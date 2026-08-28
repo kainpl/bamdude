@@ -64,6 +64,16 @@
     "title_template": "Filament Low",
     "body_template": "{printer}: Slot {slot} at {remaining_percent}%"
   },
+  "filament_runout": {
+    "name": "Filament Runout",
+    "title_template": "Filament Runout",
+    "body_template": "{printer}: Slot {slot} ran out of filament and is waiting. Load a new spool and assign it in BamDude so the rest of the print is booked to the right spool."
+  },
+  "filament_runout_backup": {
+    "name": "Filament Runout (Backup)",
+    "title_template": "Filament Runout",
+    "body_template": "{printer}: Slot {slot} ran out; the AMS switched to the backup slot and the print continues."
+  },
   "maintenance_due": {
     "name": "Maintenance Due",
     "title_template": "Maintenance Due",
@@ -73,6 +83,11 @@
     "name": "AMS Humidity High",
     "title_template": "AMS Humidity Alert",
     "body_template": "{printer} {ams_label}: Humidity {humidity}% exceeds {threshold}% threshold"
+  },
+  "ams_drying_suspended": {
+    "name": "AMS Auto-Drying Suspended",
+    "title_template": "Auto-drying stopped",
+    "body_template": "{printer} {ams_label}: {cycles} drying cycles in a row ended at {humidity}%, still above the {threshold}% threshold. An AMS reads higher while warm, so this threshold cannot be reached here. Automatic drying is paused for this unit until the reading comes down."
   },
   "ams_temperature_high": {
     "name": "AMS Temperature High",
@@ -193,5 +208,10 @@
     "name": "Sensor Reporting Again",
     "title_template": "Sensor Recovered",
     "body_template": "{location} — {sensor} is reporting again"
+  },
+  "filament_deficit": {
+    "name": "Filament Will Run Out",
+    "title_template": "Filament Will Run Out",
+    "body_template": "{printer}: {print_name} needs {needed}g in slot {slot}, which holds {available}g — short by {missing}g. The print has started anyway."
   }
 }

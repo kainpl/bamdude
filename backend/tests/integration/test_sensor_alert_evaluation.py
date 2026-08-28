@@ -10,12 +10,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 
-async def _sensor(db_session, ieee="aa:bb", name="Workshop"):
+async def _sensor(db_session, ieee="aa:bb", name="Workshop", printer_id=None):
     from backend.app.models.smart_sensor import SmartSensor
     from backend.app.models.zigbee_device import ZigbeeDevice
 
     db_session.add(ZigbeeDevice(ieee=ieee, kind="sensor", name="SONOFF"))
-    sensor = SmartSensor(name=name, zigbee_ieee=ieee)
+    sensor = SmartSensor(name=name, zigbee_ieee=ieee, printer_id=printer_id)
     db_session.add(sensor)
     await db_session.commit()
     await db_session.refresh(sensor)
@@ -165,6 +165,31 @@ async def test_the_message_carries_the_place_and_the_numbers(db_session):
     # No location on this sensor, so the place falls back to its own name — a
     # message opening with an empty dash says nothing about where to walk.
     assert event.variables["location"] == "Workshop"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_printer_bound_sensor_names_the_printer_it_is_taped_to(db_session):
+    """⚠️ The printer, not the room it stands in.
+
+    A sensor bound to a printer has no location — the two bindings are
+    exclusive — so without this the message would fall back to the sensor's own
+    name and an alert about an enclosure would not say which machine.
+    """
+    from backend.app.models.printer import Printer
+    from backend.app.services.sensor_alerts import evaluate_thresholds
+
+    printer = Printer(name="X1C #2", ip_address="192.168.1.9", access_code="12345678", serial_number="SN9")
+    db_session.add(printer)
+    await db_session.commit()
+    await db_session.refresh(printer)
+
+    sensor = await _sensor(db_session, name="Enclosure", printer_id=printer.id)
+    await _threshold(db_session, sensor, max_value=30.0)
+    await _reading(db_session, sensor, "temperature", 31.2)
+
+    [event] = await evaluate_thresholds(db_session)
+    assert event.variables["location"] == "X1C #2"
 
 
 class TestSilence:

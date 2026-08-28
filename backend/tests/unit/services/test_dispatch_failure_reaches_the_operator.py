@@ -63,12 +63,33 @@ async def test_a_queue_job_is_left_to_the_scheduler(notify):
     """⚠️ Otherwise one failure produces two messages."""
     job = _job(
         queue_item_id=42,
+        awaited_by_scheduler=True,
         outcome={"success": False, "archive_id": None, "error": "FTP upload failed", "cancelled": False},
     )
 
     await report_failure_if_unwatched(job)
 
     notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_direct_print_is_announced_even_though_it_has_a_queue_item(notify):
+    """⚠️ The discriminator is ``awaited_by_scheduler``, not ``queue_item_id``.
+
+    A direct print carries a queue item of its own now — that row is how it
+    claims the printer for the length of its dispatch. Reading the item as
+    "the scheduler has this" would leave whoever pressed Print now with no
+    word at all that their upload failed: the scheduler only reports the items
+    it dispatched itself.
+    """
+    job = _job(
+        queue_item_id=42,
+        outcome={"success": False, "archive_id": None, "error": "FTP upload failed", "cancelled": False},
+    )
+
+    await report_failure_if_unwatched(job)
+
+    notify.assert_awaited_once()
 
 
 @pytest.mark.asyncio

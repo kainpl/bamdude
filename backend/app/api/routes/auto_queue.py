@@ -54,6 +54,7 @@ from backend.app.services.auto_queue_eligibility import find_eligible_printer
 from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
 from backend.app.services.filament_requirements import overrides_for_plate
 from backend.app.services.library_helpers import project_for_library_file
+from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +253,19 @@ async def add_to_auto_queue(
     )
     max_pos = int(max_pos_q.scalar() or 0)
 
-    batch_id = str(uuid.uuid4()) if (data.quantity > 1 or len(plate_ids) > 1) else None
+    # How many runs each plate was asked for. Absent for a plate → the shared
+    # ``quantity``, which is what every caller sent before per-plate counts
+    # existed.
+    per_plate = data.plate_quantities or {}
+
+    def _quantity_for(plate: int | None) -> int:
+        return per_plate.get(plate, data.quantity) if plate is not None else data.quantity
+
+    total_items = sum(_quantity_for(p) for p in plate_ids)
+    # A batch is "these rows were created together", so it is the TOTAL that
+    # decides — two plates at one copy each is still a batch, and one plate at
+    # three is too.
+    batch_id = str(uuid.uuid4()) if total_items > 1 else None
 
     # Raw override dicts; narrowed per-plate inside the loop below (#2551).
     overrides_list = [o.model_dump() for o in data.filament_overrides] if data.filament_overrides else []
@@ -263,7 +276,11 @@ async def add_to_auto_queue(
     pos_offset = 0
     for plate_id in plate_ids:
         # Per-plate 3MF auto-extraction (fall back to provided values when given)
-        target_model = data.target_model
+        # Normalised on the way in so the stored value is the short name the
+        # rest of the app compares and displays. Routing normalises again when
+        # it reads (that is what covers rows written by telegram and the VP),
+        # but a row that keeps "C12" shows "C12" everywhere it is named.
+        target_model = normalize_model_name(data.target_model)
         required_types = data.required_filament_types
         print_time = None
         if file_path is not None and file_path.exists():
@@ -281,7 +298,7 @@ async def add_to_auto_queue(
         plate_overrides = overrides_for_plate(overrides_list, file_path, plate_id)
         plate_overrides_json = json.dumps(plate_overrides) if plate_overrides else None
 
-        for _ in range(data.quantity):
+        for _ in range(_quantity_for(plate_id)):
             pos_offset += 1
             items.append(
                 AutoQueueItem(
@@ -432,7 +449,15 @@ async def update_auto_queue_item(
     if item.status != "pending":
         raise HTTPException(400, f"Cannot edit item in status '{item.status}'")
 
-    update_data = data.model_dump(exclude_unset=True)
+    _apply_item_update(item, data.model_dump(exclude_unset=True))
+
+    await db.commit()
+    await db.refresh(item)
+    return _to_response(item)
+
+
+def _apply_item_update(item: AutoQueueItem, update_data: dict) -> None:
+    """Field-by-field update shared by the single-item and batch PUTs."""
     for key, value in update_data.items():
         if key == "filament_overrides" and value is not None:
             value = json.dumps([o if isinstance(o, dict) else o.model_dump() for o in value])
@@ -444,11 +469,39 @@ async def update_auto_queue_item(
         elif key in ("bed_levelling", "flow_cali"):
             # No *_mode column on auto-queue — store the bool mirror only.
             value = mode_to_bool(value)
+        elif key == "target_model" and value is not None:
+            value = normalize_model_name(value)
         setattr(item, key, value)
 
+
+@router.put("/batch/{batch_id}", response_model=AutoQueueBatchActionResponse)
+async def update_auto_queue_batch(
+    batch_id: str,
+    data: AutoQueueItemUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Apply one edit to every still-pending copy of a batch.
+
+    The batch is N identical copies by construction; editing the group is the
+    common gesture (5 copies = 1 edit, not 5), and a copy already assigned to
+    a printer is deliberately left alone — the per-printer item owns it.
+    ``position`` is excluded: copies must keep their own positions or the
+    group edit would stack the whole batch onto one slot.
+    """
+    result = await db.execute(
+        select(AutoQueueItem).where(AutoQueueItem.batch_id == batch_id, AutoQueueItem.status == "pending")
+    )
+    items = list(result.scalars().all())
+    if not items:
+        raise HTTPException(404, "No pending items in this batch")
+
+    update_data = data.model_dump(exclude_unset=True)
+    update_data.pop("position", None)
+    for item in items:
+        _apply_item_update(item, update_data)
     await db.commit()
-    await db.refresh(item)
-    return _to_response(item)
+    return AutoQueueBatchActionResponse(batch_id=batch_id, affected=len(items))
 
 
 @router.delete("/{item_id}", response_model=AutoQueueItemResponse)
@@ -531,11 +584,6 @@ async def reorder_auto_queue(
     _: User | None = RequirePermission(Permission.QUEUE_REORDER),
 ):
     """Persist a new ordering of pending auto items."""
-    for entry in payload.items:
-        await db.execute(
-            select(AutoQueueItem).where(AutoQueueItem.id == entry.id).execution_options(synchronize_session=False)
-        )
-    # Use ORM update for clarity / per-row event firing
     for entry in payload.items:
         result = await db.execute(select(AutoQueueItem).where(AutoQueueItem.id == entry.id))
         row = result.scalar_one_or_none()

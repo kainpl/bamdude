@@ -1,13 +1,17 @@
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
 
-if TYPE_CHECKING:
-    from backend.app.models.printer_location import PrinterLocation
+# Runtime import on purpose, not TYPE_CHECKING: ``Printer.location`` names
+# "PrinterLocation" as a string, and configure_mappers() can only resolve it
+# if the class reached the registry. Behind TYPE_CHECKING that depended on
+# whoever happened to import printer_location first — fine in the app (init_db
+# imports every model) but a landmine in any isolated test that touched the
+# mapper registry. printer_location imports no models back, so no cycle.
+from backend.app.models.printer_location import PrinterLocation  # noqa: F401
 
 
 class Printer(Base):
@@ -107,6 +111,10 @@ class Printer(Base):
     # Relationships
     archives: Mapped[list["PrintArchive"]] = relationship(back_populates="printer", cascade="all, delete-orphan")
     smart_plugs: Mapped[list["SmartPlug"]] = relationship(back_populates="printer")
+    # No cascade on either of these two: a plug and a sensor are physical
+    # hardware that outlive the printer they were wired to, so deleting the
+    # printer unbinds them rather than deleting them.
+    smart_sensors: Mapped[list["SmartSensor"]] = relationship(back_populates="printer")
     notification_providers: Mapped[list["NotificationProvider"]] = relationship(back_populates="printer")
     maintenance_items: Mapped[list["PrinterMaintenance"]] = relationship(
         back_populates="printer", cascade="all, delete-orphan"
@@ -126,3 +134,4 @@ from backend.app.models.maintenance import PrinterMaintenance  # noqa: E402
 from backend.app.models.notification import NotificationProvider  # noqa: E402
 from backend.app.models.printer_sensor_history import PrinterSensorHistory  # noqa: E402, F401
 from backend.app.models.smart_plug import SmartPlug  # noqa: E402
+from backend.app.models.smart_sensor import SmartSensor  # noqa: E402

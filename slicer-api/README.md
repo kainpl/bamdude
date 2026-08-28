@@ -79,6 +79,45 @@ First build downloads the slicer's AppImage (~110 MB OrcaSlicer, ~220 MB
 BambuStudio) and compiles the Node wrapper. Takes 3–8 minutes per service.
 Subsequent runs reuse the local image — instant start.
 
+## Experimental setup for ARM64
+
+Both images are `linux/amd64`: OrcaSlicer's ARM64 path is on hold upstream and
+BambuStudio publishes no ARM64 build at all. On an ARM64 host the
+`docker-compose.arm64.yml` override in this folder runs them under QEMU
+emulation.
+
+⚠️ **A separate x86_64 box is the better answer if you have one.** This is a
+stopgap, and it costs more here than it would on a stack that pulls prebuilt
+images: BamDude *builds* the sidecars, so the emulation applies to the build as
+well — the first build downloads and extracts a ~110 MB or ~220 MB AppImage
+under QEMU. Budget well past the usual five minutes per service. Slicing itself
+runs roughly 3-6x slower than native, worsening with model complexity.
+
+**Set up QEMU binfmt on the host first**, or the containers fail with
+`exec format error`. On Debian/Ubuntu that is `qemu-user-static` plus
+`binfmt-support`; Docker Desktop on Apple Silicon already has it.
+
+```bash
+cd slicer-api/
+cp .env.example .env
+
+# Make every later `docker compose` command pick up the ARM64 override:
+echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.arm64.yml' >> .env
+
+docker compose --profile orca up -d
+curl http://localhost:3003/health
+```
+
+⚠️ That `COMPOSE_FILE` line is what makes the rest of this README work
+unchanged on ARM64, **Updating** included. Without it every command has to name
+both files (`docker compose -f docker-compose.yml -f docker-compose.arm64.yml
+…`), and the first command that forgets drops the override — a manifest error
+on a host with no emulation registered for that image, and a silent switch
+between image architectures once native ARM64 builds exist.
+
+The `--profile` flag is still required on top of it: both services are gated,
+so a bare `up -d` starts nothing whatever compose files are in play.
+
 ## Ports
 
 | Service | Default host port | Why this port |
@@ -138,6 +177,20 @@ docker compose --profile all up -d
 is needed because the Dockerfile downloads the AppImage inline; Docker
 won't re-fetch it on a version change otherwise.
 
+⚠️ **The `--profile` flag belongs on both commands, every time.** A bare
+`docker compose build` or `docker compose up -d` skips profile-gated services
+**silently**: it reports success, `restart: unless-stopped` keeps the old
+container serving, and you stay on the old image however often you repeat it.
+Both services here are gated, so a bare command touches nothing at all. To
+update one sidecar only, name it instead:
+
+```bash
+docker compose build --no-cache bambu-studio-api
+docker compose up -d bambu-studio-api
+```
+
+Naming a service enables its profile implicitly.
+
 ## Troubleshooting
 
 - **`address already in use` on port 3000 or 3002** — BamDude's
@@ -147,6 +200,10 @@ won't re-fetch it on a version change otherwise.
   binary works; the wrapper just couldn't parse the version string from
   the slicer's `--help` output (BambuStudio's format differs from
   OrcaSlicer's, which is what the wrapper was tuned for).
+- **A large model is rejected as too big** — the sidecar caps the upload at
+  512 MB by default. Raise `MAX_MODEL_UPLOAD_MB` in `.env` and restart the
+  service. The cap lives inside the sidecar, so a reverse-proxy body limit is
+  neither the cause nor the cure.
 - **Slice returns "Failed to slice the model"** — the wrapper hides the
   CLI's stderr. Re-run inside the container to see it:
 

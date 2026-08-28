@@ -770,6 +770,18 @@ async def stop_queue_item(
             "ensure_fresh_connection returned False for printer %s - printer may not be connected", printer_id
         )
 
+    # ⚠️ Signal the dispatcher BEFORE the stop command. A stop only makes sense
+    # once a print is running; during the preheat stage there is nothing to
+    # stop, and the dispatch coroutine — which only ever sees this through its
+    # own cancel-check — would otherwise keep the heaters on for the rest of
+    # the wait and soak while holding the printer claimed.
+    try:
+        from backend.app.services.background_dispatch import background_dispatch
+
+        background_dispatch.cancel_dispatch_for_queue_item(item_id)
+    except Exception as exc:  # noqa: BLE001 - the stop below matters more
+        logger.warning("Could not signal the dispatcher for stopped queue item %s: %s", item_id, exc)
+
     # Try to send stop command to printer
     stop_sent = False
     try:

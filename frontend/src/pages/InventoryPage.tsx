@@ -1,10 +1,11 @@
 import { useState, useMemo, useEffect, useRef, useCallback, type CSSProperties, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { buildFilamentBackground } from '../components/filamentSwatchHelpers';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
-  Plus, Loader2, Trash2, Archive, RotateCcw, Edit2, Package,
+  Plus, Trash2, Archive, RotateCcw, Edit2, Package,
   Search,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, Disc3, Copy, Eraser,
@@ -16,7 +17,7 @@ import type { InventorySpool, SpoolAssignment, SpoolCatalogEntry } from '../api/
 import { Button } from '../components/Button';
 import { PaginationBar } from '../components/PaginationBar';
 import { SpoolFormModal, type SpoolFormMode } from '../components/SpoolFormModal';
-import { SpoolCsvImportModal } from '../components/SpoolCsvImportModal';
+import { SpoolCsvExportModal, SpoolCsvImportModal } from '../components/SpoolCsvImportModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { ColumnConfigModal, type ColumnConfig } from '../components/ColumnConfigModal';
 import { LabelTemplatePickerModal } from '../components/LabelTemplatePickerModal';
@@ -24,7 +25,9 @@ import { BulkEditSpoolsModal } from '../components/BulkEditSpoolsModal';
 import { LocationsModal } from '../components/LocationsModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
-import { resolveSpoolColorName } from '../utils/colors';
+import { resolveSpoolColorName,
+  colorSortKey,
+} from '../utils/colors';
 import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
@@ -38,6 +41,7 @@ import {
   type ArchiveFilter,
   type UsageFilter,
   type StockFilter,
+  type AssignedFilter,
   type ViewMode,
 } from '../utils/inventoryFilters';
 import {
@@ -520,8 +524,14 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
   last_used_time: (s) => s.last_used || '',
   material: (s) => (s.material || '').toLowerCase(),
   subtype: (s) => (s.subtype || '').toLowerCase(),
+  // The NAME column sorts by name — alphabetical is what it says on the header.
   color_name: (s) => (s.color_name || '').toLowerCase(),
-  color_combined: (s) => (s.color_name || '').toLowerCase(),
+  // ⚠️ The swatch columns sort by COLOUR. The swatch column had no extractor at
+  // all, so its header ignored clicks; the combined one sorted by name, which
+  // files a titanium grey under T and a burgundy under B — an ordering nobody
+  // reading a row of swatches can follow.
+  rgba: (s) => colorSortKey(s.rgba),
+  color_combined: (s) => colorSortKey(s.rgba),
   brand: (s) => (s.brand || '').toLowerCase(),
   slicer_filament: (s) => (s.slicer_filament_name || s.slicer_filament || '').toLowerCase(),
   location: (s, am) => {
@@ -715,6 +725,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const [categoryFilter, setCategoryFilter] = useState(storedFilters.categoryFilter);
   const [spoolFilter, setSpoolFilter] = useState(storedFilters.spoolFilter);
   const [stockFilter, setStockFilter] = useState<StockFilter>(storedFilters.stockFilter);
+  const [assignedFilter, setAssignedFilter] = useState<AssignedFilter>(storedFilters.assignedFilter);
   const [search, setSearch] = useState(storedFilters.search);
   const [viewMode, setViewMode] = useState<ViewMode>(storedFilters.viewMode);
   const [sortState, setSortState] = useState<SortState>(loadSortState);
@@ -751,19 +762,11 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // CSV import/export (#1576). Local inventory only — disabled in Spoolman mode
   // (Spoolman owns the data store and has its own CSV import/export there).
   const [csvImportOpen, setCsvImportOpen] = useState(false);
-  const [exportingCsv, setExportingCsv] = useState(false);
+  // Export goes through a small options dialog (encoding / delimiter /
+  // decimal mark) — the next stop is usually a locale-bound spreadsheet.
+  const [csvExportOpen, setCsvExportOpen] = useState(false);
   // Structured storage-location catalog manager (upstream #1505).
   const [locationsModalOpen, setLocationsModalOpen] = useState(false);
-  const handleExportCsv = useCallback(async () => {
-    setExportingCsv(true);
-    try {
-      await api.exportSpoolsCsv();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : t('inventory.csv.exportError', 'Export failed'), 'error');
-    } finally {
-      setExportingCsv(false);
-    }
-  }, [showToast, t]);
   // Tooltip on both CSV buttons when they're disabled in Spoolman mode.
   const spoolmanCsvHint = spoolmanMode
     ? t('inventory.csv.spoolmanHint', 'In Spoolman mode, use Spoolman\'s built-in CSV import/export.')
@@ -1244,6 +1247,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       filtered = filtered.filter((s) => !!s.slicer_filament);
     }
 
+    // Loaded in a printer, or on the shelf. Reads the same `assignmentMap` the
+    // Location column renders from, so the filter and the column can never
+    // disagree — and so it answers for BOTH inventory backends: the map is
+    // already merged from local assignments and Spoolman's slot assignments.
+    if (assignedFilter === 'assigned') {
+      filtered = filtered.filter((s) => !!assignmentMap[s.id]);
+    } else if (assignedFilter === 'unassigned') {
+      filtered = filtered.filter((s) => !assignmentMap[s.id]);
+    }
+
     // Global search — tokenised substring match against the synthesised display
     // name so queries like "SUN Bl" find "SUNLU PETG Black". Also keeps the
     // prior per-column fallbacks so a free-text search still hits note /
@@ -1266,7 +1279,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     }
 
     return filtered;
-  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, search, spoolDisplayTemplate, lowStockThreshold, storageLocations]);
+  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, assignmentMap, search, spoolDisplayTemplate, lowStockThreshold, storageLocations]);
 
   // Reset page on filter changes
   const resetPage = () => setPageIndex(0);
@@ -1312,7 +1325,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const hasUnsetStorageLocation = (spools ?? []).some((s) => !s.location_id && !s.storage_location?.trim());
 
   // Check if any filters are non-default
-  const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!colorFilter || !!categoryFilter || !!spoolFilter || !!storageLocationFilter || stockFilter !== 'all' || !!search;
+  const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!colorFilter || !!categoryFilter || !!spoolFilter || !!storageLocationFilter || stockFilter !== 'all' || assignedFilter !== 'all' || !!search;
 
   const handleColumnConfigSave = (config: ColumnConfig[]) => {
     setColumnConfig(config);
@@ -1450,10 +1463,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   useEffect(() => {
     saveFilters({
       archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter,
-      categoryFilter, spoolFilter, stockFilter, search, viewMode,
+      categoryFilter, spoolFilter, stockFilter, assignedFilter, search, viewMode,
     });
   }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter,
-      categoryFilter, spoolFilter, stockFilter, search, viewMode]);
+      categoryFilter, spoolFilter, stockFilter, assignedFilter, search, viewMode]);
 
   // Drop the selection whenever the visible set changes underneath it. A
   // toolbar reading "12 selected" over a list that no longer contains those
@@ -1464,7 +1477,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   useEffect(() => {
     setSelectedIds(new Set());
   }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter,
-      spoolFilter, storageLocationFilter, stockFilter, search, groupSimilar, spoolmanMode]);
+      spoolFilter, storageLocationFilter, stockFilter, assignedFilter, search, groupSimilar, spoolmanMode]);
 
   const selectedSpools = useMemo(
     () => filteredSpools.filter((sp) => selectedIds.has(sp.id)),
@@ -1524,22 +1537,25 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     setSpoolFilter('');
     setStorageLocationFilter('');
     setStockFilter('all');
+    setAssignedFilter('all');
     setSearch('');
     resetPage();
   };
 
   return (
     <div className="p-4 md:p-6 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header. ⚠️ Stacks below sm and the actions wrap: the buttons side by
+          side are ~600px and nothing in that row can shrink, so on a phone the
+          header pushed past the viewport and took the WHOLE PAGE with it —
+          <main> is the scroll container, so everything inside it panned
+          sideways. Identical at >=640px. Same pattern the Statistics, Settings
+          and Archives headers use, and the filter bar further down this page. */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="flex items-center gap-3">
-            <Disc3 className="w-6 h-6 text-bambu-green" />
-            <h1 className="text-2xl font-bold text-white">{t('inventory.title')}</h1>
-          </div>
-          <p className="text-sm text-bambu-gray">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Disc3 className="w-6 h-6 text-bambu-green" />{t('inventory.title')}</h1>
+            <p className="text-sm text-bambu-gray">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Bulk edit — internal inventory only (not Spoolman mode). Opens a
               modal that lets the user pick which of the filtered spools to edit
               and which fields to change. */}
@@ -1578,8 +1594,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             <Upload className="w-4 h-4" />
             {t('inventory.csv.importButton', 'Import CSV')}
           </Button>
-          <Button variant="secondary" disabled={spoolmanMode || exportingCsv} onClick={handleExportCsv} title={spoolmanCsvHint}>
-            {exportingCsv ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+          <Button variant="secondary" disabled={spoolmanMode} onClick={() => setCsvExportOpen(true)} title={spoolmanCsvHint}>
+            <Download className="w-4 h-4" />
             {t('inventory.csv.exportButton', 'Export CSV')}
           </Button>
           <Button variant="secondary" onClick={() => setLocationsModalOpen(true)}>
@@ -1920,6 +1936,45 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           </button>
         </div>
 
+        {/* Loaded in a printer, or on the shelf. Three states rather than a
+            checkbox: "not assigned" is a question people ask as often as
+            "assigned" — it is what is left to take — and a two-state tick
+            cannot express it without meaning "all" in one of its positions. */}
+        <div className="flex items-center rounded-lg border border-bambu-dark-tertiary overflow-hidden">
+          <button
+            onClick={() => { setAssignedFilter('all'); resetPage(); }}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+              assignedFilter === 'all'
+                ? 'bg-bambu-green/20 text-bambu-green'
+                : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
+            }`}
+          >
+            {t('inventory.all')}
+          </button>
+          <button
+            onClick={() => { setAssignedFilter('assigned'); resetPage(); }}
+            title={t('inventory.inPrinterHint')}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+              assignedFilter === 'assigned'
+                ? 'bg-bambu-green/20 text-bambu-green'
+                : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
+            }`}
+          >
+            {t('inventory.inPrinter')}
+          </button>
+          <button
+            onClick={() => { setAssignedFilter('unassigned'); resetPage(); }}
+            title={t('inventory.onShelfHint')}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+              assignedFilter === 'unassigned'
+                ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
+                : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
+            }`}
+          >
+            {t('inventory.onShelf')}
+          </button>
+        </div>
+
         <div className="w-px h-5 bg-bambu-dark-tertiary" />
 
         {/* Material dropdown chip */}
@@ -2064,9 +2119,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
       {/* Content */}
       {isLoading ? (
-        <div className="flex justify-center py-16">
-          <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-        </div>
+        <LoadingBlock label={t('common.loading')} />
       ) : viewMode === 'forecast' ? (
         /* Forecast view (upstream #1184) */
         <ForecastPanel spools={spools || []} />
@@ -2408,6 +2461,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       )}
 
       {/* CSV import modal (#1576) */}
+      {csvExportOpen && <SpoolCsvExportModal onClose={() => setCsvExportOpen(false)} />}
+
       {csvImportOpen && (
         <SpoolCsvImportModal
           onClose={() => setCsvImportOpen(false)}

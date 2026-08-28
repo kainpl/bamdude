@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
-from fastapi.responses import FileResponse as FastAPIFileResponse
-from sqlalchemy import distinct, func, select, update
+from fastapi.responses import FileResponse as FastAPIFileResponse, JSONResponse
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -28,7 +28,6 @@ from backend.app.core.auth import (
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder
 from backend.app.models.library_project_links import library_file_projects, library_folder_projects
@@ -76,19 +75,28 @@ from backend.app.services.library_helpers import (
     sliced_gcode_in_3mf,
     sync_system_tags,
 )
-from backend.app.services.library_ingest import IngestResult, external_hash_is_stale, find_reusable_row
+from backend.app.services.library_ingest import IngestResult, find_reusable_row
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
+from backend.app.services.process_overrides import apply_process_overrides
+from backend.app.services.slice_output_check import missing_start_gcode_message, start_gcode_is_missing
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
-from backend.app.utils.filename import InvalidFilenameError, is_sliced_file, validate_print_filename
-from backend.app.utils.safe_path import safe_join_under
+from backend.app.utils.filename import (
+    MAX_FILENAME_BYTES,
+    InvalidFilenameError,
+    is_sliced_file,
+    safe_path_component,
+    validate_print_filename,
+)
+from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 from backend.app.utils.threemf_tools import (
     expand_to_project_slots,
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
+    supports_enabled_in_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -345,6 +353,80 @@ def _resolve_upload_destination(target_folder: LibraryFolder | None, filename: s
         return dest, True
     ext = os.path.splitext(filename)[1].lower()
     return get_library_files_dir() / f"{uuid.uuid4().hex}{ext}", False
+
+
+def _unique_external_name(ext_dir: Path, filename: str) -> str:
+    """``filename``, or the first free ``<stem> (n)<suffix>`` variant.
+
+    Splits on the COMPOUND extension, so re-slicing ``Bidoof.3mf`` yields
+    ``Bidoof (2).gcode.3mf`` rather than ``Bidoof.gcode (2).3mf``.
+
+    ⚠️ Uploads answer a collision with a 409, which is right for a file the user
+    has just chosen to send. A slice is not that: re-slicing the same source
+    with different settings is routine, and by the time the name is known the
+    run has already spent minutes of CPU — refusing to store it throws that
+    away. Overwriting is worse still: the target is somebody's NAS and the file
+    being replaced may not even be ours.
+    """
+    stem = filename[: -len(".gcode.3mf")] if filename.endswith(".gcode.3mf") else Path(filename).stem
+    suffix = ".gcode.3mf" if filename.endswith(".gcode.3mf") else Path(filename).suffix
+    candidate = filename
+    counter = 2
+    # ⚠️ Bounded. A directory holding 999 re-slices of one model is
+    # pathological, and an unbounded loop here would hang the request on a
+    # mount that lies about exists() — some SMB shares do, under contention.
+    #
+    # safe_join_under rather than ``ext_dir / candidate``: the filename derives
+    # from a name read out of a 3MF, so even the first probe must not be able to
+    # stat its way outside the mount.
+    while safe_join_under(ext_dir, candidate, http=False).exists() and counter < 1000:
+        candidate = f"{stem} ({counter}){suffix}"
+        counter += 1
+    return candidate
+
+
+def _resolve_slice_destination(target_folder: LibraryFolder | None, out_filename: str) -> tuple[Path, bool, str | None]:
+    """Where a slice result should be written: ``(path, is_external, reason)``.
+
+    ``reason`` is None on the normal paths, and otherwise names why an external
+    folder could not receive the file — so the caller can say so instead of
+    quietly filing it elsewhere.
+
+    ⚠️ Slicing a file that lives on an external mount used to store the output
+    in the managed library dir unconditionally, while giving the new row the
+    external folder's id. The file therefore appeared in the right folder in the
+    UI and never arrived on the share — the one place the user was looking, and
+    the reason it could not be reproduced from the web UI at all. Uploads
+    learned this in ``_resolve_upload_destination``; slicing was the last write
+    path still assuming managed storage.
+
+    ⚠️ Unlike an upload, a failure here does NOT raise. The bytes exist and cost
+    real time to produce, so an unwritable target falls back to managed storage
+    with a reason attached rather than discarding the slice.
+    """
+    managed = get_library_files_dir() / f"{uuid.uuid4().hex}.gcode.3mf"
+    if target_folder is None or not target_folder.is_external:
+        return managed, False, None
+
+    if target_folder.external_readonly:
+        return managed, False, "external_readonly"
+    if not target_folder.external_path:
+        return managed, False, "external_no_path"
+
+    ext_dir = Path(target_folder.external_path)
+    if not ext_dir.exists() or not ext_dir.is_dir():
+        return managed, False, "external_unreachable"
+    if not os.access(ext_dir, os.W_OK):
+        return managed, False, "external_not_writable"
+
+    try:
+        dest = safe_join_under(ext_dir, _unique_external_name(ext_dir, out_filename), http=False)
+    except PathTraversalError:
+        # The name reached us from a 3MF on disk, so this is defensive rather
+        # than expected — but a name that escapes the mount must land in managed
+        # storage, never outside it.
+        return managed, False, "external_invalid_name"
+    return dest, True, None
 
 
 def _stored_file_path(abs_path: Path, is_external: bool) -> str:
@@ -778,10 +860,20 @@ async def list_folders(
     )
     rows = result.all()
 
-    # Get file counts per folder
+    # Files each folder HAS — the trash excluded.
+    #
+    # ⚠️ ``deleted_at`` is what "in the bin" means here: the row stays, the
+    # bytes stay, and the file can be restored, so the count has to exclude it
+    # explicitly rather than relying on the row being gone. Without this a
+    # folder emptied into the trash still read its old number and never reached
+    # zero, disagreeing with what opening it showed.
+    #
+    # ⚠️ The two other endpoints that report this number already filtered it,
+    # and so did the activity query below — whose comment claimed to share this
+    # one's WHERE clause. Keep all four together.
     file_counts_result = await db.execute(
         select(LibraryFile.folder_id, func.count(LibraryFile.id))
-        .where(LibraryFile.folder_id.isnot(None))
+        .where(LibraryFile.folder_id.isnot(None), LibraryFile.deleted_at.is_(None))
         .group_by(LibraryFile.folder_id)
     )
     file_counts = dict(file_counts_result.all())
@@ -1000,8 +1092,71 @@ async def create_folder(
     # Verify parent exists if specified
     if data.parent_id is not None:
         parent_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.parent_id))
-        if not parent_result.scalar_one_or_none():
+        parent = parent_result.scalar_one_or_none()
+        if not parent:
             raise HTTPException(status_code=404, detail="Parent folder not found")
+        # An external folder mirrors a real filesystem, so a folder created
+        # inside it must be a REAL directory on the share — a virtual row
+        # would be a phantom that looks like part of the NAS while its files
+        # live in managed storage (and the freshly linked external is
+        # AUTO-SELECTED, so "New folder" right after linking used to land
+        # here silently — measured live 2026-08-28). Same gate ladder as
+        # uploads into externals (#1112): readonly → 403, broken path → 400.
+        if parent.is_external:
+            if parent.external_readonly:
+                raise HTTPException(status_code=403, detail="Cannot create a folder in a read-only external folder")
+            if not parent.external_path:
+                raise HTTPException(status_code=400, detail="External folder has no configured path")
+            ext_dir = Path(parent.external_path)
+            if not ext_dir.exists() or not ext_dir.is_dir():
+                raise HTTPException(status_code=400, detail=f"External path is not accessible: {parent.external_path}")
+            if not os.access(ext_dir, os.W_OK):
+                raise HTTPException(status_code=400, detail=f"External path is not writable: {parent.external_path}")
+            dest = (ext_dir / data.name).resolve()  # SEC-PATH-OK: containment guard below raises HTTP 400 on traversal
+            try:
+                dest.relative_to(ext_dir.resolve())
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid folder name") from None
+            if dest.parent != ext_dir.resolve():
+                # A name with separators would silently nest deeper than asked.
+                raise HTTPException(status_code=400, detail="Invalid folder name")
+            if dest.exists():
+                raise HTTPException(status_code=409, detail="A folder with this name already exists on the share")
+            try:
+                dest.mkdir()
+            except OSError as exc:
+                raise HTTPException(status_code=400, detail=f"Could not create the directory: {exc}") from None
+            # The same row shape the scanner creates for an on-disk subfolder
+            # (library_scan): the next walk recognises it as its own instead
+            # of treating it as a stranger.
+            folder = LibraryFolder(
+                name=data.name,
+                parent_id=parent.id,
+                is_external=True,
+                external_path=str(dest),
+                external_readonly=False,
+                external_show_hidden=parent.external_show_hidden,
+                archive_id=data.archive_id,
+            )
+            folder.projects = await _resolve_projects_for_assign(db, data.project_ids)
+            db.add(folder)
+            await db.commit()
+            return FolderResponse(
+                id=folder.id,
+                name=folder.name,
+                parent_id=folder.parent_id,
+                projects=_project_refs(folder.projects),
+                archive_id=folder.archive_id,
+                archive_name=None,
+                is_external=True,
+                external_path=folder.external_path,
+                external_readonly=folder.external_readonly,
+                external_show_hidden=folder.external_show_hidden,
+                file_count=0,
+                latest_activity_at=folder_activity_at(folder),
+                created_at=folder.created_at,
+                updated_at=folder.updated_at,
+            )
 
     # m044: validate every requested project exists in one IN-list query.
     project_rows = await _resolve_projects_for_assign(db, data.project_ids)
@@ -1688,349 +1843,75 @@ async def _backfill_external_mesh_thumbnails(folder_ids: list[int]) -> None:
 async def scan_external_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+    user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
-    """Scan an external folder and sync files to the database.
+    """Start a scan of an external folder and return straight away.
 
-    Discovers new files, removes DB entries for deleted files.
-    Does not copy files - stores the external path directly.
+    ⚠️ **This used to do the work and answer with counts.** It walked the share,
+    wrote every row and only then replied — holding SQLite's write lock the
+    whole time, so on a NAS mount anything else that tried to write failed with
+    ``database is locked`` after fifteen seconds. The answer shape changed
+    because the old one could only be produced by keeping the request open for
+    the entire scan, which was the bug.
+
+    The work now lives in ``services/library_scan``; progress arrives on the
+    WebSocket and the job row can be polled.
     """
+    from backend.app.services.library_scan import active_job_id, start_scan
+
     result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
     folder = result.scalar_one_or_none()
-
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
     if not folder.is_external or not folder.external_path:
         raise HTTPException(status_code=400, detail="Not an external folder")
 
-    ext_path = Path(folder.external_path)
-    if not ext_path.exists() or not ext_path.is_dir():
-        raise HTTPException(status_code=400, detail=f"External path is not accessible: {folder.external_path}")
-
-    # Collect all existing child external subfolder IDs (walk parent chain to find descendants)
-    all_folder_ids = {folder_id}
-    queue = [folder_id]
-    while queue:
-        parent = queue.pop()
-        children_result = await db.execute(select(LibraryFolder.id).where(LibraryFolder.parent_id == parent))
-        for (child_id,) in children_result.all():
-            all_folder_ids.add(child_id)
-            queue.append(child_id)
-
-    # Get existing DB files across ALL folder IDs (root + subfolders)
-    existing_result = await db.execute(
-        select(LibraryFile).where(LibraryFile.folder_id.in_(all_folder_ids), LibraryFile.is_external.is_(True))
-    )
-    existing_files = {f.file_path: f for f in existing_result.scalars().all()}
-
-    # Build folder cache mapping relative paths to folder IDs
-    folder_cache: dict[str, int] = {"": folder_id}
-
-    # Scan the directory
-    added = 0
-    removed = 0
-    # Discovered files whose content the library already holds. Counted and
-    # reported: the scan is also how people browse a mount, so a silently
-    # skipped file reads as a scan that missed something.
-    skipped_duplicates = 0
-    found_paths = set()
-    # Directory mtimes gathered during the walk (#2680), applied in one pass
-    # after it. Collected by id rather than written inline because the walk sees
-    # a path while the row it belongs to may have been created — or may already
-    # have existed — several statements earlier. Files need no such map: their
-    # rows are live ORM objects here, so the scan assigns straight to them.
-    folder_mtimes: dict[int, datetime] = {}
-
-    for dirpath, dirnames, filenames in os.walk(ext_path):
-        # Filter hidden directories unless configured
-        if not folder.external_show_hidden:
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-
-        # Compute relative directory path from ext_path
-        rel_dir = str(Path(dirpath).relative_to(ext_path)).replace("\\", "/")
-        if rel_dir == ".":
-            rel_dir = ""
-
-        # Create subfolder chain in DB when new directories are encountered
-        target_folder_id = folder_cache.get(rel_dir)
-        if target_folder_id is None:
-            parts = rel_dir.split("/")
-            current_path = ""
-            current_parent_id = folder_id
-            for part in parts:
-                current_path = f"{current_path}/{part}" if current_path else part
-                if current_path in folder_cache:
-                    current_parent_id = folder_cache[current_path]
-                else:
-                    # Create subfolder in DB
-                    new_folder = LibraryFolder(
-                        name=part,
-                        parent_id=current_parent_id,
-                        is_external=True,
-                        external_path=str(
-                            ext_path / current_path
-                        ),  # SEC-PATH-OK: current_path = relative_to(ext_path) of an os.walk'd on-disk dir, not request input
-                        external_show_hidden=folder.external_show_hidden,
-                    )
-                    db.add(new_folder)
-                    await db.flush()
-                    folder_cache[current_path] = new_folder.id
-                    all_folder_ids.add(new_folder.id)
-                    current_parent_id = new_folder.id
-            target_folder_id = folder_cache[current_path]
-
-        # The directory's own mtime (#2680). Recorded on every pass, not only
-        # when the row is created: a folder whose contents changed since the
-        # last scan has a new mtime, and that is the whole point of the column.
-        with contextlib.suppress(OSError):
-            folder_mtimes[target_folder_id] = _mtime_to_utc(os.stat(dirpath).st_mtime)
-
-        for filename in filenames:
-            # Skip hidden files unless configured
-            if not folder.external_show_hidden and filename.startswith("."):
-                continue
-
-            filepath = (
-                Path(dirpath) / filename
-            )  # SEC-PATH-OK: dirpath/filename come from os.walk(ext_path); real_path.relative_to(ext_path) symlink-escape guard just below
-            ext = filepath.suffix.lower()
-
-            # Check for compound extensions like .gcode.3mf
-            if ext not in _SCANNABLE_EXTENSIONS:
-                # Check compound
-                compound = "".join(filepath.suffixes[-2:]).lower() if len(filepath.suffixes) >= 2 else ""
-                if compound not in _SCANNABLE_EXTENSIONS:
-                    continue
-
-            # Resolve symlinks and ensure still under external_path
-            try:
-                real_path = filepath.resolve()
-                real_path.relative_to(ext_path.resolve())
-            except (ValueError, OSError):
-                continue  # Symlink escapes the external dir
-
-            file_path_str = str(filepath)
-            found_paths.add(file_path_str)
-
-            # Stat BEFORE the already-tracked check (#2680). A re-scan has to
-            # refresh the mtime of files it already knows about — that is the
-            # normal case for a mount that was added once and edited since, and
-            # skipping straight to ``continue`` is why nothing ever recorded it.
-            try:
-                stat = filepath.stat()
-            except OSError:
-                continue
-            fs_modified_at = _mtime_to_utc(stat.st_mtime)
-
-            tracked = existing_files.get(file_path_str)
-            if tracked is not None:
-                # Assigned only when it actually moved. A no-op write would
-                # still fire ``onupdate`` and stamp ``updated_at`` on every row
-                # of every scan — re-creating the very tie this column exists to
-                # break, for anyone still falling back to it.
-                if tracked.fs_modified_at != fs_modified_at:
-                    tracked.fs_modified_at = fs_modified_at
-                # Re-hash only what changed. ``external_hash_is_stale`` answers
-                # off the size and mtime already stored on the row, so a mount
-                # that has not moved costs no reads at all — which is what makes
-                # hashing mounts affordable in the first place.
-                if external_hash_is_stale(tracked, size=stat.st_size, mtime=fs_modified_at):
-                    try:
-                        tracked.file_hash = calculate_file_hash(filepath)
-                        tracked.file_size = stat.st_size
-                    except OSError:
-                        pass  # unreadable right now; the next scan tries again
-                continue  # Already tracked
-
-            file_type = detect_file_type(filepath.name)
-            # Sliced 3MFs (`.gcode.3mf`) collapse to file_type='gcode' but
-            # still need the 3MF parser path for thumbnail + plate cache.
-            # Branch by container suffix, not primary type.
-            is_3mf_container = filepath.name.lower().endswith(".3mf")
-
-            # Extract thumbnail for 3mf files
-            thumbnail_path = None
-            file_metadata = None
-            if is_3mf_container:
-                try:
-                    parser = ThreeMFParser(str(filepath))
-                    meta = parser.parse()
-                    if meta:
-                        file_metadata = _clean_3mf_metadata(meta)
-                    thumb_data = parser.extract_thumbnail()
-                    if thumb_data:
-                        thumb_dir = get_library_thumbnails_dir()
-                        thumb_filename = f"{uuid.uuid4().hex}.png"
-                        thumb_full = (
-                            thumb_dir / thumb_filename
-                        )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                        thumb_full.write_bytes(thumb_data)
-                        thumbnail_path = to_relative_path(thumb_full)
-                    # Same per-plate cache populated as the upload route —
-                    # external 3MFs imported via folder-scan benefit too.
-                    try:
-                        import zipfile as _zf
-
-                        from backend.app.services.archive import parse_plates_from_3mf
-
-                        with _zf.ZipFile(str(filepath), "r") as _zfh:
-                            plates_payload = parse_plates_from_3mf(_zfh)
-                        if plates_payload and file_metadata is not None:
-                            file_metadata["plates"] = plates_payload
-                            file_metadata["is_multi_plate"] = len(plates_payload) > 1
-                    except Exception as _pe:
-                        logger.debug("Per-plate parse for external scan failed (non-critical): %s", _pe)
-                except Exception as e:
-                    logger.debug("Failed to extract metadata from external 3mf %s: %s", filepath, e)
-
-            # Mesh thumbnails (STL + OBJ — trimesh handles both via extension
-            # dispatch) are DEFERRED to a background task spawned after the
-            # scan's db.commit() — see _backfill_external_mesh_thumbnails.
-            # Doing them inline would block the HTTP request for minutes on a
-            # large NAS mount (each file is a trimesh.load + matplotlib render,
-            # ~1-5s) and the FE modal would time out before the commit ran —
-            # the original symptom in upstream Bambuddy #1299 where
-            # subdirectories never showed up because nothing got committed.
-
-            # Extract gcode thumbnail — only for raw .gcode files; sliced
-            # .gcode.3mf already went through the 3MF parser branch above.
-            if file_type == "gcode" and not is_3mf_container and thumbnail_path is None:
-                thumb_data = extract_gcode_thumbnail(filepath)
-                if thumb_data:
-                    thumb_dir = get_library_thumbnails_dir()
-                    thumb_filename = f"{uuid.uuid4().hex}.png"
-                    thumb_full = (
-                        thumb_dir / thumb_filename
-                    )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                    thumb_full.write_bytes(thumb_data)
-                    thumbnail_path = to_relative_path(thumb_full)
-
-            # Create thumbnail for image files
-            if ext.lower() in IMAGE_EXTENSIONS and thumbnail_path is None:
-                thumbnail_path_str = create_image_thumbnail(filepath, get_library_thumbnails_dir())
-                if thumbnail_path_str:
-                    thumbnail_path = to_relative_path(Path(thumbnail_path_str))
-
-            # ⚠️ This used to write ``file_hash=None`` — "skip hashing external
-            # files for performance" — which put a whole mount outside
-            # deduplication. That decision predates m129 putting the on-disk
-            # mtime on the row: with size and mtime stored, the first scan pays
-            # a full read and every scan after it re-reads only what changed
-            # (``external_hash_is_stale``). A discovered file whose content the
-            # library already holds gets no row of its own, and the scan says so
-            # rather than looking like it missed something.
-            content_hash = calculate_file_hash(filepath)
-            reusable = await find_reusable_row(db, content_hash=content_hash)
-            if reusable is not None and reusable[1]:
-                skipped_duplicates += 1
-                continue
-
-            db_file = LibraryFile(
-                folder_id=target_folder_id,
-                is_external=True,
-                filename=filename,
-                file_path=file_path_str,
-                file_type=file_type,
-                skip_objects_supported=skip_objects_supported_from_metadata(file_metadata),
-                file_size=stat.st_size,
-                file_hash=content_hash,
-                thumbnail_path=thumbnail_path,
-                file_metadata=_without_print_name(file_metadata),
-                fs_modified_at=fs_modified_at,
-            )
-            db.add(db_file)
-            # Flushed per row rather than once after the scan: the associations
-            # key off the id, and holding every new row unflushed to save a
-            # round trip would make a mid-scan failure lose the whole batch's
-            # tags rather than just its own.
-            await db.flush()
-            await sync_system_tags(db, db_file)
-            added += 1
-
-    # Remove DB entries for files that no longer exist on disk.
-    #
-    # Gate on actual disk presence, NOT merely absence from found_paths:
-    # found_paths only collects extensions in _SCANNABLE_EXTENSIONS, so a record
-    # for any other file the upload path admitted — a .md README being the
-    # reported case (#2520) — would otherwise be read as "deleted from disk" and
-    # purged on EVERY scan while the file sits there untouched. os.path.exists
-    # keeps those records; genuinely-deleted files are still cleaned up. For
-    # external folders file_path is the absolute on-disk path.
-    for path_str, db_file in existing_files.items():
-        if path_str not in found_paths and not os.path.exists(path_str):
-            # Clean up thumbnail if we generated one
-            if db_file.thumbnail_path:
-                try:
-                    abs_thumb = to_absolute_path(db_file.thumbnail_path)
-                    if abs_thumb and abs_thumb.exists():
-                        abs_thumb.unlink()
-                except OSError:
-                    pass
-            await db.delete(db_file)
-            removed += 1
-
-    # Clean up orphaned subfolders (directories that no longer exist on disk)
-    # Re-fetch all child external subfolders
-    all_sub_result = await db.execute(
-        select(LibraryFolder).where(
-            LibraryFolder.id.in_(all_folder_ids),
-            LibraryFolder.id != folder_id,
-        )
-    )
-    all_subfolders = all_sub_result.scalars().all()
-
-    # Process deepest-first (sort by path depth descending)
-    all_subfolders.sort(key=lambda f: f.external_path.count("/") if f.external_path else 0, reverse=True)
-
-    for sub in all_subfolders:
-        if sub.external_path and not Path(sub.external_path).exists():
-            # Delete only if folder has no files and no child folders remaining
-            file_count = await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.folder_id == sub.id))
-            if (file_count.scalar() or 0) > 0:
-                continue
-            child_count = await db.execute(
-                select(func.count(LibraryFolder.id)).where(LibraryFolder.parent_id == sub.id)
-            )
-            if (child_count.scalar() or 0) > 0:
-                continue
-            await db.delete(sub)
-
-    # Stamp the directories' on-disk mtimes (#2680). After the orphan cleanup so
-    # a folder deleted in the same pass isn't resurrected by an UPDATE — os.walk
-    # only visits directories that exist, so the two sets are disjoint in
-    # practice, but the ordering makes that independent of it staying true.
-    for stamped_folder_id, mtime in folder_mtimes.items():
-        await db.execute(
-            update(LibraryFolder).where(LibraryFolder.id == stamped_folder_id).values(fs_modified_at=mtime)
+    # ⚠️ Reachability is NOT checked here. On a hung mount `exists()` blocks, and
+    # blocking this handler is what the whole change exists to stop — the worker
+    # asks the same question in a thread and fails the job with the reason.
+    existing = await active_job_id(db, folder_id)
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"a scan of this folder is already running (job {existing})",
         )
 
-    await db.commit()
+    job_id = await start_scan(folder_id, user.id if user else None)
+    return JSONResponse(status_code=202, content={"job_id": job_id, "status": "queued"})
 
-    # Spawn mesh-thumbnail backfill in the background — the scan endpoint
-    # returns immediately so the FE modal closes and subdirectories are
-    # visible right away; thumbnails fill in over the following seconds /
-    # minutes as the task processes each STL/OBJ file. Survives FE refresh
-    # — the task lives in the FastAPI event loop, not the request scope.
-    # ``folder_cache.values()`` covers the root + every pre-existing
-    # subfolder + every subfolder created during this scan;
-    # ``all_folder_ids`` on its own would miss the newly-created ones.
-    # Fire-and-forget like the other route-level background scans
-    # (discovery / tasmota); the task opens its own session and the
-    # autouse leaked-task drain handles it in tests (#1299).
-    spawn_background_task(
-        _backfill_external_mesh_thumbnails(list(set(folder_cache.values()))),
-        name=f"mesh-backfill-folder-{folder_id}",
-    )
 
+@router.get("/scan-jobs/{job_id}")
+async def get_scan_job(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
+):
+    """One scan's state.
+
+    For a client that missed the socket or reloaded mid-scan — the events are
+    the fast path, not the only one.
+    """
+    from backend.app.models.library_scan import LibraryScanJob
+
+    job = await db.get(LibraryScanJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Scan job not found")
     return {
-        "status": "success",
-        "added": added,
-        "removed": removed,
-        "skipped_duplicates": skipped_duplicates,
+        "id": job.id,
+        "folder_id": job.folder_id,
+        "status": job.status,
+        "files_total": job.files_total,
+        "files_seen": job.files_seen,
+        "files_added": job.files_added,
+        "files_updated": job.files_updated,
+        "files_removed": job.files_removed,
+        "folders_added": job.folders_added,
+        "folders_removed": job.folders_removed,
+        "skipped_deletions": job.skipped_deletions,
+        "error": job.error,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
     }
-
-
-# ============ File Endpoints ============
 
 
 @router.get("/files", response_model=list[FileListResponse])
@@ -2422,9 +2303,31 @@ def _patch_process_support_settings(process_json: str, source_3mf_bytes: bytes) 
     if not isinstance(process_cfg, dict):
         return process_json
 
-    for key in _SOURCE_PROCESS_SUPPORT_KEYS_TO_PRESERVE:
-        if key in src_cfg:
-            process_cfg[key] = src_cfg[key]
+    # ⚠️ The carry is ONE-WAY: a source can switch supports ON, never off.
+    #
+    # The original rule was "source wins in both directions", and the off
+    # direction is the one nobody asked for: a downloaded model nearly always
+    # ships ``enable_support: 0``, so slicing one against a custom preset that
+    # deliberately enabled supports stripped them straight back out — the
+    # preset said on and normal(auto), the slice came back disabled and
+    # tree(auto).
+    #
+    # Nothing is lost by not carrying the off direction. Every preset Bambu
+    # ships has supports off, so a preset that has them ON is a deliberate
+    # choice by whoever wrote it, and a file that wants supports still gets
+    # them along with its slot assignments.
+    if not supports_enabled_in_config(src_cfg):
+        return process_json
+
+    carried = {key: src_cfg[key] for key in _SOURCE_PROCESS_SUPPORT_KEYS_TO_PRESERVE if key in src_cfg}
+    process_cfg.update(carried)
+    # Logged because this is the one layer of the process JSON the user cannot
+    # see coming: the slice dialog shows the picked preset's values, so a
+    # carried key silently disagrees with what was on screen.
+    logger.info(
+        "Carried support settings from the source 3MF onto the process preset: %s",
+        dict(sorted(carried.items())),
+    )
 
     return json.dumps(process_cfg)
 
@@ -2704,6 +2607,14 @@ async def _run_slicer_with_fallback(
                 request.design_overrides,
             )
 
+    # ⚠️ The user's own edits from the slice dialog's settings panel. Applied
+    # LAST, and for every model type — not just 3MF: unlike the two patches
+    # above this reads nothing out of the source file, it is what the user
+    # typed. Last write wins, so an explicit choice beats both the carried
+    # support config and the designer's tweaks.
+    if request.process_overrides:
+        presets["process"] = apply_process_overrides(presets["process"], request.process_overrides)
+
     used_embedded_settings = False
     # "Slice as designed" (upstream #2611): honour the file's embedded
     # project_settings.config instead of the picked profile triplet. Only
@@ -2749,6 +2660,11 @@ async def _run_slicer_with_fallback(
             )
             cross_class_arrange = True
 
+    # ⚠️ UNION, not replacement: the cross-class case is a correctness measure
+    # (the source's coordinate layout lands in the target's dead zone without
+    # it), and a user who did not tick the box must not switch it off.
+    arrange = cross_class_arrange or request.auto_arrange
+
     # SliceModal submits a filament pick per slot, but each plate uses only a
     # subset. A heterogeneous unused-slot default trips BS's loaded-filament
     # temp-spread validator (exit 194) even though the plate's G-code never
@@ -2762,7 +2678,21 @@ async def _run_slicer_with_fallback(
     # ``--slice 0 --arrange`` would consolidate every plate onto one bed
     # (arrange is project-wide). Slice each plate with --arrange and merge the
     # per-plate outputs instead. Same-class slice-all uses the native path.
-    use_cross_class_slice_all = cross_class_arrange and request.plate == 0 and request.export_3mf
+    # ⚠️ Keyed on the ARRANGE flag itself, not on the cross-class decision: the
+    # project-wide collapse belongs to --arrange, so a user who ticks the box on
+    # a same-class slice-all needs the same per-plate treatment.
+    use_cross_class_slice_all = arrange and request.plate == 0 and request.export_3mf
+
+    # ⚠️ Arrange is PROJECT-WIDE, so one ``--slice 0 --arrange`` call consolidates
+    # every plate onto a single bed. The per-plate loop below is what makes
+    # arrange safe for a slice-all; the paths that cannot loop — embedded
+    # settings, and the crash fallback — must therefore not send it, or a
+    # multi-plate project silently comes back as one plate.
+    arrange_single_call = arrange and not (request.plate == 0 and request.export_3mf)
+    if arrange and not arrange_single_call and not use_cross_class_slice_all:
+        logger.info(
+            "Slice-all with arrange: not forwarding --arrange on a single-call path (it would merge the plates)"
+        )
 
     try:
         try:
@@ -2777,6 +2707,8 @@ async def _run_slicer_with_fallback(
                     model_filename=model_filename,
                     plate=request.plate,
                     export_3mf=request.export_3mf,
+                    arrange=arrange_single_call,
+                    orient=request.auto_orient,
                     bed_type=request.bed_type,
                     request_id=progress_request_id,
                     on_progress=progress_callback,
@@ -2822,6 +2754,7 @@ async def _run_slicer_with_fallback(
                         plate=plate_num,
                         export_3mf=True,
                         arrange=True,
+                        orient=request.auto_orient,
                         request_id=progress_request_id,
                         on_progress=plate_cb,
                     )
@@ -2846,7 +2779,8 @@ async def _run_slicer_with_fallback(
                     filament_profile_jsons=filament_jsons,
                     plate=request.plate,
                     export_3mf=request.export_3mf,
-                    arrange=cross_class_arrange,
+                    arrange=arrange,
+                    orient=request.auto_orient,
                     bed_type=request.bed_type,
                     request_id=progress_request_id,
                     on_progress=progress_callback,
@@ -2886,6 +2820,8 @@ async def _run_slicer_with_fallback(
                 model_filename=model_filename,
                 plate=request.plate,
                 export_3mf=request.export_3mf,
+                arrange=arrange_single_call,
+                orient=request.auto_orient,
                 bed_type=request.bed_type,
                 request_id=progress_request_id,
                 on_progress=progress_callback,
@@ -2904,6 +2840,26 @@ async def _run_slicer_with_fallback(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         await service.close()
+
+    # Backstop for upstream #2838. Only the standard tier, and only when the
+    # presets we sent were actually used: there the sidecar resolved a bundled
+    # preset by name and the bundle guarantees the start G-code, so its absence
+    # is a sidecar defect we can name. A cloud, local or Orca-cloud preset
+    # carries its own start G-code, and the embedded-settings fallback prints
+    # the source file's — both are the user's to author, and refusing them here
+    # would be us second-guessing a profile we did not resolve.
+    if (
+        not used_embedded_settings
+        and request.printer_preset is not None
+        and request.printer_preset.source == "standard"
+        and start_gcode_is_missing(result.content, export_3mf=bool(request.export_3mf))
+    ):
+        logger.error(
+            "Slice for printer preset %r came back without start G-code (%s); refusing it",
+            request.printer_preset.id,
+            "3mf" if request.export_3mf else "gcode",
+        )
+        raise HTTPException(status_code=502, detail=missing_start_gcode_message(request.printer_preset.id))
 
     return result, used_embedded_settings
 
@@ -2960,10 +2916,32 @@ async def slice_and_persist(
                 db=db,
             )
 
+    # ⚠️ ``model_filename`` can be built from the source's embedded
+    # ``print_name``, which is free text. Managed storage names the file after
+    # a UUID and never sees this, but the library row shows it either way — and
+    # a "/" in it is a path separator, not a character.
     base_name = model_filename.rsplit(".", 1)[0]
-    out_filename = f"{base_name}.gcode.3mf"
-    unique_name = f"{uuid.uuid4().hex}.gcode.3mf"
-    out_path = get_library_files_dir() / unique_name  # SEC-PATH-OK: unique_name is a server uuid4().hex + .gcode.3mf
+    safe_base = safe_path_component(base_name, fallback="sliced", max_bytes=MAX_FILENAME_BYTES - len(b".gcode.3mf"))
+    out_filename = f"{safe_base}.gcode.3mf"
+    # Write next to the source when the source lives on an external mount. The
+    # folder is loaded here rather than passed in because every caller already
+    # has only the id.
+    target_folder: LibraryFolder | None = None
+    if folder_id is not None:
+        folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
+        target_folder = folder_result.scalar_one_or_none()
+    out_path, out_is_external, external_fallback = _resolve_slice_destination(target_folder, out_filename)
+    if out_is_external:
+        # _unique_external_name may have suffixed it; the library row has to
+        # show the name the file actually has on the share, or the two drift.
+        out_filename = out_path.name
+    if external_fallback:
+        logger.warning(
+            "Slice output for %s stored in managed library instead of external folder %s: %s",
+            model_filename,
+            target_folder.external_path if target_folder else None,
+            external_fallback,
+        )
     # Last-resort plate-thumbnail fill: the BS/Orca sidecar CLIs skip
     # plate_N.png in headless --export-3mf, so STEP/STP sources, preview-less
     # 3MF sources, and plates 2..N of multi-plate slices land here with no
@@ -3029,12 +3007,14 @@ async def slice_and_persist(
                 filament_used_g=result.filament_used_g,
                 filament_used_mm=result.filament_used_mm,
                 used_embedded_settings=used_embedded_settings,
+                external_write_fallback=external_fallback,
             )
 
     new_file = LibraryFile(
         folder_id=folder_id,
         filename=out_filename,
-        file_path=to_relative_path(out_path),
+        is_external=out_is_external,
+        file_path=_stored_file_path(out_path, out_is_external),
         # Sliced output is a ``.gcode.3mf`` zip with embedded G-code, but the
         # user-facing meaning is "ready-to-print G-code" — using ``"gcode"``
         # gives it the same badge as plain .gcode files and distinguishes it
@@ -3077,6 +3057,7 @@ async def slice_and_persist(
         filament_used_g=result.filament_used_g,
         filament_used_mm=result.filament_used_mm,
         used_embedded_settings=used_embedded_settings,
+        external_write_fallback=external_fallback,
     )
 
 
@@ -3107,14 +3088,29 @@ async def slice_and_persist_as_archive(
         current_user_id=current_user_id,
     )
 
-    base_name = model_filename.rsplit(".", 1)[0]
-    out_filename = f"{base_name}.gcode.3mf"
-
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     printer_folder = str(source_archive.printer_id) if source_archive.printer_id is not None else "unassigned"
-    archive_subdir = f"{timestamp}_{base_name}_sliced"
-    # base_name derives from the (user-supplied) upload filename, so a crafted
-    # name like "../../x" would escape archive_dir — containment-check the join.
+
+    # ⚠️ ``model_filename`` is built from the archive's display name, which comes
+    # from the 3MF's own metadata — whatever the model's author typed. A "/" in
+    # it is a path SEPARATOR: both joins below silently gain a level,
+    # ``mkdir(parents=True)`` makes the one the folder implied, and the file's
+    # own join then lands on a parent nobody created. The containment check does
+    # not catch it — the deeper path is still under archive_dir, so it passes
+    # and fails afterwards on ENOENT.
+    #
+    # Reduced to a single component first, leaving room for the prefix and the
+    # extension wrapped around it.
+    base_name = model_filename.rsplit(".", 1)[0]
+    reserve = max(len(f"{timestamp}__sliced".encode()), len(b".gcode.3mf"))
+    safe_base = safe_path_component(
+        base_name, fallback=f"archive_{source_archive.id}", max_bytes=MAX_FILENAME_BYTES - reserve
+    )
+    out_filename = f"{safe_base}.gcode.3mf"
+    archive_subdir = f"{timestamp}_{safe_base}_sliced"
+
+    # The reduction is what makes both joins single-component; these stay as the
+    # backstop that says so, and would catch a future edit reaching around it.
     archive_dir = safe_join_under(app_settings.archive_dir, printer_folder, archive_subdir)
     archive_dir.mkdir(parents=True, exist_ok=True)
     out_path = safe_join_under(archive_dir, out_filename)
@@ -3279,13 +3275,26 @@ async def slice_library_file(
     lib_file = _ensure_library_file_visible(lib_file, current_user, can_read_all)
 
     src_lower = (lib_file.filename or "").lower()
-    if not (
-        src_lower.endswith(".stl")
-        or src_lower.endswith(".3mf")
-        or src_lower.endswith(".step")
-        or src_lower.endswith(".stp")
-    ):
-        raise HTTPException(status_code=400, detail="Source file must be STL, 3MF, or STEP")
+    if src_lower.endswith(".step") or src_lower.endswith(".stp"):
+        # ⚠️ Neither slicer's CLI can load a STEP: OrcaSlicer and BambuStudio
+        # both answer "Unknown file format. Input file must have .stl, .obj,
+        # .amf(.xml) extension." Accepting the job here meant reading the file,
+        # converting it and uploading it before the sidecar rejected it as
+        # unparseable — which reads as a corrupt model rather than an
+        # unsupported format. Say so before any of that happens.
+        #
+        # Open in Slicer is unaffected and still hands a STEP to the desktop
+        # application, which opens it fine. That was always the working path.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "STEP files cannot be sliced here. The OrcaSlicer and Bambu Studio command-line "
+                "slicers load only STL and 3MF — open the STEP in your slicer and export it as "
+                "one of those first."
+            ),
+        )
+    if not (src_lower.endswith(".stl") or src_lower.endswith(".3mf")):
+        raise HTTPException(status_code=400, detail="Source file must be STL or 3MF")
 
     src_path = to_absolute_path(lib_file.file_path)
     if not src_path or not src_path.exists():
@@ -5448,8 +5457,17 @@ async def get_library_stats(
     if user is not None and not can_read_all:
         file_filters.append(LibraryFile.created_by_id == user.id)
 
+    # ⚠️ Counts exclude the trash; the SIZE below does not, deliberately.
+    # "How many files do I have" and "how much disk is this using" are different
+    # questions and the bin answers them differently: a binned file is not in
+    # the library any more, but its bytes are still on the disk until the
+    # sweeper takes them. Reporting the count including the bin was the same
+    # oversight the folder tree had — a folder emptied into it never reached
+    # zero.
+    live_files = [*file_filters, LibraryFile.deleted_at.is_(None)]
+
     # Total files
-    total_files_result = await db.execute(select(func.count(LibraryFile.id)).where(*file_filters))
+    total_files_result = await db.execute(select(func.count(LibraryFile.id)).where(*live_files))
     total_files = total_files_result.scalar() or 0
 
     # Total folders (folders are shared org structure, not per-user — count all)
@@ -5462,7 +5480,7 @@ async def get_library_stats(
 
     # Files by type
     type_result = await db.execute(
-        select(LibraryFile.file_type, func.count(LibraryFile.id)).where(*file_filters).group_by(LibraryFile.file_type)
+        select(LibraryFile.file_type, func.count(LibraryFile.id)).where(*live_files).group_by(LibraryFile.file_type)
     )
     files_by_type = dict(type_result.all())
 

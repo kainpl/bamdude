@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { FamilyPicker } from './FamilyPicker';
 import {
   Gauge,
   Loader2,
@@ -511,47 +512,24 @@ function KProfileModal({
               </p>
             </div>
 
-            {/* Filament - read-only when editing */}
+            {/* Filament family — K-profiles bind to the family (filament_id),
+                the same identity the printer's own table uses. Editing keeps
+                the family fixed, as before. */}
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.filament')}</label>
-              <select
-                value={filamentId}
-                onChange={(e) => {
-                  const newFilamentId = e.target.value;
-                  setFilamentId(newFilamentId);
-                  // Auto-generate profile name when filament is selected (for new profiles)
-                  // Only auto-generate if name is empty - don't overwrite user input
-                  if (!profile && newFilamentId && !name) {
-                    const selectedFilament = knownFilaments.find(f => f.id === newFilamentId);
-                    if (selectedFilament) {
-                      const flowLabel = nozzleType === 'HH00' ? 'HF' : 'S';
-                      setName(`${flowLabel} ${selectedFilament.name}`);
-                    }
+              <FamilyPicker
+                value={filamentId || null}
+                disabled={!!profile}
+                onChange={(id, family) => {
+                  setFilamentId(id || '');
+                  // Auto-generate profile name when a family is picked (new profiles
+                  // only; never overwrite user input).
+                  if (!profile && id && !name && family) {
+                    const flowLabel = nozzleType === 'HH00' ? 'HF' : 'S';
+                    setName(`${flowLabel} ${family.alias}`);
                   }
                 }}
-                disabled={!!profile}
-                className={`w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none ${profile ? 'opacity-60 cursor-not-allowed' : ''}`}
-                required={!profile}
-              >
-                <option value="">{t('kProfiles.modal.selectFilament')}</option>
-                {/* Show current filament when editing - look up from knownFilaments */}
-                {profile?.filament_id && (
-                  <option key={profile.filament_id} value={profile.filament_id}>
-                    {knownFilaments.find(f => f.id === profile.filament_id)?.name || profile.filament_id}
-                  </option>
-                )}
-                {/* Show known filaments from existing K-profiles (for new profiles) */}
-                {!profile && knownFilaments.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
-              {!profile && knownFilaments.length === 0 && (
-                <p className="text-xs text-bambu-gray mt-1">
-                  {t('kProfiles.modal.noFilamentsHelp')}
-                </p>
-              )}
+              />
             </div>
 
             {/* Flow Type and Nozzle Size - read-only when editing.

@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -51,9 +52,28 @@ async def list_smart_plugs(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
-    """List all smart plugs."""
+    """List all smart plugs, flagging each printer's main one.
+
+    ⚠️ The flag is computed here rather than left to the caller. Every surface
+    that switches a printer's power — the card's Power row, the "power on the
+    offline ones" list — has to name the SAME plug, and a ranking re-implemented
+    client-side is a second answer waiting to disagree with this one.
+    """
     result = await db.execute(select(SmartPlug).order_by(SmartPlug.name))
-    return list(result.scalars().all())
+    plugs = list(result.scalars().all())
+
+    by_printer: dict[int, list[SmartPlug]] = {}
+    for plug in plugs:
+        if plug.printer_id is not None:
+            by_printer.setdefault(plug.printer_id, []).append(plug)
+    main_ids = {main.id for group in by_printer.values() if (main := _pick_main_plug(group)) is not None}
+
+    responses = []
+    for plug in plugs:
+        payload = SmartPlugResponse.model_validate(plug, from_attributes=True)
+        payload.is_main_plug = plug.id in main_ids
+        responses.append(payload)
+    return responses
 
 
 @router.post("/", response_model=SmartPlugResponse)
@@ -179,31 +199,109 @@ async def create_smart_plug(
     return plug
 
 
+def _is_script_plug(plug: SmartPlug) -> bool:
+    """Whether the plug is a Home Assistant script rather than a switchable device."""
+    return bool(plug.plug_type == "homeassistant" and plug.ha_entity_id and plug.ha_entity_id.startswith("script."))
+
+
+def _can_be_switched(plug: SmartPlug) -> bool:
+    """Whether the control endpoint can actually turn this plug on and off.
+
+    ⚠️ Two kinds cannot, and the card's on/off button is useless on both:
+
+    - A Home Assistant **script**. It can be run, not switched.
+    - An **MQTT** plug. We subscribe to it and never publish, so the control
+      endpoint rejects it as monitor-only — and an MQTT plug is exactly the kind
+      that reports watts, so without this ahead of the power tiebreak below it
+      would take the row off a plug that can actually be switched.
+    """
+    return not _is_script_plug(plug) and plug.plug_type != "mqtt"
+
+
+def _reports_power(plug: SmartPlug) -> bool:
+    """Whether the plug is CONFIGURED with somewhere to read watts from.
+
+    ⚠️ Read from the configuration rather than measured: this runs on every
+    printer card render, and probing each plug would mean an HTTP round trip per
+    plug. So it is approximate in both directions — an HA plug with no dedicated
+    power sensor may still report watts from the switch entity's own attribute,
+    and a Tasmota device without energy metering is counted here as if it had
+    it. Only a live read could tell, and this only ever breaks a tie between
+    plugs that are otherwise equally eligible, so neither miss decides anything
+    on its own.
+    """
+    if plug.plug_type == "homeassistant":
+        return bool(plug.ha_power_entity)
+    if plug.plug_type == "mqtt":
+        return bool(plug.mqtt_power_topic or plug.mqtt_topic)
+    if plug.plug_type == "rest":
+        return bool(plug.rest_power_path)
+    return True  # Tasmota and zigbee, whose firmware reports power when the hardware has it
+
+
+def _main_plug_rank(plug: SmartPlug) -> tuple:
+    """Sort key for choosing the printer's main power plug, best first.
+
+    ⚠️ A printer's plugs are NOT interchangeable. The card's Power row carries
+    the power on/off and auto-off-after-print controls, so it has to land on the
+    plug that actually feeds the printer — pointing those at an enclosure fan is
+    the same harm ``controls_printer_power`` was added to prevent for the
+    scheduler's power-on. Ordered:
+
+    1. It can be switched at all — the row's buttons are the point of it.
+    2. ``controls_printer_power`` — the flag that says this plug feeds the
+       printer, as opposed to an accessory that merely follows the print cycle.
+    3. ``enabled`` — a disabled plug ignores automation, so its auto-off toggle
+       would sit there doing nothing.
+    4. ``show_on_printer_card`` — ⚠️ RANKED, not filtered: excluding hidden plugs
+       outright would strip the Power row, and with it the on/off button, from a
+       printer whose only plug has the flag off. It sorts below the power flag
+       because a display preference must not hand power control to an accessory.
+    5. Reports power, so the row shows watts rather than "--" where there is a
+       choice.
+    6. Lowest id, so the answer never depends on row order. The query had no
+       ORDER BY at all, which on PostgreSQL means a plain UPDATE can move a row
+       and silently swap which plug the card calls the printer's power.
+
+    ⚠️ Deliberately NOT shared with the energy helper in ``main.py``. That one
+    wants the plug that METERS the printer, and an MQTT monitor-only plug is an
+    ideal answer there while being useless here — switchability leads this rank
+    and would push exactly the best meter to the bottom. Two questions, two
+    answers; merging them would silently spoil one.
+    """
+    return (
+        not _can_be_switched(plug),
+        not plug.controls_printer_power,
+        not plug.enabled,
+        not plug.show_on_printer_card,
+        not _reports_power(plug),
+        plug.id,
+    )
+
+
+def _pick_main_plug(plugs: list[SmartPlug]) -> SmartPlug | None:
+    """The plug the printer card shows as its power, or None if there are none."""
+    return min(plugs, key=_main_plug_rank, default=None)
+
+
+async def _plugs_for_printer(db: AsyncSession, printer_id: int) -> list[SmartPlug]:
+    result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id).order_by(SmartPlug.id))
+    return list(result.scalars().all())
+
+
 @router.get("/by-printer/{printer_id}", response_model=SmartPlugResponse | None)
 async def get_smart_plug_by_printer(
     printer_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
-    """Get the main smart plug assigned to a printer.
+    """The plug the card shows as this printer's power.
 
-    When multiple plugs are assigned (e.g., a regular plug + script),
-    returns the main (non-script) plug for power control.
+    When several are assigned — a printer outlet, an enclosure fan, a script —
+    returns the one that best fits the card's power controls. See
+    ``_main_plug_rank`` for the order and why.
     """
-    result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-    plugs = result.scalars().all()
-
-    if not plugs:
-        return None
-
-    # If multiple plugs, prefer the non-script one (main power plug)
-    for plug in plugs:
-        is_script = plug.plug_type == "homeassistant" and plug.ha_entity_id and plug.ha_entity_id.startswith("script.")
-        if not is_script:
-            return plug
-
-    # All are scripts, return the first one
-    return plugs[0]
+    return _pick_main_plug(await _plugs_for_printer(db, printer_id))
 
 
 @router.get("/by-printer/{printer_id}/scripts", response_model=list[SmartPlugResponse])
@@ -218,14 +316,24 @@ async def get_script_plugs_by_printer(
     show_on_printer_card enabled.
     Used to display action buttons alongside the main power plug.
     """
-    result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-    plugs = result.scalars().all()
+    plugs = await _plugs_for_printer(db, printer_id)
 
-    # Filter to HA entities with show_on_printer_card enabled
-    ha_entities = [
-        plug for plug in plugs if plug.plug_type == "homeassistant" and plug.ha_entity_id and plug.show_on_printer_card
+    # ⚠️ A switchable main plug is left out: it is rendered directly above this
+    # row with its own on/off button, so listing it here draws the same entity
+    # twice. A SCRIPT is not excluded, because a printer whose only entities are
+    # scripts falls back to showing one of them in the power row — taking it out
+    # of this row too would cost the one-click run it has always had there.
+    main_plug = _pick_main_plug(plugs)
+    duplicate_of_power_row = main_plug.id if main_plug and not _is_script_plug(main_plug) else None
+
+    return [
+        plug
+        for plug in plugs
+        if plug.plug_type == "homeassistant"
+        and plug.ha_entity_id
+        and plug.show_on_printer_card
+        and plug.id != duplicate_of_power_row
     ]
-    return ha_entities
 
 
 # Tasmota Discovery Endpoints
@@ -444,6 +552,58 @@ async def get_smart_plug(
     if not plug:
         raise HTTPException(404, "Smart plug not found")
     return plug
+
+
+class PowerOnBehaviorUpdate(BaseModel):
+    """The relay's state after mains power returns (ZCL StartUpOnOff)."""
+
+    mode: Literal["on", "off", "previous"]
+
+
+async def _zigbee_plug_or_422(db: AsyncSession, plug_id: int) -> SmartPlug:
+    result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
+    plug = result.scalar_one_or_none()
+    if not plug:
+        raise HTTPException(404, "Smart plug not found")
+    if plug.plug_type != "zigbee":
+        raise HTTPException(422, "Power-on behavior is a Zigbee plug setting")
+    return plug
+
+
+@router.get("/{plug_id}/power-on-behavior")
+async def get_power_on_behavior(
+    plug_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
+):
+    """What the relay does when mains power returns — read from the device.
+
+    ``mode`` is None when the plug is unreachable or does not implement the
+    attribute; the UI says so instead of showing a guessed value.
+    """
+    plug = await _zigbee_plug_or_422(db, plug_id)
+    from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+    mode = await zigbee_smart_plug_service.read_power_on_behavior(plug)
+    return {"mode": mode, "supported": mode is not None}
+
+
+@router.put("/{plug_id}/power-on-behavior")
+async def set_power_on_behavior(
+    plug_id: int,
+    data: PowerOnBehaviorUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_UPDATE),
+):
+    """Write the power-on state to the device. 502 unless it acknowledged —
+    a stored-but-not-applied setting here would defeat its whole purpose."""
+    plug = await _zigbee_plug_or_422(db, plug_id)
+    from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+    ok = await zigbee_smart_plug_service.write_power_on_behavior(plug, data.mode)
+    if not ok:
+        raise HTTPException(502, "The plug did not acknowledge the setting — is it powered and in range?")
+    return {"mode": data.mode, "supported": True}
 
 
 async def _void_inflight_energy(db: AsyncSession, printer_id: int, plug_id: int) -> int:

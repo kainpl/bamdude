@@ -64,6 +64,16 @@
     "title_template": "Мало філаменту",
     "body_template": "{printer}: Слот {slot} - {remaining_percent}%"
   },
+  "filament_runout": {
+    "name": "Закінчився філамент",
+    "title_template": "Закінчився філамент",
+    "body_template": "{printer}: у слоті {slot} закінчився філамент, принтер чекає. Заправте нову котушку і призначте її в BamDude — решта друку спишеться на правильну котушку."
+  },
+  "filament_runout_backup": {
+    "name": "Закінчився філамент (резерв)",
+    "title_template": "Закінчився філамент",
+    "body_template": "{printer}: у слоті {slot} закінчився філамент; AMS перемкнувся на резервний слот, друк триває."
+  },
   "maintenance_due": {
     "name": "Потрібне обслуговування",
     "title_template": "Потрібне обслуговування",
@@ -73,6 +83,11 @@
     "name": "Висока вологість AMS",
     "title_template": "Попередження вологості AMS",
     "body_template": "{printer} {ams_label}: Вологість {humidity}% перевищує поріг {threshold}%"
+  },
+  "ams_drying_suspended": {
+    "name": "Автосушіння призупинено",
+    "title_template": "Автосушіння зупинено",
+    "body_template": "{printer} {ams_label}: {cycles} циклів сушіння поспіль завершились на {humidity}%, що все ще вище порога {threshold}%. Теплий AMS показує вищу вологість, ніж холодний, тож цього порога тут не досягти. Автоматичне сушіння для цього юніта призупинено, доки показник не спаде."
   },
   "ams_temperature_high": {
     "name": "Висока температура AMS",
@@ -193,5 +208,10 @@
     "name": "Датчик знову говорить",
     "title_template": "Датчик у нормі",
     "body_template": "{location} — {sensor} знову говорить"
+  },
+  "filament_deficit": {
+    "name": "Філаменту не вистачить",
+    "title_template": "Філаменту не вистачить",
+    "body_template": "{printer}: для «{print_name}» потрібно {needed} г у слоті {slot}, а там {available} г — бракує {missing} г. Друк усе одно запущено."
   }
 }

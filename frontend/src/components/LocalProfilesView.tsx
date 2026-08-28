@@ -18,6 +18,8 @@ import { api } from '../api/client';
 import type { LocalPreset, LocalPresetsResponse } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
+import { CreateFilamentFamilyModal } from './CreateFilamentFamilyModal';
+import { AuthoredFamiliesSection } from './AuthoredFamiliesSection';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -227,6 +229,7 @@ export function LocalProfilesView() {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+  const [createFamilyOpen, setCreateFamilyOpen] = useState(false);
 
   const { data: presets, isLoading } = useQuery({
     queryKey: ['localPresets'],
@@ -342,6 +345,15 @@ export function LocalProfilesView() {
 
   return (
     <div className="space-y-6">
+      {/* Create Filament (spec B) — authoring entry point beside import */}
+      {hasPermission('settings:update') && (
+        <div className="flex justify-end">
+          <Button onClick={() => setCreateFamilyOpen(true)}>{t('authoring.createButton')}</Button>
+          <CreateFilamentFamilyModal open={createFamilyOpen} onClose={() => setCreateFamilyOpen(false)} />
+        </div>
+      )}
+      {/* Authored families management (spec-B wiring + Orca write leg) */}
+      {hasPermission('settings:update') && <AuthoredFamiliesSection />}
       {/* Import Zone */}
       {hasPermission('settings:update') && (
         <div

@@ -1063,6 +1063,13 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.SMART_PLUGS_READ: "can_read_status",
     # A sensor reading is status, exactly as a plug reading is — so it rides
     # the scope a key already has rather than growing a column of its own.
+    Permission.LABEL_TEMPLATES_READ: "can_read_status",
+    Permission.LABEL_DEVICES_READ: "can_read_status",
+    # ⚠️ The bridge's own two, on a column of their own. POLL mutates — it
+    # claims a job — so it is not a read, and a key that can print labels must
+    # not thereby reach anything else.
+    Permission.LABEL_DEVICES_POLL: "can_print_labels",
+    Permission.LABEL_JOBS_CREATE: "can_print_labels",
     Permission.SMART_SENSORS_READ: "can_read_status",
     Permission.CAMERA_VIEW: "can_read_status",
     Permission.MAINTENANCE_READ: "can_read_status",
@@ -1076,6 +1083,14 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.PRINTER_SENSOR_HISTORY_READ: "can_read_status",
     Permission.STATS_READ: "can_read_status",
     Permission.STATS_FILTER_BY_USER: "can_read_status",
+    # ⚠️ USERS_READ_SLIM grants no data an API key could not already reach: for
+    # API-keyed requests the permission deps return None as ``current_user``, so
+    # the stats/archives user-filter guard short-circuits and ``?created_by_id=N``
+    # is already honoured for every N. Without a way to discover the ids, that
+    # filter is only addressable by brute force. The slim listing makes it
+    # usable; the full USERS_READ listing (emails, roles, group membership,
+    # permission sets) stays unmapped = admin-only.
+    Permission.USERS_READ_SLIM: "can_read_status",
     Permission.SYSTEM_READ: "can_read_status",
     # SETTINGS_READ stays read-only so kiosk / integration keys can fetch the
     # UI-language setting; SETTINGS_UPDATE remains admin-only (denylist).
@@ -1172,6 +1187,13 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
 # load-bearing check.
 _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
     {
+        # ⚠️ A group permission, never a key one. There is no automation
+        # reason to redesign a label, and the consequence of a bad one shows
+        # up on every label printed afterwards.
+        Permission.LABEL_TEMPLATES_WRITE,
+        # ⚠️ Adopting a device decides that a printer on somebody's desk may
+        # receive our labels. Pairing is a person's judgement, not a key's.
+        Permission.LABEL_DEVICES_MANAGE,
         # Settings administration (cred storage; rewriting these reaches SMTP/LDAP/MQTT).
         Permission.SETTINGS_UPDATE,
         Permission.SETTINGS_BACKUP,
@@ -1238,6 +1260,14 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.SMART_SENSORS_DELETE,
         # Network scanning — operator only (no API-key scope for this).
         Permission.DISCOVERY_SCAN,
+        # Cloud Link pairing. Deliberately NOT folded into can_access_cloud:
+        # that scope says "this key may talk to a cloud on the owner's behalf",
+        # which is outbound and revocable at the far end. CLOUD_LINK_MANAGE is
+        # the opposite direction — it decides that something outside the LAN may
+        # reach in, and mints the instance secret that lets it. A credential
+        # that lives in somebody's automation script does not get to make that
+        # call, so there is no scope column for it and none should be added.
+        Permission.CLOUD_LINK_MANAGE,
     }
 )
 
@@ -1254,12 +1284,92 @@ def _resolve_apikey_scope(perm_string: str) -> str | None:
     return _APIKEY_SCOPE_BY_PERMISSION.get(perm)
 
 
-def _check_apikey_permissions(api_key: APIKey, perm_strings: list[str], *, require_any: bool = False) -> None:
+def apikey_effective_permissions(api_key: APIKey, owner: User | None = None) -> list[str]:
+    """Return the permissions ``api_key`` can actually exercise, sorted.
+
+    This is the exact set ``_check_apikey_permissions`` will let through: every
+    mapped permission whose scope flag is True on the key, further narrowed to
+    what ``owner`` may do. Unmapped permissions are administrative and never
+    resolve for a key, so they are absent.
+
+    ⚠️ ``owner=None`` means a **legacy ownerless key**, where the scope flags
+    are the whole of the key's authority — not "skip the owner check". A caller
+    holding an owned key must pass the owner, or ``/auth/me`` will over-report
+    and drift from the gate, which is the whole defect this pairs with.
+    """
+    return sorted(
+        perm.value
+        for perm, scope_attr in _APIKEY_SCOPE_BY_PERMISSION.items()
+        if getattr(api_key, scope_attr, False) and (owner is None or owner.has_permission(perm.value))
+    )
+
+
+async def resolve_apikey_owner(db: AsyncSession, api_key: APIKey) -> User | None:
+    """Load the owner of ``api_key`` for an authorization decision.
+
+    Distinct from the "who is this, if anyone" question — here two cases that
+    both look like "no user" must not be conflated:
+
+    - ``user_id IS NULL`` — a key predating per-user ownership. There is no
+      owner to narrow against, so the scope flags stand alone. Returns None.
+    - ``user_id`` set but the row is missing or deactivated — the key's
+      authority came from a user who no longer has any. ⚠️ Raises 403 rather
+      than returning None, because returning None here would **fail open**:
+      deactivating a user would leave their keys working at full scope
+      authority.
+
+    Groups are eager-loaded because ``has_permission`` walks them, and a lazy
+    load inside the permission check would raise MissingGreenlet.
+    """
+    if api_key.user_id is None:
+        return None
+    result = await db.execute(select(User).where(User.id == api_key.user_id).options(selectinload(User.groups)))
+    owner = result.scalar_one_or_none()
+    if owner is None or not owner.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key owner is deactivated or no longer exists",
+        )
+    return owner
+
+
+async def authorize_api_key(
+    db: AsyncSession,
+    api_key: APIKey,
+    perm_strings: list[str],
+    *,
+    require_any: bool = False,
+) -> None:
+    """Resolve the key's owner and run the full permission gate. Raises 403.
+
+    The single entry point for every route-level gate: resolving the owner and
+    then forgetting to use it is exactly the drift this exists to prevent.
+    """
+    owner = await resolve_apikey_owner(db, api_key)
+    _check_apikey_permissions(api_key, perm_strings, owner=owner, require_any=require_any)
+
+
+def _check_apikey_permissions(
+    api_key: APIKey,
+    perm_strings: list[str],
+    *,
+    owner: User | None = None,
+    require_any: bool = False,
+) -> None:
     """Raise 403 unless ``api_key`` is allowed to use ``perm_strings``.
 
     Allowlist semantics: every requested permission MUST be present in
     ``_APIKEY_SCOPE_BY_PERMISSION`` AND its scope flag must be True on
     ``api_key``. Unmapped permissions = administrative = 403.
+
+    ⚠️ **A key must not out-rank the user it belongs to**, so when ``owner`` is
+    given the permission must additionally be one the owner holds. Scope flags
+    are chosen at creation time by whoever holds ``api_keys:create``; that is
+    admin-only in the default groups, but a custom group can grant it, and
+    without this check such a user could mint themselves a key with
+    ``can_control_printer`` and act through it beyond their own permissions.
+    ``owner=None`` is only correct for legacy ownerless keys — see
+    ``resolve_apikey_owner``.
 
     By default ALL requested permissions must pass (mirrors
     ``require_permission``). When ``require_any=True``, only one needs to pass
@@ -1284,6 +1394,11 @@ def _check_apikey_permissions(api_key: APIKey, perm_strings: list[str], *, requi
             failure = HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"API key does not have '{scope_attr}' permission",
+            )
+        elif owner is not None and not owner.has_permission(perm_str):
+            failure = HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"API key owner does not have '{perm_str}' permission",
             )
         else:
             failure = None
@@ -1325,6 +1440,38 @@ def check_permission(api_key: APIKey, permission: str) -> None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"API key does not have '{permission}' permission",
+        )
+
+
+# The coarse webhook permission names predate the Permission enum. Each maps to
+# the enum member that best represents it, so the owner can be held to the same
+# standard here as on the modern routes.
+_WEBHOOK_PERMISSION_EQUIVALENT: dict[str, Permission] = {
+    "queue": Permission.QUEUE_CREATE,
+    "control_printer": Permission.PRINTERS_CONTROL,
+    "read_status": Permission.PRINTERS_READ,
+}
+
+
+async def check_webhook_permission(db: AsyncSession, api_key: APIKey, permission: str) -> None:
+    """``check_permission`` plus the owner checks the modern routes apply.
+
+    ⚠️ ``/webhook/*`` reaches its scope flags through ``check_permission``
+    rather than ``_check_apikey_permissions``, so it does NOT pick up the owner
+    narrowing automatically. Without this it would be the way around the gate:
+    the same key refused printer control on ``/printers/{id}/stop`` could stop
+    the print through ``/webhook/printer/{id}/stop``.
+
+    ``resolve_apikey_owner`` also kills a key whose owner was deactivated,
+    which this door would otherwise honour indefinitely.
+    """
+    check_permission(api_key, permission)
+    owner = await resolve_apikey_owner(db, api_key)
+    equivalent = _WEBHOOK_PERMISSION_EQUIVALENT.get(permission)
+    if owner is not None and equivalent is not None and not owner.has_permission(equivalent.value):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"API key owner does not have '{equivalent.value}' permission",
         )
 
 
@@ -1416,7 +1563,7 @@ def require_permission(*permissions: str | Permission):
                 if api_key:
                     # GHSA-r2qv-8222-hqg3: gate on the key's scope flags instead
                     # of allowing any valid key unconditionally.
-                    _check_apikey_permissions(api_key, perm_strings)
+                    await authorize_api_key(db, api_key, perm_strings)
                     return None  # API key valid + scoped, allow access
 
             credentials_exception = HTTPException(
@@ -1433,7 +1580,7 @@ def require_permission(*permissions: str | Permission):
             if token.startswith("bb_"):
                 api_key = await _validate_api_key(db, token)
                 if api_key:
-                    _check_apikey_permissions(api_key, perm_strings)
+                    await authorize_api_key(db, api_key, perm_strings)
                     return None  # API key valid + scoped, allow access
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1518,6 +1665,12 @@ def require_energy_cost_update():
                         detail="Invalid API key",
                         headers={"WWW-Authenticate": "Bearer"},
                     )
+                # Fails closed if the owner has been deactivated. ⚠️ The scope
+                # flag itself is NOT narrowed against the owner's permissions
+                # the way the general gate is: this door exists precisely
+                # because no user permission maps to it (SETTINGS_UPDATE stays
+                # denied for keys even when the owner is an administrator).
+                await resolve_apikey_owner(db, api_key)
                 if not api_key.can_update_energy_cost:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
@@ -1570,7 +1723,7 @@ def require_any_permission(*permissions: str | Permission):
                 api_key = await _validate_api_key(db, x_api_key)
                 if api_key:
                     # GHSA-r2qv-8222-hqg3: require at least one requested scope.
-                    _check_apikey_permissions(api_key, perm_strings, require_any=True)
+                    await authorize_api_key(db, api_key, perm_strings, require_any=True)
                     return None
 
             credentials_exception = HTTPException(
@@ -1586,7 +1739,7 @@ def require_any_permission(*permissions: str | Permission):
             if token.startswith("bb_"):
                 api_key = await _validate_api_key(db, token)
                 if api_key:
-                    _check_apikey_permissions(api_key, perm_strings, require_any=True)
+                    await authorize_api_key(db, api_key, perm_strings, require_any=True)
                     return None
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1754,7 +1907,7 @@ def require_ownership_permission(
                     # the same scope flag, so gating on ``all_perm`` is correct;
                     # keys have no per-row ownership identity so a passing key
                     # keeps can_modify_all=True.
-                    _check_apikey_permissions(api_key, [all_perm])
+                    await authorize_api_key(db, api_key, [all_perm])
                     return None, True
 
             # Check for Bearer token (could be JWT or API key)
@@ -1764,7 +1917,7 @@ def require_ownership_permission(
                 if token.startswith("bb_"):
                     api_key = await _validate_api_key(db, token)
                     if api_key:
-                        _check_apikey_permissions(api_key, [all_perm])
+                        await authorize_api_key(db, api_key, [all_perm])
                         return None, True
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,

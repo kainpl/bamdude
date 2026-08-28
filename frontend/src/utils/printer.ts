@@ -94,3 +94,14 @@ export function getWifiStrength(rssi: number): { labelKey: string; color: string
   if (rssi >= -80) return { labelKey: 'printers.wifiSignal.weak', color: 'text-orange-600 dark:text-orange-400', bars: 1 };
   return { labelKey: 'printers.wifiSignal.veryWeak', color: 'text-red-600 dark:text-red-400', bars: 1 };
 }
+
+// Ceiling for the chamber targets the UI asks for without a printer in hand:
+// the preheat filament map (global, one target per filament type) and the
+// per-print override (entered before a printer is chosen). Mirrors backend
+// MAX_CHAMBER_TEMP_C in backend/app/utils/temperature_limits.py — keep the two
+// in sync.
+//
+// ⚠️ NOT for the manual chamber control on the printer card. That one bounds
+// itself from the printer's own reported limits, which is the better answer;
+// a flat number there would be a step backwards.
+export const MAX_CHAMBER_TEMP_C = 65;

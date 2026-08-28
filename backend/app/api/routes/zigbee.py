@@ -30,6 +30,10 @@ from backend.app.models.user import User
 from backend.app.schemas.printer_location import PrinterLocationOut
 from backend.app.schemas.smart_sensor import SmartSensorCreate, SmartSensorOut, SmartSensorUpdate
 from backend.app.schemas.zigbee_settings import DeviceSettingsUpdate
+
+# Imported as a module so the lock and the restart sequence are visibly the same
+# objects the supervisor uses, not copies that could drift apart.
+from backend.app.services.zigbee import supervisor as _supervisor
 from backend.app.services.zigbee.coordinator import CoordinatorState, zigbee_coordinator
 from backend.app.services.zigbee.device_settings import resolve_reporting
 from backend.app.services.zigbee.devices import DeviceKind, describe_device, describe_for_ui
@@ -322,7 +326,12 @@ async def permit_join(
 
 # One restart at a time. The radio lock is a *file* lock and only distinguishes
 # processes, so it cannot see a second call inside this one.
-_restart_lock = asyncio.Lock()
+#
+# ⚠️ Shared with the supervisor rather than owned here. It performs the same
+# restart on its own timer, so a lock private to this module would let a retry
+# run straight through an operator disconnecting the radio or resetting the
+# network — and the file lock, being per-process, would not notice either.
+_restart_lock = _supervisor.restart_lock
 
 
 @router.post("/restart")
@@ -342,35 +351,8 @@ async def restart_coordinator(
     feature would be the wrong signal, and this endpoint is also how the
     coordinator gets stopped after the box is unticked.
     """
-    from backend.app.api.routes.settings import get_setting
-    from backend.app.models.smart_plug import SmartPlug
-    from backend.app.services.zigbee import reporting
-    from backend.app.services.zigbee.driver import zigbee_smart_plug_service
-
-    settings = {
-        key: (await get_setting(db, key) or "") for key in ("zigbee_enabled", "zigbee_transport", "zigbee_path")
-    }
-
     async with _restart_lock:
-        await zigbee_coordinator.stop()
-
-        # Every cached listener belongs to a cluster object that stop() just
-        # orphaned. Keeping them would leave reports silently unwired while
-        # commands and polling carried on working — the shape of half-broken
-        # this subsystem keeps rediscovering. A read still in flight holds those
-        # same orphaned clusters, so it goes with them.
-        await zigbee_smart_plug_service.cancel_refreshes()
-        zigbee_smart_plug_service._listeners.clear()
-
-        await zigbee_coordinator.start(settings)
-
-        if zigbee_coordinator.app is not None:
-            rows = (await db.execute(select(SmartPlug).where(SmartPlug.plug_type == "zigbee"))).scalars().all()
-            if rows:
-                # Resolved through the module so a test can patch it, and so the
-                # import cannot go stale against a reload.
-                wired = await reporting.subscribe_all(zigbee_smart_plug_service, rows)
-                logger.info("Zigbee reporting re-established for %s/%s plug(s)", wired, len(rows))
+        await _supervisor.restart_radio(db)
 
     status = zigbee_coordinator.status
     return {"state": status.state.value, "reason": status.reason, **_radio_identity()}
@@ -484,6 +466,11 @@ async def list_sensors(
             "name": row.name,
             # The place, resolved -- one shape for a location everywhere.
             "location": PrinterLocationOut.from_location(row.location),
+            # ⚠️ Or the printer it belongs to, exclusive with the place above.
+            # Both are sent so the settings list can show which binding was
+            # chosen without asking a second time.
+            "printer_id": row.printer_id,
+            "printer_name": row.printer.name if row.printer else None,
             "ieee": ieee,
             "present": device is not None,
         }
@@ -700,14 +687,64 @@ async def adopt_sensor(
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status_code=409, detail="This sensor has already been added.")
 
-    if payload.location_id is not None and await db.get(PrinterLocation, payload.location_id) is None:
-        raise HTTPException(status_code=422, detail="No such location.")
-
-    sensor = SmartSensor(name=payload.name.strip(), location_id=payload.location_id, zigbee_ieee=ieee)
+    sensor = SmartSensor(name=payload.name.strip(), zigbee_ieee=ieee)
+    await _bind_sensor(
+        db,
+        sensor,
+        location_id=payload.location_id,
+        printer_id=payload.printer_id,
+        set_location=True,
+        set_printer=True,
+    )
     db.add(sensor)
     await db.commit()
     await db.refresh(sensor)
-    return sensor
+    return _sensor_out(sensor)
+
+
+async def _bind_sensor(db, sensor, *, location_id, printer_id, set_location: bool, set_printer: bool) -> None:
+    """Point a sensor at a place or at a printer, never at both.
+
+    ⚠️ Exclusive by construction rather than by a check that could be forgotten:
+    setting either side clears the other. The two answer the same question —
+    where this reading belongs — and a printer already has a location, so a
+    sensor holding both could claim a place its printer is not in and appear in
+    two lists at once.
+
+    ``set_location`` / ``set_printer`` say whether the caller mentioned the
+    field at all, so an update that touches neither leaves the binding alone,
+    and one that sends an explicit null unbinds.
+    """
+    from backend.app.models.printer import Printer
+
+    if set_printer and printer_id is not None:
+        if await db.get(Printer, printer_id) is None:
+            raise HTTPException(status_code=422, detail="No such printer.")
+        sensor.printer_id = printer_id
+        sensor.location_id = None
+        return
+    if set_location and location_id is not None:
+        if await db.get(PrinterLocation, location_id) is None:
+            raise HTTPException(status_code=422, detail="No such location.")
+        sensor.location_id = location_id
+        sensor.printer_id = None
+        return
+    # Explicit nulls: unbind whichever side was named.
+    if set_printer:
+        sensor.printer_id = None
+    if set_location:
+        sensor.location_id = None
+
+
+def _sensor_out(sensor) -> SmartSensorOut:
+    """Serialise a sensor, naming the printer it is bound to.
+
+    Read off the eager-loaded relationship, so a sensor list costs no extra
+    query per row.
+    """
+    payload = SmartSensorOut.model_validate(sensor, from_attributes=True)
+    payload.printer_name = sensor.printer.name if sensor.printer else None
+    return payload
 
 
 @router.patch("/sensors/{sensor_id}", response_model=SmartSensorOut)
@@ -730,13 +767,17 @@ async def rename_sensor(
     # once given a place can never become placeless.
     if "name" in payload.model_fields_set and payload.name is not None:
         sensor.name = payload.name.strip()
-    if "location_id" in payload.model_fields_set:
-        if payload.location_id is not None and await db.get(PrinterLocation, payload.location_id) is None:
-            raise HTTPException(status_code=422, detail="No such location.")
-        sensor.location_id = payload.location_id
+    await _bind_sensor(
+        db,
+        sensor,
+        location_id=payload.location_id,
+        printer_id=payload.printer_id,
+        set_location="location_id" in payload.model_fields_set,
+        set_printer="printer_id" in payload.model_fields_set,
+    )
     await db.commit()
     await db.refresh(sensor)
-    return sensor
+    return _sensor_out(sensor)
 
 
 @router.delete("/sensors/{sensor_id}")

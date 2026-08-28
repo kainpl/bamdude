@@ -1,12 +1,12 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { X, ExternalLink, Box, Code2, Cog, Loader2, Layers, Check, Maximize2, Minimize2 } from 'lucide-react';
+import { X, ExternalLink, Box, Code2, Cog, Loader2, Layers, Check, Maximize2, Minimize2, ChevronDown } from 'lucide-react';
 import { ModelViewer } from './ModelViewer';
-import { GcodeViewer } from './GcodeViewer';
+import { GcodePreview } from './GcodePreview';
 import { Button } from './Button';
 import { api } from '../api/client';
-import { openInSlicer, type SlicerType } from '../utils/slicer';
+import { openInSlicer, type SlicerType, isApiSliceableFileType } from '../utils/slicer';
 import { useTheme } from '../contexts/ThemeContext';
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateMetadata } from '../types/plates';
 
@@ -36,6 +36,106 @@ interface Capabilities {
   has_source: boolean;
   build_volume: { x: number; y: number; z: number };
   filament_colors: string[];
+}
+
+interface SlicerSplitButtonProps {
+  icon: ReactNode;
+  label: string;
+  dropdownLabel: string;
+  onPrimary: () => void;
+  disabled?: boolean;
+  items: Array<{ key: string; label: string; onClick: () => void }>;
+}
+
+// Split button: the primary half runs the default action, the chevron opens the
+// other slicer options.
+//
+// ⚠️ It exists because the two were mutually exclusive before: with the slicer
+// API enabled the modal offered "Slice with BamDude" and nothing else, so
+// opening the same file in your own desktop slicer stopped being possible at
+// all. Neither is a replacement for the other — the sidecar slices on the
+// server, the desktop app is where you go to change something.
+//
+// ⚠️ Escape is stopped rather than left to bubble: the modal itself closes on
+// Escape, and one key press should shut one thing.
+function SlicerSplitButton({ icon, label, dropdownLabel, onPrimary, disabled = false, items }: SlicerSplitButtonProps) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative inline-flex" ref={containerRef}>
+      <div className="flex relative z-50">
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => {
+            setOpen(false);
+            onPrimary();
+          }}
+          disabled={disabled}
+          className="rounded-r-none"
+        >
+          {icon}
+          {label}
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setOpen((prev) => !prev)}
+          disabled={disabled}
+          aria-label={dropdownLabel}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          className="rounded-l-none border-l border-bambu-dark px-2"
+        >
+          <ChevronDown className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`} />
+        </Button>
+      </div>
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 top-full mt-1 w-56 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-50 py-1"
+        >
+          {items.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                item.onClick();
+              }}
+              className="w-full text-left px-3 py-2 text-sm text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white transition-colors flex items-center gap-2"
+            >
+              <ExternalLink className="w-4 h-4 flex-shrink-0" />
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, archivePlateIndex, onSliceWithBamDude, onClose }: ModelViewerModalProps) {
@@ -311,30 +411,49 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
   // BamDude's own SliceModal (same as the file-row Cog) instead of launching
   // an external slicer. Only for library previews of a sliceable source type,
   // and only when the caller wired an in-app handler.
-  const sliceableType = ['3mf', 'stl', 'step', 'stp'].includes((fileType || '').toLowerCase());
+  // ⚠️ The SIDECAR's list, not the desktop slicers'. A STEP opens fine in the
+  // desktop application — which is what the button below still does — but no
+  // slicer CLI can load one, so offering the in-app slice only ever produced a
+  // failure after the upload. See isApiSliceableFileType.
+  const sliceableType = isApiSliceableFileType(fileType);
   const useBamDudeSlicer = Boolean(isLibrary && settings?.use_slicer_api && onSliceWithBamDude && sliceableType);
 
-  const handleOpenInSlicer = async () => {
+  // Which slicers the chevron offers. With the sidecar in play the primary
+  // action is the server slice, so BOTH desktop slicers belong in the menu;
+  // otherwise the primary already is the preferred one, and only the other is
+  // worth listing.
+  const slicerDropdownTypes: SlicerType[] = useBamDudeSlicer
+    ? ['bambu_studio', 'orcaslicer']
+    : [preferredSlicer === 'orcaslicer' ? 'bambu_studio' : 'orcaslicer'];
+  const slicerName = (slicer: SlicerType) =>
+    slicer === 'orcaslicer' ? t('settings.slicerOrcaSlicer') : t('settings.slicerBambuStudio');
+  const slicerDropdownItems = slicerDropdownTypes.map((slicer) => ({
+    key: slicer,
+    label: t('modelViewer.openInSlicerWith', { slicer: slicerName(slicer) }),
+    onClick: () => handleOpenInSlicer(slicer),
+  }));
+
+  const handleOpenInSlicer = async (slicer: SlicerType) => {
     if (!canOpenInSlicer) return;
     const filename = title || 'model';
     try {
       if (isLibrary) {
         const { token } = await api.createLibrarySlicerToken(libraryFileId!);
         const path = api.getLibrarySlicerDownloadUrl(libraryFileId!, token, filename);
-        openInSlicer(`${window.location.origin}${path}`, preferredSlicer);
+        openInSlicer(`${window.location.origin}${path}`, slicer);
       } else {
         const { token } = await api.createArchiveSlicerToken(archiveId!);
         const path = api.getArchiveSlicerDownloadUrl(archiveId!, token, filename);
-        openInSlicer(`${window.location.origin}${path}`, preferredSlicer);
+        openInSlicer(`${window.location.origin}${path}`, slicer);
       }
     } catch {
       // Fallback to direct URL (works when auth is disabled)
       if (isLibrary) {
         const downloadUrl = `${window.location.origin}${api.getLibraryFileDownloadUrl(libraryFileId!)}`;
-        openInSlicer(downloadUrl, preferredSlicer);
+        openInSlicer(downloadUrl, slicer);
       } else {
         const downloadUrl = `${window.location.origin}${api.getArchiveForSlicer(archiveId!, filename)}`;
-        openInSlicer(downloadUrl, preferredSlicer);
+        openInSlicer(downloadUrl, slicer);
       }
     }
   };
@@ -362,12 +481,32 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
           </div>
           <div className="flex items-center gap-2">
             {useBamDudeSlicer ? (
-              <Button variant="secondary" size="sm" onClick={onSliceWithBamDude}>
-                <Cog className="w-4 h-4" />
-                {t('slice.action')}
-              </Button>
+              canOpenInSlicer ? (
+                <SlicerSplitButton
+                  icon={<Cog className="w-4 h-4" />}
+                  label={t('slice.action')}
+                  dropdownLabel={t('modelViewer.moreSlicerOptions')}
+                  onPrimary={() => onSliceWithBamDude?.()}
+                  items={slicerDropdownItems}
+                />
+              ) : (
+                // A file the desktop slicers cannot open either — no chevron to
+                // offer, so the plain button is the honest control.
+                <Button variant="secondary" size="sm" onClick={onSliceWithBamDude}>
+                  <Cog className="w-4 h-4" />
+                  {t('slice.action')}
+                </Button>
+              )
+            ) : canOpenInSlicer ? (
+              <SlicerSplitButton
+                icon={<ExternalLink className="w-4 h-4" />}
+                label={t('modelViewer.openInSlicer')}
+                dropdownLabel={t('modelViewer.moreSlicerOptions')}
+                onPrimary={() => handleOpenInSlicer(preferredSlicer)}
+                items={slicerDropdownItems}
+              />
             ) : (
-              <Button variant="secondary" size="sm" onClick={handleOpenInSlicer} disabled={!canOpenInSlicer}>
+              <Button variant="secondary" size="sm" onClick={() => handleOpenInSlicer(preferredSlicer)} disabled>
                 <ExternalLink className="w-4 h-4" />
                 {t('modelViewer.openInSlicer')}
               </Button>
@@ -758,7 +897,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                       {t('modelViewer.pickPlatePrompt', { defaultValue: 'Pick a plate from the panel above to preview it.' })}
                     </div>
                   ) : (
-                    <GcodeViewer
+                    <GcodePreview
                       gcodeUrl={api.getLibraryFileGcodeUrl(libraryFileId!, selectedPlateId)}
                       buildVolume={capabilities.build_volume}
                       filamentColors={capabilities.filament_colors}
@@ -772,7 +911,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                 </div>
               </div>
             ) : (
-              <GcodeViewer
+              <GcodePreview
                 gcodeUrl={isLibrary ? api.getLibraryFileGcodeUrl(libraryFileId!) : api.getArchiveGcode(archiveId!)}
                 buildVolume={capabilities.build_volume}
                 filamentColors={capabilities.filament_colors}

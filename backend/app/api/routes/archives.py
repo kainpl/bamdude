@@ -38,6 +38,7 @@ from backend.app.services.design_settings import overrides_from_config
 from backend.app.services.filament_cost import default_rate_per_kg
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
+from backend.app.utils.archive_paths import photos_dir_for
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import safe_join_under
 from backend.app.utils.threemf_tools import (
@@ -208,7 +209,15 @@ async def list_archives(
     hide_duplicates: bool = Query(False),
     tag: str | None = Query(None),
     kind: str | None = Query(None, description="'calibration' or 'regular' — filters by PrintArchive.is_calibration"),
-    sort_by: str = Query("date-desc"),
+    sort_by: str = Query(
+        "date-desc",
+        description=(
+            "date/name/size/printer-{asc,desc}, or what the print consumed: "
+            "cost/energy/filament/duration-{asc,desc}. Unknown values fall back "
+            "to date-desc rather than erroring — a stale bookmark should still "
+            "open the page."
+        ),
+    ),
     page: int = Query(1, ge=1),
     per_page: int = Query(24, ge=1, le=200),
     all: bool = Query(False, description="When true, skip pagination and return every matching row"),
@@ -1100,10 +1109,9 @@ async def get_archive_stats(
         for printer_key, accs in printer_accuracies.items():
             accuracy_by_printer[printer_key] = round(sum(accs) / len(accs), 1)
 
-    # Energy totals - check which mode to use
+    # Energy, both ways — see ArchiveStats for why there are two of each.
     from backend.app.api.routes.settings import get_setting
 
-    energy_tracking_mode = await get_setting(db, "energy_tracking_mode") or "total"
     energy_cost_per_kwh_str = await get_setting(db, "energy_cost_per_kwh")
     energy_cost_per_kwh = float(energy_cost_per_kwh_str) if energy_cost_per_kwh_str else 0.15
 
@@ -1111,11 +1119,22 @@ async def get_archive_stats(
     total_energy_cost: float = 0.0
     energy_data_warming_up = False
 
-    if energy_tracking_mode == "total" and not date_from and not date_to:
-        # All-time total consumption - read live lifetime counters.
+    # ── What the prints themselves drew ──────────────────────────────────
+    # The per-print column, summed. Recorded from the plug at the start and end
+    # of each print, so it excludes everything between prints.
+    print_energy_kwh = (
+        await db.execute(select(func.sum(PrintArchive.energy_kwh)).where(*base_conditions))
+    ).scalar() or 0
+    print_energy_cost = (
+        await db.execute(select(func.sum(PrintArchive.energy_cost)).where(*base_conditions))
+    ).scalar() or 0
+
+    # ── What the plugs measured, full stop ───────────────────────────────
+    if not date_from and not date_to:
+        # All-time: the live lifetime counters.
         total_energy_kwh = await _sum_live_plug_totals(db)
         total_energy_cost = total_energy_kwh * energy_cost_per_kwh
-    elif energy_tracking_mode == "total":
+    else:
         # Total consumption mode with a date filter (#941): use hourly snapshots
         # to compute per-plug (endpoint - baseline) deltas.
         #
@@ -1132,13 +1151,6 @@ async def get_archive_stats(
 
         total_energy_kwh, energy_data_warming_up = await _sum_snapshot_deltas(db, dt_from=dt_from, dt_to=dt_to)
         total_energy_cost = total_energy_kwh * energy_cost_per_kwh
-    else:
-        # Per-print mode: sum the per-print energy column directly.
-        energy_kwh_result = await db.execute(select(func.sum(PrintArchive.energy_kwh)).where(*base_conditions))
-        total_energy_kwh = energy_kwh_result.scalar() or 0
-
-        energy_cost_result = await db.execute(select(func.sum(PrintArchive.energy_cost)).where(*base_conditions))
-        total_energy_cost = energy_cost_result.scalar() or 0
 
     return ArchiveStats(
         total_prints=total_prints,
@@ -1152,6 +1164,8 @@ async def get_archive_stats(
         prints_by_printer=prints_by_printer,
         average_time_accuracy=average_accuracy,
         time_accuracy_by_printer=accuracy_by_printer if accuracy_by_printer else None,
+        print_energy_kwh=round(print_energy_kwh, 3),
+        print_energy_cost=round(print_energy_cost, 3),
         total_energy_kwh=round(total_energy_kwh, 3),
         total_energy_cost=round(total_energy_cost, 3),
         energy_data_warming_up=energy_data_warming_up,
@@ -2521,8 +2535,7 @@ async def upload_photo(
         raise HTTPException(400, "File must be an image (.jpg, .jpeg, .png, .webp)")
 
     # Get archive directory
-    archive_dir = settings.base_dir / Path(archive.file_path).parent
-    photos_dir = archive_dir / "photos"
+    photos_dir = photos_dir_for(archive)
     photos_dir.mkdir(exist_ok=True)
 
     # Generate unique filename
@@ -2568,8 +2581,7 @@ async def get_photo(
     # (served to <img> tags). Without containment it FileResponse-served any
     # file the backend could read (``..%2f..%2fetc%2fpasswd``) — safe_join_under
     # rejects traversal with 400 (path-traversal hardening, GHSA-r2qv).
-    archive_dir = settings.base_dir / Path(archive.file_path).parent
-    photo_path = safe_join_under(archive_dir / "photos", filename)
+    photo_path = safe_join_under(photos_dir_for(archive), filename)
 
     if not photo_path.exists():
         raise HTTPException(404, "Photo not found")
@@ -2611,8 +2623,7 @@ async def delete_photo(
     # UUID-generated name in ``archive.photos``; safe_join_under is
     # defence-in-depth so a future change that drops the membership gate can't
     # reintroduce a traversal-delete.
-    archive_dir = settings.base_dir / Path(archive.file_path).parent
-    photo_path = safe_join_under(archive_dir / "photos", filename)
+    photo_path = safe_join_under(photos_dir_for(archive), filename)
     if photo_path.exists():
         photo_path.unlink()
 

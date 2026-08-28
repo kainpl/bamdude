@@ -12,15 +12,22 @@ from backend.app.core.permissions import Permission
 from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
 from backend.app.models.user import User
 from backend.app.schemas.git_backup import (
+    REF_PATTERN,
     GitBackupConfigCreate,
     GitBackupConfigResponse,
     GitBackupConfigUpdate,
     GitBackupLogResponse,
     GitBackupStatus,
     GitBackupTriggerResponse,
+    GitCommitListResponse,
+    GitRestorePreview,
+    GitRestoreRequest,
+    GitRestoreResponse,
     GitTestConnectionResponse,
+    RestoreCategory,
 )
 from backend.app.services.git_backup import git_backup_service
+from backend.app.services.git_restore import git_restore_service
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +328,7 @@ async def get_status(
             configured=False,
             enabled=False,
             is_running=False,
+            restore_running=False,
             progress=None,
             last_backup_at=None,
             last_backup_status=None,
@@ -331,7 +339,11 @@ async def get_status(
         configured=True,
         enabled=config.enabled,
         is_running=git_backup_service.is_running,
-        progress=git_backup_service.progress,
+        restore_running=git_restore_service.is_running,
+        # Either operation's progress: only one of the two can run at a time
+        # (each refuses while the other holds), so there is never a choice to
+        # make here.
+        progress=git_backup_service.progress or git_restore_service.progress,
         last_backup_at=config.last_backup_at,
         last_backup_status=config.last_backup_status,
         next_scheduled_run=config.next_scheduled_run,
@@ -415,3 +427,112 @@ async def clear_logs(
     logger.info("Deleted %s Git backup logs (kept %s)", deleted_count, keep_last)
 
     return {"deleted": deleted_count, "message": f"Deleted {deleted_count} logs"}
+
+
+# The permission that owns each category's rows, required ON TOP OF
+# ``git:restore``. Backup is its own permission group, so without this a role
+# holding only Backup could write — via a restore — rows it cannot write through
+# the endpoint that owns them.
+#
+#   * SETTINGS  → settings:update
+#   * SPOOLS    → inventory:update (spool rows and their usage history both
+#     restore under this category)
+#   * ARCHIVES  → archives:update_all, NOT archives:create. ⚠️ A restore writes
+#     rows owned by other users — that is the whole point of carrying the owner
+#     across — and update_all is the permission that means "may write an archive
+#     that is not yours". create alone would let create_own-shaped access seed
+#     history onto somebody else.
+#   * KPROFILES → kprofiles:update, which is what the restore ultimately calls.
+_CATEGORY_WRITE_PERMISSION = {
+    RestoreCategory.SETTINGS: Permission.SETTINGS_UPDATE,
+    RestoreCategory.SPOOLS: Permission.INVENTORY_UPDATE,
+    RestoreCategory.ARCHIVES: Permission.ARCHIVES_UPDATE_ALL,
+    RestoreCategory.KPROFILES: Permission.KPROFILES_UPDATE,
+}
+
+
+@router.get("/commits", response_model=GitCommitListResponse)
+async def list_commits(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.GIT_RESTORE),
+):
+    """List recent backup commits so the user can pick one to restore from."""
+    result = await db.execute(select(GitBackupConfig).limit(1))
+    config = result.scalar_one_or_none()
+
+    if not config:
+        raise HTTPException(status_code=404, detail="No configuration found. Configure backup first.")
+
+    commit_result = await git_restore_service.list_commits(config, limit=limit)
+    return GitCommitListResponse(**commit_result)
+
+
+@router.get("/restore/preview", response_model=GitRestorePreview)
+async def preview_restore(
+    ref: str = Query(default="HEAD", pattern=REF_PATTERN),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.GIT_RESTORE),
+):
+    """Report which categories a given backup commit contains."""
+    result = await db.execute(select(GitBackupConfig).limit(1))
+    config = result.scalar_one_or_none()
+
+    if not config:
+        raise HTTPException(status_code=404, detail="No configuration found. Configure backup first.")
+
+    preview = await git_restore_service.preview(db, config, ref=ref)
+    return GitRestorePreview(**preview)
+
+
+@router.post("/restore", response_model=GitRestoreResponse)
+async def restore_backup(
+    request: GitRestoreRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.GIT_RESTORE),
+):
+    """Restore selected categories from one backup commit.
+
+    Note there is no private-repo gate here, unlike the config endpoints: that
+    check exists to stop credentials leaving the instance, and this path only
+    reads. A config can only be saved against a private repo anyway.
+
+    Every category needs the permission that owns the rows it writes, on top of
+    ``git:restore`` — see ``_CATEGORY_WRITE_PERMISSION`` and the check below.
+    """
+    if current_user is not None:
+        # Each category rewrites rows some other endpoint already owns, and
+        # Backup is its own permission group — so a role holding only Backup
+        # could otherwise write, through a restore, what it cannot write through
+        # the endpoint that owns them. This module already makes that argument;
+        # it is why the four protected auth keys are refused outright.
+        #
+        # current_user is None only when auth is disabled: git:restore is in
+        # _APIKEY_DENIED_PERMISSIONS, so an API key never gets past the
+        # dependency to reach this line.
+        missing = sorted(
+            {
+                permission.value
+                for category, permission in _CATEGORY_WRITE_PERMISSION.items()
+                if category in request.categories and not current_user.has_all_permissions(permission.value)
+            }
+        )
+        if missing:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Missing required permissions: {', '.join(missing)}",
+            )
+
+    result = await db.execute(select(GitBackupConfig).limit(1))
+    config = result.scalar_one_or_none()
+
+    if not config:
+        raise HTTPException(status_code=404, detail="No configuration found. Configure backup first.")
+
+    restore_result = await git_restore_service.run_restore(
+        config.id,
+        ref=request.ref,
+        categories=request.categories,
+        overwrite_existing=request.overwrite_existing,
+    )
+    return GitRestoreResponse(**restore_result)

@@ -278,8 +278,22 @@ def test_every_fk_to_printers_is_accounted_for():
     somebody deletes a printer and either gets a 500 or quietly orphans rows.
     Adding one now fails here instead, with the name of the table.
     """
-    import backend.app.models  # noqa: F401  - populate the registry
-    import backend.app.models.auto_queue  # noqa: F401
+    # ⚠️ Import EVERY model module, not the package.
+    # ``backend.app.models.__init__`` lists only some of them, and the rest
+    # reach the registry by whatever else the test session happened to import
+    # first — including ``PRINTER_CASCADE_MODELS`` itself, which imports exactly
+    # the tables that are already handled. That circularity meant a new
+    # unhandled table was invisible here when this file ran alone and only
+    # showed up in a full run, i.e. the guard was reliable for the one case it
+    # does not need to be.
+    import importlib
+    import pkgutil
+
+    import backend.app.models as models_pkg
+
+    for module in pkgutil.iter_modules(models_pkg.__path__):
+        importlib.import_module(f"{models_pkg.__name__}.{module.name}")
+
     from backend.app.api.routes.printers import PRINTER_CASCADE_MODELS
     from backend.app.core.database import Base
 

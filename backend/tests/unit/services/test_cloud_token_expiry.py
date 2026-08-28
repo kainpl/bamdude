@@ -187,3 +187,77 @@ class TestValidateToken:
         invalidate_validation_cache("tok")
         await svc.validate_token()
         assert len(hits) == 2
+
+
+class TestRefreshAccessToken:
+    """Spec A §3 hardening: the community-documented refreshtoken endpoint,
+    behind a safe fallback — any failure leaves the stored state untouched."""
+
+    def _service(self, handler) -> BambuCloudService:
+        transport = httpx.MockTransport(handler)
+        svc = BambuCloudService(client=httpx.AsyncClient(transport=transport))
+        svc.set_token("old-access")
+        svc.set_refresh_token("old-refresh")
+        return svc
+
+    @pytest.mark.asyncio
+    async def test_success_swaps_both_tokens(self):
+        import json as _json
+
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            seen["body"] = _json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={"accessToken": "new-access", "refreshToken": "new-refresh", "expiresIn": 7776000},
+            )
+
+        svc = self._service(handler)
+        assert await svc.refresh_access_token() is True
+        assert seen["url"].endswith("/v1/user-service/user/refreshtoken")
+        assert seen["body"] == {"refreshToken": "old-refresh"}
+        assert svc.access_token == "new-access"
+        assert svc.refresh_token == "new-refresh"
+
+    @pytest.mark.asyncio
+    async def test_no_refresh_token_fails_fast(self):
+        svc = BambuCloudService()
+        svc.set_token("x")
+        assert await svc.refresh_access_token() is False
+
+    @pytest.mark.asyncio
+    async def test_rejection_keeps_current_tokens(self):
+        svc = self._service(lambda r: httpx.Response(401, json={"error": "Please login."}))
+        assert await svc.refresh_access_token() is False
+        assert svc.access_token == "old-access"
+        assert svc.refresh_token == "old-refresh"
+
+    @pytest.mark.asyncio
+    async def test_200_without_access_token_is_failure(self):
+        """The endpoint is undocumented — a shape change must not store garbage."""
+        svc = self._service(lambda r: httpx.Response(200, json={"weird": 1}))
+        assert await svc.refresh_access_token() is False
+        assert svc.access_token == "old-access"
+
+    @pytest.mark.asyncio
+    async def test_transport_error_is_failure(self):
+        def boom(request):
+            raise httpx.ConnectError("no route", request=request)
+
+        svc = self._service(boom)
+        assert await svc.refresh_access_token() is False
+
+    @pytest.mark.asyncio
+    async def test_success_rearms_the_auth_failure_report(self):
+        """After a successful refresh the service may report a future genuine
+        expiry again — the once-per-instance latch resets with the new token."""
+
+        def handler(request):
+            return httpx.Response(200, json={"accessToken": "new-access", "refreshToken": "new-refresh"})
+
+        svc = self._service(handler)
+        svc._auth_failure_reported = True
+        assert await svc.refresh_access_token() is True
+        assert svc._auth_failure_reported is False

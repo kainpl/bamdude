@@ -740,6 +740,24 @@ class TestSecurityHeaders:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_the_overlay_may_be_framed_by_our_own_ui_and_nothing_else(self, async_client: AsyncClient):
+        """⚠️ Every other route sends ``frame-ancestors 'none'``, which is
+        stricter than the SAMEORIGIN in ``X-Frame-Options`` beside it and
+        refuses even a same-origin frame — the Settings preview showed the
+        browser's "another site has embedded it" page instead of the overlay.
+
+        ``'self'`` permits a framer on THIS origin only, which is BamDude's own
+        UI. A clickjacking page on another host is refused exactly as before,
+        and cross-origin embedding stays what TRUSTED_FRAME_ORIGINS is for.
+        """
+        overlay = await async_client.get("/overlay/1")
+        other = await async_client.get("/printers")
+
+        assert "frame-ancestors 'self'" in overlay.headers.get("content-security-policy", "")
+        assert "frame-ancestors 'none'" in other.headers.get("content-security-policy", "")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_hsts_absent_for_http(self, async_client: AsyncClient):
         """HSTS must NOT be set over plain HTTP (test transport uses http)."""
         resp = await async_client.get(ME_URL, headers={"Authorization": ""})

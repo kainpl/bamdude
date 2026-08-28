@@ -198,7 +198,15 @@ class TestAuthMeAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_me_with_api_key_bearer(self, async_client: AsyncClient, db_session):
-        """Verify /me returns synthetic admin user when using API key via Bearer token."""
+        """A legacy ownerless key gets an anonymous identity — but not admin.
+
+        ⚠️ This used to assert the opposite: ``role="admin"`` and
+        ``is_admin=True``. That was the defect. A key cannot reach an
+        administrative route at all, whoever owns it, so a client building its
+        UI from this response rendered actions that 403 on use. The ``id=0`` /
+        ``api-key:`` identity survives because a key with no ``user_id`` has no
+        identity to report — the claim to be an administrator does not.
+        """
         from backend.app.core.auth import generate_api_key
         from backend.app.models.api_key import APIKey
 
@@ -218,15 +226,18 @@ class TestAuthMeAPI:
         result = response.json()
         assert result["id"] == 0
         assert result["username"].startswith("api-key:")
-        assert result["role"] == "admin"
-        assert result["is_admin"] is True
+        assert result["role"] == "user"
+        assert result["is_admin"] is False
         assert result["is_active"] is True
+        # What the key's own scope flags admit, not the whole enum.
         assert len(result["permissions"]) > 0
+        assert "users:create" not in result["permissions"], "an administrative permission must never appear"
+        assert "printers:read" in result["permissions"], "can_read_status defaults True"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_me_with_api_key_header(self, async_client: AsyncClient, db_session):
-        """Verify /me returns synthetic admin user when using X-API-Key header."""
+        """Same answer through the header door as through Bearer."""
         from backend.app.core.auth import generate_api_key
         from backend.app.models.api_key import APIKey
 
@@ -244,7 +255,7 @@ class TestAuthMeAPI:
         result = response.json()
         assert result["id"] == 0
         assert result["username"].startswith("api-key:")
-        assert result["is_admin"] is True
+        assert result["is_admin"] is False
 
     @pytest.mark.asyncio
     @pytest.mark.integration

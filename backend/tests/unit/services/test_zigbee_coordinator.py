@@ -10,11 +10,16 @@ All of these run without hardware: the single seam that touches zigpy is
 """
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.app.services.zigbee.coordinator import CoordinatorState, ZigbeeCoordinator
+from backend.app.services.zigbee.coordinator import (
+    CoordinatorState,
+    ZigbeeCoordinator,
+    _quiet_dead_radio_disconnect,
+)
 
 
 def _settings(enabled=True, mode="ethernet", path="1.2.3.4:6638"):
@@ -386,3 +391,62 @@ async def test_an_unsupported_device_is_still_removed(paired):
 
     assert paired.removed == ["aa:bb:cc:dd:ee:ff:00:11"]
     assert paired.events[-1]["type"] == "zigbee_device_rejected"
+
+
+class TestTheDeadRadioTeardownIsQuiet:
+    """⚠️ Shutting down a controller whose radio already left reaches
+    ``bellows.ezsp.disconnect``, which awaits a gateway that is already None and
+    raises ``TypeError``. zigpy catches that itself, logs it with a traceback,
+    and finishes the rest of the teardown.
+
+    So the call stays — the rest of that teardown is real, and the supervisor
+    now stops a dead radio on every retry, which would turn a skipped shutdown
+    into a leak per attempt. Only the one line goes.
+    """
+
+    @staticmethod
+    def _emit():
+        logging.getLogger("zigpy.application").warning("Failed to disconnect from radio")
+
+    def test_the_complaint_is_dropped_when_the_radio_is_known_gone(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="zigpy.application"), _quiet_dead_radio_disconnect(True):
+            self._emit()
+
+        assert "Failed to disconnect" not in caplog.text
+
+    def test_a_live_radio_still_reports_a_real_failure(self, caplog):
+        """⚠️ The guard on the guard: silence conditional on knowing why."""
+        with caplog.at_level(logging.WARNING, logger="zigpy.application"), _quiet_dead_radio_disconnect(False):
+            self._emit()
+
+        assert "Failed to disconnect" in caplog.text
+
+    def test_other_zigpy_warnings_are_untouched(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="zigpy.application"), _quiet_dead_radio_disconnect(True):
+            logging.getLogger("zigpy.application").warning("Watchdog failure")
+
+        assert "Watchdog failure" in caplog.text
+
+    def test_the_filter_does_not_outlive_the_block(self, caplog):
+        """A filter left installed would hide the next real one, for good."""
+        with _quiet_dead_radio_disconnect(True):
+            pass
+
+        with caplog.at_level(logging.WARNING, logger="zigpy.application"):
+            self._emit()
+
+        assert "Failed to disconnect" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connection_lost_marks_the_radio_gone(tmp_path):
+    """``stop`` reads this to decide whether the teardown has anything to be
+    quiet about. A radio that never opened is also down, and its teardown is
+    not the same case."""
+    coord = ZigbeeCoordinator(data_dir=tmp_path)
+    assert coord._radio_lost is False
+
+    coord.connection_lost(OSError("the connection closed without an error"))
+
+    assert coord._radio_lost is True
+    assert coord.status.state is CoordinatorState.ERROR

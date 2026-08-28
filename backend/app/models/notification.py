@@ -74,11 +74,23 @@ class NotificationProvider(Base):
     on_printer_error = Column(Boolean, default=False)  # AMS issues, etc.
     on_ai_failure_detection = Column(Boolean, default=False)  # Obico spaghetti / failure detection (#1794)
     on_filament_low = Column(Boolean, default=False)
+    # A detected filament runout (pause / AMS backup switch / external holder).
+    # DDL for existing installs rides m153.
+    on_filament_runout = Column(Boolean, default=False)
+    # "this print needs more than the slot holds" — a comparison against a job,
+    # unlike on_filament_low, which is a threshold on a spool. Defaults True:
+    # it fires rarely by construction and only when we can prove the shortfall.
+    on_filament_deficit = Column(Boolean, default=True)
     on_maintenance_due = Column(Boolean, default=False)  # Maintenance reminder
 
     # Event triggers - AMS environmental alarms (regular AMS with 4 slots)
     on_ams_humidity_high = Column(Boolean, default=False)  # AMS humidity above threshold
     on_ams_temperature_high = Column(Boolean, default=False)  # AMS temperature above threshold
+    # ⚠️ Defaults TRUE, unlike its neighbours. It fires at most once per AMS
+    # unit, and only to say BamDude has STOPPED doing something it was doing
+    # before — silence there reads as "still drying", which is exactly how the
+    # reported re-arm loop cost two days.
+    on_ams_drying_suspended = Column(Boolean, default=True)  # auto-drying gave up on a unit
 
     # Event triggers - AMS-HT environmental alarms (single slot heated AMS)
     on_ams_ht_humidity_high = Column(Boolean, default=False)  # AMS-HT humidity above threshold

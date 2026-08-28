@@ -140,6 +140,15 @@ class ProjectResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     stats: ProjectStats | None = None
+    # Everything under this project, its own prints included — present only when
+    # it actually has sub-projects.
+    #
+    # ⚠️ A SECOND figure rather than a widening of ``stats``. Nesting has been
+    # settable over the API all along, so broadening the existing numbers would
+    # silently restate the history of anyone who already used it; and a master
+    # project still has its own prints, which are a different question from what
+    # the tree did.
+    rollup_stats: ProjectStats | None = None
 
     class Config:
         from_attributes = True
@@ -191,6 +200,10 @@ class ProjectListResponse(BaseModel):
     archives: list[ArchivePreview] = []
     url: str | None = None
     cover_image_filename: str | None = None
+    # Nesting, so a list-only caller can group and can offer a parent picker
+    # that already knows which projects would close a loop.
+    parent_id: int | None = None
+    is_template: bool = False
 
     class Config:
         from_attributes = True

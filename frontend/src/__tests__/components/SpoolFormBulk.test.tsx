@@ -26,6 +26,8 @@ vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
   getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
+    getFilamentFamilies: vi.fn().mockResolvedValue([]),
+    triggerFilamentPresetSync: vi.fn().mockResolvedValue({ queued: true }),
     getSettings: vi.fn().mockResolvedValue({}),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
     getCloudStatus: vi.fn().mockResolvedValue({ is_authenticated: false }),
@@ -129,7 +131,7 @@ describe('validateForm with quickAdd', () => {
     const result = validateForm(defaultFormData, false);
     expect(result.isValid).toBe(false);
     expect(result.errors.material).toBeDefined();
-    expect(result.errors.slicer_filament).toBeDefined();
+    expect(result.errors.filament_family_id).toBeDefined();
     expect(result.errors.brand).toBeDefined();
     expect(result.errors.subtype).toBeDefined();
   });

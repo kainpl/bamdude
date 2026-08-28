@@ -69,7 +69,6 @@ const MOCK_SETTINGS = {
   default_filament_cost: 25.0,
   currency: 'USD',
   energy_cost_per_kwh: 0.15,
-  energy_tracking_mode: 'total',
   spoolman_enabled: false,
   spoolman_url: '',
   spoolman_sync_mode: 'auto',

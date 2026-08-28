@@ -1,4 +1,5 @@
 import json
+import re
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -13,6 +14,16 @@ from pydantic import BaseModel, Field, field_validator
 # setting belongs here** — or, if it must be reachable on the public internet, on
 # the stricter OIDC guard instead.
 LAN_SERVICE_URL_SETTINGS = ("ha_url", "obico_ml_url", "orcaslicer_api_url", "bambu_studio_api_url")
+
+# ⚠️ ``docker_compose_dir`` is unusual among the string settings: BamDude never
+# consumes it. It is interpolated into a shell command that the Settings page
+# invites the operator to copy and paste into a root-capable terminal. A value
+# like ``/opt/bamdude; rm -rf /`` would render as a perfectly plausible-looking
+# update command, so anyone holding ``settings:update`` could hand every admin a
+# destructive one-liner to run. Restricting it to characters that occur in real
+# paths removes that entirely.
+_COMPOSE_DIR_ALLOWED = re.compile(r"^[\w \-./\\:~]+$")
+_COMPOSE_DIR_MAX_LEN = 512
 
 
 class AppSettings(BaseModel):
@@ -48,15 +59,35 @@ class AppSettings(BaseModel):
         ge=1,
         description="Days since the design's most recent print before its 3MF copies are eligible for cleanup. Minimum 1.",
     )
+    # Runout zero-point accounting (usage journal, m153).
+    runout_zero_point_enabled: bool = Field(
+        default=True,
+        description="Close a spool at exactly empty when the printer reports an unambiguous filament runout",
+    )
+    ams_sync_bidirectional: bool = Field(
+        default=True,
+        description=(
+            "Allow idle AMS readings to correct a Bambu-tagged spool's weight downward "
+            "(a value must repeat across two reports a minute apart)"
+        ),
+    )
+    runout_purge_grams: int = Field(
+        default=0,
+        ge=0,
+        le=500,
+        description="Grams charged to the backup spool for the purge of an AMS auto-switch (0 = off)",
+    )
+    usage_events_retention_hours: int = Field(
+        default=72,
+        ge=1,
+        le=8760,
+        description="Hours to keep a finished print's usage-journal events (runout/tray timeline) for forensics",
+    )
     # 0 = unset. There is no sensible default price of plastic, and a
     # plausible figure reads as an answer while a blank reads as a blank.
     default_filament_cost: float = Field(default=0.0, description="Default filament cost per kg (0 = unset)")
     currency: str = Field(default="USD", description="Currency for cost tracking")
     energy_cost_per_kwh: float = Field(default=0.15, description="Electricity cost per kWh for energy tracking")
-    energy_tracking_mode: str = Field(
-        default="total",
-        description="Energy display mode on stats: 'print' shows sum of per-print energy, 'total' shows lifetime plug consumption",
-    )
 
     # Spoolman integration
     spoolman_enabled: bool = Field(default=False, description="Enable Spoolman integration for filament tracking")
@@ -67,6 +98,12 @@ class AppSettings(BaseModel):
     # so without these there is no way to configure Zigbee short of writing to
     # the database by hand. The phase-4 UI binds to the same three.
     zigbee_enabled: bool = Field(default=False, description="Run the built-in Zigbee coordinator")
+    # Off by default: it needs a desktop bridge running somewhere, so a farm
+    # that has none must not be shown a queue nothing will ever drain.
+    device_labels_enabled: bool = Field(
+        default=False,
+        description="Print spool labels directly on a printer attached to a desktop bridge",
+    )
     zigbee_transport: str = Field(default="ethernet", description="Zigbee dongle transport: ethernet or usb")
     zigbee_path: str = Field(
         default="",
@@ -322,6 +359,12 @@ class AppSettings(BaseModel):
     mqtt_use_tls: bool = Field(default=False, description="Use TLS/SSL encryption for MQTT connection")
 
     # External URL for notifications
+    # Where the compose file lives on the host, for the update instructions.
+    # Never read by BamDude itself — see the validator on the update schema.
+    docker_compose_dir: str = Field(
+        default="", description="Host directory holding docker-compose.yml, shown in the update command"
+    )
+
     external_url: str = Field(
         default="", description="External URL where BamDude is accessible (for notification images)"
     )
@@ -364,6 +407,18 @@ class AppSettings(BaseModel):
     )
 
     # Preferred slicer application (server-side / API sidecar slicer)
+    # Where slicing RUNS. ⚠️ Orthogonal to ``preferred_slicer``, which only says
+    # which slicer BINARY the sidecar drives: an execution site is not a binary
+    # choice. Kept as its own key so the two never have to encode impossible
+    # combinations.
+    #
+    # Only "sidecar" is implemented today; the slice dialog offers a per-job
+    # choice once more than one engine exists, and hides the control entirely
+    # while there is only one.
+    slice_engine: str = Field(
+        default="sidecar",
+        description="Default execution site for slicing: 'sidecar' (server-side API).",
+    )
     preferred_slicer: str = Field(
         default="bambu_studio",
         description="Slicer used for the server-side API / sidecar: 'bambu_studio' or 'orcaslicer'",
@@ -551,12 +606,16 @@ class AppSettingsUpdate(BaseModel):
     archive_3mf_retention_enabled: bool | None = None
     archive_3mf_retention_days: int | None = Field(default=None, ge=1)
     log_retention_days: int | None = Field(default=None, ge=1, le=365)
+    runout_zero_point_enabled: bool | None = None
+    ams_sync_bidirectional: bool | None = None
+    runout_purge_grams: int | None = Field(default=None, ge=0, le=500)
+    usage_events_retention_hours: int | None = Field(default=None, ge=1, le=8760)
     default_filament_cost: float | None = None
     currency: str | None = None
     energy_cost_per_kwh: float | None = None
-    energy_tracking_mode: str | None = None
     spoolman_enabled: bool | None = None
     zigbee_enabled: bool | None = None
+    device_labels_enabled: bool | None = None
     zigbee_transport: str | None = None
     zigbee_path: str | None = None
     spoolman_url: str | None = None
@@ -628,6 +687,7 @@ class AppSettingsUpdate(BaseModel):
     mqtt_topic_prefix: str | None = None
     mqtt_use_tls: bool | None = None
     external_url: str | None = None
+    docker_compose_dir: str | None = None
     ha_enabled: bool | None = None
     ha_url: str | None = None
     ha_token: str | None = None
@@ -635,6 +695,7 @@ class AppSettingsUpdate(BaseModel):
     library_all_files_recursive: bool | None = None
     firmware_batch_concurrency: int | None = None
     camera_view_mode: str | None = None
+    slice_engine: str | None = None
     preferred_slicer: str | None = None
     open_in_slicer: str | None = None
     use_slicer_api: bool | None = None
@@ -690,6 +751,36 @@ class AppSettingsUpdate(BaseModel):
 
         assert_safe_lan_service_url(v, label=info.field_name)
         return v
+
+    @field_validator("docker_compose_dir")
+    @classmethod
+    def validate_docker_compose_dir(cls, v: str | None) -> str | None:
+        """Keep the copy-and-paste update command free of shell injection.
+
+        ⚠️ Validated on the WRITE path only. Doing it on the read schema as well
+        would mean a single bad row — however it got there — 500s the entire
+        settings GET and takes the app down with it, which is a worse outcome
+        than rendering a string that has to be pasted into a shell by hand
+        before it does anything at all.
+        """
+        if v is None or not v.strip():
+            return v
+        candidate = v.strip()
+        if len(candidate) > _COMPOSE_DIR_MAX_LEN:
+            raise ValueError(f"Compose directory must be at most {_COMPOSE_DIR_MAX_LEN} characters")
+        if not _COMPOSE_DIR_ALLOWED.match(candidate):
+            raise ValueError(
+                "Compose directory may only contain path characters (letters, digits, space, and - _ . / \\ : ~)"
+            )
+        # ⚠️ A trailing backslash is the one survivor that would still break the
+        # frontend's double-quoting: `cd "/opt/bam dude\"` escapes the closing
+        # quote and swallows the rest of the line. Harmless — the shell just
+        # waits for a terminator rather than running anything — but the operator
+        # would be left staring at a continuation prompt, so refuse it here
+        # rather than shipping a command that cannot work.
+        if candidate.endswith("\\"):
+            raise ValueError("Compose directory must not end with a backslash")
+        return candidate
 
     @field_validator("gcode_snippets")
     @classmethod

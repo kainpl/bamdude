@@ -111,6 +111,20 @@ class Permission(StrEnum):
     SMART_SENSORS_UPDATE = "smart_sensors:update"
     SMART_SENSORS_DELETE = "smart_sensors:delete"
 
+    # Labels. Designing one and printing one are different questions: a design
+    # outlives every label made from it, so redrawing it is not a print action.
+    LABEL_TEMPLATES_READ = "label_templates:read"
+    LABEL_TEMPLATES_WRITE = "label_templates:write"
+
+    # Direct-to-device label printing. A device is a printer on somebody's desk,
+    # reached through a bridge that polls us — so POLL is its own permission
+    # rather than a read: it mutates (it claims a job), and the key that holds
+    # it must reach nothing else.
+    LABEL_DEVICES_READ = "label_devices:read"
+    LABEL_DEVICES_POLL = "label_devices:poll"
+    LABEL_DEVICES_MANAGE = "label_devices:manage"
+    LABEL_JOBS_CREATE = "label_jobs:create"
+
     # Camera
     CAMERA_VIEW = "camera:view"
 
@@ -179,6 +193,10 @@ class Permission(StrEnum):
     # Cloud Auth (admin-level)
     CLOUD_AUTH = "cloud:auth"
     ORCA_CLOUD_AUTH = "orca_cloud:auth"
+    # Cloud Link — pairing this instance with the BamDude portal. A different
+    # question from CLOUD_AUTH: that one signs us in to somebody else's cloud,
+    # this one decides that somebody else's cloud may reach in here.
+    CLOUD_LINK_MANAGE = "cloud_link:manage"
 
     # API Keys (admin-level)
     API_KEYS_READ = "api_keys:read"
@@ -188,6 +206,11 @@ class Permission(StrEnum):
 
     # Users (admin-level)
     USERS_READ = "users:read"
+    # Narrow read: id + username only, no emails / roles / groups / permission
+    # sets. Exists so an id -> name mapping can be resolved without handing out
+    # the full user objects. Pairs with STATS_FILTER_BY_USER, which is useless
+    # without a way to discover the ids it filters on.
+    USERS_READ_SLIM = "users:read_slim"
     USERS_CREATE = "users:create"
     USERS_UPDATE = "users:update"
     USERS_DELETE = "users:delete"
@@ -282,6 +305,16 @@ PERMISSION_CATEGORIES = {
         Permission.SMART_SENSORS_UPDATE,
         Permission.SMART_SENSORS_DELETE,
     ],
+    "Label Templates": [
+        Permission.LABEL_TEMPLATES_READ,
+        Permission.LABEL_TEMPLATES_WRITE,
+    ],
+    "Label Printers": [
+        Permission.LABEL_DEVICES_READ,
+        Permission.LABEL_DEVICES_POLL,
+        Permission.LABEL_DEVICES_MANAGE,
+        Permission.LABEL_JOBS_CREATE,
+    ],
     "Camera": [
         Permission.CAMERA_VIEW,
     ],
@@ -345,6 +378,7 @@ PERMISSION_CATEGORIES = {
     "Cloud": [
         Permission.CLOUD_AUTH,
         Permission.ORCA_CLOUD_AUTH,
+        Permission.CLOUD_LINK_MANAGE,
     ],
     "API Keys": [
         Permission.API_KEYS_READ,
@@ -354,6 +388,7 @@ PERMISSION_CATEGORIES = {
     ],
     "User Management": [
         Permission.USERS_READ,
+        Permission.USERS_READ_SLIM,
         Permission.USERS_CREATE,
         Permission.USERS_UPDATE,
         Permission.USERS_DELETE,
@@ -480,10 +515,19 @@ DEFAULT_GROUPS = {
             Permission.PRINTER_SENSOR_HISTORY_READ.value,
             Permission.STATS_READ.value,
             Permission.STATS_FILTER_BY_USER.value,
+            Permission.USERS_READ_SLIM.value,
             Permission.SYSTEM_READ.value,
             # Settings - read only
             Permission.SETTINGS_READ.value,
             # WebSocket
+            # Label templates — design the labels, and print them
+            Permission.LABEL_TEMPLATES_READ.value,
+            Permission.LABEL_TEMPLATES_WRITE.value,
+            # ⚠️ Print to a device and see which ones exist, but NOT adopt one.
+            # Adopting decides that a printer on somebody's desk may receive our
+            # labels, which is an administrator's call, not an operator's.
+            Permission.LABEL_DEVICES_READ.value,
+            Permission.LABEL_JOBS_CREATE.value,
             Permission.WEBSOCKET_CONNECT.value,
         ],
         "is_system": True,
@@ -521,6 +565,8 @@ DEFAULT_GROUPS = {
             Permission.STATS_READ.value,
             Permission.SYSTEM_READ.value,
             Permission.SETTINGS_READ.value,
+            Permission.LABEL_TEMPLATES_READ.value,
+            Permission.LABEL_DEVICES_READ.value,
             Permission.WEBSOCKET_CONNECT.value,
         ],
         "is_system": True,

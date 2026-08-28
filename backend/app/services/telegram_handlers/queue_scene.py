@@ -31,6 +31,7 @@ PAGE_SIZE = 8
 class QueueAddState(StatesGroup):
     selecting_file = State()
     selecting_target = State()
+    selecting_location = State()
     confirming = State()
 
 
@@ -218,15 +219,135 @@ async def cb_qadd_select_printer(
     await _show_confirm(callback, state, lang)
 
 
+# A Telegram keyboard is a poor place to scroll a farm's whole location tree,
+# and a place that holds no printer of the chosen model is never a useful
+# answer. Cap what we draw and say what was left out — a silently truncated
+# list reads as "that's all there is".
+MAX_LOCATION_BUTTONS = 24
+
+
+async def _locations_for_model(model: str) -> list[tuple[int, str]]:
+    """Places worth offering for ``model``, as ``(id, path)``, shallowest first.
+
+    A location qualifies when its **subtree** holds a printer of that model —
+    the same subtree rule routing itself applies, so aiming at a workshop
+    reaches the printers on its shelves.
+
+    ⚠️ Archived printers don't count (they are retired), but a printer in
+    Maintenance Mode does: that is temporary, and hiding its workshop would stop
+    the operator queueing work for when it comes back. This is deliberately a
+    weaker filter than ``printers_for_item`` uses at routing time — the question
+    here is "is this place ever right", not "can it run right now".
+    """
+    from sqlalchemy import func as sa_func, select
+
+    from backend.app.core.database import async_session
+    from backend.app.models.printer import Printer
+    from backend.app.services.printer_location_service import load_tree, path_of, subtree_ids
+
+    async with async_session() as db:
+        tree = await load_tree(db)
+        if not tree:
+            return []
+        occupied = set(
+            (
+                await db.execute(
+                    select(Printer.location_id)
+                    .where(sa_func.lower(Printer.model) == model.lower())
+                    .where(Printer.archived.is_(False))
+                    .where(Printer.location_id.is_not(None))
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    if not occupied:
+        return []
+    offered = [loc_id for loc_id in tree if subtree_ids(tree, loc_id) & occupied]
+    return sorted(((loc_id, path_of(tree, loc_id)) for loc_id in offered), key=lambda pair: pair[1])
+
+
 @router.callback_query(F.data.startswith("qadd:model:"))
 async def cb_qadd_select_model(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
-    """Model-based assignment selected."""
+    """Model-based assignment selected — then, if it can matter, where."""
     lang = await get_language()
     model = callback.data.split(":")[2]
     await callback.answer()
 
+    await state.update_data(
+        printer_id=None,
+        target_model=model,
+        target_label=f"Any {model}",
+        target_location_id=None,
+        target_location_label=None,
+    )
+
+    locations = await _locations_for_model(model)
+    if not locations:
+        # Nothing to choose between: no locations on this farm, or none of them
+        # holds a printer of this model. Asking anyway would be a step whose
+        # every answer is the same.
+        await state.set_state(QueueAddState.confirming)
+        await _show_confirm(callback, state, lang)
+        return
+
+    await state.set_state(QueueAddState.selecting_location)
+    await _show_location_list(callback, state, lang, locations)
+
+
+async def _show_location_list(
+    callback: CallbackQuery, state: FSMContext, lang: str, locations: list[tuple[int, str]]
+) -> None:
+    data = await state.get_data()
+    lines = [
+        f"📄 *{escape_md(data.get('file_name', '?'))}*\n",
+        f"🎯 {escape_md(data.get('target_label', '?'))}\n",
+        escape_md(t(lang, NS, "queue_add.select_location")),
+    ]
+
+    shown = locations[:MAX_LOCATION_BUTTONS]
+    hidden = len(locations) - len(shown)
+    if hidden:
+        lines.append(escape_md(t(lang, NS, "queue_add.locations_hidden", count=hidden)))
+
+    btns = [
+        [
+            InlineKeyboardButton(
+                text=f"🌍 {t(lang, NS, 'queue_add.btn_anywhere')}",
+                callback_data="qadd:loc:any",
+            )
+        ]
+    ]
+    for loc_id, path in shown:
+        btns.append([InlineKeyboardButton(text=f"📍 {path}", callback_data=f"qadd:loc:{loc_id}")])
+
+    btns.append([InlineKeyboardButton(text=f"◀️ {t(lang, NS, 'printers.btn_back')}", callback_data="qadd:start")])
+
+    await callback.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+
+
+@router.callback_query(F.data.startswith("qadd:loc:"))
+async def cb_qadd_select_location(
+    callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None
+) -> None:
+    """Location filter chosen (or explicitly declined)."""
+    lang = await get_language()
+    raw = callback.data.split(":")[2]
+    await callback.answer()
+
+    if raw == "any":
+        await state.update_data(target_location_id=None, target_location_label=None)
+    else:
+        location_id = int(raw)
+        label = None
+        data = await state.get_data()
+        model = data.get("target_model")
+        if model:
+            label = next((path for lid, path in await _locations_for_model(model) if lid == location_id), None)
+        await state.update_data(target_location_id=location_id, target_location_label=label)
+
     await state.set_state(QueueAddState.confirming)
-    await state.update_data(printer_id=None, target_model=model, target_label=f"Any {model}")
     await _show_confirm(callback, state, lang)
 
 
@@ -234,12 +355,15 @@ async def _show_confirm(callback: CallbackQuery, state: FSMContext, lang: str) -
     data = await state.get_data()
     file_name = data.get("file_name", "?")
     target_label = data.get("target_label", "?")
+    location_label = data.get("target_location_label")
 
     text = (
         f"\U0001f4cb *{escape_md(t(lang, NS, 'queue_add.confirm_title'))}*\n\n"
         f"\U0001f4c4 {escape_md(t(lang, NS, 'queue.file'))}: *{escape_md(file_name)}*\n"
         f"\U0001f3af {escape_md(target_label)}"
     )
+    if location_label:
+        text += f"\n\U0001f4cd {escape_md(t(lang, NS, 'queue_add.location'))}: {escape_md(location_label)}"
 
     await callback.message.edit_text(
         text,
@@ -262,6 +386,7 @@ async def _add_to_auto_queue(
     file_id: int | None,
     target_model: str,
     tg_chat: TelegramChat | None,
+    target_location_id: int | None = None,
 ) -> None:
     """Put the job on the auto-queue, for the distributor to place.
 
@@ -328,6 +453,7 @@ async def _add_to_auto_queue(
             item = AutoQueueItem(
                 library_file_id=file_id,
                 target_model=target_model,
+                target_location_id=target_location_id,
                 required_filament_types=required_types_json,
                 status="pending",
                 position=max_pos + 1,
@@ -367,7 +493,7 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
     # for it and then refused every one of them at this line: the target sets
     # printer_id=None, and the check below read that as "nothing chosen".
     if not printer_id and target_model:
-        await _add_to_auto_queue(callback, lang, file_id, target_model, tg_chat)
+        await _add_to_auto_queue(callback, lang, file_id, target_model, tg_chat, data.get("target_location_id"))
         return
 
     # Neither a printer nor a model: nothing was ever chosen here, which after a

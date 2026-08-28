@@ -24,6 +24,11 @@ from backend.app.core.database import async_session
 from backend.app.core.websocket import ws_manager
 from backend.app.models.library import LibraryFile
 from backend.app.models.printer import Printer
+
+# ⚠️ Module scope on purpose: the ``finally`` below calls into this, and a
+# dispatch that dies before reaching the local import would raise NameError
+# from inside the cleanup — masking the real exception.
+from backend.app.services import preheat as preheat_service
 from backend.app.services.archive import ArchiveService
 from backend.app.services.bambu_ftp import (
     delete_file_async,
@@ -189,6 +194,83 @@ def _mqtt_commands_rejected(status) -> bool:
     return False
 
 
+async def _warn_on_filament_deficit(db, job, archive) -> None:
+    """Tell the operator this print will empty a slot, and let it run.
+
+    ⚠️ **Best-effort, and silent on any failure.** A warning is worth having; it
+    is not worth a dispatch. Everything it reads — requirements from the 3MF,
+    the printer's live slots, inventory remaining — can be unavailable for
+    ordinary reasons, and none of them is a reason to stop a print.
+    """
+    try:
+        from backend.app.services.filament_deficit import compute_shortfalls
+        from backend.app.services.print_scheduler import scheduler as _sched
+
+        mapping = job.options.get("ams_mapping")
+        if not mapping:
+            return
+
+        status = printer_manager.get_status(job.printer_id)
+        if status is None:
+            return
+
+        item = getattr(job, "queue_item", None)
+        requirements = await _sched._get_filament_requirements(db, item) if item is not None else None
+        if not requirements:
+            return
+
+        loaded = _sched._build_loaded_filaments(status)
+        if not loaded:
+            return
+
+        remaining = await _sched._build_inventory_remain_overrides(db, job.printer_id, loaded)
+        # ⚠️ Only slots whose remaining we actually track are judged; see the
+        # module docstring on why silence must not read as empty.
+        shortfalls = compute_shortfalls(
+            requirements,
+            loaded,
+            mapping,
+            remaining or {},
+            # ⚠️ ``ams_auto_switch_filament`` is what the state actually calls it
+            # (home_flag bit 10, BS AutoRefill). Guessing the name here would
+            # have silently disabled the backup pooling — getattr returns the
+            # default and nothing complains.
+            auto_refill=bool(getattr(status, "ams_auto_switch_filament", False)),
+        )
+        if not shortfalls:
+            return
+
+        printer = printer_manager.get_printer(job.printer_id)
+        printer_name = getattr(printer, "name", None) or f"Printer {job.printer_id}"
+        print_name = archive.print_name or archive.filename or ""
+
+        logger.warning(
+            "Filament deficit on %s for %r: %s",
+            printer_name,
+            print_name,
+            ", ".join(f"{s.slot_label} short by {s.missing_grams}g" for s in shortfalls),
+        )
+        from backend.app.services.notification_service import notification_service
+
+        await notification_service.on_filament_deficit(job.printer_id, printer_name, print_name, shortfalls, db)
+        await ws_manager.send_filament_deficit(
+            job.printer_id,
+            printer_name,
+            print_name,
+            [
+                {
+                    "slot": s.slot_label,
+                    "needed": s.needed_grams,
+                    "available": s.available_grams,
+                    "missing": s.missing_grams,
+                }
+                for s in shortfalls
+            ],
+        )
+    except Exception:  # noqa: BLE001 - a warning must never cost a dispatch
+        logger.debug("Filament deficit check failed for printer %s", job.printer_id, exc_info=True)
+
+
 async def _apply_calibrations_for_print(
     db,
     printer_id: int,
@@ -282,7 +364,9 @@ async def _apply_calibrations_for_print(
             ).scalar_one_or_none()
             spool = assignment_row.spool if assignment_row else None
 
-            filament_id = derive_effective_filament_id(spool=spool, slot_tray_info_idx=tray_info_idx or None)
+            filament_id = await derive_effective_filament_id(
+                spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
+            )
             if not filament_id:
                 continue
             try:
@@ -343,7 +427,9 @@ async def _apply_calibrations_for_print(
             ).scalar_one_or_none()
             spool = assignment_row.spool if assignment_row else None
 
-            filament_id = derive_effective_filament_id(spool=spool, slot_tray_info_idx=tray_info_idx or None)
+            filament_id = await derive_effective_filament_id(
+                spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
+            )
             if not filament_id:
                 continue
             try:
@@ -467,6 +553,12 @@ class PrintDispatchJob:
     # ``archive_id`` once the archive row is created so the two FSMs stay
     # in sync without a second DB round-trip from the scheduler.
     queue_item_id: int | None = None
+    # True only for jobs the scheduler is awaiting through
+    # ``run_from_queue_item``. ⚠️ Not the same question as
+    # ``queue_item_id is not None`` — a direct print now carries a queue item
+    # too (it is how it claims the printer), so that older test would silence
+    # the only failure report a Print now ever gets.
+    awaited_by_scheduler: bool = False
     # Signalled at the very end of ``_run_*`` (success / failure / cancel)
     # so ``run_from_queue_item`` callers can await the outcome.
     completion_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -487,9 +579,12 @@ async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
     nowhere else. Whoever pressed the button learns nothing, unless they happen
     to be looking at that panel at that moment.
 
-    ⚠️ **Gated on ``queue_item_id is None``** — that is the whole discriminator.
-    A job dispatched for a queue item is already awaited and reported by the
-    scheduler, and announcing it here would notify twice for one failure.
+    ⚠️ **Gated on ``awaited_by_scheduler``** — that is the whole discriminator.
+    A job dispatched for a queue item by the scheduler is already awaited and
+    reported by it, and announcing here would notify twice for one failure. It
+    used to read ``queue_item_id is None`` instead, which stopped meaning
+    "direct print" the moment a direct print started claiming the printer with
+    a queue item of its own.
 
     ⚠️ Cancellations are not failures. The operator who pressed Cancel does not
     need to be told what they just did.
@@ -498,7 +593,7 @@ async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
     wrong, and a notification provider being unreachable must not replace the
     real error with its own.
     """
-    if job.queue_item_id is not None:
+    if job.awaited_by_scheduler:
         return
     outcome = job.outcome or {}
     if outcome.get("success") or outcome.get("cancelled"):
@@ -526,6 +621,45 @@ class ActiveDispatchState:
     message: str
     upload_bytes: int | None = None
     upload_total_bytes: int | None = None
+
+
+def _rack_slot_extruders(printer, file_path, plate_id, nozzle_mapping) -> str | None:
+    """Per-slot extruder assignment for a nozzle-rack printer, as JSON, or None.
+
+    ⚠️ **Derived at dispatch, not at queue time.** This is the first point that
+    knows both the actual printer and the actual file: an item can be created
+    without a printer (model-based assignment), reassigned afterwards, or have
+    its file swapped for a G-code-injected copy. One call here therefore covers
+    the print dialog, a bulk library add, the webhook and a pipeline run, and no
+    column is needed.
+
+    Skipped when the job already carries a BambuStudio capture from the Virtual
+    Printer: that one wins downstream anyway, so reading the 3MF again would be
+    work thrown away on every dispatch.
+
+    ⚠️ Takes the file **actually being sent** — the patched copy when G-code
+    injection or an M970 rewrite produced one — rather than the archive on disk.
+    The patcher does not touch ``slice_info.config`` today, so the two agree;
+    reading the dispatched file is what keeps that from mattering if it ever
+    stops being true.
+
+    ⚠️ Nothing here may fail a dispatch — the queue item is already committed as
+    ``printing`` and the command is published with no handler above it. Every
+    failure degrades to "no field, firmware picks", which is the behaviour that
+    existed before.
+    """
+    if nozzle_mapping or file_path is None:
+        return None
+    from backend.app.utils.printer_models import is_nozzle_rack_model
+
+    if not is_nozzle_rack_model(getattr(printer, "model", None)):
+        return None
+    import json
+
+    from backend.app.utils.threemf_tools import extract_slot_extruders_from_3mf
+
+    slot_extruders = extract_slot_extruders_from_3mf(file_path, plate_id=plate_id or 1)
+    return json.dumps(slot_extruders) if slot_extruders else None
 
 
 class BackgroundDispatchService:
@@ -558,6 +692,43 @@ class BackgroundDispatchService:
         if not state:
             return False
         return state.state in ("RUNNING", "PAUSE", "PAUSED") and bool(state.gcode_file)
+
+    async def _release_direct_claim(self, job: PrintDispatchJob, *, status: str) -> None:
+        """Give the printer back after a direct dispatch that will not print.
+
+        ⚠️ Gated on ``awaited_by_scheduler``: the scheduler owns the outcome of
+        its own items — including the #2598 busy-refusal that returns one to
+        ``pending`` instead of failing it — and a second writer here would
+        overwrite that silently.
+
+        Never raises. This runs on the way out of a dispatch that has already
+        gone wrong, and losing the real error to a secondary one from the
+        cleanup is the failure this method exists to avoid.
+        """
+        if job.awaited_by_scheduler or job.queue_item_id is None:
+            return
+
+        from datetime import datetime, timezone
+
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.services.queue_counters import set_queue_error, set_queue_idle, update_queue_counters
+
+        try:
+            async with async_session() as db:
+                item = await db.get(PrintQueueItem, job.queue_item_id)
+                if item is None:
+                    return
+                item.status = status
+                item.completed_at = datetime.now(timezone.utc)
+                if status == "failed":
+                    item.error_message = str((job.outcome or {}).get("error") or "Dispatch failed")
+                    await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+                else:
+                    await set_queue_idle(db, item.queue_id)
+                await update_queue_counters(db, item.queue_id)
+                await db.commit()
+        except Exception:
+            logger.exception("Failed to release the dispatch claim for job %s", job.id)
 
     async def start(self):
         async with self._lock:
@@ -657,6 +828,7 @@ class BackgroundDispatchService:
                 requested_by_username=requested_by_username,
                 project_id=project_id,
                 queue_item_id=queue_item_id,
+                awaited_by_scheduler=True,
             )
             self._next_job_id += 1
             self._active_jobs[job.id] = ActiveDispatchState(job=job, message=f"Queue dispatch to {printer_name}...")
@@ -727,6 +899,33 @@ class BackgroundDispatchService:
             project_id=project_id,
             cleanup_library_after_dispatch=cleanup_library_after_dispatch,
         )
+
+    def cancel_dispatch_for_queue_item(self, queue_item_id: int) -> bool:
+        """Tell an in-flight dispatch that its queue item no longer wants to print.
+
+        ⚠️ Stopping an item only writes ``status`` to the database, and a
+        dispatch coroutine parked in ``asyncio.sleep`` cannot see that. During
+        the preheat stage there is no print to stop either — the stop command
+        goes to an idle printer — so without this the heaters ran for the rest
+        of ``preheat_max_wait_seconds`` + ``preheat_soak_seconds`` and the
+        printer stayed claimed, blocking every other queued item behind a print
+        that was not happening.
+
+        Synchronous and lock-free on purpose: the callers are HTTP routes on
+        the request path, and the flag is read by the dispatch's own
+        cancel-check. Returns whether a live job was signalled.
+        """
+        signalled = False
+        for state in list(self._active_jobs.values()):
+            if state.job.queue_item_id == queue_item_id:
+                self._cancel_requested_job_ids.add(state.job.id)
+                logger.info(
+                    "Cancel requested for dispatch job %s - its queue item %s was stopped",
+                    state.job.id,
+                    queue_item_id,
+                )
+                signalled = True
+        return signalled
 
     async def cancel_job(self, job_id: int) -> dict[str, Any]:
         """Cancel a queued dispatch job.
@@ -826,6 +1025,33 @@ class BackgroundDispatchService:
             if self._printer_is_busy_printing(printer_id):
                 raise DispatchEnqueueRejected(f"Printer {printer_name} is currently busy printing")
 
+            # Claim the printer now, in the DB, so ``check_queue`` sees this
+            # print for the whole of its dispatch. Until this existed the claim
+            # arrived only with ``on_print_start`` — i.e. once the printer had
+            # already started — and the queue dispatched over the file on its
+            # way, which is the bug reported against 0.5.4. Inside the lock and
+            # after the refusals above: if this raises, no job was created and
+            # nothing leaked, and a rejected dispatch cannot park a printer.
+            #
+            # ⚠️ Yes, this does DB I/O while holding ``_lock``, and that is
+            # deliberate. Moving it out would leave the job queued but unclaimed
+            # for however long the write takes — which is the exact window the
+            # claim exists to close. The cost is bounded: one INSERT plus one
+            # UPDATE, and the enqueue path is not on any hot loop.
+            from backend.app.services.queue_batch import claim_printer_for_direct_print
+
+            async with async_session() as claim_db:
+                claim_item = await claim_printer_for_direct_print(
+                    claim_db,
+                    printer_id=printer_id,
+                    archive_id=source_id if kind == "reprint_archive" else None,
+                    library_file_id=source_id if kind == "print_library_file" else None,
+                    options=options,
+                    created_by_id=requested_by_user_id,
+                    project_id=project_id,
+                )
+                claim_item_id = claim_item.id if claim_item is not None else None
+
             dispatch_position = len(self._queued_jobs) + len(self._active_jobs) + 1
             job = PrintDispatchJob(
                 id=self._next_job_id,
@@ -839,6 +1065,9 @@ class BackgroundDispatchService:
                 requested_by_username=requested_by_username,
                 project_id=project_id,
                 cleanup_library_after_dispatch=cleanup_library_after_dispatch,
+                queue_item_id=claim_item_id,
+                # ⚠️ ``awaited_by_scheduler`` stays False: the dispatcher owns
+                # this item, and is therefore the one that must release it.
             )
             self._next_job_id += 1
             self._batch_total += 1
@@ -910,16 +1139,31 @@ class BackgroundDispatchService:
                     await ws_manager.broadcast({"type": "background_dispatch", "data": payload})
 
     async def _run_active_job(self, job: PrintDispatchJob):
+        # Only direct prints reach here: ``_queued_jobs`` is fed by ``_dispatch``
+        # alone, and the scheduler runs its own items through
+        # ``run_from_queue_item``. So this method owns the claim's release.
+        #
+        # ⚠️ The release is on the failure paths, never in ``finally``: a
+        # ``finally`` release would also fire on success and hand the printer
+        # away in the middle of the print it just started. A normal return means
+        # the print IS running — every failure inside the runners raises,
+        # including a refused ``start_print`` — and from there the claim belongs
+        # to the running print, for ``on_print_complete`` to close.
         try:
             await self._process_job(job)
             await self._mark_job_finished(job, failed=False, message="Background dispatch complete")
         except DispatchJobCancelled:
+            await self._release_direct_claim(job, status="cancelled")
             await self._mark_job_cancelled(job)
         except asyncio.CancelledError:
+            # Process shutdown. Deliberately not released here — that would race
+            # the shutdown's own session teardown, and
+            # ``release_interrupted_dispatch_claims`` reclaims it at next start.
             raise
         except Exception as e:
             logger.error("Background dispatch job %s failed: %s", job.id, e, exc_info=True)
             _record_outcome_error(job, e)
+            await self._release_direct_claim(job, status="failed")
             await self._mark_job_finished(job, failed=True, message=str(e))
         finally:
             self._job_event.set()
@@ -1308,6 +1552,12 @@ class BackgroundDispatchService:
 
                 await apply_loaded_spool_colors(db, archive, job.printer_id, job.options.get("ams_mapping"))
 
+                # ⚠️ Warn, never gate. The print goes out either way — see
+                # ``services/filament_deficit``. Placed here because this is the
+                # one point that has all three inputs at once: the printer, the
+                # mapping actually dispatched, and an archive to name.
+                await _warn_on_filament_deficit(db, job, archive)
+
                 await db.commit()
             finally:
                 self._startup_lock.release()
@@ -1554,6 +1804,11 @@ class BackgroundDispatchService:
                     use_ams=job.options.get("use_ams", True),
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
                     nozzle_mapping=job.options.get("nozzle_mapping"),
+                    # H2C only: the physical rack position is resolved in the
+                    # MQTT layer, where the live mounted hotend is known.
+                    nozzle_slot_extruders=_rack_slot_extruders(
+                        printer, upload_file_path, plate_id, job.options.get("nozzle_mapping")
+                    ),
                     # The medium and the URL scheme are one decision, carried
                     # here from where it was made rather than re-derived.
                     storage=storage,
@@ -1567,6 +1822,9 @@ class BackgroundDispatchService:
                 if started:
                     # Confirmed send: the entry is now the printer's to resolve.
                     _unconfirmed_expected_print = None
+                    # The print owns the heaters from here; preheat must not
+                    # undo its own work on the way out.
+                    preheat_service.clear_pin(job.printer_id)
 
                 if not started:
                     await self._cleanup_sd_card_file(
@@ -1670,6 +1928,11 @@ class BackgroundDispatchService:
                 if _unconfirmed_expected_print is not None:
                     withdraw_expected_print(*_unconfirmed_expected_print)
                     _unconfirmed_expected_print = None
+                # Same "every exit path" argument: a dispatch that dies after
+                # preheat ran left the machine heating for a print that was
+                # never going to happen. Nothing switched it off, because
+                # nothing knew it was on. A no-op once the print has started.
+                preheat_service.rollback(job.printer_id)
                 # Patched-3MF temp dir must clean up on every exit path —
                 # cancel mid-upload otherwise leaks the temp into /tmp until
                 # process restart.
@@ -2154,6 +2417,11 @@ class BackgroundDispatchService:
                     use_ams=job.options.get("use_ams", True),
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
                     nozzle_mapping=job.options.get("nozzle_mapping"),
+                    # H2C only: the physical rack position is resolved in the
+                    # MQTT layer, where the live mounted hotend is known.
+                    nozzle_slot_extruders=_rack_slot_extruders(
+                        printer, upload_file_path, plate_id, job.options.get("nozzle_mapping")
+                    ),
                     # The medium and the URL scheme are one decision, carried
                     # here from where it was made rather than re-derived.
                     storage=storage,
@@ -2167,6 +2435,9 @@ class BackgroundDispatchService:
                 if started:
                     # Confirmed send: the entry is now the printer's to resolve.
                     _unconfirmed_expected_print = None
+                    # The print owns the heaters from here; preheat must not
+                    # undo its own work on the way out.
+                    preheat_service.clear_pin(job.printer_id)
 
                 if not started:
                     await self._cleanup_sd_card_file(
@@ -2301,6 +2572,11 @@ class BackgroundDispatchService:
                 if _unconfirmed_expected_print is not None:
                     withdraw_expected_print(*_unconfirmed_expected_print)
                     _unconfirmed_expected_print = None
+                # Same "every exit path" argument: a dispatch that dies after
+                # preheat ran left the machine heating for a print that was
+                # never going to happen. Nothing switched it off, because
+                # nothing knew it was on. A no-op once the print has started.
+                preheat_service.rollback(job.printer_id)
                 # Patched-3MF temp dir must clean up on every exit path —
                 # cancel mid-upload otherwise leaks the temp into /tmp until
                 # process restart.

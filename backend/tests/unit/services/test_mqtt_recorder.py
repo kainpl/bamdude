@@ -9,12 +9,13 @@ on the farm.
 from __future__ import annotations
 
 import json
+import os
 import time
 from unittest.mock import MagicMock
 
 import pytest
 
-from backend.app.services.mqtt_recorder import MqttRecorder
+from backend.app.services.mqtt_recorder import MQTTRecorder
 
 pytestmark = pytest.mark.unit
 
@@ -24,6 +25,7 @@ class _Client:
 
     def __init__(self):
         self.handlers = []
+        self.publish_handlers = []
         self.connect_calls = 0
 
     def register_raw_message_handler(self, h):
@@ -31,6 +33,16 @@ class _Client:
 
     def unregister_raw_message_handler(self, h):
         self.handlers.remove(h)
+
+    def register_raw_publish_handler(self, h):
+        self.publish_handlers.append(h)
+
+    def unregister_raw_publish_handler(self, h):
+        self.publish_handlers.remove(h)
+
+    def publish(self, topic, payload):
+        for h in list(self.publish_handlers):
+            h(topic, json.dumps(payload).encode())
 
     def connect(self, *a, **kw):
         self.connect_calls += 1
@@ -45,7 +57,7 @@ def recorder(tmp_path):
     client = _Client()
     manager = MagicMock()
     manager.get_client.return_value = client
-    return MqttRecorder(log_dir=tmp_path, printer_manager=manager), client
+    return MQTTRecorder(log_dir=tmp_path, printer_manager=manager), client
 
 
 def _wait_for(path, predicate, timeout=3.0):
@@ -196,3 +208,215 @@ def test_re_attaching_does_not_double_register(recorder):
 
     assert len(client.handlers) == 1
     r.stop(3)
+
+
+class TestBothHalvesOfTheConversation:
+    """⚠️ A recording that holds only what the printer said is half a transcript.
+
+    The case that proved it: an external-slot spool assignment where the printer
+    replied ``result: "success"`` and then, one message later, sent a delta that
+    wiped our cache. Reading it needed BOTH sides — what we asked for and what
+    came back — and until now the file carried only the second.
+
+    Outgoing is teed at the paho client, once, because
+    ``BambuMQTTClient`` publishes from 59 places and ``send_command`` is only
+    one of them; the old in-memory debug buffer hooked that one method and so
+    missed every command that mattered here.
+    """
+
+    def test_a_command_we_send_lands_in_the_file(self, recorder):
+        rec, client = recorder
+        path = rec.start(7)
+
+        client.publish("device/X/request", {"print": {"command": "ams_filament_setting"}})
+
+        assert _wait_for(path, lambda t: "ams_filament_setting" in t)
+
+    def test_each_line_says_which_way_it_went(self, recorder):
+        rec, client = recorder
+        path = rec.start(7)
+
+        client.publish("device/X/request", {"print": {"command": "extrusion_cali_sel"}})
+        client.emit("device/X/report", {"print": {"command": "push_status"}})
+
+        assert _wait_for(path, lambda t: "push_status" in t and "extrusion_cali_sel" in t)
+        rows = [ln.split("\t") for ln in path.read_text(encoding="utf-8").splitlines() if ln]
+        directions = {r[1] for r in rows}
+        assert directions == {"out", "in"}, "a transcript that cannot tell the sides apart is not readable"
+        sent = next(r for r in rows if "extrusion_cali_sel" in r[3])
+        assert sent[1] == "out"
+
+    def test_stopping_detaches_the_outgoing_side_too(self, recorder):
+        rec, client = recorder
+        rec.start(7)
+        rec.stop(7)
+
+        assert client.publish_handlers == [], "a stopped recording kept teeing our commands"
+
+
+class TestReadingARecordingBack:
+    """The dialog reads the file, so the recorder owns parsing it.
+
+    ⚠️ ``file_for`` only knows a path while the recording runs — it is dropped on
+    stop. A stopped recording is exactly what somebody wants to read, so lookup
+    goes by the naming convention on disk instead.
+    """
+
+    def test_a_stopped_recording_is_still_findable(self, recorder):
+        rec, client = recorder
+        path = rec.start(7)
+        client.emit("device/X/report", {"print": {"command": "push_status"}})
+        assert _wait_for(path, lambda t: "push_status" in t)
+        rec.stop(7)
+
+        assert rec.file_for(7) is None, "the live handle is gone, as before"
+        assert rec.paths_for(7) == [path], "but the file on disk is still ours to find"
+
+    def test_another_printers_recording_is_not_ours(self, recorder):
+        rec, client = recorder
+        rec.start(7)
+        (rec.log_dir / "mqtt" / "mqtt-20260101-9.log").write_text("x\n", encoding="utf-8")
+
+        assert all(p.name.endswith("-7.log") for p in rec.paths_for(7))
+
+    def test_tail_parses_the_columns(self, recorder):
+        rec, client = recorder
+        path = rec.start(7)
+        client.publish("device/X/request", {"print": {"command": "ams_filament_setting"}})
+        client.emit("device/X/report", {"print": {"command": "push_status"}})
+        assert _wait_for(path, lambda t: "push_status" in t)
+
+        entries = rec.tail(7, limit=10)
+
+        assert [e["direction"] for e in entries] == ["out", "in"]
+        assert entries[0]["topic"] == "device/X/request"
+        assert entries[0]["payload"]["print"]["command"] == "ams_filament_setting"
+        assert entries[0]["timestamp"]
+
+    def test_tail_returns_the_end_not_the_beginning(self, recorder):
+        """⚠️ Nothing caps the file. Reading it whole to show the last screenful
+        is how a debugging aid becomes the thing that falls over."""
+        rec, client = recorder
+        path = rec.start(7)
+        for i in range(50):
+            client.emit("device/X/report", {"print": {"seq": i}})
+        assert _wait_for(path, lambda t: t.count("\n") >= 50)
+
+        entries = rec.tail(7, limit=5)
+
+        assert len(entries) == 5
+        assert [e["payload"]["print"]["seq"] for e in entries] == [45, 46, 47, 48, 49]
+
+    def test_a_line_that_is_not_json_still_comes_back(self, recorder):
+        """A truncated last line, or a payload the printer sent as plain text,
+        must not blank the whole view."""
+        rec, _ = recorder
+        path = rec.start(7)
+        path.write_text("2026-08-21T00:00:00+00:00\tin\tdevice/X/report\tnot json\n", encoding="utf-8")
+
+        entries = rec.tail(7, limit=10)
+
+        assert entries[0]["payload"] == "not json"
+
+    def test_nothing_recorded_yet_is_an_empty_list(self, recorder):
+        rec, _ = recorder
+        assert rec.tail(7, limit=10) == []
+        assert rec.paths_for(7) == []
+
+    def test_delete_removes_the_files_and_reports_how_many(self, recorder):
+        rec, client = recorder
+        path = rec.start(7)
+        client.emit("device/X/report", {"print": {"a": 1}})
+        assert _wait_for(path, lambda t: '"a"' in t)
+        rec.stop(7)
+
+        assert rec.delete(7) == 1
+        assert rec.paths_for(7) == []
+
+    def test_deleting_while_recording_keeps_recording(self, recorder):
+        """⚠️ Clear means "start the transcript over", not "stop watching" — the
+        badge stays on, so stopping here would leave it lying."""
+        rec, client = recorder
+        path = rec.start(7)
+        client.emit("device/X/report", {"print": {"a": 1}})
+        assert _wait_for(path, lambda t: '"a"' in t)
+
+        rec.delete(7)
+
+        assert rec.is_recording(7) is True
+        client.emit("device/X/report", {"print": {"b": 2}})
+        assert _wait_for(rec.file_for(7), lambda t: '"b"' in t)
+
+
+class TestRecordingsAgeOutWithTheLogs:
+    """Recordings expire on the same setting as the application log.
+
+    ⚠️ They cannot join the rotating handler itself — the recorder writes from
+    its own thread, deliberately outside ``logging``, so it never blocks paho's
+    network thread. What they share is the operator's knob: one
+    ``log_retention_days``, one mental model, no second setting for the same
+    idea.
+    """
+
+    def _aged(self, rec, name: str, days_old: float):
+        directory = rec.log_dir / "mqtt"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
+        path.write_text("x\n", encoding="utf-8")
+        old = time.time() - days_old * 86400
+        os.utime(path, (old, old))
+        return path
+
+    def test_an_old_recording_goes(self, recorder):
+        rec, _ = recorder
+        stale = self._aged(rec, "mqtt-20260101-7.log", days_old=30)
+
+        assert rec.prune(days=14) == 1
+        assert not stale.exists()
+
+    def test_a_recent_one_stays(self, recorder):
+        rec, _ = recorder
+        fresh = self._aged(rec, "mqtt-20260820-7.log", days_old=2)
+
+        assert rec.prune(days=14) == 0
+        assert fresh.exists()
+
+    def test_the_file_being_written_is_never_removed(self, recorder):
+        """⚠️ A recording started before the cutoff is still running. Deleting it
+        under the writer loses the capture somebody is sitting and waiting for —
+        and the badge would still say it is going."""
+        rec, client = recorder
+        path = rec.start(7)
+        client.emit("device/X/report", {"print": {"a": 1}})
+        assert _wait_for(path, lambda t: '"a"' in t)
+        old = time.time() - 99 * 86400
+        os.utime(path, (old, old))
+
+        assert rec.prune(days=1) == 0
+        assert path.exists()
+
+    def test_it_leaves_other_files_alone(self, recorder):
+        """Only our own naming. The directory is inside the log folder."""
+        rec, _ = recorder
+        other = rec.log_dir / "mqtt" / "notes.txt"
+        other.parent.mkdir(parents=True, exist_ok=True)
+        other.write_text("keep me", encoding="utf-8")
+        old = time.time() - 99 * 86400
+        os.utime(other, (old, old))
+
+        rec.prune(days=1)
+
+        assert other.exists()
+
+    def test_no_directory_is_a_noop(self, recorder):
+        rec, _ = recorder
+        assert rec.prune(days=7) == 0
+
+    def test_zero_or_negative_keeps_everything(self, recorder):
+        """⚠️ ``log_retention_days`` is clamped elsewhere, but a 0 arriving here
+        must not be read as "delete everything today"."""
+        rec, _ = recorder
+        stale = self._aged(rec, "mqtt-20260101-7.log", days_old=99)
+
+        assert rec.prune(days=0) == 0
+        assert stale.exists()

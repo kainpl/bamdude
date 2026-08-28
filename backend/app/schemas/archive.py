@@ -218,7 +218,21 @@ class ArchiveStats(BaseModel):
     # Average across all prints with data
     average_time_accuracy: float | None = None
     time_accuracy_by_printer: dict | None = None  # Per-printer accuracy
-    # Energy stats
+    # ── Energy, answered twice ───────────────────────────────────────────
+    # These used to be one pair whose meaning depended on a setting, so the
+    # number on the page could not be read without opening Settings to find out
+    # which question it had answered. Both are returned now and the page shows
+    # both; the setting is gone.
+    #
+    # ⚠️ They are not two views of one figure. ``print_*`` is measured between
+    # the start and end of each print and is therefore bounded by the date
+    # filter like every other statistic here. ``total_*`` is what the plugs
+    # themselves counted — idle, warm-up, and anything else sharing the socket
+    # — and all-time it is read from their live lifetime counters, which no
+    # date filter can reach. The gap between the two is the cost of standing
+    # still, which is the reason anyone wants both.
+    print_energy_kwh: float = 0.0
+    print_energy_cost: float = 0.0
     total_energy_kwh: float = 0.0
     total_energy_cost: float = 0.0
     # Set when the date-range query in "total consumption" mode is running on

@@ -175,6 +175,50 @@ async def test_cancelling_an_unrouted_item_deletes_the_row(async_client: AsyncCl
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_batch_edit_reaches_every_pending_copy_but_not_their_positions(async_client: AsyncClient, db_session):
+    """One edit for N identical copies; positions stay per-copy (a group edit
+    that stacked the batch onto one slot would undo any manual reorder)."""
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.library import LibraryFile
+
+    library_file = LibraryFile(
+        filename="aq_batch_edit.gcode.3mf",
+        file_path="library/files/aq_batch_edit.3mf",
+        file_type="gcode",
+        file_size=2048,
+        file_hash="aq_libfile_hash_edit",
+    )
+    db_session.add(library_file)
+    await db_session.commit()
+    await db_session.refresh(library_file)
+
+    created = await async_client.post("/api/v1/auto-queue/", json={"library_file_id": library_file.id, "quantity": 3})
+    assert created.status_code == 200, created.text
+    batch_id = created.json()["batch_id"]
+
+    response = await async_client.put(
+        f"/api/v1/auto-queue/batch/{batch_id}",
+        json={"timelapse": True, "target_model": "P1S", "position": 999},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["affected"] == 3
+
+    rows = (await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.batch_id == batch_id))).scalars().all()
+    assert len(rows) == 3
+    assert all(r.timelapse is True for r in rows)
+    assert all(r.target_model == "P1S" for r in rows)
+    # Positions untouched — still three distinct slots.
+    assert len({r.position for r in rows}) == 3
+
+    missing = await async_client.put(
+        "/api/v1/auto-queue/batch/00000000-0000-0000-0000-000000000000",
+        json={"timelapse": True},
+    )
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_cancelling_a_batch_deletes_its_unrouted_rows(async_client: AsyncClient, db_session):
     """Batch cancel follows the same rule as the single-item cancel."""
     from backend.app.models.auto_queue import AutoQueueItem

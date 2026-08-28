@@ -63,3 +63,14 @@ export function autoCalibrationCaps(model: string | null | undefined): AutoCalib
     nozzle_offset_cali: supportsAutoNozzleOffset(model),
   };
 }
+
+// Dual-nozzle models (#1682) — gate for the nozzle-offset calibration control.
+// The MQTT layer forces "skip" on single-nozzle machines regardless; hiding
+// the control avoids a misleading no-op. One source for the PrintModal's
+// auto-mode gate AND the saved-profiles editor, so the two sets cannot drift.
+const DUAL_NOZZLE_MODELS = new Set(['H2D', 'H2DPRO', 'H2C', 'X2D']);
+
+export function isDualNozzleModel(model: string | null | undefined): boolean {
+  if (!model) return false;
+  return DUAL_NOZZLE_MODELS.has(model.toUpperCase().replace(/[\s-]/g, ''));
+}

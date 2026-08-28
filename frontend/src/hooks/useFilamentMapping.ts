@@ -9,6 +9,7 @@ import {
   formatSlotLabel,
   getGlobalTrayId,
   matchLoadedExtruderTray,
+  filamentTypesCompatible,
 } from '../utils/amsHelpers';
 import { api } from '../api/client';
 import type { PrinterStatus } from '../api/client';
@@ -268,7 +269,7 @@ export function buildFilamentComparison(
       const manualLoaded = loadedFilaments.find((f) => f.globalTrayId === manualTrayId);
 
       if (manualLoaded) {
-        const typeMatch = manualLoaded.type?.toUpperCase() === req.type?.toUpperCase();
+        const typeMatch = filamentTypesCompatible(manualLoaded.type, req.type);
         const colorMatch =
           normalizeColorForCompare(manualLoaded.color) === normalizeColorForCompare(req.color) ||
           colorsAreSimilar(manualLoaded.color, req.color);
@@ -346,13 +347,13 @@ export function buildFilamentComparison(
       const idxMatches = available.filter((f) => f.trayInfoIdx === reqTrayInfoIdx);
       exactMatch = idxMatches.find(
         (f) =>
-          f.type?.toUpperCase() === req.type?.toUpperCase() &&
+          filamentTypesCompatible(f.type, req.type) &&
           normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
       );
       if (!exactMatch) {
         similarMatch = idxMatches.find(
           (f) =>
-            f.type?.toUpperCase() === req.type?.toUpperCase() &&
+            filamentTypesCompatible(f.type, req.type) &&
             colorsAreSimilar(f.color, req.color)
         );
       }
@@ -360,7 +361,7 @@ export function buildFilamentComparison(
         // Right variant, wrong colour. Held back as a last resort so it cannot
         // block the search below from finding a correctly-coloured tray.
         idxTypeOnly = idxMatches.find(
-          (f) => f.type?.toUpperCase() === req.type?.toUpperCase()
+          (f) => filamentTypesCompatible(f.type, req.type)
         );
       }
     }
@@ -369,19 +370,19 @@ export function buildFilamentComparison(
     if (!exactMatch && !similarMatch && !typeOnlyMatch) {
       exactMatch = available.find(
         (f) =>
-          f.type?.toUpperCase() === req.type?.toUpperCase() &&
+          filamentTypesCompatible(f.type, req.type) &&
           normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
       );
       if (!exactMatch) {
         similarMatch = available.find(
           (f) =>
-            f.type?.toUpperCase() === req.type?.toUpperCase() &&
+            filamentTypesCompatible(f.type, req.type) &&
             colorsAreSimilar(f.color, req.color)
         );
       }
       if (!exactMatch && !similarMatch) {
         typeOnlyMatch = available.find(
-          (f) => f.type?.toUpperCase() === req.type?.toUpperCase()
+          (f) => filamentTypesCompatible(f.type, req.type)
         );
       }
     }

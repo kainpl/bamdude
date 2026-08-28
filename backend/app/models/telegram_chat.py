@@ -17,10 +17,15 @@ DEFAULT_NOTIFY_EVENTS = [
     "print_stopped",
     "print_paused",
     "plate_not_empty",
+    "filament_deficit",
     "queue_job_waiting",
     "queue_job_skipped",
     "queue_job_failed",
     "printer_queue_completed",
+    # Reports that auto-drying has STOPPED acting on a unit. Silence there reads
+    # as "still drying", which is exactly how the reported re-arm loop went
+    # unnoticed for two days — so an unconfigured chat hears it too.
+    "ams_drying_suspended",
 ]
 
 # All available notification event types
@@ -39,12 +44,16 @@ ALL_NOTIFY_EVENTS = [
     "printer_error",
     "ai_failure_detection",
     "filament_low",
+    "filament_deficit",
     "maintenance_due",
     # AMS environmental
     "ams_humidity_high",
     "ams_temperature_high",
     "ams_ht_humidity_high",
     "ams_ht_temperature_high",
+    # Reports that auto-drying has STOPPED acting, so it joins the defaults —
+    # a chat that has never been configured still needs to hear this one.
+    "ams_drying_suspended",
     # Zigbee sensor alerts (cycle A). Five here against two provider columns on
     # purpose: the column says whether at all, the chat says which ones — which
     # is m045's whole position. Deliberately NOT in DEFAULT_NOTIFY_EVENTS:

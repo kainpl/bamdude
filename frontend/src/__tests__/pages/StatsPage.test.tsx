@@ -225,12 +225,18 @@ describe('StatsPage', () => {
       });
     });
 
-    it('shows energy cost', async () => {
+    it('shows both energy costs — printing, and everything the plugs counted', async () => {
+      // ⚠️ Two pairs since the display-mode setting went. One pair whose
+      // meaning depended on a setting could not be read without opening
+      // Settings to find out which question it had answered.
       render(<StatsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('Energy Cost')).toBeInTheDocument();
+        expect(screen.getByText('Cost While Printing')).toBeInTheDocument();
       });
+      expect(screen.getByText('Cost At The Plug')).toBeInTheDocument();
+      expect(screen.getByText('Energy While Printing')).toBeInTheDocument();
+      expect(screen.getByText('Energy At The Plug')).toBeInTheDocument();
     });
   });
 
@@ -526,5 +532,40 @@ describe('StatsPage', () => {
         expect(screen.getByText('Recalculate Costs')).toBeInTheDocument();
       });
     });
+  });
+});
+
+describe('while the numbers are still loading', () => {
+  /**
+   * ⚠️ The page used to be an early return: one line of centred text in place
+   * of EVERYTHING — title, timeframe picker, export buttons. On a farm with a
+   * long archive it looked broken for as long as the query took, and the
+   * controls that could have narrowed the range were exactly the part you
+   * could not reach.
+   */
+  beforeEach(() => {
+    server.use(
+      // Never resolves: the page has to be usable in this state, not merely
+      // survive it.
+      http.get('/api/v1/archives/stats', () => new Promise(() => {})),
+    );
+  });
+
+  it('draws the title straight away', async () => {
+    render(<StatsPage />);
+
+    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
+  });
+
+  it('offers the controls that would narrow the query', async () => {
+    render(<StatsPage />);
+
+    expect(await screen.findByRole('button', { name: /reset layout/i })).toBeInTheDocument();
+  });
+
+  it('says it is working rather than looking empty', async () => {
+    render(<StatsPage />);
+
+    expect(await screen.findByText('Loading statistics...')).toBeInTheDocument();
   });
 });

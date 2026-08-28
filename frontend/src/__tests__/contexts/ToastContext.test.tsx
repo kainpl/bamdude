@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { act, render, renderHook } from '@testing-library/react';
+import { act, render, renderHook, screen } from '@testing-library/react';
 import { type ReactNode } from 'react';
 import { ToastProvider, useToast } from '../../contexts/ToastContext';
 
@@ -129,4 +129,36 @@ describe('ToastContext viewport on small screens (#2612)', () => {
     expect(rendered).not.toBeNull();
     expect(rendered.style.maxWidth).toContain('100vw');
   });
+
+  // A missed error is gone for good — there is no notification history — and
+  // an error toast carries a reason relayed from the printer or the backend,
+  // often a couple of lines. Three seconds is not long enough to finish one.
+  describe('how long a toast stays up', () => {
+    it.each(['error', 'warning'] as const)('holds a %s for six seconds', (type) => {
+      vi.useFakeTimers();
+      const { result } = renderHook(() => useToast(), { wrapper: Wrapper });
+
+      act(() => result.current.showToast('something went wrong', type));
+      act(() => { vi.advanceTimersByTime(3000); });
+      expect(screen.getByText('something went wrong')).toBeInTheDocument();
+
+      act(() => { vi.advanceTimersByTime(3000); });
+      expect(screen.queryByText('something went wrong')).not.toBeInTheDocument();
+
+      vi.useRealTimers();
+    });
+
+    it.each(['success', 'info'] as const)('keeps a %s at three', (type) => {
+      // These confirm something the user just did and are skimmed, not read.
+      vi.useFakeTimers();
+      const { result } = renderHook(() => useToast(), { wrapper: Wrapper });
+
+      act(() => result.current.showToast('saved', type));
+      act(() => { vi.advanceTimersByTime(3000); });
+
+      expect(screen.queryByText('saved')).not.toBeInTheDocument();
+      vi.useRealTimers();
+    });
+  });
+
 });

@@ -1,4 +1,4 @@
-"""Auto-link engine: attach printer K-profiles to spools by filament_id.
+"""Auto-link engine: attach printer K-profiles to spools by their family (filament_id).
 
 Pure functions reused by triggers (spool save, calibration sync), the manual
 relink endpoint, and the migration's runtime resolver. "B-simple" rule: the
@@ -153,7 +153,10 @@ async def autolink_spool(*, db: AsyncSession, spool) -> int:
         )
 
     return await _apply_links(
-        db=db, existing_rows=list(existing), filament_id=spool.resolved_filament_id, make_row=_make
+        db=db,
+        existing_rows=list(existing),
+        filament_id=spool.filament_family_id,
+        make_row=_make,
     )
 
 
@@ -180,7 +183,7 @@ async def autolink_spoolman_spool(*, db: AsyncSession, spoolman_spool_id: int, r
 
 
 async def propagate_calibration_to_spools(*, db: AsyncSession, printer_id: int, filament_ids: set[str]) -> None:
-    """Re-link all local spools whose ``resolved_filament_id`` is in
+    """Re-link all local spools whose ``filament_family_id`` is in
     ``filament_ids`` (called after a printer's K-profiles sync).
 
     ``printer_id`` is accepted for symmetry / future scoping; matching already
@@ -192,6 +195,6 @@ async def propagate_calibration_to_spools(*, db: AsyncSession, printer_id: int, 
     fids = {f for f in filament_ids if f}
     if not fids:
         return
-    spools = (await db.execute(select(Spool).where(Spool.resolved_filament_id.in_(fids)))).scalars().all()
+    spools = (await db.execute(select(Spool).where(Spool.filament_family_id.in_(fids)))).scalars().all()
     for sp in spools:
         await autolink_spool(db=db, spool=sp)

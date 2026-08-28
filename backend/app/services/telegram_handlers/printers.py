@@ -223,14 +223,22 @@ async def show_printer_detail(
         next_job = await get_next_queue_item(printer_id)
         if next_job:
             lines.append(f"\n\U0001f4e5 {escape_md(t(lang, NS, 'printers.next_in_queue', name=next_job))}")
-            btns.append(
-                [
-                    InlineKeyboardButton(
-                        text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
-                        callback_data=f"action:clear_plate:{printer_id}",
-                    )
-                ]
-            )
+        # \u26a0\ufe0f The buttons belong to the ARMED GATE, not to there being something
+        # queued behind. They used to sit inside ``if next_job:``, so after the
+        # last print in a queue Telegram offered no plate control at all \u2014
+        # exactly when repeating is most wanted.
+        btns.append(
+            [
+                InlineKeyboardButton(
+                    text=f"\U0001f501 {t(lang, NS, 'printers.btn_repeat_print')}",
+                    callback_data=f"action:repeat_print:{printer_id}",
+                ),
+                InlineKeyboardButton(
+                    text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
+                    callback_data=f"action:clear_plate:{printer_id}",
+                ),
+            ]
+        )
 
     # Maintenance
     maint_btns = []

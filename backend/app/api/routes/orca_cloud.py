@@ -145,6 +145,7 @@ _SETTINGS_KEYS = {
     "expires_at": "orca_cloud_expires_at",  # ISO 8601 UTC string
     "email": "orca_cloud_email",
     "user_id": "orca_cloud_user_id",
+    "scope": "orca_cloud_scope",
     "pending_device_code": "orca_cloud_pending_verifier",  # reused column
     "pending_interval": "orca_cloud_pending_state",  # reused column
     "pending_at": "orca_cloud_pending_at",  # ISO 8601 UTC string
@@ -204,6 +205,7 @@ class _OrcaCredentials:
         "expires_at",
         "email",
         "user_id",
+        "scope",
         "pending_device_code",
         "pending_interval",
         "pending_at",
@@ -215,6 +217,7 @@ class _OrcaCredentials:
         self.expires_at: datetime | None = None
         self.email: str | None = None
         self.user_id: str | None = None
+        self.scope: str | None = None
         self.pending_device_code: str | None = None
         self.pending_interval: str | None = None
         self.pending_at: datetime | None = None
@@ -239,6 +242,7 @@ async def _load_credentials(db: AsyncSession, user: User | None) -> _OrcaCredent
         creds.expires_at = _as_utc(user.orca_cloud_expires_at)
         creds.email = user.orca_cloud_email
         creds.user_id = user.orca_cloud_user_id
+        creds.scope = user.orca_cloud_scope
         creds.pending_device_code = user.orca_cloud_pending_verifier
         creds.pending_interval = user.orca_cloud_pending_state
         creds.pending_at = _as_utc(user.orca_cloud_pending_at)
@@ -251,6 +255,7 @@ async def _load_credentials(db: AsyncSession, user: User | None) -> _OrcaCredent
     creds.expires_at = _parse_iso(raw.get(_SETTINGS_KEYS["expires_at"]))
     creds.email = raw.get(_SETTINGS_KEYS["email"])
     creds.user_id = raw.get(_SETTINGS_KEYS["user_id"])
+    creds.scope = raw.get(_SETTINGS_KEYS["scope"])
     creds.pending_device_code = raw.get(_SETTINGS_KEYS["pending_device_code"])
     creds.pending_interval = raw.get(_SETTINGS_KEYS["pending_interval"])
     creds.pending_at = _parse_iso(raw.get(_SETTINGS_KEYS["pending_at"]))
@@ -321,6 +326,7 @@ async def _persist_tokens(
     expires_at: datetime | None,
     email: str | None,
     user_id: str | None,
+    scope: str | None = None,
 ) -> None:
     """Atomically write the new access/refresh pair to whichever backing store
     the deployment uses. Also clears the pending device-code state on the same
@@ -335,6 +341,7 @@ async def _persist_tokens(
                 orca_cloud_expires_at=expires_at,
                 orca_cloud_email=email,
                 orca_cloud_user_id=user_id,
+                orca_cloud_scope=scope,
                 orca_cloud_pending_verifier=None,
                 orca_cloud_pending_state=None,
                 orca_cloud_pending_at=None,
@@ -350,6 +357,7 @@ async def _persist_tokens(
             _SETTINGS_KEYS["expires_at"]: _iso(expires_at),
             _SETTINGS_KEYS["email"]: email,
             _SETTINGS_KEYS["user_id"]: user_id,
+            _SETTINGS_KEYS["scope"]: scope,
             _SETTINGS_KEYS["pending_device_code"]: None,
             _SETTINGS_KEYS["pending_interval"]: None,
             _SETTINGS_KEYS["pending_at"]: None,
@@ -363,29 +371,30 @@ async def _persist_rotated_tokens(
     access_token: str,
     refresh_token: str | None,
     expires_at: datetime | None,
+    scope: str | None = None,
 ) -> None:
     """Persist tokens after a refresh — does NOT touch email/user_id and does
-    NOT touch the pending state (refresh happens long after pairing)."""
+    NOT touch the pending state (refresh happens long after pairing). The
+    scope is refreshed when the token response named one (it always does)."""
     if user is not None:
-        await db.execute(
-            update(User)
-            .where(User.id == user.id)
-            .values(
-                orca_cloud_token=access_token,
-                orca_cloud_refresh_token=refresh_token,
-                orca_cloud_expires_at=expires_at,
-            )
-        )
+        values = {
+            "orca_cloud_token": access_token,
+            "orca_cloud_refresh_token": refresh_token,
+            "orca_cloud_expires_at": expires_at,
+        }
+        if scope:
+            values["orca_cloud_scope"] = scope
+        await db.execute(update(User).where(User.id == user.id).values(**values))
         await db.commit()
         return
-    await _upsert_settings(
-        db,
-        {
-            _SETTINGS_KEYS["token"]: access_token,
-            _SETTINGS_KEYS["refresh_token"]: refresh_token,
-            _SETTINGS_KEYS["expires_at"]: _iso(expires_at),
-        },
-    )
+    values = {
+        _SETTINGS_KEYS["token"]: access_token,
+        _SETTINGS_KEYS["refresh_token"]: refresh_token,
+        _SETTINGS_KEYS["expires_at"]: _iso(expires_at),
+    }
+    if scope:
+        values[_SETTINGS_KEYS["scope"]] = scope
+    await _upsert_settings(db, values)
 
 
 async def _clear_credentials(db: AsyncSession, user: User | None) -> None:
@@ -455,6 +464,7 @@ async def _build_authenticated_service(
 
     svc = OrcaCloudService()
     svc.set_tokens(creds.token, creds.refresh_token, creds.expires_at)
+    svc.granted_scope = creds.scope
     if not svc.is_authenticated:
         if not svc.refresh_token:
             raise HTTPException(
@@ -473,7 +483,9 @@ async def _build_authenticated_service(
         # Persist new pair BEFORE returning. A crash between here and the
         # downstream API call would still leave the user with valid stored
         # tokens for the next request.
-        await _persist_rotated_tokens(db, user, svc.access_token, svc.refresh_token, svc.token_expiry)
+        await _persist_rotated_tokens(
+            db, user, svc.access_token, svc.refresh_token, svc.token_expiry, svc.granted_scope
+        )
     return svc
 
 
@@ -494,8 +506,11 @@ async def device_start(
     frontend to display and poll against."""
     svc = OrcaCloudService()
     # instance_url/label are display-only anti-phishing context on the approval
-    # card. base_url may be off behind a reverse proxy, but it's harmless if so.
-    instance_url = str(request.base_url).rstrip("/") or None
+    # card. Prefer the operator-configured public URL; base_url may be off
+    # behind a reverse proxy, but it's harmless as the fallback.
+    from backend.app.api.routes.settings import get_setting
+
+    instance_url = (await get_setting(db, "external_url") or "").strip() or str(request.base_url).rstrip("/") or None
     try:
         data = await svc.request_device_code(instance_url=instance_url, instance_label="BamDude")
     except OrcaCloudAuthError as e:
@@ -571,7 +586,12 @@ async def device_poll(
         # have valid tokens, which is the load-bearing part.
         logger.warning("Orca Cloud introspection failed after successful pairing: %s", e)
 
-    await _persist_tokens(db, current_user, svc.access_token, svc.refresh_token, svc.token_expiry, None, user_id)
+    await _persist_tokens(
+        db, current_user, svc.access_token, svc.refresh_token, svc.token_expiry, None, user_id, svc.granted_scope
+    )
+    from backend.app.services.filament_preset_sync import request_sync_soon
+
+    request_sync_soon()  # freshly paired Orca account mirrors within seconds (spec A trigger)
     return OrcaDevicePollResponse(status=DevicePoll.COMPLETE, connected=True, email=None, user_id=user_id)
 
 
@@ -587,6 +607,7 @@ async def get_status(
         connected=bool(creds.token),
         email=creds.email,
         user_id=creds.user_id,
+        scope=creds.scope,
     )
 
 

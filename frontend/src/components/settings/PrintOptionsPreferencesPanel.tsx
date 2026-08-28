@@ -15,15 +15,17 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2, Pencil, Copy, Flame } from 'lucide-react';
 import {
   api,
+  macrosApi,
   type CalibrationMode,
   type Printer,
   type PrintOptionsPreferenceAdminEntry,
   type PrintOptionsPreferenceData,
-  type UserResponse,
+  type UserSlim,
 } from '../../api/client';
 import { CalibrationModeControl } from '../PrintModal/CalibrationModeControl';
-import { autoCalibrationCaps } from '../../utils/printerCapabilities';
+import { autoCalibrationCaps, isDualNozzleModel } from '../../utils/printerCapabilities';
 import { useToast } from '../../contexts/ToastContext';
+import { MAX_CHAMBER_TEMP_C } from '../../utils/printer';
 
 // Sentinel for the "System (slicer fallback)" pseudo-user. Real user ids
 // start at 1, so 0 is safe to mean "the per-model system row (user_id IS
@@ -47,6 +49,7 @@ const DEFAULT_PRINT_OPTIONS: PrintOptionsPreferenceData = {
     execute: true,
     events: ['swap_mode_start', 'swap_mode_change_table'],
   },
+  event_macros: { deselected_ids: [] },
 };
 
 type DialogMode =
@@ -102,9 +105,12 @@ export function PrintOptionsPreferencesPanel() {
     return merged;
   }, [adminEntries, systemRows, t]);
 
+  // Only names are rendered here — the picker and the copy-to dropdown — so
+  // the slim listing is enough. Its own cache key: the full listing owns
+  // 'users' and the two shapes would clobber each other.
   const { data: users } = useQuery({
-    queryKey: ['users'],
-    queryFn: api.getUsers,
+    queryKey: ['users-slim'],
+    queryFn: api.getUsersSlim,
   });
 
   const { data: printers } = useQuery({
@@ -275,6 +281,10 @@ function summariseOptions(
   if (data.swap_macros.execute && data.swap_macros.events.length > 0) {
     enabled.push(`${t('printModal.swapMacros')} (${data.swap_macros.events.length})`);
   }
+  const deselected = data.event_macros?.deselected_ids?.length ?? 0;
+  if (deselected > 0) {
+    enabled.push(`${t('printOptionsPrefs.macrosOff')} (${deselected})`);
+  }
   if (enabled.length === 0) return t('printOptionsPrefs.allOff');
   return enabled.join(', ');
 }
@@ -282,7 +292,7 @@ function summariseOptions(
 interface EditDialogProps {
   mode: 'edit' | 'add';
   existingEntries: PrintOptionsPreferenceAdminEntry[];
-  users: UserResponse[];
+  users: UserSlim[];
   availableModels: string[];
   initialEntry: PrintOptionsPreferenceAdminEntry | null;
   onClose: () => void;
@@ -353,7 +363,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
     }));
   };
 
-  const setCalibrationMode = (key: 'bed_levelling' | 'flow_cali', mode: CalibrationMode) => {
+  const setCalibrationMode = (key: 'bed_levelling' | 'flow_cali' | 'nozzle_offset_cali', mode: CalibrationMode) => {
     setData((prev) => ({
       ...prev,
       print_options: { ...prev.print_options, [key]: mode },
@@ -373,6 +383,34 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
           events: has
             ? prev.swap_macros.events.filter((e) => e !== event)
             : [...prev.swap_macros.events, event],
+        },
+      };
+    });
+  };
+
+  // Event macros for the model — same listing the PrintModal uses. The
+  // profile stores EXCEPTIONS (deselected ids), so a macro created after the
+  // profile was saved arrives ticked; here that means "unlisted id" is shown
+  // nowhere and simply expires from the row on the next save.
+  const { data: modelMacros } = useQuery({
+    queryKey: ['macros', 'for-model', printerModel],
+    queryFn: () => macrosApi.getMacrosForModel(printerModel),
+    enabled: !isSystemRow && printerModel.trim().length > 0,
+    staleTime: 60 * 1000,
+  });
+  const eventMacros = useMemo(
+    () => (modelMacros ?? []).filter((m) => m.enabled && !m.event.startsWith('swap_mode_')),
+    [modelMacros],
+  );
+  const deselectedIds = data.event_macros?.deselected_ids ?? [];
+
+  const toggleEventMacro = (id: number) => {
+    setData((prev) => {
+      const current = prev.event_macros?.deselected_ids ?? [];
+      return {
+        ...prev,
+        event_macros: {
+          deselected_ids: current.includes(id) ? current.filter((x) => x !== id) : [...current, id],
         },
       };
     });
@@ -405,7 +443,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
       ...prev,
       print_options: {
         ...prev.print_options,
-        preheat_chamber_target_override: Math.max(0, Math.min(60, parsed)),
+        preheat_chamber_target_override: Math.max(0, Math.min(MAX_CHAMBER_TEMP_C, parsed)),
       },
     }));
   };
@@ -484,6 +522,11 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
               [
                 ['bed_levelling', 'printModal.bedLeveling'],
                 ['flow_cali', 'printModal.flowCalibration'],
+                // Dual-nozzle only (#1682) — same gate as the PrintModal's
+                // auto mode; single-nozzle machines skip it in MQTT anyway.
+                ...(isDualNozzleModel(printerModel)
+                  ? ([['nozzle_offset_cali', 'printModal.nozzleOffsetCali']] as const)
+                  : []),
               ] as const
             ).map(([key, labelKey]) => (
               <CalibrationModeControl
@@ -543,7 +586,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
               <input
                 type="number"
                 min={0}
-                max={60}
+                max={MAX_CHAMBER_TEMP_C}
                 step={1}
                 value={data.print_options.preheat_chamber_target_override ?? ''}
                 onChange={(e) => setPreheatTarget(e.target.value)}
@@ -553,6 +596,29 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
             </div>
           )}
         </div>
+
+        {!isSystemRow && eventMacros.length > 0 && (
+          <div className="border-t border-bambu-dark-tertiary pt-3 mb-4">
+            <h4 className="text-sm font-medium text-white mb-2">{t('printModal.eventMacros')}</h4>
+            <p className="text-xs text-bambu-gray mb-2">{t('printOptionsPrefs.eventMacrosHint')}</p>
+            <div className="space-y-1">
+              {eventMacros.map((m) => (
+                <label key={m.id} className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!deselectedIds.includes(m.id)}
+                    onChange={() => toggleEventMacro(m.id)}
+                    className="accent-bambu-green"
+                  />
+                  <span className="text-sm text-white">{m.name}</span>
+                  <span className="text-xs text-bambu-gray">
+                    {t(`settings.macroEvents.${m.event}`, { defaultValue: m.event })}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
 
         {swapEligible && !isSystemRow && (
           <div className="border-t border-bambu-dark-tertiary pt-3 mb-4">
@@ -573,7 +639,12 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
             </label>
             {data.swap_macros.execute && (
               <div className="ml-5 space-y-1">
-                {(['swap_mode_start', 'swap_mode_change_table'] as const).map((event) => (
+                {(
+                  [
+                    ['swap_mode_start', 'printModal.swapEventStart'],
+                    ['swap_mode_change_table', 'printModal.swapEventChangeTable'],
+                  ] as const
+                ).map(([event, labelKey]) => (
                   <label key={event} className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
@@ -581,7 +652,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
                       onChange={() => toggleSwapEvent(event)}
                       className="accent-bambu-green"
                     />
-                    <span className="text-xs text-bambu-gray">{event}</span>
+                    <span className="text-xs text-bambu-gray">{t(labelKey)}</span>
                   </label>
                 ))}
               </div>
@@ -613,7 +684,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
 
 interface CopyDialogProps {
   src: PrintOptionsPreferenceAdminEntry;
-  users: UserResponse[];
+  users: UserSlim[];
   availableModels: string[];
   onClose: () => void;
 }

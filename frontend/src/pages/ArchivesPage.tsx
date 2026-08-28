@@ -61,6 +61,7 @@ import {
   Archive as ArchiveIcon,
 } from 'lucide-react';
 import { MakerWorldIcon } from '../components/BrandIcons';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { printerLabel, comparePrinterLike } from '../utils/printerLabel';
@@ -2830,8 +2831,11 @@ function ArchiveListRow({
   );
 }
 
-type SortOption = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc' | 'printer-asc' | 'printer-desc';
-type SortField = 'date' | 'name' | 'size' | 'printer';
+/** What a print consumed, alongside the file's own properties. The server
+ *  holds rows with nothing recorded for the chosen column at the END whichever
+ *  way you sort — see ``_MEASURED_SORTS`` in services/archive.py. */
+type SortField = 'date' | 'name' | 'size' | 'printer' | 'cost' | 'energy' | 'filament' | 'duration';
+type SortOption = `${SortField}-asc` | `${SortField}-desc`;
 type ViewMode = 'grid' | 'list' | 'calendar';
 type Collection = 'all' | 'recent' | 'this-week' | 'this-month' | 'favorites' | 'printed' | 'failed' | 'duplicates';
 
@@ -2967,6 +2971,12 @@ export function ArchivesPage() {
     name: 'asc',
     size: 'desc',
     printer: 'asc',
+    // The interesting end of a cost, an energy figure, a filament weight or a
+    // duration is the big one — that is the print worth looking at.
+    cost: 'desc',
+    energy: 'desc',
+    filament: 'desc',
+    duration: 'desc',
   };
   const sortByColumn = (field: SortField) => {
     if (field === sortField) {
@@ -3478,9 +3488,8 @@ export function ArchivesPage() {
 
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <div>
-          <div className="flex items-center gap-3">
-            <ArchiveIcon className="w-6 h-6 text-bambu-green" />
-            <h1 className="text-2xl font-bold text-white">{t('archives.page.title')}</h1>
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3"><ArchiveIcon className="w-6 h-6 text-bambu-green" />{t('archives.page.title')}</h1>
           </div>
           {viewMode === 'calendar' && (
             <p className="text-bambu-gray text-sm">{t('archives.calendarView')}</p>
@@ -3869,6 +3878,10 @@ export function ArchivesPage() {
                     <option value="name">{t('common.name')}</option>
                     <option value="size">{t('fileManager.size')}</option>
                     <option value="printer">{t('archives.list.printer')}</option>
+                    <option value="cost">{t('archives.list.cost')}</option>
+                    <option value="energy">{t('archives.list.energy')}</option>
+                    <option value="filament">{t('archives.list.filament')}</option>
+                    <option value="duration">{t('archives.list.printTime')}</option>
                   </select>
                   <button
                     onClick={toggleSortDir}
@@ -3890,7 +3903,7 @@ export function ArchivesPage() {
 
       {/* Archives */}
       {isLoading ? (
-        <div className="text-center py-12 text-bambu-gray">{t('archives.loadingArchives')}</div>
+        <LoadingBlock label={t('archives.loadingArchives')} className="py-12 text-bambu-gray" />
       ) : archives?.length === 0 ? (
         <Card>
           <CardContent className="text-center py-12">
@@ -3954,10 +3967,10 @@ export function ArchivesPage() {
               <div></div>
               <div>{sortHeader('name', t('archives.list.name'))}</div>
               <div>{sortHeader('printer', t('archives.list.printer'))}</div>
-              {/* Print time carries no header control: the sort runs on the
-                  server, which has no ordering for it. A clickable header that
-                  did nothing would be worse than a plain one. */}
-              <div>{t('archives.list.printTime')}</div>
+              {/* Sorts on the REAL duration (``actual_time_seconds``), not the
+                  slicer's estimate — which is also why a print that never
+                  finished sorts to the end rather than to the top. */}
+              <div>{sortHeader('duration', t('archives.list.printTime'))}</div>
               <div>{sortHeader('date', t('archives.list.date'))}</div>
               <div>{sortHeader('size', t('archives.list.size'))}</div>
               <div>{t('archives.list.actions')}</div>

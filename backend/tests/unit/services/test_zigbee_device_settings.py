@@ -227,6 +227,33 @@ class TestStalenessDefaultsPerMechanism:
         assert await resolve_stale_after_seconds(_Db(), "aa:bb", polled=False, max_interval=10800) == 21600
 
     @pytest.mark.asyncio
+    async def test_the_global_multiplier_setting_moves_the_reporting_threshold(self):
+        """The Settings field existed since the sensors shipped but was never
+        read — found by the 2026-08-23 dead-code audit and wired on request."""
+        from backend.app.services.zigbee.device_settings import resolve_stale_after_seconds
+
+        db = _Db(settings={"zigbee_sensor_stale_multiplier": "4"})
+
+        assert await resolve_stale_after_seconds(db, "aa:bb", polled=False, max_interval=900) == 3600
+
+    @pytest.mark.asyncio
+    async def test_the_multiplier_setting_does_not_touch_polled_devices(self):
+        from backend.app.services.zigbee.device_settings import resolve_stale_after_seconds
+
+        db = _Db(settings={"zigbee_sensor_stale_multiplier": "4"})
+
+        assert await resolve_stale_after_seconds(db, "aa:bb", polled=True, max_interval=900) == 120
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["", "abc", "0", "-3", None])
+    async def test_a_garbage_or_nonpositive_multiplier_falls_back_to_the_default(self, raw):
+        from backend.app.services.zigbee.device_settings import resolve_stale_after_seconds
+
+        db = _Db(settings={} if raw is None else {"zigbee_sensor_stale_multiplier": raw})
+
+        assert await resolve_stale_after_seconds(db, "aa:bb", polled=False, max_interval=900) == 1800
+
+    @pytest.mark.asyncio
     async def test_a_device_override_wins_over_both(self):
         from backend.app.services.zigbee.device_settings import resolve_stale_after_seconds
 

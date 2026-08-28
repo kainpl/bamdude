@@ -63,6 +63,11 @@ export default defineConfig({
                         return 'vendor-charts'
                     if (id.includes('@tiptap') || id.includes('prosemirror'))
                         return 'vendor-editor'
+                    // The label editor's canvas. One route uses it, so it does
+                    // not belong in the chunk every page waits for.
+                    if (id.includes('node_modules/konva/') ||
+                        id.includes('node_modules/react-konva/'))
+                        return 'vendor-canvas'
                     if (id.includes('node_modules/react/') ||
                         id.includes('node_modules/react-dom/') ||
                         id.includes('node_modules/react-router'))

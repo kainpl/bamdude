@@ -43,11 +43,28 @@ router = APIRouter(prefix="/printer-locations", tags=["printer-locations"])
 _NAME_TAKEN = "A location with this name already exists."
 
 
-async def _holders(db, location_id: int) -> tuple[int, int, int]:
-    """How many printers, sensors and queued items point at this place."""
-    counts = []
+async def _holders(db, location_id: int, *, count_archived_printers: bool = True) -> tuple[int, int, int]:
+    """How many printers, sensors and queued items point at this place.
+
+    ⚠️ **Two callers, two different questions, and the difference is archived
+    printers.**
+
+    *What may be deleted* must count them: ``delete_location`` removes the row
+    without nulling anything that referenced it, so a location deleted out from
+    under an archived printer leaves that printer pointing at nothing. Hence the
+    default.
+
+    *What is shown on the row* must not. An archived printer is retired and
+    hidden everywhere else — counting it there tells the operator a place holds
+    machines they cannot see, which is the same reading "available" gets in the
+    scheduler, the metrics and the queue list.
+    """
+    printers = select(func.count()).select_from(Printer).where(Printer.location_id == location_id)
+    if not count_archived_printers:
+        printers = printers.where(Printer.archived.is_(False))
+
+    counts = [(await db.execute(printers)).scalar_one()]
     for model, column in (
-        (Printer, Printer.location_id),
         (SmartSensor, SmartSensor.location_id),
         (AutoQueueItem, AutoQueueItem.target_location_id),
     ):
@@ -99,7 +116,7 @@ async def list_locations(
     tree = await load_tree(db)
     locations = []
     for row in rows:
-        printers, sensors, queued = await _holders(db, row.id)
+        printers, sensors, queued = await _holders(db, row.id, count_archived_printers=False)
         locations.append(
             PrinterLocationListItem(
                 id=row.id,

@@ -118,6 +118,9 @@ async def create_local_preset(
     db.add(preset)
     await db.flush()
     await db.refresh(preset)
+    from backend.app.services.filament_preset_sync import absorb_local_preset
+
+    await absorb_local_preset(db, preset)  # identity mirror (family catalog)
     return LocalPresetResponse.model_validate(preset)
 
 
@@ -137,6 +140,17 @@ async def update_local_preset(
     if data.name is not None:
         preset.name = data.name
 
+    if data.setting is not None and preset.source == "authored":
+        # Identity fields define the family (spec B §3) — pin them to the
+        # stored values; the editor changes content, never identity.
+        try:
+            current = json.loads(preset.setting or "{}")
+        except ValueError:
+            current = {}
+        for key in ("filament_id", "filament_vendor", "filament_type"):
+            if key in current:
+                data.setting[key] = current[key]
+
     if data.setting is not None:
         # Re-resolve and extract core fields
         resolved = await resolve_preset(data.setting, preset.preset_type, db)
@@ -154,6 +168,21 @@ async def update_local_preset(
 
     await db.flush()
     await db.refresh(preset)
+    from backend.app.services.filament_preset_sync import absorb_local_preset
+
+    await absorb_local_preset(db, preset)  # keep the identity mirror current
+
+    if data.setting is not None:
+        from backend.app.models.user_filament import UserFilamentPreset
+
+        mirror = (
+            (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.local_preset_id == preset.id)))
+            .scalars()
+            .first()
+        )
+        if mirror is not None and mirror.pushed_cloud_id:
+            mirror.push_dirty = True  # explicit Re-push only — never automatic
+
     return LocalPresetResponse.model_validate(preset)
 
 
@@ -169,6 +198,9 @@ async def delete_local_preset(
     if not preset:
         raise HTTPException(404, "Local preset not found")
 
+    from backend.app.services.filament_preset_sync import drop_local_preset_row
+
+    await drop_local_preset_row(db, preset_id)
     await db.delete(preset)
     return {"success": True}
 

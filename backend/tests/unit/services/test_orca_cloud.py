@@ -15,6 +15,7 @@ from backend.app.services.orca_cloud import (
     ORCA_CLIENT_ID,
     DevicePoll,
     OrcaCloudAuthError,
+    OrcaCloudConflict,
     OrcaCloudError,
     OrcaCloudService,
 )
@@ -42,6 +43,124 @@ def _mock_response(
 @pytest.fixture
 def svc() -> OrcaCloudService:
     return OrcaCloudService(client=MagicMock(spec=httpx.AsyncClient))
+
+
+# ---------------------------------------------------------------------------
+# Write API (own-client + sync:write, 2026-08-24)
+# ---------------------------------------------------------------------------
+
+
+class TestPushProfile:
+    @pytest.mark.asyncio
+    async def test_success_returns_profile_metadata(self, svc):
+        svc.access_token = "oc_ext_x"
+        meta = {"id": "u-1", "name": "PETG root", "updated_time": 1800000042}
+        svc._client.post = AsyncMock(return_value=_mock_response(json_data=meta))
+
+        out = await svc.push_profile(profile_id="u-1", name="PETG root", content={"filament_type": "PETG"})
+
+        assert out == meta
+        _args, kwargs = svc._client.post.call_args
+        assert _args[0].endswith("/api/v1/external/sync/push")
+        assert kwargs["json"] == {"id": "u-1", "name": "PETG root", "content": {"filament_type": "PETG"}}
+
+    @pytest.mark.asyncio
+    async def test_update_carries_the_optimistic_lock(self, svc):
+        svc.access_token = "oc_ext_x"
+        svc._client.post = AsyncMock(return_value=_mock_response(json_data={"id": "u-1", "updated_time": 2}))
+
+        await svc.push_profile(profile_id="u-1", name="n", content={}, original_updated_time=1800000001)
+
+        _args, kwargs = svc._client.post.call_args
+        assert kwargs["json"]["original_updated_time"] == 1800000001
+
+    @pytest.mark.asyncio
+    async def test_conflict_raises_with_code_reason_and_server_profile(self, svc):
+        svc.access_token = "oc_ext_x"
+        body = {
+            "error": "conflict",
+            "code": -1,
+            "reason": "timestamp_conflict",
+            "server_profile": {"id": "u-1", "updated_time": 9},
+        }
+        svc._client.post = AsyncMock(return_value=_mock_response(status_code=409, json_data=body))
+
+        with pytest.raises(OrcaCloudConflict) as exc:
+            await svc.push_profile(profile_id="u-1", name="n", content={}, original_updated_time=1)
+
+        assert exc.value.code == -1
+        assert exc.value.reason == "timestamp_conflict"
+        assert exc.value.server_profile == {"id": "u-1", "updated_time": 9}
+
+    @pytest.mark.asyncio
+    async def test_payload_too_large_is_a_sized_error(self, svc):
+        svc.access_token = "oc_ext_x"
+        svc._client.post = AsyncMock(
+            return_value=_mock_response(status_code=413, json_data={"error": "payload_too_large"})
+        )
+
+        with pytest.raises(OrcaCloudError, match="1 MB"):
+            await svc.push_profile(profile_id="u-1", name="n", content={})
+
+    @pytest.mark.asyncio
+    async def test_401_raises_auth_error(self, svc):
+        svc.access_token = "oc_ext_x"
+        svc._client.post = AsyncMock(return_value=_mock_response(status_code=401, json_data={}))
+
+        with pytest.raises(OrcaCloudAuthError):
+            await svc.push_profile(profile_id="u-1", name="n", content={})
+
+
+class TestForcePushProfile:
+    @pytest.mark.asyncio
+    async def test_posts_to_force_push_without_the_lock(self, svc):
+        svc.access_token = "oc_ext_x"
+        svc._client.post = AsyncMock(return_value=_mock_response(json_data={"id": "u-1", "updated_time": 3}))
+
+        out = await svc.force_push_profile(profile_id="u-1", name="n", content={"k": 1})
+
+        assert out["updated_time"] == 3
+        _args, kwargs = svc._client.post.call_args
+        assert _args[0].endswith("/api/v1/external/sync/force-push")
+        assert "original_updated_time" not in kwargs["json"]
+
+
+class TestDeleteProfiles:
+    @pytest.mark.asyncio
+    async def test_sends_delete_with_json_body_and_returns_the_report(self, svc):
+        svc.access_token = "oc_ext_x"
+        report = {
+            "status": "partial_failure",
+            "deleted": [{"id": "a", "name": "x"}],
+            "failed": [{"id": "b", "name": None}],
+        }
+        svc._client.request = AsyncMock(return_value=_mock_response(status_code=207, json_data=report))
+
+        out = await svc.delete_profiles(["a", "b"])
+
+        assert out == report
+        _args, kwargs = svc._client.request.call_args
+        assert _args[0] == "DELETE"
+        assert _args[1].endswith("/api/v1/external/sync/delete?resource=profiles")
+        assert kwargs["json"] == {"ids": ["a", "b"]}
+
+    @pytest.mark.asyncio
+    async def test_404_none_matched_is_still_a_report(self, svc):
+        svc.access_token = "oc_ext_x"
+        report = {"status": "failed", "failed": [{"id": "a", "name": None}]}
+        svc._client.request = AsyncMock(return_value=_mock_response(status_code=404, json_data=report))
+
+        out = await svc.delete_profiles(["a"])
+
+        assert out["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_401_raises_auth_error(self, svc):
+        svc.access_token = "oc_ext_x"
+        svc._client.request = AsyncMock(return_value=_mock_response(status_code=401, json_data={}))
+
+        with pytest.raises(OrcaCloudAuthError):
+            await svc.delete_profiles(["a"])
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +235,48 @@ class TestRequestDeviceCode:
 # ---------------------------------------------------------------------------
 # Token poll (RFC 8628 device_code grant)
 # ---------------------------------------------------------------------------
+
+
+class TestIdentityDefaults:
+    """The identity switch (2026-08-24): BamDude pairs under its OWN client id
+    with the write scope — both changed in the same release, so users re-pair
+    exactly once. Pinned so a merge can't silently revert either half."""
+
+    def test_the_default_client_id_is_bamdudes_own(self):
+        import os
+
+        if os.environ.get("ORCA_CLOUD_CLIENT_ID"):
+            pytest.skip("env override active")
+        assert ORCA_CLIENT_ID == "oc_app_69bdc4a77b23b2335cdb212d"
+
+    def test_the_default_scope_requests_write(self):
+        import os
+
+        from backend.app.services.orca_cloud import ORCA_SCOPE
+
+        if os.environ.get("ORCA_CLOUD_SCOPE"):
+            pytest.skip("env override active")
+        assert ORCA_SCOPE == "sync:write"
+
+
+class TestGrantedScopeCapture:
+    @pytest.mark.asyncio
+    async def test_token_response_scope_is_kept(self, svc):
+        svc._apply_token_response(
+            {
+                "access_token": "oc_ext_a",
+                "refresh_token": "oc_ext_rt_b",
+                "expires_in": 86400,
+                "scope": "external_app:connect sync:write",
+            }
+        )
+        assert svc.granted_scope == "external_app:connect sync:write"
+
+    @pytest.mark.asyncio
+    async def test_a_response_without_scope_keeps_the_previous_value(self, svc):
+        svc.granted_scope = "sync:write"
+        svc._apply_token_response({"access_token": "oc_ext_a", "expires_in": 3600})
+        assert svc.granted_scope == "sync:write"
 
 
 class TestPollToken:

@@ -123,6 +123,25 @@ async def notify_missing_spool_assignments_on_print_start(
     mapping_values = explicit_values if explicit_values else decoded_values
 
     used_global_trays = {value for value in mapping_values if value >= 0}
+    # AMS-less machines: BambuStudio remaps the external holder to 0 with
+    # use_ams=False, so an explicit 0 there means the external — reading it
+    # as AMS0-T0 flagged slot "A1" missing on every mini external print
+    # (2026-08-24). 0 stays literal wherever AMS units actually exist.
+    if 0 in used_global_trays:
+        state_for_mapping = printer_manager.get_status(printer_id)
+        raw = getattr(state_for_mapping, "raw_data", None) if state_for_mapping else None
+        # Flip 0 -> external only when the machine POSITIVELY reports no AMS
+        # units. No state at all (reconnect gap) is unknown, not AMS-less —
+        # assuming there flagged a phantom "Ext-L" missing on ordinary
+        # AMS0-T0 prints whenever the status had not arrived yet.
+        if raw is not None:
+            ams_raw = raw.get("ams", {})
+            ams_units = (
+                ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw if isinstance(ams_raw, list) else []
+            )
+            if not ams_units:
+                used_global_trays.discard(0)
+                used_global_trays.add(254)
     if not used_global_trays:
         return
 

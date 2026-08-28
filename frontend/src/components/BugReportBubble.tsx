@@ -13,6 +13,15 @@ type DiagnosticEntry = { name: string; result: PrinterDiagnosticResult };
 
 type ViewState = 'form' | 'logging' | 'stopping' | 'submitting' | 'success' | 'error';
 
+const REPORT_STATUS_STYLES: Record<string, string> = {
+  submitted: 'bg-bambu-dark-tertiary text-bambu-gray',
+  open: 'bg-blue-500/20 text-blue-600 dark:text-blue-400',
+  closed: 'bg-green-500/20 text-green-700 dark:text-green-400',
+  not_planned: 'bg-bambu-dark-tertiary text-bambu-gray-dark line-through',
+  failed: 'bg-red-500/20 text-red-600 dark:text-red-400',
+};
+
+
 const MAX_DIMENSION = 1920;
 const JPEG_QUALITY = 0.7;
 const MAX_LOG_SECONDS = 300; // 5 minutes
@@ -47,9 +56,35 @@ function formatElapsed(seconds: number): string {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
-export function BugReportBubble() {
+interface BugReportBubbleProps {
+  /**
+   * Render the floating disc in the bottom-right corner. False when the
+   * trigger lives somewhere else — the compact header does this, so the panel
+   * still mounts here while the button that opens it sits in the header.
+   *
+   * ⚠️ The panel deliberately stays at the Layout root rather than moving into
+   * the header with its button: the header is `fixed z-40` and therefore its
+   * own stacking context, so a `z-50` panel nested inside it would be capped
+   * at the header's level and end up underneath every ordinary z-50 modal.
+   */
+  showTrigger?: boolean;
+  /** Controlled open state. Falls back to internal state when omitted. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugReportBubbleProps = {}) {
   const { t } = useTranslation();
-  const [isOpen, setIsOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlled = open !== undefined;
+  const isOpen = isControlled ? open : internalOpen;
+  const setIsOpen = useCallback(
+    (next: boolean) => {
+      if (!isControlled) setInternalOpen(next);
+      onOpenChange?.(next);
+    },
+    [isControlled, onOpenChange],
+  );
   const [viewState, setViewState] = useState<ViewState>('form');
   const [description, setDescription] = useState('');
   const [email, setEmail] = useState('');
@@ -60,6 +95,16 @@ export function BugReportBubble() {
   const [errorMessage, setErrorMessage] = useState('');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [wasDebug, setWasDebug] = useState(false);
+  const [reportsOpen, setReportsOpen] = useState(false);
+  // Lazy: the list (and the relay status sync behind it) is fetched only
+  // when the reporter actually expands "My reports".
+  const { data: myReports, isLoading: reportsLoading } = useQuery({
+    queryKey: ['bug-reports'],
+    queryFn: bugReportApi.listReports,
+    enabled: isOpen && viewState === 'form' && reportsOpen,
+    staleTime: 60_000,
+  });
+
   const modalRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handleStopLoggingRef = useRef<() => void>(() => {});
@@ -109,8 +154,12 @@ export function BugReportBubble() {
     return () => clearTimeout(timer);
   }, [viewState, elapsedSeconds]);
 
-  const handleOpen = () => {
-    setIsOpen(true);
+  // ⚠️ Reset ON OPEN rather than in the click handler: the panel now has two
+  // possible triggers — the floating disc here, and the compact header's
+  // button, which only flips the controlled flag — and a stale half-filled
+  // form reappearing for one of them would be a nasty little inconsistency.
+  useEffect(() => {
+    if (!isOpen) return;
     setViewState('form');
     setDescription('');
     setEmail('');
@@ -120,7 +169,9 @@ export function BugReportBubble() {
     setErrorMessage('');
     setElapsedSeconds(0);
     setWasDebug(false);
-  };
+  }, [isOpen]);
+
+  const handleOpen = () => setIsOpen(true);
 
   const handleClose = () => {
     setIsOpen(false);
@@ -216,20 +267,23 @@ export function BugReportBubble() {
 
   return (
     <>
-      {/* Floating bubble */}
-      <button
-        onClick={handleOpen}
-        className="fixed bottom-4 right-4 z-40 w-12 h-12 rounded-full bg-red-500 hover:bg-red-600 text-white shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 flex items-center justify-center"
-        title={t('bugReport.title')}
-      >
-        <Bug className="w-5 h-5" />
-      </button>
+      {/* Floating bubble. Absent below the sidebar-compact breakpoint, where
+          the compact header carries the trigger instead — see Layout. */}
+      {showTrigger && (
+        <button
+          onClick={handleOpen}
+          className="fixed bottom-4 right-4 z-40 w-12 h-12 rounded-full bg-red-500 hover:bg-red-600 text-white shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 flex items-center justify-center"
+          title={t('bugReport.title')}
+        >
+          <Bug className="w-5 h-5" />
+        </button>
+      )}
 
       {/* Slide-in panel anchored to bottom-right */}
       {isOpen && (
         <div
           id="bug-report-modal"
-          className="fixed bottom-20 right-4 z-50 w-full max-w-md"
+          className="fixed bottom-20 right-4 left-4 z-50 w-auto max-w-md ml-auto"
           onPaste={handlePaste}
         >
           <div
@@ -420,6 +474,52 @@ export function BugReportBubble() {
                       <p>{t('bugReport.dataIncludedList')}</p>
                       <p className="font-medium text-bambu-gray">{t('bugReport.dataNeverIncluded')}</p>
                       <p>{t('bugReport.dataNeverIncludedList')}</p>
+                    </div>
+                  </details>
+
+                  {/* Previously submitted reports, statuses synced through the relay */}
+                  <details
+                    className="text-xs bg-bambu-dark border border-bambu-dark-tertiary rounded-lg p-3"
+                    onToggle={(e) => setReportsOpen((e.target as HTMLDetailsElement).open)}
+                  >
+                    <summary className="cursor-pointer font-medium text-bambu-gray hover:text-white">
+                      {t('bugReport.myReports')}
+                    </summary>
+                    <div className="mt-2 space-y-1.5">
+                      {reportsLoading && <Loader2 className="w-4 h-4 animate-spin text-bambu-gray" />}
+                      {myReports && myReports.reports.length === 0 && (
+                        <p className="text-bambu-gray-dark">{t('bugReport.noReports')}</p>
+                      )}
+                      {myReports && !myReports.synced && (
+                        <p className="text-status-warning">{t('bugReport.staleStatuses')}</p>
+                      )}
+                      {myReports?.reports.map((r) => (
+                        <div key={r.id} className="flex items-center gap-2">
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] leading-tight whitespace-nowrap ${REPORT_STATUS_STYLES[r.status] ?? REPORT_STATUS_STYLES.submitted}`}
+                          >
+                            {t(`bugReport.status.${r.status}`)}
+                          </span>
+                          {r.github_issue_url ? (
+                            <a
+                              href={r.github_issue_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="truncate text-bambu-green hover:text-bambu-green-light hover:underline"
+                              title={r.description}
+                            >
+                              #{r.github_issue_number} {r.description}
+                            </a>
+                          ) : (
+                            <span className="truncate text-bambu-gray" title={r.description}>
+                              {r.description}
+                            </span>
+                          )}
+                          <span className="ml-auto whitespace-nowrap text-bambu-gray-dark">
+                            {new Date(r.created_at).toLocaleDateString()}
+                          </span>
+                        </div>
+                      ))}
                     </div>
                   </details>
 

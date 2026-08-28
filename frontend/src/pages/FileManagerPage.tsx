@@ -45,9 +45,10 @@ import {
   ListCollapse,
   Layers,
   Cog,
+  ExternalLink,
   Tag as TagIcon,
 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import type {
   LibraryFolderTree,
   LibraryFileListItem,
@@ -59,6 +60,7 @@ import type {
   Archive,
   Permission,
 } from '../api/client';
+import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { LibraryPlateGalleryModal } from '../components/LibraryPlateGallery';
@@ -81,6 +83,7 @@ import { FileTagBadges } from '../components/FileTagBadges';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
 import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { getTagStyle, isPrintable, isSliceable, isMultiPlate } from '../lib/fileTags';
+import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
@@ -95,13 +98,19 @@ type TFunction = (key: string, options?: Record<string, unknown>) => string;
 // New Folder Modal
 interface NewFolderModalProps {
   parentId: number | null;
+  /** Where the folder will land, for the destination line. */
+  parentName: string | null;
+  /** True when the current selection is an external folder — the new folder
+   *  then goes to the ROOT (virtual folders cannot live inside a mirrored
+   *  filesystem), and the modal says so instead of landing there silently. */
+  externalRedirected: boolean;
   onClose: () => void;
   onSave: (data: LibraryFolderCreate) => void;
   isLoading: boolean;
   t: TFunction;
 }
 
-function NewFolderModal({ parentId, onClose, onSave, isLoading, t }: NewFolderModalProps) {
+function NewFolderModal({ parentId, parentName, externalRedirected, onClose, onSave, isLoading, t }: NewFolderModalProps) {
   const [name, setName] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -114,6 +123,16 @@ function NewFolderModal({ parentId, onClose, onSave, isLoading, t }: NewFolderMo
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-sm border border-bambu-dark-tertiary">
         <div className="p-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">{t('fileManager.newFolder')}</h2>
+          <p className="text-xs text-bambu-gray mt-1">
+            {t('fileManager.newFolderDestination', {
+              destination: parentId !== null && parentName ? parentName : t('fileManager.allFiles'),
+            })}
+          </p>
+          {externalRedirected && (
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+              {t('fileManager.newFolderExternalRedirect')}
+            </p>
+          )}
         </div>
         <form onSubmit={handleSubmit} className="p-4 space-y-4">
           <div>
@@ -933,6 +952,7 @@ interface FileCardProps {
   onAddToQueue?: (id: number) => void;
   onPrint?: (file: LibraryFileListItem) => void;
   onSlice?: (file: LibraryFileListItem) => void;
+  onOpenInSlicer?: (file: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
   onPreview3d?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
@@ -983,7 +1003,7 @@ function anchorFrom(
   };
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, onOpenInSlicer, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -991,6 +1011,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onPrint: (f: LibraryFileListItem) => void;
   onSchedule: (f: LibraryFileListItem) => void;
   onSlice?: (f: LibraryFileListItem) => void;
+  onOpenInSlicer?: (f: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
   onPreview3d: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
@@ -1000,6 +1021,9 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onTags?: (f: LibraryFileListItem, anchor: TagsPopoverAnchor) => void;
   onDelete: (id: number) => void;
 }) {
+  // ⚠️ The two modes need different permissions: slicing through the sidecar
+  // writes a new library file, while opening in a desktop slicer is a download.
+  const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   // Portal-rendered dropdown escapes the list container's `overflow-hidden`,
@@ -1071,15 +1095,26 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 </button>
               </>
             )}
-            {onSlice && useSlicerApi && isSliceable(file) && (
+            {/* ⚠️ The entry is no longer gated on the sidecar being enabled.
+                With it off this is the desktop hand-off, which has always
+                worked and simply had no way in from here. The two also need
+                DIFFERENT permissions: slicing on the server writes a new
+                library file (library:upload), while opening in a desktop app
+                is a download (library:read). */}
+            {isSliceable(file) && (onSlice || onOpenInSlicer) && (
               <button
-                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:upload') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
-                onClick={() => { if (hasPermission('library:upload')) { onSlice(file); setOpen(false); } }}
-                disabled={!hasPermission('library:upload')}
-                title={!hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined}
+                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${!sliceDisabled ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
+                onClick={() => {
+                  if (sliceDisabled) return;
+                  if (useSlicerApi) onSlice?.(file);
+                  else onOpenInSlicer?.(file);
+                  setOpen(false);
+                }}
+                disabled={sliceDisabled}
+                title={sliceDisabled ? (useSlicerApi ? t('fileManager.noPermissionSlice') : t('fileManager.noPermissionDownload')) : undefined}
               >
-                <Cog className="w-3.5 h-3.5" />
-                {t('slice.action', { defaultValue: 'Slice' })}
+                {useSlicerApi ? <Cog className="w-3.5 h-3.5" /> : <ExternalLink className="w-3.5 h-3.5" />}
+                {useSlicerApi ? t('slice.action') : t('modelViewer.openInSlicer')}
               </button>
             )}
             {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
@@ -1177,7 +1212,10 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+  // ⚠️ The two modes need different permissions: slicing through the sidecar
+  // writes a new library file, while opening in a desktop slicer is a download.
+  const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
   const [showActions, setShowActions] = useState(false);
   // Portal-rendered dropdown — the card root has `overflow-hidden` for the
   // thumbnail crop, which clips an absolute-positioned menu against the card
@@ -1412,6 +1450,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
         <button
           ref={triggerRef}
           onClick={() => setShowActions(!showActions)}
+          aria-label={t('fileManager.fileActions')}
           className="p-1.5 rounded bg-bambu-dark-secondary/90 hover:bg-bambu-dark-tertiary"
         >
           <MoreVertical className="w-4 h-4 text-bambu-gray" />
@@ -1456,17 +1495,24 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
                   {t('fileManager.schedulePrint')}
                 </button>
               )}
-              {onSlice && useSlicerApi && isSliceable(file) && (
+              {/* See the note on the sibling menu above: not gated on the
+                  sidecar, and the two modes need different permissions. */}
+              {isSliceable(file) && (onSlice || onOpenInSlicer) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:upload') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    !sliceDisabled ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                   }`}
-                  onClick={() => { if (hasPermission('library:upload')) { onSlice(file); setShowActions(false); } }}
-                  disabled={!hasPermission('library:upload')}
-                  title={!hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined}
+                  onClick={() => {
+                    if (sliceDisabled) return;
+                    if (useSlicerApi) onSlice?.(file);
+                    else onOpenInSlicer?.(file);
+                    setShowActions(false);
+                  }}
+                  disabled={sliceDisabled}
+                  title={sliceDisabled ? (useSlicerApi ? t('fileManager.noPermissionSlice') : t('fileManager.noPermissionDownload')) : undefined}
                 >
-                  <Cog className="w-3.5 h-3.5" />
-                  {t('slice.action', { defaultValue: 'Slice' })}
+                  {useSlicerApi ? <Cog className="w-3.5 h-3.5" /> : <ExternalLink className="w-3.5 h-3.5" />}
+                  {useSlicerApi ? t('slice.action') : t('modelViewer.openInSlicer')}
                 </button>
               )}
               {onPreview3d && (file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
@@ -1778,6 +1824,24 @@ export function FileManagerPage() {
   });
   const timeFormat: TimeFormat = settings?.time_format || 'system';
   const dateFormat: DateFormat = settings?.date_format || 'system';
+
+  // Hand a library file to the operator's own desktop slicer. ⚠️ The token URL
+  // first so the file is reachable with auth on; the plain download URL is the
+  // fallback for an install with auth disabled, where minting one would 404.
+  const preferredSlicer: SlicerType = settings?.open_in_slicer || settings?.preferred_slicer || 'bambu_studio';
+  const handleOpenInSlicer = useCallback(
+    async (file: LibraryFileListItem) => {
+      try {
+        const { token } = await api.createLibrarySlicerToken(file.id);
+        const path = api.getLibrarySlicerDownloadUrl(file.id, token, file.filename);
+        openInSlicer(`${window.location.origin}${path}`, preferredSlicer);
+      } catch {
+        const path = api.getLibraryFileDownloadUrl(file.id);
+        openInSlicer(`${window.location.origin}${path}`, preferredSlicer);
+      }
+    },
+    [preferredSlicer],
+  );
   const { data: folders, isLoading: foldersLoading } = useQuery({
     queryKey: ['library-folders'],
     queryFn: () => api.getLibraryFolders(),
@@ -1814,6 +1878,14 @@ export function FileManagerPage() {
     };
     return sortLevel(folders);
   }, [folders, folderSortField, folderSortDirection]);
+
+  // #1621 promised "external folders are surfaced separately below" but the
+  // tree rendered one interleaved alphabetical list, so a linked NAS root sat
+  // in the middle of the user's own folders — and everything after the
+  // "External" header read as its child. Split at ROOT level only: an
+  // external living deeper in the tree belongs to its parent and stays put.
+  const ownRootFolders = useMemo(() => sortedFolders?.filter((f) => !f.is_external), [sortedFolders]);
+  const externalRootFolders = useMemo(() => sortedFolders?.filter((f) => f.is_external), [sortedFolders]);
 
   // Trash count for the header badge (#1008). Empty/error treated as zero so a
   // broken trash endpoint doesn't break the File Manager.
@@ -1935,10 +2007,13 @@ export function FileManagerPage() {
     queryFn: () => api.getLibraryStats(),
   });
 
-  // Get users for the username filter autocomplete
+  // Get users for the username filter autocomplete. The slim listing, not the
+  // full one: only the name is rendered, and the full listing is admin-gated —
+  // an operator who may filter by user but not administer them got an empty
+  // datalist with no indication why.
   const { data: users } = useQuery({
-    queryKey: ['users'],
-    queryFn: () => api.getUsers(),
+    queryKey: ['users-slim'],
+    queryFn: api.getUsersSlim,
   });
 
   // Get unique file types for filter dropdown
@@ -2018,6 +2093,26 @@ export function FileManagerPage() {
     return stats.disk_free_bytes < thresholdBytes;
   }, [stats, settings]);
 
+  // An external scan is a background job; these are its numbers as they land.
+  const handleScanFinished = useCallback(
+    (_folderId: number, state: LibraryScanState) => {
+      if (state.status === 'failed') {
+        showToast(t('fileManager.toast.scanFailed', { error: state.error || '' }), 'error');
+        return;
+      }
+      if (state.skippedDeletions) {
+        // Deliberately not a success toast. Nothing was deleted, and the reason
+        // is one the operator has to act on — the strip keeps saying it.
+        showToast(t('fileManager.toast.scanSkippedDeletions'), 'warning');
+        return;
+      }
+      showToast(t('fileManager.toast.folderScanned', { added: state.added, removed: state.removed }), 'success');
+    },
+    [showToast, t]
+  );
+  const { scans, markStarted: markScanStarted, dismiss: dismissScan } = useLibraryScanProgress(handleScanFinished);
+  const activeScan = selectedFolderId ? scans[selectedFolderId] : undefined;
+
   // Mutations
   const createFolderMutation = useMutation({
     mutationFn: (data: LibraryFolderCreate) => api.createLibraryFolder(data),
@@ -2032,30 +2127,39 @@ export function FileManagerPage() {
   const createExternalFolderMutation = useMutation({
     mutationFn: async (data: ExternalFolderCreate) => {
       const folder = await api.createExternalFolder(data);
-      // Auto-scan after creation
-      await api.scanExternalFolder(folder.id);
-      return folder;
+      // Auto-scan after creation. Returns as soon as the job exists — a share
+      // with thousands of files no longer holds this dialog open.
+      const job = await api.scanExternalFolder(folder.id);
+      return { folder, job };
     },
-    onSuccess: (folder) => {
+    onSuccess: ({ folder, job }) => {
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
       setShowExternalFolderModal(false);
       setSelectedFolderId(folder.id);
+      markScanStarted(folder.id, job.job_id);
       showToast(t('fileManager.toast.externalFolderLinked'), 'success');
     },
     onError: (error: Error) => showToast(error.message, 'error'),
   });
 
+  // ⚠️ Starting a scan is all this does now. It used to wait for the counts,
+  // which is why a NAS share could hold the request — and SQLite's write lock —
+  // for minutes. The counts arrive on the socket; see useLibraryScanProgress.
   const scanExternalFolderMutation = useMutation({
     mutationFn: (folderId: number) => api.scanExternalFolder(folderId),
-    onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['library-files'] });
-      queryClient.invalidateQueries({ queryKey: ['library-folders'] });
-      queryClient.invalidateQueries({ queryKey: ['library-stats'] });
-      showToast(t('fileManager.toast.folderScanned', { added: result.added, removed: result.removed }), 'success');
+    onSuccess: (result, folderId) => {
+      markScanStarted(folderId, result.job_id);
+      showToast(t('fileManager.toast.scanStarted'), 'info');
     },
-    onError: (error: Error) => showToast(error.message, 'error'),
+    onError: (error: Error) => {
+      // A scan of this folder is already running — a fact, not a failure. The
+      // usual way to see one is reloading the tab mid-walk, when the strip that
+      // was following it is gone but the walk is not.
+      const already = error instanceof ApiError && error.status === 409;
+      showToast(already ? t('fileManager.toast.scanAlreadyRunning') : error.message, already ? 'info' : 'error');
+    },
   });
 
   const deleteFolderMutation = useMutation({
@@ -2425,14 +2529,40 @@ export function FileManagerPage() {
     return findFolder(folders);
   }, [selectedFolderId, folders]);
 
+  // The "External" root is a virtual node whose children are linked shares —
+  // "New folder" has nothing meaningful to create there (it used to silently
+  // create at the library root), so the button disables and points at Link.
+  const atExternalRoot = selectedFolderId === null && topLevelView === 'external';
+
+  // One renderer for both root groups of the sidebar tree (own folders under
+  // "All files", external roots under the "External" header) so the split
+  // can't let their props drift apart.
+  const renderRootFolder = (folder: LibraryFolderTree) => (
+    <FolderTreeItem
+      key={`${folder.id}-${collapseFoldersByDefault ? 'c' : 'e'}`}
+      folder={folder}
+      depth={1}
+      selectedFolderId={selectedFolderId}
+      onSelect={setSelectedFolderId}
+      onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
+      onLink={setLinkFolder}
+      onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
+      wrapNames={wrapFolderNames}
+      defaultExpanded={!collapseFoldersByDefault}
+      hasPermission={hasPermission}
+      t={t}
+      timeFormat={timeFormat}
+      dateFormat={dateFormat}
+    />
+  );
+
   return (
     <div className="p-4 md:p-6 min-h-[calc(100vh)] lg:h-[calc(100vh)] flex flex-col">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
         <div className="flex items-center gap-3">
-          <FolderOpen className="w-6 h-6 text-bambu-green" />
           <div>
-            <h1 className="text-2xl font-bold text-white">{t('fileManager.title')}</h1>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3"><FolderOpen className="w-6 h-6 text-bambu-green" />{t('fileManager.title')}</h1>
             <p className="text-sm text-bambu-gray">{t('fileManager.subtitle')}</p>
           </div>
         </div>
@@ -2493,8 +2623,14 @@ export function FileManagerPage() {
             variant="outline"
             size="sm"
             onClick={() => setShowNewFolderModal(true)}
-            disabled={!hasPermission('library:upload')}
-            title={!hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : undefined}
+            disabled={!hasPermission('library:upload') || atExternalRoot}
+            title={
+              !hasPermission('library:upload')
+                ? t('fileManager.noPermissionCreateFolder')
+                : atExternalRoot
+                  ? t('fileManager.newFolderExternalRootHint')
+                  : undefined
+            }
           >
             <FolderPlus className="w-4 h-4 mr-2" />
             {t('fileManager.newFolder')}
@@ -2587,11 +2723,10 @@ export function FileManagerPage() {
             }}
             className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg px-3 py-2.5 text-white focus:outline-none focus:border-bambu-green"
           >
+            {/* Same grouping as the desktop sidebar: own folders under
+                "All files", external roots after the "External" entry. */}
             <option value="__top:internal">📁 {t('fileManager.allFiles')}</option>
-            {folders?.some((f) => f.is_external) && (
-              <option value="__top:external">🔗 {t('fileManager.allExternal')}</option>
-            )}
-            {sortedFolders && (() => {
+            {(() => {
               // Flatten folder tree for mobile selector
               const flattenFolders = (items: LibraryFolderTree[], depth = 0): { id: number; name: string; fileCount: number; depth: number }[] => {
                 const result: { id: number; name: string; fileCount: number; depth: number }[] = [];
@@ -2603,11 +2738,21 @@ export function FileManagerPage() {
                 }
                 return result;
               };
-              return flattenFolders(sortedFolders).map((folder) => (
-                <option key={folder.id} value={folder.id}>
-                  {'│ '.repeat(folder.depth)}📂 {folder.name} {folder.fileCount > 0 ? `(${folder.fileCount})` : ''}
-                </option>
-              ));
+              const toOptions = (items: LibraryFolderTree[] | undefined) =>
+                flattenFolders(items ?? [], 1).map((folder) => (
+                  <option key={folder.id} value={folder.id}>
+                    {'│ '.repeat(folder.depth)}📂 {folder.name} {folder.fileCount > 0 ? `(${folder.fileCount})` : ''}
+                  </option>
+                ));
+              return (
+                <>
+                  {toOptions(ownRootFolders)}
+                  {folders?.some((f) => f.is_external) && (
+                    <option value="__top:external">🔗 {t('fileManager.allExternal')}</option>
+                  )}
+                  {toOptions(externalRootFolders)}
+                </>
+              );
             })()}
           </select>
         </div>
@@ -2711,9 +2856,10 @@ export function FileManagerPage() {
             </div>
           </div>
           <div className="flex-1 overflow-y-auto p-2">
-            {/* All Files = the user's own uploaded / managed-storage files
-                only. External folders are surfaced separately below to keep
-                a linked NAS from drowning the user's own uploads (#1621). */}
+            {/* "Internal" root = the user's own uploaded / managed-storage
+                files only; its folders render indented beneath it. External
+                roots live under the "External" header below, so a linked NAS
+                can't drown the user's own uploads (#1621). */}
             <div
               className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
                 selectedFolderId === null && topLevelView === 'internal'
@@ -2728,6 +2874,13 @@ export function FileManagerPage() {
               <FileBox className="w-4 h-4" />
               <span className="text-sm">{t('fileManager.allFiles')}</span>
             </div>
+
+            {/* Folder tree — re-key on the collapse toggle so flipping it
+                remounts every FolderTreeItem, which re-reads defaultExpanded
+                and makes the preference take effect immediately. Own folders
+                render here, under "All files"; external roots render below,
+                under the "External" header — each header heads its group. */}
+            {ownRootFolders?.map(renderRootFolder)}
 
             {/* External (combined) — only shown when at least one external
                 folder is linked. Single-folder users don't need a combined
@@ -2748,27 +2901,7 @@ export function FileManagerPage() {
                 <span className="text-sm">{t('fileManager.allExternal')}</span>
               </div>
             )}
-
-            {/* Folder tree — re-key on the collapse toggle so flipping it
-                remounts every FolderTreeItem, which re-reads defaultExpanded
-                and makes the preference take effect immediately. */}
-            {sortedFolders?.map((folder) => (
-              <FolderTreeItem
-                key={`${folder.id}-${collapseFoldersByDefault ? 'c' : 'e'}`}
-                folder={folder}
-                selectedFolderId={selectedFolderId}
-                onSelect={setSelectedFolderId}
-                onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
-                onLink={setLinkFolder}
-                onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
-                wrapNames={wrapFolderNames}
-                defaultExpanded={!collapseFoldersByDefault}
-                hasPermission={hasPermission}
-                t={t}
-                timeFormat={timeFormat}
-                dateFormat={dateFormat}
-              />
-            ))}
+            {externalRootFolders?.map(renderRootFolder)}
           </div>
         </div>
 
@@ -2811,16 +2944,84 @@ export function FileManagerPage() {
                 variant="secondary"
                 size="sm"
                 onClick={() => selectedFolderId && scanExternalFolderMutation.mutate(selectedFolderId)}
-                disabled={scanExternalFolderMutation.isPending}
+                disabled={scanExternalFolderMutation.isPending || activeScan?.status === 'running'}
                 title={t('fileManager.scanFolder')}
               >
-                {scanExternalFolderMutation.isPending ? (
+                {scanExternalFolderMutation.isPending || activeScan?.status === 'running' ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <RefreshCw className="w-4 h-4" />
                 )}
                 <span className="ml-1.5">{t('fileManager.scanFolder')}</span>
               </Button>
+            </div>
+          )}
+          {/* Scan progress. The walk runs in the background now, so this strip
+              is the only place its numbers appear — and the only place an
+              unreachable mount is explained. */}
+          {activeScan && activeScan.status === 'running' && (
+            <div className="mb-4 p-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
+              <div className="flex items-center gap-3">
+                <Loader2 className="w-4 h-4 text-bambu-green animate-spin flex-shrink-0" />
+                <span className="text-sm text-white">
+                  {activeScan.total > 0
+                    ? t('fileManager.scanProgress.counted', { seen: activeScan.seen, total: activeScan.total })
+                    : t('fileManager.scanProgress.counting')}
+                </span>
+                <span className="text-xs text-bambu-gray ml-auto tabular-nums">
+                  {t('fileManager.scanProgress.counters', {
+                    added: activeScan.added,
+                    updated: activeScan.updated,
+                    removed: activeScan.removed,
+                  })}
+                </span>
+              </div>
+              {activeScan.total > 0 && (
+                <div className="mt-2 h-1 bg-bambu-dark rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-bambu-green transition-all duration-300"
+                    style={{ width: `${Math.min(100, Math.round((activeScan.seen / activeScan.total) * 100))}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+          {activeScan && activeScan.status === 'failed' && (
+            <div className="flex items-start gap-3 mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+              <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-red-300">{t('fileManager.scanProgress.failed')}</p>
+                {activeScan.error && (
+                  <p className="text-xs text-bambu-gray mt-0.5 break-words">{activeScan.error}</p>
+                )}
+              </div>
+              <button
+                onClick={() => selectedFolderId && dismissScan(selectedFolderId)}
+                className="text-bambu-gray hover:text-white flex-shrink-0"
+                title={t('common.dismiss')}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+          {activeScan && activeScan.status === 'finished' && activeScan.skippedDeletions && (
+            <div className="flex items-start gap-3 mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+              <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-amber-300">
+                  {t('fileManager.scanProgress.skippedDeletionsTitle')}
+                </p>
+                <p className="text-xs text-bambu-gray mt-0.5">
+                  {t('fileManager.scanProgress.skippedDeletionsBody')}
+                </p>
+              </div>
+              <button
+                onClick={() => selectedFolderId && dismissScan(selectedFolderId)}
+                className="text-bambu-gray hover:text-white flex-shrink-0"
+                title={t('common.dismiss')}
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           )}
           {/* Combined toolbar: search/filters/sort (row 1) + selection actions (row 2) */}
@@ -3209,6 +3410,7 @@ export function FileManagerPage() {
                     }}
                     onPrint={setPrintFile}
                     onSlice={setSliceFile}
+                    onOpenInSlicer={handleOpenInSlicer}
                     useSlicerApi={settings?.use_slicer_api ?? false}
                     onPreview3d={setViewerFile}
                     onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
@@ -3513,6 +3715,7 @@ export function FileManagerPage() {
                         onPrint={setPrintFile}
                         onSchedule={scheduleOne}
                         onSlice={setSliceFile}
+                        onOpenInSlicer={handleOpenInSlicer}
                         useSlicerApi={settings?.use_slicer_api ?? false}
                         onPreview3d={setViewerFile}
                             onDownload={handleDownload}
@@ -3560,7 +3763,18 @@ export function FileManagerPage() {
       )}
       {showNewFolderModal && (
         <NewFolderModal
-          parentId={selectedFolderId}
+          // Inside a WRITABLE external the backend creates a real directory
+          // on the share (mirroring upload semantics). A READ-ONLY external
+          // cannot take one, so the folder goes to the library root and the
+          // modal says so — the freshly linked external is auto-selected,
+          // which is exactly how folders used to land somewhere unnoticed.
+          parentId={selectedFolder?.is_external && selectedFolder.external_readonly ? null : selectedFolderId}
+          parentName={
+            selectedFolder?.is_external && selectedFolder.external_readonly
+              ? null
+              : (selectedFolder?.name ?? null)
+          }
+          externalRedirected={!!(selectedFolder?.is_external && selectedFolder.external_readonly)}
           onClose={() => setShowNewFolderModal(false)}
           onSave={(data) => createFolderMutation.mutate(data)}
           isLoading={createFolderMutation.isPending}

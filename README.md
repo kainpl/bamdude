@@ -22,7 +22,6 @@
   <a href="https://hub.docker.com/r/kainpl/bamdude"><img alt="Docker Hub" src="https://img.shields.io/badge/Docker-Hub-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
   <a href="https://github.com/kainpl/bamdude/releases"><img alt="Latest Release" src="https://img.shields.io/github/v/release/kainpl/bamdude?style=flat-square&logo=github"></a>
   <a href="https://send.monobank.ua/jar/2vREyf3SrF"><img alt="Support BamDude" src="https://img.shields.io/badge/Support-monobank%20jar-ffd60a?style=flat-square&logo=buymeacoffee&logoColor=black"></a>
-  <a href="https://app.drukarmy.org.ua/inv/ujnv7w8i"><img alt="Join DrukArmy" src="https://img.shields.io/badge/%F0%9F%87%BA%F0%9F%87%A6-Join%20DrukArmy-005bbb?style=flat-square"></a>
 </p>
 
 ---
@@ -39,6 +38,16 @@ why Ukrainian is a first-class locale rather than an afterthought.
 
 If you have a printer and want it to do something useful:
 **[join DrukArmy](https://app.drukarmy.org.ua/inv/ujnv7w8i)**.
+
+---
+
+## Partners
+
+| | |
+|---|---|
+| **[DrukArmy](https://drukarmy.org.ua/ua)** | Ukraine's largest volunteer 3D-printing community, printing for the front line. BamDude was born in this workshop — and if you have a printer, there is useful work waiting for it: **[join](https://app.drukarmy.org.ua/inv/ujnv7w8i)**. |
+| **[Dragons of Defense](https://dragons.in.ua/)** | A volunteer 3D-printing initiative: a 24/7 print farm making plastic gear for Ukraine's defense forces, with fully transparent finances — everything public, counted automatically. |
+| **[AdditHub](https://addithub.com/)** | Ukraine's #1 3D-printing marketplace: post a job and verified makers place blind bids — FDM, SLA and SLS printing, 3D modelling and post-processing. |
 
 ---
 
@@ -146,6 +155,15 @@ BamDude speaks the printer's own file channel alongside FTP, and the difference 
 
 The channel exists only on that newer generation, and BamDude decides by asking the printer rather than by model name — an open port proves nothing, since on A1 and P1 the same port belongs to the camera.
 
+### Filament identity the way the slicers model it
+
+Bambu Studio thinks in **filament families**: one identity (`filament_id`) behind every "Generic PETG" or your own custom filament, with per-printer presets hanging under it. BamDude adopts that model outright:
+
+- **A built-in catalog of every official filament**, distilled from Bambu Studio and OrcaSlicer themselves — names, vendors, types, temperatures, which printers each preset fits. No hardcoded tables, no cloud round-trips: slot names, tooltips and assignments resolve locally and offline.
+- **Your own cloud presets are mirrored in the background** from both Bambu Cloud and Orca Cloud, so a custom filament created in either slicer is known here minutes later — family included.
+- **One family picker everywhere** — the spool form, the AMS slot dialog, the K-profile editor. Spools link to a family, calibration auto-matching keys on it, and custom filaments finally match their own K-profiles instead of collapsing onto Generic.
+- **Create a filament in BamDude itself** — vendor + type + serial, exactly like Bambu Studio's Create Filament dialog, with a Bambu-Studio-compatible identity and a root preset cloned per printer profile you tick. Optionally **push it to Bambu Cloud**, and desktop Bambu Studio sees it on its next sync; create it from the Bambu Cloud tab and it is born in the cloud outright.
+
 ### Smaller, but still ours
 
 - **Ukrainian.** Upstream ships twelve locales and Ukrainian is not among them. BamDude ships English and Ukrainian only, and both are strict: a key missing from either fails CI, and so does a placeholder that drifted between them.
@@ -220,6 +238,7 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 - **Copy one printer's queue onto other printers of the same model** — pick what and where, and the Schedule dialog opens once per item with every chosen printer pinned; filament is mapped per printer inside that one dialog, so three items across four printers is three dialogs, not twelve. A print started outside the queue counts as part of it
 - **Drop a batch of files** on a printer, its queue or the auto-queue — each file gets its own Schedule dialog with a `2 / 5` counter, and anything that cannot be printed says why, by name. On the auto-queue each item's target model comes from its own slicing and cannot be changed
 - **Queue organization** — group prints into collapsible batches, drag-reorder by grip handle, and sort the Printers page by ETA; the timeline shows only committed schedules
+- **The auto-queue is a real queue** — items listed in true dispatch order, batches expand into their copies, and everything drags: a batch as a block or a single copy anywhere in the order. Any copy (or a whole batch) edits in the same dialog the per-printer queue uses; with shortest-job-first the distributor owns the order and the handles hide
 - **Per-printer Maintenance Mode** — park a printer out of service (drops out of dispatch, scheduler, auto-drying, and metrics, and disconnects MQTT) without deleting it
 - **Archive a printer** — soft-retire a sold/decommissioned printer: it disappears from the Printers page, every picker, queues, dispatch, the scheduler, and MQTT, while its full print history is kept. Blocked while printing; cancels the printer's pending queue items. Restore or permanently delete it under Settings → Printing → Archived printers. Distinct from Maintenance Mode, which only parks a printer temporarily and keeps its card visible
 - Auto error-pause on print failure (queue stops, user decides next step)
@@ -307,11 +326,17 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 
 ### Spool Inventory
 - Built-in inventory with AMS slot assignment
+- **Spools link to a filament family** — the same identity Bambu Studio uses (`filament_id`), picked from a built-in catalog of official filaments plus your own cloud/custom ones; slot assignment, K-profile auto-matching and slicing all key on it
+- **Create your own filament family** from the spool form or the Profiles page — Bambu-Studio-compatible identity, per-printer presets, optional push to Bambu Cloud
+- **Runout-accurate consumption tracking** — a filament runout closes the spent spool at exactly its label weight and splits the print at the runout layer between the old and the replacement spool (per-layer G-code accuracy, same-slot refills and AMS backup switches included); jams are never mistaken for runouts. Live "filament so far" on the printer card while a print runs; a filament-runout notification prompts you to assign the replacement
+- **Two-way AMS weight sync for Bambu-tagged spools** — the firmware's own remaining estimate can correct the books downward too, debounced against garbled post-reconnect reports
 - Automatic filament consumption tracking
 - Per-spool cost tracking
 - Bulk spool addition
 - **Mass actions on the Filament tab** — tick rows (or the whole page, or everything matching the filter) and Edit / Print labels / Reset usage / Archive / Restore / Delete in one go; works in both built-in and Spoolman modes
 - Spool catalog, color catalog, low-stock alerts
+- **Spool labels you draw yourself** — text, QR, barcode and a block of the spool's colour, placed by hand in Settings → Filament → Marking, with the live picture coming from the renderer that makes the printed file. Sheets of stock are a separate thing you can also draw, so any label prints on any paper; a design too big for a cell is refused rather than shrunk. The designs BamDude ships are a starting point you can redraw. [Manual](https://docs.bamdude.top/features/labels/)
+- **Print straight to a label printer on a desk** — BamDude renders and queues, the BamDude Bridge app on that machine comes and takes it; nothing is exposed and no port is opened. A design declares whether it is going out as colour through a driver or to a one-bit thermal head.
 - **Managed storage-locations catalog** — pick shelves/drawers/dryboxes from a managed list instead of free-text
 - **Colour-aware reorder forecasting** — per-colour runway with material/brand filters and lead-time overrides. Spools you archived still count as **what you burned** while no longer counting as **what you have**, so retiring an empty spool does not collapse the rate onto its fresh replacement; a material you have run out of entirely stays on the panel for 90 days, because that is precisely the one to reorder
 - **The manager remembers what you filtered to** — material, brand, colour, category, name, the archived tab, the usage and stock chips, the search box and the view all survive leaving the page, and "Clear filters" clears the memory too
@@ -320,12 +345,13 @@ The channel exists only on that newer generation, and BamDude decides by asking 
 - Spoolman integration
 
 ### Integrations
+- **BamDude Cloud link (opt-in)** — pair the farm to the [cloud.bamdude.top](https://cloud.bamdude.top) portal and it reports outward: which of the printers you chose to publish are running, how far along, the events worth knowing, and a single camera frame on request. One-way by design — nothing prints from the portal, the request list is fixed in the version you installed, and the link can be cut from either side
 - **Server-side slicing** — OrcaSlicer + BambuStudio sidecar containers ship in the same Compose project (`--profile orca` / `--profile bambu` / `--profile all`); per-job slicer picker in the Slice modal with live reachability badges, bed-type override (Cool / Engineering / High-Temp / Textured PEI / SuperTack), inline multi-plate selection, owner-filter on preset dropdowns
 - Spoolman filament sync
 - MQTT publishing for Home Assistant
 - Prometheus metrics for Grafana
 - Local OrcaSlicer preset import
-- **Orca Cloud profile sync** — sign in and use your Orca Cloud printer/process/filament presets as a preset tier in the slice dialog and AMS-slot picker
+- **Orca Cloud profile sync & push** — pair once (under BamDude's own registered app identity, via a device code) and use your Orca Cloud printer/process/filament presets as a preset tier in the slice dialog and AMS-slot picker; mirrored server-side into the filament family catalog alongside Bambu Cloud's. Authored filament families push back to Orca Cloud too, with explicit conflict resolution when a profile changed in the cloud
 - K-profiles (pressure advance)
 - Git backup (GitHub + GitLab)
 - API keys & webhooks

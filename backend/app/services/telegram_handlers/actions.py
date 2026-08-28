@@ -205,7 +205,60 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
 
     try:
         printer_manager.set_awaiting_plate_clear(printer_id, False)
+        # \u26a0\ufe0f The same answer as the card's Clear plate, so the held row goes here
+        # too. Without this, clearing from Telegram leaks a row that nothing
+        # else will ever remove.
+        from backend.app.core.database import async_session
+        from backend.app.services.plate_hold import answer_by_clearing
+
+        async with async_session() as _db:
+            await answer_by_clearing(_db, printer_id)
         await callback.answer(f"\u2705 {t(lang, NS, 'printers.clear_plate_ok')}")
+    except Exception:
+        await callback.answer(t(lang, NS, "printers.clear_plate_fail"), show_alert=True)
+        return
+
+    # Refresh printer detail
+    from backend.app.services.telegram_handlers.printers import show_printer_detail
+
+    await show_printer_detail(callback, printer_id, tg_chat)
+
+
+@router.callback_query(F.data.startswith("action:repeat_print:"))
+async def cb_repeat_print(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
+    """Print the job that just finished again — Telegram's half of the pair.
+
+    Same permission as clearing: they are two answers to one question.
+    """
+    lang = await get_language()
+
+    if not has_perm(tg_chat, "printers:clear_plate"):
+        await callback.answer(t(lang, NS, "auth.no_permission"), show_alert=True)
+        return
+
+    printer_id = int(callback.data.split(":")[2])
+
+    from backend.app.core.database import async_session
+    from backend.app.services.plate_hold import RepeatNotPossible, answer_by_repeating
+
+    try:
+        async with async_session() as _db:
+            row = await answer_by_repeating(_db, printer_id)
+    except RepeatNotPossible as e:
+        # Nothing to send again — said plainly rather than queued and failed.
+        await callback.answer(str(e), show_alert=True)
+        return
+
+    try:
+        if row is None:
+            # ⚠️ The gate stays armed: the plate has not been dealt with, and
+            # dropping it would let the queue dispatch onto a bed nobody cleared.
+            await callback.answer(t(lang, NS, "printers.repeat_print_none"), show_alert=True)
+            return
+        # Releasing the gate is part of the answer — while it is armed
+        # ``_is_printer_idle`` is False and the re-armed row would never go out.
+        printer_manager.set_awaiting_plate_clear(printer_id, False)
+        await callback.answer(f"✅ {t(lang, NS, 'printers.repeat_print_ok')}")
     except Exception:
         await callback.answer(t(lang, NS, "printers.clear_plate_fail"), show_alert=True)
         return

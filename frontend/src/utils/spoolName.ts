@@ -159,6 +159,35 @@ export const DEFAULT_SPOOL_DISPLAY_TEMPLATE = '{brand} {material} {color_name}';
 const placeholderMap = new Map(SPOOL_PLACEHOLDERS.map((p) => [p.key, p]));
 
 /**
+ * Characters that are punctuation between two values rather than a value.
+ *
+ * ⚠️ Only a word made ENTIRELY of these counts — "PLA-CF" and "1,000" are
+ * values that happen to contain one.
+ */
+const SEPARATORS = /^[·\-–—/|,;:]+$/;
+
+/**
+ * Drop separators that lost what they were separating.
+ *
+ * ⚠️ `{brand} · {material}` on a spool with no brand read "· PLA". A
+ * separator is punctuation between two things; with one of them gone it is
+ * debris, and debris in a name reads as a fault in the data.
+ *
+ * The same rule runs server-side in `services/label_template.py::resolve`,
+ * because these two lists are one vocabulary written twice — a spool has to
+ * read the same way in the table and on the label printed from it.
+ */
+function dropOrphanSeparators(words: string[]): string[] {
+  const kept: string[] = [];
+  for (const word of words) {
+    if (SEPARATORS.test(word) && (kept.length === 0 || SEPARATORS.test(kept[kept.length - 1]))) continue;
+    kept.push(word);
+  }
+  while (kept.length > 0 && SEPARATORS.test(kept[kept.length - 1])) kept.pop();
+  return kept;
+}
+
+/**
  * Interpolate the template against a single spool.
  *
  * - Unknown placeholders (typos) are left verbatim so the Settings live preview
@@ -168,6 +197,7 @@ const placeholderMap = new Map(SPOOL_PLACEHOLDERS.map((p) => [p.key, p]));
  *   template doesn't leave a dangling space. This is the reason the front-end
  *   path is preferred over a SQL concat: SQL-side would need CASE / COALESCE
  *   gymnastics to get the same feel.
+ * - A separator holding nothing goes with the value it was separating.
  */
 export function formatSpoolDisplayName(
   spool: InventorySpool,
@@ -178,7 +208,7 @@ export function formatSpoolDisplayName(
     const ph = placeholderMap.get(key);
     return ph ? ph.format(spool) : match;
   });
-  return replaced.replace(/\s+/g, ' ').trim();
+  return dropOrphanSeparators(replaced.split(/\s+/).filter(Boolean)).join(' ');
 }
 
 /**

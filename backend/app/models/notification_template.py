@@ -98,6 +98,15 @@ DEFAULT_TEMPLATES = [
         "body_template": "{printer}: Objects detected on build plate. Print has been paused. Clear plate and resume.",
     },
     {
+        "event_type": "filament_deficit",
+        "name": "Filament Will Run Out",
+        "title_template": "Filament Will Run Out",
+        "body_template": (
+            "{printer}: {print_name} needs {needed}g in slot {slot}, which holds {available}g "
+            "— short by {missing}g. The print has started anyway."
+        ),
+    },
+    {
         "event_type": "filament_low",
         "name": "Filament Low",
         "title_template": "Filament Low",
@@ -114,6 +123,16 @@ DEFAULT_TEMPLATES = [
         "name": "AMS Humidity High",
         "title_template": "AMS Humidity Alert",
         "body_template": "{printer} {ams_label}: Humidity {humidity}% exceeds {threshold}% threshold",
+    },
+    {
+        "event_type": "ams_drying_suspended",
+        "name": "AMS Auto-Drying Suspended",
+        "title_template": "Auto-drying stopped",
+        "body_template": (
+            "{printer} {ams_label}: {cycles} drying cycles in a row ended at {humidity}%, still above the "
+            "{threshold}% threshold. An AMS reads higher while warm, so this threshold cannot be reached "
+            "here. Automatic drying is paused for this unit until the reading comes down."
+        ),
     },
     {
         "event_type": "ams_temperature_high",

@@ -23,6 +23,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.spool import Spool
+from backend.app.models.user_filament import UserFilamentPreset
 
 
 class _PrinterManagerPatch:
@@ -91,15 +92,26 @@ class TestAssignSpoolTrayInfoIdx:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_pfus_slicer_filament_discarded_falls_back_to_generic(
-        self, async_client: AsyncClient, printer_factory, spool_factory
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session
     ):
-        """PFUS* setting-ids are not valid tray_info_idx. With no cloud/printer_kp
-        realignment, the PFUS *tray_info_idx* is discarded and an empty slot falls
-        back to the generic id for the spool's material (#1387) — but the PFUS
-        *setting_id* is preserved so the slicer still loads the user's custom cloud
-        preset instead of the Generic fallback setting (#1815)."""
+        """A MIRRORED cloud preset resolves to its family and keeps its cloud
+        setting_id (the family-catalog successor of #1815): tray_info_idx is
+        the family, setting_id stays the PFUS the slicer understands. An
+        UNMIRRORED PFUS is covered by the generic-fallback tests below."""
         printer = await printer_factory(name="H2D")
         spool = await spool_factory(slicer_filament="PFUS9ac902733670a9", material="PLA")
+        db_session.add(
+            UserFilamentPreset(
+                owner_user_id=None,
+                ecosystem="bambu",
+                source="cloud_bambu",
+                cloud_id="PFUS9ac902733670a9",
+                name="My PLA @BBL H2D",
+                family_filament_id="GFA00",
+                filament_type="PLA",
+            )
+        )
+        await db_session.commit()
 
         mock_client = MagicMock()
         mock_client.ams_set_filament_setting.return_value = True
@@ -118,9 +130,9 @@ class TestAssignSpoolTrayInfoIdx:
 
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
-            assert call_kwargs.kwargs["tray_info_idx"] == "GFL99"
-            # #1815: PFUS is a valid *slicer* setting_id even when it's not a valid
-            # tray_info_idx — preserve it instead of overwriting with GFSL99.
+            # The mirror resolves the family; the printer gets the family id...
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFA00"
+            # ...and the slicer-facing setting_id stays the user's cloud preset.
             assert call_kwargs.kwargs["setting_id"] == "PFUS9ac902733670a9"
 
     @pytest.mark.asyncio
@@ -159,11 +171,13 @@ class TestAssignSpoolTrayInfoIdx:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_pfus_discarded_reuses_slot_specific_preset(
+    async def test_pfus_discarded_does_not_reuse_foreign_tray_id(
         self, async_client: AsyncClient, printer_factory, spool_factory
     ):
-        """A discarded PFUS spool reuses the slot's own specific preset when the
-        slot material matches the spool (#1387 fallback: slot-reuse before generic)."""
+        """The old slot-reuse heuristic is deliberately gone (family catalog,
+        spec A §5.2): an unmirrored PFUS spool degrades to the generic family
+        of its material — the tray's current id belongs to whatever spool was
+        there before and is never copied onto this one."""
         printer = await printer_factory(name="H2D")
         spool = await spool_factory(slicer_filament="PFUS9ac902733670a9", material="PLA")
 
@@ -187,8 +201,9 @@ class TestAssignSpoolTrayInfoIdx:
 
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
-            # PFUS discarded → slot's specific preset (same material) is reused.
-            assert call_kwargs.kwargs["tray_info_idx"] == "P4d64437"
+            # PFUS unknown to the mirrors → generic family of the material;
+            # the foreign P4d64437 on the tray is NOT copied onto this spool.
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFL99"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -380,10 +395,12 @@ class TestAssignSpoolTrayInfoIdx:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_no_preset_reuses_specific_slot_preset(
+    async def test_no_preset_goes_generic_not_tray_reuse(
         self, async_client: AsyncClient, printer_factory, spool_factory
     ):
-        """Spool without preset + specific preset on slot → reuse slot's preset."""
+        """Spool without any preset link → the generic family of its material
+        (family catalog, spec A §5.2). The tray's current specific id belongs
+        to the previous spool and is never inherited."""
         printer = await printer_factory(name="X1C")
         spool = await spool_factory(slicer_filament=None, material="PLA")
 
@@ -407,152 +424,12 @@ class TestAssignSpoolTrayInfoIdx:
 
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
-            # Slot's specific preset is reused when spool has no own preset
-            assert call_kwargs.kwargs["tray_info_idx"] == "GFA05"
+            # Generic PLA family — the tray's GFA05 is not inherited.
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFL99"
 
 
-class TestAssignSpoolPresetMapping:
-    """Tests that assign_spool saves the slot preset mapping for correct UI display."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_preset_mapping_saved_with_slicer_filament_name(
-        self, async_client: AsyncClient, printer_factory, spool_factory
-    ):
-        """Slot preset mapping uses slicer_filament_name (not material+subtype)."""
-
-        printer = await printer_factory(name="X1C")
-        spool = await spool_factory(
-            slicer_filament="GFA05",
-            slicer_filament_name="Bambu PLA Silk",
-            material="PLA",
-            subtype="Silk",
-            brand="Bambu",
-        )
-
-        mock_client = MagicMock()
-        mock_client.ams_set_filament_setting.return_value = True
-        mock_client.extrusion_cali_sel.return_value = True
-        status = _make_mock_status(ams_data=[{"id": 0, "tray": [{"id": 1, "tray_type": "PLA"}]}])
-
-        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
-            mock_pm.get_client.return_value = mock_client
-            mock_pm.get_status.return_value = status
-
-            response = await async_client.post(
-                "/api/v1/inventory/assignments",
-                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 1},
-            )
-
-        assert response.status_code == 200
-
-        # Verify via the slot presets API
-        presets_resp = await async_client.get(f"/api/v1/printers/{printer.id}/slot-presets")
-        assert presets_resp.status_code == 200
-        presets = presets_resp.json()
-        # Key is str(ams_id * 4 + tray_id) - ams 0, tray 1 → "1"
-        assert "1" in presets
-        # Must use slicer_filament_name, NOT "PLA Silk" from material+subtype
-        assert presets["1"]["preset_name"] == "Bambu PLA Silk"
-        assert presets["1"]["preset_id"] == "GFSA05"
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_preset_mapping_overwrites_old_mapping(
-        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
-    ):
-        """Assigning a new spool overwrites the old slot preset mapping."""
-        from backend.app.models.slot_preset import SlotPresetMapping
-
-        printer = await printer_factory(name="X1C")
-
-        # Pre-existing mapping (e.g. from previous manual configuration)
-        old_mapping = SlotPresetMapping(
-            printer_id=printer.id,
-            ams_id=0,
-            tray_id=2,
-            preset_id="GFSA01",
-            preset_name="Bambu PLA Matte",
-            preset_source="cloud",
-        )
-        db_session.add(old_mapping)
-        await db_session.commit()
-
-        # Assign a "Generic PLA Silk" spool to same slot
-        spool = await spool_factory(
-            slicer_filament="GFL96",
-            slicer_filament_name="Generic PLA Silk",
-            material="PLA",
-            subtype="Silk",
-        )
-
-        mock_client = MagicMock()
-        mock_client.ams_set_filament_setting.return_value = True
-        mock_client.extrusion_cali_sel.return_value = True
-        status = _make_mock_status(ams_data=[{"id": 0, "tray": [{"id": 2, "tray_type": "PLA"}]}])
-
-        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
-            mock_pm.get_client.return_value = mock_client
-            mock_pm.get_status.return_value = status
-
-            response = await async_client.post(
-                "/api/v1/inventory/assignments",
-                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 2},
-            )
-
-        assert response.status_code == 200
-
-        # Verify via the slot presets API to avoid stale session cache
-        presets_resp = await async_client.get(f"/api/v1/printers/{printer.id}/slot-presets")
-        assert presets_resp.status_code == 200
-        presets = presets_resp.json()
-        # Key is str(ams_id * 4 + tray_id) - ams 0, tray 2 → "2"
-        assert "2" in presets
-        # Old "Bambu PLA Matte" must be overwritten
-        assert presets["2"]["preset_name"] == "Generic PLA Silk"
-        assert presets["2"]["preset_id"] == "GFSL96"
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_preset_mapping_fallback_to_tray_sub_brands(
-        self, async_client: AsyncClient, printer_factory, spool_factory
-    ):
-        """When slicer_filament_name is null, falls back to tray_sub_brands."""
-        from backend.app.models.slot_preset import SlotPresetMapping
-
-        printer = await printer_factory(name="A1M")
-        spool = await spool_factory(
-            slicer_filament="GFL05",
-            slicer_filament_name=None,
-            material="PLA",
-            subtype="Matte",
-            brand="Overture",
-        )
-
-        mock_client = MagicMock()
-        mock_client.ams_set_filament_setting.return_value = True
-        mock_client.extrusion_cali_sel.return_value = True
-        status = _make_mock_status(ams_data=[{"id": 0, "tray": [{"id": 0, "tray_type": "PLA"}]}])
-
-        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
-            mock_pm.get_client.return_value = mock_client
-            mock_pm.get_status.return_value = status
-
-            response = await async_client.post(
-                "/api/v1/inventory/assignments",
-                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 0},
-            )
-
-        assert response.status_code == 200
-
-        # Verify via the slot presets API
-        presets_resp = await async_client.get(f"/api/v1/printers/{printer.id}/slot-presets")
-        assert presets_resp.status_code == 200
-        presets = presets_resp.json()
-        # Key is str(ams_id * 4 + tray_id) - ams 0, tray 0 → "0"
-        assert "0" in presets
-        # Falls back to tray_sub_brands ("Overture PLA Matte")
-        assert presets["0"]["preset_name"] == "Overture PLA Matte"
+# (TestAssignSpoolPresetMapping deleted: slot_preset_mappings retired —
+# slot display names come from the identity resolver.)
 
 
 class TestAssignSpoolEmptySlotPreConfig:
@@ -781,3 +658,99 @@ class TestAssignSpoolEmptySlotPreConfig:
 
         # Fingerprint was already set — re-fire path skipped
         mock_client.ams_set_filament_setting.assert_not_called()
+
+
+class TestARunoutIsNotASpoolRemoval:
+    """A slot that empties mid-print is a runout, not somebody taking the spool out.
+
+    The spool is still physically in the AMS, just consumed. Unlinking it there
+    loses the only record of which spool fed the print, so the completion path
+    has nothing to charge the runout segment to — and with AMS filament backup
+    the whole print then lands on the substitute spool (upstream `454457a0`).
+    """
+
+    async def _push(self, printer_id: int, ams_data: list, printer_state: str):
+        from backend.app.main import on_ams_change
+
+        status = _make_mock_status(ams_data=ams_data)
+        status.state = printer_state
+
+        with (
+            patch("backend.app.main.printer_manager") as mock_pm_main,
+            patch("backend.app.services.printer_manager.printer_manager") as mock_pm_inv,
+            patch("backend.app.main.mqtt_relay") as mock_relay,
+            patch("backend.app.main.ws_manager") as mock_ws,
+        ):
+            mock_pm_main.get_printer.return_value = MagicMock(name="X1C", serial_number="00M00A391800004")
+            mock_pm_main.get_status.return_value = status
+            mock_pm_main.get_client.return_value = MagicMock()
+            mock_pm_main.get_model.return_value = "X1C"
+            mock_pm_inv.get_status.return_value = status
+            mock_relay.on_ams_change = AsyncMock()
+            mock_ws.send_printer_status = AsyncMock()
+            mock_ws.broadcast = AsyncMock()
+
+            await on_ams_change(printer_id, ams_data)
+
+    async def _assignment_for(self, db_session: AsyncSession, printer_id: int):
+        from sqlalchemy import select
+
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        result = await db_session.execute(select(SpoolAssignment).where(SpoolAssignment.printer_id == printer_id))
+        return result.scalars().all()
+
+    async def _assigned_printer(self, printer_factory, spool_factory, db_session):
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        printer = await printer_factory(name="X1C")
+        spool = await spool_factory(material="PLA")
+        db_session.add(
+            SpoolAssignment(
+                spool_id=spool.id,
+                printer_id=printer.id,
+                ams_id=0,
+                tray_id=0,
+                fingerprint_color="FF0000FF",
+                fingerprint_type="PLA",
+            )
+        )
+        await db_session.commit()
+        return printer
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_link_survives_a_slot_vanishing_mid_print(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+    ):
+        printer = await self._assigned_printer(printer_factory, spool_factory, db_session)
+
+        # AMS 0 now reports only tray 1 — the assigned slot is gone from the push.
+        await self._push(printer.id, [{"id": 0, "tray": [{"id": 1, "tray_type": "PETG"}]}], "RUNNING")
+
+        assert len(await self._assignment_for(db_session, printer.id)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_paused_print_counts_as_running(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+    ):
+        """A runout usually pauses the printer — the state most likely to be seen."""
+        printer = await self._assigned_printer(printer_factory, spool_factory, db_session)
+
+        await self._push(printer.id, [{"id": 0, "tray": [{"id": 1, "tray_type": "PETG"}]}], "PAUSE")
+
+        assert len(await self._assignment_for(db_session, printer.id)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_idle_printer_still_unlinks_an_empty_slot(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+    ):
+        """The guard defers the decision, it does not cancel it: with no print
+        running an empty slot really is a spool that was taken out."""
+        printer = await self._assigned_printer(printer_factory, spool_factory, db_session)
+
+        await self._push(printer.id, [{"id": 0, "tray": [{"id": 1, "tray_type": "PETG"}]}], "IDLE")
+
+        assert await self._assignment_for(db_session, printer.id) == []

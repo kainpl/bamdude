@@ -9,7 +9,7 @@ import {
   type SlicerPipeline,
   type UnifiedPresetsResponse,
 } from '../api/client';
-import { resolvePresetName } from './preset-picker/presetPickerUtils';
+import { resolvePresetName } from '../utils/presetPickerUtils';
 import { Card, CardContent, CardHeader } from './Card';
 import { useToast } from '../contexts/ToastContext';
 

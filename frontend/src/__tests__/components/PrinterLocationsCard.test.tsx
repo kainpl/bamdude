@@ -85,3 +85,138 @@ describe('PrinterLocationsCard', () => {
     expect([...own.options].map((option) => option.value)).not.toContain('2');
   });
 });
+
+describe('the rows line up as columns', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(api, 'getPrinterLocations').mockResolvedValue(ROWS);
+  });
+
+  it('shares one grid between all rows rather than a flex row each', async () => {
+    // ⚠️ The bug this replaces: every column here is content-sized, so with a
+    // flex row per item each row sized its own. A row whose parent read "Top
+    // level" pushed its picker wider and further left than the row below it.
+    render(<PrinterLocationsCard />);
+    await screen.findAllByText('Shelf 1');
+
+    const list = screen.getByRole('list');
+    expect(list.className).toContain('grid');
+    expect(list.className).toContain('grid-cols-');
+  });
+
+  it('lets each row hand its cells to that grid', async () => {
+    render(<PrinterLocationsCard />);
+    await screen.findAllByText('Shelf 1');
+
+    for (const row of screen.getAllByRole('listitem')) {
+      expect(row.className).toContain('contents');
+    }
+  });
+
+  it('gives every row exactly one cell per column', async () => {
+    // ⚠️ This is the trap `contents` sets. Every child of the row becomes a
+    // grid item — including one that is only there for screen readers. Adding a
+    // sibling `<label class="sr-only">` back would take a column of its own and
+    // push the whole row one cell across, which is why the picker is labelled
+    // by `aria-label` instead.
+    render(<PrinterLocationsCard />);
+    await screen.findAllByText('Shelf 1');
+
+    const columns = (screen.getByRole('list').className.match(/grid-cols-\[(.+?)\]/) || [])[1];
+    expect(columns?.split('_')).toHaveLength(4);
+    for (const row of screen.getAllByRole('listitem')) {
+      expect(row.children).toHaveLength(4);
+    }
+  });
+
+  it('still names the picker for a screen reader', async () => {
+    render(<PrinterLocationsCard />);
+    await screen.findAllByText('Shelf 1');
+
+    expect(screen.getByLabelText(/Shelf 1$/)).toBeInstanceOf(HTMLSelectElement);
+  });
+});
+
+describe('renaming a location', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(api, 'getPrinterLocations').mockResolvedValue(ROWS);
+  });
+
+  const openEditor = async () => {
+    render(<PrinterLocationsCard />);
+    await screen.findAllByText('Shelf 1');
+    // Second row's pencil — the rows are Workshop, then Shelf 1.
+    await userEvent.click(screen.getAllByTitle('Edit')[1]);
+    return screen.getByRole('textbox', { name: /Shelf 1$/ });
+  };
+
+  it('saves on Enter', async () => {
+    const update = vi.spyOn(api, 'updatePrinterLocation').mockResolvedValue({} as never);
+    const field = await openEditor();
+
+    await userEvent.clear(field);
+    await userEvent.type(field, 'Shelf One{Enter}');
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith(2, { name: 'Shelf One' }));
+  });
+
+  it('abandons on Escape', async () => {
+    const update = vi.spyOn(api, 'updatePrinterLocation').mockResolvedValue({} as never);
+    const field = await openEditor();
+
+    await userEvent.clear(field);
+    await userEvent.type(field, 'Shelf One{Escape}');
+
+    expect(update).not.toHaveBeenCalled();
+    // ⚠️ Asserted on the editor being gone, not on the text: "Shelf 1" also
+    // appears in every other row's parent picker, so a text match finds four.
+    expect(screen.queryByRole('textbox', { name: /Shelf 1$/ })).toBeNull();
+  });
+
+  it('saves when you click away, because a finished rename is finished', async () => {
+    const update = vi.spyOn(api, 'updatePrinterLocation').mockResolvedValue({} as never);
+    const field = await openEditor();
+
+    await userEvent.clear(field);
+    await userEvent.type(field, 'Shelf One');
+    await userEvent.tab();
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith(2, { name: 'Shelf One' }));
+  });
+
+  it('writes nothing when the name did not change', async () => {
+    // ⚠️ Leaving a row you opened by mistake must not PATCH anything.
+    const update = vi.spyOn(api, 'updatePrinterLocation').mockResolvedValue({} as never);
+    const field = await openEditor();
+
+    await userEvent.tab();
+
+    expect(update).not.toHaveBeenCalled();
+    expect(field.isConnected).toBe(false);
+  });
+
+  it('writes nothing when the field was emptied', async () => {
+    // The backend would refuse it, in a sentence about a field nobody meant to
+    // touch — and an empty name is a slip, not a request.
+    const update = vi.spyOn(api, 'updatePrinterLocation').mockResolvedValue({} as never);
+    const field = await openEditor();
+
+    await userEvent.clear(field);
+    await userEvent.tab();
+
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('moves a location without touching its name', async () => {
+    // The parent picker and the rename share one endpoint; each must send only
+    // its own field, or moving a row would rewrite the name it happens to show.
+    const update = vi.spyOn(api, 'updatePrinterLocation').mockResolvedValue({} as never);
+    render(<PrinterLocationsCard />);
+    await screen.findAllByText('Shelf 1');
+
+    await userEvent.selectOptions(screen.getByLabelText(/Inside Shelf 1$/), '');
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith(2, { parent_id: null }));
+  });
+});

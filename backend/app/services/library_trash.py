@@ -130,6 +130,38 @@ class LibraryPurgeRunResult:
         }
 
 
+async def _cancel_pending_queue_items(db: AsyncSession, library_file_id: int) -> None:
+    """Cancel pending queue items whose source file is on its way out.
+
+    A queue row that outlives its file cannot dispatch, and until now it was
+    left to find that out at the printer — days later, as "Library file not
+    found" — or, on the external branch below, was deleted outright with no
+    error and no history (upstream #2819, which had both faces of this).
+
+    ⚠️ **Only ``pending`` rows.** ``printing`` is a race the printer-side fail
+    path catches anyway, and completed / failed / cancelled rows are history:
+    rewriting those would edit the record of what actually happened.
+
+    Twin of ``archive_purge.ArchivePurgeService._cancel_pending_queue_items``,
+    which does the same for a trashed archive. Both leave the row visible with
+    a reason rather than removing it, because a job that vanished silently is
+    indistinguishable from one that was never queued.
+
+    Does not commit; the caller owns the transaction.
+    """
+    from backend.app.models.print_queue import PrintQueueItem
+
+    result = await db.execute(
+        select(PrintQueueItem).where(
+            PrintQueueItem.library_file_id == library_file_id,
+            PrintQueueItem.status == "pending",
+        )
+    )
+    for item in result.scalars().all():
+        item.status = "cancelled"
+        item.waiting_reason = "Source file deleted"
+
+
 class LibraryTrashService:
     """Manages the trash retention sweeper and admin-triggered bulk purges."""
 
@@ -509,6 +541,19 @@ class LibraryTrashService:
         await db.execute(
             update(PrintArchive).where(PrintArchive.library_file_id.in_(row_ids)).values(library_file_id=None)
         )
+        # ⚠️ And the queue, for exactly the same reason. ``print_queue.
+        # library_file_id`` is ``ON DELETE SET NULL`` so a row OUTLIVES the file
+        # it was queued from — that is deliberate, it is the operator's record
+        # of what was asked for. With FK actions off the nulling never happened
+        # here, so a row cancelled when the file went to the trash ended up,
+        # after the retention window, pointing at a library file that no longer
+        # exists. The route-side delete paths already do this; the sweeper did
+        # it for archives and forgot the queue.
+        from backend.app.models.print_queue import PrintQueueItem
+
+        await db.execute(
+            update(PrintQueueItem).where(PrintQueueItem.library_file_id.in_(row_ids)).values(library_file_id=None)
+        )
         await db.execute(delete(LibraryFile).where(LibraryFile.id.in_(row_ids)))
         await db.commit()
         logger.info("Library trash sweeper: hard-deleted %d row(s) past %d-day retention", deleted, retention)
@@ -581,6 +626,7 @@ class LibraryTrashService:
             await db.delete(file)
             return False
 
+        await _cancel_pending_queue_items(db, file.id)
         file.deleted_at = datetime.now(timezone.utc)
         if detach_folder:
             file.folder_id = None

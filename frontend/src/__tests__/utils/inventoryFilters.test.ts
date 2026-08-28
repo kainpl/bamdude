@@ -160,3 +160,44 @@ describe('withCurrentId', () => {
     expect(withCurrentId([1, 2], '')).toEqual([1, 2]);
   });
 });
+
+describe('the assigned filter', () => {
+  beforeEach(() => localStorage.clear());
+
+  it('is off by default', () => {
+    expect(DEFAULT_FILTERS.assignedFilter).toBe('all');
+  });
+
+  it('survives a round trip', () => {
+    saveFilters({ ...DEFAULT_FILTERS, assignedFilter: 'unassigned' });
+    expect(loadFilters().assignedFilter).toBe('unassigned');
+  });
+
+  it('falls back when the stored value is not one we support', () => {
+    // ⚠️ The failure this guards is silent: an unknown value would filter every
+    // spool out of a list whose controls all read "no filter".
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({ assignedFilter: 'maybe' }));
+    expect(loadFilters().assignedFilter).toBe('all');
+  });
+
+  it('is missing from an older saved blob without breaking it', () => {
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({ materialFilter: 'PETG' }));
+    const loaded = loadFilters();
+    expect(loaded.assignedFilter).toBe('all');
+    expect(loaded.materialFilter).toBe('PETG');
+  });
+
+  it('counts as a narrowed filter, so Clear filters has something to clear', () => {
+    // saveFilters drops the key entirely when nothing is narrowed — if this
+    // field were left out of the comparison, setting it would write nothing and
+    // the choice would vanish on the next visit.
+    saveFilters({ ...DEFAULT_FILTERS, assignedFilter: 'assigned' });
+    expect(localStorage.getItem(FILTERS_KEY)).not.toBeNull();
+  });
+
+  it('clears with everything else', () => {
+    saveFilters({ ...DEFAULT_FILTERS, assignedFilter: 'assigned' } satisfies StoredFilters);
+    saveFilters(DEFAULT_FILTERS);
+    expect(localStorage.getItem(FILTERS_KEY)).toBeNull();
+  });
+});

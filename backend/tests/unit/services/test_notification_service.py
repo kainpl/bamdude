@@ -2574,3 +2574,54 @@ class TestBarkProvider:
         assert live_ok is True
         assert test_ok is True
         assert mock_send.call_count == 2
+
+
+class TestFilamentRunoutNotification:
+    """The runout trigger: pause/external prompts to assign the replacement,
+    autoswitch is informational, and providers gate on on_filament_runout."""
+
+    @pytest.fixture
+    def service(self):
+        return NotificationService()
+
+    def _provider(self):
+        provider = MagicMock()
+        provider.id = 1
+        provider.provider_type = "webhook"
+        provider.enabled = True
+        provider.on_filament_runout = True
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_pause_kind_uses_the_waiting_template(self, service):
+        db = AsyncMock()
+        with (
+            patch.object(service, "_get_providers_for_event", AsyncMock(return_value=[self._provider()])) as gp,
+            patch.object(service, "_build_message_from_template", AsyncMock(return_value=("T", "M"))) as build,
+            patch.object(service, "_send_to_providers", AsyncMock()) as send,
+        ):
+            await service.on_filament_runout(1, "P1S", "A2", "pause", db)
+        gp.assert_awaited_once_with(db, "on_filament_runout", 1)
+        assert build.await_args[0][1] == "filament_runout"
+        assert send.await_args[0][4] == "filament_runout"
+
+    @pytest.mark.asyncio
+    async def test_autoswitch_uses_the_backup_template(self, service):
+        db = AsyncMock()
+        with (
+            patch.object(service, "_get_providers_for_event", AsyncMock(return_value=[self._provider()])),
+            patch.object(service, "_build_message_from_template", AsyncMock(return_value=("T", "M"))) as build,
+            patch.object(service, "_send_to_providers", AsyncMock()),
+        ):
+            await service.on_filament_runout(1, "P1S", "A2", "autoswitch", db)
+        assert build.await_args[0][1] == "filament_runout_backup"
+
+    @pytest.mark.asyncio
+    async def test_no_opted_in_provider_sends_nothing(self, service):
+        db = AsyncMock()
+        with (
+            patch.object(service, "_get_providers_for_event", AsyncMock(return_value=[])),
+            patch.object(service, "_send_to_providers", AsyncMock()) as send,
+        ):
+            await service.on_filament_runout(1, "P1S", "A2", "pause", db)
+        send.assert_not_awaited()

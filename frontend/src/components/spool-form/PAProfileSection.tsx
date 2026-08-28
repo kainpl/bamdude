@@ -32,12 +32,11 @@ export function PAProfileSection({
     enabled: needsCloudDetail,
     staleTime: 60_000,
   });
-  // Prefer the custom preset's inherited base (base_id) over its own id so a
-  // custom filament matches the base's K-profiles (calibrated under the base).
-  const targetFilamentId = resolveTargetFilamentId(
-    formData.slicer_filament,
-    cloudSettingDetailQuery.data,
-  );
+  // The family link is the identity authority (spec A §5.1); the legacy
+  // preset resolution only fills in for spools not yet linked.
+  const targetFilamentId =
+    formData.filament_family_id
+    || resolveTargetFilamentId(formData.slicer_filament, cloudSettingDetailQuery.data);
 
   const togglePrinterExpanded = (printerId: string) => {
     setExpandedPrinters((prev) => {

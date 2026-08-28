@@ -426,3 +426,81 @@ class TestHtRemovalIsNoticed:
         )
 
         assert client.state.raw_data["ams"][0]["tray"][0]["tray_type"] == "PLA"
+
+
+class TestOutgoingPublishesAreTeed:
+    """The other half of a recording, wired at the one place paho is built.
+
+    ⚠️ Not at the call sites: this class publishes from dozens of them, and the
+    single method that already carried an outgoing hook is not the one the
+    commands worth reading go through.
+    """
+
+    class _Paho:
+        def __init__(self):
+            self.sent = []
+
+        def publish(self, topic, payload=None, qos=0, retain=False, properties=None):
+            self.sent.append((topic, payload, qos))
+            return "ack"
+
+    def test_a_publish_reaches_both_the_printer_and_the_listener(self, client):
+        paho = self._Paho()
+        client._tee_publishes(paho)
+        seen = []
+        client.register_raw_publish_handler(lambda t, p: seen.append((t, p)))
+
+        result = paho.publish("device/X/request", '{"print":{"command":"x"}}', qos=1)
+
+        assert result == "ack", "the real publish must still happen and its result pass through"
+        assert paho.sent == [("device/X/request", '{"print":{"command":"x"}}', 1)]
+        assert seen == [("device/X/request", b'{"print":{"command":"x"}}')]
+
+    def test_a_crashing_listener_cannot_stop_a_command(self, client):
+        """⚠️ A debugging aid must never be able to keep a command from the printer."""
+        paho = self._Paho()
+        client._tee_publishes(paho)
+
+        def _boom(_t, _p):
+            raise RuntimeError("nope")
+
+        client.register_raw_publish_handler(_boom)
+
+        paho.publish("device/X/request", "{}")
+
+        assert len(paho.sent) == 1
+
+    def test_nothing_is_teed_once_unregistered(self, client):
+        paho = self._Paho()
+        client._tee_publishes(paho)
+        seen = []
+        handler = lambda t, p: seen.append(t)  # noqa: E731
+        client.register_raw_publish_handler(handler)
+        client.unregister_raw_publish_handler(handler)
+
+        paho.publish("device/X/request", "{}")
+
+        assert seen == []
+
+
+class TestTheTeeIsActuallyAttached:
+    """⚠️ ``_tee_publishes`` being correct proves nothing if nobody calls it.
+
+    Removing the one call in ``connect`` left every other test in this file
+    green, which is exactly how a recording would quietly lose its outgoing
+    half again.
+    """
+
+    def test_connect_wraps_the_paho_client_it_builds(self, client, monkeypatch):
+        from unittest.mock import MagicMock
+
+        built = MagicMock()
+        monkeypatch.setattr("backend.app.services.bambu_mqtt.mqtt.Client", MagicMock(return_value=built))
+
+        client.connect()
+
+        seen = []
+        client.register_raw_publish_handler(lambda t, p: seen.append(t))
+        client._client.publish("device/X/request", "{}")
+
+        assert seen == ["device/X/request"], "connect() built a client nobody tees"

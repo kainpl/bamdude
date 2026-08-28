@@ -22,6 +22,15 @@ from backend.app.services.usage_tracker import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _empty_usage_journal():
+    """on_print_complete (m153) loads the print's usage journal before Path 1;
+    these legacy sequential-mock harnesses predate it, so neutralise that query
+    instead of shifting every response list by one."""
+    with patch("backend.app.services.print_usage_journal.load_events", AsyncMock(return_value=[])):
+        yield
+
+
 def _make_spool(spool_id=1, label_weight=1000, weight_used=0, tag_uid=None, tray_uuid=None):
     """Create a mock Spool object."""
     spool = MagicMock()
@@ -84,10 +93,14 @@ def _mock_db_sequential(responses):
         idx = call_count[0]
         call_count[0] += 1
         result = MagicMock()
-        if idx < len(responses):
-            result.scalar_one_or_none.return_value = responses[idx]
-        else:
-            result.scalar_one_or_none.return_value = None
+        response = responses[idx] if idx < len(responses) else None
+        result.scalar_one_or_none.return_value = response
+        # The queue-item lookup reads `.scalars().first()` — it must tolerate a
+        # re-print pointing a second queue item at the same archive, where
+        # `scalar_one_or_none` would raise and cost the print all of its usage
+        # tracking. Both shapes answer with the same row so a test's response
+        # list stays a plain "one per query" sequence.
+        result.scalars.return_value.first.return_value = response
         # For cost aggregation queries that use .scalar() instead of .scalar_one_or_none()
         result.scalar.return_value = None
         return result
@@ -482,7 +495,9 @@ class TestTrackFrom3mf:
 
     @pytest.mark.asyncio
     async def test_per_layer_partial_print(self):
-        """Failed print at layer N uses gcode cumulative data."""
+        """Failed print at layer N uses the slot's gcode-timeline FRACTION x
+        the slicer estimate — not absolute mm→grams: flush lives in firmware
+        macros and never appears as gcode extrusion (2026-08-28)."""
         spool = _make_spool(spool_id=1, label_weight=1000)
         assignment = _make_assignment(spool_id=1)
         archive = _make_archive(archive_id=10)
@@ -515,15 +530,13 @@ class TestTrackFrom3mf:
             ),
             patch(
                 "backend.app.utils.threemf_tools.get_cumulative_usage_at_layer",
-                return_value={0: 5000.0},
+                # 7500 of the slot's 10000 mm timeline — deliberately NOT the
+                # linear 50% so the assertion can tell fraction from linear.
+                return_value={0: 7500.0},
             ),
             patch(
                 "backend.app.utils.threemf_tools.extract_filament_properties_from_3mf",
                 return_value=filament_props,
-            ),
-            patch(
-                "backend.app.utils.threemf_tools.mm_to_grams",
-                return_value=12.0,  # 5000mm at 1.75mm/1.24g/cm3
             ),
         ):
             mock_settings.base_dir = MagicMock()
@@ -542,8 +555,9 @@ class TestTrackFrom3mf:
             )
 
         assert len(results) == 1
-        # Should use per-layer grams (12.0g), not linear scale (10.0g)
-        assert results[0]["weight_used"] == 12.0
+        # Fraction 7500/10000 x 20 g estimate = 15 g — not the linear 10 g,
+        # and not absolute gcode grams (which exclude the flush entirely).
+        assert results[0]["weight_used"] == 15.0
 
     @pytest.mark.asyncio
     async def test_completed_print_uses_full_weight(self):
@@ -811,8 +825,9 @@ class TestTrackFrom3mf:
         assignment = _make_assignment(spool_id=10, ams_id=2, tray_id=1)
         archive = _make_archive(archive_id=50)
 
-        # db: archive, assignment, spool (no queue lookup when ams_mapping provided)
-        db = _mock_db_sequential([archive, assignment, spool])
+        # db: archive, queue_item(None) — the -1 marker asks the queue for the
+        # pre-remap mapping — then assignment, spool.
+        db = _mock_db_sequential([archive, None, assignment, spool])
 
         printer_manager = MagicMock()
         printer_manager.get_status.return_value = SimpleNamespace(
@@ -1631,11 +1646,15 @@ class TestMqttMappingIntegration:
         assign_red = _make_assignment(spool_id=3, ams_id=128, tray_id=0)
         archive = _make_archive(archive_id=12)
 
-        # db: archive, then 3 pairs of (assignment, spool)
-        # No queue lookup because MQTT mapping is found first
+        # db: archive, the queue lookup (nothing — this print came from the
+        # printer, not the queue), then 3 pairs of (assignment, spool).
+        # The queue is asked FIRST now: AMS filament backup rewrites the live
+        # `mapping` field to the substitute tray, so a dispatched mapping, where
+        # one exists, outranks it.
         db = _mock_db_sequential(
             [
                 archive,
+                None,
                 assign_white,
                 spool_white,
                 assign_black,

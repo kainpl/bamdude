@@ -23,7 +23,6 @@ from backend.app.core.tasks import spawn_background_task
 from backend.app.models.ams_label import AmsLabel
 from backend.app.models.printer import Printer
 from backend.app.models.printer_location import PrinterLocation
-from backend.app.models.slot_preset import SlotPresetMapping
 from backend.app.models.user import User
 from backend.app.schemas.printer import (
     AmsLabelBody,
@@ -33,7 +32,7 @@ from backend.app.schemas.printer import (
     FilaSwitchResponse,
     HmsActionBody,
     HMSErrorResponse,
-    MqttRecordingRequest,
+    MQTTRecordingRequest,
     NozzleInfoResponse,
     NozzleRackSlot,
     PrinterCreate,
@@ -59,12 +58,14 @@ from backend.app.services.bambu_mqtt import (
     airduct_mode_effective,
     airduct_parts_effective,
 )
+from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import (
     _airduct_fans,
+    display_temperatures,
     drying_screen_only,
     find_ams_unit,
     first_drying_blocking_reason,
@@ -78,8 +79,8 @@ from backend.app.services.printer_manager import (
     supports_chamber_temp,
     supports_drying,
     supports_drying_while_printing,
+    uniform_tray_drying_hint,
 )
-from backend.app.utils.filament_ids import filament_id_to_setting_id
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import is_within, limits_for
@@ -256,6 +257,23 @@ async def create_printer(
     return printer
 
 
+@router.get("/{printer_id}/usage-projection")
+async def get_usage_projection(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    _=RequirePermission(Permission.PRINTERS_READ),
+):
+    """Live filament-usage projection for the print running on this printer.
+
+    Display-only: consumed-so-far per slot from the per-layer G-code cumulative
+    (linear fallback), split by the usage journal's frozen spool boundaries.
+    Writes nothing — the books are written once, at completion.
+    """
+    from backend.app.services.usage_projection import compute_usage_projection
+
+    return await compute_usage_projection(db, printer_id)
+
+
 @router.get("/usb-cameras")
 async def list_usb_cameras(
     _=RequirePermission(Permission.PRINTERS_READ),
@@ -285,10 +303,12 @@ async def get_available_filaments(
 
     Used by the frontend to offer filament override options for model-based queue assignment.
     """
-    from backend.app.utils.printer_models import normalize_printer_model, normalize_printer_model_id
+    from backend.app.utils.printer_models import normalize_model_name
 
-    # Normalize model name
-    normalized_model = normalize_printer_model(model) or normalize_printer_model_id(model) or model
+    # One helper, because the or-chain this replaces had a dead second branch:
+    # ``normalize_printer_model`` returns an unknown code unchanged, so the code
+    # map was never reached and an internal code found no printers at all.
+    normalized_model = normalize_model_name(model) or model
 
     query = (
         select(Printer)
@@ -471,13 +491,23 @@ async def update_printer(
         if printer.is_active:
             await printer_manager.connect_printer(printer)
 
+    # Parking a printer (Maintenance Mode) takes it out of "available" exactly
+    # as archiving does, and leaves a running Cloud Link publishing it for the
+    # same reason — see ``archive_printer``, including why this cannot be
+    # allowed to fail the request that has already been committed.
+    if "is_active" in update_data and not printer.is_active:
+        try:
+            await cloud_link_service.request_snapshot()
+        except Exception as e:
+            logger.warning("Cloud Link: could not refresh the publish set after parking printer %s: %s", printer_id, e)
+
     return printer
 
 
 @router.post("/{printer_id}/mqtt-recording")
 async def set_mqtt_recording(
     printer_id: int,
-    body: MqttRecordingRequest,
+    body: MQTTRecordingRequest,
     _=RequirePermission(Permission.PRINTERS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
@@ -516,6 +546,85 @@ async def set_mqtt_recording(
 
     await db.commit()
     return {"enabled": printer.mqtt_recording, "file": str(mqtt_recorder.file_for(printer_id) or "")}
+
+
+@router.get("/{printer_id}/mqtt-recording")
+async def get_mqtt_recording(
+    printer_id: int,
+    limit: int = 500,
+    _=RequirePermission(Permission.PRINTERS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """The tail of this printer's recording, for the debug dialog.
+
+    ⚠️ Reads the FILE, not an in-memory buffer. The buffer this replaced held a
+    hundred messages, so the beginning of anything interesting had already
+    scrolled out of it by the time somebody looked — and it saw only the
+    commands that went through ``send_command``, which is not the path the
+    commands worth reading take.
+
+    Works on a stopped recording too: the file is the artefact, and reading one
+    back is most of why it is written.
+    """
+    from backend.app.services.mqtt_recorder import mqtt_recorder
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(404, "Printer not found")
+
+    return {
+        "recording": mqtt_recorder.is_recording(printer_id),
+        "size_bytes": mqtt_recorder.size_on_disk(printer_id),
+        "entries": mqtt_recorder.tail(printer_id, limit=max(1, min(limit, 5000))),
+    }
+
+
+@router.get("/{printer_id}/mqtt-recording/download")
+async def download_mqtt_recording(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """The recording itself, for keeping or sending on.
+
+    Raw, exactly as the support bundle carries it: it is the operator's own copy
+    of their own farm, and redacting the serial would make two machines
+    impossible to tell apart.
+    """
+    from fastapi.responses import FileResponse
+
+    from backend.app.services.mqtt_recorder import mqtt_recorder
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(404, "Printer not found")
+
+    paths = mqtt_recorder.paths_for(printer_id)
+    if not paths:
+        raise HTTPException(404, "No recording for this printer")
+    path = paths[-1]
+    return FileResponse(path, media_type="text/plain", filename=path.name)
+
+
+@router.delete("/{printer_id}/mqtt-recording")
+async def clear_mqtt_recording(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Throw the transcript away and start over.
+
+    ⚠️ Does not stop a running recording — the badge stays on and the writer
+    starts a fresh file on its next message. Stopping here would leave the badge
+    saying something is being recorded when it is not.
+    """
+    from backend.app.services.mqtt_recorder import mqtt_recorder
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(404, "Printer not found")
+
+    return {"removed": mqtt_recorder.delete(printer_id)}
 
 
 @router.post("/{printer_id}/archive")
@@ -560,6 +669,24 @@ async def archive_printer(
     await db.commit()
     await db.refresh(printer)
     printer_manager.disconnect_printer(printer_id)
+    # A ``CloudLinkPrinter`` row survives archiving on purpose, so the allowlist
+    # still names this machine — availability is filtered on the READ side, in
+    # ``Uplink.build_snapshot``. A running link is holding the set that snapshot
+    # produced, and nothing about archiving reaches it: the printer is gone from
+    # the whole app while the portal is still being told about it. This is what
+    # makes it re-ask. Safe with no link running — the service returns at once.
+    #
+    # ⚠️ Best-effort, and the try is the point. The archive is COMMITTED by the
+    # line above; with a live link this opens a fresh session to re-read the
+    # publish set, so a database that is busy right now would raise here and
+    # turn a completed archive into a 500 the user reads as "it did not work" —
+    # they retry, and the second attempt 404s or no-ops on a printer that is
+    # already archived. The portal being told late is a pump cycle; a false
+    # failure is a user acting on a lie.
+    try:
+        await cloud_link_service.request_snapshot()
+    except Exception as e:
+        logger.warning("Cloud Link: could not refresh the publish set after archiving printer %s: %s", printer_id, e)
 
     payload = _serialize_printer(printer, include_secret=False).model_dump()
     payload["cancelled_items"] = cancelled
@@ -714,28 +841,32 @@ def _printer_cascade_models() -> tuple[type, ...]:
     joins that description without being listed, because the alternative is
     finding out from a 500 or from orphan rows nobody counted.
     """
+    from backend.app.models.active_print_session import ActivePrintSession
     from backend.app.models.active_print_spoolman import ActivePrintSpoolman
     from backend.app.models.ams_setting_audit import AmsSettingAudit
     from backend.app.models.calibration_audit import CalibrationAudit
     from backend.app.models.calibration_session import CalibrationSession
+    from backend.app.models.cloud_link import CloudLinkPrinter
     from backend.app.models.filament_calibration import FilamentCalibration
     from backend.app.models.firmware import FirmwareBatchItem
+    from backend.app.models.print_usage_event import PrintUsageEvent
     from backend.app.models.printer_setting_audit import PrinterSettingAudit
-    from backend.app.models.slot_preset import SlotPresetMapping
     from backend.app.models.spool_assignment import SpoolAssignment
     from backend.app.models.spool_k_profile import SpoolKProfile
     from backend.app.models.spoolman_k_profile import SpoolmanKProfile
     from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 
     return (
+        ActivePrintSession,
         ActivePrintSpoolman,
         AmsSettingAudit,
         CalibrationAudit,
         CalibrationSession,
+        CloudLinkPrinter,
         FilamentCalibration,
         FirmwareBatchItem,
+        PrintUsageEvent,
         PrinterSettingAudit,
-        SlotPresetMapping,
         SpoolAssignment,
         SpoolKProfile,
         SpoolmanKProfile,
@@ -928,7 +1059,8 @@ async def get_printer_status(
             is_ams_ht = len(trays) == 1
 
             # Active-cycle filament + target temperature for the drying badge
-            # (cache first, then first-loaded-tray fallback — see printer_manager).
+            # (cache first, then the loaded trays when they agree on a filament
+            # type — see uniform_tray_drying_hint in printer_manager).
             ams_id_int = int(ams_data.get("id", 0))
             target = drying_targets.get(ams_id_int) or {}
             dry_target_temp: int | None = None
@@ -943,16 +1075,13 @@ async def get_printer_status(
             if target_fil_val:
                 dry_filament = str(target_fil_val)
             if dry_target_temp is None or not dry_filament:
-                for tray in trays:
-                    if tray.tray_type:
-                        if not dry_filament:
-                            dry_filament = str(tray.tray_type)
-                        if dry_target_temp is None and tray.drying_temp:
-                            try:
-                                dry_target_temp = int(tray.drying_temp)
-                            except (TypeError, ValueError):
-                                pass
-                        break
+                hint_filament, hint_temp = uniform_tray_drying_hint(
+                    [(tray.tray_type or "", tray.drying_temp) for tray in trays]
+                )
+                if not dry_filament:
+                    dry_filament = hint_filament
+                if dry_target_temp is None:
+                    dry_target_temp = hint_temp
 
             ams_units.append(
                 AMSUnit(
@@ -1260,6 +1389,7 @@ async def get_overlay_status(
             "layer_num": None,
             "total_layers": None,
             "stg_cur_name": None,
+            "temperatures": {},
             "time_format": time_format,
         }
 
@@ -1276,6 +1406,9 @@ async def get_overlay_status(
         "layer_num": state.layer_num,
         "total_layers": state.total_layers,
         "stg_cur_name": get_derived_status_name(state, printer.model),
+        # Nozzle / bed / chamber readings for the overlay's temperature fields.
+        # Filtered rather than passed through — see display_temperatures.
+        "temperatures": display_temperatures(state.temperatures, printer.model),
         "time_format": time_format,
     }
 
@@ -1332,7 +1465,9 @@ async def connect_printer(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
+    logger.info("Manual connect requested for printer %d (%s)", printer.id, printer.name)
     success = await printer_manager.connect_printer(printer)
+    logger.info("Manual connect for printer %d (%s): %s", printer.id, printer.name, "ok" if success else "FAILED")
     return {"connected": success}
 
 
@@ -1348,6 +1483,7 @@ async def disconnect_printer(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
+    logger.info("Manual disconnect requested for printer %d (%s)", printer.id, printer.name)
     printer_manager.disconnect_printer(printer_id)
     return {"connected": False}
 
@@ -2317,92 +2453,6 @@ async def get_printer_storage(
 
 
 # ============================================
-# MQTT Debug Logging Endpoints
-# ============================================
-
-
-@router.post("/{printer_id}/logging/enable")
-async def enable_mqtt_logging(
-    printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_CONTROL),
-    db: AsyncSession = Depends(get_db),
-):
-    """Enable MQTT message logging for a printer."""
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    printer = result.scalar_one_or_none()
-    if not printer:
-        raise HTTPException(404, "Printer not found")
-
-    success = printer_manager.enable_logging(printer_id, True)
-    if not success:
-        raise HTTPException(400, "Printer not connected")
-
-    return {"logging_enabled": True}
-
-
-@router.post("/{printer_id}/logging/disable")
-async def disable_mqtt_logging(
-    printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_CONTROL),
-    db: AsyncSession = Depends(get_db),
-):
-    """Disable MQTT message logging for a printer."""
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    printer = result.scalar_one_or_none()
-    if not printer:
-        raise HTTPException(404, "Printer not found")
-
-    success = printer_manager.enable_logging(printer_id, False)
-    if not success:
-        raise HTTPException(400, "Printer not connected")
-
-    return {"logging_enabled": False}
-
-
-@router.get("/{printer_id}/logging")
-async def get_mqtt_logs(
-    printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_READ),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get MQTT message logs for a printer."""
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    printer = result.scalar_one_or_none()
-    if not printer:
-        raise HTTPException(404, "Printer not found")
-
-    logs = printer_manager.get_logs(printer_id)
-    return {
-        "logging_enabled": printer_manager.is_logging_enabled(printer_id),
-        "logs": [
-            {
-                "timestamp": log.timestamp,
-                "topic": log.topic,
-                "direction": log.direction,
-                "payload": log.payload,
-            }
-            for log in logs
-        ],
-    }
-
-
-@router.delete("/{printer_id}/logging")
-async def clear_mqtt_logs(
-    printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_CONTROL),
-    db: AsyncSession = Depends(get_db),
-):
-    """Clear MQTT message logs for a printer."""
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    printer = result.scalar_one_or_none()
-    if not printer:
-        raise HTTPException(404, "Printer not found")
-
-    printer_manager.clear_logs(printer_id)
-    return {"status": "cleared"}
-
-
-# ============================================
 # AMS Drying Endpoints
 # ============================================
 
@@ -2517,6 +2567,15 @@ async def stop_drying(
     success = printer_manager.send_drying_command(printer_id, ams_id, temp=0, duration=0, mode=0)
     if not success:
         raise HTTPException(400, "Printer not connected")
+    # ⚠️ A cycle somebody stopped by hand says nothing about whether DRYING is
+    # able to move this unit's humidity, so it must not count towards the
+    # unproductive-cycle cap — it was cut short before it had a chance. Without
+    # this, two prints (or two impatient operators) interrupting a dry would
+    # suspend auto-drying on the unit. The cooldown before re-arming still
+    # applies.
+    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+    print_scheduler.forget_auto_dry_cycle(printer_id, ams_id)
     return {"status": "drying_stopped", "ams_id": ams_id}
 
 
@@ -2642,152 +2701,6 @@ async def get_calibration_options(
 # ============================================================================
 
 
-def _slot_preset_key(ams_id: int, tray_id: int) -> int:
-    """Mirrors frontend ``getGlobalTrayId`` (amsHelpers.ts).
-
-    AMS-HT (ams_id 128-135) is single-slot and shares its global tray id with
-    the unit id itself — keying by ``ams_id * 4 + tray_id`` would put every HT
-    unit at offset 512+ and silently miss the frontend lookup, making the
-    Configure modal show "Generic" after a custom preset was saved. Regular
-    AMS and external (255) use the classic ``ams_id * 4 + tray_id`` formula.
-    Upstream #1053.
-    """
-    if 128 <= ams_id <= 135:
-        return ams_id
-    return ams_id * 4 + tray_id
-
-
-@router.get("/{printer_id}/slot-presets")
-async def get_slot_presets(
-    printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_READ),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get all saved slot-to-preset mappings for a printer."""
-    result = await db.execute(select(SlotPresetMapping).where(SlotPresetMapping.printer_id == printer_id))
-    mappings = result.scalars().all()
-
-    return {
-        _slot_preset_key(mapping.ams_id, mapping.tray_id): {
-            "ams_id": mapping.ams_id,
-            "tray_id": mapping.tray_id,
-            "preset_id": mapping.preset_id,
-            "preset_name": mapping.preset_name,
-        }
-        for mapping in mappings
-    }
-
-
-@router.get("/{printer_id}/slot-presets/{ams_id}/{tray_id}")
-async def get_slot_preset(
-    printer_id: int,
-    ams_id: int,
-    tray_id: int,
-    _=RequirePermission(Permission.PRINTERS_READ),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get the saved preset for a specific slot."""
-    result = await db.execute(
-        select(SlotPresetMapping).where(
-            SlotPresetMapping.printer_id == printer_id,
-            SlotPresetMapping.ams_id == ams_id,
-            SlotPresetMapping.tray_id == tray_id,
-        )
-    )
-    mapping = result.scalar_one_or_none()
-
-    if not mapping:
-        return None
-
-    return {
-        "ams_id": mapping.ams_id,
-        "tray_id": mapping.tray_id,
-        "preset_id": mapping.preset_id,
-        "preset_name": mapping.preset_name,
-    }
-
-
-@router.put("/{printer_id}/slot-presets/{ams_id}/{tray_id}")
-async def save_slot_preset(
-    printer_id: int,
-    ams_id: int,
-    tray_id: int,
-    preset_id: str,
-    preset_name: str,
-    preset_source: str = "cloud",
-    _=RequirePermission(Permission.PRINTERS_UPDATE),
-    db: AsyncSession = Depends(get_db),
-):
-    """Save a preset mapping for a specific slot."""
-    # Check printer exists
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    if not result.scalar_one_or_none():
-        raise HTTPException(404, "Printer not found")
-
-    # Check for existing mapping
-    result = await db.execute(
-        select(SlotPresetMapping).where(
-            SlotPresetMapping.printer_id == printer_id,
-            SlotPresetMapping.ams_id == ams_id,
-            SlotPresetMapping.tray_id == tray_id,
-        )
-    )
-    mapping = result.scalar_one_or_none()
-
-    if mapping:
-        # Update existing
-        mapping.preset_id = preset_id
-        mapping.preset_name = preset_name
-        mapping.preset_source = preset_source
-    else:
-        # Create new
-        mapping = SlotPresetMapping(
-            printer_id=printer_id,
-            ams_id=ams_id,
-            tray_id=tray_id,
-            preset_id=preset_id,
-            preset_name=preset_name,
-            preset_source=preset_source,
-        )
-        db.add(mapping)
-
-    await db.commit()
-    await db.refresh(mapping)
-
-    return {
-        "ams_id": mapping.ams_id,
-        "tray_id": mapping.tray_id,
-        "preset_id": mapping.preset_id,
-        "preset_name": mapping.preset_name,
-        "preset_source": mapping.preset_source,
-    }
-
-
-@router.delete("/{printer_id}/slot-presets/{ams_id}/{tray_id}")
-async def delete_slot_preset(
-    printer_id: int,
-    ams_id: int,
-    tray_id: int,
-    _=RequirePermission(Permission.PRINTERS_UPDATE),
-    db: AsyncSession = Depends(get_db),
-):
-    """Delete a saved preset mapping for a slot."""
-    result = await db.execute(
-        select(SlotPresetMapping).where(
-            SlotPresetMapping.printer_id == printer_id,
-            SlotPresetMapping.ams_id == ams_id,
-            SlotPresetMapping.tray_id == tray_id,
-        )
-    )
-    mapping = result.scalar_one_or_none()
-
-    if mapping:
-        await db.delete(mapping)
-        await db.commit()
-
-    return {"success": True}
-
-
 @router.post("/{printer_id}/slots/{ams_id}/{tray_id}/configure")
 async def configure_ams_slot(
     printer_id: int,
@@ -2806,6 +2719,7 @@ async def configure_ams_slot(
     kprofile_setting_id: str = Query(""),
     k_value: float = Query(0.0),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
 ):
     """Configure an AMS slot with a specific filament setting and K profile.
 
@@ -2847,101 +2761,38 @@ async def configure_ams_slot(
     if not client:
         raise HTTPException(status_code=400, detail="Printer not connected")
 
-    # Resolve tray_info_idx for the MQTT command.
-    # Priority:
-    #   1. Use the provided tray_info_idx if set (including cloud-synced
-    #      custom presets like PFUS* / P*).
-    #   2. Reuse the slot's existing tray_info_idx if it's a specific
-    #      (non-generic) preset for the same material.
-    #   3. Fall back to a generic Bambu filament ID.
-    _GENERIC_FILAMENT_IDS = {
-        "PLA": "GFL99",
-        "PETG": "GFG99",
-        "ABS": "GFB99",
-        "ASA": "GFB98",
-        "PC": "GFC99",
-        "PA": "GFN99",
-        "NYLON": "GFN99",
-        "TPU": "GFU99",
-        "PVA": "GFS99",
-        "HIPS": "GFS98",
-        "PLA-CF": "GFL98",
-        "PETG-CF": "GFG98",
-        "PA-CF": "GFN98",
-        "PETG HF": "GFG96",
-    }
-    _GENERIC_ID_VALUES = set(_GENERIC_FILAMENT_IDS.values())
-    effective_tray_info_idx = tray_info_idx
+    # ONE identity path (spec A §5.2): the family catalog builds the payload.
+    # ``tray_info_idx`` (when given) is a family id straight from the picker;
+    # otherwise the material name routes to its generic family inside the
+    # builder. The old slot-reuse and generic-table heuristics are gone.
+    from backend.app.services.slot_assignment import build_slot_assignment
 
-    if not tray_info_idx:
-        # No preset provided - try slot reuse or generic fallback
-        current_tray_info_idx = ""
-        current_tray_type = ""
-        state = printer_manager.get_status(printer_id)
-        if state and state.raw_data:
-            from backend.app.api.routes.inventory import _find_tray_in_ams_data
+    state = printer_manager.get_status(printer_id)
+    try:
+        plan = await build_slot_assignment(
+            db,
+            family_id=tray_info_idx or None,
+            preset_setting_id=setting_id or None,
+            # ⚠️ The model lives in the manager's model cache, NOT on
+            # PrinterInfo (name + serial only) — ``info.model`` 500'd every
+            # configure-slot call and no test caught it (untested endpoint,
+            # mocks auto-supply any attribute).
+            printer_model=printer_manager.get_model(printer_id),
+            nozzle_diameter=nozzle_diameter,
+            supports_user_preset=bool(getattr(state, "support_user_preset", False)),
+            material_override=tray_type,
+            color_rgba=tray_color,
+            temp_overrides=(nozzle_temp_min or None, nozzle_temp_max or None),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    for note in plan.warnings:
+        logger.info("[configure_ams_slot] %s", note)
+    effective_tray_info_idx = plan.tray_info_idx
+    effective_setting_id = plan.setting_id
 
-            if ams_id == 255:
-                vt_tray = state.raw_data.get("vt_tray") or []
-                ext_id = tray_id + 254
-                for vt in vt_tray:
-                    if isinstance(vt, dict) and int(vt.get("id", 254)) == ext_id:
-                        current_tray_info_idx = vt.get("tray_info_idx", "")
-                        current_tray_type = vt.get("tray_type", "")
-                        break
-            else:
-                ams_data = state.raw_data.get("ams", {})
-                ams_list = (
-                    ams_data.get("ams", [])
-                    if isinstance(ams_data, dict)
-                    else ams_data
-                    if isinstance(ams_data, list)
-                    else []
-                )
-                cur_tray = _find_tray_in_ams_data(ams_list, ams_id, tray_id)
-                if cur_tray:
-                    current_tray_info_idx = cur_tray.get("tray_info_idx", "")
-                    current_tray_type = cur_tray.get("tray_type", "")
-
-        if (
-            current_tray_info_idx
-            and current_tray_info_idx not in _GENERIC_ID_VALUES
-            and current_tray_type
-            and current_tray_type.upper() == tray_type.upper()
-        ):
-            logger.info(
-                "[configure_ams_slot] Reusing slot's existing tray_info_idx=%r (same material %r)",
-                current_tray_info_idx,
-                tray_type,
-            )
-            effective_tray_info_idx = current_tray_info_idx
-        elif tray_type:
-            material = tray_type.upper().strip()
-            generic = (
-                _GENERIC_FILAMENT_IDS.get(material)
-                or _GENERIC_FILAMENT_IDS.get(material.split("-")[0].split(" ")[0])
-                or ""
-            )
-            if generic:
-                logger.info("[configure_ams_slot] Falling back to generic %r for material %r", generic, tray_type)
-                effective_tray_info_idx = generic
-
-    # Send filament setting + K-profile commands
+    # K-profile linkage keeps its own explicit id when the client sent one.
     filament_id_for_kprofile = kprofile_filament_id if kprofile_filament_id else effective_tray_info_idx
-
-    # Back-fill setting_id from the resolved filament id when the client sent
-    # none. Built-in / local / Orca-generic presets in the Configure AMS Slot
-    # modal leave setting_id empty (they carry only a GF* tray_info_idx), and
-    # the printer treats a filament-id-without-setting-id slot as half
-    # configured: it shows the new material briefly, then reverts to its
-    # previously stored profile (upstream #2604). This mirrors the derivation
-    # the inventory/assignment path already does (inventory.py).
-    # ``filament_id_to_setting_id`` leaves P* user presets and already-GFS*
-    # values unchanged, so only the empty-setting_id generic paths are affected;
-    # an explicit setting_id from the client still passes through untouched.
-    effective_setting_id = setting_id
-    if effective_tray_info_idx and not effective_setting_id:
-        effective_setting_id = filament_id_to_setting_id(effective_tray_info_idx)
 
     # Always send ams_set_filament_setting - the user explicitly clicked
     # "Configure Slot", so honor that.  Previous versions skipped this for
@@ -2952,12 +2803,14 @@ async def configure_ams_slot(
         ams_id=ams_id,
         tray_id=tray_id,
         tray_info_idx=effective_tray_info_idx,
-        tray_type=tray_type,
+        tray_type=plan.tray_type or tray_type,
         tray_sub_brands=tray_sub_brands,
         tray_color=tray_color,
-        nozzle_temp_min=nozzle_temp_min,
-        nozzle_temp_max=nozzle_temp_max,
+        nozzle_temp_min=plan.nozzle_temp_min,
+        nozzle_temp_max=plan.nozzle_temp_max,
         setting_id=effective_setting_id,
+        cols=plan.cols,
+        ctype=plan.ctype,
     )
 
     if not success:
@@ -3048,19 +2901,6 @@ async def reset_ams_slot(
 
     if not success:
         raise HTTPException(status_code=500, detail="Failed to send reset command")
-
-    # Also delete any saved slot preset mapping
-    result = await db.execute(
-        select(SlotPresetMapping).where(
-            SlotPresetMapping.printer_id == printer_id,
-            SlotPresetMapping.ams_id == ams_id,
-            SlotPresetMapping.tray_id == tray_id,
-        )
-    )
-    mapping = result.scalar_one_or_none()
-    if mapping:
-        await db.delete(mapping)
-        await db.commit()
 
     # Request fresh status push from printer so frontend gets updated data via WebSocket
     client.request_status_update()
@@ -3323,7 +3163,51 @@ async def clear_plate(
 
     printer_manager.set_awaiting_plate_clear(printer_id, False)
 
+    # The finished row was held for this answer — see ``services/plate_hold``.
+    from backend.app.services.plate_hold import answer_by_clearing
+
+    await answer_by_clearing(db, printer_id)
+
     return {"success": True, "message": "Plate cleared, next print will start shortly"}
+
+
+@router.post("/{printer_id}/repeat-print")
+async def repeat_print(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_CLEAR_PLATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Print the job that just finished again — the card's other answer to a full plate.
+
+    The same thing as pressing reprint on the printer itself: the row that was
+    waiting is re-armed in place, put at the front, and the ordinary dispatcher
+    takes it from there, producing a new archive. The row is re-armed rather
+    than copied because a copy list cannot be trusted to stay complete — the one
+    behind ``clone_item`` had silently dropped ten print options.
+
+    ⚠️ Releases the plate gate as part of the answer. The operator has taken the
+    part off — that is what pressing this means — and while the gate is armed
+    ``_is_printer_idle`` is False, so the re-armed row would never dispatch.
+
+    Same permission as Clear plate: they are two answers to one question.
+    """
+    from backend.app.services.plate_hold import RepeatNotPossible, answer_by_repeating
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(404, "Printer not found")
+
+    try:
+        row = await answer_by_repeating(db, printer_id)
+    except RepeatNotPossible as e:
+        # Said out loud rather than queued and failed later: a failed dispatch
+        # errors the whole queue, which is what this feature exists to avoid.
+        raise HTTPException(409, str(e)) from e
+    if row is None:
+        raise HTTPException(409, "No finished print is waiting on this printer")
+
+    printer_manager.set_awaiting_plate_clear(printer_id, False)
+    return {"success": True, "item_id": row.id}
 
 
 @router.post("/{printer_id}/print/pause")
@@ -4522,7 +4406,9 @@ async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):
                 else:
                     slot_extruder = state.ams_extruder_map.get(str(ams_id)) or 0
 
-            effective_filament_id = derive_effective_filament_id(spool=spool, slot_tray_info_idx=tray_info_idx or None)
+            effective_filament_id = await derive_effective_filament_id(
+                spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
+            )
             if not effective_filament_id:
                 return
 

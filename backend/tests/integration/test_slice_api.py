@@ -169,7 +169,9 @@ class TestSliceValidation:
             },
         )
         assert response.status_code == 400
-        assert "STL, 3MF, or STEP" in response.json()["detail"]
+        # STEP left this list: no slicer CLI can load one, so it now gets its
+        # own message telling the user to export STL or 3MF first.
+        assert "STL or 3MF" in response.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,9 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
 
   // Fetch groups and users for dropdowns
   const { data: groups } = useQuery({ queryKey: ['groups'], queryFn: api.getGroups });
+  // ⚠️ The FULL listing on purpose: `handleUserChange` reads the picked
+  // user's groups to preselect the chat's role, which the slim shape does
+  // not carry. Telegram chat setup is an admin screen anyway.
   const { data: users } = useQuery({ queryKey: ['users'], queryFn: api.getUsers });
   const { data: eventTypes } = useQuery({ queryKey: ['telegram-events'], queryFn: api.getTelegramEvents });
 
@@ -151,6 +154,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
     ams_temperature_high: 'notifications.amsTemperatureHigh',
     ams_ht_humidity_high: 'notifications.amsHtHumidityHigh',
     ams_ht_temperature_high: 'notifications.amsHtTemperatureHigh',
+    ams_drying_suspended: 'notifications.amsDryingSuspended',
     sensor_above_max: 'notifications.sensorAboveMax',
     sensor_below_min: 'notifications.sensorBelowMin',
     sensor_back_in_range: 'notifications.sensorBackInRange',

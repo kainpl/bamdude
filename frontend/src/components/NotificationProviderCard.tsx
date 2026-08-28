@@ -256,6 +256,14 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             <span
                                 className="px-2 py-0.5 bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-400 text-xs rounded">{t('notifications.lowFilament')}</span>
                         )}
+                        {!isTelegram && provider.on_filament_runout && (
+                            <span
+                                className="px-2 py-0.5 bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400 text-xs rounded">{t('notifications.filamentRunout')}</span>
+                        )}
+                        {!isTelegram && provider.on_filament_deficit && (
+                            <span
+                                className="px-2 py-0.5 bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-400 text-xs rounded">{t('notifications.filamentDeficit')}</span>
+                        )}
                         {!isTelegram && provider.on_maintenance_due && (
                             <span
                                 className="px-2 py-0.5 bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400 text-xs rounded">{t('notifications.maintenance')}</span>
@@ -275,6 +283,10 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                         {!isTelegram && provider.on_ams_ht_temperature_high && (
                             <span
                                 className="px-2 py-0.5 bg-amber-100 dark:bg-amber-600/20 text-amber-700 dark:text-amber-300 text-xs rounded">{t('notifications.amsHtTemp')}</span>
+                        )}
+                        {!isTelegram && provider.on_ams_drying_suspended && (
+                            <span
+                                className="px-2 py-0.5 bg-rose-100 dark:bg-rose-600/20 text-rose-700 dark:text-rose-300 text-xs rounded">{t('notifications.amsDryingSuspendedBadge')}</span>
                         )}
                         {!isTelegram && provider.on_bed_cooled && (
                             <span
@@ -553,6 +565,14 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                 </div>
 
                                 <div className="flex items-center justify-between">
+                                    <p className="text-sm text-white">{t('notifications.filamentRunout')}</p>
+                                    <Toggle
+                                        checked={provider.on_filament_runout ?? false}
+                                        onChange={(checked) => updateMutation.mutate({on_filament_runout: checked})}
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-between">
                                     <div>
                                         <p className="text-sm text-white">{t('notifications.maintenanceDue')}</p>
                                         <p className="text-xs text-bambu-gray">{t('notifications.maintenanceDueDescription')}</p>
@@ -587,6 +607,17 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                     <Toggle
                                         checked={provider.on_ams_temperature_high ?? false}
                                         onChange={(checked) => updateMutation.mutate({on_ams_temperature_high: checked})}
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <p className="text-sm text-white">{t('notifications.amsDryingSuspended')}</p>
+                                        <p className="text-xs text-bambu-gray">{t('notifications.amsDryingSuspendedDescription')}</p>
+                                    </div>
+                                    <Toggle
+                                        checked={provider.on_ams_drying_suspended ?? false}
+                                        onChange={(checked) => updateMutation.mutate({on_ams_drying_suspended: checked})}
                                     />
                                 </div>
                             </div>

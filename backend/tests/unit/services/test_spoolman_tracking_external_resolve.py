@@ -10,7 +10,29 @@ was linked to AMS slot 0 (regression of #853).
 
 from __future__ import annotations
 
-from backend.app.services.spoolman_tracking import _resolve_global_tray_id
+from backend.app.services.spoolman_tracking import _resolve_global_tray_id, unlose_external_markers
+
+
+class TestUnloseExternalMarkers:
+    """The send-side remap turns 254/255 into -1; on a dual-external machine
+    only the queue item's pre-remap copy still names WHICH external (live
+    2026-08-27, archive 775: [0, 255] went out as [0, -1])."""
+
+    def test_minus_one_takes_the_queue_items_concrete_external(self):
+        assert unlose_external_markers([0, -1], [0, 255]) == [0, 255]
+
+    def test_only_external_markers_are_touched(self):
+        # A queue disagreement on an AMS slot is NOT un-losing — the command
+        # mapping stays the authority for everything it states concretely.
+        assert unlose_external_markers([1, -1], [0, 254]) == [1, 254]
+
+    def test_slots_the_queue_cannot_answer_keep_their_marker(self):
+        assert unlose_external_markers([-1, -1], [255]) == [255, -1]
+        assert unlose_external_markers([-1], [0]) == [-1]
+
+    def test_no_queue_mapping_is_a_passthrough(self):
+        assert unlose_external_markers([0, -1], None) == [0, -1]
+        assert unlose_external_markers(None, [0, 255]) is None
 
 
 class TestResolveGlobalTrayIdExternalSpool:
@@ -52,3 +74,19 @@ class TestResolveGlobalTrayIdExternalSpool:
         """Regression: position-based default still picks sorted_tray_ids[slot_id - 1]."""
         ams_trays = {0: {}, 1: {}, 254: {}}
         assert _resolve_global_tray_id(3, slot_to_tray=None, ams_trays=ams_trays) == 254
+
+
+class TestResolveGlobalTrayIdAmslessZero:
+    """AMS-less machines (A1 mini + external holder): BambuStudio remaps the
+    external to ``0`` with ``use_ams=False`` ("No AMS detected" on our send
+    path too). Honouring 0 as AMS0-T0 on a machine that HAS no AMS0-T0
+    credited nothing (2026-08-24, four minis). 0 stays literal wherever the
+    tray actually exists."""
+
+    def test_zero_on_an_amsless_machine_resolves_to_the_external(self):
+        ams_trays = {254: {}}
+        assert _resolve_global_tray_id(1, slot_to_tray=[0], ams_trays=ams_trays) == 254
+
+    def test_zero_on_an_ams_machine_stays_tray_zero(self):
+        ams_trays = {0: {}, 1: {}, 254: {}}
+        assert _resolve_global_tray_id(1, slot_to_tray=[0], ams_trays=ams_trays) == 0

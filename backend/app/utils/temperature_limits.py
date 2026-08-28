@@ -45,6 +45,23 @@ BED_RANGE_DEFAULT = (20, 120)
 # floor, and it is also what every mirrored config actually carries.
 CHAMBER_RANGE_DEFAULT = (0, 60)
 
+# The one ceiling for the chamber targets that are NOT asked of a printer.
+#
+# ⚠️ Manual chamber control does **not** use this — :func:`limits_for` answers
+# per model from the mirrored BS config, and that is the better answer. But the
+# preheat filament map is global (one chamber target per filament type, shared
+# by the whole farm) and the per-print override is entered before a printer is
+# chosen, so neither has a model to ask. Those take the highest ceiling any
+# model has and let the firmware clamp on the rest; a per-model maximum cannot
+# be expressed in a global map.
+#
+# 60 was the X1E's ceiling, and the X1E was the only heated-chamber model when
+# that limit was written. The H2 family and the X2D heat to 65, so the top of
+# their range was simply unreachable — an ABS profile calling for 65 ran at 60.
+# Pinned to the mirrored configs by ``test_chamber_ceiling.py``, so a BS re-sync
+# that raises it fails a test instead of going unnoticed.
+MAX_CHAMBER_TEMP_C = 65
+
 # DeviceManager.hpp: ``#define BED_TEMP_LIMIT 120``.
 BED_LIMIT_DEFAULT = 120
 BED_LIMIT_X1_220V = 110

@@ -27,7 +27,18 @@ export type SettingsSearchTab =
   | 'users'
   | 'backup';
 
-export type SettingsSearchSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
+// ⚠️ Sub-tabs from more than one tab share this union. `marking` belongs to
+// Filament, the rest to Authentication — the search index does not care which
+// tab a sub-tab came from, and splitting the type per tab would buy nothing
+// but a second place to add a name.
+export type SettingsSearchSubTab =
+  | 'users'
+  | 'email'
+  | 'ldap'
+  | 'twofa'
+  | 'oidc'
+  | 'security'
+  | 'marking';
 
 export interface SettingsSearchEntry {
   /** i18n key for the label. Resolved with t() at render time. */

@@ -28,7 +28,7 @@ describe('validateForm — details are required only when creating', () => {
     const { isValid, errors } = validateForm(stockSpool, false, false, 'create');
 
     expect(isValid).toBe(false);
-    expect(errors.slicer_filament).toBeTruthy();
+    expect(errors.filament_family_id).toBeTruthy();
     expect(errors.brand).toBeTruthy();
     expect(errors.subtype).toBeTruthy();
   });

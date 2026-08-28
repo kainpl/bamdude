@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "type": "cmd_result",
+  "id": "f-cmd-result-no-re",
+  "ts": "2026-08-24T12:00:00Z",
+  "data": {
+    "ok": true
+  }
+}

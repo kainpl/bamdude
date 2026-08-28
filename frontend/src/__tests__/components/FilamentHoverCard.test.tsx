@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '../utils';
-import { FilamentHoverCard } from '../../components/FilamentHoverCard';
+import { FilamentHoverCard, EmptySlotHoverCard } from '../../components/FilamentHoverCard';
 
 const baseFilamentData = {
   vendor: 'Bambu Lab' as const,
@@ -269,4 +269,45 @@ describe('FilamentHoverCard', () => {
       await waitFor(() => expect(screen.queryByText('PLA Basic')).not.toBeInTheDocument());
     });
   });
+
+  // ⚠️ Paired with the EmptySlotHoverCard assertion below. Together they pin
+  // the TWO render paths to the same Assign-then-Configure order — separately,
+  // either could move and the menu would reshuffle itself depending on whether
+  // the slot happened to hold filament, which is exactly what it did.
+  it('lists Assign Spool above Configure', async () => {
+    renderWithHover(
+      <FilamentHoverCard
+        data={baseFilamentData}
+        inventory={{ assignedSpool: null, onAssignSpool: vi.fn() }}
+        configureSlot={{ enabled: true, onConfigure: vi.fn() }}
+      >
+        <div>trigger</div>
+      </FilamentHoverCard>
+    );
+    vi.advanceTimersByTime(100);
+    await waitFor(() => expect(screen.getByText(/assign spool/i)).toBeInTheDocument());
+
+    const assign = screen.getByText(/assign spool/i);
+    const configure = screen.getByText(/^configure$/i);
+    expect(assign.compareDocumentPosition(configure)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('lists Assign Spool above Configure on an empty slot too', async () => {
+    const result = render(
+      <EmptySlotHoverCard
+        configureSlot={{ enabled: true, onConfigure: vi.fn() }}
+        onAssignSpool={vi.fn()}
+      >
+        <div>trigger</div>
+      </EmptySlotHoverCard>
+    );
+    fireEvent.mouseEnter(result.container.firstElementChild as HTMLElement);
+    vi.advanceTimersByTime(100);
+    await waitFor(() => expect(screen.getByText(/assign spool/i)).toBeInTheDocument());
+
+    const assign = screen.getByText(/assign spool/i);
+    const configure = screen.getByText(/^configure$/i);
+    expect(assign.compareDocumentPosition(configure)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
 });

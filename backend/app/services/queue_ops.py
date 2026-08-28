@@ -193,7 +193,19 @@ async def bump_block_to_bottom(db: AsyncSession, queue_id: int, block_ids: list[
 
 
 def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_position: int) -> PrintQueueItem:
-    """Shallow clone of a queue item's user-editable fields."""
+    """Shallow clone of a queue item's user-editable fields.
+
+    ⚠️ **Every print option belongs here, and the list rots if nobody watches
+    it.** It once carried 19 of the model's columns and had not grown since:
+    the tri-state calibration modes (m106), the preheat overrides (m103),
+    ``require_previous_success`` (m116), gcode injection, the H2C nozzle
+    mapping and the selected macros were all dropped, so a cloned or retried
+    job printed with different settings than the one it copied — silently,
+    which is worse than refusing to clone at all.
+    ``test_queue_ops.TestACloneCarriesEveryPrintOption`` now fails when a new
+    column is added and forgotten; it also pins what is deliberately NOT
+    carried, and why.
+    """
     return PrintQueueItem(
         queue_id=src.queue_id,
         archive_id=src.archive_id,
@@ -203,17 +215,27 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
         scheduled_time=src.scheduled_time,
         manual_start=src.manual_start,
         auto_off_after=src.auto_off_after,
+        require_previous_success=src.require_previous_success,
         ams_mapping=src.ams_mapping,
+        nozzle_mapping=src.nozzle_mapping,
         plate_id=src.plate_id,
         bed_levelling=src.bed_levelling,
+        bed_levelling_mode=src.bed_levelling_mode,
         flow_cali=src.flow_cali,
+        flow_cali_mode=src.flow_cali_mode,
+        nozzle_offset_cali=src.nozzle_offset_cali,
+        nozzle_offset_cali_mode=src.nozzle_offset_cali_mode,
         layer_inspect=src.layer_inspect,
         timelapse=src.timelapse,
         timelapse_storage=src.timelapse_storage,
         use_ams=src.use_ams,
         mesh_mode_fast_check=src.mesh_mode_fast_check,
+        gcode_injection=src.gcode_injection,
         execute_swap_macros=src.execute_swap_macros,
         swap_macro_events=src.swap_macro_events,
+        selected_macro_ids=src.selected_macro_ids,
+        preheat_override=src.preheat_override,
+        preheat_chamber_target_override=src.preheat_chamber_target_override,
         status="pending",
         batch_id=new_batch_id,
         created_by_id=src.created_by_id,

@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Calendar, LayoutGrid, Loader2 } from 'lucide-react';
+import { Calendar, LayoutGrid } from 'lucide-react';
 import { api } from '../api/client';
 import { compareLocationNames } from '../utils/locationOrder';
 import { readStoredQueueSort, sortQueues, type QueueSortOption } from '../utils/queueOrder';
@@ -10,6 +10,7 @@ import { buildLocationIndex, readStoredLocationFilter } from '../utils/locationT
 import { groupByLocation } from '../utils/locationGroups';
 import type { PrinterQueue, PrintQueueItem } from '../api/client';
 import { QueueCard } from '../components/QueueCard';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { QueueStatsBar } from '../components/Queue/QueueStatsBar';
 import { StaggerBanner } from '../components/Queue/StaggerBanner';
 import { QueueTimelineView } from '../components/Queue/QueueTimelineView';
@@ -208,11 +209,11 @@ export function QueuePage() {
   );
 
   return (
-    <div className="p-4 md:p-6">
+    <div className="p-4 md:p-6 space-y-4">
       {/* Header: title + inline toolbar (search / filters / view modes) */}
       <div className="space-y-3 mb-6">
         <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-          <Calendar className="w-7 h-7 text-bambu-green" />
+          <Calendar className="w-6 h-6 text-bambu-green" />
           {t('queue.title')}
         </h1>
 
@@ -255,11 +256,7 @@ export function QueuePage() {
       <StaggerBanner />
 
       {/* Loading */}
-      {isLoading && (
-        <div className="flex justify-center items-center py-20">
-          <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-        </div>
-      )}
+      {isLoading && <LoadingBlock label={t('common.loading')} className="py-20 text-bambu-gray" />}
 
       {/* Empty state */}
       {!isLoading && (!queues || queues.length === 0) && (

@@ -1,6 +1,6 @@
 """Pydantic schemas for slice requests (Phase 1 of 0.5.x slicer cycle)."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -80,6 +80,35 @@ class SliceRequest(BaseModel):
     export_3mf: bool = Field(
         default=False,
         description="If true, request a 3MF response with embedded G-code instead of raw G-code.",
+    )
+    process_overrides: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The user's own process-setting edits from the slice dialog's settings panel, as a "
+            "sparse ``{option_key: value}`` map (layer height, wall count, supports, speeds — "
+            "OrcaSlicer's process parameter set). Written into the process JSON AFTER the "
+            "source's support settings and the designer's carried tweaks, so an explicit choice "
+            "here wins over both. Values are normalised to the string forms a process preset "
+            "stores; keys that are not valid config keys are dropped rather than failing the "
+            "slice. None/empty leaves the picked preset untouched."
+        ),
+    )
+    auto_arrange: bool = Field(
+        default=False,
+        description=(
+            "Run the slicer's auto-arrange pass, repositioning objects on the bed before slicing. "
+            "Off by default; unions with the automatic cross-nozzle-class arrange rather than "
+            "replacing it."
+        ),
+    )
+    auto_orient: bool = Field(
+        default=False,
+        description=(
+            "Run the slicer's auto-orientation pass: score candidate rotations (overhang area, "
+            "contour, unprintability) and rotate each object onto the best one. Off by default and "
+            "user-driven only — rotating a deliberately laid-out model is not a change to make "
+            "silently."
+        ),
     )
     # Bed plate override (sidecar maps to ``--curr-bed-type``). Mirrors the
     use_embedded_settings: bool = Field(
@@ -200,6 +229,15 @@ class SliceResponse(BaseModel):
     filament_used_g: float
     filament_used_mm: float
     used_embedded_settings: bool = False
+    # Set when the source lives in an external folder that could not receive
+    # the result (read-only, unreachable, not writable), so the file went to
+    # managed storage instead — and names which of those it was. ``None`` on
+    # every normal slice.
+    #
+    # ⚠️ Reported rather than silently absorbed. Filing the output somewhere the
+    # user is not looking, with no signal, is exactly what made this
+    # unreproducible from the UI.
+    external_write_fallback: str | None = None
 
 
 class SliceArchiveResponse(BaseModel):

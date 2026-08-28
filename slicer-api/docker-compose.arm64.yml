@@ -1,0 +1,38 @@
+# Override file for the slicer-API sidecar stack on ARM64 (experimental).
+#
+# Runs both sidecars as linux/amd64 under QEMU emulation on an ARM64 host.
+# The host must have QEMU binfmt registered first (qemu-user-static +
+# binfmt-support on Debian/Ubuntu; Docker Desktop on Apple Silicon has it
+# already) or the containers fail with "exec format error".
+#
+# ⚠️ This costs more here than it does upstream, because BamDude BUILDS the
+# sidecars rather than pulling published images: the emulation applies to the
+# build as well as the run, so the first build — which downloads and extracts a
+# ~110 MB (OrcaSlicer) or ~220 MB (BambuStudio) AppImage — runs emulated too.
+# Budget well beyond the usual ~5 minutes per service. Slicing itself is
+# roughly 3-6x slower than native, worsening with model complexity.
+#
+# A separate x86_64 box is the better answer if you have one. This is a
+# stopgap until native ARM64 images exist, not a replacement for it.
+#
+# Not meant to be used alone — it overrides the default file:
+#   docker compose -f docker-compose.yml -f docker-compose.arm64.yml \
+#     --profile all up -d
+#
+# ⚠️ BOTH -f flags are needed on EVERY compose command, not just the first, or
+# the override silently drops off and you get a manifest error on a host with
+# no emulation registered for that image. Put this in `.env` instead and every
+# command in the README works unchanged:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.arm64.yml
+#
+# The `--profile` flag is still required on top of that — both services are
+# profile-gated here, so a bare `up -d` starts nothing whatever files are in
+# play. See the README.
+
+services:
+  orca-slicer-api:
+    platform: linux/amd64
+
+  bambu-studio-api:
+    platform: linux/amd64

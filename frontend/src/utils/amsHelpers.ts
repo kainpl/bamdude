@@ -336,14 +336,23 @@ export function autoMatchFilament(
       filamentTypesCompatible(f.type, req.type) &&
       normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
   );
+  // ⚠️ `reduce`, not `find`: among the spools the tolerance admits, take the
+  // one that LOOKS closest rather than the one that happens to sit first. The
+  // scheduler does the same, and the two must agree or this dialog promises a
+  // spool the dispatch would not pick.
   const similarMatch = exactMatch
     ? undefined
-    : nozzleFilaments.find(
-        (f) =>
-          !usedTrayIds.has(f.globalTrayId) &&
-          filamentTypesCompatible(f.type, req.type) &&
-          colorsAreSimilar(f.color, req.color)
-      );
+    : nozzleFilaments
+        .filter(
+          (f) =>
+            !usedTrayIds.has(f.globalTrayId) &&
+            filamentTypesCompatible(f.type, req.type) &&
+            colorsAreSimilar(f.color, req.color)
+        )
+        .reduce<typeof loadedFilaments[number] | undefined>(
+          (best, f) => nearerColour(best, f, req.color),
+          undefined
+        );
   const typeOnlyMatch =
     exactMatch || similarMatch
       ? undefined
@@ -577,4 +586,146 @@ export function computeBackupGroups(
     if (a.displayName !== b.displayName) return a.displayName.localeCompare(b.displayName);
     return a.members[0].globalTrayId - b.members[0].globalTrayId;
   });
+}
+
+// --- Perceptual colour difference (CIEDE2000) --------------------------------
+//
+// Ranking spools by RGB distance rates a colour by how far apart the numbers
+// are, which is not how far apart they look: RGB overweights blue badly, so a
+// required green could take a purple over a green that was numerically further
+// away. CIEDE2000 is the CIE's perceptual metric, and small differences — which
+// is all this ever sees, since candidates are already inside a narrow tolerance
+// — are exactly the regime its predecessors handle worst.
+//
+// ⚠️ Mirrored from `backend/app/utils/color_utils.py` (`perceptual_color_distance`),
+// kept structurally identical so the two can be read side by side. They MUST
+// agree: this dialog must not promise a spool the scheduler would not pick.
+
+const D65_WHITE: readonly [number, number, number] = [0.95047, 1.0, 1.08883];
+const LAB_DELTA = 6 / 29;
+
+/** Convert `RRGGBB(AA)` to CIE L*a*b* under D65, or null if unusable. */
+function hexToLab(hexColor: string | undefined): [number, number, number] | null {
+  const cleaned = (hexColor ?? '').replace('#', '').trim().toLowerCase();
+  if (cleaned.length < 6) return null;
+  const channels: number[] = [];
+  for (const i of [0, 2, 4]) {
+    const value = parseInt(cleaned.substring(i, i + 2), 16);
+    if (Number.isNaN(value)) return null;
+    channels.push(value / 255);
+  }
+
+  // sRGB gamma -> linear light.
+  const [r, g, b] = channels.map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+
+  const x = 0.4124564 * r + 0.3575761 * g + 0.1804375 * b;
+  const y = 0.2126729 * r + 0.7151522 * g + 0.072175 * b;
+  const z = 0.0193339 * r + 0.119192 * g + 0.9503041 * b;
+
+  const f = (t: number) => (t > LAB_DELTA ** 3 ? Math.cbrt(t) : t / (3 * LAB_DELTA * LAB_DELTA) + 4 / 29);
+  const [fx, fy, fz] = [x, y, z].map((v, i) => f(v / D65_WHITE[i]));
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
+const toRadians = (deg: number) => (deg * Math.PI) / 180;
+const toDegrees = (rad: number) => (rad * 180) / Math.PI;
+
+/** CIEDE2000 difference between two L*a*b* triples, with kL = kC = kH = 1. */
+function ciede2000(lab1: [number, number, number], lab2: [number, number, number]): number {
+  const [l1, a1, b1] = lab1;
+  const [l2, a2, b2] = lab2;
+
+  const c1 = Math.hypot(a1, b1);
+  const c2 = Math.hypot(a2, b2);
+  const cBar7 = ((c1 + c2) / 2) ** 7;
+  const gFactor = 0.5 * (1 - Math.sqrt(cBar7 / (cBar7 + 25 ** 7)));
+
+  const a1p = (1 + gFactor) * a1;
+  const a2p = (1 + gFactor) * a2;
+  const c1p = Math.hypot(a1p, b1);
+  const c2p = Math.hypot(a2p, b2);
+
+  const hue = (ap: number, bp: number) => {
+    if (ap === 0 && bp === 0) return 0;
+    const deg = toDegrees(Math.atan2(bp, ap));
+    return deg < 0 ? deg + 360 : deg;
+  };
+
+  const h1p = hue(a1p, b1);
+  const h2p = hue(a2p, b2);
+
+  const dlp = l2 - l1;
+  const dcp = c2p - c1p;
+
+  const chromaProduct = c1p * c2p;
+  let dhp = 0;
+  if (chromaProduct !== 0) {
+    dhp = h2p - h1p;
+    if (dhp > 180) dhp -= 360;
+    else if (dhp < -180) dhp += 360;
+  }
+  const dhpBig = 2 * Math.sqrt(chromaProduct) * Math.sin(toRadians(dhp) / 2);
+
+  const lBar = (l1 + l2) / 2;
+  const cBar = (c1p + c2p) / 2;
+
+  let hBar: number;
+  if (chromaProduct === 0) hBar = h1p + h2p;
+  else if (Math.abs(h1p - h2p) <= 180) hBar = (h1p + h2p) / 2;
+  else if (h1p + h2p < 360) hBar = (h1p + h2p + 360) / 2;
+  else hBar = (h1p + h2p - 360) / 2;
+
+  const t =
+    1 -
+    0.17 * Math.cos(toRadians(hBar - 30)) +
+    0.24 * Math.cos(toRadians(2 * hBar)) +
+    0.32 * Math.cos(toRadians(3 * hBar + 6)) -
+    0.2 * Math.cos(toRadians(4 * hBar - 63));
+
+  const cBarP7 = cBar ** 7;
+  const rc = 2 * Math.sqrt(cBarP7 / (cBarP7 + 25 ** 7));
+  const sl = 1 + (0.015 * (lBar - 50) ** 2) / Math.sqrt(20 + (lBar - 50) ** 2);
+  const sc = 1 + 0.045 * cBar;
+  const sh = 1 + 0.015 * cBar * t;
+  const rt = -Math.sin(toRadians(2 * (30 * Math.exp(-(((hBar - 275) / 25) ** 2))))) * rc;
+
+  const dlTerm = dlp / sl;
+  const dcTerm = dcp / sc;
+  const dhTerm = dhpBig / sh;
+  return Math.sqrt(dlTerm ** 2 + dcTerm ** 2 + dhTerm ** 2 + rt * dcTerm * dhTerm);
+}
+
+/**
+ * Perceptual distance between two hex colours, or null if either is unusable.
+ *
+ * A CIEDE2000 delta-E: ~1.0 is the threshold of a just-noticeable difference,
+ * so these numbers are far smaller than the RGB distances they replaced and
+ * cannot be compared against an RGB threshold.
+ */
+export function colorDistance(color1: string | undefined, color2: string | undefined): number | null {
+  const lab1 = hexToLab(color1);
+  const lab2 = hexToLab(color2);
+  if (lab1 === null || lab2 === null) return null;
+  return ciede2000(lab1, lab2);
+}
+
+/**
+ * Whichever of two candidates looks closer to `required`.
+ *
+ * ⚠️ Among the spools the tolerance already admits, the FIRST in tray order used
+ * to win — and tray order is where spools happen to sit in the AMS, not how
+ * close they look. Eligibility is untouched (still `colorsAreSimilar`); this
+ * only reorders candidates that already qualified.
+ */
+export function nearerColour<T extends { color?: string }>(
+  incumbent: T | undefined,
+  candidate: T,
+  required: string | undefined,
+): T {
+  if (!incumbent) return candidate;
+  const incumbentDistance = colorDistance(incumbent.color, required);
+  const candidateDistance = colorDistance(candidate.color, required);
+  if (candidateDistance === null) return incumbent;
+  if (incumbentDistance === null) return candidate;
+  return candidateDistance < incumbentDistance ? candidate : incumbent;
 }

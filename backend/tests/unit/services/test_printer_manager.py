@@ -381,6 +381,10 @@ class TestPrinterManager:
             use_ams=True,
             nozzle_offset_cali=False,
             nozzle_mapping=None,
+            # Derived per dispatch for a nozzle-rack model (H2C) and None for
+            # every other printer — the rack is the only one whose wire wants a
+            # physical nozzle position rather than an extruder index.
+            nozzle_slot_extruders=None,
             # Defaults keep every existing caller on the card and on today's
             # empty digest; only a dispatch that uploaded to internal storage
             # passes anything else.
@@ -526,67 +530,6 @@ class TestPrinterManager:
     def test_is_print_active_false_for_unknown_printer(self, manager):
         """Unknown printer id → not active (no client)."""
         assert manager.is_print_active(999) is False
-
-    # ========================================================================
-    # Tests for logging methods
-    # ========================================================================
-
-    def test_enable_logging_calls_client(self, manager, mock_client):
-        """Verify enable_logging calls client method."""
-        manager._clients[1] = mock_client
-
-        result = manager.enable_logging(1, True)
-
-        mock_client.enable_logging.assert_called_once_with(True)
-        assert result is True
-
-    def test_enable_logging_returns_false_for_unknown(self, manager):
-        """Verify enable_logging returns False for unknown printer."""
-        result = manager.enable_logging(999, True)
-        assert result is False
-
-    def test_get_logs_returns_logs(self, manager, mock_client):
-        """Verify get_logs returns client logs."""
-        mock_logs = [MagicMock(), MagicMock()]
-        mock_client.get_logs.return_value = mock_logs
-        manager._clients[1] = mock_client
-
-        result = manager.get_logs(1)
-
-        assert result == mock_logs
-
-    def test_get_logs_returns_empty_for_unknown(self, manager):
-        """Verify get_logs returns empty list for unknown printer."""
-        result = manager.get_logs(999)
-        assert result == []
-
-    def test_clear_logs_calls_client(self, manager, mock_client):
-        """Verify clear_logs calls client method."""
-        manager._clients[1] = mock_client
-
-        result = manager.clear_logs(1)
-
-        mock_client.clear_logs.assert_called_once()
-        assert result is True
-
-    def test_clear_logs_returns_false_for_unknown(self, manager):
-        """Verify clear_logs returns False for unknown printer."""
-        result = manager.clear_logs(999)
-        assert result is False
-
-    def test_is_logging_enabled_returns_status(self, manager, mock_client):
-        """Verify is_logging_enabled returns client status."""
-        mock_client.logging_enabled = True
-        manager._clients[1] = mock_client
-
-        result = manager.is_logging_enabled(1)
-
-        assert result is True
-
-    def test_is_logging_enabled_returns_false_for_unknown(self, manager):
-        """Verify is_logging_enabled returns False for unknown printer."""
-        result = manager.is_logging_enabled(999)
-        assert result is False
 
     # ========================================================================
     # Tests for request_status_update
@@ -1938,3 +1881,35 @@ class TestResolvePlateId:
             dispatched_subtask=None,
         )
         assert resolve_plate_id(state) is None
+
+
+class TestHMSSerializationParity:
+    """The WS status and the REST status must describe an HMS error identically.
+
+    The WS shape used to drop actions/full_code/job_id — so an open HMS modal
+    rendered its buttons from the REST payload and lost them on the first live
+    WS push ('blinked'), and could no longer submit the action it needed
+    full_code/job_id for. Measured live on an A1 mini (07FF-8007 Done/Retry),
+    2026-08-23."""
+
+    def test_ws_dict_carries_the_action_fields(self):
+        from backend.app.services.bambu_mqtt import HMSError, PrinterState
+        from backend.app.services.printer_manager import printer_state_to_dict
+
+        state = PrinterState()
+        state.hms_errors = [
+            HMSError(
+                code="0x8007",
+                attr=0x07FF8000,
+                module=0x07,
+                severity=2,
+                actions=["FILAMENT_EXTRUDED", "RETRY_FILAMENT_EXTRUDED"],
+                job_id="12345",
+                full_code="07FF8007",
+            )
+        ]
+        payload = printer_state_to_dict(state, printer_id=1, model="A1 mini")
+        entry = payload["hms_errors"][0]
+        assert entry["actions"] == ["FILAMENT_EXTRUDED", "RETRY_FILAMENT_EXTRUDED"]
+        assert entry["full_code"] == "07FF8007"
+        assert entry["job_id"] == "12345"

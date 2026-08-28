@@ -18,6 +18,7 @@ yet (inherits-chain resolver, sentinel-value strip, multi-filament input,
 
 import asyncio
 import io
+import json
 import logging
 import time
 import zipfile
@@ -63,6 +64,20 @@ class SlicerApiServerError(SlicerApiError):
 
 class SlicerInputError(SlicerApiError):
     """Sidecar rejected the input as invalid (4xx)."""
+
+
+class ResolvedProfile(NamedTuple):
+    """A preset's effective values, or why they are unavailable.
+
+    ⚠️ ``reason`` exists so the UI can say something ACTIONABLE instead of one
+    generic "could not read the values" for four different causes. The common
+    one in practice is a sidecar older than the endpoint — an install rebuilds
+    its sidecar independently of BamDude's own version — and that one has a
+    one-line fix.
+    """
+
+    values: dict | None
+    reason: str
 
 
 class SliceResult(NamedTuple):
@@ -195,7 +210,100 @@ def _guess_model_content_type(filename: str) -> str:
     return "application/octet-stream"
 
 
-def _handle_slice_response(response: httpx.Response, *, export_3mf: bool) -> SliceResult:
+def _transport_error_reason(exc: httpx.RequestError) -> str:
+    """Describe a transport failure, even when the exception carries no message.
+
+    ⚠️ Several ``httpx.RequestError`` subclasses are raised with no args, so
+    ``str(exc)`` is the empty string — which is how log lines came to read
+    "Slicer sidecar unreachable:" with nothing after the colon. The class name
+    is not much, but it separates a refused connection from a protocol error,
+    and a line that names nothing is worth less than one that names the type.
+    """
+    return str(exc) or type(exc).__name__
+
+
+# How the sidecar says "your model is bigger than my cap", across versions.
+#
+# ⚠️ Images built before the cap became reachable answer with multer's raw
+# ``LIMIT_FILE_SIZE`` text under a **500** — ``MulterError`` is not the
+# sidecar's ``AppError``, so its handler falls through to the default status —
+# while current ones send a 413 naming the limit and the env var that raises
+# it. Matching on TEXT rather than status covers both, and it matters because a
+# 500 otherwise reads as a slicer crash and sends people off tuning reverse
+# proxies that were never in the path.
+#
+# ⚠️ Deliberately specific: a proxy's own "413 Request Entity Too Large" must
+# NOT match here — that one really is fixed at the proxy and has its own advice
+# below.
+_UPLOAD_TOO_LARGE_MARKERS = (
+    "file too large",
+    "upload limit",
+    "max_model_upload_mb",
+)
+
+# A sidecar that names the knob is new enough to have one. Older ones only emit
+# multer's bare "File too large", and for those the advice has to be "rebuild
+# the image" — there is no variable to set.
+_CONFIGURABLE_CAP_MARKERS = ("upload limit", "max_model_upload_mb")
+
+
+def _upload_size_rejection(response: httpx.Response, model_size_bytes: int | None) -> str | None:
+    """An explanation if the sidecar refused the upload as oversized, else None.
+
+    ⚠️ The 500 case is matched STRICTLY — the body has to be *only* multer's
+    message — because a 500 is also how a genuine CLI failure arrives, and
+    those must keep reaching the embedded-settings fallback. A CLI failure
+    always carries the slicer's stderr in ``details``, so it never reduces to
+    the bare string on its own.
+    """
+    detail = _format_sidecar_error(response)
+    lowered = detail.lower()
+    if response.status_code >= 500:
+        if lowered.strip() != "file too large":
+            return None
+    elif not any(marker in lowered for marker in _UPLOAD_TOO_LARGE_MARKERS):
+        return None
+
+    size = f"{model_size_bytes / (1024 * 1024):.0f} MB " if model_size_bytes else ""
+    # Both variants must rule out the layers people reach for first, because
+    # those are the ones that look like they should apply.
+    common = (
+        f"The slicer sidecar refused the {size}model file as too large. The limit lives inside "
+        "the sidecar container, so it is neither a BamDude setting nor a reverse-proxy one — "
+        "raising 'client_max_body_size' or a proxy body limit will not change it."
+    )
+
+    if any(marker in lowered for marker in _CONFIGURABLE_CAP_MARKERS):
+        return (
+            f"{common} Raise it by setting MAX_MODEL_UPLOAD_MB in slicer-api/.env and rebuilding "
+            f"the service. Sidecar said: {detail}"
+        )
+    return (
+        f"{common} This sidecar image predates the reachable cap — rebuild it with "
+        "'cd slicer-api/ && docker compose --profile all build && docker compose --profile all "
+        f"up -d', which adds MAX_MODEL_UPLOAD_MB for going higher. Sidecar said: {detail}"
+    )
+
+
+def _log_slice_request(filename: str, model_bytes: bytes, *, plate: int | None, profiles: int) -> None:
+    """Record what is being sent to the sidecar, size included.
+
+    ⚠️ Nothing logged the payload size, so a support bundle from a slice that
+    died on an upload cap looked identical to one that died on a bad profile.
+    One line per slice is cheap next to the operation it describes.
+    """
+    logger.info(
+        "Slicing %s (%.1f MB) plate=%s with %d profile(s)",
+        filename,
+        len(model_bytes) / (1024 * 1024),
+        "all" if plate is None else plate,
+        profiles,
+    )
+
+
+def _handle_slice_response(
+    response: httpx.Response, *, export_3mf: bool, model_size_bytes: int | None = None
+) -> SliceResult:
     """Turn a sidecar ``/slice`` response into a validated ``SliceResult``.
 
     Shared by ``slice_with_profiles`` / ``slice_without_profiles``: the two had
@@ -229,6 +337,14 @@ def _handle_slice_response(response: httpx.Response, *, export_3mf: bool) -> Sli
             response.status_code,
             response.text[:8000],
         )
+    # ⚠️ Checked ahead of the status branches: the same rejection arrives as a
+    # 500 from older sidecars and a 413 from newer ones. And raising
+    # SlicerInputError rather than SlicerApiServerError is what stops the
+    # library route retrying the identical oversized upload with embedded
+    # settings — a second slow conversion for a guaranteed same answer.
+    oversized = _upload_size_rejection(response, model_size_bytes)
+    if oversized:
+        raise SlicerInputError(oversized)
     if response.status_code == 413:
         # A 413 almost never comes from the slicer itself — it is a reverse
         # proxy capping the multipart upload (model + profiles). Name the layer
@@ -383,7 +499,7 @@ class SlicerApiService:
         try:
             response = await self._client.get(f"{self.base_url}/health", timeout=10.0)
         except httpx.RequestError as exc:
-            raise SlicerApiUnavailableError(f"Slicer sidecar unreachable: {exc}") from exc
+            raise SlicerApiUnavailableError(f"Slicer sidecar unreachable: {_transport_error_reason(exc)}") from exc
         if response.status_code >= 400:
             raise SlicerApiUnavailableError(f"Slicer sidecar /health returned {response.status_code}")
         return response.json()
@@ -405,7 +521,7 @@ class SlicerApiService:
         try:
             response = await self._client.get(f"{self.base_url}/profiles/bundled", timeout=10.0)
         except httpx.RequestError as exc:
-            raise SlicerApiUnavailableError(f"Slicer sidecar unreachable: {exc}") from exc
+            raise SlicerApiUnavailableError(f"Slicer sidecar unreachable: {_transport_error_reason(exc)}") from exc
         if response.status_code >= 400:
             raise SlicerApiUnavailableError(f"Slicer sidecar /profiles/bundled returned {response.status_code}")
         return response.json()
@@ -535,7 +651,61 @@ class SlicerApiService:
         try:
             return post_task.result()
         except httpx.RequestError as exc:
-            raise SlicerApiUnavailableError(f"Slicer sidecar unreachable: {exc}") from exc
+            raise SlicerApiUnavailableError(f"Slicer sidecar unreachable: {_transport_error_reason(exc)}") from exc
+
+    async def resolve_profile(self, profile_json: str, category: str) -> "ResolvedProfile":
+        """``POST /profiles/resolve`` — flatten a preset's ``inherits:`` chain.
+
+        Returns the effective key/value map the slicer would actually use, so
+        the slice dialog's settings panel can show a preset's REAL values rather
+        than the option schema's compiled-in defaults. A "Standard" pick is only
+        an ``{inherits: ...}`` stub on our side; everything else it sets lives in
+        the sidecar's bundled profiles.
+
+        ⚠️ Deliberately asks the SIDECAR rather than resolving locally. We have
+        our own ``inherits:`` resolver, but it walks OrcaSlicer's *published*
+        profile tree, which is not necessarily the one baked into the running
+        sidecar image — values from it would look authoritative and could
+        quietly disagree with what actually gets sliced.
+
+        Genuine transport failures still raise; everything else comes back as a
+        reason.
+        """
+        try:
+            payload = json.loads(profile_json)
+        except json.JSONDecodeError:
+            logger.warning("Cannot resolve %s preset: content is not valid JSON", category)
+            return ResolvedProfile(None, "preset_unresolved")
+
+        try:
+            response = await self._client.post(
+                f"{self.base_url}/profiles/resolve",
+                json={"category": category, "profile": payload},
+                timeout=15.0,
+            )
+        except httpx.RequestError as exc:
+            raise SlicerApiUnavailableError(f"Slicer sidecar unreachable: {_transport_error_reason(exc)}") from exc
+
+        if response.status_code == 404:
+            # ⚠️ Sidecar predates the endpoint. Not an error, and specifically
+            # NOT the same as a broken one — this is the case with a fix the
+            # user can act on.
+            logger.info("Slicer sidecar has no /profiles/resolve; falling back to schema defaults")
+            return ResolvedProfile(None, "sidecar_outdated")
+        if response.status_code >= 400:
+            logger.warning(
+                "Slicer sidecar /profiles/resolve returned %s: %s",
+                response.status_code,
+                _format_sidecar_error(response),
+            )
+            return ResolvedProfile(None, "sidecar_unavailable")
+
+        body = response.json()
+        resolved = body.get("profile") if isinstance(body, dict) else None
+        if not isinstance(resolved, dict):
+            logger.warning("Slicer sidecar /profiles/resolve returned no profile object")
+            return ResolvedProfile(None, "sidecar_unavailable")
+        return ResolvedProfile(resolved, "ok")
 
     async def slice_with_profiles(
         self,
@@ -548,6 +718,7 @@ class SlicerApiService:
         plate: int | None = None,
         export_3mf: bool = False,
         arrange: bool = False,
+        orient: bool = False,
         bed_type: str | None = None,
         request_id: str | None = None,
         on_progress: Callable[[dict], None] | None = None,
@@ -599,11 +770,7 @@ class SlicerApiService:
             data["plate"] = str(plate)
         if export_3mf:
             data["exportType"] = "3mf"
-        if arrange:
-            # Sidecar reads truthy strings as True; cross-nozzle-class re-slices
-            # (#1493) need --arrange so BS repositions objects for the target
-            # bed instead of inheriting the source printer's coordinate layout.
-            data["arrange"] = "true"
+        _add_layout_flags(data, arrange=arrange, orient=orient)
         if bed_type is not None:
             # Sidecar's ``SlicingSettings.bedType`` → ``--curr-bed-type`` CLI
             # arg. Empty string falls back to slicer-internal default, so we
@@ -617,8 +784,9 @@ class SlicerApiService:
         # structured updates via on_progress. Uses a short-tick poll (1 s)
         # since the slicer emits stage changes several times per minute on
         # complex models.
+        _log_slice_request(model_filename, model_bytes, plate=plate, profiles=len(filament_profile_jsons) + 2)
         response = await self._post_slice(files=files, data=data, request_id=request_id, on_progress=on_progress)
-        return _handle_slice_response(response, export_3mf=export_3mf)
+        return _handle_slice_response(response, export_3mf=export_3mf, model_size_bytes=len(model_bytes))
 
     async def slice_without_profiles(
         self,
@@ -627,11 +795,21 @@ class SlicerApiService:
         model_filename: str,
         plate: int | None = None,
         export_3mf: bool = False,
+        arrange: bool = False,
+        orient: bool = False,
         bed_type: str | None = None,
         request_id: str | None = None,
         on_progress: Callable[[dict], None] | None = None,
     ) -> SliceResult:
         """``POST /slice`` with only the model file and no profile triplet.
+
+        ⚠️ ``arrange`` / ``orient`` mean the same here as on
+        ``slice_with_profiles``: they are CLI actions applied to the loaded
+        geometry, independent of where the print config came from. Both paths
+        accept them so a per-slice choice survives the embedded-settings route
+        and the segfault fallback. The filament-discovery preview leaves them
+        off — moving objects there would change nothing about which slots the
+        plate consumes.
 
         For 3MF inputs this lets the slicer fall back on the file's embedded
         ``Metadata/project_settings.config``. Used as a fallback when
@@ -655,13 +833,40 @@ class SlicerApiService:
             data["plate"] = str(plate)
         if export_3mf:
             data["exportType"] = "3mf"
+        _add_layout_flags(data, arrange=arrange, orient=orient)
         if bed_type is not None:
             data["bedType"] = bed_type
         if request_id is not None:
             data["requestId"] = request_id
 
+        _log_slice_request(model_filename, model_bytes, plate=plate, profiles=0)
         response = await self._post_slice(files=files, data=data, request_id=request_id, on_progress=on_progress)
-        return _handle_slice_response(response, export_3mf=export_3mf)
+        return _handle_slice_response(response, export_3mf=export_3mf, model_size_bytes=len(model_bytes))
+
+
+def _add_layout_flags(data: dict[str, str], *, arrange: bool, orient: bool) -> None:
+    """Set the sidecar's ``arrange`` / ``orient`` form fields, but only when on.
+
+    ⚠️ An off flag is expressed by OMITTING the field. The sidecar branches on
+    ``settings.arrange !== undefined``, and multipart fields arrive as strings —
+    where ``"false"`` is truthy in JavaScript. Sending ``"false"`` would
+    therefore turn the flag ON.
+
+    Omission also keeps the wire payload of default-off callers byte-identical
+    to what it was before these parameters existed.
+
+    ``arrange`` repositions objects on the bed; cross-nozzle-class re-slices
+    need it so the slicer lays the plate out for the target bed instead of
+    inheriting the source printer's coordinates. ``orient`` runs the CLI's
+    auto-orientation pass, which scores candidate rotations and turns each
+    object onto the best one. ⚠️ Both are user-driven — nothing turns ``orient``
+    on by itself, because rotating a deliberately-laid-out model is not a change
+    to make silently.
+    """
+    if arrange:
+        data["arrange"] = "true"
+    if orient:
+        data["orient"] = "true"
 
 
 def _safe_int(value: str | None) -> int:

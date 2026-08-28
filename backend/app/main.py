@@ -26,15 +26,19 @@ from backend.app.api.routes import (
     camera,
     camwall,
     cloud,
+    cloud_link,
     discovery,
     external_links,
     filament_calibration as filament_calibration_routes,
+    filament_families as filament_families_routes,
     firmware,
     git_backup,
     groups,
     hms as hms_routes,
     inventory,
     kprofiles,
+    label_devices,
+    label_templates,
     labels,
     library,
     library_notes,
@@ -568,6 +572,7 @@ _expected_print_registered_at: dict[tuple[int, str], float] = {}
 # Cleanup loop interval
 _EXPECTED_PRINT_CLEANUP_INTERVAL: int = 15 * 60  # 15 minutes
 _expected_prints_cleanup_task: asyncio.Task | None = None
+_label_reclaim_task: asyncio.Task | None = None
 
 
 # Per-printer lock that serialises the spool-assignment block of
@@ -1040,7 +1045,9 @@ async def maybe_register_external_stagger(printer_id: int) -> None:
         logging.getLogger(__name__).debug("External stagger registration failed for printer %s: %s", printer_id, e)
 
 
-async def mark_queue_printing_for_printer(printer_id: int, item_id: int | None = None) -> None:
+async def mark_queue_printing_for_printer(
+    printer_id: int, item_id: int | None = None, *, archive_id: int | None = None, options: dict | None = None
+) -> None:
     """Ensure the printer's queue reflects the real busy state.
 
     Call this once we know an active print exists on *printer_id* —
@@ -1049,10 +1056,31 @@ async def mark_queue_printing_for_printer(printer_id: int, item_id: int | None =
     but the UI does, and a stale idle status while a print runs is
     confusing.
 
-    ``item_id`` is ``None`` for external / direct-dispatch prints that
-    have no corresponding ``PrintQueueItem``.
+    ``item_id`` is the scheduler's queue item when it has one. When it is None
+    the print either claimed its own row at dispatch (Print now — see
+    ``claim_printer_for_direct_print``) or has none at all, which is what an
+    external print looks like: started from the printer's screen or sent
+    straight from a slicer, so BamDude registered no expected key for it.
+
+    ⚠️ **A missing row is created, an existing one is adopted.** Two rows in
+    ``printing`` on one queue is exactly the state ``on_print_complete`` warns
+    about as "BUG: Multiple queue items in 'printing' status", and it would
+    attribute the print to whichever came back first.
+
+    ``options`` is what the PRINTER told us about a print BamDude did not send,
+    and it is only ever used for a row being created here. Repeating such a row
+    dispatches it again, so anything dropped now is silently wrong on the
+    repeat — reported from a farm whose repeat of a BambuStudio print went out
+    with no AMS mapping at all.
+
+    ⚠️ Only what the printer actually reports belongs in it. The calibration
+    flags, the macros, the preheat override and the gcode injection are
+    parameters of a ``project_file`` command we never sent and the printer does
+    not report back; they keep their defaults rather than a guess.
     """
+    from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.queue_batch import claim_printer_for_direct_print
     from backend.app.services.queue_counters import set_queue_printing
 
     async with async_session() as db:
@@ -1060,6 +1088,37 @@ async def mark_queue_printing_for_printer(printer_id: int, item_id: int | None =
         queue = result.scalar_one_or_none()
         if queue is None:
             return
+
+        if item_id is None:
+            existing = (
+                (
+                    await db.execute(
+                        select(PrintQueueItem)
+                        .where(PrintQueueItem.queue_id == queue.id)
+                        .where(PrintQueueItem.status == "printing")
+                        .order_by(PrintQueueItem.started_at.desc())
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing is not None:
+                item_id = existing.id
+                # ⚠️ A direct print's row is created before its archive exists.
+                # The dispatcher wires the two together, but a re-trigger path
+                # that adopts a *different* archive would leave the row pointing
+                # nowhere — and a completed item with no archive is never
+                # auto-cleaned, so it would outlive its print.
+                if existing.archive_id is None and archive_id is not None:
+                    existing.archive_id = archive_id
+                    await db.commit()
+            else:
+                created = await claim_printer_for_direct_print(
+                    db, printer_id=printer_id, archive_id=archive_id, options=options
+                )
+                if created is not None:
+                    item_id = created.id
+
         if queue.status == "printing" and queue.current_item_id == item_id:
             return  # already in correct state
         await set_queue_printing(db, queue.id, item_id)
@@ -1072,6 +1131,51 @@ def _get_start_ams_mapping(data: dict, archive_id: int | None) -> list[int] | No
     if not stored_ams_mapping and archive_id:
         stored_ams_mapping = _print_ams_mappings.get(archive_id)
     return stored_ams_mapping
+
+
+def _printer_reported_options(data: dict, archive_id: int | None, plate_id: int | None) -> dict:
+    """The print options a print BamDude did not send can still be known from.
+
+    A print started from BambuStudio or the printer's screen gets a queue row
+    like any other, and that row is repeatable — so an option dropped here is
+    silently wrong on the repeat. Reported from a farm: the row came out with
+    both columns empty.
+
+    ⚠️ Empty does not mean the repeat fails, which is why this went unnoticed.
+    ``PrintScheduler._ensure_ams_mapping`` recomputes a missing mapping from
+    whatever is loaded on the printer *now*, and that is the weaker source the
+    filament-attribution rule exists to rank last: it charges the repeat to
+    today's spools rather than to the slots the print was actually sliced for.
+
+    ⚠️ **Both can still come back None here, and often do.** Measured on a
+    BambuStudio-launched print (2026-08-21): the printer announced it as
+    ``Cube_slicer.gcode.3mf`` with no ``gcode_file``, so the plate was
+    unparseable; and no mapping existed at all — the request-topic interceptor
+    never saw a ``project_file`` command (Studio had not gone through the LAN
+    broker), and the live ``mapping`` field was absent too. That is not a fault
+    to paper over:
+
+    * the **plate** is knowable later, from the file itself, and
+      ``ArchiveService.attach_3mf_to_archive`` carries it to the row when the
+      3MF lands;
+    * the **mapping** is not knowable at all in that case. It stays None, and
+      the recompute above is the honest answer. ⚠️ Do NOT fill it late from the
+      live ``mapping`` field: by then AMS filament backup may have rewritten it
+      to a substitute, and ``PrintQueueItem.ams_mapping`` is ranked ABOVE the
+      live field by the attribution chain — writing it there would launder the
+      weakest source into the second-strongest slot.
+
+    Exactly two things are recoverable: the slicer's slot-per-filament mapping,
+    which the printer echoes in the print payload, and the plate parsed from the
+    filename.
+
+    ⚠️ Nothing else is guessed. The calibration flags, the macros, the preheat
+    override and the gcode injection are parameters of a ``project_file``
+    command we never sent and the printer does not report back — a plausible
+    default invented here would be indistinguishable from one the operator
+    chose.
+    """
+    return {"ams_mapping": _get_start_ams_mapping(data, archive_id), "plate_id": plate_id}
 
 
 def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None = None) -> dict[str, str]:
@@ -1267,6 +1371,24 @@ def set_expected_pause_reason(printer_id: int, reason_code: str) -> None:
     _expected_pause_reasons[printer_id] = reason_code
 
 
+async def _current_tray_frozen(db, printer_id: int, state) -> tuple[int | None, int | None, int | None]:
+    """(global_tray, spool_id, spoolman_spool_id) of the currently-loaded tray.
+
+    For journal timeline rows (pause/resume) — forensic context only, never
+    accounting, so an unresolvable tray simply yields Nones.
+    """
+    from backend.app.services.print_usage_journal import freeze_spool_ids
+
+    tn = getattr(state, "tray_now", 255)
+    if not ((0 <= tn <= 15) or (24 <= tn <= 27) or (128 <= tn <= 135) or tn == 254):
+        return None, None, None
+    try:
+        spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tn)
+    except Exception:
+        return tn, None, None
+    return tn, spool_id, spoolman_spool_id
+
+
 async def _handle_pause_edge(printer_id: int, state: PrinterState):
     """Fire on_print_pause notification + WS push on RUNNING→PAUSE.
 
@@ -1312,6 +1434,32 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
         now = time.time()
         state.pause_started_at = now
         _pause_started_at[printer_id] = now
+
+        # Timeline entry in the usage journal — attribution-neutral (the
+        # accountant ignores pause/resume), but it anchors spool_loaded events
+        # and makes runout forensics readable. The current tray + its frozen
+        # spool ride along for the same forensic reason: "what was loaded when
+        # it paused" is the first question a timeline reader asks.
+        try:
+            from backend.app.models.print_usage_event import EVENT_PAUSE
+            from backend.app.services.print_usage_journal import active_archive_id, record_event
+
+            async with async_session() as db:
+                archive_id = await active_archive_id(db, printer_id)
+                if archive_id is not None:
+                    tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)
+                    await record_event(
+                        db,
+                        printer_id=printer_id,
+                        archive_id=archive_id,
+                        layer_num=state.layer_num or 0,
+                        event=EVENT_PAUSE,
+                        global_tray_id=tray,
+                        spool_id=spool_id,
+                        spoolman_spool_id=spoolman_spool_id,
+                    )
+        except Exception as e:
+            logging.getLogger(__name__).debug("Pause journal entry failed for printer %d: %s", printer_id, e)
 
         filename = state.subtask_name or state.gcode_file
         ws_data = {
@@ -1360,6 +1508,27 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState):
         # never consumed (e.g. plate-detect issued the pause + the printer
         # resumed before the MQTT pause edge made it through).
         _expected_pause_reasons.pop(printer_id, None)
+
+        try:
+            from backend.app.models.print_usage_event import EVENT_RESUME
+            from backend.app.services.print_usage_journal import active_archive_id, record_event
+
+            async with async_session() as db:
+                archive_id = await active_archive_id(db, printer_id)
+                if archive_id is not None:
+                    tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)
+                    await record_event(
+                        db,
+                        printer_id=printer_id,
+                        archive_id=archive_id,
+                        layer_num=state.layer_num or 0,
+                        event=EVENT_RESUME,
+                        global_tray_id=tray,
+                        spool_id=spool_id,
+                        spoolman_spool_id=spoolman_spool_id,
+                    )
+        except Exception as e:
+            logging.getLogger(__name__).debug("Resume journal entry failed for printer %d: %s", printer_id, e)
 
         filename = state.subtask_name or state.gcode_file
         ws_data = {
@@ -1844,9 +2013,21 @@ async def on_ams_change(printer_id: int, ams_data: list):
     # Check if a print is actively running on this printer - if so, skip AMS
     # weight sync to avoid double-deducting spool weight (the usage tracker
     # handles weight deduction precisely during prints via 3MF/G-code data).
+    from backend.app.services.ams_sync_debounce import debounce as _ams_decrease_debounce
     from backend.app.services.usage_tracker import _active_sessions, record_ams_sync_usage
 
     _print_active = printer_id in _active_sessions
+
+    # A slot that reports empty while a print is running is a filament runout,
+    # not a spool swap: the spool is still physically in the AMS, just consumed.
+    # Dropping the slot link there loses the only record of which spool fed the
+    # print, so the completion path can't charge the runout segment to anything.
+    #
+    # ⚠️ Read from the printer's state, NOT from ``_print_active``: with Spoolman
+    # owning usage there is deliberately no in-memory session, and those users
+    # have the same runout.
+    _unlink_state = printer_manager.get_status(printer_id)
+    printing_now = (getattr(_unlink_state, "state", "") or "").upper() in ("RUNNING", "PAUSE")
 
     # MQTT relay - publish AMS change
     try:
@@ -1911,6 +2092,17 @@ async def on_ams_change(printer_id: int, ams_data: list):
                 else:
                     current_tray = _find_tray_in_ams_data(ams_data, assignment.ams_id, assignment.tray_id)
                 if not current_tray:
+                    if printing_now:
+                        # Runout, not a swap — see ``printing_now`` at the top of
+                        # this function. The next idle-time pass unlinks it if
+                        # the user really did take the spool out.
+                        logger.info(
+                            "Auto-unlink skipped: spool %d AMS%d-T%d - slot empty during a running print (runout?)",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        continue
                     logger.info(
                         "Auto-unlink: spool %d AMS%d-T%d - tray not found in AMS data (slot empty?)",
                         assignment.spool_id,
@@ -2037,6 +2229,34 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             fp_color,
                             fp_type,
                         )
+                        continue
+
+                    if not cur_type.strip():
+                        # The firmware DID say the slot is empty — one of
+                        # ``_FIRMWARE_EMPTY_STATES`` with cleared content is the
+                        # only blank that gets past the guard above. Empty means
+                        # two different things depending on when it is said:
+                        # mid-print it is a runout (the reel is consumed, not
+                        # removed — same rule as the tray-not-found branch),
+                        # while idle it is the user taking the spool out.
+                        # Letting the blank fall through to the fingerprint
+                        # compare below turned a runout into "spool changed"
+                        # (X2D, 2026-08-23) and the runout row froze spool=None.
+                        if printing_now:
+                            logger.info(
+                                "Auto-unlink skipped: spool %d AMS%d-T%d - slot empty during a running print (runout?)",
+                                assignment.spool_id,
+                                assignment.ams_id,
+                                assignment.tray_id,
+                            )
+                            continue
+                        logger.info(
+                            "Auto-unlink: spool %d AMS%d-T%d - slot reports empty (spool removed)",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        stale.append(assignment)
                         continue
 
                     if not _colors_similar(cur_color, fp_color) or cur_type.upper() != fp_type.upper():
@@ -2201,6 +2421,38 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                             new_used=new_used,
                                         )
                                         await db.commit()
+                                    elif new_used < current_used - 1 and not printing_now:
+                                        # Downward correction — BS-mirror parity for
+                                        # RFID spools only, and never on one reading:
+                                        # the same value must repeat across two pushes
+                                        # ≥60 s apart (reconnect bursts cannot pass;
+                                        # zeros never got this far — grams_used refuses
+                                        # them). record_ams_sync_usage's decrease branch
+                                        # does the bookkeeping: no history row, baseline
+                                        # pulled, low-stock re-armed.
+                                        _bidir_raw = await get_setting(db, "ams_sync_bidirectional")
+                                        if (
+                                            (_bidir_raw is None or _bidir_raw.lower() != "false")
+                                            and is_bambu_tag(tag_uid, tray_uuid, tray_info_idx)
+                                            and _ams_decrease_debounce.offer(
+                                                (printer_id, ams_id, tray_id), new_used, str(tray_uuid or "")
+                                            )
+                                        ):
+                                            logger.info(
+                                                "Weight sync (down): spool %d weight_used %s -> %s (debounced, tagged)",
+                                                existing_assignment.spool_id,
+                                                current_used,
+                                                new_used,
+                                            )
+                                            await record_ams_sync_usage(
+                                                db,
+                                                existing_assignment.spool,
+                                                printer_id=printer_id,
+                                                ams_id=ams_id,
+                                                tray_id=tray_id,
+                                                new_used=new_used,
+                                            )
+                                            await db.commit()
 
                             # Re-apply stored K-profile when the live tray's
                             # cali_idx drifted from the spool's stored profile.
@@ -2243,8 +2495,8 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                         else:
                                             slot_extruder = state.ams_extruder_map.get(str(ams_id)) or 0
 
-                                    effective_filament_id = derive_effective_filament_id(
-                                        spool=spool, slot_tray_info_idx=tray_info_idx or None
+                                    effective_filament_id = await derive_effective_filament_id(
+                                        spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
                                     )
                                     if effective_filament_id:
                                         # Helper fires only when the live cali_idx
@@ -2490,29 +2742,8 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             _clear_unknown_tag_dedup(printer_id, ams_id, tray.tray_id)
                         if result:
                             synced += 1
-                            # E8: keep the AMS slot card's preset name in sync with
-                            # the just-synced Spoolman spool — the PrintersPage
-                            # display chain consults slot_preset_mappings.preset_name
-                            # first, so without this the card keeps showing the
-                            # previous spool's preset after a swap. Guarded so a
-                            # shape mismatch can never break the Spoolman sync.
-                            try:
-                                from backend.app.services.slot_preset_writer import (
-                                    upsert_slot_preset_for_spoolman_spool,
-                                )
-
-                                await upsert_slot_preset_for_spoolman_spool(
-                                    db=db,
-                                    spoolman_spool=result,
-                                    tray_info_idx=tray_data.get("tray_info_idx", "") or "",
-                                    tray_sub_brands=tray_data.get("tray_sub_brands", "") or "",
-                                    tray_type=tray_data.get("tray_type", "") or "",
-                                    printer_id=printer_id,
-                                    ams_id=ams_id,
-                                    tray_id=tray.tray_id,
-                                )
-                            except Exception as _e:
-                                logger.debug("slot preset upsert (spoolman) failed: %s", _e)
+                            # (slot_preset_mappings retired — slot display names
+                            # come from the identity resolver now.)
                             if result.get("id"):
                                 synced_spool_ids.add(result["id"])
                                 # If a new spool was created, add it to the cache
@@ -2525,6 +2756,22 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                         printer_id,
                                         result["id"],
                                     )
+                        # Bidirectional weight leg for Bambu-tagged spools —
+                        # never while a print runs (the per-print tracker owns
+                        # weight then; #1119's no-weight rule stays for
+                        # everything untagged).
+                        if result and result.get("id") and not printing_now and not _print_active:
+                            try:
+                                await _spoolman_bidirectional_weight_sync(
+                                    client, db, printer_id, ams_id, tray, tray_data, result
+                                )
+                            except Exception as e:
+                                logger.debug(
+                                    "Bidirectional weight sync failed for AMS %s tray %s: %s",
+                                    ams_id,
+                                    tray.tray_id,
+                                    e,
+                                )
                     except Exception as e:
                         logger.error("Error syncing AMS %s tray %s: %s", ams_id, tray.tray_id, e)
 
@@ -2552,6 +2799,72 @@ async def on_ams_change(printer_id: int, ams_data: list):
 
     except Exception as e:
         logging.getLogger(__name__).warning(f"Spoolman AMS sync failed: {e}")
+
+
+async def _spoolman_bidirectional_weight_sync(client, db, printer_id: int, ams_id: int, tray, tray_data, spool):
+    """AMS-driven weight for a Bambu-tagged Spoolman spool, both directions.
+
+    #1119 removed the AMS weight sync wholesale because non-RFID spools have
+    no usable ``remain`` and were silently dropped. A valid Bambu tag's remain
+    IS the firmware's own estimate — the same number BS mirrors into its
+    Filament Manager — so it comes back narrowly, tagged spools only, idle
+    only (the caller gates on printing): remaining dropped → ``use_spool`` the
+    delta immediately (≥1 g); remaining rose → a downward correction of our
+    books, applied only after the two-push debounce, via a
+    ``remaining_weight`` PATCH. Zeros never reach here — ``grams_remaining``
+    refuses them (inv-zero-remain-is-not-an-empty-spool).
+    """
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.services.ams_sync_debounce import debounce as _ams_decrease_debounce
+    from backend.app.utils.filament_remaining import grams_remaining
+
+    logger = logging.getLogger(__name__)
+
+    tray_uuid = str(getattr(tray, "tray_uuid", "") or "")
+    if not tray_uuid or set(tray_uuid) == {"0"}:
+        return  # untagged — #1119 territory, weight stays per-print-owned
+
+    filament = spool.get("filament") or {}
+    ref_weight = filament.get("weight")
+    if not ref_weight or ref_weight <= 0:
+        return
+
+    remain_raw = tray_data.get("remain")
+    try:
+        remain_val = int(remain_raw) if remain_raw is not None else -1
+    except (TypeError, ValueError):
+        remain_val = -1
+    new_remaining = grams_remaining(tray_data.get("remain_g"), remain_val, int(ref_weight))
+    if new_remaining is None:
+        return
+
+    current_remaining = spool.get("remaining_weight")
+    if current_remaining is None:
+        return
+
+    delta_used = float(current_remaining) - float(new_remaining)
+    if delta_used > 1:
+        await client.use_spool(spool["id"], round(delta_used, 1))
+        logger.info(
+            "Spoolman weight sync: spool %s consumed %.1fg per AMS reading (AMS%d-T%d)",
+            spool["id"],
+            delta_used,
+            ams_id,
+            tray.tray_id,
+        )
+    elif delta_used < -1:
+        _bidir_raw = await get_setting(db, "ams_sync_bidirectional")
+        if _bidir_raw is not None and _bidir_raw.lower() == "false":
+            return
+        if _ams_decrease_debounce.offer((printer_id, ams_id, tray.tray_id), float(new_remaining), tray_uuid):
+            await client.update_spool(spool["id"], remaining_weight=round(float(new_remaining), 1))
+            logger.info(
+                "Spoolman weight sync (down): spool %s remaining -> %.1fg (debounced, tagged, AMS%d-T%d)",
+                spool["id"],
+                new_remaining,
+                ams_id,
+                tray.tray_id,
+            )
 
 
 async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -> bytes | None:
@@ -3056,16 +3369,30 @@ async def on_print_start(printer_id: int, data: dict):
     except Exception:
         pass  # Don't fail print start callback if MQTT fails
 
-    # Capture AMS tray remain% for filament consumption tracking (skip if Spoolman handles usage)
+    # Capture the AMS tray remain%, the assignment snapshot, the dispatched
+    # mapping and the seeded tray-change log.
+    #
+    # Unconditional, for both inventory backends. This only *captures* — the
+    # writing is still split, with the internal tracker skipped at completion
+    # when Spoolman owns usage. Spoolman's own durable row (#1820) already
+    # carries its plate-scoped 3MF figures and stored mapping, but not the
+    # tray-change log, and that log is the only record of which spool fed which
+    # layers when AMS filament backup swaps trays mid-print. Capturing it on one
+    # side only would leave Spoolman users with the mid-print restart bug this
+    # fixes for everyone else.
     try:
         async with async_session() as db:
             from backend.app.api.routes.settings import get_setting
+            from backend.app.services.usage_tracker import on_print_start as usage_on_print_start
 
             _spoolman_on = await get_setting(db, "spoolman_enabled")
-            if not _spoolman_on or _spoolman_on.lower() != "true":
-                from backend.app.services.usage_tracker import on_print_start as usage_on_print_start
-
-                await usage_on_print_start(printer_id, data, printer_manager, db=db)
+            await usage_on_print_start(
+                printer_id,
+                data,
+                printer_manager,
+                db=db,
+                spoolman_owns_usage=bool(_spoolman_on) and _spoolman_on.lower() == "true",
+            )
     except Exception as e:
         logger.warning("Usage tracker on_print_start failed: %s", e)
 
@@ -3444,7 +3771,7 @@ async def on_print_start(printer_id: int, data: dict):
 
                 # Ensure queue reflects the busy state (queue-driven flow
                 # already sets this from the scheduler, but repeat-safe).
-                await mark_queue_printing_for_printer(printer_id)
+                await mark_queue_printing_for_printer(printer_id, archive_id=archive.id)
 
                 # Set up energy tracking (#941: persist start on archive row)
                 await _record_energy_start(archive, printer_id, db, context="expected-print")
@@ -3519,8 +3846,16 @@ async def on_print_start(printer_id: int, data: dict):
         # Legacy archives (pre-m038) carry ``plate_index = NULL``; treat them
         # as plate-agnostic so this filter never excludes a legitimate
         # adoption candidate from an older install.
-        live_plate_id = parse_plate_id(data.get("filename")) or parse_plate_id(
-            (data.get("raw_data") or {}).get("gcode_file")
+        # ⚠️ Third source, and for a slicer-launched print the only one that
+        # answers: both of the first two are empty there — the printer names
+        # such a print by container alone and reports no ``gcode_file`` — while
+        # the dispatch command's ``param`` carries ``Metadata/plate_N.gcode``.
+        # Last, not first: the two above are read from this print's own live
+        # state, whereas the capture is a remembered value.
+        live_plate_id = (
+            parse_plate_id(data.get("filename"))
+            or parse_plate_id((data.get("raw_data") or {}).get("gcode_file"))
+            or parse_plate_id(data.get("plate_param"))
         )
         logger.info(
             "[adopt] check_name=%r live_plate_id=%s (filename=%r gcode_file=%r)",
@@ -3656,8 +3991,14 @@ async def on_print_start(printer_id: int, data: dict):
                 check_name,
             )
             _active_prints[(printer_id, existing_archive.filename)] = existing_archive.id
-            # Ensure queue reflects the busy state.
-            await mark_queue_printing_for_printer(printer_id)
+            # Ensure queue reflects the busy state. The options are consulted
+            # only if no row exists yet — a re-trigger normally adopts the row
+            # the first pass created, which knows more than we do here.
+            await mark_queue_printing_for_printer(
+                printer_id,
+                archive_id=existing_archive.id,
+                options=_printer_reported_options(data, existing_archive.id, live_plate_id),
+            )
             # Also set up energy tracking if not already tracked (#941: persisted column)
             if existing_archive.energy_start_kwh is None:
                 await _record_energy_start(existing_archive, printer_id, db, context="existing-printing")
@@ -3766,7 +4107,13 @@ async def on_print_start(printer_id: int, data: dict):
             _active_prints[(printer_id, subtask_name)] = archive.id
 
         # Ensure the queue reflects the busy state (external / direct print).
-        await mark_queue_printing_for_printer(printer_id)
+        # This is where an external print's row is born, so it is also the one
+        # chance to record what the printer told us about it.
+        await mark_queue_printing_for_printer(
+            printer_id,
+            archive_id=archive.id,
+            options=_printer_reported_options(data, archive.id, live_plate_id),
+        )
         await maybe_register_external_stagger(printer_id)
 
         # #941: the plug's lifetime counter, read at the real start of the
@@ -4060,7 +4407,11 @@ async def on_print_start(printer_id: int, data: dict):
                         if subtask_name:
                             _active_prints[(printer_id, f"{subtask_name}.3mf")] = hash_match.id
                             _active_prints[(printer_id, subtask_name)] = hash_match.id
-                        await mark_queue_printing_for_printer(printer_id)
+                        await mark_queue_printing_for_printer(
+                            printer_id,
+                            archive_id=hash_match.id,
+                            options=_printer_reported_options(data, hash_match.id, live_plate_id),
+                        )
                         if hash_match.energy_start_kwh is None:
                             await _record_energy_start(hash_match, printer_id, db, context="hash-adoption")
                         if not notification_sent:
@@ -4478,6 +4829,87 @@ async def _capture_finish_photo_from_timelapse(
         await asyncio.sleep(poll_interval)
 
 
+async def _restore_usage_tracking_session(printer_id: int, state, db, logger) -> None:
+    """Put the filament-attribution context back after a restart mid-print.
+
+    ``usage_tracker._active_sessions`` and ``PrinterState.tray_change_log`` both
+    die with the process. The print keeps running, so at completion the tracker
+    would fall back to whatever the printer reports *now* — and AMS filament
+    backup makes "now" the substitute tray, charging the whole print to the
+    spool that only finished it.
+
+    The persisted row is only trusted when its print name still matches what the
+    printer says it is running: a row left behind by a completion we never saw
+    must not attach itself to the next print.
+    """
+    try:
+        from backend.app.api.routes.settings import get_setting
+        from backend.app.services.usage_tracker import (
+            clear_persisted_session,
+            get_persisted_print_name,
+            restore_session,
+        )
+
+        persisted_name = await get_persisted_print_name(db, printer_id)
+        current_name = (state.subtask_name or "").strip()
+        if persisted_name and current_name and persisted_name.strip() != current_name:
+            logger.info(
+                "[RESTART] Discarding stale print session for printer %s (%r != running %r)",
+                printer_id,
+                persisted_name,
+                current_name,
+            )
+            await clear_persisted_session(db, printer_id)
+            # Fall through to seeding: the print on the printer is real, it just
+            # isn't the one the row described.
+            persisted_log = None
+        else:
+            # Spoolman users get the tray-change log back but no in-memory
+            # session — see ``usage_tracker.on_print_start`` on why that dict is
+            # load-bearing for the remain%-sync guard.
+            _spoolman_on = await get_setting(db, "spoolman_enabled")
+            persisted_log = await restore_session(
+                db,
+                printer_id,
+                register_active=not (bool(_spoolman_on) and _spoolman_on.lower() == "true"),
+            )
+        if persisted_log:
+            restored = [tuple(entry) for entry in persisted_log if isinstance(entry, (list, tuple)) and len(entry) == 2]
+            # Anything this process already observed goes after the persisted
+            # history — the log is ordered by layer, and a fresh process can only
+            # have seen changes from later in the print.
+            for entry in state.tray_change_log or []:
+                if tuple(entry) not in restored:
+                    restored.append(tuple(entry))
+            state.tray_change_log = restored
+
+        tray_now = state.tray_now
+        if 0 <= tray_now <= 254:
+            if not state.tray_change_log:
+                # No persisted history — a print that started before this build,
+                # or before the row existed. Seed with the tray feeding right now
+                # so the remainder of the print is at least attributable to the
+                # right spool.
+                state.tray_change_log = [(tray_now, state.layer_num)]
+                logger.info(
+                    "[RESTART] Seeded tray change log for printer %s: tray=%d at layer=%d",
+                    printer_id,
+                    tray_now,
+                    state.layer_num,
+                )
+            # The tray handler updates ``last_loaded_tray`` on every push
+            # regardless of whether it logged a change, so re-align it to avoid a
+            # duplicate entry on the next push. Only ever with a real tray:
+            # ``last_loaded_tray`` is the "survives the end-of-print retract to
+            # 255" fallback, and writing 255 into it would defeat that.
+            state.last_loaded_tray = tray_now
+    except Exception:
+        # Never let attribution recovery cost the caller its timelapse baseline —
+        # that capture has to happen before the printer uploads the in-flight MP4
+        # and there is no second chance at it.
+        logger.exception("[RESTART] Failed to restore usage-tracking session for printer %s", printer_id)
+
+
 async def on_print_running_observed(printer_id: int, data: dict):
     """Restart-recovery: capture a fresh timelapse baseline for a print that
     started before BamDude came up.
@@ -4496,6 +4928,14 @@ async def on_print_running_observed(printer_id: int, data: dict):
     pre-upload.
     """
     logger = logging.getLogger(__name__)
+
+    # Attribution recovery first, and deliberately BEFORE the baseline
+    # early-return below: the two are independent, and a printer that already
+    # has a baseline in this process must still get its tray-change log back.
+    _state = printer_manager.get_status(printer_id)
+    if _state is not None:
+        async with async_session() as db:
+            await _restore_usage_tracking_session(printer_id, _state, db, logger)
 
     # Avoid double-capture: on_print_start may have run earlier in this process.
     if printer_id in _timelapse_baselines:
@@ -4670,6 +5110,62 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
     finally:
         # #1790: always unblock the consumer's bounded wait — captured / gave up / errored.
         producer_done.set()
+
+
+async def _completion_belongs_to_item(db, queue_item, data: dict) -> bool:
+    """Whether this completion event is the one that closes *queue_item*.
+
+    ⚠️ **Nothing in the MQTT payload identifies a run.** The completion carries
+    a subtask name and no id, and the row is found by printer + ``status
+    ='printing'`` alone — so before this check, *any* completion delivered for a
+    printer closed whichever job was printing on it. The printer's own
+    calibration runs and the tail of a previous job both arrive that way.
+
+    The damage is not a wrong row in a list. A job closed like this is marked
+    completed while the printer is still working, leaves the queue into history,
+    and **strands the rest of its batch**: ``check_queue`` counts a printing row
+    as a busy printer, and nothing else ever closes one, so the queue stops
+    until somebody cancels by hand (upstream #2819 / #2829).
+
+    ⚠️ **Only a positive disagreement refuses.** No archive, no recorded name or
+    no subtask name in the payload is *unverifiable*, not *wrong* — and refusing
+    there would strand the row just as thoroughly, only for a different reason.
+    Comparison goes through :func:`_name_matches_subtask`, which already folds
+    the space/underscore substitution the firmware applies and tolerates the
+    printer truncating a long name; it learned that from our own X2D losing a
+    two-hour print on restart, and it is the reason this guard can be added
+    without repeating that lesson.
+    """
+    subtask = (data.get("subtask_name") or "").strip()
+    if not subtask or not queue_item.archive_id:
+        return True
+    from backend.app.models.archive import PrintArchive as _PAMatch
+    from backend.app.services.print_reconciliation import _name_matches_subtask
+
+    archive = await db.get(_PAMatch, queue_item.archive_id)
+    if archive is None or not (archive.print_name or archive.filename):
+        return True
+    if _name_matches_subtask(archive, subtask):
+        return True
+    logging.getLogger(__name__).warning(
+        "Completion for %r does not match queue item %s (dispatched as %r) — leaving the row alone",
+        subtask,
+        queue_item.id,
+        archive.print_name or archive.filename,
+    )
+    return False
+
+
+async def _auto_clean_completed_item(db, queue_item, *, queue_status: str, plate_auto_cleared: bool) -> bool:
+    """Thin wrapper — the rule itself lives in ``services.plate_hold``.
+
+    ⚠️ Shared rather than inlined here because ``print_reconciliation`` finishes
+    rows too, and when it does this step has to happen there as well. It did not,
+    which is how a swap printer ended up with a completed row nobody deleted.
+    """
+    from backend.app.services.plate_hold import clean_up_finished_row
+
+    return await clean_up_finished_row(db, queue_item, queue_status=queue_status, plate_auto_cleared=plate_auto_cleared)
 
 
 async def on_print_complete(printer_id: int, data: dict):
@@ -5469,6 +5965,8 @@ async def on_print_complete(printer_id: int, data: dict):
                     [(i.id, i.archive_id, i.library_file_id) for i in printing_items],
                 )
             queue_item = printing_items[0] if printing_items else None
+            if queue_item is not None and not await _completion_belongs_to_item(db, queue_item, data):
+                queue_item = None
             if queue_item:
                 queue_status = data.get("status", "completed")
                 # MQTT sends "aborted" for cancelled prints; normalise to
@@ -5649,25 +6147,16 @@ async def on_print_complete(printer_id: int, data: dict):
                     except Exception as e:
                         logger.warning("Failed to schedule queue auto-off for printer %s: %s", printer_id, e)
 
-                # Auto-cleanup: completed queue items now live on via their
-                # linked archive (counters re-computed from print_archives
-                # post-m019). Failed / cancelled / skipped stay put so the
-                # operator can retry from the queue UI.
-                if queue_status == "completed" and queue_item.archive_id is not None:
-                    _completed_item_id = queue_item.id
-                    _completed_archive_id = queue_item.archive_id
-                    _completed_queue_id = queue_item.queue_id
-                    from backend.app.services.queue_counters import detach_print_queue_refs
-
-                    await detach_print_queue_refs(db, [queue_item.id])
-                    await db.delete(queue_item)
-                    await db.commit()
-                    logger.info(
-                        "Auto-cleaned completed queue item %s (archive %s, queue %s)",
-                        _completed_item_id,
-                        _completed_archive_id,
-                        _completed_queue_id,
-                    )
+                # Auto-cleanup: completed queue items live on via their linked
+                # archive (counters re-computed from print_archives post-m019).
+                # ⚠️ Unless the printer confirms its plate — then the row waits
+                # for Clear or Repeat instead. See ``_auto_clean_completed_item``.
+                await _auto_clean_completed_item(
+                    db,
+                    queue_item,
+                    queue_status=queue_status,
+                    plate_auto_cleared=_plate_auto_cleared_by_swap,
+                )
 
                 # Queue may now be empty — fire the queue-completed
                 # notification. Must live in the ``if queue_item:`` branch:
@@ -5722,10 +6211,21 @@ async def on_print_complete(printer_id: int, data: dict):
                 except Exception:
                     pass  # Don't fail if notification fails
             else:
-                # No queue_item was printing → this was an external or
-                # direct-dispatch print.  Still flip queue.status back to
+                # No queue_item was printing. Still flip queue.status back to
                 # idle/error so the UI's current-print card goes away and
                 # pending items unblock.
+                #
+                # ⚠️ This is now a FALLBACK, not the direct/external path it was
+                # written as. Every print holds a row while it runs — the
+                # scheduler's, the claim a direct print takes at dispatch, or the
+                # one created here at start for a print BamDude did not send — so
+                # reaching this branch means the row vanished, or
+                # ``_completion_belongs_to_item`` rejected it as somebody else's.
+                #
+                # ⚠️ **Do not delete it as dead code.** Without it, exactly those
+                # cases leave the printer claimed for ever, and ``check_queue``
+                # reads a stale claim as a live one with no age check — the farm
+                # quietly stops taking work.
                 from backend.app.models.printer_queue import PrinterQueue
                 from backend.app.services.queue_counters import set_queue_error, set_queue_idle
 
@@ -6065,6 +6565,18 @@ async def on_print_complete(printer_id: int, data: dict):
     except Exception as e:
         logger.warning("Usage tracker on_print_complete failed: %s", e)
 
+    # Drop the print-start context unconditionally — the Spoolman branch above
+    # skips the internal tracker entirely, so nothing else would clear what print
+    # start captured, and a row surviving its print would be restored onto the
+    # next one after a restart.
+    try:
+        from backend.app.services.usage_tracker import discard_session
+
+        async with async_session() as db:
+            await discard_session(db, printer_id)
+    except Exception as e:
+        logger.warning("Failed to clear persisted print session for printer %s: %s", printer_id, e)
+
     # Report filament usage to Spoolman if print completed successfully
     if data.get("status") == "completed":
         try:
@@ -6126,13 +6638,12 @@ async def on_print_complete(printer_id: int, data: dict):
 
             import uuid
             from datetime import datetime
-            from pathlib import Path
 
-            if archive.file_path:
-                archive_dir = app_settings.base_dir / Path(archive.file_path).parent
-            else:
-                logger.warning("[PHOTO-BG] Archive %s has no file_path, using fallback dir", archive_id)
-                archive_dir = app_settings.archive_dir / str(archive.id)
+            from backend.app.utils.archive_paths import archive_dir_for
+
+            if not archive.file_path:
+                logger.warning("[PHOTO-BG] Archive %s has no file_path, using the per-id folder", archive_id)
+            archive_dir = archive_dir_for(archive)
             photo_filename = None
 
             # Prefer the timelapse last-frame source when a timelapse was recording —
@@ -6383,14 +6894,9 @@ async def on_print_complete(printer_id: int, data: dict):
 
                             # Read finish photo bytes for image attachment (e.g. Pushover)
                             try:
-                                from pathlib import Path
+                                from backend.app.utils.archive_paths import photos_dir_for
 
-                                photo_path = (
-                                    app_settings.base_dir
-                                    / Path(archive.file_path).parent
-                                    / "photos"
-                                    / finish_photo_filename
-                                )
+                                photo_path = photos_dir_for(archive) / finish_photo_filename
                                 if photo_path.exists():
                                     photo_bytes = await asyncio.to_thread(photo_path.read_bytes)
                                     if len(photo_bytes) <= 2_500_000:
@@ -6873,6 +7379,20 @@ async def record_ams_history():
                             f"Cleaned up {result.rowcount} old AMS sensor history entries (older than {retention_days} days)"
                         )
 
+                    # Usage-journal retention rides the same daily tick. The
+                    # sweep itself refuses rows of a still-printing archive.
+                    try:
+                        from backend.app.services.print_usage_journal import prune_finished
+
+                        result = await db.execute(
+                            select(Settings).where(Settings.key == "usage_events_retention_hours")
+                        )
+                        setting = result.scalar_one_or_none()
+                        retention_hours = int(setting.value) if setting else 72
+                        await prune_finished(db, retention_hours)
+                    except Exception as e:
+                        logger.warning("Usage-journal retention sweep failed: %s", e)
+
             # Wait until next recording interval
             await asyncio.sleep(AMS_HISTORY_INTERVAL)
 
@@ -6881,6 +7401,31 @@ async def record_ams_history():
         except Exception as e:
             logger.warning("AMS history recording failed: %s", e)
             await asyncio.sleep(60)  # Wait a bit before retrying
+
+
+_filament_preset_sync_task = None
+_family_backfill_task = None
+
+
+def start_filament_preset_sync():
+    """Start the cloud preset-mirror sync loop (spec A §3)."""
+    global _filament_preset_sync_task
+    if _filament_preset_sync_task is None:
+        from backend.app.services.filament_preset_sync import filament_preset_sync_loop
+
+        _filament_preset_sync_task = asyncio.create_task(filament_preset_sync_loop())
+        logging.getLogger(__name__).info("Filament preset sync loop started")
+
+
+def stop_filament_preset_sync():
+    """Stop the cloud preset-mirror sync loop (and the one-shot backfill)."""
+    global _filament_preset_sync_task, _family_backfill_task
+    if _filament_preset_sync_task:
+        _filament_preset_sync_task.cancel()
+        _filament_preset_sync_task = None
+    if _family_backfill_task:
+        _family_backfill_task.cancel()
+        _family_backfill_task = None
 
 
 def start_ams_history_recording():
@@ -7241,6 +7786,30 @@ def stop_expected_prints_cleanup() -> None:
         logging.getLogger(__name__).info("Expected prints cleanup stopped")
 
 
+def start_label_reclaim() -> None:
+    """Sweep label jobs whose device claimed them and then went quiet.
+
+    ⚠️ Started unconditionally rather than behind ``device_labels_enabled``: the
+    setting can be switched off while a job is out, and the sweep is what stops
+    that job reading as "printing" forever. It is a no-op query against an empty
+    table on every install that never uses this.
+    """
+    global _label_reclaim_task
+    if _label_reclaim_task is None:
+        from backend.app.services.label_reclaim import reclaim_loop
+
+        _label_reclaim_task = asyncio.create_task(reclaim_loop())
+        logging.getLogger(__name__).info("Label job reclaim sweep started")
+
+
+def stop_label_reclaim() -> None:
+    global _label_reclaim_task
+    if _label_reclaim_task:
+        _label_reclaim_task.cancel()
+        _label_reclaim_task = None
+        logging.getLogger(__name__).info("Label job reclaim sweep stopped")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -7355,6 +7924,16 @@ async def lifespan(app: FastAPI):
             from backend.app.services.zigbee.poller import zigbee_poller as _zb_poller
 
             _zb_poller.start(_zb_driver, _zb_session)
+
+        # ⚠️ Outside the "did the radio come up" block on purpose. The
+        # supervisor's whole job is the case where it did not: a dongle absent
+        # at boot, a port another program is holding, or a radio that dies
+        # later. Starting it only when the radio is already healthy would leave
+        # every one of those needing a full application restart, which is the
+        # bug it was written for.
+        from backend.app.services.zigbee.supervisor import zigbee_supervisor as _zb_supervisor
+
+        _zb_supervisor.start(_zb_session)
     except Exception as _zb_exc:
         logging.getLogger(__name__).warning("Zigbee coordinator not started: %s", _zb_exc)
 
@@ -7582,6 +8161,107 @@ async def lifespan(app: FastAPI):
 
     printer_manager.set_assignment_verified_callback(on_assignment_verified)
 
+    async def on_tray_change(printer_id: int, tray_global: int, layer_num: int):
+        """Persist a mid-print tray change for completion-time attribution.
+
+        AMS filament backup switches trays without telling the slicer, so the
+        tray-change log is the only record of which spool fed which layers.
+        Keeping it only in memory meant a restart mid-print charged everything to
+        the tray that finished the job.
+        """
+        try:
+            from backend.app.services.usage_tracker import record_tray_change_event
+
+            async with async_session() as db:
+                await record_tray_change_event(db, printer_id, tray_global, layer_num)
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Failed to persist tray change for printer %d (tray=%d, layer=%d): %s",
+                printer_id,
+                tray_global,
+                layer_num,
+                e,
+            )
+
+    printer_manager.set_tray_change_callback(on_tray_change)
+
+    async def on_usage_event(printer_id: int, event: str, kind: str | None, tray_global: int | None, layer_num: int):
+        """Mirror detector events (runout / spool_loaded) into the usage journal.
+
+        Spool ids are frozen HERE, at event time — the whole point of the
+        journal: completion attributes segments without re-asking the DB after
+        assignments have moved on. Events with no active archive have nothing
+        to attach to and are dropped.
+        """
+        try:
+            from backend.app.models.print_usage_event import EVENT_SPOOL_LOADED
+            from backend.app.services.print_usage_journal import (
+                active_archive_id,
+                freeze_spool_ids,
+                record_event,
+                record_runout,
+            )
+
+            async with async_session() as db:
+                archive_id = await active_archive_id(db, printer_id)
+                if archive_id is None:
+                    logging.getLogger(__name__).debug(
+                        "Usage event %s on printer %d has no active archive, dropped", event, printer_id
+                    )
+                    return
+                spool_id = spoolman_spool_id = None
+                if tray_global is not None:
+                    spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tray_global)
+                if event == "runout":
+                    await record_runout(
+                        db,
+                        printer_id=printer_id,
+                        archive_id=archive_id,
+                        layer_num=layer_num,
+                        kind=kind,
+                        global_tray_id=tray_global,
+                        spool_id=spool_id,
+                        spoolman_spool_id=spoolman_spool_id,
+                    )
+                    # Notify — pause/external doubles as the human-in-the-loop
+                    # prompt to assign the replacement spool. Ambiguous stays
+                    # silent (could equally be a jam).
+                    if kind != "ambiguous":
+                        try:
+                            from backend.app.services.spool_assignment_notifications import (
+                                _slot_label_from_global_tray,
+                            )
+
+                            printer_info = printer_manager.get_printer(printer_id)
+                            await notification_service.on_filament_runout(
+                                printer_id=printer_id,
+                                printer_name=printer_info.name if printer_info else f"Printer {printer_id}",
+                                slot=_slot_label_from_global_tray(tray_global) if tray_global is not None else "?",
+                                kind=kind or "pause",
+                                db=db,
+                            )
+                        except Exception as e:
+                            logging.getLogger(__name__).warning(
+                                "filament_runout notification failed for printer %d: %s", printer_id, e
+                            )
+                elif event == EVENT_SPOOL_LOADED:
+                    await record_event(
+                        db,
+                        printer_id=printer_id,
+                        archive_id=archive_id,
+                        layer_num=layer_num,
+                        event=EVENT_SPOOL_LOADED,
+                        global_tray_id=tray_global,
+                        spool_id=spool_id,
+                        spoolman_spool_id=spoolman_spool_id,
+                    )
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Failed to journal usage event %s for printer %d: %s", event, printer_id, e
+            )
+
+    printer_manager.set_usage_event_callback(on_usage_event)
+
     # Initialize MQTT relay from settings
     async with async_session() as db:
         from backend.app.api.routes.settings import get_setting
@@ -7761,6 +8441,39 @@ async def lifespan(app: FastAPI):
     # Start AMS history recording
     start_ams_history_recording()
 
+    # Start the filament preset-mirror sync loop (family catalog, spec A)
+    start_filament_preset_sync()
+
+    # One-shot: absorb pre-existing local presets + backfill spool family
+    # links. Idempotent (fills NULLs only), so ordering vs the first mirror
+    # sync is non-critical — an offline boot resolves what the catalog alone
+    # can; the next boot picks up mirror-dependent ones.
+    async def _family_catalog_startup_backfill():
+        try:
+            from backend.app.core import database
+            from backend.app.services.filament_family_backfill import backfill_spool_families
+            from backend.app.services.filament_preset_sync import (
+                absorb_all_local_presets,
+                request_sync_soon,
+            )
+
+            request_sync_soon()
+            await asyncio.sleep(5)  # give a connected instance a chance to fill mirrors
+            async with database.async_session() as db:
+                absorbed = await absorb_all_local_presets(db)
+                await db.commit()
+                summary = await backfill_spool_families(db)
+            logging.getLogger(__name__).info(
+                "family catalog startup: %d local presets absorbed, backfill %s", absorbed, summary
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger(__name__).exception("family catalog startup backfill failed")
+
+    global _family_backfill_task
+    _family_backfill_task = asyncio.create_task(_family_catalog_startup_backfill())
+
     # Start printer heater (nozzle/bed/chamber) history recording
     start_printer_sensor_history_recording()
 
@@ -7786,6 +8499,20 @@ async def lifespan(app: FastAPI):
     # Start expected-print TTL eviction (prevents memory leak when prints are
     # registered but on_print_start never fires)
     start_expected_prints_cleanup()
+    start_label_reclaim()
+
+    # ⚠️ A scan the previous process was running is gone with it, and the row it
+    # left says `running` — which reads on screen as progress AND makes the
+    # duplicate guard refuse every future scan of that folder. Swept before
+    # anything can look at it.
+    try:
+        from backend.app.services.library_scan import sweep_interrupted_jobs
+
+        swept = await sweep_interrupted_jobs()
+        if swept:
+            logging.getLogger(__name__).info("failed %d library scan(s) left running by a restart", swept)
+    except Exception:
+        logging.getLogger(__name__).warning("library scan sweep failed", exc_info=True)
 
     # Event-loop stall watchdog: dumps all thread stacks to stderr if the loop
     # freezes (#1486 — silent "container hangs after adding a printer" reports).
@@ -7856,9 +8583,30 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to start archive auto-purge sweeper: %s", e)
 
+    # Cloud Link (opt-in, off by default). ``start()`` reads the pairing row
+    # and returns having done nothing unless the link is enabled, paired and
+    # not revoked — so an upgrade never connects a farm to anything.
+    try:
+        from backend.app.services.cloud_link.service import cloud_link_service
+
+        await cloud_link_service.start()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to start Cloud Link: %s", e)
+
     yield
 
     # Shutdown
+    # Cloud Link first: it holds a socket and describes this farm, so it should
+    # let go before the services it describes start disappearing underneath it.
+    # ``stop()`` cancels the client task rather than waiting on its stop event
+    # — the wait can be ~35 s inside a handshake, longer than the grace period
+    # Docker and systemd give us.
+    try:
+        from backend.app.services.cloud_link.service import cloud_link_service
+
+        await cloud_link_service.stop()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to stop Cloud Link: %s", e)
     # Stop Telegram bot
     try:
         from backend.app.services.telegram_bot import stop_telegram_bot
@@ -7874,8 +8622,13 @@ async def lifespan(app: FastAPI):
     try:
         from backend.app.services.zigbee.coordinator import zigbee_coordinator
         from backend.app.services.zigbee.poller import zigbee_poller
+        from backend.app.services.zigbee.supervisor import zigbee_supervisor
 
-        # Poller first: it reads through the radio the coordinator owns, so
+        # Supervisor first, before anything it might restart: left running, it
+        # would answer the coordinator's stop by bringing the radio back up
+        # mid-teardown, and hold the lock while doing it.
+        await zigbee_supervisor.stop()
+        # Poller next: it reads through the radio the coordinator owns, so
         # stopping that out from under an in-flight read is how shutdown starts
         # logging exceptions nobody can act on.
         await zigbee_poller.stop()
@@ -7916,6 +8669,7 @@ async def lifespan(app: FastAPI):
     git_backup_service.stop_scheduler()
     local_backup_service.stop_scheduler()
     stop_ams_history_recording()
+    stop_filament_preset_sync()
     stop_printer_sensor_history_recording()
     from backend.app.services.connection_watchdog import stop_connection_watchdog
 
@@ -7943,6 +8697,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.warning("Failed to shut down camera broadcasters: %s", e)
     stop_expected_prints_cleanup()
+    stop_label_reclaim()
+
+    from backend.app.services.library_scan import cancel_running_scans
+
+    cancel_running_scans()
     printer_manager.disconnect_all()
     await close_spoolman_client()
 
@@ -8028,6 +8787,7 @@ PUBLIC_API_PATTERNS = [
     # Thumbnails
     "/thumbnail",  # /archives/{id}/thumbnail, /library/files/{id}/thumbnail
     "/plate-thumbnail/",  # /archives/{id}/plate-thumbnail/{plate_id}
+    "/plate-preview",  # /archives/{id}/plate-preview — <img> loaded like its siblings; its handler always claimed this
     # Images and media
     "/photos/",  # /archives/{id}/photos/{filename}
     "/project-image/",  # /archives/{id}/project-image/{path}
@@ -8352,6 +9112,22 @@ async def security_headers_middleware(request, call_next):
     if not _TRUSTED_FRAME_ORIGINS:
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # ⚠️ The streaming overlay is embedded SAME-ORIGIN by the URL builder's
+    # preview in Settings. Every SPA route otherwise sends
+    # ``frame-ancestors 'none'``, which is stricter than the SAMEORIGIN in
+    # ``X-Frame-Options`` beside it and refuses even a same-origin frame — the
+    # preview showed the browser's "another site has embedded it" page instead
+    # of the overlay.
+    #
+    # ``'self'`` only permits a framer on THIS origin, which is BamDude's own
+    # UI, so a clickjacking page on another host is blocked exactly as before.
+    # (The overlay draws status over a camera feed and has no interactive
+    # element to bait a click into, even from a same-origin framer.)
+    # Cross-origin embedding — Home Assistant on another port — remains what
+    # ``TRUSTED_FRAME_ORIGINS`` is for, and ``_frame_ancestors`` already folds
+    # that allowlist in. Every other path keeps ``'none'``.
+    embeddable_same_origin = request.url.path.startswith("/overlay/")
+
     if request.url.path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
         # FastAPI's built-in Swagger UI / ReDoc pages load assets from
         # cdn.jsdelivr.net and bootstrap with an inline <script>, so the
@@ -8378,7 +9154,7 @@ async def security_headers_middleware(request, call_next):
             "font-src 'self' data:; "
             "object-src 'none'; "
             "base-uri 'self'; "
-            "frame-src 'self' http: https:; " + _frame_ancestors("'none'")
+            "frame-src 'self' http: https:; " + _frame_ancestors("'self'" if embeddable_same_origin else "'none'")
         )
     if request.url.scheme == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
@@ -8452,10 +9228,14 @@ app.include_router(measurement_history.router, prefix=app_settings.api_prefix)
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
 app.include_router(archives.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
+app.include_router(filament_families_routes.router, prefix=app_settings.api_prefix)
 app.include_router(orca_cloud.router, prefix=app_settings.api_prefix)
 app.include_router(labels.router, prefix=app_settings.api_prefix)
+app.include_router(label_templates.router, prefix=app_settings.api_prefix)
+app.include_router(label_devices.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)
+app.include_router(cloud_link.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_pipelines.router, prefix=app_settings.api_prefix)

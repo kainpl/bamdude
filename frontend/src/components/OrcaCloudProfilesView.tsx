@@ -4,7 +4,8 @@ import type { TFunction } from 'i18next';
 import { Search, Filter, RefreshCw, Droplet, Settings2, Printer as PrinterIcon, Layers, X, Loader2, Clock } from 'lucide-react';
 
 import { api } from '../api/client';
-import type { OrcaProfileListResponse, OrcaProfileMeta, Printer } from '../api/client';
+import type { OrcaProfileListResponse, OrcaProfileMeta } from '../api/client';
+import { canonicalPrinterModel } from '../utils/slicerPrinterMatch';
 import { Button } from './Button';
 import { FilterDropdown } from './FilterDropdown';
 import { formatRelativeTime } from '../utils/date';
@@ -53,7 +54,6 @@ interface OrcaCloudProfilesViewProps {
   lastSyncTime?: Date;
   onRefresh: () => void;
   isRefreshing: boolean;
-  printers: Printer[];
   t: TFunction;
 }
 
@@ -62,7 +62,6 @@ export function OrcaCloudProfilesView({
   lastSyncTime,
   onRefresh,
   isRefreshing,
-  printers,
   t,
 }: OrcaCloudProfilesViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
@@ -73,46 +72,59 @@ export function OrcaCloudProfilesView({
   const [filterLayerHeight, setFilterLayerHeight] = useState('all');
   const [selectedSetting, setSelectedSetting] = useState<OrcaProfileMeta | null>(null);
 
+  const { data: printerModelsMap = {} } = useQuery({
+    queryKey: ['printer-models'],
+    queryFn: () => api.getPrinterModels(),
+    staleTime: 10 * 60_000,
+  });
+
   const allPresetsWithMeta = useMemo(() => {
     const combined = [
       ...settings.filament.map(s => ({ ...s, type: 'filament' as const })),
       ...settings.printer.map(s => ({ ...s, type: 'printer' as const })),
       ...settings.process.map(s => ({ ...s, type: 'process' as const })),
     ];
-    return combined.map(s => ({ ...s, meta: extractMetadata(s.name) }));
-  }, [settings]);
+    return combined.map(s => {
+      const meta = extractMetadata(s.name);
+      // One row per machine in the printer filter (#1649: "A1M" vs "A1 mini").
+      const printer = meta.printer ? canonicalPrinterModel(meta.printer, printerModelsMap) : null;
+      return { ...s, meta: { ...meta, printer } };
+    });
+  }, [settings, printerModelsMap]);
 
   const filterOptions = useMemo(() => {
     const nozzles = new Set<string>();
     const filaments = new Set<string>();
     const layerHeights = new Set<string>();
+    // Printer filter lists printer PROFILES (models the presets mention,
+    // as in BS/Orca) — not the devices registered in BamDude.
+    const models = new Set<string>();
     allPresetsWithMeta.forEach(p => {
+      if (p.meta.printer) models.add(p.meta.printer);
       if (p.meta.nozzle) nozzles.add(p.meta.nozzle);
       if (p.meta.filamentType) filaments.add(p.meta.filamentType);
       if (p.meta.layerHeight) layerHeights.add(p.meta.layerHeight);
     });
     return {
-      printers: printers.map(p => ({ id: p.id.toString(), name: p.name })),
+      printers: Array.from(models).sort().map(m => ({ id: m, name: m })),
       nozzles: Array.from(nozzles).sort((a, b) => parseFloat(a) - parseFloat(b)),
       filaments: Array.from(filaments).sort(),
       layerHeights: Array.from(layerHeights).sort((a, b) => parseFloat(a) - parseFloat(b)),
     };
-  }, [allPresetsWithMeta, printers]);
+  }, [allPresetsWithMeta]);
 
-  const selectedPrinterModel = useMemo(() => {
-    if (filterPrinter === 'all') return null;
-    const printer = printers.find(p => p.id.toString() === filterPrinter);
-    return printer?.model || null;
-  }, [filterPrinter, printers]);
+  // The picked value IS the model string
+  const selectedPrinterModel = useMemo(
+    () => (filterPrinter === 'all' ? null : filterPrinter),
+    [filterPrinter],
+  );
 
   const filteredPresets = useMemo(() => {
     return allPresetsWithMeta
       .filter(s => filterType === 'all' || s.type === filterType)
       .filter(s => {
         if (filterPrinter === 'all' || !selectedPrinterModel) return true;
-        const presetPrinter = s.meta.printer?.toLowerCase() || '';
-        const configuredModel = selectedPrinterModel.toLowerCase();
-        return presetPrinter.includes(configuredModel) || configuredModel.includes(presetPrinter);
+        return s.meta.printer === selectedPrinterModel; // both canonicalised
       })
       .filter(s => filterNozzle === 'all' || s.meta.nozzle === filterNozzle)
       .filter(s => filterFilament === 'all' || s.meta.filamentType === filterFilament)

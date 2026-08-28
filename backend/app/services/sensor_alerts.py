@@ -106,8 +106,15 @@ class AlertEvent:
 
 
 def _place(sensor: SmartSensor) -> str:
-    """Where to walk. A sensor with no location falls back to its own name: a
-    message opening with an empty dash says nothing."""
+    """Where to walk.
+
+    The printer first, because a sensor bound to one is bound to nothing else —
+    the two are exclusive — and "go to the X1C" is the more useful instruction
+    of the two anyway. A sensor with neither falls back to its own name: a
+    message opening with an empty dash says nothing.
+    """
+    if sensor.printer is not None:
+        return sensor.printer.name
     return (sensor.location.path if sensor.location else None) or sensor.name
 
 

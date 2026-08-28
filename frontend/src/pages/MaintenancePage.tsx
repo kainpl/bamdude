@@ -7,7 +7,6 @@ import { buildLocationIndex, readStoredLocationFilter } from '../utils/locationT
 import { groupByLocation } from '../utils/locationGroups';
 import {
   Wrench,
-  Loader2,
   Check,
   AlertTriangle,
   Clock,
@@ -50,6 +49,7 @@ import {
 import { api, macrosApi, getAuthToken } from '../api/client';
 import type { MaintenanceStatus, PrinterMaintenanceOverview, MaintenanceType, MaintenanceHistoryEntry, Permission, MacroMeta } from '../api/client';
 import { Card, CardContent } from '../components/Card';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { Button } from '../components/Button';
 import { Toggle } from '../components/Toggle';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -214,7 +214,11 @@ function MaintenanceCard({
 
   return (
     <div className={`rounded-xl border p-4 transition-all ${getBgColor()}`}>
-      <div className="flex items-start gap-3 max-[550px]:flex-wrap">
+      {/* ⚠️ Container, not viewport. This said `max-[550px]:` and therefore
+          never fired: the card lives in a 3-column grid, so it is ~400px wide
+          on a 1536px screen and full-width on a 500px one — the wrap protection
+          was armed for exactly the case that does not need it. */}
+      <div className="flex items-start gap-3 @max-[34rem]:flex-wrap">
         {/* Icon with status indicator */}
         <div className={`relative p-2.5 rounded-lg shrink-0 ${
           item.is_due ? 'bg-red-100 dark:bg-red-500/20' :
@@ -231,8 +235,18 @@ function MaintenanceCard({
 
         {/* Content */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <h3 className={`font-medium truncate ${item.enabled ? 'text-white' : 'text-bambu-gray'}`}>
+          {/* ⚠️ Wraps. The models badge is `shrink-0` and can be as long as
+              "X1 Carbon, X1, X1E, P1P, P1S", so on one line it took the width
+              the name needed AND still ran off the card: the name collapsed to
+              "Очис…" beside a badge that was itself clipped. Flex breaks lines
+              on the items' own widths before it shrinks anything, so the badge
+              drops to its own line exactly when it does not fit, and the name
+              gets the whole first line. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <h3
+              className={`font-medium truncate ${item.enabled ? 'text-white' : 'text-bambu-gray'}`}
+              title={item.maintenance_type_name}
+            >
               {item.maintenance_type_name}
             </h3>
             {intervalType === 'days' && (
@@ -258,7 +272,10 @@ function MaintenanceCard({
               ) : null;
             })()}
             {hasModelFilter && (
-              <span className="px-1.5 py-0.5 bg-bambu-dark-tertiary text-bambu-gray text-[10px] rounded shrink-0">
+              // `max-w-full` alongside `shrink-0`: the badge keeps its full
+              // width whenever it has one, but a list longer than the card
+              // itself wraps inside the badge instead of running off it.
+              <span className="px-1.5 py-0.5 bg-bambu-dark-tertiary text-bambu-gray text-[10px] rounded shrink-0 max-w-full">
                 {printerModels.map(code => macroMeta?.printer_models?.[code] || code).join(', ')}
               </span>
             )}
@@ -284,7 +301,7 @@ function MaintenanceCard({
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-2 shrink-0 max-[550px]:w-full max-[550px]:justify-end max-[550px]:mt-1">
+        <div className="flex items-center gap-2 shrink-0 @max-[34rem]:w-full @max-[34rem]:justify-end @max-[34rem]:mt-1">
           <span title={!hasPermission('maintenance:update') ? t('maintenance.noPermissionUpdate') : undefined}>
             <Toggle
               checked={item.enabled}
@@ -353,16 +370,25 @@ function PrinterSection({
   };
 
   return (
-    <Card className="overflow-hidden">
+    // ⚠️ `@container`, and every width rule below reads it rather than the
+    // viewport. These cards sit in `xl:grid-cols-3`, so on a WIDE screen each
+    // one is ~400px — the opposite of what a viewport breakpoint assumes. That
+    // is why the header ran together on a 1080p laptop at 125% scaling while
+    // looking fine on a narrow window, where the grid is one column and the
+    // card is the full width.
+    <Card className="overflow-hidden @container">
       {/* Header */}
       <div className="p-5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h2 className="text-xl font-semibold text-white">{overview.printer_name}</h2>
-            <Link to={`/maintenance?printer=${overview.printer_id}`} className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors" title={t('maintenance.viewHistory')}>
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <h2 className="text-xl font-semibold text-white truncate" title={overview.printer_name}>{overview.printer_name}</h2>
+            <Link to={`/maintenance?printer=${overview.printer_id}`} className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors shrink-0" title={t('maintenance.viewHistory')}>
               <History className="w-4 h-4" />
             </Link>
-            <div className="flex items-center gap-2">
+            {/* The badge is the one thing here that must stay legible whole —
+                a clipped "2 overdue" is worse than a clipped printer name,
+                which the operator already knows. */}
+            <div className="flex items-center gap-2 shrink-0">
               {overview.due_count > 0 && (
                 <span className="px-2.5 py-1 bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400 text-xs font-medium rounded-full flex items-center gap-1.5">
                   <AlertTriangle className="w-3 h-3" />
@@ -385,7 +411,7 @@ function PrinterSection({
           </div>
           <button
             onClick={() => setExpanded(!expanded)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-bambu-gray hover:text-white hover:bg-bambu-dark rounded-lg transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-bambu-gray hover:text-white hover:bg-bambu-dark rounded-lg transition-colors shrink-0 ml-auto"
           >
             {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             {expanded ? t('common.collapse') : t('common.expand')}
@@ -393,9 +419,9 @@ function PrinterSection({
         </div>
 
         {/* Quick stats row */}
-        <div className="flex items-center gap-6 mt-4">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-3 mt-4">
           {/* Print Hours */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             <div className="p-2 bg-bambu-dark/50 rounded-lg">
               <Timer className="w-4 h-4 text-bambu-gray" />
             </div>
@@ -437,13 +463,19 @@ function PrinterSection({
             )}
           </div>
 
-          {/* Divider */}
-          <div className="w-px h-10 bg-bambu-dark-tertiary" />
+          {/* Divider. Goes as soon as the row can wrap: once the two blocks sit
+              on separate lines it is a vertical rule dangling off the end of the
+              first one, pointing at nothing. */}
+          <div className="w-px h-10 bg-bambu-dark-tertiary shrink-0 @max-[26rem]:hidden" />
 
-          {/* Next Maintenance */}
+          {/* Next Maintenance. Takes its own line in a narrow card rather than
+              being left to truncate: with `min-w-0` the name would shrink to a
+              few characters instead of wrapping, and "Замі…" answers nothing.
+              Same threshold as the divider above, so the two decisions cannot
+              disagree and leave a rule pointing at a line break. */}
           {nextTask && (
-            <div className="flex items-center gap-3">
-              <div className={`p-2 rounded-lg ${
+            <div className="flex items-center gap-3 min-w-0 @max-[26rem]:w-full">
+              <div className={`p-2 rounded-lg shrink-0 ${
                 nextTask.is_due ? 'bg-red-100 dark:bg-red-500/20' : 'bg-amber-500/20'
               }`}>
                 {(() => {
@@ -451,8 +483,11 @@ function PrinterSection({
                   return <Icon className={`w-4 h-4 ${nextTask.is_due ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'}`} />;
                 })()}
               </div>
-              <div>
-                <div className={`text-sm font-medium ${nextTask.is_due ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'}`}>
+              <div className="min-w-0">
+                {/* The name is the long one and the only one that can be
+                    recovered — its status sits right under it, and the full
+                    text is one click away in the expanded list. */}
+                <div className={`text-sm font-medium truncate ${nextTask.is_due ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'}`} title={nextTask.maintenance_type_name}>
                   {nextTask.maintenance_type_name}
                 </div>
                 <div className={`text-xs ${nextTask.is_due ? 'text-red-700/80 dark:text-red-400/70' : 'text-amber-700/80 dark:text-amber-400/70'}`}>
@@ -1279,8 +1314,8 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
   if (isLoading) {
     return (
       <Card>
-        <CardContent className="text-center py-16">
-          <Loader2 className="w-8 h-8 mx-auto mb-4 text-bambu-green animate-spin" />
+        <CardContent>
+          <LoadingBlock label={t('common.loading')} />
         </CardContent>
       </Card>
     );
@@ -1602,14 +1637,6 @@ export function MaintenancePage() {
     setHoursMutation.mutate({ printerId, hours });
   };
 
-  if (isLoading) {
-    return (
-      <div className="p-4 md:p-6 flex justify-center">
-        <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-      </div>
-    );
-  }
-
   const totalDue = overview?.reduce((sum, p) => sum + p.due_count, 0) || 0;
   const totalWarning = overview?.reduce((sum, p) => sum + p.warning_count, 0) || 0;
 
@@ -1688,11 +1715,13 @@ export function MaintenancePage() {
       <div className="space-y-3">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <Wrench className="w-7 h-7 text-bambu-green" />
+            <Wrench className="w-6 h-6 text-bambu-green" />
             {t('maintenance.title')}
           </h1>
           <p className="text-sm text-bambu-gray mt-1">
-            {activeTab === 'status' ? (
+            {/* Zeros would read as "nothing due", which is an answer we do
+                not have while the overview is still coming. */}
+            {isLoading ? null : activeTab === 'status' ? (
                 <>
                   {totalDue > 0 && <span className="text-red-700 dark:text-red-400">{t('maintenance.dueCount', { count: totalDue })}</span>}
                   {totalDue > 0 && totalWarning > 0 && ' · '}
@@ -1725,97 +1754,109 @@ export function MaintenancePage() {
       </div>
 
       {/* Tab content */}
-      {activeTab === 'status' ? (
-        <div className="space-y-6">
-          {overview && overview.length > 0 ? (
-            visibleOverviews.length === 0 ? (
+      {/* ⚠️ Only the tabs' content waits. The title and the whole toolbar —
+          search, status filter, location filter, sort, hide-offline — are local
+          state and a separate query, so they stay usable while the overview is
+          still coming. This was an early return that replaced all of it, which
+          meant the filters able to narrow the very request being waited on were
+          the part you could not reach. */}
+      {isLoading ? (
+        <LoadingBlock label={t('common.loading')} />
+      ) : (
+        <>
+        {activeTab === 'status' ? (
+          <div className="space-y-6">
+            {overview && overview.length > 0 ? (
+              visibleOverviews.length === 0 ? (
+                <Card>
+                  <CardContent className="text-center py-12">
+                    <p className="text-bambu-gray">{t('printers.noSearchResults')}</p>
+                  </CardContent>
+                </Card>
+              ) : groupedOverviews ? (
+                groupedOverviews.map((group) => (
+                  <div key={group.locationId ?? 'ungrouped'} className="space-y-3">
+                    <h2 className="text-lg font-semibold text-white flex items-center gap-2 flex-wrap">
+                      <span className="w-2 h-2 rounded-full bg-bambu-green" />
+                      {group.label}
+                      <span className="text-bambu-gray text-sm font-normal">({group.items.length})</span>
+                    </h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
+                      {group.items.map((printerOverview) => (
+                        <PrinterSection
+                          key={printerOverview.printer_id}
+                          overview={printerOverview}
+                          types={types || []}
+                          macroMeta={macroMeta}
+                          onPerform={handlePerform}
+                          onToggle={handleToggle}
+                          onSetHours={handleSetHours}
+                          hasPermission={hasPermission}
+                          t={t}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
+                  {visibleOverviews.map((printerOverview) => (
+                    <PrinterSection
+                      key={printerOverview.printer_id}
+                      overview={printerOverview}
+                      types={types || []}
+                      macroMeta={macroMeta}
+                      onPerform={handlePerform}
+                      onToggle={handleToggle}
+                      onSetHours={handleSetHours}
+                      hasPermission={hasPermission}
+                      t={t}
+                    />
+                  ))}
+                </div>
+              )
+            ) : (
               <Card>
-                <CardContent className="text-center py-12">
-                  <p className="text-bambu-gray">{t('printers.noSearchResults')}</p>
+                <CardContent className="text-center py-16">
+                  <Wrench className="w-16 h-16 mx-auto mb-4 text-bambu-gray/30" />
+                  <p className="text-lg font-medium text-white mb-2">{t('common.noPrinters')}</p>
+                  <p className="text-bambu-gray">{t('maintenance.configureSettings')}</p>
                 </CardContent>
               </Card>
-            ) : groupedOverviews ? (
-              groupedOverviews.map((group) => (
-                <div key={group.locationId ?? 'ungrouped'} className="space-y-3">
-                  <h2 className="text-lg font-semibold text-white flex items-center gap-2 flex-wrap">
-                    <span className="w-2 h-2 rounded-full bg-bambu-green" />
-                    {group.label}
-                    <span className="text-bambu-gray text-sm font-normal">({group.items.length})</span>
-                  </h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
-                    {group.items.map((printerOverview) => (
-                      <PrinterSection
-                        key={printerOverview.printer_id}
-                        overview={printerOverview}
-                        types={types || []}
-                        macroMeta={macroMeta}
-                        onPerform={handlePerform}
-                        onToggle={handleToggle}
-                        onSetHours={handleSetHours}
-                        hasPermission={hasPermission}
-                        t={t}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
-                {visibleOverviews.map((printerOverview) => (
-                  <PrinterSection
-                    key={printerOverview.printer_id}
-                    overview={printerOverview}
-                    types={types || []}
-                    macroMeta={macroMeta}
-                    onPerform={handlePerform}
-                    onToggle={handleToggle}
-                    onSetHours={handleSetHours}
-                    hasPermission={hasPermission}
-                    t={t}
-                  />
-                ))}
-              </div>
-            )
-          ) : (
-            <Card>
-              <CardContent className="text-center py-16">
-                <Wrench className="w-16 h-16 mx-auto mb-4 text-bambu-gray/30" />
-                <p className="text-lg font-medium text-white mb-2">{t('common.noPrinters')}</p>
-                <p className="text-bambu-gray">{t('maintenance.configureSettings')}</p>
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      ) : activeTab === 'history' ? (
-        <HistorySection t={t} printerId={printerIdParam} />
-      ) : (
-        <SettingsSection
-          overview={overview}
-          types={types || []}
-          macroMeta={macroMeta}
-          onUpdateInterval={(id, data) =>
-            updateMutation.mutate({ id, data })
-          }
-          onAddType={async (data, printerIds) => {
-            // Create the type first, then assign to selected printers
-            const newType = await api.createMaintenanceType(data);
-            // Assign to each selected printer
-            for (const printerId of printerIds) {
-              await api.assignMaintenanceType(printerId, newType.id);
+            )}
+          </div>
+        ) : activeTab === 'history' ? (
+          <HistorySection t={t} printerId={printerIdParam} />
+        ) : (
+          <SettingsSection
+            overview={overview}
+            types={types || []}
+            macroMeta={macroMeta}
+            onUpdateInterval={(id, data) =>
+              updateMutation.mutate({ id, data })
             }
-            queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });
-            queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
-            showToast(t('maintenance.typeUpdated'));
-          }}
-          onUpdateType={(id, data) => updateTypeMutation.mutate({ id, data })}
-          onDeleteType={(id) => deleteTypeMutation.mutate(id)}
-          onRestoreDefaults={() => restoreDefaultsMutation.mutate()}
-          isRestoringDefaults={restoreDefaultsMutation.isPending}
-          onAssignType={(printerId, typeId) => assignTypeMutation.mutate({ printerId, typeId })}
-          onRemoveItem={(itemId) => removeItemMutation.mutate(itemId)}
-          hasPermission={hasPermission}
-          t={t}
-        />
+            onAddType={async (data, printerIds) => {
+              // Create the type first, then assign to selected printers
+              const newType = await api.createMaintenanceType(data);
+              // Assign to each selected printer
+              for (const printerId of printerIds) {
+                await api.assignMaintenanceType(printerId, newType.id);
+              }
+              queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });
+              queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+              showToast(t('maintenance.typeUpdated'));
+            }}
+            onUpdateType={(id, data) => updateTypeMutation.mutate({ id, data })}
+            onDeleteType={(id) => deleteTypeMutation.mutate(id)}
+            onRestoreDefaults={() => restoreDefaultsMutation.mutate()}
+            isRestoringDefaults={restoreDefaultsMutation.isPending}
+            onAssignType={(printerId, typeId) => assignTypeMutation.mutate({ printerId, typeId })}
+            onRemoveItem={(itemId) => removeItemMutation.mutate(itemId)}
+            hasPermission={hasPermission}
+            t={t}
+          />
+        )}
+        </>
       )}
     </div>
   );

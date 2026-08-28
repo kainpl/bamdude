@@ -1,8 +1,12 @@
 import asyncio
 import json
+import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import WebSocket
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectionManager:
@@ -13,7 +17,63 @@ class ConnectionManager:
         # Per-connection user id (None for API-key callers) — enables per-user
         # broadcasts. BamDude has no anonymous users, so this is almost always set.
         self._user_by_conn: dict[WebSocket, int | None] = {}
+        # In-process subscribers to the same fan-out the browsers get — today
+        # only the Cloud Link uplink. See ``add_internal_listener``.
+        self._internal_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._lock = asyncio.Lock()
+
+    # ------------------------------------------------------ internal listeners
+
+    def add_internal_listener(self, cb: Callable[[dict[str, Any]], None]) -> None:
+        """Subscribe an in-process consumer to every broadcast message.
+
+        One choke point instead of a hook at each of the two dozen callsites
+        that broadcast: whatever the product learns to push tomorrow, a
+        listener sees it without anybody remembering to wire it up.
+
+        The contract for ``cb`` is narrow on purpose — **synchronous, fast, and
+        it must not block.** It is called from inside ``broadcast``, on the
+        event loop, before a single browser has been written to; anything that
+        awaits or does I/O there delays every printer card in the app. The
+        intended shape is an enqueue and nothing else (see
+        ``services/cloud_link/uplink.py::Uplink.feed``).
+
+        A listener that raises is swallowed — see ``_notify_internal_listeners``
+        for why that is not the usual anti-pattern.
+        """
+        if cb not in self._internal_listeners:
+            self._internal_listeners.append(cb)
+
+    def remove_internal_listener(self, cb: Callable[[dict[str, Any]], None]) -> None:
+        """Unsubscribe. Removing something that was never added is not an error
+        — a link being switched off should not have to remember whether it was
+        ever switched on."""
+        if cb in self._internal_listeners:
+            self._internal_listeners.remove(cb)
+
+    def _notify_internal_listeners(self, message: dict[str, Any]) -> None:
+        """Hand the message to each listener, and let none of them escape.
+
+        ⚠️ **The swallow is load-bearing.** ``broadcast`` feeds every printer
+        card, queue view and archive list in the product. A listener is an
+        optional add-on — Cloud Link ships disabled — and an add-on must never
+        be able to take the dashboard down with it. Debug rather than warning
+        because a broken listener would otherwise log once per status push,
+        several times a second per printer, and bury everything else.
+
+        Failures are per-listener, so one bad subscriber cannot rob the next
+        one of the message.
+
+        Iterated over a copy: a listener is allowed to unregister itself from
+        inside its own call — a link shutting down on the very message that
+        told it to — and mutating the list mid-iteration would silently skip
+        whoever happened to be standing next to it.
+        """
+        for cb in list(self._internal_listeners):
+            try:
+                cb(message)
+            except Exception as e:
+                logger.debug("Internal broadcast listener raised (ignored): %s", e)
 
     async def connect(self, websocket: WebSocket, user_id: int | None = None):
         """Accept a new WebSocket connection, tagged with the authenticated user
@@ -31,7 +91,16 @@ class ConnectionManager:
             self._user_by_conn.pop(websocket, None)
 
     async def broadcast(self, message: dict[str, Any]):
-        """Broadcast a message to all connected clients."""
+        """Broadcast a message to all connected clients.
+
+        ⚠️ **Internal listeners fire first, and above the empty-connection
+        early return.** A farm running headless overnight has no browser
+        attached, and that is exactly the situation Cloud Link exists for — a
+        tap placed after the return would report nothing precisely when there
+        is nobody in the room to notice.
+        """
+        self._notify_internal_listeners(message)
+
         if not self.active_connections:
             return
 
@@ -56,7 +125,14 @@ class ConnectionManager:
         BamDude has no anonymous users (auth always-on), so owner-scoped events —
         e.g. a Slicer Pipeline run's dashboard refresh — can target just the owner
         instead of the whole farm. Falls back to a global broadcast when ``user_id``
-        is None (e.g. an API-key-owned resource)."""
+        is None (e.g. an API-key-owned resource).
+
+        ⚠️ **Internal listeners are deliberately NOT fired for the targeted
+        path.** A message here is scoped to one person's browser sessions by
+        design, and an agent is not a person — it has no ``user_id`` to be, so
+        delivering it one would widen an audience the caller narrowed on
+        purpose. The ``user_id is None`` branch below is a genuine global
+        broadcast and taps normally, because that is what it is."""
         if user_id is None:
             await self.broadcast(message)
             return
@@ -158,6 +234,20 @@ class ConnectionManager:
         """Notify clients that a file was added to the library."""
         await self.broadcast({"type": "library_file_added", "data": file_data})
 
+    async def send_library_scan_progress(self, data: dict):
+        """How far an external-folder scan has got.
+
+        ⚠️ Throttled by the caller, not here. Per-file progress on a
+        five-thousand-file share is five thousand messages to every open tab —
+        the per-file ``library_file_added`` earns its noise because it carries a
+        row somebody wants to see appear, but a percentage does not.
+        """
+        await self.broadcast({"type": "library_scan_progress", "data": data})
+
+    async def send_library_scan_finished(self, data: dict):
+        """A scan ended — with its counters, and whether it refused to delete."""
+        await self.broadcast({"type": "library_scan_finished", "data": data})
+
     async def send_library_file_notes_changed(self, file_id: int, notes_count: int):
         """Notify clients that a library file's notes changed (gh#3).
 
@@ -185,6 +275,30 @@ class ConnectionManager:
                 "printer_id": printer_id,
                 "printer_name": printer_name,
                 "missing_slots": missing_slots,
+            }
+        )
+
+    async def send_filament_deficit(
+        self,
+        printer_id: int,
+        printer_name: str,
+        print_name: str,
+        shortfalls: list[dict],
+    ):
+        """Tell open tabs a print started that will exhaust a slot.
+
+        Informative only — the print is already running. It rides the socket
+        rather than waiting for the notification channel because the operator
+        standing at the farm screen is exactly who can walk over and put a new
+        spool on before it matters.
+        """
+        await self.broadcast(
+            {
+                "type": "filament_deficit",
+                "printer_id": printer_id,
+                "printer_name": printer_name,
+                "print_name": print_name,
+                "shortfalls": shortfalls,
             }
         )
 

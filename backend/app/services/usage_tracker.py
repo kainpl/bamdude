@@ -7,6 +7,7 @@ Primary tracking uses 3MF slicer estimates (precise per-filament data).
 AMS remain% delta is the fallback for trays not covered by 3MF data.
 """
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -257,15 +258,312 @@ class PrintSession:
     print_name: str
     started_at: datetime
     tray_remain_start: dict[tuple[int, int], int] = field(default_factory=dict)
+    # RFID uuid per slot at print start — the remain-delta's spool-swap gate
+    # (parity with the Spoolman delta): a changed uuid means a different
+    # physical reel, and the delta must not be billed to the snapshot's spool.
+    tray_uuid_start: dict[tuple[int, int], str] = field(default_factory=dict)
     # tray_now at print start (correct value, unlike at completion where it's 255)
     tray_now_at_start: int = -1
     # Snapshot of spool assignments at print start: {(ams_id, tray_id): spool_id}
     # Prevents usage loss when on_ams_change unlinks a spool mid-print
     spool_assignments: dict[tuple[int, int], int] = field(default_factory=dict)
+    # Slicer slot -> global tray as DISPATCHED. Kept because the live MQTT
+    # ``mapping`` field is not a substitute: AMS filament backup rewrites it to
+    # the substitute tray when a spool runs dry, so read at completion it names
+    # the tray that finished the print rather than the one the slicer assigned.
+    ams_mapping: list[int] | None = None
 
 
-# Module-level storage, keyed by printer_id
+# Module-level storage, keyed by printer_id. Mirrored to the
+# ``active_print_sessions`` table so a restart mid-print doesn't lose the
+# context — see ``persist_session`` / ``restore_session``.
 _active_sessions: dict[int, PrintSession] = {}
+
+# Serialises the read-modify-write on the persisted tray-change log, per printer.
+_tray_change_locks: dict[int, asyncio.Lock] = {}
+
+
+def _tray_key_to_str(key: tuple[int, int]) -> str:
+    return f"{key[0]}-{key[1]}"
+
+
+def _tray_key_from_str(key: str) -> tuple[int, int] | None:
+    ams_str, _, tray_str = key.partition("-")
+    try:
+        return int(ams_str), int(tray_str)
+    except ValueError:
+        return None
+
+
+def _tray_map_to_json(mapping: dict[tuple[int, int], int]) -> dict[str, int]:
+    return {_tray_key_to_str(k): v for k, v in mapping.items()}
+
+
+def _tray_map_from_json(mapping: dict | None) -> dict[tuple[int, int], int]:
+    result: dict[tuple[int, int], int] = {}
+    for raw_key, value in (mapping or {}).items():
+        key = _tray_key_from_str(str(raw_key))
+        if key is not None and isinstance(value, int):
+            result[key] = value
+    return result
+
+
+async def persist_session(
+    db: AsyncSession,
+    session: PrintSession,
+    tray_change_log: list | None = None,
+) -> None:
+    """Mirror ``session`` into ``active_print_sessions`` for restart recovery.
+
+    Overwrites any existing row for the printer: a printer runs one print at a
+    time, and a row left behind by a completion we never saw must not outlive
+    the next print start.
+    """
+    from backend.app.models.active_print_session import ActivePrintSession
+
+    row = await db.get(ActivePrintSession, session.printer_id)
+    if row is None:
+        row = ActivePrintSession(printer_id=session.printer_id)
+        db.add(row)
+
+    row.print_name = session.print_name or ""
+    row.started_at = session.started_at.replace(tzinfo=None)
+    row.tray_now_at_start = session.tray_now_at_start
+    row.ams_mapping = list(session.ams_mapping) if session.ams_mapping else None
+    row.spool_assignments = _tray_map_to_json(session.spool_assignments) or None
+    # Combined per-slot value {"remain", "uuid"} when the uuid is known —
+    # SAME column, richer value; readers accept the legacy bare int too.
+    remain_json: dict[str, object] = {}
+    for key, remain in session.tray_remain_start.items():
+        uuid = session.tray_uuid_start.get(key)
+        remain_json[_tray_key_to_str(key)] = {"remain": remain, "uuid": uuid} if uuid else remain
+    row.tray_remain_start = remain_json or None
+    row.tray_change_log = [list(entry) for entry in (tray_change_log or [])] or None
+
+    await db.commit()
+
+
+async def record_tray_change(db: AsyncSession, printer_id: int, tray_global: int, layer_num: int) -> None:
+    """Append one tray change to the persisted log.
+
+    No-op when no print-start row exists — a tray change outside a tracked
+    print has nothing to attribute.
+    """
+    from backend.app.models.active_print_session import ActivePrintSession
+
+    # Read-modify-write on a JSON column: two changes close together (a runout
+    # parks the extruder and the backup tray loads moments later) would
+    # otherwise race and drop a segment boundary.
+    async with _tray_change_locks.setdefault(printer_id, asyncio.Lock()):
+        row = await db.get(ActivePrintSession, printer_id)
+        if row is None:
+            return
+
+        log = [list(entry) for entry in (row.tray_change_log or [])]
+        entry = [tray_global, layer_num]
+        if log and log[-1] == entry:
+            # Print start seeds the log from PrinterState, which may already
+            # hold a change this callback is also reporting.
+            return
+        log.append(entry)
+        row.tray_change_log = log
+        await db.commit()
+
+
+async def record_tray_change_event(db: AsyncSession, printer_id: int, tray_global: int, layer_num: int) -> None:
+    """Journal a mid-print tray change (m153 successor of ``record_tray_change``).
+
+    Appends to ``print_usage_events`` with the assigned spool ids FROZEN at
+    this moment — completion attributes segments from the row, not from a
+    later lookup. Dropped when the printer has no active archive (nothing to
+    anchor to) and deduped against an identical immediately-preceding entry
+    (print start seeds the log from PrinterState, which may already hold the
+    change this callback is reporting).
+    """
+    from backend.app.models.print_usage_event import EVENT_START, EVENT_TRAY_CHANGE, PrintUsageEvent
+    from backend.app.services.print_usage_journal import active_archive_id, freeze_spool_ids, record_event
+
+    archive_id = await active_archive_id(db, printer_id)
+    if archive_id is None:
+        return
+
+    last = (
+        (
+            await db.execute(
+                select(PrintUsageEvent)
+                .where(
+                    PrintUsageEvent.archive_id == archive_id,
+                    PrintUsageEvent.event.in_([EVENT_START, EVENT_TRAY_CHANGE]),
+                )
+                .order_by(PrintUsageEvent.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if last is not None and last.global_tray_id == tray_global and last.layer_num == layer_num:
+        return
+
+    spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tray_global)
+    await record_event(
+        db,
+        printer_id=printer_id,
+        archive_id=archive_id,
+        layer_num=layer_num,
+        event=EVENT_TRAY_CHANGE,
+        global_tray_id=tray_global,
+        spool_id=spool_id,
+        spoolman_spool_id=spoolman_spool_id,
+    )
+
+
+async def _journal_print_start(db: AsyncSession, printer_id: int, state) -> None:
+    """Seed the journal with the print's opening tray as an EVENT_START row."""
+    from backend.app.models.print_usage_event import EVENT_START
+    from backend.app.services.print_usage_journal import active_archive_id, freeze_spool_ids, record_event
+
+    archive_id = await active_archive_id(db, printer_id)
+    if archive_id is None:
+        return
+
+    seed_log = getattr(state, "tray_change_log", None) or []
+    tray: int | None = None
+    if seed_log:
+        tray = seed_log[0][0]
+    elif 0 <= getattr(state, "tray_now", 255) <= 254:
+        tray = state.tray_now
+
+    spool_id = spoolman_spool_id = None
+    if tray is not None:
+        spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tray)
+    await record_event(
+        db,
+        printer_id=printer_id,
+        archive_id=archive_id,
+        layer_num=0,
+        event=EVENT_START,
+        global_tray_id=tray,
+        spool_id=spool_id,
+        spoolman_spool_id=spoolman_spool_id,
+    )
+
+
+async def get_persisted_print_name(db: AsyncSession, printer_id: int) -> str | None:
+    """Print name on the persisted row, for identity-checking a restored session."""
+    from backend.app.models.active_print_session import ActivePrintSession
+
+    row = await db.get(ActivePrintSession, printer_id)
+    return row.print_name if row is not None else None
+
+
+async def restore_session(db: AsyncSession, printer_id: int, register_active: bool = True) -> list[list[int]] | None:
+    """Rebuild the in-memory session for ``printer_id`` from the persisted row.
+
+    Returns the persisted tray-change log so the caller can put it back on
+    ``PrinterState``, or None when there is nothing to restore.
+
+    ``register_active=False`` returns the log without publishing the session to
+    ``_active_sessions`` — for Spoolman users, who need the tray-change log
+    restored but whose remain%-sync must not be suppressed by it (see
+    ``on_print_start``).
+    """
+    from backend.app.models.active_print_session import ActivePrintSession
+
+    row = await db.get(ActivePrintSession, printer_id)
+    if row is None:
+        return None
+
+    started_at = row.started_at
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+
+    tray_remain_start: dict[tuple[int, int], int] = {}
+    tray_uuid_start: dict[tuple[int, int], str] = {}
+    for raw_key, value in (row.tray_remain_start or {}).items():
+        key = _tray_key_from_str(str(raw_key))
+        if key is None:
+            continue
+        if isinstance(value, dict):
+            remain = value.get("remain")
+            if isinstance(remain, int):
+                tray_remain_start[key] = remain
+            uuid = value.get("uuid")
+            if isinstance(uuid, str) and uuid:
+                tray_uuid_start[key] = uuid
+        elif isinstance(value, int):  # legacy bare-int rows
+            tray_remain_start[key] = value
+
+    session = PrintSession(
+        printer_id=printer_id,
+        print_name=row.print_name or "",
+        started_at=started_at,
+        tray_remain_start=tray_remain_start,
+        tray_uuid_start=tray_uuid_start,
+        tray_now_at_start=row.tray_now_at_start,
+        spool_assignments=_tray_map_from_json(row.spool_assignments),
+        ams_mapping=list(row.ams_mapping) if row.ams_mapping else None,
+    )
+    if register_active:
+        _active_sessions[printer_id] = session
+
+    # Journal-first: the events table is the tray log's home since m153. The
+    # JSON column is a one-release read fallback for a print that was already
+    # running when the upgrade landed (written by the old binary).
+    log: list[list[int]] = []
+    try:
+        from backend.app.models.print_usage_event import EVENT_START, EVENT_TRAY_CHANGE
+        from backend.app.services.print_usage_journal import active_archive_id, load_events
+
+        archive_id = await active_archive_id(db, printer_id)
+        if archive_id is not None:
+            events = await load_events(db, printer_id, archive_id)
+            for e in events:
+                if e.event not in (EVENT_START, EVENT_TRAY_CHANGE) or e.global_tray_id is None:
+                    continue
+                # A row naming the tray already current is not a change —
+                # collapse it. Two same-tray entries would make the completion
+                # split charge the first segment and silently drop the second
+                # (handled_trays skips a repeated (ams,tray)), vanishing the
+                # tail of the print from the books (X2D, 2026-08-24). A real
+                # sandwich (A→B→A) has no consecutive duplicates.
+                if log and log[-1][0] == e.global_tray_id:
+                    continue
+                log.append([e.global_tray_id, e.layer_num])
+    except Exception:
+        logger.exception("[UsageTracker] Journal read failed during restore for printer %d", printer_id)
+    if not log:
+        log = [list(entry) for entry in (row.tray_change_log or [])]
+    logger.info(
+        "[UsageTracker] Restored print session for printer %d: ams_mapping=%s, %d assignments, tray_change_log=%s",
+        printer_id,
+        row.ams_mapping,
+        len(row.spool_assignments or {}),
+        log,
+    )
+    return log
+
+
+async def clear_persisted_session(db: AsyncSession, printer_id: int) -> None:
+    """Drop the persisted print-start row once the print is closed out."""
+    from backend.app.models.active_print_session import ActivePrintSession
+
+    row = await db.get(ActivePrintSession, printer_id)
+    if row is not None:
+        await db.delete(row)
+        await db.commit()
+
+
+async def discard_session(db: AsyncSession, printer_id: int) -> None:
+    """Forget a printer's print-start context, in memory and on disk.
+
+    The completion path calls this for every print, including the ones whose
+    usage Spoolman owns: the context is captured for both backends, but only
+    the internal tracker's ``on_print_complete`` consumes (and pops) it.
+    """
+    _active_sessions.pop(printer_id, None)
+    _tray_change_locks.pop(printer_id, None)
+    await clear_persisted_session(db, printer_id)
 
 
 def _to_epoch_seconds(value: datetime | None) -> float | None:
@@ -390,6 +688,274 @@ async def _warn_if_low_stock(db: AsyncSession, spool: Spool, printer_id: int, gl
 # from the print outcomes (completed/failed/aborted/cancelled) because it is not
 # a print — it is filament this instance never saw leave the spool.
 AMS_SYNC_STATUS = "ams_sync"
+
+# The status a runout zero-correction carries: the tail of a spool our books
+# never saw leave it, written when a detected runout proves the spool holds
+# exactly 0 g. Not a print either — the print's own segment rows are separate.
+RUNOUT_STATUS = "runout"
+
+
+def journal_touched_trays(events: list) -> set[int]:
+    """Every tray the journal names — excluded from the remain%-delta path.
+
+    Belt-and-braces against the multicolour double-count: a substitute tray
+    that fed part of the print appears here (tray_change / runout /
+    spool_loaded), so Path 2 must not charge its remain-delta on top of
+    whatever Path 1 attributed."""
+    return {e.global_tray_id for e in (events or []) if e.global_tray_id is not None}
+
+
+def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple[int, int | None, int | None]]:
+    """Spool-change boundaries for ONE tray: ``[(start_layer, spool_id, spoolman_id)]``.
+
+    Handles MULTIPLE runout episodes of the same tray in one print (two short
+    reels back-to-back is real). Per episode, in event order: the origin runs
+    to the runout layer; the follow-on feeder is the same-tray ``spool_loaded``
+    (refill), the backup tray's frozen spool (autoswitch: the first tray_change
+    to ANOTHER tray at the runout layer), or ``None`` when it can't be named
+    (charged to nothing rather than guessed). An ``ambiguous`` runout is a
+    boundary only when a replacement was demonstrably loaded; a runout with no
+    follow-on keeps its own spool — the zero correction closes it at
+    label_weight regardless. Empty/single-segment results mean "no split".
+    """
+    from backend.app.models.print_usage_event import (
+        EVENT_RUNOUT,
+        EVENT_SPOOL_LOADED,
+        EVENT_TRAY_CHANGE,
+        KIND_AMBIGUOUS,
+        KIND_AUTOSWITCH,
+        KIND_MANUAL,
+    )
+
+    runouts = [e for e in (events or []) if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray_id]
+    if not runouts:
+        return []
+
+    loads = [e for e in events if e.event == EVENT_SPOOL_LOADED and e.global_tray_id == global_tray_id]
+
+    segments: list[tuple[int, int | None, int | None]] = [(0, runouts[0].spool_id, runouts[0].spoolman_spool_id)]
+    for idx, runout in enumerate(runouts):
+        next_runout_id = runouts[idx + 1].id if idx + 1 < len(runouts) else None
+        loaded = next(
+            (e for e in loads if e.id > runout.id and (next_runout_id is None or e.id < next_runout_id)),
+            None,
+        )
+        if runout.kind in (KIND_AMBIGUOUS, KIND_MANUAL):
+            # Ambiguous could equally be a jam; manual is a declared intent —
+            # either way, a boundary only when the human demonstrably loaded
+            # a replacement.
+            if loaded is not None:
+                segments.append((runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id))
+            continue
+        if loaded is not None:
+            segments.append((runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id))
+        elif runout.kind == KIND_AUTOSWITCH:
+            backup = next(
+                (
+                    e
+                    for e in events
+                    if e.id > runout.id
+                    and e.event == EVENT_TRAY_CHANGE
+                    and e.global_tray_id is not None
+                    and e.global_tray_id != global_tray_id
+                    and e.layer_num <= runout.layer_num + 1
+                ),
+                None,
+            )
+            if backup is not None:
+                segments.append((runout.layer_num, backup.spool_id, backup.spoolman_spool_id))
+            else:
+                # The backup feeder can't be named — better an under-count on
+                # the backup spool than grams on a guess; the origin zeroes out.
+                segments.append((runout.layer_num, None, None))
+        else:
+            # Resumed without a detectable replacement — the same spool (or a
+            # splice) kept feeding; the zero correction self-consistently
+            # closes it at label_weight after the print rows.
+            segments.append((runout.layer_num, runout.spool_id, runout.spoolman_spool_id))
+
+    return segments if len(segments) > 1 else []
+
+
+def _add_autoswitch_purge(
+    segments: list[tuple[int, int, float]],
+    tray_changes: list[tuple[int, int]],
+    events: list,
+    purge_grams: float,
+) -> list[tuple[int, int, float]]:
+    """Add the emergency-swap purge to each autoswitch backup segment.
+
+    The slicer's estimate contains the *planned* colour-change flushes but not
+    the purge of an AMS backup switch — that filament is physically fed by the
+    backup spool, so it lands inside the backup segment's grams (never a
+    separate row). Coarse by nature; ``runout_purge_grams`` defaults to 0.
+    """
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_AUTOSWITCH
+
+    if purge_grams <= 0 or not events or not segments:
+        return segments
+    runouts = [
+        e for e in events if e.event == EVENT_RUNOUT and e.kind == KIND_AUTOSWITCH and e.global_tray_id is not None
+    ]
+    if not runouts:
+        return segments
+
+    out = [list(s) for s in segments]
+    for runout in runouts:
+        for seg_idx, tray_global, _grams in segments:
+            seg_layer = tray_changes[seg_idx][1]
+            if tray_global != runout.global_tray_id and abs(seg_layer - runout.layer_num) <= 1:
+                out[seg_idx][2] += purge_grams
+                break
+    return [tuple(s) for s in out]
+
+
+def _autoswitch_purge_for_tray(events: list, global_tray_id: int, purge_grams: float) -> float:
+    """The purge grams owed to a journal-split backup segment on this tray."""
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_AUTOSWITCH
+
+    if purge_grams <= 0 or not events:
+        return 0.0
+    for e in events:
+        if e.event == EVENT_RUNOUT and e.kind == KIND_AUTOSWITCH and e.global_tray_id == global_tray_id:
+            return purge_grams
+    return 0.0
+
+
+async def _zero_point_enabled(db: AsyncSession) -> bool:
+    from backend.app.api.routes.settings import get_setting
+
+    raw = await get_setting(db, "runout_zero_point_enabled")
+    return raw is None or raw.lower() != "false"
+
+
+async def apply_runout_zero_corrections(
+    db: AsyncSession,
+    printer_id: int,
+    events: list,
+    default_filament_cost: float,
+) -> list[dict]:
+    """Close every unambiguously-run-out spool at exactly label_weight.
+
+    Runs AFTER all print rows so the arithmetic is one subtraction: ``tail =
+    label_weight − weight_used``. A positive tail is drift the books never saw
+    — it gets a ``runout`` history row (readers SUM the table, so the spool's
+    history now adds up to the label). A negative tail means the books
+    over-counted; per the AMS-sync rule a downward move is a correction, not a
+    negative print: silent clamp, baseline pulled, low-stock re-armed, no row.
+
+    Never fires for ``ambiguous``/``manual`` kinds (a tangled or preventively
+    swapped spool is not empty) or for events whose slot/spool was not
+    positively known.
+
+    A pause-runout closes the books only when its episode was CLOSED by a
+    spool_loaded — the same reel reinserted (AMS without backup, or a
+    cut-filament test) keeps printing and is demonstrably not empty; topping
+    it to the label invented 606 g on a half-full spool (X2D, 2026-08-24).
+    An autoswitch is closed by definition: the firmware moved to the backup,
+    the origin could not have continued. The negative clamp stays
+    unconditional either way — books over the label are impossible
+    arithmetic, not a claim about emptiness.
+    """
+    from backend.app.models.print_usage_event import (
+        EVENT_RUNOUT,
+        EVENT_SPOOL_LOADED,
+        KIND_AMBIGUOUS,
+        KIND_AUTOSWITCH,
+        KIND_MANUAL,
+    )
+
+    runouts = [
+        e
+        for e in (events or [])
+        if e.event == EVENT_RUNOUT
+        and e.kind not in (KIND_AMBIGUOUS, KIND_MANUAL)
+        and e.global_tray_id is not None
+        and e.spool_id
+    ]
+    if not runouts:
+        return []
+    if not await _zero_point_enabled(db):
+        return []
+
+    results: list[dict] = []
+    touched = False
+    for event in runouts:
+        spool = (await db.execute(select(Spool).where(Spool.id == event.spool_id))).scalar_one_or_none()
+        if spool is None:
+            continue
+        label = spool.label_weight or 0
+        if label <= 0:
+            continue
+        tail = round(label - (spool.weight_used or 0), 1)
+        episode_closed = event.kind == KIND_AUTOSWITCH or any(
+            e.event == EVENT_SPOOL_LOADED and e.global_tray_id == event.global_tray_id and e.id > event.id
+            for e in (events or [])
+        )
+        if tail > 0 and not episode_closed:
+            logger.info(
+                "[UsageTracker] Runout on spool %d stays OPEN (no replacement seen) — not closing the books",
+                spool.id,
+            )
+            continue
+        if tail > 0:
+            spool.weight_used = float(label)
+            spool.last_used = datetime.now(timezone.utc)
+            cost = None
+            cost_per_kg = spool.cost_per_kg if spool.cost_per_kg is not None else default_filament_cost
+            if cost_per_kg > 0:
+                cost = round((tail / 1000.0) * cost_per_kg, 2)
+            db.add(
+                SpoolUsageHistory(
+                    spool_id=spool.id,
+                    printer_id=printer_id,
+                    print_name=None,
+                    weight_used=tail,
+                    percent_used=int(round(tail / label * 100)),
+                    status=RUNOUT_STATUS,
+                    cost=cost,
+                    archive_id=event.archive_id,
+                )
+            )
+            await _warn_if_low_stock(db, spool, printer_id, event.global_tray_id)
+            results.append(
+                {
+                    "spool_id": spool.id,
+                    "weight_used": tail,
+                    "percent_used": int(round(tail / label * 100)),
+                    "ams_id": event.global_tray_id // 4 if event.global_tray_id < 128 else 255,
+                    "tray_id": event.global_tray_id % 4 if event.global_tray_id < 128 else 0,
+                    "material": spool.material,
+                    "cost": cost,
+                    "slot_id": None,
+                    "color": _spool_color_to_hex(spool.rgba),
+                    "status": RUNOUT_STATUS,
+                }
+            )
+            touched = True
+            logger.info(
+                "[UsageTracker] Runout zero-point: spool %d closed at label %dg (+%.1fg tail) on printer %d tray %d",
+                spool.id,
+                label,
+                tail,
+                printer_id,
+                event.global_tray_id,
+            )
+        elif tail < 0:
+            spool.weight_used = float(label)
+            if (spool.weight_used_baseline or 0) > label:
+                spool.weight_used_baseline = float(label)
+            spool.low_stock_notified = False
+            touched = True
+            logger.info(
+                "[UsageTracker] Runout zero-point: spool %d clamped down to label %dg (books had %.1fg over)",
+                spool.id,
+                label,
+                -tail,
+            )
+    if touched:
+        await db.commit()
+    return results
 
 
 async def record_ams_sync_usage(
@@ -517,8 +1083,40 @@ async def _resolve_spool_id_for_tray(
     return None
 
 
-async def on_print_start(printer_id: int, data: dict, printer_manager, db: AsyncSession | None = None) -> None:
-    """Capture AMS tray remain% and spool assignments at print start."""
+def _machine_tray_lookup(printer_manager, printer_id: int) -> dict | None:
+    """The machine's current global-tray map (AMS + externals), or None when
+    no state is available. Used to reverse BS's send-side mapping remaps."""
+    state = printer_manager.get_status(printer_id)
+    raw = getattr(state, "raw_data", None) if state else None
+    if not raw:
+        return None
+    from backend.app.services.spoolman_tracking import build_ams_tray_lookup
+
+    return build_ams_tray_lookup(raw)
+
+
+async def on_print_start(
+    printer_id: int,
+    data: dict,
+    printer_manager,
+    db: AsyncSession | None = None,
+    spoolman_owns_usage: bool = False,
+) -> None:
+    """Capture AMS tray remain% and spool assignments at print start.
+
+    The capture runs for **both** inventory backends. The persisted row carries
+    the tray-change log, which is the only record of which spool fed which
+    layers when AMS filament backup swaps trays, and Spoolman's own durable row
+    (#1820) does not hold it — capturing on one side only would leave Spoolman
+    users with the mid-print-restart attribution bug this fixes for everyone
+    else.
+
+    ``spoolman_owns_usage`` keeps the in-memory session out of
+    ``_active_sessions``. That dict doubles as ``on_ams_change``'s "a print is
+    running, so skip the remain%-based weight sync because the internal tracker
+    will deduct precisely" flag; registering a session the internal tracker will
+    never complete would suppress a sync those users still need.
+    """
     state = printer_manager.get_status(printer_id)
     if not state or not state.raw_data:
         logger.debug("[UsageTracker] No state for printer %d, skipping", printer_id)
@@ -526,11 +1124,14 @@ async def on_print_start(printer_id: int, data: dict, printer_manager, db: Async
 
     ams_raw = state.raw_data.get("ams", [])
     ams_data = ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw if isinstance(ams_raw, list) else []
-    if not ams_data:
-        logger.debug("[UsageTracker] No AMS data for printer %d, skipping", printer_id)
-        return
+    # An AMS-less machine (mini + external holder) has no remains to snapshot
+    # — but it still needs everything else this function does: the session
+    # carries the dispatched mapping, seeds the journal start row and anchors
+    # the runout machinery. The old "no AMS -> skip" gate silently killed all
+    # of that (2026-08-24: four minis printed with no start events at all).
 
     tray_remain_start: dict[tuple[int, int], int] = {}
+    tray_uuid_start: dict[tuple[int, int], str] = {}
     for ams_unit in ams_data:
         ams_id = int(ams_unit.get("id", 0))
         for tray in ams_unit.get("tray", []):
@@ -538,6 +1139,9 @@ async def on_print_start(printer_id: int, data: dict, printer_manager, db: Async
             remain = usable_remain_percent(tray.get("remain"))
             if remain is not None:
                 tray_remain_start[(ams_id, tray_id)] = remain
+                uuid = str(tray.get("tray_uuid", "") or "")
+                if uuid and set(uuid) != {"0"}:
+                    tray_uuid_start[(ams_id, tray_id)] = uuid
 
     print_name = data.get("subtask_name", "") or data.get("filename", "unknown")
 
@@ -592,10 +1196,28 @@ async def on_print_start(printer_id: int, data: dict, printer_manager, db: Async
         print_name=print_name,
         started_at=datetime.now(timezone.utc),
         tray_remain_start=tray_remain_start,
+        tray_uuid_start=tray_uuid_start,
         tray_now_at_start=tray_now_at_start,
         spool_assignments=spool_assignments,
+        ams_mapping=data.get("ams_mapping"),
     )
-    _active_sessions[printer_id] = session
+    if spoolman_owns_usage:
+        _active_sessions.pop(printer_id, None)
+    else:
+        _active_sessions[printer_id] = session
+
+    # Mirror to the DB so a restart mid-print doesn't lose the context. The
+    # tray log itself lives in ``print_usage_events`` since m153 — the session
+    # row keeps only context, and its legacy ``tray_change_log`` column is
+    # cleared here so a stale value can never shadow the journal. The seed
+    # tray (bambu_mqtt cleared + reseeded the state log before this callback)
+    # becomes the journal's EVENT_START row.
+    if db:
+        try:
+            await persist_session(db, session)
+            await _journal_print_start(db, printer_id, state)
+        except Exception:
+            logger.exception("[UsageTracker] Failed to persist print session for printer %d", printer_id)
 
     if tray_remain_start:
         logger.info(
@@ -630,6 +1252,22 @@ async def on_print_complete(
     from backend.app.models.spool_usage_history import SpoolUsageHistory
 
     session = _active_sessions.pop(printer_id, None)
+    if session is None:
+        # Restart mid-print: the in-memory session is gone but the print-start
+        # row survived. Without this the completion path loses the dispatched
+        # mapping and the assignment snapshot, and attributes the whole print to
+        # whichever tray happened to finish it.
+        try:
+            await restore_session(db, printer_id)
+        except Exception:
+            logger.exception("[UsageTracker] Failed to restore print session for printer %d", printer_id)
+        session = _active_sessions.pop(printer_id, None)
+
+    # The caller's mapping comes from the MQTT request-topic capture and the
+    # in-memory ``_print_ams_mappings`` dict, both of which a restart destroys.
+    if not ams_mapping and session and session.ams_mapping:
+        ams_mapping = session.ams_mapping
+
     status = data.get("status", "completed")
     results = []
     handled_trays: set[tuple[int, int]] = set()
@@ -637,6 +1275,13 @@ async def on_print_complete(
     # Fetch default filament cost from settings for fallback
     default_cost_str = await get_setting(db, "default_filament_cost")
     default_filament_cost = float(default_cost_str) if default_cost_str else 0.0
+
+    # Optional emergency-swap purge (grams per autoswitch runout, default 0).
+    _purge_str = await get_setting(db, "runout_purge_grams")
+    try:
+        runout_purge_grams = float(_purge_str) if _purge_str else 0.0
+    except ValueError:
+        runout_purge_grams = 0.0
 
     logger.info(
         "[UsageTracker] on_print_complete: printer=%d, archive=%s, session=%s, ams_mapping=%s",
@@ -657,6 +1302,30 @@ async def on_print_complete(
             getattr(state, "last_loaded_tray", "N/A"),
         )
 
+    # The print's journal (m153): runout/spool-change boundaries with spool
+    # ids frozen at event time. With events present, the assignment snapshot
+    # wins unconditionally over a live reassignment — the journal owns
+    # mid-print changes, so "live wins" keeps only its wrong-assignment-
+    # correction case on journal-less prints (print_started_at=None routes
+    # _resolve_spool_id_for_tray onto its snapshot fast path).
+    journal_events: list = []
+    if archive_id:
+        try:
+            from backend.app.services.print_usage_journal import load_events
+
+            journal_events = await load_events(db, printer_id, archive_id)
+        except Exception:
+            logger.exception("[UsageTracker] Journal load failed for archive %s", archive_id)
+    # "Live assignment wins" is suspended only when the journal holds
+    # BOUNDARY events (runout / spool_loaded) — those own mid-print changes.
+    # Any print has a start row (and jams leave pause rows), so keying on
+    # "any journal row" would kill the legitimate wrong-link correction for
+    # every print; a jam-time spool swap stays on the old live-wins semantics.
+    from backend.app.models.print_usage_event import EVENT_RUNOUT as _EV_RUNOUT, EVENT_SPOOL_LOADED as _EV_LOADED
+
+    has_boundary_events = any(e.event in (_EV_RUNOUT, _EV_LOADED) for e in journal_events)
+    effective_started_at = None if has_boundary_events else (session.started_at if session else None)
+
     # --- Path 1 (PRIMARY): 3MF per-filament estimates ---
     if archive_id:
         print_name = (
@@ -676,9 +1345,22 @@ async def on_print_complete(
             last_layer_num=data.get("last_layer_num", 0),
             default_filament_cost=default_filament_cost,
             spool_assignments=session.spool_assignments if session else None,
-            print_started_at=session.started_at if session else None,
+            print_started_at=effective_started_at,
+            journal_events=journal_events,
+            runout_purge_grams=runout_purge_grams,
         )
         results.extend(threemf_results)
+
+    # Belt-and-braces against the multicolour runout double-count: every tray
+    # the journal names is off-limits to the remain%-delta fallback, whether
+    # or not Path 1 managed to attribute it.
+    for tray in journal_touched_trays(journal_events):
+        if tray >= 254:
+            handled_trays.add((255, tray - 254))
+        elif tray >= 128:
+            handled_trays.add((tray, 0))
+        else:
+            handled_trays.add((tray // 4, tray % 4))
 
     # --- Path 2 (FALLBACK): AMS remain% delta (only for trays not handled by 3MF) ---
     if session and session.tray_remain_start:
@@ -709,6 +1391,19 @@ async def on_print_complete(
                     if current_remain is None:
                         continue
 
+                    # Spool swap mid-print — the RFID uuid changed, so this is
+                    # a different physical reel and the delta belongs to nobody
+                    # we can name (parity with the Spoolman remain-delta gate).
+                    start_uuid = session.tray_uuid_start.get(key, "")
+                    cur_uuid = str(tray.get("tray_uuid", "") or "")
+                    if start_uuid and cur_uuid and set(cur_uuid) != {"0"} and start_uuid != cur_uuid:
+                        logger.info(
+                            "[UsageTracker] AMS%d-T%d: spool swapped mid-print (uuid changed), skipping remain-delta",
+                            ams_id,
+                            tray_id,
+                        )
+                        continue
+
                     start_remain = session.tray_remain_start[key]
                     delta_pct = start_remain - current_remain
 
@@ -721,7 +1416,7 @@ async def on_print_complete(
                         tray_id=tray_id,
                         db=db,
                         spool_assignments_snapshot=session.spool_assignments,
-                        print_started_at=session.started_at,
+                        print_started_at=effective_started_at,
                     )
                     if spool_id is None:
                         continue
@@ -827,6 +1522,16 @@ async def on_print_complete(
                 archive.filament_used_grams = effective_grams
             await db.commit()
 
+    # --- Runout zero corrections, AFTER every print row and the archive cost ---
+    # The tail is lifetime drift, not this print's consumption: it must not
+    # inflate the archive's cost/weight above, but it is broadcast so the UI
+    # sees the spool close out.
+    try:
+        correction_results = await apply_runout_zero_corrections(db, printer_id, journal_events, default_filament_cost)
+        results.extend(correction_results)
+    except Exception:
+        logger.exception("[UsageTracker] Runout zero corrections failed for printer %d", printer_id)
+
     return results
 
 
@@ -845,6 +1550,8 @@ async def _track_from_3mf(
     default_filament_cost: float = 0.0,
     spool_assignments: dict[tuple[int, int], int] | None = None,
     print_started_at: datetime | None = None,
+    journal_events: list | None = None,
+    runout_purge_grams: float = 0.0,
 ) -> list[dict]:
     """Track usage from 3MF per-filament slicer data (primary path).
 
@@ -852,10 +1559,11 @@ async def _track_from_3mf(
     For partial prints (failed/aborted), tries per-layer gcode data first,
     then falls back to linear scaling by progress.
 
-    Slot-to-tray mapping priority:
+    Slot-to-tray mapping priority (both dispatched sources before the live one —
+    AMS filament backup rewrites the live MQTT field to the substitute tray):
     1. Stored ams_mapping from print command (reprints/direct prints)
-    2. MQTT mapping field from printer state (universal, all print sources)
-    3. Queue item ams_mapping (for queue-initiated prints)
+    2. Queue item ams_mapping (for queue-initiated prints)
+    3. MQTT mapping field from printer state (universal, all print sources)
     4. tray_now from printer state (for single-filament non-queue prints)
     5. Position-based default using sorted available tray IDs (handles external spools)
     6. Default mapping: slot_id - 1 = global_tray_id (last resort)
@@ -897,7 +1605,47 @@ async def _track_from_3mf(
     if slot_to_tray:
         mapping_source = "print_cmd"
 
-    # 2. Try MQTT mapping field from printer state (universal, all print sources)
+    # 2. Try queue item ams_mapping (queue-initiated prints store the exact mapping)
+    #
+    # ⚠️ Ranked ABOVE the live MQTT field on purpose: ``mapping`` reports the
+    # tray the printer is feeding from *now*, and AMS filament backup rewrites
+    # it to the substitute tray when a spool runs dry. Read at completion it
+    # names the tray that finished the print, not the one the slicer assigned —
+    # so the spool that actually emptied was charged nothing and the backup
+    # spool was charged the lot. The queue item's copy is the mapping the print
+    # was dispatched with, and it is in the database, so it also survives a
+    # restart mid-print.
+    # Fetched both as the fallback source AND to un-lose the -1 external
+    # markers the send-side remap put into the command mapping — on a
+    # dual-external machine only the queue copy still names WHICH external.
+    _needs_queue = not slot_to_tray or any(m == -1 for m in slot_to_tray if isinstance(m, int))
+    if _needs_queue and archive_id:
+        queue_result = await db.execute(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.archive_id == archive_id)
+            .where(PrintQueueItem.status.in_(["printing", "completed", "failed"]))
+        )
+        # ``.first()``, not ``.scalar_one_or_none()``: a re-print points a second
+        # queue item at the same archive, and raising MultipleResultsFound here
+        # would cost the print all of its usage tracking.
+        queue_item = queue_result.scalars().first()
+        if queue_item and queue_item.ams_mapping:
+            try:
+                queue_map = json.loads(queue_item.ams_mapping)
+            except (json.JSONDecodeError, TypeError):
+                queue_map = None
+            if queue_map and not slot_to_tray:
+                slot_to_tray = queue_map
+                mapping_source = "queue"
+            elif queue_map and slot_to_tray:
+                from backend.app.services.spoolman_tracking import unlose_external_markers
+
+                merged = unlose_external_markers(slot_to_tray, queue_map)
+                if merged is not slot_to_tray:
+                    slot_to_tray = merged
+                    mapping_source = "print_cmd+queue_external"
+
+    # 3. Try MQTT mapping field from printer state (universal, all print sources)
     if not slot_to_tray:
         state = printer_manager.get_status(printer_id)
         raw_data = getattr(state, "raw_data", None) if state else None
@@ -907,21 +1655,6 @@ async def _track_from_3mf(
             if decoded:
                 slot_to_tray = decoded
                 mapping_source = "mqtt"
-
-    # 3. Try queue item ams_mapping (queue-initiated prints store the exact mapping)
-    if not slot_to_tray:
-        queue_result = await db.execute(
-            select(PrintQueueItem)
-            .where(PrintQueueItem.archive_id == archive_id)
-            .where(PrintQueueItem.status.in_(["printing", "completed", "failed"]))
-        )
-        queue_item = queue_result.scalar_one_or_none()
-        if queue_item and queue_item.ams_mapping:
-            try:
-                slot_to_tray = json.loads(queue_item.ams_mapping)
-                mapping_source = "queue"
-            except (json.JSONDecodeError, TypeError):
-                pass
 
     # 4. Color-match 3MF filament slots to AMS trays (for printers without mapping field)
     if not slot_to_tray:
@@ -957,6 +1690,22 @@ async def _track_from_3mf(
     state = printer_manager.get_status(printer_id) if len(nonzero_slots) == 1 else None
     if state is not None:
         tray_changes = getattr(state, "tray_change_log", []) or []
+    elif len(nonzero_slots) > 1:
+        # Multi-material print: every filament change moves tray_now, so the log
+        # can't be read as "this slot moved to that tray" and splitting would
+        # attribute worse than the mapping does. Say so rather than silently
+        # dropping the evidence — a runout mid-print on a multi-material job
+        # still lands entirely on the mapped tray.
+        _multi_state = printer_manager.get_status(printer_id)
+        if len(getattr(_multi_state, "tray_change_log", []) or []) > 1:
+            logger.warning(
+                "[UsageTracker] 3MF: %d tray changes observed but %d filament slots used — "
+                "splitting needs a single slot, attributing by mapping alone (printer %d, archive %s)",
+                len(_multi_state.tray_change_log),
+                len(nonzero_slots),
+                printer_id,
+                archive_id,
+            )
 
     if len(tray_changes) > 1:
         # Multi-tray usage detected — splitting takes over regardless of
@@ -1017,21 +1766,26 @@ async def _track_from_3mf(
                 from backend.app.utils.threemf_tools import (
                     extract_filament_properties_from_3mf,
                     extract_layer_filament_usage_from_3mf,
-                    get_cumulative_usage_at_layer,
-                    mm_to_grams,
                 )
 
-                layer_usage = extract_layer_filament_usage_from_3mf(file_path)
+                layer_usage = extract_layer_filament_usage_from_3mf(file_path, archive.plate_index)
                 if layer_usage:
-                    cumulative_mm = get_cumulative_usage_at_layer(layer_usage, current_layer)
-                    filament_props = extract_filament_properties_from_3mf(file_path)
+                    # Progress fraction of the slot's own gcode timeline x the
+                    # slicer estimate — NOT absolute gcode grams. Flush/purge on
+                    # every filament change happens inside firmware macros and
+                    # never appears as gcode extrusion, so the absolute figure
+                    # under-charged a cancelled swap-heavy print ~7x (measured
+                    # 2026-08-28: slicer totals 46.35 g vs 6.8 g of E-moves).
+                    from backend.app.utils.threemf_tools import slot_progress_fraction
+
+                    _est_by_slot = {u.get("slot_id", 0): u.get("used_g", 0) for u in filament_usage}
                     layer_grams = {}
-                    for filament_id, mm_used in cumulative_mm.items():
-                        slot_id = filament_id + 1  # 0-based to 1-based
-                        props = filament_props.get(slot_id, {})
-                        density = props.get("density", 1.24)
-                        diameter = props.get("diameter", 1.75)
-                        layer_grams[slot_id] = mm_to_grams(mm_used, diameter, density)
+                    for slot_id, est_g in _est_by_slot.items():
+                        if est_g <= 0:
+                            continue
+                        fraction = slot_progress_fraction(layer_usage, slot_id - 1, current_layer)
+                        if fraction is not None:
+                            layer_grams[slot_id] = est_g * fraction
             except Exception:
                 pass  # Fall back to linear scaling
 
@@ -1067,7 +1821,7 @@ async def _track_from_3mf(
                     extract_layer_filament_usage_from_3mf,
                 )
 
-                split_layer_usage = extract_layer_filament_usage_from_3mf(file_path)
+                split_layer_usage = extract_layer_filament_usage_from_3mf(file_path, archive.plate_index)
                 filament_props = extract_filament_properties_from_3mf(file_path)
                 split_props = filament_props.get(slot_id, {})
             except Exception:
@@ -1085,6 +1839,7 @@ async def _track_from_3mf(
                 total_layers=(state.total_layers if state else 0) or 0,
                 last_layer_num=last_layer_num,
             )
+            segments = _add_autoswitch_purge(segments, tray_changes, journal_events or [], runout_purge_grams)
 
             for seg_idx, tray_global, segment_grams in segments:
                 if segment_grams <= 0:
@@ -1202,6 +1957,34 @@ async def _track_from_3mf(
                 mapped = slot_to_tray[slot_id - 1]
                 if isinstance(mapped, int) and mapped >= 0:
                     global_tray_id = mapped
+                    if mapped == 0:
+                        # On an AMS-less machine BambuStudio remaps the
+                        # external to 0 with use_ams=False ("No AMS detected"
+                        # on our send path) — honour 0 as AMS0-T0 only where
+                        # that tray actually exists, else it is the external
+                        # in disguise (2026-08-24: four minis).
+                        _lookup = _machine_tray_lookup(printer_manager, printer_id)
+                        if _lookup is not None and 0 not in _lookup:
+                            for _ext_id in (254, 255):
+                                if _ext_id in _lookup:
+                                    global_tray_id = _ext_id
+                                    break
+                elif mapped == -1:
+                    # ``-1`` means the EXTERNAL holder — BambuStudio converts
+                    # 254/255 to -1 in ams_mapping before sending the print
+                    # command. Spoolman's _resolve_global_tray_id has honoured
+                    # that since upstream #1276; this path fell through to the
+                    # position-based default below and charged the first AMS
+                    # reel for an external print (P1S, 2026-08-24). Never let
+                    # an explicit external marker reach that default.
+                    _lookup = _machine_tray_lookup(printer_manager, printer_id)
+                    if _lookup is not None:
+                        for _ext_id in (254, 255):
+                            if _ext_id in _lookup:
+                                global_tray_id = _ext_id
+                                break
+                    if global_tray_id is None:
+                        global_tray_id = 254
             # Position-based default: sort available tray IDs so external spools (254/255)
             # naturally follow standard AMS trays, matching slicer slot numbering
             if global_tray_id is None:
@@ -1250,6 +2033,120 @@ async def _track_from_3mf(
 
         key = (ams_id, tray_id)
         if key in handled_trays:
+            continue
+
+        # --- Journal-driven split: a runout on this slot's tray ---
+        # Spool-change boundaries with ids frozen at event time. Takes over
+        # only when the tray-change split above didn't (that one owns
+        # single-slot multi-tray prints); the boundary math is the same
+        # helper, so the two cannot drift.
+        journal_segs = (
+            journal_boundaries_for_tray(journal_events, global_tray_id)
+            if journal_events and len(tray_changes) <= 1
+            else []
+        )
+        if len(journal_segs) > 1:
+            if layer_grams and slot_id in layer_grams:
+                total_weight = layer_grams[slot_id]
+            else:
+                total_weight = used_g * scale
+            if total_weight <= 0:
+                continue
+
+            seg_layer_usage = None
+            seg_props: dict = {}
+            try:
+                from backend.app.utils.threemf_tools import (
+                    extract_filament_properties_from_3mf,
+                    extract_layer_filament_usage_from_3mf,
+                )
+
+                seg_layer_usage = extract_layer_filament_usage_from_3mf(file_path, archive.plate_index)
+                seg_props = extract_filament_properties_from_3mf(file_path).get(slot_id, {})
+            except Exception:
+                pass  # linear fallback inside the helper
+
+            from backend.app.utils.tray_split import compute_layer_segment_grams
+
+            state = printer_manager.get_status(printer_id)
+            seg_grams = compute_layer_segment_grams(
+                boundary_layers=[start for start, _, _ in journal_segs],
+                total_weight=total_weight,
+                slot_id=slot_id,
+                layer_usage=seg_layer_usage,
+                density=seg_props.get("density", 1.24),
+                diameter=seg_props.get("diameter", 1.75),
+                total_layers=(state.total_layers if state else 0) or 0,
+                last_layer_num=last_layer_num,
+            )
+            _purge = _autoswitch_purge_for_tray(journal_events or [], global_tray_id, runout_purge_grams)
+            if _purge > 0 and len(seg_grams) > 1:
+                seg_grams[1] += _purge
+
+            for (seg_start, seg_spool_id, _), segment_grams in zip(journal_segs, seg_grams, strict=True):
+                if segment_grams <= 0:
+                    continue
+                if seg_spool_id is None:
+                    logger.info(
+                        "[UsageTracker] 3MF journal split: segment from layer %d has no attributable spool "
+                        "(printer %d tray %d) — %.1fg uncharged rather than guessed",
+                        seg_start,
+                        printer_id,
+                        global_tray_id,
+                        segment_grams,
+                    )
+                    continue
+                spool_result = await db.execute(select(Spool).where(Spool.id == seg_spool_id))
+                spool = spool_result.scalar_one_or_none()
+                if not spool:
+                    continue
+
+                spool.weight_used = (spool.weight_used or 0) + segment_grams
+                spool.last_used = datetime.now(timezone.utc)
+                await _warn_if_low_stock(db, spool, printer_id, global_tray_id)
+
+                percent = round(segment_grams / (spool.label_weight or 1000) * 100)
+                cost = None
+                cost_per_kg = spool.cost_per_kg if spool.cost_per_kg is not None else default_filament_cost
+                if cost_per_kg > 0:
+                    cost = round((segment_grams / 1000.0) * cost_per_kg, 2)
+
+                db.add(
+                    SpoolUsageHistory(
+                        spool_id=spool.id,
+                        printer_id=printer_id,
+                        print_name=print_name,
+                        weight_used=round(segment_grams, 1),
+                        percent_used=percent,
+                        status=status,
+                        cost=cost,
+                        archive_id=archive_id,
+                    )
+                )
+                results.append(
+                    {
+                        "spool_id": spool.id,
+                        "weight_used": round(segment_grams, 1),
+                        "percent_used": percent,
+                        "ams_id": ams_id,
+                        "tray_id": tray_id,
+                        "material": spool.material,
+                        "cost": cost,
+                        "slot_id": slot_id,
+                        "color": _spool_color_to_hex(spool.rgba),
+                    }
+                )
+                logger.info(
+                    "[UsageTracker] Spool %d consumed %.1fg (journal split from layer %d) on printer %d tray %d (%s)",
+                    spool.id,
+                    segment_grams,
+                    seg_start,
+                    printer_id,
+                    global_tray_id,
+                    status,
+                )
+
+            handled_trays.add(key)
             continue
 
         spool_id = await _resolve_spool_id_for_tray(

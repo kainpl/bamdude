@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Clock, Calendar, ChevronRight, Loader2, CircleCheck } from 'lucide-react';
+import { Clock, Calendar, ChevronRight, Loader2, CircleCheck, RotateCcw } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
@@ -25,6 +25,17 @@ export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear
     queryKey: ['queue', printerId, 'pending'],
     queryFn: () => api.getQueue(printerId, 'pending'),
     refetchInterval: 30000,
+  });
+
+  // The other answer to a full plate — see services/plate_hold on the backend.
+  const repeatPrintMutation = useMutation({
+    mutationFn: () => api.repeatPrint(printerId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['queue', printerId] });
+      queryClient.invalidateQueries({ queryKey: ['printerStatus', printerId] });
+      showToast(t('queue.repeatPrintSuccess'), 'success');
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
   });
 
   const clearPlateMutation = useMutation({
@@ -85,18 +96,32 @@ export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear
             {t('queue.plateReady')}
           </div>
         ) : (
-          <button
-            onClick={() => clearPlateMutation.mutate()}
-            disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}
-            className="w-full py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
-          >
-            {clearPlateMutation.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <CircleCheck className="w-4 h-4" />
-            )}
-            {t('queue.clearPlate')}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => repeatPrintMutation.mutate()}
+              disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
+              className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {repeatPrintMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <RotateCcw className="w-4 h-4" />
+              )}
+              {t('queue.repeatPrint')}
+            </button>
+            <button
+              onClick={() => clearPlateMutation.mutate()}
+              disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}
+              className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {clearPlateMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <CircleCheck className="w-4 h-4" />
+              )}
+              {t('queue.clearPlateShort')}
+            </button>
+          </div>
         )}
       </div>
     );

@@ -32,6 +32,8 @@ export interface SpoolFormData {
   core_weight_catalog_id: number | null;
   weight_used: number;
   slicer_filament: string;
+  // Family link (spec A §5.1) — the catalog identity; empty = unlinked.
+  filament_family_id: string;
   note: string;
   cost_per_kg: number | null;
   // ISO yyyy-mm-dd string or empty. Stored separately from ``created_at``
@@ -77,6 +79,7 @@ export const defaultFormData: SpoolFormData = {
   core_weight_catalog_id: null,
   weight_used: 0,
   slicer_filament: '',
+  filament_family_id: '',
   note: '',
   cost_per_kg: null,
   purchase_date: '',
@@ -133,12 +136,6 @@ export interface SectionProps {
 
 // Filament section props
 export interface FilamentSectionProps extends SectionProps {
-  cloudAuthenticated: boolean;
-  loadingCloudPresets: boolean;
-  presetInputValue: string;
-  setPresetInputValue: (value: string) => void;
-  selectedPresetOption?: FilamentOption;
-  filamentOptions: FilamentOption[];
   availableBrands: string[];
   availableMaterials: string[];
   // Brands/materials the catalog and slicer presets know to pair with the
@@ -259,8 +256,10 @@ export function validateForm(
   // stop or an out-of-range threshold through on every edit — and neither the
   // backend nor the column constrains them.
   if (spoolDetailsRequired(quickAdd, spoolmanMode, mode)) {
-    if (!formData.slicer_filament) {
-      errors.slicer_filament = 'Slicer preset is required';
+    if (!formData.filament_family_id && !formData.slicer_filament) {
+      // The family link is the identity now; a legacy slicer_filament on an
+      // old spool still satisfies the requirement.
+      errors.filament_family_id = 'Filament family is required';
     }
     if (!formData.material) {
       errors.material = 'Material is required';

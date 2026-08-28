@@ -295,7 +295,14 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
 
   return (
     <>
-      <Card>
+      {/*
+        Clip at the border as a backstop, so a value longer than anything
+        anticipated above lands inside the card instead of on the page
+        background. ⚠️ Scoped here rather than added to `Card` itself: half the
+        cards in the app render dropdowns and menus that deliberately paint
+        outside their bounds, and this one has none.
+      */}
+      <Card className="overflow-hidden">
         {/* Collapsed header - always visible, clickable to expand */}
         <div
           className="px-4 py-3 flex items-center gap-3 cursor-pointer select-none"
@@ -308,23 +315,45 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             }
           </button>
           <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isRunning ? 'bg-green-400 animate-pulse' : 'bg-gray-500'}`} />
-          <span className="text-white font-medium truncate">{printer.name}</span>
-          <span className="text-xs text-bambu-gray flex-shrink-0">{modeLabel}</span>
-          {printer.model_name && (
-            <span className="text-xs text-bambu-gray flex-shrink-0">{printer.model_name}</span>
-          )}
-          {targetPrinterName && (
-            <span className="text-xs text-bambu-gray flex-shrink-0 truncate">
-              {localMode === 'proxy' && <ArrowRightLeft className="w-3 h-3 inline mr-1" />}
-              {targetPrinterName}
-            </span>
-          )}
-          {localBindIp && (
-            <span className="text-[10px] text-bambu-gray flex-shrink-0 font-mono">{localBindIp}</span>
-          )}
-          {localRemoteInterfaceIp && (
-            <span className="text-[10px] text-bambu-gray flex-shrink-0 font-mono">{localRemoteInterfaceIp}</span>
-          )}
+          {/*
+            ⚠️ Metadata WRAPS rather than overflowing. Every item in this row
+            used to be `flex-shrink-0`, so nothing could give and the row was as
+            wide as its contents — which the Card does not clip, so the last IP
+            and the enable toggle were painted outside the card's border. The
+            name's `truncate` did not save it either: a flex item defaults to
+            `min-width: auto`, so it could not shrink below its text and the
+            ellipsis never engaged (`flex-shrink-0 truncate` on the target name
+            was self-cancelling for the same reason).
+
+            It takes three things at once to overflow, which is why it needs a
+            two-subnet setup to see: bind_ip and remote_interface_ip are both set
+            only when BamDude and the printer are on different subnets, a printer
+            adopted without a name is called "Printer at <ip>" (25 characters of
+            unbreakable text), and the cards sit in a multi-column grid.
+
+            Wrapping, not truncating: these addresses are what the page exists to
+            show, so hiding them behind an ellipsis trades one bug for a quieter
+            one.
+          */}
+          <div className="flex-1 min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="text-white font-medium truncate max-w-full">{printer.name}</span>
+            <span className="text-xs text-bambu-gray flex-shrink-0">{modeLabel}</span>
+            {printer.model_name && (
+              <span className="text-xs text-bambu-gray flex-shrink-0">{printer.model_name}</span>
+            )}
+            {targetPrinterName && (
+              <span className="text-xs text-bambu-gray truncate max-w-full">
+                {localMode === 'proxy' && <ArrowRightLeft className="w-3 h-3 inline mr-1" />}
+                {targetPrinterName}
+              </span>
+            )}
+            {localBindIp && (
+              <span className="text-[10px] text-bambu-gray flex-shrink-0 font-mono">{localBindIp}</span>
+            )}
+            {localRemoteInterfaceIp && (
+              <span className="text-[10px] text-bambu-gray flex-shrink-0 font-mono">{localRemoteInterfaceIp}</span>
+            )}
+          </div>
           <div className="ml-auto flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
             <button
               onClick={handleToggleEnabled}

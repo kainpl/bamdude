@@ -46,6 +46,7 @@ import { api, withStreamToken } from '../api/client';
 import { parseUTCDate, formatDateOnly, formatDateTime, formatDuration, formatDurationFromHours, formatETA, type TimeFormat, type DateFormat } from '../utils/date';
 import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem, PrintPlanItem, PrintQueueItem } from '../api/client';
 import { Card, CardContent } from '../components/Card';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { Button } from '../components/Button';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -560,9 +561,21 @@ export function ProjectDetailPage() {
   };
 
   if (projectLoading) {
+    // ⚠️ Only the way out is drawn, not a header. On a detail page the header
+    // IS the data — the project's name, its colour, its counts — so there is
+    // nothing honest to show before it arrives. What there is no excuse for is
+    // trapping somebody on a blank page: the back button does not need the
+    // project to work.
     return (
-      <div className="flex items-center justify-center py-24">
-        <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />
+      <div className="p-4 md:p-6 space-y-4">
+        <button
+          onClick={() => navigate('/projects')}
+          className="p-2 rounded-lg bg-bambu-card hover:bg-bambu-dark-tertiary transition-colors"
+          aria-label={t('projectDetail.backToProjects')}
+        >
+          <ArrowLeft className="w-5 h-5 text-bambu-gray" />
+        </button>
+        <LoadingBlock label={t('common.loading')} className="py-24 text-bambu-gray" />
       </div>
     );
   }
@@ -931,6 +944,53 @@ export function ProjectDetailPage() {
       )}
 
       {/* Sub-projects */}
+      {/* The whole tree, this project's own prints included.
+          ⚠️ A SECOND card, deliberately: the one above keeps meaning "this
+          project", and nesting has been settable over the API all along, so
+          widening it would have restated the history of anyone already using
+          it. Present only when there are sub-projects — otherwise the two
+          cards would say the same numbers, which reads as a bug. */}
+      {project.rollup_stats && (
+        <div>
+          <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-3">
+            <FolderTree className="w-5 h-5" />
+            {t('projectDetail.rollup.title')}
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatCard
+              icon={Package}
+              label={t('projectDetail.stats.printJobs')}
+              value={project.rollup_stats.total_archives}
+              subValue={t('projectDetail.stats.partsPrinted', { count: project.rollup_stats.completed_prints })}
+              color="text-bambu-green"
+            />
+            <StatCard
+              icon={Clock}
+              label={t('projectDetail.stats.printTime')}
+              value={formatDurationFromHours(project.rollup_stats.total_print_time_hours)}
+              color="text-yellow-600 dark:text-yellow-400"
+            />
+            <StatCard
+              icon={Printer}
+              label={t('projectDetail.stats.filamentUsed')}
+              value={formatFilament(project.rollup_stats.total_filament_grams)}
+              color="text-purple-600 dark:text-purple-400"
+            />
+            <StatCard
+              icon={FolderTree}
+              label={t('projectDetail.rollup.progress')}
+              value={
+                project.rollup_stats.progress_percent != null
+                  ? `${project.rollup_stats.progress_percent}%`
+                  : '—'
+              }
+              subValue={t('projectDetail.rollup.acrossTree', { count: project.children?.length ?? 0 })}
+              color="text-bambu-blue"
+            />
+          </div>
+        </div>
+      )}
+
       {project.children && project.children.length > 0 && (
         <Card>
           <CardContent className="p-4">
@@ -1255,11 +1315,33 @@ export function ProjectDetailPage() {
                         >
                           <Minus className="w-3.5 h-3.5" />
                         </button>
-                        <span
-                          className="min-w-[2ch] text-center text-sm text-white font-medium tabular-nums"
-                          title={t('projectDetail.files.copies')}
-                        >
-                          ×{item.copies}
+                        {/* Editable count: type a number, commit on blur/Enter.
+                            Uncontrolled + keyed on the server value so a
+                            confirmed mutation remounts the field fresh and a
+                            discarded edit falls back to what the server holds. */}
+                        <span className="flex items-center text-sm text-white font-medium" title={t('projectDetail.files.copies')}>
+                          ×
+                          <input
+                            key={`${item.library_file_id}:${item.copies}`}
+                            type="number"
+                            min={1}
+                            max={999}
+                            defaultValue={item.copies}
+                            disabled={updateCopiesMutation.isPending}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') e.currentTarget.blur();
+                            }}
+                            onBlur={(e) => {
+                              const v = parseInt(e.currentTarget.value, 10);
+                              const next = Number.isFinite(v) ? Math.min(999, Math.max(1, v)) : item.copies;
+                              if (next !== item.copies) {
+                                updateCopiesMutation.mutate({ fileId: item.library_file_id, copies: next });
+                              } else {
+                                e.currentTarget.value = String(item.copies);
+                              }
+                            }}
+                            className="w-10 text-center text-sm text-white font-medium tabular-nums bg-transparent border border-transparent hover:border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none rounded disabled:opacity-50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                          />
                         </span>
                         <button
                           onClick={() =>
@@ -1494,9 +1576,7 @@ export function ProjectDetailPage() {
           )}
 
           {bomLoading ? (
-            <div className="flex items-center justify-center py-4">
-              <Loader2 className="w-6 h-6 animate-spin text-bambu-green" />
-            </div>
+            <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
           ) : bomItems && bomItems.length > 0 ? (
             <div className="space-y-2">
               {bomItems
@@ -1705,9 +1785,7 @@ export function ProjectDetailPage() {
           </div>
 
           {timelineLoading ? (
-            <div className="flex items-center justify-center py-4">
-              <Loader2 className="w-6 h-6 animate-spin text-bambu-green" />
-            </div>
+            <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
           ) : timeline && timeline.length > 0 ? (
             <div className="space-y-3">
               {(timelineExpanded ? timeline : timeline.slice(0, TIMELINE_COLLAPSED)).map((event, index) => (
@@ -1812,9 +1890,7 @@ export function ProjectDetailPage() {
           </h2>
         </div>
         {archivesLoading ? (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="w-6 h-6 animate-spin text-bambu-green" />
-          </div>
+          <LoadingBlock label={t('common.loading')} className="py-8 text-bambu-gray" />
         ) : (
           <ArchiveGrid archives={archives || []} t={t} />
         )}

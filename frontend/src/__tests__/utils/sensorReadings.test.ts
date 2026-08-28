@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildLocationIndex } from '../../utils/locationTree';
 import type { LocationNode } from '../../utils/locationTree';
-import { formatReading, roomReadings, sensorsForGroup } from '../../utils/sensorReadings';
+import { formatReading, roomReadings, sensorsForGroup, sensorsForPrinter } from '../../utils/sensorReadings';
 import type { ZigbeeSensor } from '../../api/client';
 
 // Workshop(1) -> Shelf 1(2) -> Box(4);  Workshop -> Shelf 2(3);  Hall(5)
@@ -32,6 +32,8 @@ function sensor(over: Partial<ZigbeeSensor> = {}): ZigbeeSensor {
     id: 1,
     name: 'S',
     location: null,
+    printer_id: null,
+    printer_name: null,
     ieee: 'aa:bb',
     nwk: 1,
     manufacturer: 'SONOFF',
@@ -143,5 +145,44 @@ describe('formatReading', () => {
     expect(formatReading(null)).toBe('—');
     expect(formatReading(undefined)).toBe('—');
     expect(formatReading(Number.NaN)).toBe('—');
+  });
+});
+
+describe('sensorsForPrinter', () => {
+  it('takes the ones bound to that printer', () => {
+    const mine = sensor({ id: 1, printer_id: 7 });
+    const theirs = sensor({ id: 2, printer_id: 8 });
+
+    expect(sensorsForPrinter([mine, theirs], 7)).toEqual([mine]);
+  });
+
+  it('ignores a sensor bound to the place the printer stands in', () => {
+    // ⚠️ Deliberate, and the difference from the group header: a place sensor
+    // already shows there. Repeating it on every card in the room would claim
+    // the enclosure reads what the room reads.
+    const roomProbe = sensor({ id: 3, location: { id: 1, name: 'Workshop', parent_id: null } as never });
+
+    expect(sensorsForPrinter([roomProbe], 7)).toEqual([]);
+  });
+
+  it('drops a live sensor with nothing to say about its surroundings', () => {
+    const batteryOnly = sensor({ id: 4, printer_id: 7, measurements: { battery: reading(88, '%') } });
+
+    expect(sensorsForPrinter([batteryOnly], 7)).toEqual([]);
+  });
+
+  it('keeps one that is off the mesh', () => {
+    // Its readings are empty BECAUSE it is absent; a dead sensor must not look
+    // like no sensor.
+    const gone = sensor({ id: 5, printer_id: 7, present: false, measurements: {} });
+
+    expect(sensorsForPrinter([gone], 7)).toEqual([gone]);
+  });
+
+  it('orders by name so the card does not reshuffle between renders', () => {
+    const b = sensor({ id: 6, name: 'Bed', printer_id: 7 });
+    const a = sensor({ id: 7, name: 'Ambient', printer_id: 7 });
+
+    expect(sensorsForPrinter([b, a], 7).map((s) => s.name)).toEqual(['Ambient', 'Bed']);
   });
 });

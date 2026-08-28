@@ -14,6 +14,7 @@ only the rows that came back `valid`.
 
 import csv
 import io
+import re
 from datetime import datetime
 
 from pydantic import BaseModel, ValidationError
@@ -126,6 +127,62 @@ class ImportResult(BaseModel):
     skipped: int
     errors: int
     error_rows: list[ImportRowResult] = []
+
+
+# What a locale-bound spreadsheet actually varies: the cell delimiter, the
+# decimal mark, and (rarely) a legacy encoding. Import defaults every knob to
+# 'auto' — sniffed delimiter, strict decimal-comma tolerance, UTF-8 — and the
+# explicit choices exist for what auto cannot safely guess: cp1251/cp1252
+# decode almost ANY byte string, so they are never guessed, only chosen; a
+# thousands-separated number is only unambiguous once the user names the
+# decimal mark.
+_DELIMITER_BY_NAME = {"comma": ",", "semicolon": ";", "tab": "\t"}
+_IMPORT_CODECS = {"utf-8": "utf-8-sig", "windows-1251": "cp1251", "windows-1252": "cp1252"}
+# Columns the export rewrites dot→comma when asked for a comma decimal.
+_EXPORT_NUMERIC_COLUMNS = {
+    "label_weight",
+    "weight_used",
+    "remaining",
+    "cost_per_kg",
+    "nozzle_temp_min",
+    "nozzle_temp_max",
+    "low_stock_threshold_pct",
+}
+
+
+def _sniff_delimiter(text: str) -> str:
+    """The delimiter is whichever candidate splits the header widest.
+
+    Our own export writes commas, but a spreadsheet in a European locale
+    re-saves CSV with ';' (LibreOffice/Excel list separator — measured live
+    2026-08-25: an exported inventory edited in Calc came back
+    semicolon-separated and the whole header read as one unknown column),
+    and a tab-separated paste is real too. Counted on the header line only —
+    data cells may legitimately contain commas.
+    """
+    header_line = text.split("\n", 1)[0]
+    counts = {d: header_line.count(d) for d in (",", ";", "\t")}
+    best = max(counts, key=lambda d: counts[d])
+    return best if counts[best] > 0 else ","
+
+
+_DECIMAL_COMMA_RE = re.compile(r"^-?\d+,\d+$")
+
+
+def _numeric_text(value: str, decimal: str = "auto") -> str:
+    """Normalise a numeric cell for ``float()`` under the chosen decimal mark.
+
+    ``auto`` accepts the strict decimal-comma form ('1027,5' — one comma,
+    digits both sides) and nothing else, so a thousands-separated '1.027,5'
+    fails loudly instead of importing a wrong number. An EXPLICIT mark also
+    strips the other character as a thousands separator — that rewrite is
+    only unambiguous once the user has named the decimal.
+    """
+    if decimal == "comma":
+        return value.replace(".", "").replace(",", ".")
+    if decimal == "dot":
+        return value.replace(",", "")
+    return value.replace(",", ".", 1) if _DECIMAL_COMMA_RE.match(value) else value
 
 
 def _normalize_header(name: str) -> str:
@@ -267,21 +324,36 @@ def _empty_preview(warnings: list[str]) -> ImportPreview:
     )
 
 
-async def parse_and_validate(raw_bytes: bytes, db: AsyncSession) -> ImportPreview:
+async def parse_and_validate(
+    raw_bytes: bytes,
+    db: AsyncSession,
+    *,
+    encoding: str = "auto",
+    delimiter: str = "auto",
+    decimal: str = "auto",
+) -> ImportPreview:
     """Parse a CSV blob, validate + colour-resolve each row. Never writes.
 
-    Decodes UTF-8 (BOM tolerant), reads with DictReader against the fixed
-    schema, and classifies each row as valid / error / skipped. Valid rows
-    carry a SpoolCreate-shaped `spool` dict ready to persist.
+    Decodes per ``encoding`` ('auto' = UTF-8, BOM tolerant), reads against the
+    fixed schema with the chosen (or sniffed) ``delimiter``, and classifies
+    each row as valid / error / skipped. Valid rows carry a SpoolCreate-shaped
+    `spool` dict ready to persist.
     """
     warnings: list[str] = []
 
     try:
-        text = raw_bytes.decode("utf-8-sig")
+        text = raw_bytes.decode(_IMPORT_CODECS.get(encoding, "utf-8-sig"))
     except UnicodeDecodeError:
-        return _empty_preview(["File is not valid UTF-8 text."])
+        return _empty_preview(
+            [
+                "File is not valid UTF-8 text. If a spreadsheet saved it in a legacy "
+                "encoding, pick that encoding in the import options."
+                if encoding == "auto"
+                else f"File could not be decoded as {encoding}."
+            ]
+        )
 
-    reader = csv.reader(io.StringIO(text))
+    reader = csv.reader(io.StringIO(text), delimiter=_DELIMITER_BY_NAME.get(delimiter) or _sniff_delimiter(text))
     try:
         header = next(reader)
     except StopIteration:
@@ -370,7 +442,7 @@ async def parse_and_validate(raw_bytes: bytes, db: AsyncSession) -> ImportPrevie
                 value = cell(raw_row, field)
                 if value:
                     try:
-                        data[field] = float(value)
+                        data[field] = float(_numeric_text(value, decimal))
                     except ValueError:
                         row_error = f"{field} must be a number (got '{value}')"
                         break
@@ -487,20 +559,31 @@ async def parse_and_validate(raw_bytes: bytes, db: AsyncSession) -> ImportPrevie
     )
 
 
-def serialize(spools: list[Spool]) -> bytes:
+def serialize(spools: list[Spool], *, delimiter: str = "comma", decimal: str = "dot", bom: bool = False) -> bytes:
     """Render spools to CSV bytes using the fixed schema (export side).
 
     rgba is written without a leading `#`, matching the import-side
     normalisation, so export → import round-trips without transformation.
     `remaining` is derived (label_weight - weight_used) and `last_used` is
     written as ISO-8601; empty/None fields become empty cells.
+
+    The locale knobs mirror the import options: ``delimiter`` and ``decimal``
+    make the file open as columns-and-numbers in a European-locale
+    spreadsheet, and ``bom`` prepends the UTF-8 BOM — the only thing that
+    makes Windows Excel read UTF-8 as UTF-8 instead of mojibake.
     """
     output = io.StringIO()
-    writer = csv.writer(output)
+    writer = csv.writer(output, delimiter=_DELIMITER_BY_NAME.get(delimiter, ","))
     writer.writerow(CSV_COLUMNS)
     for spool in spools:
-        writer.writerow([_sanitize_cell(_cell_value(spool, col)) for col in CSV_COLUMNS])
-    return output.getvalue().encode("utf-8")
+        cells = []
+        for col in CSV_COLUMNS:
+            value = _cell_value(spool, col)
+            if decimal == "comma" and col in _EXPORT_NUMERIC_COLUMNS:
+                value = value.replace(".", ",")
+            cells.append(_sanitize_cell(value))
+        writer.writerow(cells)
+    return output.getvalue().encode("utf-8-sig" if bom else "utf-8")
 
 
 def _sanitize_cell(value: str) -> str:

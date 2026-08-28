@@ -22,9 +22,9 @@ class SpoolBase(BaseModel):
     weight_used_baseline: float = 0
     slicer_filament: str | None = None
     slicer_filament_name: str | None = None
-    # Normalized GF-form filament_id for K-profile / colour matching
-    # (base-resolved for custom presets). Set by the spool form at save time.
-    resolved_filament_id: str | None = Field(default=None, max_length=50)
+    # Family link (spec A §5.1) — the catalog identity the spool is tied to
+    # ("GFG99" / "P122e532"); the family picker sets this.
+    filament_family_id: str | None = Field(default=None, max_length=50)
     nozzle_temp_min: int | None = None
     nozzle_temp_max: int | None = None
     note: str | None = None
@@ -83,7 +83,7 @@ class SpoolUpdate(BaseModel):
     weight_used_baseline: float | None = None  # PATCH-able for "Reset usage to 0" parity (#1390)
     slicer_filament: str | None = None
     slicer_filament_name: str | None = None
-    resolved_filament_id: str | None = Field(default=None, max_length=50)
+    filament_family_id: str | None = Field(default=None, max_length=50)
     nozzle_temp_min: int | None = None
     nozzle_temp_max: int | None = None
     note: str | None = None
@@ -227,6 +227,11 @@ class SpoolAssignmentCreate(BaseModel):
     printer_id: int
     ams_id: int
     tray_id: int
+    # The human answered the mid-pause prompt with "this is a replacement":
+    # journal a manual runout boundary so the print's usage splits at the
+    # current layer. Refused (409) unless the printer is PAUSED mid-print.
+    # False = plain assignment (wrong-link correction semantics).
+    mid_print_replacement: bool = False
 
 
 class SpoolAssignmentResponse(BaseModel):

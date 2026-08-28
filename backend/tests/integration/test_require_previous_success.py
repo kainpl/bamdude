@@ -249,3 +249,50 @@ class TestUnskipReleasesTheGate:
         )
         for item in pending:
             assert await scheduler.previous_print_succeeded(db_session, printer.id, item.id) is True
+
+
+class TestTheGateSeesPrintsItUsedToMiss:
+    """⚠️ A behaviour change, taken on purpose.
+
+    The gate asks "did the last print on this machine fail". Before every print
+    held a queue row it could only see prints the queue tier dispatched, so a
+    failed **Print now** — or a failed print started on the printer's screen —
+    gated nothing queued behind it, on the same machine, minutes later.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_failed_direct_print_gates_what_is_queued_behind_it(
+        self, db_session, printer_factory, monkeypatch
+    ) -> None:
+        """End to end through the real claim and the real release, because the
+        point is the row those two leave behind — not a row hand-built to look
+        like one."""
+        from contextlib import asynccontextmanager
+
+        from backend.app.services.background_dispatch import PrintDispatchJob, background_dispatch
+        from backend.app.services.queue_batch import claim_printer_for_direct_print
+
+        printer, queue = await _printer_with_queue(db_session, printer_factory)
+        assert await PrintScheduler().previous_print_succeeded(db_session, printer.id) is True
+
+        claimed = await claim_printer_for_direct_print(db_session, printer_id=printer.id)
+
+        @asynccontextmanager
+        async def _session_ctx():
+            yield db_session
+
+        monkeypatch.setattr("backend.app.services.background_dispatch.async_session", _session_ctx)
+        job = PrintDispatchJob(
+            id=1,
+            kind="print_library_file",
+            source_id=1,
+            source_name="file1.gcode.3mf",
+            printer_id=printer.id,
+            printer_name=printer.name,
+            queue_item_id=claimed.id,
+        )
+        job.outcome = {"success": False, "archive_id": None, "error": "FTP 553", "cancelled": False}
+        await background_dispatch._release_direct_claim(job, status="failed")
+
+        assert await PrintScheduler().previous_print_succeeded(db_session, printer.id) is False

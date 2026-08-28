@@ -17,6 +17,11 @@ class APIKeyCreate(BaseModel):
     can_manage_maintenance: bool = True  # Log/reset maintenance, edit intervals, manage type catalog (#1832 follow-up)
     can_manage_archives: bool = True  # Create/update/delete print archives — not purge (#1888)
     can_manage_projects: bool = True  # Create/update/delete projects + membership (add archives) (#1893)
+    # ⚠️ Defaults False, unlike every scope above. Those split capabilities
+    # keys already had; this one is new, so granting it must be deliberate.
+    # It is what a desktop bridge authenticates with, and a bridge sits on
+    # somebody's desk — it must reach nothing else.
+    can_print_labels: bool = False
     printer_ids: list[int] | None = None  # null = all printers
     expires_at: datetime | None = None
 
@@ -35,6 +40,7 @@ class APIKeyUpdate(BaseModel):
     can_manage_maintenance: bool | None = None
     can_manage_archives: bool | None = None
     can_manage_projects: bool | None = None
+    can_print_labels: bool | None = None
     printer_ids: list[int] | None = None
     enabled: bool | None = None
     expires_at: datetime | None = None
@@ -57,6 +63,7 @@ class APIKeyResponse(BaseModel):
     can_manage_maintenance: bool = True
     can_manage_archives: bool = True
     can_manage_projects: bool = True
+    can_print_labels: bool = False
     printer_ids: list[int] | None
     enabled: bool
     last_used: datetime | None

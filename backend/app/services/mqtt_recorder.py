@@ -30,6 +30,7 @@ that offers it says what it adds.
 
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
@@ -43,15 +44,20 @@ logger = logging.getLogger(__name__)
 # failure here: a recorder must never become backpressure on the client that
 # feeds every other feature.
 _QUEUE_MAX = 10_000
+# How much of the tail to read for a screenful. Generous enough that a few
+# hundred lines always fit, small enough that the size of the file does not
+# matter to whoever is reading it.
+_TAIL_BYTES = 1_000_000
 
 
-class MqttRecorder:
+class MQTTRecorder:
     """One writer thread; one file per printer per day."""
 
     def __init__(self, log_dir: Path | None = None, printer_manager=None):
         self._log_dir = log_dir
         self._manager = printer_manager
         self._handlers: dict[int, object] = {}
+        self._publish_handlers: dict[int, object] = {}
         # The client each handler is attached to, so a rebuilt session is
         # detected rather than assumed away. See start().
         self._clients: dict[int, object] = {}
@@ -103,6 +109,7 @@ class MqttRecorder:
             # The session was rebuilt underneath us. Drop the dead handle and
             # re-register on the live client, keeping the same file.
             self._handlers.pop(printer_id, None)
+            self._publish_handlers.pop(printer_id, None)
             logger.info("MQTT recording re-attached for printer %s after its session was rebuilt", printer_id)
 
         # Same file across a re-attach: a rebuilt session is the same recording
@@ -114,23 +121,45 @@ class MqttRecorder:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
             path = directory / f"mqtt-{stamp}-{printer_id}.log"
 
+        # ⚠️ The request topic carries every command travelling TO the printer —
+        # BambuStudio's included, because the broker echoes them to us. Arriving
+        # on our socket makes them inbound, but where they are GOING is what a
+        # reader needs, so they are filed "out" beside our own commands. This is
+        # the only way "what does Studio actually put in that command?" can be
+        # answered from an operator's own capture.
+        request_topic = getattr(client, "topic_publish", None)
+
         def _handler(topic: str, payload: bytes, _pid=printer_id) -> None:
             # paho's network thread. Enqueue and return; never write here.
+            direction = "out" if request_topic and topic == request_topic else "in"
             try:
-                self._queue.put_nowait((_pid, time.time(), topic, payload))
+                self._queue.put_nowait((_pid, time.time(), direction, topic, payload))
+            except queue.Full:
+                pass
+
+        def _sent(topic: str, payload: bytes, _pid=printer_id) -> None:
+            try:
+                self._queue.put_nowait((_pid, time.time(), "out", topic, payload))
             except queue.Full:
                 pass
 
         self._files[printer_id] = path
         self._handlers[printer_id] = _handler
+        self._publish_handlers[printer_id] = _sent
         self._clients[printer_id] = client
         client.register_raw_message_handler(_handler)
+        # Both halves, or the transcript cannot be read. The case that proved it:
+        # an external-slot assignment the printer answered "success", then wiped
+        # with a delta one message later - diagnosing it needed what we asked for
+        # as well as what came back.
+        client.register_raw_publish_handler(_sent)
         self._ensure_writer()
         logger.info("MQTT recording started for printer %s -> %s", printer_id, path)
         return path
 
     def stop(self, printer_id: int) -> None:
         handler = self._handlers.pop(printer_id, None)
+        sent = self._publish_handlers.pop(printer_id, None)
         if handler is None:
             return
         client = self._get_client(printer_id)
@@ -139,6 +168,11 @@ class MqttRecorder:
                 client.unregister_raw_message_handler(handler)
             except Exception:
                 logger.debug("unregister failed for printer %s", printer_id, exc_info=True)
+            if sent is not None:
+                try:
+                    client.unregister_raw_publish_handler(sent)
+                except Exception:
+                    logger.debug("publish unregister failed for printer %s", printer_id, exc_info=True)
         self._files.pop(printer_id, None)
         self._clients.pop(printer_id, None)
         logger.info("MQTT recording stopped for printer %s", printer_id)
@@ -150,10 +184,143 @@ class MqttRecorder:
         return self._files.get(printer_id)
 
     def size_bytes(self, printer_id: int) -> int:
+        """Size of the RUNNING recording, or 0.
+
+        ⚠️ Deliberately not the file on disk: the printer card shows this beside
+        the badge, and a number next to no badge would read as a recording that
+        is still going. Whoever wants the stored file's size asks
+        :meth:`size_on_disk`.
+        """
         path = self._files.get(printer_id)
         if path is None or not path.exists():
             return 0
         return path.stat().st_size
+
+    def size_on_disk(self, printer_id: int) -> int:
+        """Total size of this printer's stored recordings, running or not."""
+        total = 0
+        for path in self.paths_for(printer_id):
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+        return total
+
+    def paths_for(self, printer_id: int) -> list[Path]:
+        """Every recording on disk for this printer, oldest first.
+
+        ⚠️ Not ``file_for``: that only knows a path while the recording runs, and
+        a stopped recording is exactly the one somebody wants to read. Lookup
+        goes by the naming convention instead, which is why the printer id is
+        the last segment of the name.
+        """
+        directory = self.log_dir / "mqtt"
+        if not directory.is_dir():
+            return []
+        return sorted(directory.glob(f"mqtt-*-{printer_id}.log"))
+
+    def tail(self, printer_id: int, limit: int = 500) -> list[dict]:
+        """The last ``limit`` recorded messages, newest last.
+
+        ⚠️ Reads only the end of the file. Nothing caps a recording's size, so
+        loading it whole to show a screenful is how the debugging aid becomes
+        the thing that falls over.
+
+        A line whose payload is not JSON comes back as the raw string rather
+        than being dropped — a truncated last line (the writer appends while
+        this reads) must not blank the view.
+        """
+        paths = self.paths_for(printer_id)
+        if not paths:
+            return []
+        path = paths[-1]
+        try:
+            with path.open("rb") as fh:
+                fh.seek(0, 2)
+                size = fh.tell()
+                fh.seek(max(0, size - _TAIL_BYTES))
+                chunk = fh.read()
+        except OSError:
+            return []
+
+        text = chunk.decode("utf-8", "replace")
+        if len(chunk) == _TAIL_BYTES and "\n" in text:
+            # The window almost certainly cut the first line in half.
+            text = text.split("\n", 1)[1]
+
+        entries: list[dict] = []
+        for line in text.splitlines()[-limit:]:
+            parts = line.split("\t", 3)
+            if len(parts) != 4:
+                continue
+            stamp, direction, topic, raw = parts
+            try:
+                payload = json.loads(raw)
+            except ValueError:
+                payload = raw
+            entries.append({"timestamp": stamp, "direction": direction, "topic": topic, "payload": payload})
+        return entries
+
+    def prune(self, days: int) -> int:
+        """Drop recordings older than ``days``; returns how many went.
+
+        Shares ``log_retention_days`` with the application log rather than
+        carrying a setting of its own — one knob, one mental model. Recordings
+        cannot join the rotating handler itself: the writer runs on its own
+        thread, deliberately outside ``logging``, so it never blocks paho's
+        network thread. What they share is when the answer is applied, which is
+        why this hangs off ``core.logging_state.update_log_retention``.
+
+        ⚠️ **Never removes a file a recording is currently writing.** A capture
+        started before the cutoff is still running, and deleting it under the
+        writer throws away exactly what somebody is sitting and waiting for —
+        while the badge goes on saying it is being recorded.
+
+        ⚠️ ``days <= 0`` keeps everything. The setting is clamped elsewhere, but
+        a zero arriving here must not read as "delete today's too".
+        """
+        if days <= 0:
+            return 0
+
+        live = set(self._files.values())
+        cutoff = time.time() - days * 86400
+        directory = self.log_dir / "mqtt"
+        if not directory.is_dir():
+            return 0
+
+        removed = 0
+        # Only our own naming — the folder sits inside the operator's log
+        # directory and is not ours to sweep wholesale.
+        for path in directory.glob("mqtt-*-*.log"):
+            if path in live:
+                continue
+            try:
+                if path.stat().st_mtime >= cutoff:
+                    continue
+                path.unlink()
+                removed += 1
+            except OSError:
+                logger.debug("could not prune recording %s", path, exc_info=True)
+        if removed:
+            logger.info("Pruned %d MQTT recording(s) older than %d days", removed, days)
+        return removed
+
+    def delete(self, printer_id: int) -> int:
+        """Remove this printer's recordings; returns how many files went.
+
+        ⚠️ Does NOT stop an active recording — clearing means "start the
+        transcript over", and the badge stays on. Stopping here would leave the
+        badge lying about what is happening. The writer recreates the file on
+        its next append.
+        """
+        removed = 0
+        for path in self.paths_for(printer_id):
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                logger.debug("could not remove recording %s", path, exc_info=True)
+        return removed
 
     def recording_printer_ids(self) -> list[int]:
         return sorted(self._handlers)
@@ -171,7 +338,7 @@ class MqttRecorder:
                 time.sleep(0.01)
                 continue
             try:
-                printer_id, ts, topic, payload = self._queue.get(timeout=0.2)
+                printer_id, ts, direction, topic, payload = self._queue.get(timeout=0.2)
             except queue.Empty:
                 continue
             path = self._files.get(printer_id)
@@ -183,12 +350,12 @@ class MqttRecorder:
                 stamp = datetime.fromtimestamp(ts, timezone.utc).isoformat()
                 line = payload.decode("utf-8", "replace")
                 with path.open("a", encoding="utf-8") as fh:
-                    fh.write(f"{stamp}\t{topic}\t{line}\n")
+                    fh.write(f"{stamp}\t{direction}\t{topic}\t{line}\n")
             except Exception:
                 logger.debug("MQTT recorder write failed for printer %s", printer_id, exc_info=True)
 
 
-mqtt_recorder = MqttRecorder()
+mqtt_recorder = MQTTRecorder()
 
 
 async def resume_recordings() -> None:

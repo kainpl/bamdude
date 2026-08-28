@@ -16,7 +16,14 @@ def _our_tables():
     about somebody else's schema, in a test about this one.
     """
     from backend.app.core.database import Base
-    from backend.app.models import smart_sensor, zigbee_device  # noqa: F401
+
+    # ⚠️ ``printer_location`` and ``printer`` are side-effect imports, not
+    # tables we create: ``smart_sensors`` carries an FK to each, and
+    # ``create_all`` cannot emit its DDL unless both targets are on the
+    # metadata. Without them this file passed only when some earlier test in
+    # the same session happened to have imported them — green in the full run,
+    # red on its own.
+    from backend.app.models import printer, printer_location, smart_sensor, zigbee_device  # noqa: F401
 
     return [Base.metadata.tables["zigbee_devices"], Base.metadata.tables["smart_sensors"]]
 
@@ -101,10 +108,11 @@ async def test_the_models_and_the_migration_chain_agree_on_the_columns(tmp_path)
     tested by everything else.
 
     The comparison is against the whole chain from here on, not this migration
-    alone. m124 turns ``smart_sensors.location`` into a foreign key and m127
-    adds the two silence columns, so m123's own DDL is no longer what an
-    upgraded database ends up with — only the chain is. **A migration that
-    touches ``smart_sensors`` or ``zigbee_devices`` belongs in this list.**"""
+    alone. m124 turns ``smart_sensors.location`` into a foreign key, m127 adds
+    the two silence columns and m144 adds the printer binding, so m123's own DDL
+    is no longer what an upgraded database ends up with — only the chain is.
+    **A migration that touches ``smart_sensors`` or ``zigbee_devices`` belongs
+    in this list.**"""
     from sqlalchemy import inspect
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -126,7 +134,11 @@ async def test_the_models_and_the_migration_chain_agree_on_the_columns(tmp_path)
         from_models = await conn.run_sync(columns_of)
     await fresh.dispose()
 
-    from backend.app.migrations import m124_printer_locations as m124, m127_sensor_thresholds as m127
+    from backend.app.migrations import (
+        m124_printer_locations as m124,
+        m127_sensor_thresholds as m127,
+        m144_smart_sensor_printer_binding as m144,
+    )
 
     upgraded = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'upgraded.db'}")
     async with upgraded.begin() as conn:
@@ -137,6 +149,10 @@ async def test_the_models_and_the_migration_chain_agree_on_the_columns(tmp_path)
         await m.upgrade(conn)
         await m124.upgrade(conn)
         await m127.upgrade(conn)
+        # m144 adds a bare INTEGER column plus an index on it — no FK clause,
+        # because SQLite cannot add one to an existing table — so the printers
+        # table does not have to exist for this to run.
+        await m144.upgrade(conn)
         from_migration = await conn.run_sync(columns_of)
     await upgraded.dispose()
 

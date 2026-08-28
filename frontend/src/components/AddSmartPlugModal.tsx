@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
+import { useToast } from '../contexts/ToastContext';
 import { X, Save, Loader2, Wifi, WifiOff, CheckCircle, Bell, Clock, LayoutGrid, Search, Plug, Power, Eye } from 'lucide-react';
 import { ZigbeePlugFields } from './smartPlug/ZigbeePlugFields';
 import { useTranslation } from 'react-i18next';
@@ -1571,6 +1572,14 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
             />
           )}
 
+          {/* Power-on behavior lives on the DEVICE, not in our DB — read and
+              written over the air, so it only renders for an existing plug.
+              Motivation: a plug that rebooted overnight came back with the
+              relay OFF because its start-up state said so (2026-08-27). */}
+          {isEditing && plugType === 'zigbee' && plug?.id != null && (
+            <PowerOnBehaviorField plugId={plug.id} />
+          )}
+
           {/* Link to Printer — shown for EVERY type.
               It used to be hidden for MQTT as "monitor-only", but phase 0 (m113)
               gave MQTT plugs a command topic, so they control printer power
@@ -1806,6 +1815,58 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+
+/**
+ * The relay's state after mains power returns (ZCL StartUpOnOff), edited on
+ * the device over the air. 'previous' is the safe answer for a printer feed:
+ * a plug that reboots mid-print comes back exactly as it was.
+ */
+function PowerOnBehaviorField({ plugId }: { plugId: number }) {
+  const { t } = useTranslation();
+  const { showToast } = useToast();
+  const queryClient = useQueryClient();
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['plug-power-on-behavior', plugId],
+    queryFn: () => api.getPlugPowerOnBehavior(plugId),
+    staleTime: 60 * 1000,
+  });
+
+  const mutation = useMutation({
+    mutationFn: (mode: 'on' | 'off' | 'previous') => api.setPlugPowerOnBehavior(plugId, mode),
+    onSuccess: (result) => {
+      queryClient.setQueryData(['plug-power-on-behavior', plugId], result);
+      showToast(t('smartPlugs.powerOn.saved'));
+    },
+    onError: (err: Error) => showToast(err.message || t('smartPlugs.powerOn.saveFailed'), 'error'),
+  });
+
+  return (
+    <div>
+      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.powerOn.label')}</label>
+      {isLoading ? (
+        <p className="text-xs text-bambu-gray italic">{t('common.loading')}</p>
+      ) : !data?.supported ? (
+        <p className="text-xs text-bambu-gray italic">{t('smartPlugs.powerOn.unsupported')}</p>
+      ) : (
+        <>
+          <select
+            value={data.mode ?? 'previous'}
+            disabled={mutation.isPending}
+            onChange={(e) => mutation.mutate(e.target.value as 'on' | 'off' | 'previous')}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-60"
+          >
+            <option value="previous">{t('smartPlugs.powerOn.previous')}</option>
+            <option value="on">{t('smartPlugs.powerOn.alwaysOn')}</option>
+            <option value="off">{t('smartPlugs.powerOn.alwaysOff')}</option>
+          </select>
+          <p className="text-xs text-bambu-gray mt-1">{t('smartPlugs.powerOn.hint')}</p>
+        </>
+      )}
     </div>
   );
 }

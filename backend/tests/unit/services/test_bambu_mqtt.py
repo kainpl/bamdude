@@ -5,6 +5,7 @@ These tests focus on timelapse tracking during prints.
 """
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -1557,10 +1558,16 @@ class TestRequestTopicFailSafe:
 
     @pytest.fixture(autouse=True)
     def clear_request_topic_cache(self):
-        """Clear class-level cache before each test to avoid cross-test pollution."""
+        """Clear class-level state before each test to avoid cross-test pollution.
+
+        ⚠️ Both dicts. The strike counter is as class-level as the cache, so a
+        test that leaves one strike behind silently halves the next test's
+        threshold.
+        """
         from backend.app.services.bambu_mqtt import BambuMQTTClient
 
         BambuMQTTClient._request_topic_cache.clear()
+        BambuMQTTClient._request_topic_strikes.clear()
 
     @pytest.fixture
     def mqtt_client(self):
@@ -1614,7 +1621,28 @@ class TestRequestTopicFailSafe:
         assert mqtt_client._request_topic_supported is True
 
     def test_disconnect_after_subscription_disables_topic(self, mqtt_client):
-        """Disconnect within 10s of subscription attempt disables request topic."""
+        """Two disconnects within 10s of a subscription attempt disable it.
+
+        ⚠️ Two, not one — changed deliberately after 2026-08-21, when a
+        fleet-wide network outage made every reconnect die young and five
+        printers that were happy with the request topic had it switched off by
+        an event that had nothing to do with them. A printer that genuinely
+        refuses does so every time, so it still latches, one reconnect later.
+        Full reasoning in ``test_mqtt_client_is_not_abandoned.py``.
+        """
+        import time
+
+        for _ in range(2):
+            mqtt_client._request_topic_sub_time = time.time()
+            mqtt_client._request_topic_confirmed = False
+            mqtt_client._last_message_time = 0.0
+            mqtt_client._on_disconnect(None, None)
+
+        assert mqtt_client._request_topic_supported is False
+        assert mqtt_client._request_topic_sub_time == 0.0
+
+    def test_a_single_disconnect_does_not_disable_the_topic(self, mqtt_client):
+        """The other half of the rule above, so a revert to one strike fails."""
         import time
 
         mqtt_client._request_topic_sub_time = time.time()
@@ -1623,8 +1651,7 @@ class TestRequestTopicFailSafe:
 
         mqtt_client._on_disconnect(None, None)
 
-        assert mqtt_client._request_topic_supported is False
-        assert mqtt_client._request_topic_sub_time == 0.0
+        assert mqtt_client._request_topic_supported is True
 
     def test_disconnect_after_confirmation_does_not_disable(self, mqtt_client):
         """Disconnect after SUBACK confirmation keeps request topic enabled."""
@@ -1680,11 +1707,13 @@ class TestRequestTopicFailSafe:
         )
         assert client1._request_topic_supported is True
 
-        # Simulate disconnect-after-subscribe disabling the topic
-        client1._request_topic_sub_time = __import__("time").time()
-        client1._request_topic_confirmed = False
-        client1._last_message_time = 0.0
-        client1._on_disconnect(None, None)
+        # Simulate disconnect-after-subscribe disabling the topic. Twice: one
+        # is no longer enough to convict — see the fail-safe tests above.
+        for _ in range(2):
+            client1._request_topic_sub_time = __import__("time").time()
+            client1._request_topic_confirmed = False
+            client1._last_message_time = 0.0
+            client1._on_disconnect(None, None)
         assert client1._request_topic_supported is False
 
         # New instance for same serial should inherit the cached state
@@ -1744,7 +1773,15 @@ class TestRequestTopicFailSafe:
 
 
 class TestRequestTopicAmsMapping:
-    """Tests for capturing ams_mapping from the MQTT request topic."""
+    """Tests for capturing ams_mapping from a ``project_file`` command.
+
+    ⚠️ The request topic is no longer the only place one arrives — the printer
+    echoes the same command back on the report topic, which is the only sighting
+    on a printer that refuses the request subscription. Both topics land in
+    ``_handle_project_file_command``, so these tests cover both; the report
+    topic's extra guard and the plate it also carries live in
+    ``test_project_file_echo_capture.py``.
+    """
 
     @pytest.fixture
     def mqtt_client(self):
@@ -1762,7 +1799,7 @@ class TestRequestTopicAmsMapping:
         """Verify _captured_ams_mapping starts as None."""
         assert mqtt_client._captured_ams_mapping is None
 
-    def test_handle_request_message_captures_ams_mapping(self, mqtt_client):
+    def test_handle_project_file_command_captures_ams_mapping(self, mqtt_client):
         """project_file command with ams_mapping stores the mapping."""
         data = {
             "print": {
@@ -1771,20 +1808,20 @@ class TestRequestTopicAmsMapping:
                 "url": "ftp://192.168.1.100/test.3mf",
             }
         }
-        mqtt_client._handle_request_message(data)
+        mqtt_client._handle_project_file_command(data)
         assert mqtt_client._captured_ams_mapping == [0, 4, -1, -1]
 
-    def test_handle_request_message_ignores_non_print_commands(self, mqtt_client):
+    def test_handle_project_file_command_ignores_non_print_commands(self, mqtt_client):
         """Non-project_file commands don't store ams_mapping."""
         data = {
             "print": {
                 "command": "pause",
             }
         }
-        mqtt_client._handle_request_message(data)
+        mqtt_client._handle_project_file_command(data)
         assert mqtt_client._captured_ams_mapping is None
 
-    def test_handle_request_message_ignores_missing_ams_mapping(self, mqtt_client):
+    def test_handle_project_file_command_ignores_missing_ams_mapping(self, mqtt_client):
         """project_file command without ams_mapping doesn't store anything."""
         data = {
             "print": {
@@ -1792,19 +1829,19 @@ class TestRequestTopicAmsMapping:
                 "url": "ftp://192.168.1.100/test.3mf",
             }
         }
-        mqtt_client._handle_request_message(data)
+        mqtt_client._handle_project_file_command(data)
         assert mqtt_client._captured_ams_mapping is None
 
-    def test_handle_request_message_ignores_non_dict_print(self, mqtt_client):
+    def test_handle_project_file_command_ignores_non_dict_print(self, mqtt_client):
         """Non-dict print value is safely ignored."""
         data = {"print": "not_a_dict"}
-        mqtt_client._handle_request_message(data)
+        mqtt_client._handle_project_file_command(data)
         assert mqtt_client._captured_ams_mapping is None
 
-    def test_handle_request_message_ignores_missing_print(self, mqtt_client):
+    def test_handle_project_file_command_ignores_missing_print(self, mqtt_client):
         """Message without print key is safely ignored."""
         data = {"pushing": {"command": "pushall"}}
-        mqtt_client._handle_request_message(data)
+        mqtt_client._handle_project_file_command(data)
         assert mqtt_client._captured_ams_mapping is None
 
     def test_captured_mapping_overwrites_previous(self, mqtt_client):
@@ -1816,7 +1853,7 @@ class TestRequestTopicAmsMapping:
                 "ams_mapping": [4, 8, -1, -1],
             }
         }
-        mqtt_client._handle_request_message(data)
+        mqtt_client._handle_project_file_command(data)
         assert mqtt_client._captured_ams_mapping == [4, 8, -1, -1]
 
     def test_print_start_callback_includes_ams_mapping(self, mqtt_client):
@@ -1995,7 +2032,7 @@ class TestRequestTopicAmsMapping:
         mqtt_client.on_print_complete = on_complete
 
         # 1. Slicer sends print command (captured from request topic)
-        mqtt_client._handle_request_message(
+        mqtt_client._handle_project_file_command(
             {
                 "print": {
                     "command": "project_file",
@@ -5071,6 +5108,7 @@ class TestPrintRunningObservedCallback:
             "remaining_time",
             "raw_data",
             "ams_mapping",
+            "plate_param",
         }
 
 
@@ -5452,3 +5490,445 @@ class TestTimelapseStorageOnTheWire:
         cmd = json.loads(mqtt_client._client.publish.call_args[0][1])["print"]
         assert cmd["cfg"] == "4"
         assert cmd["url"] == "ftp://test.3mf"
+
+
+class TestRunoutDetector:
+    """Runout signals → on_usage_event, full-ecode matched, deduped per print.
+
+    The detector must never guess a slot (a spool whose slot was guessed is
+    never zeroed). The A1-mini pair 12FF2000/12FF8000 shares a short code and
+    differs only in the full ecode: the runout half fires external, the jam
+    half fires ambiguous (timeline-only — never a zero correction).
+    """
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="192.168.1.50", serial_number="RUNOUT01", access_code="12345678")
+        c._was_running = True
+        c._completion_triggered = False
+        c.state.state = "RUNNING"
+        c.state.layer_num = 42
+        c.state.tray_now = 0
+        c.state.raw_data = {
+            "ams": {"ams": [{"id": 0, "tray": [{"id": 0, "tray_uuid": "AAAA0000AAAA0000AAAA0000AAAA0000"}]}]}
+        }
+        c.on_usage_event = MagicMock()
+        return c
+
+    @staticmethod
+    def _hms_push(attr: int, code: int) -> dict:
+        return {"print": {"hms": [{"attr": attr, "code": code}]}}
+
+    def test_ams_runout_pause_fires_once_despite_repeated_hms(self, client):
+        push = self._hms_push(0x07002000, 0x00020001)
+        client._process_message(push)
+        client._process_message(push)
+        assert client.on_usage_event.call_count == 1
+        assert client.on_usage_event.call_args[0] == ("runout", "pause", 0, 42)
+
+    def test_autoswitch_upgrades_a_fired_pause_once(self, client):
+        client._process_message(self._hms_push(0x07002000, 0x00020001))
+        client._process_message(self._hms_push(0x07002000, 0x00030002))
+        client._process_message(self._hms_push(0x07002000, 0x00030002))
+        kinds = [call[0][1] for call in client.on_usage_event.call_args_list]
+        assert kinds == ["pause", "autoswitch"]
+
+    def test_external_runout_via_print_error(self, client):
+        client._process_message({"print": {"print_error": 0x03008015}})
+        assert client.on_usage_event.call_count == 1
+        assert client.on_usage_event.call_args[0] == ("runout", "external", 254, 42)
+
+    def test_unrelated_codes_fire_nothing(self, client):
+        client._process_message(self._hms_push(0x0C000300, 0x0003000B))  # unrelated module
+        assert client.on_usage_event.call_count == 0
+
+    def test_holder_jam_fires_an_ambiguous_runout_on_the_external(self, client):
+        # «затряг кінчик»: a reel's taped tail presents as the jam half of the
+        # 12FF_0001 pair. The timeline marker lets the mid-pause replacement
+        # assignment journal a spool_loaded boundary (printer 3, 2026-08-25).
+        client._process_message(self._hms_push(0x12FF8000, 0x00020001))
+        assert client.on_usage_event.call_count == 1
+        assert client.on_usage_event.call_args[0] == ("runout", "ambiguous", 254, 42)
+
+    def test_a_definite_runout_upgrades_a_fired_ambiguous(self, client):
+        # The firmware escalates its own diagnosis (jam -> ran out) inside the
+        # same pause; the definite kind must own the episode.
+        client._process_message(self._hms_push(0x12FF8000, 0x00020001))
+        client._process_message(self._hms_push(0x12FF2000, 0x00020002))
+        kinds = [call[0][1] for call in client.on_usage_event.call_args_list]
+        assert kinds == ["ambiguous", "external"]
+
+    def test_slot_is_not_guessed_with_two_units_and_mismatched_tray_now(self, client):
+        client.state.raw_data["ams"]["ams"].append({"id": 1, "tray": [{"id": 1, "tray_uuid": ""}]})
+        client.state.tray_now = 5  # unit 1 slot 1 — does not match slot_in_unit 0
+        client._process_message(self._hms_push(0x07002000, 0x00020001))
+        assert client.on_usage_event.call_count == 1
+        assert client.on_usage_event.call_args[0] == ("runout", "pause", None, 42)
+
+    def test_single_unit_resolves_slot_from_code(self, client):
+        client.state.tray_now = 255  # unloaded — slot must come from the code + the only unit
+        client._process_message(self._hms_push(0x07002100, 0x00020001))  # slot_in_unit 1
+        assert client.on_usage_event.call_args[0] == ("runout", "pause", 1, 42)
+
+    def test_generic_code_with_invalid_tray_now_is_timeline_only(self, client):
+        client.state.tray_now = 255
+        client._process_message({"print": {"print_error": 0x03008004}})
+        assert client.on_usage_event.call_args[0] == ("runout", "ambiguous", None, 42)
+
+    def test_spool_loaded_after_uuid_change(self, client):
+        client._process_message(self._hms_push(0x07002000, 0x00020001))
+        client.state.raw_data["ams"]["ams"][0]["tray"][0]["tray_uuid"] = "BBBB0000BBBB0000BBBB0000BBBB0000"
+        client.state.layer_num = 43
+        client._process_message({"print": {}})
+        assert client.on_usage_event.call_args_list[-1][0] == ("spool_loaded", None, 0, 43)
+        # The watch is one-shot — a further push does not repeat it.
+        client._process_message({"print": {}})
+        assert client.on_usage_event.call_count == 2
+
+    def test_nothing_fires_outside_a_print(self, client):
+        client._was_running = False
+        client._process_message(self._hms_push(0x07002000, 0x00020001))
+        assert client.on_usage_event.call_count == 0
+
+    def test_memory_resets_on_new_print(self, client):
+        client._process_message(self._hms_push(0x07002000, 0x00020001))
+        assert client.on_usage_event.call_count == 1
+        # New print: the previous one completed (flags dropped), then an
+        # IDLE → RUNNING transition with a fresh file re-arms everything.
+        client._was_running = False
+        client._previous_gcode_state = "IDLE"
+        client._process_message({"print": {"gcode_state": "RUNNING", "gcode_file": "next.3mf"}})
+        client._was_running = True
+        client._completion_triggered = False
+        # The new print's state has filled in by the time filament can run out
+        # (the stale-state gate refuses layer 0 with no total_layers on purpose).
+        client.state.layer_num = 3
+        client.state.total_layers = 200
+        client._process_message(self._hms_push(0x07002000, 0x00020001))
+        assert client.on_usage_event.call_count == 2
+
+
+class TestJournalTrayGate:
+    """255 is "unloaded" (and the colour-change transitional) — never a tray.
+
+    Measured live on an X2D 2026-08-23: a vt-aware 255 acceptance journaled a
+    phantom external-2 START (tray_now was 255 = nothing loaded yet) with a
+    frozen spool from (255,1). Colour changes also pass through 255. The gate
+    rejects it unconditionally; genuine ext-2 prints are attributed by the
+    completion-time vt_tray fallback."""
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        return BambuMQTTClient(ip_address="1.2.3.4", serial_number="GATE01", access_code="1")
+
+    def test_255_is_rejected_even_with_a_second_external(self, client):
+        client.state.raw_data = {"vt_tray": [{"id": 254}, {"id": 255}]}
+        assert client._is_journal_tray(255) is False
+
+    def test_255_rejected_without_a_second_external(self, client):
+        client.state.raw_data = {}
+        assert client._is_journal_tray(255) is False
+
+    def test_the_usual_set_is_unchanged(self, client):
+        client.state.raw_data = {}
+        for tn in (0, 15, 24, 27, 128, 135, 254):
+            assert client._is_journal_tray(tn) is True, tn
+        for tn in (16, 23, 136, 253, -1, 300):
+            assert client._is_journal_tray(tn) is False, tn
+
+
+class TestPrintErrorIsAScalarRegister:
+    """print_error supersedes its previous value on every push — including 0,
+    the firmware's "cleared". Append-only left a resolved fault on the card
+    until some later push happened to carry hms[] (stuck error, 2026-08-27),
+    and a stale 8-char runout code kept the runout detector armed."""
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="192.168.1.51", serial_number="SCALAR01", access_code="12345678")
+        c._was_running = True
+        c._completion_triggered = False
+        c.state.state = "RUNNING"
+        c.state.layer_num = 10
+        c.state.raw_data = {}
+        return c
+
+    def test_zero_clears_the_previous_print_error(self, client):
+        client._process_message({"print": {"print_error": 0x05004030}})
+        assert [e.full_code for e in client.state.hms_errors] == ["05004030"]
+        client._process_message({"print": {"print_error": 0}})
+        assert client.state.hms_errors == []
+
+    def test_a_new_value_replaces_the_old_one(self, client):
+        client._process_message({"print": {"print_error": 0x05004030}})
+        client._process_message({"print": {"print_error": 0x03008015}})
+        assert [e.full_code for e in client.state.hms_errors] == ["03008015"]
+
+    def test_hms_array_entries_survive_a_print_error_clear(self, client):
+        # 16-char hms[] faults belong to the hms channel and only IT clears them.
+        client._process_message({"print": {"hms": [{"attr": 0x07002000, "code": 0x00020001}]}})
+        client._process_message({"print": {"print_error": 0}})
+        assert [e.full_code for e in client.state.hms_errors] == ["0700200000020001"]
+
+    def test_a_push_without_the_field_changes_nothing(self, client):
+        client._process_message({"print": {"print_error": 0x05004030}})
+        client._process_message({"print": {"mc_percent": 50}})
+        assert [e.full_code for e in client.state.hms_errors] == ["05004030"]
+
+
+class TestExternalRunoutTrayClamp:
+    """Measured on an A1 mini 2026-08-23: the generic 07FF8011 print_error
+    (nominally 'right external' = 255) fires beside the mini's own
+    12FF2000 hms code for its ONLY holder (254). The FE/FF nibble names the
+    external only where two exist — the answer clamps to the machine's
+    actual vt_tray set, so both codes dedup into one journal event."""
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="1.2.3.4", serial_number="0309CLAMP", access_code="1")
+        c._was_running = True
+        c._completion_triggered = False
+        c.state.state = "RUNNING"
+        c.state.layer_num = 548
+        c.state.tray_now = 254
+        c.on_usage_event = MagicMock()
+        return c
+
+    def test_single_external_machine_clamps_07ff_to_254_and_dedups(self, client):
+        client.state.raw_data = {"vt_tray": [{"id": 254}]}
+        client._process_message({"print": {"hms": [{"attr": 0x12FF2000, "code": 0x00020001}]}})
+        client._process_message({"print": {"print_error": 0x07FF8011}})
+        assert client.on_usage_event.call_count == 1
+        assert client.on_usage_event.call_args[0] == ("runout", "external", 254, 548)
+
+    def test_dual_external_machine_keeps_the_code_meaning(self, client):
+        client.state.raw_data = {"vt_tray": [{"id": 254}, {"id": 255}]}
+        client._process_message({"print": {"print_error": 0x07FF8011}})
+        assert client.on_usage_event.call_args[0] == ("runout", "external", 255, 548)
+
+    def test_no_vt_info_keeps_the_code_answer(self, client):
+        client.state.raw_data = {}
+        client._process_message({"print": {"print_error": 0x07FF8011}})
+        assert client.on_usage_event.call_args[0] == ("runout", "external", 255, 548)
+
+
+class TestRunoutEpisodes:
+    """Two runouts of the same tray in one print are two episodes: the dedup
+    re-arms once the code clears (reload + resume), and a fresh reconnect's
+    empty state never fires at layer 0 (both measured live, 2026-08-23)."""
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="1.2.3.4", serial_number="EPISODE1", access_code="1")
+        c._was_running = True
+        c._completion_triggered = False
+        c.state.state = "RUNNING"
+        c.state.layer_num = 100
+        c.state.total_layers = 400
+        c.state.tray_now = 254
+        c.state.raw_data = {"vt_tray": [{"id": 254}]}
+        c.on_usage_event = MagicMock()
+        return c
+
+    def test_rearm_after_the_code_clears(self, client):
+        push = {"print": {"hms": [{"attr": 0x12FF2000, "code": 0x00020001}]}}
+        client._process_message(push)
+        client._process_message(push)  # still the same episode — deduped
+        assert client.on_usage_event.call_count == 1
+        client._process_message({"print": {"hms": []}})  # reloaded + resumed: code gone
+        client.state.layer_num = 250
+        client._process_message(push)  # second reel ran out — a new episode
+        assert client.on_usage_event.call_count == 2
+        assert client.on_usage_event.call_args[0] == ("runout", "external", 254, 250)
+
+    def test_unpopulated_state_after_reconnect_never_fires_at_layer_zero(self, client):
+        client.state.layer_num = 0
+        client.state.total_layers = 0
+        push = {"print": {"hms": [{"attr": 0x12FF2000, "code": 0x00020001}]}}
+        client._process_message(push)
+        assert client.on_usage_event.call_count == 0
+        # State fills in on a later push — the repeating HMS then fires with a
+        # real layer.
+        client.state.layer_num = 548
+        client.state.total_layers = 600
+        client._process_message(push)
+        assert client.on_usage_event.call_args[0] == ("runout", "external", 254, 548)
+
+
+class TestTrayLogPerPrintBoundary:
+    """last_loaded_tray must not survive the print boundary, and the append
+    dedup keys on the LOG TAIL, not only on last_loaded_tray.
+
+    Measured live (X2D, 2026-08-24, archive 734): two consecutive prints from
+    the same AMS tray — the second print journaled NOTHING (the start row
+    seeds NULL because tray_now=255 at start, and the tray report matched the
+    stale last_loaded_tray from the previous print). The earlier print only
+    got its boundary because a backend restart happened to reset the client.
+    The log-tail guard also stops the restore-then-report duplicate: a
+    restored log of [[2,0]] plus a fresh client (last=-1) must not append
+    (2, X) again — the completion split silently drops the second same-tray
+    segment."""
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="1.2.3.4", serial_number="20PBOUND1", access_code="1")
+        c.state.raw_data = {"ams": {"ams": [{"id": 0, "tray": [{"id": 2, "tray_type": "PETG"}]}]}}
+        c.on_tray_change = MagicMock()
+        return c
+
+    def _feed_tray(self, client, tray):
+        client._process_message({"print": {"ams": {"tray_now": str(tray)}}})
+
+    def test_a_consecutive_same_tray_print_still_gets_its_boundary(self, client):
+        # print A fed tray 2 and finished
+        client.state.tray_now = 255  # retracted at start of the next print
+        client.state.last_loaded_tray = 2
+        client._previous_gcode_state = "FINISH"
+        client._process_message({"print": {"gcode_state": "RUNNING", "gcode_file": "next.3mf"}})
+        assert client.state.tray_change_log == []  # 255 seeds nothing
+
+        client.state.layer_num = 0
+        self._feed_tray(client, 2)
+
+        assert client.state.tray_change_log == [(2, 0)]
+        client.on_tray_change.assert_called_once_with(2, 0)
+
+    def test_the_seed_is_not_duplicated_by_the_first_report(self, client):
+        client.state.tray_now = 254
+        client.state.last_loaded_tray = 2  # stale from the previous print
+        client._previous_gcode_state = "IDLE"
+        client._process_message({"print": {"gcode_state": "RUNNING", "gcode_file": "ext.3mf"}})
+        assert client.state.tray_change_log == [(254, 0)]
+
+        self._feed_tray(client, 254)
+
+        assert client.state.tray_change_log == [(254, 0)]
+        client.on_tray_change.assert_not_called()
+
+    def test_a_restored_log_is_not_duplicated_by_the_next_report(self, client):
+        # mid-print client recreation: restore put the log back, the fresh
+        # client knows no last_loaded_tray
+        client._was_running = True
+        client._completion_triggered = False
+        client.state.state = "RUNNING"
+        client.state.layer_num = 120
+        client.state.tray_change_log = [(2, 0)]
+        client.state.last_loaded_tray = -1
+
+        self._feed_tray(client, 2)
+
+        assert client.state.tray_change_log == [(2, 0)]
+        client.on_tray_change.assert_not_called()
+        assert client.state.last_loaded_tray == 2  # tracking still catches up
+
+
+class TestRunoutTailThroughExternal:
+    """When an AMS slot runs dry the firmware flips the nozzle's source to its
+    external id and keeps printing the filament still in the feed tube — the
+    runout code arrives only when the tube is dry (X2D, measured 2026-08-23).
+    That filament is the emptied reel's, and one nozzle cannot genuinely
+    combine AMS and external in a single job, so the flip is a runout tail,
+    not a tray change: it must not enter the tray log. The discriminator is
+    the source slot itself — emptied (blank tray_type after the stale-tray
+    clearing) means tail; still loaded means a real dual-nozzle switch to the
+    other nozzle's external, which must keep logging."""
+
+    @pytest.fixture
+    def client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        c = BambuMQTTClient(ip_address="1.2.3.4", serial_number="20PTAIL01", access_code="1")
+        c._was_running = True
+        c._completion_triggered = False
+        c.state.state = "RUNNING"
+        c.state.layer_num = 23
+        c.state.total_layers = 200
+        c.state.tray_now = 2
+        c.state.last_loaded_tray = 2
+        c.state.tray_change_log = [(2, 0)]
+        c.state.raw_data = {
+            "ams": {"ams": [{"id": 0, "tray": [{"id": 2, "tray_type": "", "tray_color": ""}]}]},
+            "vt_tray": [{"id": 254}, {"id": 255}],
+        }
+        c.on_tray_change = MagicMock()
+        c.on_usage_event = MagicMock()
+        return c
+
+    def _feed(self, client, tray):
+        client._process_message({"print": {"ams": {"tray_now": str(tray)}}})
+
+    def test_flip_to_external_with_an_emptied_source_slot_is_not_logged(self, client):
+        self._feed(client, 254)
+        assert client.state.tray_change_log == [(2, 0)]
+        client.on_tray_change.assert_not_called()
+        # the origin stays current so the post-refill return is a no-op too
+        assert client.state.last_loaded_tray == 2
+
+    def test_return_to_the_refilled_slot_after_the_tail_logs_nothing(self, client):
+        self._feed(client, 254)
+        self._feed(client, 2)
+        assert client.state.tray_change_log == [(2, 0)]
+        client.on_tray_change.assert_not_called()
+
+    def test_flip_to_external_with_a_loaded_source_slot_is_a_real_change(self, client):
+        # dual-colour job on a dual-nozzle machine: the AMS slot keeps its
+        # filament while the other nozzle takes over from its external holder
+        client.state.raw_data["ams"]["ams"][0]["tray"][0]["tray_type"] = "PETG"
+        self._feed(client, 254)
+        assert client.state.tray_change_log == [(2, 0), (254, 23)]
+        client.on_tray_change.assert_called_once_with(254, 23)
+        assert client.state.last_loaded_tray == 254
+
+    def test_repeated_tail_reports_log_once_at_info_then_debug(self, client, caplog):
+        """The firmware repeats tray_now=254 every second for the whole tube
+        drain — one INFO line per episode is signal, forty are noise."""
+        import logging
+
+        with caplog.at_level(logging.DEBUG, logger="backend.app.services.bambu_mqtt"):
+            self._feed(client, 254)
+            self._feed(client, 254)
+            self._feed(client, 254)
+
+        tail_lines = [r for r in caplog.records if "runout tail" in r.message]
+        assert [r.levelno for r in tail_lines] == [logging.INFO, logging.DEBUG, logging.DEBUG]
+
+    def test_a_new_episode_logs_info_again(self, client, caplog):
+        import logging
+
+        with caplog.at_level(logging.DEBUG, logger="backend.app.services.bambu_qtt".replace("qtt", "mqtt")):
+            self._feed(client, 254)
+            # the tray comes back (refill), slot loaded again, prints on...
+            client.state.raw_data["ams"]["ams"][0]["tray"][0]["tray_type"] = "PETG"
+            self._feed(client, 2)
+            # ...and empties once more — a NEW episode
+            client.state.raw_data["ams"]["ams"][0]["tray"][0]["tray_type"] = ""
+            self._feed(client, 254)
+
+        tail_lines = [r for r in caplog.records if "runout tail" in r.message]
+        assert [r.levelno for r in tail_lines] == [logging.INFO, logging.INFO]
+
+    def test_runout_after_the_tail_still_lands_on_the_ams_tray(self, client):
+        # the X2D reported the runout on the emptied AMS slot itself
+        self._feed(client, 254)
+        client.state.layer_num = 25
+        client._process_message({"print": {"hms": [{"attr": 0x07002200, "code": 0x00020001}]}})
+        assert client.on_usage_event.call_args[0] == ("runout", "pause", 2, 25)
+
+    def test_idle_transitions_keep_tracking_the_tray(self, client):
+        client._was_running = False
+        client.state.state = "IDLE"
+        self._feed(client, 254)
+        assert client.state.tray_change_log == [(2, 0)]
+        assert client.state.last_loaded_tray == 254

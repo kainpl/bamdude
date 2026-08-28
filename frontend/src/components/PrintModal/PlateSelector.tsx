@@ -30,6 +30,8 @@ export function PlateSelector({
   onSelectAll,
   onDeselectAll,
   multiSelect,
+  quantities,
+  onQuantityChange,
 }: PlateSelectorProps) {
   const { t } = useTranslation();
 
@@ -48,6 +50,8 @@ export function PlateSelector({
 
   const allSelected = selectedPlates.size === plates.length;
   const active = plates.find((p) => p.index === activeIdx);
+  const quantityOf = (plateIndex: number) => quantities?.[plateIndex] ?? 1;
+  const showQuantity = Boolean(onQuantityChange) && Boolean(multiSelect) && selectedPlates.size > 1;
 
   return (
     <div className="mb-4">
@@ -225,6 +229,40 @@ export function PlateSelector({
           </button>
         )}
       </div>
+
+      {/* Per-plate run count. Only once more than one plate is selected: with a
+          single plate the dialog's shared Quantity field already answers this,
+          and a second control for the same number is a second source of truth.
+          Outside the card <button> above — nesting one button in another is
+          invalid, and a click here must not toggle the plate. */}
+      {showQuantity && active && selectedPlates.has(active.index) && (
+        <div className="mt-2 flex items-center justify-end gap-2">
+          <span className="text-xs text-bambu-gray">
+            {t('printModal.copiesOfThisPlate', 'Copies of this plate')}
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => onQuantityChange!(active.index, Math.max(1, quantityOf(active.index) - 1))}
+              disabled={quantityOf(active.index) <= 1}
+              className="w-7 h-7 rounded bg-bambu-dark-tertiary text-white disabled:opacity-40"
+              aria-label={t('printModal.decreaseQuantity', 'Fewer')}
+            >
+              −
+            </button>
+            <span className="w-8 text-center text-sm text-white tabular-nums">{quantityOf(active.index)}</span>
+            <button
+              type="button"
+              onClick={() => onQuantityChange!(active.index, Math.min(999, quantityOf(active.index) + 1))}
+              disabled={quantityOf(active.index) >= 999}
+              className="w-7 h-7 rounded bg-bambu-dark-tertiary text-white disabled:opacity-40"
+              aria-label={t('printModal.increaseQuantity', 'More')}
+            >
+              +
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

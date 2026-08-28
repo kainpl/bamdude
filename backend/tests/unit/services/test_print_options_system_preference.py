@@ -33,6 +33,27 @@ _PAYLOAD = PrintOptionsPreferenceData.model_validate(
 )
 
 
+def test_event_macros_survive_the_schema_round_trip():
+    """The PrintModal sends event_macros.deselected_ids with every save; the
+    schema dropped it silently (extra='ignore') until 2026-08-25, so an
+    unticked macro came back ticked on every open. Pin the round-trip AND
+    the pre-fix rows parsing to the empty default."""
+    data = PrintOptionsPreferenceData.model_validate(
+        {
+            "print_options": _TOGGLES,
+            "swap_macros": {"execute": False, "events": []},
+            "event_macros": {"deselected_ids": [7, 12]},
+        }
+    )
+    dumped = data.model_dump()
+    assert dumped["event_macros"] == {"deselected_ids": [7, 12]}
+
+    legacy = PrintOptionsPreferenceData.model_validate(
+        {"print_options": _TOGGLES, "swap_macros": {"execute": False, "events": []}}
+    )
+    assert legacy.model_dump()["event_macros"] == {"deselected_ids": []}
+
+
 @pytest.mark.asyncio
 async def test_system_row_persists_with_null_user(db_session):
     """A NULL-user row is insertable and round-trips its options blob."""

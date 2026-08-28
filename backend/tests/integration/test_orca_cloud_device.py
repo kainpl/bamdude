@@ -113,6 +113,29 @@ class TestDevicePoll:
             assert again.status_code == 400
 
     @pytest.mark.asyncio
+    async def test_poll_complete_persists_the_granted_scope(self, async_client: AsyncClient):
+        """The token response's scope survives to /status — the UI gates the
+        push controls on it instead of guessing from defaults."""
+        await _start(async_client)
+
+        async def fake_complete(self, device_code):
+            self.access_token = "oc_ext_new"
+            self.refresh_token = "oc_ext_rt_new"
+            self.token_expiry = datetime.now(timezone.utc) + timedelta(seconds=86400)
+            self.granted_scope = "external_app:connect sync:write"
+            return DevicePoll.COMPLETE, {"access_token": "oc_ext_new"}
+
+        with (
+            patch.object(OrcaCloudService, "poll_token", new=fake_complete),
+            patch.object(OrcaCloudService, "introspect", return_value={"user_id": "user-123"}),
+        ):
+            resp = await async_client.post("/api/v1/orca-cloud/device/poll")
+            assert resp.status_code == 200
+
+            status = await async_client.get("/api/v1/orca-cloud/status")
+            assert status.json()["scope"] == "external_app:connect sync:write"
+
+    @pytest.mark.asyncio
     async def test_poll_denied_clears_pending(self, async_client: AsyncClient):
         await _start(async_client)
         with (

@@ -1,9 +1,12 @@
 """In-app bug report — collects debug logs + screenshot + support info, posts to relay."""
 
 import logging
+from datetime import datetime
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.routes.support import (
     _apply_log_level,
@@ -13,10 +16,11 @@ from backend.app.api.routes.support import (
     _set_debug_setting,
 )
 from backend.app.core.auth import RequirePermission
-from backend.app.core.database import async_session
+from backend.app.core.database import async_session, get_db
 from backend.app.core.permissions import Permission
+from backend.app.models.bug_report import BugReport
 from backend.app.models.user import User
-from backend.app.services.bug_report import submit_report
+from backend.app.services.bug_report import submit_report, sync_report_statuses
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.support_projection import project_for_issue
 
@@ -39,6 +43,22 @@ class BugReportResponse(BaseModel):
     issue_number: int | None = None
 
 
+class BugReportListItem(BaseModel):
+    id: int
+    description: str
+    status: str
+    github_issue_number: int | None = None
+    github_issue_url: str | None = None
+    created_at: datetime
+
+
+class BugReportListResponse(BaseModel):
+    # False = the relay could not be consulted; the list is still current
+    # locally, only the GitHub-side statuses may be stale.
+    synced: bool
+    reports: list[BugReportListItem]
+
+
 class StartLoggingResponse(BaseModel):
     started: bool
     was_debug: bool
@@ -46,6 +66,32 @@ class StartLoggingResponse(BaseModel):
 
 class StopLoggingResponse(BaseModel):
     logs: str
+
+
+@router.get("/reports", response_model=BugReportListResponse)
+async def list_bug_reports(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+):
+    """This install's submitted reports, statuses refreshed through the relay."""
+    synced = await sync_report_statuses(db)
+    rows = (await db.execute(select(BugReport).order_by(BugReport.id.desc()).limit(50))).scalars().all()
+    return BugReportListResponse(
+        synced=synced,
+        reports=[
+            BugReportListItem(
+                id=r.id,
+                # the list is a status board, not the report itself — the full
+                # text already lives in the GitHub issue the row links to
+                description=(r.description[:200] + "…") if len(r.description) > 200 else r.description,
+                status=r.status,
+                github_issue_number=r.github_issue_number,
+                github_issue_url=r.github_issue_url,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ],
+    )
 
 
 @router.post("/start-logging", response_model=StartLoggingResponse)

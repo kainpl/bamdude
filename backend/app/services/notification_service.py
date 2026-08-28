@@ -73,8 +73,17 @@ class NotificationService:
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._http_client is None or self._http_client.is_closed:
+            # ⚠️ The connect timeout is deliberately far shorter than the
+            # rest. A flat 30 s meant that when a site's internet went down,
+            # every alarm spent a full 30 s inside ``connect`` — longer than
+            # SQLite's 15 s ``busy_timeout`` — and any other task wanting to
+            # write in that window failed with "database is locked". Reaching a
+            # host either works in a couple of seconds or is not going to;
+            # sending the BODY is the part that legitimately takes time, so
+            # read/write keep the old 30 s and an image upload on a slow uplink
+            # is unaffected.
             self._http_client = httpx.AsyncClient(
-                timeout=30.0,
+                timeout=httpx.Timeout(30.0, connect=5.0),
                 headers={"User-Agent": _USER_AGENT},
             )
         return self._http_client
@@ -114,12 +123,18 @@ class NotificationService:
             return False
 
     async def _get_template(self, db: AsyncSession, event_type: str) -> NotificationTemplate | None:
-        """Get a notification template by event type."""
+        """Get a notification template by event type.
+
+        ⚠️ ``no_autoflush`` for the same reason as ``_get_providers_for_event``:
+        this read runs before any provider is contacted, and must not be the
+        thing that opens a write transaction on the caller's session.
+        """
         # Check cache first
         if event_type in self._template_cache:
             return self._template_cache[event_type]
 
-        result = await db.execute(select(NotificationTemplate).where(NotificationTemplate.event_type == event_type))
+        with db.no_autoflush:
+            result = await db.execute(select(NotificationTemplate).where(NotificationTemplate.event_type == event_type))
         template = result.scalar_one_or_none()
 
         if template:
@@ -1149,29 +1164,27 @@ class NotificationService:
                 # Print complete/failed → clear plate button
                 if event_type in ("print_complete", "print_failed"):
                     if tg_chat.has_permission("printers:clear_plate"):
-                        from sqlalchemy import func
-
-                        from backend.app.models.print_queue import PrintQueueItem
                         from backend.app.services.printer_manager import printer_manager
 
                         if printer_manager.is_awaiting_plate_clear(printer_id):
-                            pending = (
-                                await db.execute(
-                                    select(func.count(PrintQueueItem.id)).where(
-                                        PrintQueueItem.status == "pending",
-                                        PrintQueueItem.queue_id == printer_id,
-                                    )
-                                )
-                            ).scalar() or 0
-                            if pending > 0:
-                                buttons.append(
-                                    [
-                                        InlineKeyboardButton(
-                                            text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
-                                            callback_data=f"action:clear_plate:{printer_id}",
-                                        )
-                                    ]
-                                )
+                            # \u26a0\ufe0f Two answers, and neither depends on something
+                            # being queued behind. The pair used to be gated on
+                            # ``pending > 0``, so the message announcing the LAST
+                            # print in a queue carried no control at all \u2014 which
+                            # is exactly when repeating is wanted. Repeat re-arms
+                            # the row that just finished; see services/plate_hold.
+                            buttons.append(
+                                [
+                                    InlineKeyboardButton(
+                                        text=f"\U0001f501 {t(lang, NS, 'printers.btn_repeat_print')}",
+                                        callback_data=f"action:repeat_print:{printer_id}",
+                                    ),
+                                    InlineKeyboardButton(
+                                        text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
+                                        callback_data=f"action:clear_plate:{printer_id}",
+                                    ),
+                                ]
+                            )
 
                 # Print progress → pause/stop buttons
                 if event_type == "print_progress":
@@ -1248,6 +1261,18 @@ class NotificationService:
         a sensor stands in a place, not on a machine. Without it, calling with
         ``printer_id=None`` applies no filter at all, so a provider somebody
         deliberately bound to one printer would receive everything.
+
+        ⚠️ Both reads run under ``no_autoflush``. Callers routinely hold pending
+        writes when they raise an event — a sensor loop does ``db.add(history)``
+        and only commits after the alarms have gone out — and without this,
+        autoflush satisfies the SELECT by writing those rows, which opens a
+        write transaction on SQLite. The provider is then contacted over the
+        network with that transaction still open, so a site whose internet is
+        down holds the single SQLite writer for the whole connect timeout and
+        unrelated background tasks fail with "database is locked". Deferring the
+        flush costs nothing here: providers and templates are committed rows, so
+        a pending change in the caller's session cannot be one these queries
+        want.
         """
         enabled_filter = NotificationProvider.enabled.is_(True)
         printer_filter = None
@@ -1275,8 +1300,9 @@ class NotificationService:
             telegram_q = telegram_q.where(NotificationProvider.printer_id.is_(None))
             other_q = other_q.where(NotificationProvider.printer_id.is_(None))
 
-        rows = list((await db.execute(telegram_q)).scalars().all())
-        rows.extend((await db.execute(other_q)).scalars().all())
+        with db.no_autoflush:
+            rows = list((await db.execute(telegram_q)).scalars().all())
+            rows.extend((await db.execute(other_q)).scalars().all())
         return rows
 
     async def _log_notification(
@@ -1892,6 +1918,45 @@ class NotificationService:
             variables=variables,
         )
 
+    async def on_filament_deficit(
+        self,
+        printer_id: int,
+        printer_name: str,
+        print_name: str,
+        shortfalls: list,
+        db,
+    ):
+        """A print has started that will exhaust at least one mapped slot.
+
+        ⚠️ **Sent after the print is already going.** This is deliberate — the
+        decision was to warn, not to gate: a farm routinely finishes a spool
+        mid-plate on purpose, and refusing to dispatch would stop work the
+        operator intended. The message says so, so nobody reads it as "we
+        stopped it for you".
+
+        Only the worst slot is named. A message listing four slots with four
+        gram figures is not read; the operator needs to know a swap is coming
+        and which spool goes first.
+        """
+        providers = await self._get_providers_for_event(db, "on_filament_deficit", printer_id)
+        if not providers or not shortfalls:
+            return
+
+        worst = max(shortfalls, key=lambda s: s.missing_grams)
+        variables = {
+            "printer": printer_name,
+            "print_name": print_name or "",
+            "slot": worst.slot_label,
+            "needed": f"{worst.needed_grams:g}",
+            "available": f"{worst.available_grams:g}",
+            "missing": f"{worst.missing_grams:g}",
+        }
+
+        title, message = await self._build_message_from_template(db, "filament_deficit", variables)
+        await self._send_to_providers(
+            providers, title, message, db, "filament_deficit", printer_id, printer_name, variables=variables
+        )
+
     async def on_filament_low(
         self,
         printer_id: int,
@@ -1921,6 +1986,39 @@ class NotificationService:
         title, message = await self._build_message_from_template(db, "filament_low", variables)
         await self._send_to_providers(
             providers, title, message, db, "filament_low", printer_id, printer_name, variables=variables
+        )
+
+    async def on_filament_runout(
+        self,
+        printer_id: int,
+        printer_name: str,
+        slot: int | str,
+        kind: str,
+        db: AsyncSession,
+        spool_name: str | None = None,
+    ):
+        """A spool ran out mid-print.
+
+        Two shapes: ``kind="autoswitch"`` renders the informational
+        switched-to-backup template; anything else (``pause`` / ``external``)
+        renders the waiting-for-filament one, which doubles as the
+        human-in-the-loop prompt — assigning the replacement spool is what
+        routes the rest of the print's grams to the right reel. The caller
+        never fires this for ``ambiguous`` events.
+        """
+        providers = await self._get_providers_for_event(db, "on_filament_runout", printer_id)
+        if not providers:
+            return
+
+        variables = {
+            "printer": printer_name,
+            "slot": str(slot),
+            "spool": spool_name or "",
+        }
+        template_key = "filament_runout_backup" if kind == "autoswitch" else "filament_runout"
+        title, message = await self._build_message_from_template(db, template_key, variables)
+        await self._send_to_providers(
+            providers, title, message, db, template_key, printer_id, printer_name, variables=variables
         )
 
     async def on_maintenance_due(
@@ -1995,6 +2093,47 @@ class NotificationService:
             message,
             db,
             "ams_humidity_high",
+            printer_id,
+            printer_name,
+            variables=variables,
+        )
+
+    async def on_ams_drying_suspended(
+        self,
+        printer_id: int,
+        printer_name: str,
+        ams_label: str,
+        humidity: float,
+        threshold: float,
+        cycles: int,
+        db: AsyncSession,
+    ):
+        """Auto-drying has given up on one AMS unit.
+
+        ⚠️ This one reports that BamDude has STOPPED acting, which is why it is
+        on by default and fires at most once per suspension. Silence here reads
+        as "still drying" — and the humidity alarm the operator is already
+        getting says the opposite of what actually happened.
+        """
+        providers = await self._get_providers_for_event(db, "on_ams_drying_suspended", printer_id)
+        if not providers:
+            return
+
+        variables = {
+            "printer": printer_name,
+            "ams_label": ams_label,
+            "humidity": f"{humidity:.0f}",
+            "threshold": f"{threshold:.0f}",
+            "cycles": str(cycles),
+        }
+
+        title, message = await self._build_message_from_template(db, "ams_drying_suspended", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "ams_drying_suspended",
             printer_id,
             printer_name,
             variables=variables,

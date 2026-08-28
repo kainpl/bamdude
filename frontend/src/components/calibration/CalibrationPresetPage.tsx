@@ -26,17 +26,17 @@ import type {
   UnifiedPresetsResponse,
 } from '../../api/client';
 import {
-  PresetDropdown,
-  PresetSourceControl,
-} from '../preset-picker/PresetTripletPicker';
+  CalibrationPresetDropdown,
+  CalibrationPresetSourceControl,
+} from './preset-picker/CalibrationPresetDropdown';
 import {
   TIER_ORDER,
   matchesOwnerFilter,
   resolvePresetName,
   type OwnerFilter,
-} from '../preset-picker/presetPickerUtils';
-import { BedTypePicker } from '../preset-picker/BedTypePicker';
-import { SlicerPicker, type SlicerKind } from '../preset-picker/SlicerPicker';
+} from '../../utils/presetPickerUtils';
+import { CalibrationBedTypePicker } from './preset-picker/CalibrationBedTypePicker';
+import { CalibrationSlicerPicker, type SlicerKind } from './preset-picker/CalibrationSlicerPicker';
 import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
 import {
   buildCompatibilityIndex,
@@ -362,7 +362,7 @@ export function CalibrationPresetPage({
   // still applies the right values in the gcode regardless).
   const filamentInfoQuery = useQuery({
     queryKey: ['calibration', 'filament-info', filamentRef?.source, filamentRef?.id],
-    queryFn: () => api.getFilamentInfo([filamentRef!.id]),
+    queryFn: () => api.getFilamentInfo([filamentRef!.id], true),
     enabled: needsPresetPicker && filamentRef?.source === 'cloud' && !!filamentRef.id,
     staleTime: 60_000,
   });
@@ -749,16 +749,16 @@ export function CalibrationPresetPage({
 
       {needsPresetPicker && (
         <section className="space-y-3">
-          <SlicerPicker value={pickedSlicer} onChange={setPickedSlicer} />
-          <BedTypePicker value={bedType} onChange={setBedType} />
-          <PresetSourceControl
+          <CalibrationSlicerPicker value={pickedSlicer} onChange={setPickedSlicer} />
+          <CalibrationBedTypePicker value={bedType} onChange={setBedType} />
+          <CalibrationPresetSourceControl
             ownerFilter={ownerFilter}
             onOwnerFilterChange={setOwnerFilter}
           />
           <div className="grid grid-cols-1 gap-2">
             {presets ? (
               <>
-                <PresetDropdown
+                <CalibrationPresetDropdown
                   label={t('slice.printer', 'Printer profile')}
                   slot="printer"
                   data={presets}
@@ -766,7 +766,7 @@ export function CalibrationPresetPage({
                   onChange={setPrinterRef}
                   ownerFilter={ownerFilter}
                 />
-                <PresetDropdown
+                <CalibrationPresetDropdown
                   label={t('slice.process', 'Process profile')}
                   slot="process"
                   data={presets}
@@ -774,7 +774,7 @@ export function CalibrationPresetPage({
                   onChange={setProcessRef}
                   ownerFilter={ownerFilter}
                 />
-                <PresetDropdown
+                <CalibrationPresetDropdown
                   label={t('slice.filament', 'Filament profile')}
                   slot="filament"
                   data={presets}

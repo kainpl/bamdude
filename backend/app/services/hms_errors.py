@@ -8,6 +8,8 @@ disagreed with Bambu's own catalogue in 159 places, and not cosmetically:
 different fault. Descriptions now come from ``hms_catalogue``, per model.
 """
 
+from dataclasses import dataclass
+
 PAUSE_REASON_CODES: dict[str, str] = {
     # Maps HMS code → normalised pause-reason key. The dispatch path uses the
     # key for routing/filtering (frontend can highlight "filament_runout"
@@ -140,3 +142,98 @@ def classify_pause_reason(
         return "hms_other", desc, first
 
     return "unknown", _label("unknown", lang), None
+
+
+# ---------------------------------------------------------------------------
+# Runout classification (spec: docs/superpowers/specs/2026-08-23-filament-
+# usage-accuracy-design.md §2). ⚠️ FULL ecodes only — the short ``MMMM_EEEE``
+# form collapses distinct errors: ``12FF2000_00020001`` (holder ran out) and
+# ``12FF8000_00020001`` (tangled/stuck) both shorten to ``12FF_0001``, observed
+# live on an A1 mini 2026-08-23. A jam must never classify as a ZEROING
+# runout (it gets at most the ``ambiguous`` kind — timeline marker only), and
+# a spool whose slot was guessed is never zeroed — so unknown codes return
+# None and ambiguity is an explicit kind, not a fallthrough.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RunoutMatch:
+    kind: str  # pause | autoswitch | external | ambiguous
+    scope: str  # ams_slot | ams_unit | external | generic
+    slot_in_unit: int | None  # 0-3 for ams_slot scope
+    external_tray: int | None  # 254 / 255 for external scope
+    transitional: bool  # purge-phase codes fold into the slot's existing event
+
+
+# 16-char hms[] family, device 0700 (AMS). Mid bytes 20/21/22/23 name the slot
+# inside the reporting unit; the unit itself is the detector's question.
+_AMS_SLOT_RUNOUT_SUFFIXES: dict[str, tuple[str, bool]] = {
+    "00020001": ("pause", False),  # ran out, waiting for a new filament
+    "00030002": ("autoswitch", False),  # ran out, switched to the backup slot
+    "00030001": ("pause", True),  # ran out, purging the old filament
+    "00020005": ("pause", True),  # ran out, purge went abnormal
+}
+
+# 8-char print_error path: device byte + unit byte + error half.
+_EXTERNAL_ERROR_HALVES = ("8011", "8030", "C030")
+
+
+def classify_runout_ecode(full_code: str) -> RunoutMatch | None:
+    """Classify a FULL ecode as a runout signal, or ``None`` for everything else.
+
+    16-char codes come from the ``hms[]`` path (``HMSError.full_code``), 8-char
+    ones from ``print_error``. Kinds: ``pause`` (printer waits for filament),
+    ``autoswitch`` (AMS backup took over, no pause), ``external`` (spool holder
+    / external feed), ``ambiguous`` (a unit-less generic code — journal
+    timeline only, never a zero correction).
+    """
+    code = (full_code or "").upper()
+
+    if len(code) == 16:
+        if code.startswith("0700") and code[8:] in _AMS_SLOT_RUNOUT_SUFFIXES:
+            kind, transitional = _AMS_SLOT_RUNOUT_SUFFIXES[code[8:]]
+            if code[4:6] in ("20", "21", "22", "23"):
+                return RunoutMatch(kind, "ams_slot", int(code[4:6], 16) - 0x20, None, transitional)
+            if code[4:6] == "70":
+                # Unit-scoped phrasing ("put a new filament into the same slot").
+                return RunoutMatch(kind, "ams_unit", None, None, True)
+            return None
+        if code.startswith("070070") and code[8:] == "00020007":
+            # Unit-scoped generic ("put a new filament into the same slot in
+            # AMS") — the paired non-transitional per-slot code carries the
+            # boundary, this one only confirms it.
+            return RunoutMatch("pause", "ams_unit", None, None, True)
+        if code.startswith("12FF20") and code[8:] in ("00020001", "00020002"):
+            # A1-family spool holder: ran out / empty. 12FF80xx is the jam half.
+            return RunoutMatch("external", "external", None, 254, False)
+        if code.startswith("12FF80") and code[8:] == "00020001":
+            # A1-family holder jam ("may be tangled or stuck") — the other half
+            # of the reused 12FF_0001 short form. A reel's taped tail presents
+            # as a jam, and the human may answer it with a fresh spool (measured
+            # live 2026-08-25: replaced + reassigned mid-pause, and the journal
+            # had nothing to attach the assignment to). Ambiguous puts the
+            # timeline marker in so that assignment becomes a spool_loaded
+            # boundary — never a zero correction, and untangle-and-resume with
+            # the same reel journals no boundary at all.
+            return RunoutMatch("ambiguous", "external", None, 254, False)
+        return None
+
+    if len(code) == 8:
+        device, unit, half = code[:2], code[2:4], code[4:]
+        if code == "03008015":
+            return RunoutMatch("external", "external", None, 254, False)
+        if code == "03008004":
+            return RunoutMatch("ambiguous", "generic", None, None, False)
+        if device in ("07", "12", "18"):
+            if unit == "FE" and half in _EXTERNAL_ERROR_HALVES:
+                return RunoutMatch("external", "external", None, 254, False)
+            if unit == "FF" and half in _EXTERNAL_ERROR_HALVES:
+                # H2-series FF is the right/aux external; on the A1 family the
+                # holder is the only external feed and reports as 254.
+                tray = 254 if device == "12" else 255
+                return RunoutMatch("external", "external", None, tray, False)
+            if half == "8011" and unit not in ("FE", "FF"):
+                return RunoutMatch("pause", "ams_unit", None, None, False)
+        return None
+
+    return None

@@ -231,6 +231,20 @@ class GitBackupService:
         if self._running_backup:
             return {"success": False, "message": "A backup is already running", "log_id": None}
 
+        # ⚠️ The mirror of the restore's own check. A restore rewrites the very
+        # rows a backup is reading, so the two overlapping would commit a
+        # snapshot that is half old and half new — and nothing about the commit
+        # would say so. Imported here rather than at module scope: the restore
+        # service imports this one, and a top-level pair would be a cycle.
+        from backend.app.services.git_restore import git_restore_service
+
+        if git_restore_service.is_running:
+            return {
+                "success": False,
+                "message": "A restore is currently running; wait for it to finish before backing up",
+                "log_id": None,
+            }
+
         self._running_backup = True
         log_id = None
 
@@ -643,6 +657,15 @@ class GitBackupService:
         result = await db.execute(select(PrintArchive).order_by(desc(PrintArchive.created_at)))
         archives = result.scalars().all()
 
+        # ⚠️ The natural key for an owner. ``created_by_id`` alone is only
+        # meaningful on the instance that wrote it: restoring onto a rebuilt
+        # instance — this feature's whole use case — renumbers the users table,
+        # so a live id can land on a different person. ``username`` is unique, so
+        # the restore can resolve on it and treat a rename as unknown rather than
+        # guess. One query for the map; archives outnumber users by orders of
+        # magnitude.
+        user_names = dict((await db.execute(select(User.id, User.username))).all())
+
         archives_data = []
         for a in archives:
             archives_data.append(
@@ -673,6 +696,26 @@ class GitBackupService:
                     "energy_cost": a.energy_cost,
                     "quantity": a.quantity,
                     "created_at": a.created_at.isoformat() if a.created_at else None,
+                    # ⚠️ Soft-deleted archives are collected too — the row is kept
+                    # on purpose so the stats endpoint keeps counting their
+                    # filament and energy. Recording deleted_at is what lets a
+                    # restore put them back the way they were instead of
+                    # resurrecting them as visible archives.
+                    "deleted_at": a.deleted_at.isoformat() if a.deleted_at else None,
+                    # ⚠️ Who owns the archive, for the same reason deleted_at is
+                    # here: it is not decoration, it is what the access check runs
+                    # on. The visibility guard fails CLOSED on a NULL
+                    # created_by_id and the list paths filter on it, so a restored
+                    # row without it is invisible to everyone but an admin — while
+                    # the restore cheerfully reports it restored.
+                    "created_by_id": a.created_by_id,
+                    # Preferred over the id on restore; the id stays as the
+                    # fallback for an owner whose row has since gone. Null when
+                    # the archive has no owner, or when it points at a user row
+                    # that no longer exists locally — the same "absent is not
+                    # null" rule the restore applies, so a backup cannot claim an
+                    # owner it cannot name.
+                    "created_by_username": user_names.get(a.created_by_id),
                 }
             )
 

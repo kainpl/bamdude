@@ -20,18 +20,16 @@ from backend.app.core.auth import (
 )
 from backend.app.core.permissions import Permission
 
-# The scope flags an APIKey row can carry (mirrors backend/app/models/api_key.py).
-_ALL_SCOPE_FLAGS = {
-    "can_read_status",
-    "can_queue",
-    "can_control_printer",
-    "can_manage_library",
-    "can_manage_inventory",
-    "can_manage_maintenance",
-    "can_manage_archives",
-    "can_manage_projects",
-    "can_access_cloud",
-}
+# The scope flags an APIKey row can carry.
+#
+# ⚠️ **Read off the model, not transcribed.** This was a hand-kept copy that
+# said it "mirrors backend/app/models/api_key.py", and a new column made it a
+# lie the moment one was added — the guard below then failed on a scope that was
+# perfectly real. A list whose whole job is to match another list should not be
+# typed out twice.
+from backend.app.models.api_key import APIKey  # noqa: E402
+
+_ALL_SCOPE_FLAGS = {c.name for c in APIKey.__table__.columns if c.name.startswith("can_")}
 
 
 def _key(**flags: bool) -> SimpleNamespace:

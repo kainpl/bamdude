@@ -35,11 +35,12 @@ class Spool(Base):
     last_weighed_at: Mapped[datetime | None] = mapped_column(DateTime)  # When last weighed
     slicer_filament: Mapped[str | None] = mapped_column(String(50))  # Preset ID (e.g. "GFL99")
     slicer_filament_name: Mapped[str | None] = mapped_column(String(100))  # Preset name for slicer
-    # Normalized Bambu filament_id (GF*-form) used for K-profile / colour
-    # matching. For custom presets this is the BASE preset's filament_id
-    # (e.g. "Sunlu PETG крило" → "GFG99" via cloud base_id), resolved by the
-    # spool form at save time so backend matching needs no live cloud call.
-    resolved_filament_id: Mapped[str | None] = mapped_column(String(50))
+    # Family link (spec A §5.1) — the ONLY forward-path identity: a bare
+    # filament_id string ("GFG99" / "P122e532"), chosen via the family picker
+    # or backfilled. The slicer_filament pair above is denormalized display +
+    # legacy fallback: written FROM the family on save, read by resolve_spool
+    # only when the family link is empty.
+    filament_family_id: Mapped[str | None] = mapped_column(String(50))
     nozzle_temp_min: Mapped[int | None] = mapped_column()  # Override min temp
     nozzle_temp_max: Mapped[int | None] = mapped_column()  # Override max temp
     note: Mapped[str | None] = mapped_column(String(500))

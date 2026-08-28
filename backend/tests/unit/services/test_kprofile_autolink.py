@@ -75,7 +75,7 @@ async def test_autolink_spool_creates_auto_rows_and_activates(db_session):
     p = await _make_printer(db_session)
     fc = _cal(p.id, k=0.03, active=False, name="auto")
     db_session.add(fc)
-    spool = Spool(material="PETG", resolved_filament_id="GFG99")
+    spool = Spool(material="PETG", filament_family_id="GFG99")
     db_session.add(spool)
     await db_session.commit()
 
@@ -95,7 +95,7 @@ async def test_autolink_spool_respects_manual_link(db_session):
     p = await _make_printer(db_session)
     fc_manual = _cal(p.id, k=0.01, active=True, name="manual")
     fc_auto = _cal(p.id, k=0.03, active=False, name="auto")
-    spool = Spool(material="PETG", resolved_filament_id="GFG99")
+    spool = Spool(material="PETG", filament_family_id="GFG99")
     db_session.add_all([fc_manual, fc_auto, spool])
     await db_session.commit()
     db_session.add(
@@ -122,7 +122,7 @@ async def test_autolink_spool_removes_stale_auto_row(db_session):
     """An auto row whose filament no longer matches is removed."""
     p = await _make_printer(db_session)
     fc = _cal(p.id, fid="GFL99", name="pla")
-    spool = Spool(material="PETG", resolved_filament_id="GFG99")  # no GFG99 calibration exists
+    spool = Spool(material="PETG", filament_family_id="GFG99")  # no GFG99 calibration exists
     db_session.add_all([fc, spool])
     await db_session.commit()
     db_session.add(
@@ -167,7 +167,7 @@ async def test_autolink_spoolman_spool(db_session):
 async def test_propagate_calibration_relinks_matching_spools(db_session):
     p = await _make_printer(db_session)
     fc = _cal(p.id, k=0.03, name="auto")
-    spool = Spool(material="PETG", resolved_filament_id="GFG99")
+    spool = Spool(material="PETG", filament_family_id="GFG99")
     db_session.add_all([fc, spool])
     await db_session.commit()
 

@@ -32,6 +32,7 @@ def _to_response(queue: PrinterQueue, terminal_counts: dict[str, int]) -> Printe
         printer_location=(PrinterLocationOut.from_location(queue.printer.location) if queue.printer else None),
         status=queue.status,
         is_paused=queue.is_paused,
+        auto_distribute_eligible=queue.auto_distribute_eligible,
         last_activity_at=queue.last_activity_at,
         current_item_id=queue.current_item_id,
         pending_count=queue.pending_count,
@@ -157,6 +158,12 @@ async def update_queue(
     if data.is_paused is not None:
         queue.is_paused = data.is_paused
         queue.last_activity_at = datetime.now(timezone.utc)
+
+    # Orthogonal to everything above: only auto-queue ROUTING consults it, so
+    # flipping it mid-print is fine — the running job and manual queueing are
+    # untouched. Not an activity either, so last_activity_at stays.
+    if data.auto_distribute_eligible is not None:
+        queue.auto_distribute_eligible = data.auto_distribute_eligible
 
     await db.commit()
     await db.refresh(queue)

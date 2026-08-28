@@ -142,15 +142,14 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         core_weight = entry.weight
         break
 
-    # Resolve slicer filament name from builtin table
+    # Resolve slicer filament name from the identity catalog
     slicer_filament_name = None
     if tray_info_idx:
-        try:
-            from backend.app.api.routes.cloud import _BUILTIN_FILAMENT_NAMES
+        from backend.app.utils import filament_catalog as _catalog
 
-            slicer_filament_name = _BUILTIN_FILAMENT_NAMES.get(tray_info_idx)
-        except Exception:
-            pass
+        fam = _catalog.get_family(tray_info_idx)
+        if fam:
+            slicer_filament_name = fam.alias
         # Fallback: use tray_sub_brands as the display name
         if not slicer_filament_name and tray_sub_brands:
             slicer_filament_name = tray_sub_brands
@@ -326,14 +325,11 @@ async def link_tag_to_inventory_spool(db: AsyncSession, spool: Spool, tray_data:
     # Update slicer preset if not already set
     if tray_info_idx and not spool.slicer_filament:
         spool.slicer_filament = tray_info_idx
-        try:
-            from backend.app.api.routes.cloud import _BUILTIN_FILAMENT_NAMES
+        from backend.app.utils import filament_catalog as _catalog
 
-            name = _BUILTIN_FILAMENT_NAMES.get(tray_info_idx)
-            if name and not spool.slicer_filament_name:
-                spool.slicer_filament_name = name
-        except Exception:
-            pass
+        fam = _catalog.get_family(tray_info_idx)
+        if fam and not spool.slicer_filament_name:
+            spool.slicer_filament_name = fam.alias
 
     await db.flush()
     logger.info(
@@ -499,6 +495,15 @@ async def auto_assign_spool(
     db.add(assignment)
     await db.flush()
 
+    # Replacement-after-runout boundary for the journal (deduped there; the
+    # RFID uuid-watch usually records it first for tagged spools).
+    try:
+        from backend.app.services.print_usage_journal import note_assignment_change
+
+        await note_assignment_change(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id, spool_id=spool.id)
+    except Exception:
+        logger.exception("note_assignment_change failed for printer %s", printer_id)
+
     # re-Connect MQTT if stalled
     await printer_manager.ensure_fresh_connection(printer_id)
 
@@ -528,7 +533,9 @@ async def auto_assign_spool(
                 derive_effective_filament_id,
             )
 
-            effective_filament_id = derive_effective_filament_id(spool=spool, slot_tray_info_idx=tray_info_idx or None)
+            effective_filament_id = await derive_effective_filament_id(
+                spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
+            )
             fired = False
             if effective_filament_id:
                 fired, fc = await apply_active_calibration_to_slot(
@@ -586,21 +593,6 @@ async def auto_assign_spool(
     except Exception as e:
         logger.warning("K-profile apply failed for spool %d (RFID match): %s", spool.id, e)
 
-    # Reconcile slot_preset_mappings so the AMS slot card stops surfacing the
-    # previous spool's preset name. Shared with the manual-assign path
-    # (inventory.apply_spool_to_slot_via_mqtt). Outside the try above so a
-    # transient MQTT failure doesn't leave the display row stale.
-    from backend.app.services.slot_preset_writer import upsert_slot_preset_for_spool
-
-    await upsert_slot_preset_for_spool(
-        db=db,
-        spool=spool,
-        printer_id=printer_id,
-        ams_id=ams_id,
-        tray_id=tray_id,
-        tray_info_idx=tray_info_idx,
-        tray_sub_brands=tray.get("tray_sub_brands", "") if tray else "",
-        tray_type=tray.get("tray_type", "") if tray else "",
-    )
+    # (slot_preset_mappings retired — display names come from the resolver.)
 
     return assignment

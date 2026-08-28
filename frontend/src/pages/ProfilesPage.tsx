@@ -40,16 +40,20 @@ import {
   Minus as MinusIcon,
   Plus as PlusIcon,
   HardDrive,
+  ShieldAlert,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { formatRelativeTime } from '../utils/date';
-import type { SlicerSetting, SlicerSettingsResponse, SlicerSettingDetail, SlicerSettingCreate, Printer, FieldDefinition, Permission } from '../api/client';
+import type { SlicerSetting, SlicerSettingsResponse, SlicerSettingDetail, SlicerSettingCreate, FieldDefinition, Permission } from '../api/client';
 import { Card, CardContent } from '../components/Card';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { Button } from '../components/Button';
 import { FilterDropdown } from '../components/FilterDropdown';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { KProfilesView } from '../components/KProfilesView';
+import { CreateFilamentFamilyModal } from '../components/CreateFilamentFamilyModal';
+import { canonicalPrinterModel } from '../utils/slicerPrinterMatch';
 import { LocalProfilesView } from '../components/LocalProfilesView';
 import { OrcaCloudView } from '../components/OrcaCloudView';
 
@@ -105,10 +109,15 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
   const [region, setRegion] = useState('global');
   const [verificationType, setVerificationType] = useState<'email' | 'totp' | null>(null);
   const [tfaKey, setTfaKey] = useState<string | null>(null);
+  // Bambu is challenging this network with a CAPTCHA. A toast is the wrong
+  // shape for it: nothing the user types will help, the remedy is to wait or
+  // switch to a token, and both need to stay on screen while they read.
+  const [captchaBlocked, setCaptchaBlocked] = useState(false);
 
   const loginMutation = useMutation({
     mutationFn: () => api.cloudLogin(email, password, region),
     onSuccess: (result) => {
+      setCaptchaBlocked(result.reason === 'captcha');
       if (result.success) {
         showToast(t('profiles.login.toast.loggedIn'));
         onSuccess();
@@ -121,24 +130,32 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
           showToast(t('profiles.login.toast.codeSent'));
         }
         setStep('code');
-      } else {
+      } else if (result.reason !== 'captcha') {
+        // The panel below says everything a toast could, and stays put.
         showToast(result.message, 'error');
       }
     },
-    onError: (error: Error) => showToast(error.message, 'error'),
+    onError: (error: Error) => {
+      setCaptchaBlocked(false);
+      showToast(error.message, 'error');
+    },
   });
 
   const verifyMutation = useMutation({
     mutationFn: () => api.cloudVerify(email, code, tfaKey || undefined, region),
     onSuccess: (result) => {
+      setCaptchaBlocked(result.reason === 'captcha');
       if (result.success) {
         showToast(t('profiles.login.toast.loggedIn'));
         onSuccess();
-      } else {
+      } else if (result.reason !== 'captcha') {
         showToast(result.message, 'error');
       }
     },
-    onError: (error: Error) => showToast(error.message, 'error'),
+    onError: (error: Error) => {
+      setCaptchaBlocked(false);
+      showToast(error.message, 'error');
+    },
   });
 
   const tokenMutation = useMutation({
@@ -169,6 +186,28 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
           <h2 className="text-xl font-semibold text-white">{t('profiles.login.title')}</h2>
           <p className="text-sm text-bambu-gray mt-1">{t('profiles.login.subtitle')}</p>
         </div>
+
+        {captchaBlocked && step !== 'token' && (
+          <div role="alert" className="mb-4 p-3 rounded-lg border border-amber-500/40 bg-amber-500/10">
+            <div className="flex items-start gap-2">
+              <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-amber-300">{t('profiles.login.captchaTitle')}</p>
+                <p className="text-xs text-bambu-gray mt-1">{t('profiles.login.captchaBody')}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCaptchaBlocked(false);
+                    setStep('token');
+                  }}
+                  className="mt-2 text-xs text-bambu-green hover:underline"
+                >
+                  {t('profiles.login.useToken')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {step === 'email' && (
@@ -314,7 +353,10 @@ function ScrollToTop() {
   return (
     <button
       onClick={scrollToTop}
-      className="fixed bottom-6 right-6 p-3 bg-bambu-green hover:bg-bambu-green-light text-white rounded-full shadow-lg shadow-bambu-green/25 transition-all z-40"
+      // ⚠️ bottom-24, not bottom-6: at 24px this sat under the bug-report
+      // bubble (16–64px from both edges), covering most of it. Both are z-40,
+      // so which one you could actually click came down to DOM order.
+      className="fixed bottom-24 right-6 p-3 bg-bambu-green hover:bg-bambu-green-light text-white rounded-full shadow-lg shadow-bambu-green/25 transition-all z-40"
       aria-label="Scroll to top"
     >
       <ArrowUp className="w-5 h-5" />
@@ -518,9 +560,7 @@ function PresetDetailModal({
           {/* Content */}
           <div className="flex-1 min-h-0 overflow-y-auto p-4">
             {isLoading ? (
-              <div className="flex items-center justify-center py-16">
-                <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-              </div>
+              <LoadingBlock label={t('common.loading')} />
             ) : detail ? (
               <pre className="text-xs text-bambu-gray font-mono whitespace-pre-wrap break-all bg-bambu-dark p-4 rounded-lg border border-bambu-dark-tertiary overflow-x-auto max-w-full">
                 {formatJsonForDisplay(detail)}
@@ -1311,18 +1351,45 @@ function CreatePresetModal({
     }
   }, [settingsObj, activeTab]);
 
-  // Get presets filtered by selected type - only built-in presets allowed as base
-  // (Bambu Cloud only allows custom presets to inherit from built-in presets)
+  // Base-preset candidates, two groups: the user's OWN presets (which is
+  // where authored custom families live once pushed — a child of a custom
+  // family carries its parent's setting_id as base_id, the live account
+  // confirms the cloud accepts it) and built-in presets narrowed to the
+  // farm's printer models — a base for a machine you don't own is noise.
+  const { data: farmPrinters = [] } = useQuery({
+    queryKey: ['printers'],
+    queryFn: api.getPrinters,
+  });
+  const { data: baseModelsMap = {} } = useQuery({
+    queryKey: ['printer-models'],
+    queryFn: () => api.getPrinterModels(),
+    staleTime: 10 * 60_000,
+  });
+
   const availableBasePresets = useMemo(() => {
     const typeMap: Record<string, SlicerSetting[]> = {
       filament: allPresets.filament,
       print: allPresets.process,
       printer: allPresets.printer,
     };
-    return (typeMap[presetType] || [])
-      .filter(p => !isUserPreset(p.setting_id)) // Only built-in presets
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [allPresets, presetType]);
+    const all = typeMap[presetType] || [];
+    const farmModels = new Set(
+      farmPrinters
+        .map(pr => (pr.model ? canonicalPrinterModel(pr.model, baseModelsMap) : null))
+        .filter((m): m is string => !!m),
+    );
+    const mine = all.filter(p => p.is_custom);
+    const builtin = all
+      .filter(p => !p.is_custom)
+      .filter(p => {
+        if (farmModels.size === 0) return true; // no farm — nothing to narrow by
+        const raw = extractMetadata(p.name).printer;
+        if (!raw) return true; // a model-less base can serve any machine
+        return farmModels.has(canonicalPrinterModel(raw, baseModelsMap));
+      });
+    const byName = (a: SlicerSetting, b: SlicerSetting) => a.name.localeCompare(b.name);
+    return [...mine.sort(byName), ...builtin.sort(byName)];
+  }, [allPresets, presetType, farmPrinters, baseModelsMap]);
 
   // Set inherits field when base preset changes (don't pre-fill all values - they show as placeholders)
   // In edit mode, don't reset settingsObj - keep the saved values
@@ -1715,9 +1782,18 @@ function CreatePresetModal({
                   className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
                 >
                   <option value="">{t('profiles.presets.selectBasePreset')}</option>
-                  {availableBasePresets.map((preset) => (
-                    <option key={preset.setting_id} value={preset.setting_id}>{preset.name}</option>
-                  ))}
+                  {availableBasePresets.some(p => p.is_custom) && (
+                    <optgroup label={t('profiles.presets.baseGroups.mine')}>
+                      {availableBasePresets.filter(p => p.is_custom).map((preset) => (
+                        <option key={preset.setting_id} value={preset.setting_id}>{preset.name}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <optgroup label={t('profiles.presets.baseGroups.builtin')}>
+                    {availableBasePresets.filter(p => !p.is_custom).map((preset) => (
+                      <option key={preset.setting_id} value={preset.setting_id}>{preset.name}</option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
               <div>
@@ -2182,7 +2258,6 @@ function CloudProfilesView({
   lastSyncTime,
   onRefresh,
   isRefreshing,
-  printers,
   hasPermission,
   t,
 }: {
@@ -2190,19 +2265,18 @@ function CloudProfilesView({
   lastSyncTime?: Date;
   onRefresh: () => void;
   isRefreshing: boolean;
-  printers: Printer[];
   hasPermission: (permission: Permission) => boolean;
   t: TFunction;
 }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<PresetType>('all');
-  const [filterOwner, setFilterOwner] = useState<'all' | 'custom' | 'builtin'>('all');
   const [filterPrinter, setFilterPrinter] = useState('all');
   const [filterNozzle, setFilterNozzle] = useState('all');
   const [filterFilament, setFilterFilament] = useState('all');
   const [filterLayerHeight, setFilterLayerHeight] = useState('all');
   const [selectedSetting, setSelectedSetting] = useState<SlicerSetting | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showCreateFamilyModal, setShowCreateFamilyModal] = useState(false);
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
   const [duplicateData, setDuplicateData] = useState<{ type: string; name: string; base_id: string; setting: Record<string, unknown> } | null>(null);
   const [editData, setEditData] = useState<{ type: string; name: string; base_id: string; setting: Record<string, unknown>; setting_id: string } | null>(null);
@@ -2215,65 +2289,85 @@ function CloudProfilesView({
 
   const queryClient = useQueryClient();
 
+  // ONLY the user's own presets, by design (matches the Orca Cloud tab):
+  // a profile someone wants to see here must first be enabled/saved in the
+  // slicer — the cloud's public catalog half is deliberately not browsable.
+  const userSettings = useMemo(
+    () => ({
+      filament: settings.filament.filter(s => s.is_custom),
+      printer: settings.printer.filter(s => s.is_custom),
+      process: settings.process.filter(s => s.is_custom),
+    }),
+    [settings],
+  );
+
+  const { data: printerModelsMap = {} } = useQuery({
+    queryKey: ['printer-models'],
+    queryFn: () => api.getPrinterModels(),
+    staleTime: 10 * 60_000,
+  });
+
   // Combine all presets with metadata
   const allPresetsWithMeta = useMemo(() => {
     const combined = [
-      ...settings.filament.map(s => ({ ...s, type: 'filament' as const })),
-      ...settings.printer.map(s => ({ ...s, type: 'printer' as const })),
-      ...settings.process.map(s => ({ ...s, type: 'process' as const })),
+      ...userSettings.filament.map(s => ({ ...s, type: 'filament' as const })),
+      ...userSettings.printer.map(s => ({ ...s, type: 'printer' as const })),
+      ...userSettings.process.map(s => ({ ...s, type: 'process' as const })),
     ];
-    return combined.map(s => ({ ...s, meta: extractMetadata(s.name) }));
-  }, [settings]);
+    return combined.map(s => {
+      const meta = extractMetadata(s.name);
+      // Collapse "A1M" / "A1 mini" / "A1 Mini" onto one canonical model so
+      // the printer filter has one row per machine (#1649).
+      const printer = meta.printer ? canonicalPrinterModel(meta.printer, printerModelsMap) : null;
+      return { ...s, meta: { ...meta, printer } };
+    });
+  }, [userSettings, printerModelsMap]);
 
-  // Extract unique filter values (use configured printers from API)
+  // Extract unique filter values. The printer filter lists printer PROFILES
+  // (models the presets themselves mention, as in BS/Orca) — not the
+  // devices registered in BamDude.
   const filterOptions = useMemo(() => {
+    const models = new Set<string>();
     const nozzles = new Set<string>();
     const filaments = new Set<string>();
     const layerHeights = new Set<string>();
 
     allPresetsWithMeta.forEach(p => {
+      if (p.meta.printer) models.add(p.meta.printer);
       if (p.meta.nozzle) nozzles.add(p.meta.nozzle);
       if (p.meta.filamentType) filaments.add(p.meta.filamentType);
       if (p.meta.layerHeight) layerHeights.add(p.meta.layerHeight);
     });
 
     return {
-      printers: printers.map(p => ({ id: p.id.toString(), name: p.name })),
+      printers: Array.from(models).sort().map(m => ({ id: m, name: m })),
       nozzles: Array.from(nozzles).sort((a, b) => parseFloat(a) - parseFloat(b)),
       filaments: Array.from(filaments).sort(),
       layerHeights: Array.from(layerHeights).sort((a, b) => parseFloat(a) - parseFloat(b)),
     };
-  }, [allPresetsWithMeta, printers]);
+  }, [allPresetsWithMeta]);
 
-  // Get selected printer's model for filtering
-  const selectedPrinterModel = useMemo(() => {
-    if (filterPrinter === 'all') return null;
-    const printer = printers.find(p => p.id.toString() === filterPrinter);
-    return printer?.model || null;
-  }, [filterPrinter, printers]);
+  // The picked value IS the model string
+  const selectedPrinterModel = useMemo(
+    () => (filterPrinter === 'all' ? null : filterPrinter),
+    [filterPrinter],
+  );
 
   // Apply filters
   const filteredPresets = useMemo(() => {
     return allPresetsWithMeta
       .filter(s => filterType === 'all' || s.type === filterType)
-      .filter(s => {
-        if (filterOwner === 'all') return true;
-        const isCustom = isUserPreset(s.setting_id);
-        return filterOwner === 'custom' ? isCustom : !isCustom;
-      })
+
       .filter(s => {
         if (filterPrinter === 'all' || !selectedPrinterModel) return true;
-        // Match preset's printer model to configured printer's model
-        const presetPrinter = s.meta.printer?.toLowerCase() || '';
-        const configuredModel = selectedPrinterModel.toLowerCase();
-        return presetPrinter.includes(configuredModel) || configuredModel.includes(presetPrinter);
+        return s.meta.printer === selectedPrinterModel; // both canonicalised
       })
       .filter(s => filterNozzle === 'all' || s.meta.nozzle === filterNozzle)
       .filter(s => filterFilament === 'all' || s.meta.filamentType === filterFilament)
       .filter(s => filterLayerHeight === 'all' || s.meta.layerHeight === filterLayerHeight)
       .filter(s => searchQuery === '' || s.name.toLowerCase().includes(searchQuery.toLowerCase()))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [allPresetsWithMeta, filterType, filterOwner, filterPrinter, selectedPrinterModel, filterNozzle, filterFilament, filterLayerHeight, searchQuery]);
+  }, [allPresetsWithMeta, filterType, filterPrinter, selectedPrinterModel, filterNozzle, filterFilament, filterLayerHeight, searchQuery]);
 
   // Handle click on preset in compare mode
   const handlePresetClick = (preset: SlicerSetting) => {
@@ -2360,7 +2454,6 @@ function CloudProfilesView({
 
   const clearFilters = () => {
     setFilterType('all');
-    setFilterOwner('all');
     setFilterPrinter('all');
     setFilterNozzle('all');
     setFilterFilament('all');
@@ -2368,10 +2461,10 @@ function CloudProfilesView({
     setSearchQuery('');
   };
 
-  const hasActiveFilters = filterType !== 'all' || filterOwner !== 'all' || filterPrinter !== 'all' || filterNozzle !== 'all' ||
+  const hasActiveFilters = filterType !== 'all' || filterPrinter !== 'all' || filterNozzle !== 'all' ||
     filterFilament !== 'all' || filterLayerHeight !== 'all' || searchQuery !== '';
 
-  const totalCount = settings.filament.length + settings.printer.length + settings.process.length;
+  const totalCount = userSettings.filament.length + userSettings.printer.length + userSettings.process.length;
 
   return (
     <>
@@ -2431,6 +2524,20 @@ function CloudProfilesView({
               <Plus className="w-4 h-4" />
               {t('profiles.cloudView.newPreset')}
             </Button>
+            <Button
+              onClick={() => setShowCreateFamilyModal(true)}
+              disabled={!hasPermission('cloud:auth')}
+              title={!hasPermission('cloud:auth') ? t('profiles.cloudView.noCreatePermission') : undefined}
+            >
+              <Plus className="w-4 h-4" />
+              {t('authoring.createButton')}
+            </Button>
+            <CreateFilamentFamilyModal
+              variant="bambu"
+              open={showCreateFamilyModal}
+              onClose={() => setShowCreateFamilyModal(false)}
+              onCreated={() => onRefresh()}
+            />
           </div>
         </div>
 
@@ -2443,22 +2550,11 @@ function CloudProfilesView({
             value={filterType}
             options={[
               { value: 'all', label: t('profiles.cloudView.filters.all'), count: totalCount },
-              { value: 'filament', label: t('profiles.cloudView.filters.filament'), count: settings.filament.length },
-              { value: 'printer', label: t('profiles.cloudView.filters.printer'), count: settings.printer.length },
-              { value: 'process', label: t('profiles.cloudView.filters.process'), count: settings.process.length },
+              { value: 'filament', label: t('profiles.cloudView.filters.filament'), count: userSettings.filament.length },
+              { value: 'printer', label: t('profiles.cloudView.filters.printer'), count: userSettings.printer.length },
+              { value: 'process', label: t('profiles.cloudView.filters.process'), count: userSettings.process.length },
             ]}
             onChange={(v) => setFilterType(v as PresetType)}
-          />
-
-          <FilterDropdown
-            label={t('profiles.cloudView.filters.owner')}
-            value={filterOwner}
-            options={[
-              { value: 'all', label: t('profiles.cloudView.filters.all') },
-              { value: 'custom', label: t('profiles.cloudView.filters.myPresets') },
-              { value: 'builtin', label: t('profiles.cloudView.filters.builtIn') },
-            ]}
-            onChange={(v) => setFilterOwner(v as 'all' | 'custom' | 'builtin')}
           />
 
           {filterOptions.printers.length > 0 && (
@@ -2761,11 +2857,6 @@ export function ProfilesPage() {
     queryFn: api.getCloudStatus,
   });
 
-  const { data: printers = [] } = useQuery({
-    queryKey: ['printers'],
-    queryFn: api.getPrinters,
-  });
-
   const { data: settings, isLoading: settingsLoading, refetch: refetchSettings, dataUpdatedAt } = useQuery({
     queryKey: ['cloudSettings'],
     queryFn: () => api.getCloudSettings(),
@@ -2793,72 +2884,79 @@ export function ProfilesPage() {
     queryClient.invalidateQueries({ queryKey: ['cloudStatus'] });
   };
 
+  // Title and tab bar first: both are local state and need nothing from the
+  // cloud, so a slow status check no longer hides the tabs that switch away
+  // from it.
+  const pageChrome = (
+    <>
+        {/* Page Header */}
+        <div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Cloud className="w-6 h-6 text-bambu-green" />{t('profiles.title')}</h1>
+          <p className="text-sm text-bambu-gray">{t('profiles.subtitle')}</p>
+        </div>
+
+        {/* Tab Navigation */}
+        <div className="flex border-b border-bambu-dark-tertiary mb-4">
+          <button
+            onClick={() => setActiveTab('cloud')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'cloud'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-white border-transparent'
+            }`}
+          >
+            <Cloud className="w-4 h-4" />
+            {t('profiles.tabs.bambuCloud')}
+          </button>
+          <button
+            onClick={() => setActiveTab('orca_cloud')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'orca_cloud'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-white border-transparent'
+            }`}
+          >
+            <Cloud className="w-4 h-4" />
+            {t('profiles.tabs.orcaCloud')}
+          </button>
+          <button
+            onClick={() => setActiveTab('local')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'local'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-white border-transparent'
+            }`}
+          >
+            <HardDrive className="w-4 h-4" />
+            {t('profiles.tabs.local')}
+          </button>
+          <button
+            onClick={() => setActiveTab('kprofiles')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'kprofiles'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-white border-transparent'
+            }`}
+          >
+            <Gauge className="w-4 h-4" />
+            {t('profiles.tabs.kprofiles')}
+          </button>
+        </div>
+    </>
+  );
+
   if (statusLoading) {
     return (
-      <div className="p-4 md:p-8 flex items-center justify-center min-h-[400px]">
-        <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
+      <div className="p-4 md:p-6 space-y-4">
+        {pageChrome}
+        <LoadingBlock label={t('common.loading')} className="min-h-[400px] text-bambu-gray" />
       </div>
     );
   }
 
   return (
-    <div className="p-4 md:p-6">
-      {/* Page Header */}
-      <div>
-        <div className="flex items-center gap-3">
-          <Cloud className="w-6 h-6 text-bambu-green" />
-          <h1 className="text-2xl font-bold text-white">{t('profiles.title')}</h1>
-        </div>
-        <p className="text-sm text-bambu-gray">{t('profiles.subtitle')}</p>
-      </div>
-
-      {/* Tab Navigation */}
-      <div className="flex border-b border-bambu-dark-tertiary mb-4">
-        <button
-          onClick={() => setActiveTab('cloud')}
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            activeTab === 'cloud'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-white border-transparent'
-          }`}
-        >
-          <Cloud className="w-4 h-4" />
-          {t('profiles.tabs.bambuCloud')}
-        </button>
-        <button
-          onClick={() => setActiveTab('orca_cloud')}
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            activeTab === 'orca_cloud'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-white border-transparent'
-          }`}
-        >
-          <Cloud className="w-4 h-4" />
-          {t('profiles.tabs.orcaCloud')}
-        </button>
-        <button
-          onClick={() => setActiveTab('local')}
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            activeTab === 'local'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-white border-transparent'
-          }`}
-        >
-          <HardDrive className="w-4 h-4" />
-          {t('profiles.tabs.local')}
-        </button>
-        <button
-          onClick={() => setActiveTab('kprofiles')}
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            activeTab === 'kprofiles'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-white border-transparent'
-          }`}
-        >
-          <Gauge className="w-4 h-4" />
-          {t('profiles.tabs.kprofiles')}
-        </button>
-      </div>
+    <div className="p-4 md:p-6 space-y-4">
+      {pageChrome}
 
       {/* Cloud Profiles Tab */}
       {activeTab === 'cloud' && (
@@ -2899,16 +2997,13 @@ export function ProfilesPage() {
               <LoginForm onSuccess={handleLoginSuccess} t={t} />
             </>
           ) : settingsLoading ? (
-            <div className="flex items-center justify-center py-16">
-              <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-            </div>
+            <LoadingBlock label={t('common.loading')} />
           ) : settings ? (
             <CloudProfilesView
               settings={settings}
               lastSyncTime={lastSyncTime}
               onRefresh={() => refetchSettings()}
               isRefreshing={settingsLoading}
-              printers={printers}
               hasPermission={hasPermission}
               t={t}
             />

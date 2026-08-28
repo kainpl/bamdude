@@ -1083,6 +1083,12 @@ export interface ArchiveStats {
   prints_by_printer: Record<string, number>;
   average_time_accuracy: number | null;
   time_accuracy_by_printer: Record<string, number> | null;
+  // Two pairs, deliberately. `print_*` is measured between the start and end of
+  // each print and honours the date filter; `total_*` is what the plugs
+  // themselves counted, idle included, and all-time comes from their lifetime
+  // counters. The gap between them is what standing still costs.
+  print_energy_kwh: number;
+  print_energy_cost: number;
   total_energy_kwh: number;
   total_energy_cost: number;
   // True when a date-filtered total-consumption query is running on incomplete
@@ -1236,6 +1242,10 @@ export interface Project {
   created_at: string;
   updated_at: string;
   stats?: ProjectStats;
+  /** Everything under this project, its own prints included. Present only when
+   *  it actually has sub-projects — a second figure rather than a widening of
+   *  `stats`, whose meaning is unchanged. */
+  rollup_stats?: ProjectStats | null;
 }
 
 export interface ProjectAttachment {
@@ -1279,6 +1289,10 @@ export interface ProjectListItem {
   archives: ArchivePreview[];
   url: string | null;
   cover_image_filename: string | null;
+  /** Nesting, so the grid can group and the parent picker can rule out a
+   *  loop before the server has to. */
+  parent_id: number | null;
+  is_template: boolean;
 }
 
 export interface ProjectCreate {
@@ -1495,6 +1509,7 @@ export interface APIKey {
   can_manage_archives: boolean;
   /** Project write scope: create/update/delete projects + add archives (#1893). */
   can_manage_projects: boolean;
+  can_print_labels: boolean;
   printer_ids: number[] | null;
   enabled: boolean;
   last_used: string | null;
@@ -1514,6 +1529,7 @@ export interface APIKeyCreate {
   can_manage_maintenance?: boolean;
   can_manage_archives?: boolean;
   can_manage_projects?: boolean;
+  can_print_labels?: boolean;
   printer_ids?: number[] | null;
   expires_at?: string | null;
 }
@@ -1534,6 +1550,7 @@ export interface APIKeyUpdate {
   can_manage_maintenance?: boolean;
   can_manage_archives?: boolean;
   can_manage_projects?: boolean;
+  can_print_labels?: boolean;
   printer_ids?: number[] | null;
   enabled?: boolean;
   expires_at?: string | null;
@@ -1652,9 +1669,10 @@ export interface AppSettings {
   // the settings PATCH is typed by this interface — an undeclared key would be
   // dropped on the way out, exactly as Pydantic drops one on the way in.
   zigbee_enabled: boolean;
+  /** Direct-to-device label printing. Off unless somebody runs a bridge. */
+  device_labels_enabled: boolean;
   zigbee_transport: string;
   zigbee_path: string;
-  energy_tracking_mode: 'print' | 'total';
   check_updates: boolean;
   check_printer_firmware: boolean;
   include_beta_updates: boolean;
@@ -1672,6 +1690,10 @@ export interface AppSettings {
   ams_temp_good: number;      // <= this is green/blue
   ams_temp_fair: number;      // <= this is orange, > is red
   ams_history_retention_days: number;  // days to keep AMS sensor history
+  runout_zero_point_enabled: boolean;  // close a spool at exactly empty on an unambiguous runout
+  ams_sync_bidirectional: boolean;     // debounced downward AMS corrections for Bambu-tagged spools
+  runout_purge_grams: number;          // grams charged to the backup spool per AMS auto-switch (0 = off)
+  usage_events_retention_hours: number; // hours to keep a finished print's usage-journal events
   printer_sensor_history_retention_days?: number;  // days to keep printer heater history
   plug_power_history_retention_days?: number;  // days to keep smart-plug power history
   sensor_history_retention_days?: number;  // days to keep sensor measurement history
@@ -1726,6 +1748,9 @@ export interface AppSettings {
   mqtt_use_tls: boolean;
   // External URL for notifications
   external_url: string;
+  /** Host directory holding docker-compose.yml. ⚠️ Never read by BamDude —
+   *  it only appears in the Settings update instructions. */
+  docker_compose_dir: string;
   // Home Assistant integration
   ha_enabled: boolean;
   ha_url: string;
@@ -1739,6 +1764,9 @@ export interface AppSettings {
   // Camera view settings
   camera_view_mode: 'window' | 'embedded';
   // Preferred slicer (server-side / API sidecar)
+  /** Where slicing RUNS — a separate axis from `preferred_slicer`, which only
+   * says which slicer binary the sidecar drives. Only 'sidecar' exists today. */
+  slice_engine?: 'sidecar' | 'browser';
   preferred_slicer: 'bambu_studio' | 'orcaslicer';
   // Desktop "Open in Slicer" override — null inherits from preferred_slicer (#1329)
   open_in_slicer?: 'bambu_studio' | 'orcaslicer' | null;
@@ -1894,6 +1922,12 @@ export interface OverlayStatus {
   layer_num: number | null;
   total_layers: number | null;
   stg_cur_name: string | null;
+  /** ⚠️ An ALLOW-LIST, not the printer's temperature dict: that one doubles as
+   *  the MQTT client's working memory and carries derived flags and private
+   *  timestamps. An overlay token is a narrower grant than a login, so it gets
+   *  exactly what the overlay draws. Chamber keys are absent on models with no
+   *  real chamber sensor. */
+  temperatures: Record<string, number>;
   time_format: 'system' | '12h' | '24h';
 }
 
@@ -1913,6 +1947,52 @@ export interface CloudLoginResponse {
   message: string;
   verification_type?: 'email' | 'totp' | null;
   tfa_key?: string | null;
+  /**
+   * Machine-readable cause of a failure. 'captcha' means Bambu's anti-abuse
+   * layer is challenging this network and no credential will be accepted until
+   * it clears — the UI must explain that in place rather than toast `message`.
+   */
+  reason?: 'captcha' | string | null;
+}
+
+// ── Cloud Link ─────────────────────────────────────────────
+// Pairing this farm with the BamDude portal. A different question from the
+// Bambu / Orca cloud logins below: those sign us in to somebody else's cloud,
+// this one decides that somebody else's cloud may reach in here.
+//
+// `paired`, `enabled` and `connected` are three separate answers — holding a
+// credential, choosing to use it, and currently having a socket — and
+// `revoked` is a fourth that the portal decides on its own. The settings panel
+// offers a different repair for each, so none of them collapse into one flag.
+export interface CloudLinkStatus {
+  enabled: boolean;
+  paired: boolean;
+  connected: boolean;
+  portal_url: string;
+  instance_id: string | null;
+  last_connected_at: string | null;
+  /** Free text from the link itself — English, not a localised message. */
+  last_error: string | null;
+  revoked: boolean;
+  /** The allowlist **as saved**, which is what the checkboxes reflect. */
+  published_printer_ids: number[];
+}
+
+export interface CloudLinkAuditEntry {
+  ts: string;
+  /** `'up'` — we told the portal; `'down'` — the portal asked us. */
+  direction: string;
+  kind: string;
+  summary: string;
+  ok: boolean;
+}
+
+export interface CloudLinkAuditPage {
+  items: CloudLinkAuditEntry[];
+  /** Rows in the whole audit, not on this page — sizes the pager. */
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 // Orca Cloud types — paste-flow PKCE handshake against auth.orcaslicer.com.
@@ -1944,6 +2024,8 @@ export interface OrcaAuthStatusResponse {
   connected: boolean;
   email: string | null;
   user_id: string | null;
+  /** granted scope of the pairing (e.g. "external_app:connect sync:write") */
+  scope?: string | null;
 }
 
 // Orca profiles are shaped to match Bambu Cloud's SlicerSetting on the wire
@@ -2141,6 +2223,92 @@ export interface MakerworldImportsListParams {
 }
 
 // Local preset types (OrcaSlicer imports)
+export interface FilamentFamily {
+  filament_id: string;
+  ecosystem: string;
+  alias: string;
+  vendor: string | null;
+  filament_type: string | null;
+  origin: string; // 'system' | 'cloud_bambu' | 'cloud_orca' | 'authored' | 'local'
+}
+
+// Authoring (spec B): the Create Filament dialog contract.
+export interface AuthoringOptions {
+  filament_types: string[];
+  push: Record<string, boolean>;
+  /** BS printer PROFILE names ("Bambu Lab P1S 0.4 nozzle") — the authoring
+   *  dialog targets profiles, not BamDude devices. */
+  printer_names: string[];
+}
+
+export interface CreateFamilyRequest {
+  vendor: string;
+  filament_type: string;
+  serial: string;
+  printer_ids: number[];
+  printer_names: string[];
+  source_mode: 'type' | 'preset';
+  source?: string | null;
+  source_id?: string | null;
+  push_to_bambu?: boolean;
+  push_to_orca?: boolean;
+  /** false = cloud-only creation (cloud-tab flows). */
+  save_local?: boolean;
+}
+
+export interface ClonedRootOut {
+  printer_id: number | null;
+  printer_name: string | null;
+  local_preset_id: number | null;
+  preset_name: string | null;
+  error: string | null;
+}
+
+export interface CreateFamilyResponse {
+  filament_id: string;
+  name: string;
+  attached: boolean;
+  roots: ClonedRootOut[];
+  warnings: string[];
+  push: Array<{ name?: string; status: string; setting_id?: string | null; detail?: string | null }> | null;
+  push_orca: FamilyPushResult[] | null;
+}
+
+export interface FamilyPushResult {
+  name?: string;
+  status: string; // pushed | updated | up_to_date | conflict | error | overwritten | adopted
+  setting_id?: string | null; // bambu leg
+  profile_id?: string | null; // orca leg
+  row_id?: number; // set on status=conflict — feeds push-resolve
+  server_updated_time?: number | null;
+  detail?: string | null;
+}
+
+export interface AuthoredFamilyPreset {
+  row_id: number;
+  name: string;
+  bambu_pushed_id: string | null;
+  bambu_dirty: boolean;
+  orca_profile_id: string | null;
+  orca_dirty: boolean;
+}
+
+export interface AuthoredFamily {
+  filament_id: string;
+  alias: string | null;
+  vendor: string | null;
+  filament_type: string | null;
+  presets: AuthoredFamilyPreset[];
+}
+
+export interface FamilyPresetInfo {
+  name: string;
+  setting_id: string;
+  nozzle_temp_min: number | null;
+  nozzle_temp_max: number | null;
+  compatible_printers: string[];
+}
+
 export interface LocalPreset {
   id: number;
   name: string;
@@ -2189,6 +2357,97 @@ export type BedType =
   | 'Textured PEI Plate'
   | 'Supertack Plate';
 
+/**
+ * Why a preset's own values could not be read.
+ *
+ * ⚠️ Four causes, not one. The overwhelmingly common one has an obvious fix and
+ * is not an edge case: a sidecar image older than `POST /profiles/resolve` is
+ * the normal state for an install that has not rebuilt it, so collapsing them
+ * into "could not be read" would show an amber warning on every slice with
+ * nothing pointing at the sidecar.
+ */
+export type SlicerPresetValuesReason =
+  | 'ok'
+  | 'sidecar_outdated'
+  | 'sidecar_unavailable'
+  | 'not_configured'
+  | 'preset_unresolved';
+
+export interface SlicerPresetValues {
+  /** False when the sidecar could not supply values; `values` is then empty. */
+  resolved: boolean;
+  /** Flattened key -> value map, in the string forms a process preset stores. */
+  values: Record<string, string | string[]>;
+  reason: SlicerPresetValuesReason;
+}
+
+// --- Git backup restore ------------------------------------------------------
+
+export type RestoreCategory = 'kprofiles' | 'settings' | 'spools' | 'archives';
+
+export interface GitCommitInfo {
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
+export interface GitCommitListResponse {
+  success: boolean;
+  message: string;
+  branch: string;
+  commits: GitCommitInfo[];
+}
+
+export type GitRestoreParams = Record<string, string | number>;
+
+export interface GitRestorePreviewCategory {
+  category: RestoreCategory;
+  available: boolean;
+  item_count: number;
+  /** English rendering. Used as i18next's defaultValue, never shown on its own. */
+  detail: string | null;
+  /** Key under backup.restoreFromGit.details, or null when there is no caveat. */
+  detail_code: string | null;
+  detail_params: GitRestoreParams;
+}
+
+export interface GitRestorePreview {
+  success: boolean;
+  message: string;
+  ref: string;
+  commit: GitCommitInfo | null;
+  metadata_version: string | null;
+  categories: GitRestorePreviewCategory[];
+}
+
+export interface GitRestoreRequest {
+  ref?: string;
+  categories: RestoreCategory[];
+  overwrite_existing?: boolean;
+}
+
+export interface GitRestoreNote {
+  code: string;
+  params: GitRestoreParams;
+  message: string;
+}
+
+export interface GitRestoreCategoryResult {
+  restored: number;
+  skipped: number;
+  failed: number;
+  notes: GitRestoreNote[];
+}
+
+export interface GitRestoreResponse {
+  success: boolean;
+  message: string;
+  log_id: number | null;
+  ref: string | null;
+  results: Record<string, GitRestoreCategoryResult>;
+}
+
 export interface SliceRequest {
   // "Slice as designed" (upstream #2611). 3MF only: slice using the file's
   // embedded project_settings.config (the designer's own wall count, infill,
@@ -2213,6 +2472,19 @@ export interface SliceRequest {
   filament_presets?: PresetRef[];
   plate?: number;
   export_3mf?: boolean;
+  /** The user's own process-setting edits from the settings panel, as a sparse
+   * `{option_key: value}` map. Applied after the source's support settings and
+   * the designer's carried tweaks, so an explicit choice wins over both. */
+  process_overrides?: Record<string, string | number | boolean | string[]>;
+  /** Run the slicer's auto-arrange pass, repositioning objects on the bed.
+   * Unions with the automatic cross-nozzle-class arrange rather than
+   * replacing it — an unticked box cannot switch that one off. */
+  auto_arrange?: boolean;
+  /** Run the slicer's auto-orientation pass, rotating each object onto its
+   * best-scoring orientation. User-driven only; nothing turns it on by
+   * itself, since rotating a deliberately laid-out model is not a change to
+   * make silently. */
+  auto_orient?: boolean;
   // Per-job slicer override. When the user has both OrcaSlicer and
   // BambuStudio sidecars configured, the SliceModal exposes a radio so the
   // slicer can be picked per source file. Falls back to the global
@@ -2294,6 +2566,13 @@ export interface SliceResponse {
   filament_used_g: number;
   filament_used_mm: number;
   used_embedded_settings: boolean;
+  /**
+   * Set when the slice could not be written to the source's external folder and
+   * went to managed storage instead; names which reason. `null` on every normal
+   * slice. Surfaced as a warning — a silent fallback is what made the original
+   * bug impossible to see.
+   */
+  external_write_fallback?: string | null;
 }
 
 export interface SliceArchiveResponse {
@@ -2415,6 +2694,10 @@ export interface CloudDevice {
 
 // Smart Plug types
 export interface SmartPlug {
+  /** Whether this is the plug the printer card treats as that machine's power.
+   * Decided by the backend so every surface that switches a printer agrees;
+   * never re-derive it here. False for plugs with no printer. */
+  is_main_plug?: boolean;
   id: number;
   name: string;
   plug_type: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest' | 'zigbee';
@@ -2578,7 +2861,12 @@ export interface SensorMeasurement {
 export interface ZigbeeSensor {
   id: number;
   name: string;
+  /** Where this reading belongs, when the answer is a room or a shelf. */
   location: PrinterLocation | null;
+  /** ...or the machine it is taped to. Exclusive with `location` -- the
+   *  operator picks one, and setting either clears the other. */
+  printer_id: number | null;
+  printer_name: string | null;
   ieee: string;
   nwk: number | null;
   manufacturer: string | null;
@@ -3040,6 +3328,7 @@ export interface PrinterQueue {
   printer_location?: PrinterLocation | null;
   status: 'idle' | 'printing' | 'paused' | 'error';
   is_paused: boolean;
+  auto_distribute_eligible: boolean;
   last_activity_at: string | null;
   current_item_id: number | null;
   pending_count: number;
@@ -3159,6 +3448,10 @@ export interface AutoQueueItemCreate {
   force_color_match?: boolean;
   plate_id?: number | null;
   plate_ids?: number[] | null;
+  /** Runs wanted per plate, keyed by plate index. A plate left out takes
+   *  ``quantity``. Only the auto-queue needs this — the per-printer route gets
+   *  one request per plate and carries the count in each. */
+  plate_quantities?: Record<number, number> | null;
   bed_levelling?: CalibrationMode;
   flow_cali?: CalibrationMode;
   layer_inspect?: boolean;
@@ -3192,6 +3485,7 @@ export interface AutoQueueItemUpdate {
   timelapse?: boolean | null;
   use_ams?: boolean | null;
   mesh_mode_fast_check?: boolean | null;
+  timelapse_storage?: TimelapseStorage | null;
   execute_swap_macros?: boolean | null;
   swap_macro_events?: string[] | null;
   selected_macro_ids?: number[] | null;
@@ -3202,12 +3496,15 @@ export interface MQTTLogEntry {
   timestamp: string;
   topic: string;
   direction: 'in' | 'out';
-  payload: Record<string, unknown>;
+  // A line whose payload was not JSON comes back as the raw string rather than
+  // being dropped — a half-written last line must not blank the view.
+  payload: Record<string, unknown> | string;
 }
 
-export interface MQTTLogsResponse {
-  logging_enabled: boolean;
-  logs: MQTTLogEntry[];
+export interface MQTTRecordingResponse {
+  recording: boolean;
+  size_bytes: number;
+  entries: MQTTLogEntry[];
 }
 
 // K-Profile types
@@ -3297,10 +3594,13 @@ export interface NotificationProvider {
   on_printer_error: boolean;
   on_ai_failure_detection: boolean;
   on_filament_low: boolean;
+  on_filament_runout: boolean;
+  on_filament_deficit: boolean;
   on_maintenance_due: boolean;
   // AMS environmental alarms (regular AMS)
   on_ams_humidity_high: boolean;
   on_ams_temperature_high: boolean;
+  on_ams_drying_suspended: boolean;
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high: boolean;
   on_ams_ht_temperature_high: boolean;
@@ -3363,10 +3663,13 @@ export interface NotificationProviderCreate {
   on_printer_error?: boolean;
   on_ai_failure_detection?: boolean;
   on_filament_low?: boolean;
+  on_filament_runout?: boolean;
+  on_filament_deficit?: boolean;
   on_maintenance_due?: boolean;
   // AMS environmental alarms (regular AMS)
   on_ams_humidity_high?: boolean;
   on_ams_temperature_high?: boolean;
+  on_ams_drying_suspended?: boolean;
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high?: boolean;
   on_ams_ht_temperature_high?: boolean;
@@ -3423,10 +3726,13 @@ export interface NotificationProviderUpdate {
   on_printer_error?: boolean;
   on_ai_failure_detection?: boolean;
   on_filament_low?: boolean;
+  on_filament_runout?: boolean;
+  on_filament_deficit?: boolean;
   on_maintenance_due?: boolean;
   // AMS environmental alarms (regular AMS)
   on_ams_humidity_high?: boolean;
   on_ams_temperature_high?: boolean;
+  on_ams_drying_suspended?: boolean;
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high?: boolean;
   on_ams_ht_temperature_high?: boolean;
@@ -3523,6 +3829,10 @@ export interface GitBackupStatus {
   configured: boolean;
   enabled: boolean;
   is_running: boolean;
+  /** Separate from `is_running`: the two block different things. A running
+   * backup only stops another backup; a running restore is rewriting the very
+   * rows a backup would read. */
+  restore_running: boolean;
   progress: string | null;
   last_backup_at: string | null;
   last_backup_status: string | null;
@@ -3779,7 +4089,8 @@ export interface InventorySpool {
   weight_used_baseline?: number;
   slicer_filament: string | null;
   slicer_filament_name: string | null;
-  resolved_filament_id?: string | null;
+  // Family link (spec A §5.1): the catalog identity ("GFG99" / "P122e532").
+  filament_family_id?: string | null;
   nozzle_temp_min: number | null;
   nozzle_temp_max: number | null;
   note: string | null;
@@ -3829,16 +4140,230 @@ export interface SpoolLabelEntry {
   /** Optional override for the label's bold central line. The frontend forwards
    *  the value composed by ``formatSpoolDisplayName`` against the user's
    *  ``settings.spool_display_template`` so the printed label matches the
-   *  Inventory page. When omitted the backend composes a fallback as
-   *  ``color_name → slicer_filament_name → "{brand} {material}"``. */
+   *  Inventory page. When omitted the backend interpolates that same setting
+   *  itself — a label printed by an API key must read like one printed here. */
   display_name?: string | null;
+}
+
+/** Where an element sits, in millimetres from the top-left of the label. */
+export interface LabelElementBox {
+  x_mm: number;
+  y_mm: number;
+  w_mm: number;
+  h_mm: number;
+}
+
+export interface LabelTextElement extends LabelElementBox {
+  type: 'text';
+  /** Placeholders in `{brand}` form, resolved server-side. ⚠️ An unknown one
+   *  survives verbatim so a typo shows in the preview rather than as a gap. */
+  content: string;
+  size_mm: number;
+  bold: boolean;
+  italic: boolean;
+  align: 'left' | 'center' | 'right';
+  valign: 'top' | 'middle' | 'bottom';
+  /** `shrink` fits by reducing type; `clip` keeps the size and truncates. */
+  fit: 'shrink' | 'clip';
+}
+
+export interface LabelQrElement extends LabelElementBox {
+  type: 'qr';
+  content: string;
+}
+
+export interface LabelBarcodeElement extends LabelElementBox {
+  type: 'barcode';
+  content: string;
+  symbology: 'code128' | 'code39' | 'ean13' | 'ean8' | 'upca' | 'itf';
+}
+
+export interface LabelSwatchElement extends LabelElementBox {
+  type: 'swatch';
+  content: string;
+  /** The outline the colour is poured into. ⚠️ Multi-colour banding survives
+   *  every shape — a two-colour spool is two colours whatever the outline. */
+  shape: LabelSwatchShape;
+}
+
+export type LabelSwatchShape = 'rect' | 'circle' | 'rounded';
+
+export type LabelTemplateElement =
+  | LabelTextElement
+  | LabelQrElement
+  | LabelBarcodeElement
+  | LabelSwatchElement;
+
+export interface LabelTemplate {
+  id: number;
+  name: string;
+  /** One line saying what the label is for, shown beside the name wherever a
+   *  design is offered. The print dialog used to hard-code six of these as
+   *  translation keys; making it editable is what stopped that. */
+  description: string;
+  width_mm: number;
+  height_mm: number;
+  shape: 'rect' | 'round';
+  /** Which printer this design is drawn for. `driver` goes out as PDF and may
+   *  use colour — it could be landing on an inkjet or a laser; `thermal` goes
+   *  to a one-bit head, where a colour element is refused rather than dropped. */
+  target: LabelTarget;
+  elements: LabelTemplateElement[];
+  /** Set on the designs that shipped with BamDude. It resolves the names the
+   *  print API accepts and records where the row came from.
+   *
+   *  ⚠️ It does NOT freeze the row — a seeded design is a starting point a
+   *  person may redraw, and the edit reaches those automations too. Deleting
+   *  one falls back to the shipped definition, so it reads as a reset. */
+  builtin_key: string | null;
+  is_builtin: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+/** What a template looks like before it has an id. */
+export interface LabelTemplateInput {
+  name: string;
+  description: string;
+  width_mm: number;
+  height_mm: number;
+  shape: 'rect' | 'round';
+  target: LabelTarget;
+  elements: LabelTemplateElement[];
+}
+
+export type LabelTarget = 'driver' | 'thermal';
+
+export interface LabelPlaceholder {
+  key: string;
+  label: string;
+  description: string;
+  example: string;
+}
+
+export type LabelPageSize = 'A4' | 'A5' | 'letter';
+
+/** A page geometry before it has an id. */
+export interface LabelSheetInput {
+  name: string;
+  page_size: LabelPageSize;
+  cell_width_mm: number;
+  cell_height_mm: number;
+  cols: number;
+  rows: number;
+  margin_top_mm: number;
+  margin_left_mm: number;
+  gap_x_mm: number;
+  gap_y_mm: number;
+}
+
+export interface LabelSheet {
+  id: number;
+  name: string;
+  builtin_key: string | null;
+  page_size: LabelPageSize;
+  cell_width_mm: number;
+  cell_height_mm: number;
+  cols: number;
+  rows: number;
+  margin_top_mm: number;
+  margin_left_mm: number;
+  gap_x_mm: number;
+  gap_y_mm: number;
+  /** Seeded, and read-only for the same reason a built-in design is. */
+  is_builtin: boolean;
+  /** What about this grid does not fit its paper, in words. Recomputed on every
+   *  read — a geometry can stop fitting without anyone editing it, by changing
+   *  the paper under it. */
+  overflow: string[];
+}
+
+/** A rendered preview plus whatever went wrong drawing it. */
+export interface LabelPreview {
+  blob: Blob;
+  warnings: string[];
+}
+
+/** A label printer attached to somebody's desktop, reached through a bridge. */
+export interface LabelDevice {
+  id: number;
+  installation_id: string;
+  driver: string;
+  model: string | null;
+  protocol_version: number | null;
+  transport: string | null;
+  address: string | null;
+  name: string | null;
+  /** ⚠️ False until a person adopts it. The bridge authenticating proves it is
+   *  ours, not that this printer should be given our labels. */
+  enabled: boolean;
+  density: number;
+  app_version: string | null;
+  last_seen_at: string | null;
+  cassette_barcode: string | null;
+  /** Null when nobody has taught this barcode a size yet. */
+  cassette_width_mm: number | null;
+  cassette_height_mm: number | null;
+  /** 0 = the printer says it has none; null = it did not say. */
+  paper_state: number | null;
+  power_level: number | null;
+  /** The bridge answered but the printer behind it did not. */
+  printer_reachable: boolean;
+  queued: number;
+}
+
+export interface LabelDeviceUpdate {
+  name?: string | null;
+  enabled?: boolean;
+  density?: number;
+}
+
+export interface LabelJob {
+  id: number;
+  device_id: number;
+  spool_id: number | null;
+  template_id: number | null;
+  width_mm: number;
+  height_mm: number;
+  copies: number;
+  status: string;
+  attempts: number;
+  error: string | null;
+  claimed_at: string | null;
+  created_at: string | null;
+}
+
+export interface LabelJobCreate {
+  device_id: number;
+  spools: SpoolLabelEntry[];
+  /** Omitted, the server picks the design matching the loaded cassette — and
+   *  refuses if nothing does, rather than guessing a size. */
+  template_id?: number;
+  copies?: number;
+}
+
+export interface LabelCassette {
+  id: number;
+  barcode: string;
+  width_mm: number;
+  height_mm: number;
+  name: string | null;
 }
 
 export interface SpoolLabelRequest {
   spools: SpoolLabelEntry[];
-  template: SpoolLabelTemplate;
-  /** Black-and-white thermal printers: drop the colour swatch (prints as a
-   *  muddy grey block) and widen the text column instead (#1870). */
+  /** One of the six names this endpoint has always taken. Exclusive with
+   *  ``template_id`` — naming both is refused rather than guessed at. */
+  template?: SpoolLabelTemplate;
+  /** A design from the label-template catalogue, by id. */
+  template_id?: number;
+  /** Paper to lay that design out on. Only meaningful beside ``template_id``. */
+  sheet_id?: number;
+  /** Black-and-white thermal printers: drop the colour swatch, which prints as
+   *  a muddy grey block (#1870). The hex line still carries the colour.
+   *  ⚠️ The text no longer widens into the freed space: the boxes are a design
+   *  somebody placed, and rearranging them behind their back would be worse
+   *  than the gap. */
   monochrome?: boolean;
 }
 
@@ -3907,7 +4432,7 @@ export interface FilamentSkuSettings {
   color_name: string | null;
   lead_time_days: number;
   safety_margin_value: number;
-  safety_margin_unit: 'days' | 'g';
+  safety_margin_unit: 'days' | 'g' | 'kg';
   alerts_snoozed: boolean;
 }
 
@@ -3955,6 +4480,9 @@ export interface UpdateCheckResult {
   is_windows_installer?: boolean;
   update_method?: 'docker' | 'git' | 'ha_addon' | 'windows_installer';
   installer_download_url?: string | null;
+  /** ⚠️ A GUESS, and a prefill only — never the saved setting. Read the saved
+   *  `docker_compose_dir` from settings; fall back to this when it is empty. */
+  compose_dir_detected?: string | null;
 }
 
 export interface UpdateStatus {
@@ -4113,6 +4641,8 @@ export type Permission =
   | 'inventory:forecast_read' | 'inventory:forecast_write'
   | 'smart_plugs:read' | 'smart_plugs:create' | 'smart_plugs:update' | 'smart_plugs:delete' | 'smart_plugs:control'
   | 'smart_sensors:read' | 'smart_sensors:create' | 'smart_sensors:update' | 'smart_sensors:delete'
+  | 'label_templates:read' | 'label_templates:write'
+  | 'label_devices:read' | 'label_devices:poll' | 'label_devices:manage' | 'label_jobs:create'
   | 'camera:view'
   | 'maintenance:read' | 'maintenance:create' | 'maintenance:update' | 'maintenance:delete'
   | 'kprofiles:read' | 'kprofiles:create' | 'kprofiles:update' | 'kprofiles:delete'
@@ -4126,7 +4656,7 @@ export type Permission =
   | 'system:read'
   | 'settings:read' | 'settings:update' | 'settings:backup' | 'settings:restore'
   | 'git:backup' | 'git:restore'
-  | 'cloud:auth' | 'orca_cloud:auth'
+  | 'cloud:auth' | 'orca_cloud:auth' | 'cloud_link:manage'
   | 'makerworld:view' | 'makerworld:import'
   | 'api_keys:read' | 'api_keys:create' | 'api_keys:update' | 'api_keys:delete'
   | 'users:read' | 'users:create' | 'users:update' | 'users:delete'
@@ -4366,6 +4896,18 @@ export interface UserResponse {
   groups: GroupBrief[];
   permissions: Permission[];  // All permissions from groups
   created_at: string;
+}
+
+/** Just enough to resolve a user id to a display name (`GET /users/slim`).
+ *
+ * ⚠️ Deliberately narrower than `UserResponse`, and that narrowness is the
+ * contract: the full listing is admin-gated because it carries emails, roles,
+ * group membership and permission sets, while this one is reachable by anyone
+ * who may read status. Prefer it wherever only a name is rendered.
+ */
+export interface UserSlim {
+  id: number;
+  username: string;
 }
 
 /** One match from GET /auth/ldap/search — surfaced in the admin UI when
@@ -4879,12 +5421,18 @@ export interface PACalibHistoryEntryOut {
 /** Upload a CSV to the spool import endpoint (#1576). Multipart, so it bypasses
  *  `request<T>()` (which sends JSON): the browser must set the form-data
  *  boundary itself. `dryRun` toggles preview-only vs. real import. */
-async function uploadSpoolsCsv<T>(file: File, dryRun: boolean): Promise<T> {
+async function uploadSpoolsCsv<T>(file: File, dryRun: boolean, options?: CsvImportOptions): Promise<T> {
   const form = new FormData();
   form.append('file', file);
   const headers: Record<string, string> = {};
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-  const response = await fetch(`${API_BASE}/inventory/spools/import${dryRun ? '?dry_run=true' : ''}`, {
+  const params = new URLSearchParams();
+  if (dryRun) params.set('dry_run', 'true');
+  if (options?.encoding && options.encoding !== 'auto') params.set('encoding', options.encoding);
+  if (options?.delimiter && options.delimiter !== 'auto') params.set('delimiter', options.delimiter);
+  if (options?.decimal && options.decimal !== 'auto') params.set('decimal', options.decimal);
+  const qs = params.toString();
+  const response = await fetch(`${API_BASE}/inventory/spools/import${qs ? `?${qs}` : ''}`, {
     method: 'POST',
     headers,
     body: form,
@@ -4901,6 +5449,21 @@ async function uploadSpoolsCsv<T>(file: File, dryRun: boolean): Promise<T> {
 }
 
 // ── CSV import/export (#1576) ──────────────────────────────────────────────
+/** Locale knobs for the CSV importer — 'auto' everywhere by default (sniffed
+ *  delimiter, strict decimal-comma tolerance, UTF-8). Explicit choices exist
+ *  for what auto cannot safely guess: legacy encodings and thousands-separated
+ *  numbers. */
+export interface CsvImportOptions {
+  encoding?: 'auto' | 'utf-8' | 'windows-1251' | 'windows-1252';
+  delimiter?: 'auto' | 'comma' | 'semicolon' | 'tab';
+  decimal?: 'auto' | 'dot' | 'comma';
+}
+/** Export-side locale knobs; the BOM is what makes Windows Excel read UTF-8. */
+export interface CsvExportOptions {
+  encoding?: 'utf-8' | 'utf-8-bom';
+  delimiter?: 'comma' | 'semicolon' | 'tab';
+  decimal?: 'dot' | 'comma';
+}
 /** One row's outcome from the import preview / real import. */
 export interface CsvImportRow {
   row_number: number;
@@ -4940,6 +5503,32 @@ export interface CsvImportResult {
 }
 
 // API functions
+
+export interface UsageProjectionSegment {
+  start_layer: number;
+  spool_id: number | null;
+  spoolman_spool_id: number | null;
+  consumed_g: number;
+}
+
+export interface UsageProjectionSlot {
+  slot_id: number;
+  type: string;
+  color: string;
+  estimate_g: number;
+  consumed_g: number;
+  segments?: UsageProjectionSegment[];
+}
+
+export interface UsageProjection {
+  active: boolean;
+  archive_id?: number;
+  print_name?: string | null;
+  layer_num?: number;
+  total_layers?: number;
+  slots?: UsageProjectionSlot[];
+}
+
 export const api = {
   // Authentication
   getAuthStatus: () => request<AuthStatus>('/auth/status'),
@@ -5044,8 +5633,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  admin2FADisable: (userId: number) =>
-    request<{ message: string }>(`/auth/2fa/admin/${userId}`, { method: 'DELETE' }),
+  // The endpoint re-authenticates: an admin with a local password MUST send it
+  // (OIDC/LDAP-only admins are exempt). A bodyless call is a guaranteed 401.
+  admin2FADisable: (userId: number, adminPassword?: string) =>
+    request<{ message: string }>(`/auth/2fa/admin/${userId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ admin_password: adminPassword ?? null }),
+    }),
 
   // OIDC (§18.2)
   getOIDCProviders: () => request<OIDCProvider[]>('/auth/oidc/providers'),
@@ -5075,6 +5669,11 @@ export const api = {
 
   // Users
   getUsers: () => request<UserResponse[]>('/users/'),
+  // ⚠️ Cache this under its own react-query key ('users-slim'). The full
+  // listing owns 'users', and the two shapes would clobber each other —
+  // whichever resolved last would win, and a consumer reading `email` off a
+  // slim row gets undefined rather than an error.
+  getUsersSlim: () => request<UserSlim[]>('/users/slim'),
   getUser: (id: number) => request<UserResponse>(`/users/${id}`),
   createUser: (data: UserCreate) =>
     request<UserResponse>('/users/', {
@@ -5136,6 +5735,7 @@ export const api = {
 
   // Printers
   getPrinters: () => request<Printer[]>('/printers/'),
+  getUsageProjection: (id: number) => request<UsageProjection>(`/printers/${id}/usage-projection`),
   // Includes archived (soft-retired) printers — used by the Settings restore
   // section and the Archives history filter. A separate method (not a param on
   // getPrinters) so the many bare `queryFn: api.getPrinters` call sites keep
@@ -5216,6 +5816,12 @@ export const api = {
     }),
   clearPlate: (printerId: number) =>
     request<{ success: boolean; message: string }>(`/printers/${printerId}/clear-plate`, {
+      method: 'POST',
+    }),
+  // The other answer to a full plate: re-arm the job that just finished and
+  // print it again. Same permission as clearPlate — two answers, one question.
+  repeatPrint: (printerId: number) =>
+    request<{ success: boolean; item_id: number }>(`/printers/${printerId}/repeat-print`, {
       method: 'POST',
     }),
   startCalibration: (printerId: number, options: {
@@ -5406,7 +6012,7 @@ export const api = {
    * than swallowed, because a silent failure would leave the operator
    * believing a recording is running.
    */
-  setMqttRecording: (printerId: number, enabled: boolean) =>
+  setMQTTRecording: (printerId: number, enabled: boolean) =>
     request<{ enabled: boolean; file: string }>(`/printers/${printerId}/mqtt-recording`, {
       method: 'POST',
       body: JSON.stringify({ enabled }),
@@ -5598,21 +6204,17 @@ export const api = {
       { method: 'POST' },
     ),
 
-  // MQTT Debug Logging
-  enableMQTTLogging: (printerId: number) =>
-    request<{ logging_enabled: boolean }>(`/printers/${printerId}/logging/enable`, {
-      method: 'POST',
-    }),
-  disableMQTTLogging: (printerId: number) =>
-    request<{ logging_enabled: boolean }>(`/printers/${printerId}/logging/disable`, {
-      method: 'POST',
-    }),
-  getMQTTLogs: (printerId: number) =>
-    request<MQTTLogsResponse>(`/printers/${printerId}/logging`),
-  clearMQTTLogs: (printerId: number) =>
-    request<{ status: string }>(`/printers/${printerId}/logging`, {
+  // MQTT recording. One mechanism: the recorder writes a file and this reads it
+  // back. The in-memory buffer this replaced held a hundred messages and saw
+  // only the commands that went through send_command.
+  getMQTTRecording: (printerId: number, limit = 500) =>
+    request<MQTTRecordingResponse>(`/printers/${printerId}/mqtt-recording?limit=${limit}`),
+  clearMQTTRecording: (printerId: number) =>
+    request<{ removed: number }>(`/printers/${printerId}/mqtt-recording`, {
       method: 'DELETE',
     }),
+  mqttRecordingDownloadUrl: (printerId: number) =>
+    `/api/v1/printers/${printerId}/mqtt-recording/download`,
 
   // Printer File Manager
   // ``storage`` is optional everywhere: omitted, the backend answers with the
@@ -6494,6 +7096,38 @@ export const api = {
     request<OrcaProfileListResponse>('/orca-cloud/profiles'),
   orcaCloudGetProfile: (id: string) =>
     request<OrcaProfileDetail>(`/orca-cloud/profiles/${id}`),
+
+  // Cloud Link — the six calls the settings panel makes, all behind
+  // `cloud_link:manage`. Every mutating one answers with the FULL status
+  // rather than an acknowledgement: a save changes several of the fields the
+  // panel is already displaying, so a caller that had to re-fetch would show a
+  // stale link for one round trip and the wrong one if the re-fetch failed.
+  // ⚠️ `pairCloudLink` blocks for up to ~15 s — it is a synchronous HTTPS call
+  // to the portal, with no job to poll.
+  getCloudLinkStatus: () => request<CloudLinkStatus>('/cloud-link/status'),
+  pairCloudLink: (pairing_code: string, portal_url?: string) =>
+    request<CloudLinkStatus>('/cloud-link/pair', {
+      method: 'POST',
+      // `portal_url` is omitted rather than sent as null when the user left the
+      // advanced field alone: absent means "keep the saved portal", and the
+      // backend reads absence, not emptiness.
+      body: JSON.stringify(portal_url ? { pairing_code, portal_url } : { pairing_code }),
+    }),
+  unpairCloudLink: () =>
+    request<CloudLinkStatus>('/cloud-link/unpair', { method: 'POST' }),
+  /** Replaces the allowlist wholesale — an empty array means "publish nothing". */
+  setCloudLinkPublishSet: (printer_ids: number[]) =>
+    request<CloudLinkStatus>('/cloud-link/publish-set', {
+      method: 'PUT',
+      body: JSON.stringify({ printer_ids }),
+    }),
+  setCloudLinkEnabled: (enabled: boolean) =>
+    request<CloudLinkStatus>('/cloud-link/enabled', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  getCloudLinkAudit: (page = 1, pageSize = 20) =>
+    request<CloudLinkAuditPage>(`/cloud-link/audit?page=${page}&page_size=${pageSize}`),
   getCloudSettings: (version = '02.04.00.70') =>
     request<SlicerSettingsResponse>(`/cloud/settings?version=${version}`),
   getBuiltinFilaments: () =>
@@ -6575,7 +7209,11 @@ export const api = {
     request<FieldDefinitionsResponse>(`/cloud/fields/${presetType}`),
   getAllCloudFields: () =>
     request<Record<string, FieldDefinitionsResponse>>('/cloud/fields'),
-  getFilamentInfo: (settingIds: string[]) =>
+  // includeContent=true is the calibration wizard's opt-in: it asks the
+  // backend to also fetch cloud preset CONTENT (bed/nozzle/max-vol-speed).
+  // Plain calls (tray tooltips, slot cards) resolve names from the local
+  // catalog with zero cloud round-trips.
+  getFilamentInfo: (settingIds: string[], includeContent = false) =>
     request<
       Record<
         string,
@@ -6591,12 +7229,23 @@ export const api = {
           filament_max_volumetric_speed?: number;
         }
       >
-    >('/cloud/filament-info', {
+    >(`/cloud/filament-info?include_content=${includeContent}`, {
       method: 'POST',
       body: JSON.stringify(settingIds),
     }),
 
   // Smart Plugs
+  // The relay's state after mains power returns (ZCL StartUpOnOff) — read
+  // from / written to the device itself, zigbee plugs only.
+  getPlugPowerOnBehavior: (plugId: number) =>
+    request<{ mode: 'on' | 'off' | 'previous' | null; supported: boolean }>(
+      `/smart-plugs/${plugId}/power-on-behavior`,
+    ),
+  setPlugPowerOnBehavior: (plugId: number, mode: 'on' | 'off' | 'previous') =>
+    request<{ mode: 'on' | 'off' | 'previous'; supported: boolean }>(
+      `/smart-plugs/${plugId}/power-on-behavior`,
+      { method: 'PUT', body: JSON.stringify({ mode }) },
+    ),
   getSmartPlugs: () => request<SmartPlug[]>('/smart-plugs/'),
   getSmartPlug: (id: number) => request<SmartPlug>(`/smart-plugs/${id}`),
   getSmartPlugByPrinter: (printerId: number) => request<SmartPlug | null>(`/smart-plugs/by-printer/${printerId}`),
@@ -6640,13 +7289,23 @@ export const api = {
   // re-issues them to the device, which is the whole point.
   clearDeviceSettings: (ieee: string) =>
     request<DeviceSettings>(`/zigbee/devices/${encodeURIComponent(ieee)}/settings`, { method: 'DELETE' }),
-  adoptZigbeeSensor: (payload: { zigbee_ieee: string; name: string; location_id: number | null }) =>
+  adoptZigbeeSensor: (payload: {
+    zigbee_ieee: string;
+    name: string;
+    location_id: number | null;
+    printer_id?: number | null;
+  }) =>
     request<{ id: number; name: string }>('/zigbee/sensors', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
   // `location_id: null` clears the place; omitting the key leaves it alone.
-  updateZigbeeSensor: (id: number, payload: { name?: string; location_id?: number | null }) =>
+  // Sending `printer_id` binds to that printer INSTEAD, clearing the place --
+  // the two are exclusive, and the backend is what enforces it.
+  updateZigbeeSensor: (
+    id: number,
+    payload: { name?: string; location_id?: number | null; printer_id?: number | null },
+  ) =>
     request<{ id: number; name: string }>(`/zigbee/sensors/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
@@ -6846,6 +7505,13 @@ export const api = {
     }),
   assignAutoQueueNow: (id: number) =>
     request<AutoQueueItem>(`/auto-queue/${id}/assign-now`, { method: 'POST' }),
+  // One edit for every still-pending copy of a batch (position excluded
+  // server-side so a group edit cannot undo a manual reorder).
+  updateAutoQueueBatch: (batchId: string, data: AutoQueueItemUpdate) =>
+    request<{ affected: number; batch_id: string }>(`/auto-queue/batch/${batchId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   cancelAutoQueueBatch: (batchId: string) =>
     request<{ affected: number; batch_id: string }>(`/auto-queue/batch/${batchId}`, {
       method: 'DELETE',
@@ -6854,7 +7520,7 @@ export const api = {
   // Printer Queues (queue-level operations)
   getQueues: () =>
     request<PrinterQueue[]>('/queues/'),
-  updateQueue: (queueId: number, data: { status?: 'idle' | 'paused'; is_paused?: boolean }) =>
+  updateQueue: (queueId: number, data: { status?: 'idle' | 'paused'; is_paused?: boolean; auto_distribute_eligible?: boolean }) =>
     request<PrinterQueue>(`/queues/${queueId}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
@@ -6898,18 +7564,6 @@ export const api = {
     }),
 
   // Slot Preset Mappings
-  getSlotPresets: (printerId: number) =>
-    request<Record<number, SlotPresetMapping>>(`/printers/${printerId}/slot-presets`),
-  getSlotPreset: (printerId: number, amsId: number, trayId: number) =>
-    request<SlotPresetMapping | null>(`/printers/${printerId}/slot-presets/${amsId}/${trayId}`),
-  saveSlotPreset: (printerId: number, amsId: number, trayId: number, presetId: string, presetName: string, presetSource = 'cloud') =>
-    request<SlotPresetMapping>(`/printers/${printerId}/slot-presets/${amsId}/${trayId}?preset_id=${encodeURIComponent(presetId)}&preset_name=${encodeURIComponent(presetName)}&preset_source=${encodeURIComponent(presetSource)}`, {
-      method: 'PUT',
-    }),
-  deleteSlotPreset: (printerId: number, amsId: number, trayId: number) =>
-    request<{ success: boolean }>(`/printers/${printerId}/slot-presets/${amsId}/${trayId}`, {
-      method: 'DELETE',
-    }),
 
   // AMS Labels (user-defined friendly names)
   getAmsLabels: (printerId: number) =>
@@ -7160,6 +7814,169 @@ export const api = {
     return response.blob();
   },
 
+  // ── Label templates ──────────────────────────────────────────────────
+  // ⚠️ getLabelTemplates stays PARAMETER-FREE — an optional argument breaks
+  // TanStack's `queryFn: api.getLabelTemplates` inference.
+  getLabelTemplates: () => request<LabelTemplate[]>('/label-templates'),
+  getLabelTemplate: (id: number) => request<LabelTemplate>(`/label-templates/${id}`),
+  createLabelTemplate: (body: LabelTemplateInput) =>
+    request<LabelTemplate>('/label-templates', { method: 'POST', body: JSON.stringify(body) }),
+  updateLabelTemplate: (id: number, body: LabelTemplateInput) =>
+    request<LabelTemplate>(`/label-templates/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  duplicateLabelTemplate: (id: number) =>
+    request<LabelTemplate>(`/label-templates/${id}/duplicate`, { method: 'POST' }),
+  deleteLabelTemplate: (id: number) =>
+    request<void>(`/label-templates/${id}`, { method: 'DELETE' }),
+  getLabelPlaceholders: () => request<LabelPlaceholder[]>('/label-templates/placeholders'),
+  getLabelSheets: () => request<LabelSheet[]>('/label-templates/sheets'),
+  createLabelSheet: (body: LabelSheetInput) =>
+    request<LabelSheet>('/label-templates/sheets', { method: 'POST', body: JSON.stringify(body) }),
+  updateLabelSheet: (id: number, body: LabelSheetInput) =>
+    request<LabelSheet>(`/label-templates/sheets/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  duplicateLabelSheet: (id: number) =>
+    request<LabelSheet>(`/label-templates/sheets/${id}/duplicate`, { method: 'POST' }),
+  deleteLabelSheet: (id: number) =>
+    request<void>(`/label-templates/sheets/${id}`, { method: 'DELETE' }),
+
+  /**
+   * The whole page, with a design laid into every cell.
+   *
+   * ⚠️ The geometry travels in the body and the design by id — the geometry is
+   * what you are editing, the design is what you are checking it against. Comes
+   * back as a PDF, because a page is what a PDF is for.
+   */
+  previewLabelSheet: async (body: { sheet: LabelSheetInput; template_id: number }): Promise<LabelPreview> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/label-templates/sheets/preview`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const raw = response.headers.get('X-Label-Warnings');
+    return {
+      blob: await response.blob(),
+      warnings: raw ? raw.split(' | ').filter(Boolean) : [],
+    };
+  },
+
+  /**
+   * Render a design that has not been saved.
+   *
+   * ⚠️ The template travels in the BODY, not by id: dragging a box must not
+   * have to save anything, and the picture has to come from the renderer that
+   * will do the printing. Raw fetch because the answer is a PNG — `request<T>`
+   * is for JSON — and because the warnings ride in a header beside it.
+   */
+  previewLabelTemplate: async (body: {
+    template: LabelTemplateInput;
+    spool_id?: number | null;
+    dots_per_mm?: number;
+  }): Promise<LabelPreview> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/label-templates/preview`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const raw = response.headers.get('X-Label-Warnings');
+    return {
+      blob: await response.blob(),
+      warnings: raw ? raw.split(' | ').filter(Boolean) : [],
+    };
+  },
+
+  /**
+   * Print the design on screen, with example data, on a real printer.
+   *
+   * ⚠️ Unsaved, like the preview — checking a design before committing to it
+   * means before saving it. Goes through the same gate, renderer and queue a
+   * real print does, so a test that succeeds says something about the print it
+   * rehearses.
+   */
+  testPrintLabelTemplate: (body: { device_id: number; template: LabelTemplateInput }) =>
+    request<{ job_id: number; warnings: string[] }>('/label-templates/test-print', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  // ── Direct-to-device label printing ─────────────────────────────────
+  // ⚠️ getLabelDevices stays PARAMETER-FREE. An optional argument breaks
+  // TanStack's `queryFn: api.getLabelDevices` inference — the same trap
+  // getPrinters / getPrintersWithArchived already exists to avoid.
+  getLabelDevices: () => request<LabelDevice[]>('/label-devices'),
+  updateLabelDevice: (id: number, body: LabelDeviceUpdate) =>
+    request<LabelDevice>(`/label-devices/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteLabelDevice: (id: number) =>
+    request<void>(`/label-devices/${id}`, { method: 'DELETE' }),
+  getLabelJobs: (deviceId?: number) =>
+    request<LabelJob[]>(deviceId ? `/label-jobs?device_id=${deviceId}` : '/label-jobs'),
+  createLabelJobs: (body: LabelJobCreate) =>
+    request<LabelJob[]>('/label-jobs', { method: 'POST', body: JSON.stringify(body) }),
+  cancelLabelJob: (id: number) => request<void>(`/label-jobs/${id}`, { method: 'DELETE' }),
+  getLabelCassettes: () => request<LabelCassette[]>('/label-cassettes'),
+  putLabelCassette: (barcode: string, body: { width_mm: number; height_mm: number; name?: string | null }) =>
+    request<LabelCassette>(`/label-cassettes/${encodeURIComponent(barcode)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  forgetLabelCassette: (barcode: string) =>
+    request<void>(`/label-cassettes/${encodeURIComponent(barcode)}`, { method: 'DELETE' }),
+  // Binary, so raw fetch — request<T> is for JSON. Same picture the device
+  // would get, at the device's own resolution.
+  previewDeviceLabel: async (body: { device_id: number; spool: SpoolLabelEntry; template_id?: number }): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/label-jobs/preview`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+
+  // Filament family catalog (spec A)
+  getFilamentFamilies: (q = '', limit = 200) =>
+    request<FilamentFamily[]>(`/filament-families?q=${encodeURIComponent(q)}&limit=${limit}`),
+  getFilamentFamilyPresets: (filamentId: string, printerName = '') =>
+    request<FamilyPresetInfo[]>(
+      `/filament-families/${encodeURIComponent(filamentId)}/presets?printer_name=${encodeURIComponent(printerName)}`,
+    ),
+  triggerFilamentPresetSync: () => request<{ queued: boolean }>(`/filament-families/sync`, { method: 'POST' }),
+  // Authoring (spec B)
+  getFilamentAuthoringOptions: () => request<AuthoringOptions>(`/filament-families/authoring-options`),
+  createFilamentFamily: (data: CreateFamilyRequest) =>
+    request<CreateFamilyResponse>(`/filament-families`, { method: 'POST', body: JSON.stringify(data) }),
+  deleteFilamentFamily: (filamentId: string, alsoCloud = false) =>
+    request<{ presets_deleted: number; cloud_deleted: number }>(
+      `/filament-families/${encodeURIComponent(filamentId)}?also_cloud=${alsoCloud}`,
+      { method: 'DELETE' },
+    ),
+  pushFilamentFamily: (filamentId: string, ecosystem: 'bambu' | 'orca' = 'bambu') =>
+    request<{ results: FamilyPushResult[] }>(
+      `/filament-families/${encodeURIComponent(filamentId)}/push?ecosystem=${ecosystem}`,
+      { method: 'POST' },
+    ),
+  resolvePushFamilyConflict: (filamentId: string, presetRowId: number, action: 'force' | 'adopt') =>
+    request<{ status: string; profile_id: string | null }>(
+      `/filament-families/${encodeURIComponent(filamentId)}/push-resolve`,
+      { method: 'POST', body: JSON.stringify({ preset_row_id: presetRowId, action }) },
+    ),
+  getAuthoredFamilies: () => request<{ families: AuthoredFamily[] }>('/filament-families/authored'),
+
   // Inventory
   getSpools: (includeArchived = false) =>
     request<InventorySpool[]>(`/inventory/spools?include_archived=${includeArchived}`),
@@ -7167,12 +7984,19 @@ export const api = {
   // ── CSV import/export (#1576) ────────────────────────────────────────────
   // dry_run=true → preview (no write); omitted → real import. Both share one
   // multipart upload helper; see `uploadSpoolsCsv` above.
-  importSpoolsCsvPreview: (file: File): Promise<CsvImportPreview> => uploadSpoolsCsv<CsvImportPreview>(file, true),
-  importSpoolsCsv: (file: File): Promise<CsvImportResult> => uploadSpoolsCsv<CsvImportResult>(file, false),
-  exportSpoolsCsv: async (): Promise<void> => {
+  importSpoolsCsvPreview: (file: File, options?: CsvImportOptions): Promise<CsvImportPreview> =>
+    uploadSpoolsCsv<CsvImportPreview>(file, true, options),
+  importSpoolsCsv: (file: File, options?: CsvImportOptions): Promise<CsvImportResult> =>
+    uploadSpoolsCsv<CsvImportResult>(file, false, options),
+  exportSpoolsCsv: async (options?: CsvExportOptions): Promise<void> => {
     const headers: Record<string, string> = {};
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-    const response = await fetch(`${API_BASE}/inventory/spools/export`, { headers });
+    const params = new URLSearchParams();
+    if (options?.delimiter && options.delimiter !== 'comma') params.set('delimiter', options.delimiter);
+    if (options?.decimal && options.decimal !== 'dot') params.set('decimal', options.decimal);
+    if (options?.encoding && options.encoding !== 'utf-8') params.set('encoding', options.encoding);
+    const qs = params.toString();
+    const response = await fetch(`${API_BASE}/inventory/spools/export${qs ? `?${qs}` : ''}`, { headers });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       throw new Error(error.detail || `HTTP ${response.status}`);
@@ -7348,6 +8172,9 @@ export const api = {
     printer_id: number;
     ams_id: number;
     tray_id: number;
+    // "This is a physical replacement" answer from the mid-pause prompt —
+    // journals a usage-split boundary at the current layer (409 unless paused).
+    mid_print_replacement?: boolean;
   }) =>
     request<InventorySpool>('/spoolman/inventory/slot-assignments', {
       method: 'POST',
@@ -7379,9 +8206,23 @@ export const api = {
       body: JSON.stringify(profiles),
     }),
 
+  // How the assign dialog should treat a mid-print assignment right now:
+  // 'prompt' (paused — ask), 'optin' (running after a pause — checkbox),
+  // 'none' (replacement physically impossible — plain assignment).
+  getReplacementWindow: (printerId: number) =>
+    request<{ mode: 'prompt' | 'optin' | 'none'; pause_layer: number | null }>(
+      `/inventory/assignments/replacement-window/${printerId}`,
+    ),
   getAssignments: (printerId?: number) =>
     request<SpoolAssignment[]>(`/inventory/assignments${printerId ? `?printer_id=${printerId}` : ''}`),
-  assignSpool: (data: { spool_id: number; printer_id: number; ams_id: number; tray_id: number }) =>
+  assignSpool: (data: {
+    spool_id: number;
+    printer_id: number;
+    ams_id: number;
+    tray_id: number;
+    // See assignSpoolmanSlot — mid-pause "replacement" answer.
+    mid_print_replacement?: boolean;
+  }) =>
     request<SpoolAssignment>('/inventory/assignments', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -7957,10 +8798,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  // ⚠️ Answers 202 with a job id, NOT with counts. The counts used to come back
+  // here, which meant holding the request open for the whole walk — and that is
+  // what held SQLite's write lock until unrelated queries died with
+  // `database is locked`. Progress arrives on the socket now.
   scanExternalFolder: (folderId: number) =>
-    request<{ status: string; added: number; removed: number }>(`/library/folders/${folderId}/scan`, {
+    request<{ job_id: number; status: string }>(`/library/folders/${folderId}/scan`, {
       method: 'POST',
     }),
+  getLibraryScanJob: (jobId: number) => request<LibraryScanJob>(`/library/scan-jobs/${jobId}`),
   getLibraryFoldersByProject: (projectId: number) =>
     request<LibraryFolder[]>(`/library/folders/by-project/${projectId}`),
   getLibraryFoldersByArchive: (archiveId: number) =>
@@ -8215,11 +9061,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(options),
     }),
-  addLibraryFilesToQueue: (fileIds: number[]) =>
-    request<AddToQueueResponse>('/library/files/add-to-queue', {
-      method: 'POST',
-      body: JSON.stringify({ file_ids: fileIds }),
-    }),
   printLibraryFile: (
     fileId: number,
     printerId: number,
@@ -8419,8 +9260,18 @@ export const api = {
   // Per-request progress proxy used by the SliceModal's filament-discovery
   // preview slice (the sidecar's CORS allowlist + same-origin policy stop
   // the browser from hitting /slice/progress/{id} directly).
-  getPreviewSliceProgress: (requestId: string) =>
-    request<SliceJobProgress | null>(`/slicer/preview-progress/${requestId}`),
+  // ⚠️ Returns null rather than throwing: this is polled on a timer while a
+  // preview slice runs, and one failed poll is not a failed slice. The id goes
+  // through encodeURIComponent because it reaches us from the caller.
+  getPreviewSliceProgress: async (requestId: string): Promise<SliceJobProgress | null> => {
+    try {
+      return await request<SliceJobProgress>(
+        `/slicer/preview-progress/${encodeURIComponent(requestId)}`,
+      );
+    } catch {
+      return null;
+    }
+  },
   // Reachability probe for a single sidecar — used by the SliceModal to
   // disable a radio option when the picked slicer is offline. The backend
   // caches results for 30 s per (kind, url) so render-time polls don't hit
@@ -8445,6 +9296,18 @@ export const api = {
     }),
   deleteSlicerPipeline: (id: number) =>
     request<void>(`/slicer-pipelines/${id}`, { method: 'DELETE' }),
+  getGitBackupCommits: (limit = 20) =>
+    request<GitCommitListResponse>(`/git-backup/commits?limit=${limit}`),
+  getGitRestorePreview: (ref: string) =>
+    request<GitRestorePreview>(`/git-backup/restore/preview?ref=${encodeURIComponent(ref)}`),
+  restoreFromGit: (body: GitRestoreRequest) =>
+    request<GitRestoreResponse>('/git-backup/restore', { method: 'POST', body: JSON.stringify(body) }),
+
+  getSlicerPresetValues: (ref: PresetRef) =>
+    request<SlicerPresetValues>(
+      `/slicer/preset-values?source=${encodeURIComponent(ref.source)}&id=${encodeURIComponent(ref.id)}`,
+    ),
+
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>
     request<LocalPresetsResponse>('/local-presets/'),
@@ -8779,6 +9642,25 @@ export interface LibraryFolderTree {
   // "sort by recent activity" mode.
   latest_activity_at: string | null;
   children: LibraryFolderTree[];
+}
+
+export interface LibraryScanJob {
+  id: number;
+  folder_id: number;
+  status: 'queued' | 'running' | 'finished' | 'failed';
+  files_total: number;
+  files_seen: number;
+  files_added: number;
+  files_updated: number;
+  files_removed: number;
+  folders_added: number;
+  folders_removed: number;
+  /** True when the walk came back empty against a stocked folder, so the
+   *  deletion pass was refused. Usually an unreachable mount, never silence. */
+  skipped_deletions: boolean;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
 export interface LibraryFolder {
@@ -9143,25 +10025,6 @@ export interface BatchThumbnailResponse {
   results: BatchThumbnailResult[];
 }
 
-// Library Queue types
-export interface AddToQueueResult {
-  file_id: number;
-  filename: string;
-  queue_item_id: number;
-  archive_id: number;
-}
-
-export interface AddToQueueError {
-  file_id: number;
-  filename: string;
-  error: string;
-}
-
-export interface AddToQueueResponse {
-  added: AddToQueueResult[];
-  errors: AddToQueueError[];
-}
-
 // Discovery types
 export interface DiscoveredPrinter {
   serial: string;
@@ -9292,6 +10155,7 @@ export interface VPDiagnosticCheck {
     | 'port_ftps'
     | 'port_mqtt'
     | 'port_bind'
+    | 'privileged_ports'
     | 'certificate';
   status: VPDiagnosticStatus;
   params: Record<string, string | number>;
@@ -9692,7 +10556,7 @@ export interface SwapProfile {
 
 export type MacroActionType = 'gcode' | 'mqtt_action';
 
-export interface MqttActionChoice {
+export interface MQTTActionChoice {
   value: string;
   label: string;
   i18n_key: string;
@@ -9700,21 +10564,21 @@ export interface MqttActionChoice {
 
 /** The single argument an MQTT action takes, described by the server so the
  *  editor can render the right control without knowing the action. */
-export interface MqttActionParam {
+export interface MQTTActionParam {
   kind: string;
   i18n_key: string;
   default: string | null;
-  choices: MqttActionChoice[];
+  choices: MQTTActionChoice[];
   min_value: number | null;
   max_value: number | null;
   unit: string | null;
 }
 
-export interface MqttMacroAction {
+export interface MQTTMacroAction {
   id: string;
   label: string;
   i18n_key: string;
-  param: MqttActionParam | null;
+  param: MQTTActionParam | null;
 }
 
 export interface Macro {
@@ -9775,7 +10639,7 @@ export interface MacroMeta {
   swap_events: string[];
   printer_models: Record<string, string>;
   swap_profiles: SwapProfile[];
-  mqtt_actions: MqttMacroAction[];
+  mqtt_actions: MQTTMacroAction[];
 }
 
 export interface MacroExecuteResponse {
@@ -9800,6 +10664,20 @@ export interface BugReportResponse {
   issue_number?: number;
 }
 
+export interface BugReportListItem {
+  id: number;
+  description: string;
+  status: 'submitted' | 'open' | 'closed' | 'not_planned' | 'failed';
+  github_issue_number: number | null;
+  github_issue_url: string | null;
+  created_at: string;
+}
+
+export interface BugReportListResponse {
+  synced: boolean;
+  reports: BugReportListItem[];
+}
+
 export const bugReportApi = {
   submit: (data: BugReportRequest) =>
     request<BugReportResponse>('/bug-report/submit', {
@@ -9814,6 +10692,8 @@ export const bugReportApi = {
     request<{ logs: string }>(`/bug-report/stop-logging?was_debug=${wasDebug}`, {
       method: 'POST',
     }),
+
+  listReports: () => request<BugReportListResponse>('/bug-report/reports'),
 };
 
 // Macros API

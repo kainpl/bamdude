@@ -81,6 +81,129 @@ describe('PrintModal', () => {
     );
   });
 
+  describe('saved profile vs the operator (2026-08-25)', () => {
+    it('a late-arriving profile never clobbers a toggle the operator already flipped', async () => {
+      // The model — and with it the saved profile — only resolves after a
+      // printer is picked. Unticking a toggle first, picking a printer second
+      // used to let the profile flip the toggle back, and the submit then
+      // saved the flip as the new profile (live: vibration fast-check).
+      const { delay } = await import('msw');
+      server.use(
+        http.get('/api/v1/print-option-preferences/:model', async () => {
+          await delay(800);
+          return HttpResponse.json({
+            printer_model: 'A1M',
+            options: {
+              print_options: {
+                bed_levelling: 'on',
+                flow_cali: 'off',
+                layer_inspect: false,
+                timelapse: false,
+                timelapse_storage: null,
+                mesh_mode_fast_check: true,
+                gcode_injection: false,
+                nozzle_offset_cali: 'on',
+                preheat_override: 'inherit',
+                preheat_chamber_target_override: null,
+              },
+              swap_macros: { execute: false, events: [] },
+              event_macros: { deselected_ids: [] },
+            },
+            updated_at: '2026-08-25T00:00:00Z',
+          });
+        })
+      );
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          archiveId={1}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      // Pick a printer — the model resolves, the profile fetch starts (slow).
+      await user.click(await screen.findByText('A1 Mini'));
+
+      // Expand the options panel and flip the fast-check off while the
+      // profile is still on the wire.
+      await user.click(await screen.findByText('Print Options'));
+      const row = (await screen.findByText('Quick Vibration Check')).closest('label')!;
+      const toggle = row.querySelector('div.relative') as HTMLElement;
+      expect(toggle.className).toContain('bg-bambu-green'); // default: on
+      await user.click(toggle);
+      expect(toggle.className).not.toContain('bg-bambu-green');
+
+      // Let the profile land.
+      await new Promise((r) => setTimeout(r, 1200));
+
+      // The operator's click survives the profile's arrival.
+      const rowAfter = screen.getByText('Quick Vibration Check').closest('label')!;
+      const toggleAfter = rowAfter.querySelector('div.relative') as HTMLElement;
+      expect(toggleAfter.className).not.toContain('bg-bambu-green');
+    });
+  });
+
+  describe('library-file direct print carries the macro selection', () => {
+    it('sends selected_macro_ids in the printLibraryFile payload', async () => {
+      // The archive-reprint sibling always sent it; the library-file direct
+      // print silently dropped the ticked macros (P1S chamber-light macro
+      // never fired, measured live 2026-08-25).
+      let printBody: Record<string, unknown> | null = null;
+      server.use(
+        http.get('/api/v1/library/files/:id/plates', () =>
+          HttpResponse.json({ is_multi_plate: false, plates: [] }),
+        ),
+        http.get('/api/v1/library/files/:id/filament-requirements', () =>
+          HttpResponse.json({ filaments: [] }),
+        ),
+        http.get('/api/v1/macros/', () =>
+          HttpResponse.json([
+            {
+              id: 7,
+              name: 'P1S TurnOff on Start',
+              action_type: 'mqtt_action',
+              mqtt_action: 'chamber_light',
+              mqtt_action_param: 'off',
+              event: 'print_started',
+              printer_models: ['P1S', 'X1C', 'A1M'],
+              enabled: true,
+              swap_mode_only: false,
+            },
+          ]),
+        ),
+        http.post('/api/v1/library/files/:id/print', async ({ request }) => {
+          printBody = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ status: 'started', archive_id: 1 });
+        }),
+      );
+
+      render(
+        <PrintModal
+          mode="reprint"
+          libraryFileId={42}
+          archiveName="test.3mf"
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />,
+      );
+      const user = userEvent.setup();
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+      await user.click(screen.getByText('X1 Carbon'));
+
+      // tick the event macro if its panel rendered a row for it
+      const macroRow = await screen.findByText('P1S TurnOff on Start').catch(() => null);
+      if (macroRow) await user.click(macroRow);
+
+      await user.click(screen.getByRole('button', { name: /^print$/i }));
+      await waitFor(() => expect(printBody).not.toBeNull());
+      expect(printBody).toHaveProperty('selected_macro_ids');
+      expect(Array.isArray((printBody as Record<string, unknown>).selected_macro_ids)).toBe(true);
+    });
+  });
+
   describe('reprint mode', () => {
     it('renders the modal title', () => {
       render(

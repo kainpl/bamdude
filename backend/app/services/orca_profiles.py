@@ -446,6 +446,10 @@ async def _import_single_preset(data: dict, db: AsyncSession, path_hint: str | N
         version=data.get("version"),
     )
     db.add(preset)
+    await db.flush()
+    from backend.app.services.filament_preset_sync import absorb_local_preset
+
+    await absorb_local_preset(db, preset)  # identity mirror (family catalog)
     return "imported"
 
 

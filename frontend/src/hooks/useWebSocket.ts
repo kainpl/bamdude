@@ -19,6 +19,9 @@ interface WebSocketMessage {
   data?: Record<string, unknown>;
   printer_name?: string;
   missing_slots?: Array<{ slot?: string }>;
+  // Filament shortfall announced at dispatch — informative, the print is going.
+  print_name?: string;
+  shortfalls?: Array<{ slot?: string; needed?: number; available?: number; missing?: number }>;
   // Spool-assignment read-back verification (upstream #2582).
   slot?: string;
   verified?: boolean;
@@ -54,6 +57,7 @@ export function useWebSocket() {
   // Re-set on every connect, cleared on every close.
   const sendPingRef = useRef<(() => void) | null>(null);
   const lastMissingSpoolWarningRef = useRef<Map<number, string>>(new Map());
+  const lastFilamentDeficitRef = useRef<Map<number, string>>(new Map());
   const { showToast } = useToast();
   const { t } = useTranslation();
 
@@ -83,16 +87,16 @@ export function useWebSocket() {
     const processNext = () => {
       const message = messageQueueRef.current.shift();
       if (message) {
-        // Use requestAnimationFrame to yield to the browser
-        requestAnimationFrame(() => {
-          handleMessageRef.current(message);
-          // Small delay between messages to prevent overwhelming the browser
-          if (messageQueueRef.current.length > 0) {
-            setTimeout(processNext, 16); // ~60fps
-          } else {
-            processingRef.current = false;
-          }
-        });
+        handleMessageRef.current(message);
+        // Small delay between messages to prevent overwhelming the browser.
+        // ⚠️ This setTimeout IS the yield. A requestAnimationFrame around the
+        // handler used to sit here too, and it stalled the whole queue in a
+        // hidden tab — see the note on the status writes below.
+        if (messageQueueRef.current.length > 0) {
+          setTimeout(processNext, 16); // ~60fps
+        } else {
+          processingRef.current = false;
+        }
       } else {
         processingRef.current = false;
       }
@@ -248,7 +252,21 @@ export function useWebSocket() {
     wsRef.current = ws;
   }, [processMessageQueue, setIsConnected]);
 
-  // Throttled printer status update - coalesces rapid updates per printer
+  // Throttled printer status update - coalesces rapid updates per printer.
+  //
+  // ⚠️ These cache writes used to happen inside a requestAnimationFrame. A
+  // hidden tab gets no rendering opportunities, so the browser HOLDS queued
+  // frame callbacks rather than merely throttling them: the socket stayed
+  // open, messages kept arriving, and every write parked in a pending frame
+  // until the tab was shown again — at which point they all ran at once. That
+  // froze the tab-title progress (it reads this key and nothing else) and
+  // stalled every other live view.
+  //
+  // The 100ms coalescing below is what prevented the original render cascade;
+  // the frame callback only ever deferred each write by ~16ms, so it is gone.
+  // ⚠️ NOT made visibility-aware instead: a frame scheduled just before the
+  // tab was hidden would fire after the writes that took the hidden path, and
+  // clobber newer status with older.
   const throttledPrinterStatusUpdate = useCallback((printerId: number, data: Record<string, unknown>) => {
     // Merge with any pending data for this printer
     const existing = pendingPrinterStatus.current.get(printerId) || {};
@@ -262,19 +280,17 @@ export function useWebSocket() {
         printerStatusTimeoutRef.current = null;
 
         // Apply all pending updates
-        requestAnimationFrame(() => {
-          updates.forEach((statusData, id) => {
-            queryClient.setQueryData(
-              ['printerStatus', id],
-              (old: Record<string, unknown> | undefined) => {
-                const merged = { ...old, ...statusData };
-                if (merged.wifi_signal == null && old?.wifi_signal != null) {
-                  merged.wifi_signal = old.wifi_signal;
-                }
-                return merged;
+        updates.forEach((statusData, id) => {
+          queryClient.setQueryData(
+            ['printerStatus', id],
+            (old: Record<string, unknown> | undefined) => {
+              const merged = { ...old, ...statusData };
+              if (merged.wifi_signal == null && old?.wifi_signal != null) {
+                merged.wifi_signal = old.wifi_signal;
               }
-            );
-          });
+              return merged;
+            }
+          );
         });
       }, 100); // Update at most every 100ms
     }
@@ -295,13 +311,15 @@ export function useWebSocket() {
       pendingInvalidations.current.clear();
       invalidationTimeoutRef.current = null;
 
-      // Invalidate queries one at a time with delays to prevent freeze
+      // Invalidate queries one at a time with delays to prevent freeze.
+      // ⚠️ The 500ms stagger is the anti-cascade measure. A frame callback
+      // around each invalidation used to sit inside it and stalled these
+      // refreshes in a hidden tab, for the same reason as the status writes
+      // above.
       let delay = 0;
       keys.forEach((key) => {
         setTimeout(() => {
-          requestAnimationFrame(() => {
-            queryClient.invalidateQueries({ queryKey: [key] });
-          });
+          queryClient.invalidateQueries({ queryKey: [key] });
         }, delay);
         delay += 500; // 500ms between each invalidation
       });
@@ -347,6 +365,36 @@ export function useWebSocket() {
           queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
         }
         break;
+
+      case 'filament_deficit': {
+        // Informative only — the print is already running. The decision was to
+        // warn, never to gate: a farm finishes a spool mid-plate on purpose.
+        if (message.printer_id === undefined || !Array.isArray(message.shortfalls)) {
+          break;
+        }
+        const worst = message.shortfalls
+          .filter((s) => s && typeof s.slot === 'string')
+          .sort((a, b) => (b.missing ?? 0) - (a.missing ?? 0))[0];
+        if (!worst) break;
+
+        // Same de-duplication as the spool-assignment toast below: the socket
+        // can redeliver, and a warning repeated is a warning ignored.
+        const signature = `${worst.slot}|${worst.missing}`;
+        if (lastFilamentDeficitRef.current.get(message.printer_id) === signature) {
+          break;
+        }
+        lastFilamentDeficitRef.current.set(message.printer_id, signature);
+
+        showToast(
+          t('printers.toast.filamentDeficit', {
+            printer: message.printer_name || `Printer ${message.printer_id}`,
+            slot: worst.slot,
+            missing: worst.missing,
+          }),
+          'warning',
+        );
+        break;
+      }
 
       case 'missing_spool_assignment': {
         if (message.printer_id === undefined || !Array.isArray(message.missing_slots)) {
@@ -451,6 +499,27 @@ export function useWebSocket() {
         debouncedInvalidate('library-stats');
         break;
 
+      // A scan of an external folder is now a background job, so its progress
+      // arrives here rather than in the response to the request that started
+      // it. Re-dispatched as a window event because the file-manager page needs
+      // the individual numbers — a refetch would say nothing about how far a
+      // ten-minute NAS walk has got. Deliberately no query invalidation on
+      // progress: the per-file `library_file_added` above already refreshes the
+      // list as rows land, and doing it twice per file would refetch the whole
+      // library thousands of times during one scan.
+      case 'library_scan_progress':
+        window.dispatchEvent(new CustomEvent('library-scan-progress', { detail: message }));
+        break;
+
+      case 'library_scan_finished':
+        window.dispatchEvent(new CustomEvent('library-scan-finished', { detail: message }));
+        // Removals and folder changes never emit a per-file event, so this is
+        // the only thing that tells the list they happened.
+        debouncedInvalidate('library-files');
+        debouncedInvalidate('library-folders');
+        debouncedInvalidate('library-stats');
+        break;
+
       case 'library_file_notes_changed': {
         // gh#3 - notes count changed somewhere; refresh file lists (which
         // carry notes_count) and any open per-file notes query.
@@ -481,7 +550,6 @@ export function useWebSocket() {
       case 'spool_assignment_changed':
         // Spool assigned/unassigned - refresh assignment data across all tabs
         debouncedInvalidate('spool-assignments');
-        debouncedInvalidate('slotPresets');
         break;
 
       case 'spool_assignment_verified': {
@@ -515,8 +583,15 @@ export function useWebSocket() {
         break;
 
       case 'spool_usage_logged':
-        // Filament consumption recorded - refresh spool data
+        // Filament consumption recorded - refresh spool data. The slot hover
+        // cards read the spool THROUGH the assignment row (its embedded spool
+        // carries the weight), so the assignments queries must refresh too —
+        // without them the card showed the pre-print weight until the 30s
+        // staleTime lapsed (2026-08-28).
         debouncedInvalidate('inventory-spools');
+        debouncedInvalidate('spool-assignments');
+        debouncedInvalidate('spoolman-inventory-spools');
+        debouncedInvalidate('spoolman-slot-assignments');
         break;
 
       case 'inventory_changed':
@@ -524,6 +599,7 @@ export function useWebSocket() {
         // inventory across all tabs plus the storage-location catalog counts.
         debouncedInvalidate('inventory-spools');
         debouncedInvalidate('spoolman-inventory-spools');
+        debouncedInvalidate('spool-assignments');
         debouncedInvalidate(inventoryLocationsQueryKey[0]);
         break;
 

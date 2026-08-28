@@ -42,14 +42,73 @@ naming-template ones.
 from __future__ import annotations
 
 import io
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import qrcode
 from reportlab.lib.colors import Color, HexColor, black, white
 from reportlab.lib.pagesizes import A4, letter
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.pdfmetrics import stringWidth as c_stringWidth
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as rl_canvas
+
+from backend.app.services.label_canvas import draw_template
+from backend.app.services.label_template import LabelSheetSpec, LabelTemplateSpec
+
+logger = logging.getLogger(__name__)
+
+
+# ── Fonts ────────────────────────────────────────────────────────────────────
+#
+# reportlab's built-in Type-1 faces are WinAnsi-encoded. Handed a character they
+# cannot encode they do NOT raise — they switch to ZapfDingbats, whose ``n``
+# glyph is a filled black square. So a spool named "Чорний матовий" printed as
+# ``■■■■■■`` on every template, while Latin names were fine, which is exactly
+# why it went unnoticed. ``uk`` is one of two first-class locales.
+#
+# Arimo (SIL OFL) replaces them: Latin + Cyrillic + Greek, and metric-compatible
+# with Arial and therefore Helvetica — measured at ±0.1% across regular, bold
+# and italic. That matters beyond taste: the layout below truncates on
+# ``stringWidth``, so a wider face would silently start clipping names that fit
+# today. Provenance and the rejected alternative: ``data/fonts/README.md``.
+_FONT_DIR = Path(__file__).resolve().parent.parent / "data" / "fonts"
+_FONT_FILES: dict[str, Path] = {
+    "Arimo": _FONT_DIR / "Arimo-Regular.ttf",
+    "Arimo-Bold": _FONT_DIR / "Arimo-Bold.ttf",
+    "Arimo-Italic": _FONT_DIR / "Arimo-Italic.ttf",
+}
+
+
+def _register_label_fonts() -> tuple[str, str, str]:
+    """Register the shipped TTFs, or fall back to the built-in faces.
+
+    Degrading rather than raising keeps the promise the rest of this module
+    makes — a label should always print, and a missing font file is not a reason
+    to fail an inventory action. The fallback is loud in the log and pinned by a
+    test, because a *silent* fallback is precisely how the Cyrillic bug hid.
+    """
+    try:
+        for name, path in _FONT_FILES.items():
+            pdfmetrics.registerFont(TTFont(name, str(path)))
+    except Exception:
+        logger.error(
+            "Label fonts could not be registered from %s — falling back to the built-in "
+            "faces. Non-Latin text on labels will print as filled squares.",
+            _FONT_DIR,
+            exc_info=True,
+        )
+        return "Helvetica", "Helvetica-Bold", "Helvetica-Oblique"
+
+    pdfmetrics.registerFontFamily("Arimo", normal="Arimo", bold="Arimo-Bold", italic="Arimo-Italic")
+    return "Arimo", "Arimo-Bold", "Arimo-Italic"
+
+
+_FONT_REGULAR, _FONT_BOLD, _FONT_ITALIC = _register_label_fonts()
 
 TemplateName = Literal[
     "ams_holder_74x33",
@@ -290,8 +349,8 @@ def _draw_label_tight(
     # easiest thing to read on a small AMS holder at arm's length.
     brand_size = 6.5
     if data.brand:
-        c.setFont("Helvetica-Bold", brand_size)
-        brand = _truncate_to_width(c, data.brand, "Helvetica-Bold", brand_size, text_w)
+        c.setFont(_FONT_BOLD, brand_size)
+        brand = _truncate_to_width(c, data.brand, _FONT_BOLD, brand_size, text_w)
         c.drawString(text_x, y + h - pad - brand_size, brand)
 
     # Second line: material + subtype, small
@@ -299,8 +358,8 @@ def _draw_label_tight(
     sub_line = " ".join(filter(None, [data.material, data.subtype]))
     sub_y_baseline = y + h - pad - brand_size - 0.6 - sub_size
     if sub_line:
-        c.setFont("Helvetica", sub_size)
-        sub_line = _truncate_to_width(c, sub_line, "Helvetica", sub_size, text_w)
+        c.setFont(_FONT_REGULAR, sub_size)
+        sub_line = _truncate_to_width(c, sub_line, _FONT_REGULAR, sub_size, text_w)
         c.drawString(text_x, sub_y_baseline, sub_line)
 
     # Third line (when there's room): hex code, tiny — useful when the user
@@ -311,13 +370,13 @@ def _draw_label_tight(
         hex_y = sub_y_baseline - 0.4 - hex_size
         # Don't render if it'd collide with the spool ID at the bottom.
         if hex_y > inner_y + 13:
-            c.setFont("Helvetica", hex_size)
+            c.setFont(_FONT_REGULAR, hex_size)
             c.drawString(text_x, hex_y, hex_code)
 
     # Bottom: BIG spool ID — the killer field at-a-glance.
     id_size = 13
-    c.setFont("Helvetica-Bold", id_size)
-    id_text = _truncate_to_width(c, f"#{data.spool_id}", "Helvetica-Bold", id_size, text_w)
+    c.setFont(_FONT_BOLD, id_size)
+    id_text = _truncate_to_width(c, f"#{data.spool_id}", _FONT_BOLD, id_size, text_w)
     c.drawString(text_x, inner_y + 0.5, id_text)
 
 
@@ -372,16 +431,16 @@ def _draw_label_roomy(
     # Brand — bumped to bold + larger per the #809 follow-up.
     if line1:
         size = 8
-        c.setFont("Helvetica-Bold", size)
-        text = _truncate_to_width(c, line1, "Helvetica-Bold", size, text_w)
+        c.setFont(_FONT_BOLD, size)
+        text = _truncate_to_width(c, line1, _FONT_BOLD, size, text_w)
         cursor_y -= size
         c.drawString(text_x, cursor_y, text)
         cursor_y -= 1.2
 
     if line2:
         size = 7
-        c.setFont("Helvetica", size)
-        text = _truncate_to_width(c, line2, "Helvetica", size, text_w)
+        c.setFont(_FONT_REGULAR, size)
+        text = _truncate_to_width(c, line2, _FONT_REGULAR, size, text_w)
         cursor_y -= size
         c.drawString(text_x, cursor_y, text)
         cursor_y -= 1.5
@@ -390,30 +449,30 @@ def _draw_label_roomy(
     # spools apart when the swatch is small or the user is colour-blind.
     if hex_code:
         size = 6.5
-        c.setFont("Helvetica", size)
+        c.setFont(_FONT_REGULAR, size)
         cursor_y -= size
         c.drawString(text_x, cursor_y, hex_code)
         cursor_y -= 1.2
 
     if name and name != line1:
         size = 9
-        c.setFont("Helvetica-Bold", size)
-        text = _truncate_to_width(c, name, "Helvetica-Bold", size, text_w)
+        c.setFont(_FONT_BOLD, size)
+        text = _truncate_to_width(c, name, _FONT_BOLD, size, text_w)
         cursor_y -= size
         c.drawString(text_x, cursor_y, text)
         cursor_y -= 1.2
 
     if data.storage_location:
         size = 6.5
-        c.setFont("Helvetica-Oblique", size)
-        text = _truncate_to_width(c, data.storage_location, "Helvetica-Oblique", size, text_w)
+        c.setFont(_FONT_ITALIC, size)
+        text = _truncate_to_width(c, data.storage_location, _FONT_ITALIC, size, text_w)
         cursor_y -= size
         c.drawString(text_x, cursor_y, text)
 
     # Spool ID — anchored at the bottom of the text column, big and bold.
     id_size = 16
-    c.setFont("Helvetica-Bold", id_size)
-    id_text = _truncate_to_width(c, f"#{data.spool_id}", "Helvetica-Bold", id_size, text_w)
+    c.setFont(_FONT_BOLD, id_size)
+    id_text = _truncate_to_width(c, f"#{data.spool_id}", _FONT_BOLD, id_size, text_w)
     c.drawString(text_x, inner_y + 0.5, id_text)
 
 
@@ -499,7 +558,240 @@ def render_labels(template: TemplateName, data_list: list[LabelData], *, monochr
     raise ValueError(f"Unknown label template: {template!r}")
 
 
-__all__ = ["LabelData", "TemplateName", "render_labels"]
+__all__ = [
+    "CODE_DOTS_PER_MM",
+    "LabelData",
+    "PdfCanvas",
+    "TemplateName",
+    "render_labels",
+    "render_template_pdf",
+    "render_template_sheet_pdf",
+]
+
+# ── Template-driven rendering ────────────────────────────────────────────────
+
+#: Resolution the code images are built at before being placed in the PDF.
+#:
+#: ⚠️ Barcodes and QR codes go into the PDF as raster, not as reportlab's vector
+#: symbologies. Two implementations would let one label differ by how it was
+#: printed, which is exactly what having one template is meant to end. 600 dpi
+#: is finer than any printer this reaches and invisible once placed.
+CODE_DOTS_PER_MM = 600 / 25.4
+
+#: Below this a glyph stops being type and becomes a smudge on a thermal head.
+_MIN_TEXT_PT = 2.8
+
+
+class PdfCanvas:
+    """A [`label_canvas.LabelCanvas`] that draws one label onto a PDF page.
+
+    ⚠️ **reportlab counts from the bottom-left of the page; a template counts
+    from the top-left of the label.** The flip happens here, once. Anywhere else
+    and every label comes out mirrored vertically, which reads as a layout bug
+    rather than as a coordinate one.
+    """
+
+    def __init__(
+        self,
+        canvas: rl_canvas.Canvas,
+        *,
+        origin_mm: tuple[float, float],
+        page_height_pt: float,
+    ) -> None:
+        self._c = canvas
+        self._origin_x_mm, self._origin_y_mm = origin_mm
+        self._page_height_pt = page_height_pt
+
+    @property
+    def dots_per_mm(self) -> float:
+        return CODE_DOTS_PER_MM
+
+    def box_to_points(self, box_mm) -> tuple[float, float, float, float]:
+        """Box in millimetres from the label's top-left → points from the page's
+        bottom-left, returning the box's own bottom-left corner.
+
+        Public because it is the one piece of arithmetic in this class that can
+        be wrong in a way nothing else notices, and a compressed PDF is no place
+        to go looking for it.
+        """
+        x, y, w, h = box_mm
+        left = (self._origin_x_mm + x) * mm
+        top = (self._origin_y_mm + y) * mm
+        bottom = self._page_height_pt - top - h * mm
+        return left, bottom, w * mm, h * mm
+
+    def text(
+        self,
+        text: str,
+        *,
+        box_mm,
+        size_mm: float,
+        bold: bool,
+        italic: bool,
+        align: str,
+        valign: str,
+        fit: str,
+    ) -> None:
+        left, bottom, box_w, box_h = self.box_to_points(box_mm)
+        font = _FONT_BOLD if bold else (_FONT_ITALIC if italic else _FONT_REGULAR)
+        size = max(_MIN_TEXT_PT, size_mm * mm)
+
+        if fit == "shrink":
+            while size > _MIN_TEXT_PT and (c_stringWidth(text, font, size) > box_w or size > box_h):
+                size -= 0.25
+        else:
+            size = max(_MIN_TEXT_PT, min(size, box_h))
+
+        # Truncation applies to both fits: it is what keeps text inside its box
+        # rather than running over whatever sits beside it.
+        drawn = _truncate_to_width(self._c, text, font, size, box_w)
+        if not drawn:
+            return
+
+        width = c_stringWidth(drawn, font, size)
+        x = {"left": left, "center": left + (box_w - width) / 2, "right": left + box_w - width}.get(align, left)
+        # The baseline sits an ascender below the top of the box, so that `top`
+        # means the same thing here as it does on the raster.
+        ascent = size * 0.8
+        top_of_box = bottom + box_h
+        y = {
+            "top": top_of_box - ascent,
+            "middle": bottom + (box_h - size) / 2 + (size - ascent),
+            "bottom": bottom + (size - ascent),
+        }.get(valign, top_of_box - ascent)
+
+        self._c.setFont(font, size)
+        self._c.drawString(x, y, drawn)
+
+    def swatch(self, colours: list[str], *, box_mm, shape: str = "rect") -> None:
+        """One band per colour, stacked across the box, inside the given outline.
+
+        A two-colour spool is two colours, and painting only the first is a
+        small lie somebody reaches for on a shelf — the same reasoning that put
+        segments on the printer card.
+
+        ⚠️ The outline is a CLIP, not a replacement for the banding. A circle
+        that shows only the first colour would be the lie above wearing a
+        different shape; clipping keeps both facts — the colours and the form.
+        """
+        left, bottom, box_w, box_h = self.box_to_points(box_mm)
+        band = box_h / len(colours)
+
+        self._c.saveState()
+        if shape != "rect":
+            path = self._c.beginPath()
+            if shape == "circle":
+                # Inscribed, so a non-square box gives a circle rather than an
+                # ellipse — a colour dot people recognise across a shelf.
+                radius = min(box_w, box_h) / 2
+                path.circle(left + box_w / 2, bottom + box_h / 2, radius)
+            else:
+                path.roundRect(left, bottom, box_w, box_h, min(box_w, box_h) * 0.18)
+            self._c.clipPath(path, stroke=0, fill=0)
+
+        for index, colour in enumerate(colours):
+            self._c.setFillColor(_color_from_hex(colour))
+            self._c.rect(left, bottom + index * band, box_w, band, stroke=0, fill=1)
+        self._c.restoreState()
+        self._c.setFillColor(black)
+
+    def image(self, img, *, box_mm) -> None:
+        left, bottom, box_w, box_h = self.box_to_points(box_mm)
+        # Keep the code's own aspect ratio and centre it, the way the raster
+        # backend does — a stretched barcode is an unreadable one.
+        scale = min(box_w / img.width, box_h / img.height)
+        width, height = img.width * scale, img.height * scale
+        self._c.drawImage(
+            ImageReader(img.convert("L")),
+            left + (box_w - width) / 2,
+            bottom + (box_h - height) / 2,
+            width=width,
+            height=height,
+        )
+
+
+#: The papers a sheet may claim, in millimetres. One table, so the editor's
+#: dropdown, the fit check and the renderer cannot disagree about what "A5" is.
+PAGE_SIZES_MM: dict[str, tuple[float, float]] = {
+    "A4": (210.0, 297.0),
+    "A5": (148.0, 210.0),
+    "letter": (215.9, 279.4),
+}
+
+
+def page_size_points(name: str) -> tuple[float, float]:
+    """The page in points, or a refusal.
+
+    ⚠️ **Refuses rather than guesses.** This was ``A4 if name == "A4" else
+    letter``, so every size that was not A4 silently became Letter — an A5 sheet
+    laid its grid out on Letter geometry and every cell landed in the wrong
+    place. That is invisible until it is on adhesive stock.
+    """
+    try:
+        width_mm, height_mm = PAGE_SIZES_MM[name]
+    except KeyError:
+        raise ValueError(f"Unknown page size {name!r}. Known: {', '.join(PAGE_SIZES_MM)}") from None
+    return width_mm * mm, height_mm * mm
+
+
+def _page_size(name: str) -> tuple[float, float]:
+    return page_size_points(name)
+
+
+def render_template_pdf(spec: LabelTemplateSpec, contexts: list[dict[str, str]]) -> tuple[bytes, list[str]]:
+    """One page per spool, each page the size of the label.
+
+    ⚠️ Warnings are collected once, not once per spool. The same template drawn
+    twenty times has one fault, and a list that grows with the batch buries
+    whatever else is in it.
+    """
+    page = (spec.width_mm * mm, spec.height_mm * mm)
+    buf = io.BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=page)
+    c.setTitle(f"BamDude label ({spec.name})")
+
+    warnings: list[str] = []
+    for context in contexts:
+        canvas = PdfCanvas(c, origin_mm=(0.0, 0.0), page_height_pt=page[1])
+        found = draw_template(canvas, spec, context)
+        for warning in found:
+            if warning not in warnings:
+                warnings.append(warning)
+        c.showPage()
+
+    c.save()
+    return buf.getvalue(), warnings
+
+
+def render_template_sheet_pdf(
+    spec: LabelTemplateSpec, contexts: list[dict[str, str]], sheet: LabelSheetSpec
+) -> tuple[bytes, list[str]]:
+    """The same label repeated across a page of stock."""
+    page_w, page_h = _page_size(sheet.page_size)
+    buf = io.BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=(page_w, page_h))
+    c.setTitle(f"BamDude labels ({spec.name} on {sheet.name})")
+
+    warnings: list[str] = []
+    per_page = sheet.per_page
+    for start in range(0, max(len(contexts), 1), per_page):
+        chunk = contexts[start : start + per_page]
+        for index, context in enumerate(chunk):
+            row, col = divmod(index, sheet.cols)
+            origin = (
+                sheet.margin_left_mm + col * (sheet.cell_width_mm + sheet.gap_x_mm),
+                sheet.margin_top_mm + row * (sheet.cell_height_mm + sheet.gap_y_mm),
+            )
+            canvas = PdfCanvas(c, origin_mm=origin, page_height_pt=page_h)
+            for warning in draw_template(canvas, spec, context):
+                if warning not in warnings:
+                    warnings.append(warning)
+        c.showPage()
+
+    c.save()
+    return buf.getvalue(), warnings
+
+
 # white re-exported for completeness; future templates may need a paper-tone variant.
 _ = white
 # _luminance is exported for future templates that need contrast-adaptive text.

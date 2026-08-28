@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type {
   AutoQueueItemCreate,
+  AutoQueueItemUpdate,
   PrintQueueItemCreate,
   PrintQueueItemUpdate,
   SpoolAssignment,
@@ -30,7 +31,7 @@ import { FilamentMapping } from './FilamentMapping';
 import { PlateSelector } from './PlateSelector';
 import { PrinterSelector } from './PrinterSelector';
 import { PrintOptionsPanel } from './PrintOptions';
-import { autoCalibrationCaps } from '../../utils/printerCapabilities';
+import { autoCalibrationCaps, isDualNozzleModel } from '../../utils/printerCapabilities';
 import { ScheduleOptionsPanel } from './ScheduleOptions';
 import { SwapMacrosPanel } from './SwapMacros';
 import { EventMacrosPanel } from './EventMacros';
@@ -67,6 +68,8 @@ export function PrintModal({
   libraryFileId,
   archiveName,
   queueItem,
+  autoQueueItem,
+  autoQueueBatchCount,
   initialSelectedPrinterIds,
   preselectedPlateId,
   sequence,
@@ -117,6 +120,9 @@ export function PrintModal({
     if (preselectedPlateId != null) {
       return new Set([preselectedPlateId]);
     }
+    if (mode === 'edit-auto-item' && autoQueueItem?.plate_id != null) {
+      return new Set([autoQueueItem.plate_id]);
+    }
     return new Set();
   });
 
@@ -141,13 +147,27 @@ export function PrintModal({
         preheat_chamber_target_override: queueItem.preheat_chamber_target_override ?? DEFAULT_PRINT_OPTIONS.preheat_chamber_target_override,
       };
     }
+    if (mode === 'edit-auto-item' && autoQueueItem) {
+      // The router row stores only what it copies onto the per-printer item;
+      // everything it does not carry keeps the modal default.
+      return {
+        ...DEFAULT_PRINT_OPTIONS,
+        bed_levelling: autoQueueItem.bed_levelling,
+        flow_cali: autoQueueItem.flow_cali,
+        layer_inspect: autoQueueItem.layer_inspect,
+        timelapse: autoQueueItem.timelapse,
+        timelapse_storage: autoQueueItem.timelapse_storage ?? DEFAULT_PRINT_OPTIONS.timelapse_storage,
+        mesh_mode_fast_check: autoQueueItem.mesh_mode_fast_check,
+      };
+    }
     return DEFAULT_PRINT_OPTIONS;
   });
 
   const [swapMacros, setSwapMacros] = useState<SwapMacrosOptions>(() => {
-    if (mode === 'edit-queue-item' && queueItem) {
-      const execute = queueItem.execute_swap_macros ?? false;
-      const storedEvents = (queueItem.swap_macro_events ?? null) as SwapMacroEvent[] | null;
+    if ((mode === 'edit-queue-item' && queueItem) || (mode === 'edit-auto-item' && autoQueueItem)) {
+      const item = mode === 'edit-queue-item' ? queueItem! : autoQueueItem!;
+      const execute = item.execute_swap_macros ?? false;
+      const storedEvents = (item.swap_macro_events ?? null) as SwapMacroEvent[] | null;
       return {
         execute,
         events: storedEvents ?? (execute ? [...SWAP_MACRO_EVENTS] : []),
@@ -158,11 +178,31 @@ export function PrintModal({
 
   // Which macros run for this print. Edit mode starts from what the item
   // stored; every other mode is filled in from the model preference below.
-  const [selectedMacroIds, setSelectedMacroIds] = useState<number[]>(
-    () => (mode === 'edit-queue-item' && queueItem ? (queueItem.selected_macro_ids ?? []) : []),
-  );
+  const [selectedMacroIds, setSelectedMacroIds] = useState<number[]>(() => {
+    if (mode === 'edit-queue-item' && queueItem) return queueItem.selected_macro_ids ?? [];
+    if (mode === 'edit-auto-item' && autoQueueItem) return autoQueueItem.selected_macro_ids ?? [];
+    return [];
+  });
 
   const [scheduleOptions, setScheduleOptions] = useState<ScheduleOptions>(() => {
+    if (mode === 'edit-auto-item' && autoQueueItem) {
+      let scheduleType: ScheduleType = 'asap';
+      if (autoQueueItem.manual_start) scheduleType = 'manual';
+      else if (autoQueueItem.scheduled_time && !isPlaceholderDate(autoQueueItem.scheduled_time)) {
+        scheduleType = 'scheduled';
+      }
+      let scheduledTime = '';
+      if (autoQueueItem.scheduled_time && !isPlaceholderDate(autoQueueItem.scheduled_time)) {
+        const date = parseUTCDate(autoQueueItem.scheduled_time) ?? new Date();
+        scheduledTime = toDateTimeLocalValue(date);
+      }
+      return {
+        scheduleType,
+        scheduledTime,
+        autoOffAfter: autoQueueItem.auto_off_after,
+        requirePreviousSuccess: autoQueueItem.require_previous_success ?? false,
+      };
+    }
     if (mode === 'edit-queue-item' && queueItem) {
       let scheduleType: ScheduleType = 'asap';
       if (queueItem.manual_start) {
@@ -217,13 +257,32 @@ export function PrintModal({
 
   // Quantity (batch). Only exposed for reprint + add-to-queue modes.
   const [quantity, setQuantity] = useState<number>(1);
+  // Per-plate overrides of ``quantity``, keyed by plate index. A plate absent
+  // here takes the shared value — which is what every plate took before this
+  // existed, so the common single-plate flow is untouched. Changing the shared
+  // Quantity clears the overrides: it is the bulk setter, and leaving stale
+  // per-plate numbers behind it would make the visible field a lie.
+  const [plateQuantities, setPlateQuantities] = useState<Record<number, number>>({});
+  const quantityForPlate = (plateIndex: number | null | undefined) =>
+    (plateIndex != null ? plateQuantities[plateIndex] : undefined) ?? quantity;
 
   // Dispatch mode: 'specific' = pick exact printer(s); 'auto' = route via auto-queue.
   // Only meaningful for add-to-queue mode (reprint is always specific, edit-queue-item
   // is already bound to a per-printer queue row).
   const [dispatchMode, setDispatchMode] = useState<'specific' | 'auto'>(initialDispatchMode ?? 'specific');
-  const [autoModeOptions, setAutoModeOptions] = useState<AutoModeOptionsState>(DEFAULT_AUTO_MODE_OPTIONS);
-  const isAutoMode = mode === 'add-to-queue' && dispatchMode === 'auto';
+  const [autoModeOptions, setAutoModeOptions] = useState<AutoModeOptionsState>(() => {
+    if (mode === 'edit-auto-item' && autoQueueItem) {
+      return {
+        ...DEFAULT_AUTO_MODE_OPTIONS,
+        target_model: autoQueueItem.target_model,
+        target_location_id: autoQueueItem.target_location_id,
+        force_color_match: autoQueueItem.force_color_match,
+      };
+    }
+    return DEFAULT_AUTO_MODE_OPTIONS;
+  });
+  // edit-auto-item is auto mode by definition: the row belongs to the router.
+  const isAutoMode = (mode === 'add-to-queue' && dispatchMode === 'auto') || mode === 'edit-auto-item';
 
   const [filamentWarningItems, setFilamentWarningItems] = useState<FilamentWarningItem[] | null>(null);
 
@@ -273,6 +332,11 @@ export function PrintModal({
   // Edit mode skips the whole flow — there the values come from queueItem.
   const effectivePrinterModel = useMemo(() => {
     if (mode === 'edit-queue-item') return null;
+    // edit-auto-item resolves through the isAutoMode branch below — the
+    // target model still names the macros; the PREFERENCE flow is gated off
+    // separately (an edit dialog applies the item's own values, not a saved
+    // profile, and must never overwrite that profile on save).
+
     if (isAutoMode) return autoModeOptions.target_model || null;
     if (selectedPrinters.length === 0) return null;
     const first = printers?.find((p) => p.id === selectedPrinters[0]);
@@ -283,16 +347,13 @@ export function PrintModal({
   // has no concrete printer, so it mirrors the backend model list against the
   // chosen target model; specific / edit mode uses the canonical MQTT-detected
   // nozzle_count so a printer without a stored model still resolves correctly.
-  const DUAL_NOZZLE_MODELS = useMemo(() => new Set(['H2D', 'H2DPRO', 'H2C', 'X2D']), []);
   const showDualNozzleOptions = useMemo(() => {
     if (isAutoMode) {
-      const m = autoModeOptions.target_model;
-      if (!m) return false;
-      return DUAL_NOZZLE_MODELS.has(m.toUpperCase().replace(/[\s-]/g, ''));
+      return isDualNozzleModel(autoModeOptions.target_model);
     }
     if (!printers || selectedPrinters.length === 0) return false;
     return selectedPrinters.some((id) => printers.find((p) => p.id === id)?.nozzle_count === 2);
-  }, [isAutoMode, autoModeOptions.target_model, printers, selectedPrinters, DUAL_NOZZLE_MODELS]);
+  }, [isAutoMode, autoModeOptions.target_model, printers, selectedPrinters]);
 
   // ⚠️ Which selected printers cannot record a timelapse, asked HERE because
   // here there is somebody who can act on the answer. The same query key the
@@ -368,7 +429,7 @@ export function PrintModal({
         return null;
       }
     },
-    enabled: !!effectivePrinterModel,
+    enabled: !!effectivePrinterModel && mode !== 'edit-auto-item',
     staleTime: 60 * 1000,
   });
 
@@ -395,9 +456,17 @@ export function PrintModal({
   // initial apply aren't clobbered by a re-render. The set lives in a ref
   // because we don't want it to participate in render-triggered effect deps.
   const appliedPreferenceModelsRef = useRef<Set<string>>(new Set());
+  // The operator's own clicks outrank the stored profile. Without this guard,
+  // unticking a toggle BEFORE picking a printer (the model — and with it the
+  // preference — only resolves after the pick) let the late-arriving profile
+  // silently flip the toggle back, and the submit then saved the flip as the
+  // new profile (measured live 2026-08-25: vibration fast-check).
+  const touchedOptionsRef = useRef(false);
   useEffect(() => {
     if (!effectivePrinterModel || !preferenceData) return;
     if (appliedPreferenceModelsRef.current.has(effectivePrinterModel)) return;
+    appliedPreferenceModelsRef.current.add(effectivePrinterModel);
+    if (touchedOptionsRef.current) return;
     // Merge over DEFAULT so a preference saved before a new option existed
     // (e.g. nozzle_offset_cali, #1682) still gets a defined value.
     setPrintOptions({ ...DEFAULT_PRINT_OPTIONS, ...preferenceData.options.print_options });
@@ -407,7 +476,6 @@ export function PrintModal({
         (e): e is SwapMacroEvent => (SWAP_MACRO_EVENTS as readonly string[]).includes(e),
       ),
     });
-    appliedPreferenceModelsRef.current.add(effectivePrinterModel);
   }, [effectivePrinterModel, preferenceData]);
 
   // Tick everything the operator has not explicitly turned off for this model.
@@ -416,7 +484,7 @@ export function PrintModal({
   // excluded: there the item's own stored list is the authority.
   const appliedMacroModelsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (mode === 'edit-queue-item') return;
+    if (mode === 'edit-queue-item' || mode === 'edit-auto-item') return;
     if (!effectivePrinterModel || applicableMacros.length === 0) return;
     if (appliedMacroModelsRef.current.has(effectivePrinterModel)) return;
     const deselected = new Set(preferenceData?.options.event_macros?.deselected_ids ?? []);
@@ -429,7 +497,7 @@ export function PrintModal({
   // mean defaults next time. Called from each successful submit branch
   // (auto-mode + queue + reprint).
   const persistPreference = useCallback(() => {
-    if (!effectivePrinterModel) return;
+    if (!effectivePrinterModel || mode === 'edit-auto-item') return;
     void api
       .upsertPrintOptionsPreference(effectivePrinterModel, {
         print_options: printOptions,
@@ -438,10 +506,17 @@ export function PrintModal({
           deselected_ids: applicableMacros.filter((m) => !selectedMacroIds.includes(m.id)).map((m) => m.id),
         },
       })
+      .then(() => {
+        // Drop the cached read NOW: staleTime is 60s, and a dialog reopened
+        // inside that window read the pre-save profile, applied it, and its
+        // own submit then saved the STALE values back — the user's change
+        // quietly reverted itself (measured live 2026-08-25).
+        void queryClient.invalidateQueries({ queryKey: ['print-options-preference', effectivePrinterModel] });
+      })
       .catch(() => {
         // silent — preference is best-effort
       });
-  }, [effectivePrinterModel, printOptions, swapMacros, applicableMacros, selectedMacroIds]);
+  }, [effectivePrinterModel, mode, printOptions, swapMacros, applicableMacros, selectedMacroIds, queryClient]);
 
   const { data: spoolAssignments } = useQuery({
     queryKey: ['spool-assignments'],
@@ -811,6 +886,50 @@ export function PrintModal({
   const handleSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean }) => {
     e?.preventDefault();
 
+    // Edit of a pending auto-queue row (or its whole batch): one PUT, no
+    // dispatch. Position is deliberately not sent — the reorder flow owns it.
+    if (mode === 'edit-auto-item' && autoQueueItem) {
+      setIsSubmitting(true);
+      try {
+        const payload: AutoQueueItemUpdate = {
+          target_model: autoModeOptions.target_model ?? null,
+          target_location_id: autoModeOptions.target_location_id ?? null,
+          force_color_match: autoModeOptions.force_color_match,
+          bed_levelling: printOptions.bed_levelling,
+          flow_cali: printOptions.flow_cali,
+          layer_inspect: printOptions.layer_inspect,
+          timelapse: printOptions.timelapse,
+          timelapse_storage: printOptions.timelapse_storage,
+          mesh_mode_fast_check: printOptions.mesh_mode_fast_check,
+          execute_swap_macros: !swapCompatible && swapMacros.execute && swapMacros.events.length > 0,
+          swap_macro_events:
+            !swapCompatible && swapMacros.execute && swapMacros.events.length > 0 ? swapMacros.events : null,
+          selected_macro_ids: selectedMacroIds,
+          scheduled_time:
+            scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
+              ? new Date(scheduleOptions.scheduledTime).toISOString()
+              : null,
+          manual_start: scheduleOptions.scheduleType === 'manual',
+          auto_off_after: scheduleOptions.autoOffAfter,
+          require_previous_success: scheduleOptions.requirePreviousSuccess,
+        };
+        if ((autoQueueBatchCount ?? 1) > 1 && autoQueueItem.batch_id) {
+          await api.updateAutoQueueBatch(autoQueueItem.batch_id, payload);
+        } else {
+          await api.updateAutoQueueItem(autoQueueItem.id, payload);
+        }
+        showToast(t('autoQueue.itemUpdated'));
+        queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
+        onSuccess?.();
+        onClose();
+      } catch (err) {
+        showToast(t('printModal.failedPrefix', { error: (err as Error).message }), 'error');
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
     // Auto-distribute path: bypass per-printer mapping entirely.
     // The scheduler picks a printer + computes AMS mapping at dispatch.
     if (isAutoMode) {
@@ -840,10 +959,21 @@ export function PrintModal({
           auto_off_after: scheduleOptions.autoOffAfter,
           require_previous_success: scheduleOptions.requirePreviousSuccess,
           quantity,
+          // Auto-queue takes every plate in ONE request, so per-plate counts
+          // have to travel as a map. (The per-printer tier gets one request per
+          // plate and simply carries a different ``quantity`` in each.) Sent
+          // only when something was actually overridden, so an unchanged
+          // dialog still produces the payload it always did.
+          plate_quantities: Object.keys(plateQuantities).length > 0
+            ? Object.fromEntries(platesToQueue.map((index) => [index, quantityForPlate(index)]))
+            : undefined,
         };
         await api.addToAutoQueue(payload);
         persistPreference();
-        showToast(quantity > 1 ? t('queue.itemsQueued', { count: quantity }) : t('queue.printQueued'));
+        const queuedCount = platesToQueue.length > 0
+          ? platesToQueue.reduce((sum, index) => sum + quantityForPlate(index), 0)
+          : quantity;
+        showToast(queuedCount > 1 ? t('queue.itemsQueued', { count: queuedCount }) : t('queue.printQueued'));
         queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
         queryClient.invalidateQueries({ queryKey: ['queue'] });
         onSuccess?.();
@@ -944,9 +1074,16 @@ export function PrintModal({
     const totalCount = selectedPrinters.length * platesToQueue.length;
     setSubmitProgress({ current: 0, total: totalCount });
 
-    const results: { success: number; failed: number; errors: string[] } = {
+    // ⚠️ `success` counts REQUESTS, `queued` counts ROWS, and they are not the
+    // same number. One request carries a quantity and the server writes that
+    // many items — `for i in range(data.quantity)` in `queue_add`. Four
+    // printers at two copies each is four requests and eight queue entries, and
+    // the toast reported four. `success`/`failed` stay a pair of attempt counts
+    // because the partial-failure message pairs them.
+    const results: { success: number; failed: number; queued: number; errors: string[] } = {
       success: 0,
       failed: 0,
+      queued: 0,
       errors: [],
     };
 
@@ -986,7 +1123,7 @@ export function PrintModal({
         : undefined,
       ...printOptions,
       ...getSwapPayloadForPrinter(printerId),
-      quantity: mode === 'edit-queue-item' ? 1 : quantity,
+      quantity: mode === 'edit-queue-item' ? 1 : quantityForPlate(plateId),
       project_id: projectId,
       };
     };
@@ -1013,6 +1150,7 @@ export function PrintModal({
                 ams_mapping: printerMapping,
                 ...printOptions,
                 ...swapPayload,
+                selected_macro_ids: selectedMacroIds,
                 quantity,
                 project_id: projectId,
                 cleanup_library_after_dispatch: cleanupLibraryAfterDispatch,
@@ -1053,6 +1191,8 @@ export function PrintModal({
             await addToQueueMutation.mutateAsync(getQueueData(printerId, plateId));
           }
           results.success++;
+          // Edit mode replaces one row; everything else writes one per copy.
+          results.queued += mode === 'edit-queue-item' ? 1 : quantityForPlate(plateId);
         } catch (error) {
           results.failed++;
           const printerName = printers?.find(p => p.id === printerId)?.name || `Printer ${printerId}`;
@@ -1075,10 +1215,10 @@ export function PrintModal({
       if (mode !== 'reprint') {
         if (mode === 'edit-queue-item') {
           showToast(t('printModal.queueItemUpdated'));
-        } else if (results.success === 1) {
+        } else if (results.queued === 1) {
           showToast(t('queue.printQueued'));
         } else {
-          showToast(t('queue.itemsQueued', { count: results.success }));
+          showToast(t('queue.itemsQueued', { count: results.queued }));
         }
       }
       queryClient.invalidateQueries({ queryKey: ['queue'] });
@@ -1139,6 +1279,20 @@ export function PrintModal({
         loadingText: submitProgress.total > 1
           ? t('queue.sendingProgress', { current: submitProgress.current, total: submitProgress.total })
           : t('queue.sending'),
+      };
+    }
+    if (mode === 'edit-auto-item') {
+      const batch = (autoQueueBatchCount ?? 1) > 1;
+      return {
+        title: batch
+          ? t('autoQueue.editBatchTitle', { count: autoQueueBatchCount })
+          : t('autoQueue.editItemTitle'),
+        icon: Pencil,
+        submitText: batch
+          ? t('autoQueue.saveBatch', { count: autoQueueBatchCount })
+          : t('common.save'),
+        submitIcon: Pencil,
+        loadingText: t('common.saving'),
       };
     }
     if (mode === 'add-to-queue') {
@@ -1297,8 +1451,11 @@ export function PrintModal({
               );
             })()}
 
-            {/* Plate selection - first so users know filament requirements before selecting printers */}
-            <PlateSelector
+            {/* Plate selection - first so users know filament requirements
+                before selecting printers. Hidden in edit-auto-item: the plate
+                is a property of the row (one plate = one row) and the update
+                schema deliberately has no plate_id. */}
+            {mode !== 'edit-auto-item' && <PlateSelector
               plates={plates}
               isMultiPlate={isMultiPlate}
               selectedPlates={selectedPlates}
@@ -1323,7 +1480,15 @@ export function PrintModal({
               onSelectAll={mode === 'add-to-queue' ? () => setSelectedPlates(new Set(plates.map(p => p.index))) : undefined}
               onDeselectAll={mode === 'add-to-queue' ? () => setSelectedPlates(new Set()) : undefined}
               multiSelect={mode === 'add-to-queue'}
-            />
+              quantities={Object.fromEntries(
+                [...selectedPlates].map((index) => [index, quantityForPlate(index)]),
+              )}
+              onQuantityChange={
+                mode === 'add-to-queue'
+                  ? (plateIndex, value) => setPlateQuantities((prev) => ({ ...prev, [plateIndex]: value }))
+                  : undefined
+              }
+            />}
 
             {/* Auto-distribute mode controls — replaces PrinterSelector */}
             {isAutoMode && (
@@ -1446,7 +1611,7 @@ export function PrintModal({
 
             {/* Print options */}
             {(mode === 'reprint' || effectivePrinterCount > 0 || isAutoMode) && (
-              <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} autoCaps={autoCaps} timelapseBlockers={timelapseBlockers} selectedPrinterCount={selectedPrinters.length} timelapseLowSpace={timelapseLowSpace} canChooseTimelapseStorage={canChooseTimelapseStorage} onFreeTimelapseSpace={(id) => freeTimelapseSpace.mutate(id)} freeingTimelapseSpace={freeTimelapseSpace.isPending} />
+              <PrintOptionsPanel options={printOptions} onChange={(o) => { touchedOptionsRef.current = true; setPrintOptions(o); }} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} autoCaps={autoCaps} timelapseBlockers={timelapseBlockers} selectedPrinterCount={selectedPrinters.length} timelapseLowSpace={timelapseLowSpace} canChooseTimelapseStorage={canChooseTimelapseStorage} onFreeTimelapseSpace={(id) => freeTimelapseSpace.mutate(id)} freeingTimelapseSpace={freeTimelapseSpace.isPending} />
             )}
 
             {/* Swap-mode macros — only relevant when at least one selected
@@ -1460,7 +1625,7 @@ export function PrintModal({
                 ? (printers ?? []).some(p => p.swap_mode_enabled)
                 : selectedPrinters.some(id => printers?.find(p => p.id === id)?.swap_mode_enabled)
             ) && (
-              <SwapMacrosPanel options={swapMacros} onChange={setSwapMacros} />
+              <SwapMacrosPanel options={swapMacros} onChange={(o) => { touchedOptionsRef.current = true; setSwapMacros(o); }} />
             )}
 
             {/* Which of the other macros run for this print. Outside the swap
@@ -1474,7 +1639,7 @@ export function PrintModal({
 
 
             {/* Quantity (batch) - not for edit mode */}
-            {mode !== 'edit-queue-item' && (effectivePrinterCount > 0 || isAutoMode) && (
+            {mode !== 'edit-queue-item' && mode !== 'edit-auto-item' && (effectivePrinterCount > 0 || isAutoMode) && (
               <div className="mb-4 flex items-center justify-between bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-3">
                 <div>
                   <div className="text-sm text-white font-medium">{t('printModal.quantity')}</div>
@@ -1483,25 +1648,25 @@ export function PrintModal({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setQuantity(q => Math.max(1, q - 1))}
+                    onClick={() => { setQuantity(q => Math.max(1, q - 1)); setPlateQuantities({}); }}
                     disabled={quantity <= 1}
                     className="w-8 h-8 rounded bg-bambu-dark border border-bambu-dark-tertiary text-white hover:border-bambu-green disabled:opacity-40"
                   >−</button>
                   <input
                     type="number"
                     min={1}
-                    max={50}
+                    max={999}
                     value={quantity}
                     onChange={(e) => {
                       const v = parseInt(e.target.value, 10);
-                      if (Number.isFinite(v)) setQuantity(Math.min(50, Math.max(1, v)));
+                      if (Number.isFinite(v)) { setQuantity(Math.min(999, Math.max(1, v))); setPlateQuantities({}); }
                     }}
                     className="w-14 text-center bg-bambu-dark border border-bambu-dark-tertiary rounded text-white py-1"
                   />
                   <button
                     type="button"
-                    onClick={() => setQuantity(q => Math.min(50, q + 1))}
-                    disabled={quantity >= 50}
+                    onClick={() => { setQuantity(q => Math.min(999, q + 1)); setPlateQuantities({}); }}
+                    disabled={quantity >= 999}
                     className="w-8 h-8 rounded bg-bambu-dark border border-bambu-dark-tertiary text-white hover:border-bambu-green disabled:opacity-40"
                   >+</button>
                 </div>

@@ -136,7 +136,18 @@ async def sweep_once() -> int:
             if await printer_manager.connect_printer(printer):
                 rebuilt += 1
             else:
-                logger.warning("MQTT session rebuild failed for %s (id=%s)", printer.name, printer.id)
+                # ⚠️ Ask the NEW client, not the one captured above — the
+                # rebuild replaced it, and the reason we want belongs to the
+                # attempt that just failed. Five consecutive failures during a
+                # fleet-wide outage said only "rebuild failed", which is the
+                # one thing already obvious from the line existing at all.
+                fresh = printer_manager.get_client(printer.id)
+                logger.warning(
+                    "MQTT session rebuild failed for %s (id=%s): %s",
+                    printer.name,
+                    printer.id,
+                    getattr(fresh, "_last_connect_error", None) or "no refusal from the broker — connect timed out",
+                )
         except Exception as exc:  # noqa: BLE001 — one bad client must not end the sweep
             logger.warning("Connection watchdog failed for printer %s: %s", printer.id, exc)
 

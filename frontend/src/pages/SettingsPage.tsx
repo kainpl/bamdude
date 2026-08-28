@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles } from 'lucide-react';
+import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, MonitorPlay, Tag } from 'lucide-react';
+import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } from '../lib/sliceEngines';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, macrosApi } from '../api/client';
@@ -9,6 +10,8 @@ import { formatDateOnly, type DateFormat } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
 import type { AppSettings, AppSettingsUpdate, APIKey, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate, ZigbeeDevice } from '../api/client';
 import { Card, CardContent, CardHeader } from '../components/Card';
+import { LoadingBlock } from '../components/LoadingBlock';
+import { CopyButton } from '../components/CopyButton';
 import { Button } from '../components/Button';
 import { LdapUserPicker } from '../components/LdapUserPicker';
 import { ZigbeeCoordinatorCard } from '../components/zigbee/ZigbeeCoordinatorCard';
@@ -23,6 +26,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { GcodeEditor } from '../components/GcodeEditor';
 import { CreateUserAdvancedAuthModal } from '../components/CreateUserAdvancedAuthModal';
 import CameraTokensPanel from '../components/settings/CameraTokensPanel';
+import { StreamOverlayBuilder } from '../components/StreamOverlayBuilder';
 import { SpoolmanSettings } from '../components/SpoolmanSettings';
 import { SpoolDisplayNameSettings } from '../components/SpoolDisplayNameSettings';
 import { ArchiveCleanupSettingsBlock } from '../components/ArchiveCleanupSettingsBlock';
@@ -53,14 +57,23 @@ import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/setting
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
 import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPanel';
+import { LabelDevicesSettings } from '../components/settings/LabelDevicesSettings';
+import { LabelTemplateEditor } from '../components/labels/LabelTemplateEditor';
+import { LabelSheetEditor } from '../components/labels/LabelSheetEditor';
 import { RetentionCard } from '../components/settings/RetentionCard';
 import { PrinterLocationsCard } from '../components/settings/PrinterLocationsCard';
+import { CloudLinkSettings } from '../components/settings/CloudLinkSettings';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
 import { adoptUntouchedServerChanges } from '../utils/settingsReconcile';
 
 const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
 type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
+/** ⚠️ Everything about labels lives under `marking` — the designs AND the
+ *  printers that put them on stock. Splitting the two put half the answer
+ *  under Printing, beside bed levelling, which is not the question anybody
+ *  has when they are looking for it. */
+type FilamentSubTab = 'general' | 'marking';
 
 // Module-level search registry. Tab-level entries only — see lib/settingsSearch.ts
 // for the design note. Adding a narrower `anchor="card-xyz"` entry + id on the
@@ -68,10 +81,13 @@ type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
 registerSettingsSearch({ labelKey: 'settings.tabs.general', tab: 'general', keywords: 'general language date time format printer model cards appearance theme dark light archive auto save thumbnails camera external video stream currency cost kwh price file manager disk updates version firmware beta sidebar links navigation', anchor: 'tab-general' });
 registerSettingsSearch({ labelKey: 'settings.tabs.printing', tab: 'printing', keywords: 'printing bed leveling flow calibration vibration first layer timelapse staggered batch delay start group plate clear confirm auto queue gcode injection farmloop swapmod autoclear drying presets temperature humidity ams ftp retry upload', anchor: 'tab-printing' });
 registerSettingsSearch({ labelKey: 'printOptionsPrefs.cardTitle', labelFallback: 'Saved Print Profiles', tab: 'printing', keywords: 'print options profile preferences saved per user model toggles bed leveling flow timelapse mesh swap macros copy', anchor: 'card-print-options-prefs' });
+registerSettingsSearch({ labelKey: 'labelEditor.title', tab: 'filament', subTab: 'marking', keywords: 'label template design editor sticker niimbot barcode qr code placeholder print printer bridge cassette', anchor: 'card-label-designs' });
+registerSettingsSearch({ labelKey: 'labelSheets.title', tab: 'filament', subTab: 'marking', keywords: 'sheet sheets avery paper page grid columns rows margin gap label stickers a4 a5 letter', anchor: 'card-label-sheets' });
 registerSettingsSearch({ labelKey: 'settings.tabs.filament', tab: 'filament', keywords: 'filament checks warning runout remaining print modal custom mapping ams thresholds humidity temperature history retention spoolman tracking inventory sync remote integration spool catalog color catalog brand material import export', anchor: 'tab-filament' });
 registerSettingsSearch({ labelKey: 'settings.tabs.notifications', tab: 'notifications', keywords: 'notifications providers telegram discord email webhook ntfy pushover home assistant message templates notification text edit digest log viewer', anchor: 'tab-notifications' });
 registerSettingsSearch({ labelKey: 'settings.tabs.smartPlugs', tab: 'plugs', keywords: 'smart plugs energy power automation tapo kasa tplink shelly tasmota discovery kwh monitoring', anchor: 'tab-plugs' });
 registerSettingsSearch({ labelKey: 'settings.tabs.network', tab: 'network', keywords: 'network external url reverse proxy public notification link ftp retry upload retries backoff home assistant ha hass mqtt publishing broker topic integration prometheus metrics grafana monitoring bearer token', anchor: 'tab-network' });
+registerSettingsSearch({ labelKey: 'settings.tabs.cloudLink', tab: 'network', keywords: 'cloud link portal remote pairing publish', anchor: 'card-cloud-link' });
 registerSettingsSearch({ labelKey: 'settings.tabs.virtualPrinter', tab: 'virtual-printer', keywords: 'virtual printer proxy archive slicer bambustudio orcaslicer ip bind port', anchor: 'tab-virtual-printer' });
 registerSettingsSearch({ labelKey: 'settings.tabs.apiKeys', tab: 'apikeys', keywords: 'api keys create permission scope webhook endpoint post http browser documentation test token bearer', anchor: 'tab-apikeys' });
 registerSettingsSearch({ labelKey: 'cameraTokens.title', tab: 'apikeys', keywords: 'camera token long-lived home assistant frigate kiosk stream bblt', anchor: 'card-camera-tokens' });
@@ -262,6 +278,7 @@ export function SettingsPage() {
   const initialTab = isLegacyEmailTab ? 'users' : (tabParam && validTabs.includes(tabParam as TabType) ? tabParam as TabType : 'general');
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
   const [usersSubTab, setUsersSubTab] = useState<UsersSubTab>(isLegacyEmailTab ? 'email' : 'users');
+  const [filamentSubTab, setFilamentSubTab] = useState<FilamentSubTab>('general');
 
   // Update URL when tab changes
   const handleTabChange = (tab: TabType) => {
@@ -288,6 +305,10 @@ export function SettingsPage() {
     can_manage_maintenance: true,
     can_manage_archives: true,
     can_manage_projects: true,
+    // Off by default, unlike every scope above. Those split capabilities keys
+    // already had; this one is new, and it is what a desktop bridge sitting on
+    // somebody's machine authenticates with — granting it must be deliberate.
+    can_print_labels: false,
   });
   const [createdAPIKey, setCreatedAPIKey] = useState<string | null>(null);
   const [showDeleteAPIKeyConfirm, setShowDeleteAPIKeyConfirm] = useState<number | null>(null);
@@ -523,6 +544,7 @@ export function SettingsPage() {
       can_manage_maintenance: boolean;
       can_manage_archives: boolean;
       can_manage_projects: boolean;
+      can_print_labels: boolean;
     }) => api.createAPIKey(data),
     onSuccess: (data) => {
       setCreatedAPIKey(data.key || null);
@@ -1121,6 +1143,20 @@ export function SettingsPage() {
     }
   }, [settings, localSettings]);
 
+  // The compose directory the update commands are prefixed with: the operator's
+  // saved value first, the container's guess only as a fallback. ⚠️ Never the
+  // other way round — clearing the field has to mean "use the guess", not
+  // "resurrect what I just cleared".
+  const composeDir = (settings?.docker_compose_dir || updateCheck?.compose_dir_detected || '').trim();
+  // ⚠️ Double-quoted, because a path can contain spaces. The backend refuses a
+  // trailing backslash for exactly this reason — it would escape the closing
+  // quote and swallow the rest of the line.
+  const composeCdPrefix = composeDir ? `cd "${composeDir}" && ` : '';
+  const [composeDirInput, setComposeDirInput] = useState('');
+  useEffect(() => {
+    setComposeDirInput(settings?.docker_compose_dir ?? '');
+  }, [settings?.docker_compose_dir]);
+
   const updateMutation = useMutation({
     mutationFn: api.updateSettings,
     onSuccess: (data) => {
@@ -1197,7 +1233,6 @@ export function SettingsPage() {
       baseline.default_filament_cost !== localSettings.default_filament_cost ||
       baseline.currency !== localSettings.currency ||
       baseline.energy_cost_per_kwh !== localSettings.energy_cost_per_kwh ||
-      baseline.energy_tracking_mode !== localSettings.energy_tracking_mode ||
       baseline.check_updates !== localSettings.check_updates ||
       (baseline.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
       (baseline.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
@@ -1215,6 +1250,10 @@ export function SettingsPage() {
       // ``archive_3mf_retention_days`` pattern above.
       (baseline.log_retention_days ?? 7) !== (localSettings.log_retention_days ?? 7) ||
       baseline.disable_filament_warnings !== localSettings.disable_filament_warnings ||
+      (baseline.runout_zero_point_enabled ?? true) !== (localSettings.runout_zero_point_enabled ?? true) ||
+      (baseline.ams_sync_bidirectional ?? true) !== (localSettings.ams_sync_bidirectional ?? true) ||
+      (baseline.runout_purge_grams ?? 0) !== (localSettings.runout_purge_grams ?? 0) ||
+      (baseline.usage_events_retention_hours ?? 72) !== (localSettings.usage_events_retention_hours ?? 72) ||
       (baseline.queue_drying_enabled ?? false) !== (localSettings.queue_drying_enabled ?? false) ||
       (baseline.queue_shortest_first ?? false) !== (localSettings.queue_shortest_first ?? false) ||
       (baseline.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
@@ -1253,6 +1292,7 @@ export function SettingsPage() {
       Number(baseline.library_disk_warning_gb ?? 5) !== Number(localSettings.library_disk_warning_gb ?? 5) ||
       (baseline.library_all_files_recursive ?? false) !== (localSettings.library_all_files_recursive ?? false) ||
       (baseline.camera_view_mode ?? 'window') !== (localSettings.camera_view_mode ?? 'window') ||
+      resolveEngine(baseline.slice_engine) !== resolveEngine(localSettings.slice_engine) ||
       (baseline.preferred_slicer ?? 'bambu_studio') !== (localSettings.preferred_slicer ?? 'bambu_studio') ||
       (baseline.open_in_slicer ?? null) !== (localSettings.open_in_slicer ?? null) ||
       (baseline.use_slicer_api ?? false) !== (localSettings.use_slicer_api ?? false) ||
@@ -1295,7 +1335,6 @@ export function SettingsPage() {
         default_filament_cost: localSettings.default_filament_cost,
         currency: localSettings.currency,
         energy_cost_per_kwh: localSettings.energy_cost_per_kwh,
-        energy_tracking_mode: localSettings.energy_tracking_mode,
         check_updates: localSettings.check_updates,
         check_printer_firmware: localSettings.check_printer_firmware,
         include_beta_updates: localSettings.include_beta_updates,
@@ -1309,6 +1348,10 @@ export function SettingsPage() {
         ams_history_retention_days: localSettings.ams_history_retention_days,
         log_retention_days: localSettings.log_retention_days,
         disable_filament_warnings: localSettings.disable_filament_warnings,
+        runout_zero_point_enabled: localSettings.runout_zero_point_enabled,
+        ams_sync_bidirectional: localSettings.ams_sync_bidirectional,
+        runout_purge_grams: localSettings.runout_purge_grams,
+        usage_events_retention_hours: localSettings.usage_events_retention_hours,
         queue_drying_enabled: localSettings.queue_drying_enabled,
         queue_shortest_first: localSettings.queue_shortest_first,
         queue_drying_block: localSettings.queue_drying_block,
@@ -1347,6 +1390,7 @@ export function SettingsPage() {
         library_disk_warning_gb: localSettings.library_disk_warning_gb,
         library_all_files_recursive: localSettings.library_all_files_recursive,
         camera_view_mode: localSettings.camera_view_mode,
+        slice_engine: localSettings.slice_engine,
         preferred_slicer: localSettings.preferred_slicer,
         open_in_slicer: localSettings.open_in_slicer,
         use_slicer_api: localSettings.use_slicer_api,
@@ -1479,177 +1523,189 @@ export function SettingsPage() {
     updatePrinterMutation.mutate({ id: printerId, data });
   };
 
+  // ⚠️ Title, search and the tab bar are drawn before the settings arrive.
+  // The gate below used to replace the whole page with a spinner, so the tabs
+  // — which are local state and need nothing from the server — went with it,
+  // and a slow settings query looked like a page that had failed to open.
+  const pageChrome = (
+    <>
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Settings className="w-6 h-6 text-bambu-green" />{t('settings.title')}</h1>
+            <p className="text-sm text-bambu-gray">{t('settings.configureBamdude')}</p>
+          </div>
+          <SettingsSearchBar
+            onSelect={(entry) => {
+              handleTabChange(entry.tab);
+              // ⚠️ Sub-tabs are not all on the same tab any more. Routing every
+              // one to the users setter left a search hit landing on the right
+              // tab and the wrong section of it.
+              if (entry.subTab === 'marking') setFilamentSubTab('marking');
+              else if (entry.subTab) setUsersSubTab(entry.subTab);
+            }}
+          />
+        </div>
+
+        {/* Tab Navigation */}
+        <div className="flex flex-wrap gap-1 mb-4 border-b border-bambu-dark-tertiary">
+          <button
+            onClick={() => handleTabChange('general')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'general'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            {t('settings.tabs.general')}
+          </button>
+          <button
+            onClick={() => handleTabChange('printing')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'printing'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Printer className="w-4 h-4" />
+            {t('settings.tabs.printing')}
+          </button>
+          <button
+            onClick={() => handleTabChange('filament')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'filament'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Cylinder className="w-4 h-4" />
+            {t('settings.tabs.filament')}
+          </button>
+          <button
+            onClick={() => handleTabChange('notifications')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'notifications'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Bell className="w-4 h-4" />
+            {t('settings.tabs.notifications')}
+            {notificationProviders && notificationProviders.length > 0 && (
+              <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+                {notificationProviders.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => handleTabChange('plugs')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'plugs'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Plug className="w-4 h-4" />
+            {t('settings.tabs.smartPlugs')}
+            {smartPlugs && smartPlugs.length > 0 && (
+              <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+                {smartPlugs.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => handleTabChange('network')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'network'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Wifi className="w-4 h-4" />
+            {t('settings.tabs.network')}
+            <span className={`w-2 h-2 rounded-full ${mqttStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
+          </button>
+          <button
+            onClick={() => handleTabChange('virtual-printer')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'virtual-printer'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Printer className="w-4 h-4" />
+            {t('settings.tabs.virtualPrinter')}
+            <span className={`w-2 h-2 rounded-full ${virtualPrinterRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
+          </button>
+          <button
+            onClick={() => handleTabChange('apikeys')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'apikeys'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Key className="w-4 h-4" />
+            {t('settings.tabs.apiKeys')}
+            {apiKeys && apiKeys.length > 0 && (
+              <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+                {apiKeys.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => handleTabChange('failure-detection')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'failure-detection'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <ScanEye className="w-4 h-4" />
+            {t('settings.tabs.failureDetection')}
+            <span className={`w-2 h-2 rounded-full ${obicoActive ? 'bg-green-400' : 'bg-gray-500'}`} />
+          </button>
+          <button
+            onClick={() => handleTabChange('users')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'users'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            {t('settings.tabs.users')}
+            {authEnabled && (
+              <span className="w-2 h-2 rounded-full bg-green-400" />
+            )}
+          </button>
+          <button
+            onClick={() => handleTabChange('backup')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'backup'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Database className="w-4 h-4" />
+            {t('settings.tabs.backup')}
+            <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && gitBackupStatus?.configured && gitBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
+          </button>
+        </div>
+    </>
+  );
+
   if (isLoading || !localSettings) {
     return (
-      <div className="p-4 md:p-8 flex justify-center">
-        <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
+      <div className="p-4 md:p-6 space-y-4">
+        {pageChrome}
+        <LoadingBlock label={t('common.loading')} />
       </div>
     );
   }
 
   return (
-    <div className="p-4 md:p-6">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-3">
-            <Settings className="w-6 h-6 text-bambu-green" />
-            <h1 className="text-2xl font-bold text-white">{t('settings.title')}</h1>
-          </div>
-          <p className="text-sm text-bambu-gray">{t('settings.configureBamdude')}</p>
-        </div>
-        <SettingsSearchBar
-          onSelect={(entry) => {
-            handleTabChange(entry.tab);
-            if (entry.subTab) setUsersSubTab(entry.subTab);
-          }}
-        />
-      </div>
-
-      {/* Tab Navigation */}
-      <div className="flex flex-wrap gap-1 mb-4 border-b border-bambu-dark-tertiary">
-        <button
-          onClick={() => handleTabChange('general')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            activeTab === 'general'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          {t('settings.tabs.general')}
-        </button>
-        <button
-          onClick={() => handleTabChange('printing')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'printing'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Printer className="w-4 h-4" />
-          {t('settings.tabs.printing')}
-        </button>
-        <button
-          onClick={() => handleTabChange('filament')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'filament'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Cylinder className="w-4 h-4" />
-          {t('settings.tabs.filament')}
-        </button>
-        <button
-          onClick={() => handleTabChange('notifications')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'notifications'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Bell className="w-4 h-4" />
-          {t('settings.tabs.notifications')}
-          {notificationProviders && notificationProviders.length > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
-              {notificationProviders.length}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => handleTabChange('plugs')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'plugs'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Plug className="w-4 h-4" />
-          {t('settings.tabs.smartPlugs')}
-          {smartPlugs && smartPlugs.length > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
-              {smartPlugs.length}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => handleTabChange('network')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'network'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Wifi className="w-4 h-4" />
-          {t('settings.tabs.network')}
-          <span className={`w-2 h-2 rounded-full ${mqttStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
-        </button>
-        <button
-          onClick={() => handleTabChange('virtual-printer')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'virtual-printer'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Printer className="w-4 h-4" />
-          {t('settings.tabs.virtualPrinter')}
-          <span className={`w-2 h-2 rounded-full ${virtualPrinterRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
-        </button>
-        <button
-          onClick={() => handleTabChange('apikeys')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'apikeys'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Key className="w-4 h-4" />
-          {t('settings.tabs.apiKeys')}
-          {apiKeys && apiKeys.length > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
-              {apiKeys.length}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => handleTabChange('failure-detection')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'failure-detection'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <ScanEye className="w-4 h-4" />
-          {t('settings.tabs.failureDetection')}
-          <span className={`w-2 h-2 rounded-full ${obicoActive ? 'bg-green-400' : 'bg-gray-500'}`} />
-        </button>
-        <button
-          onClick={() => handleTabChange('users')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'users'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Users className="w-4 h-4" />
-          {t('settings.tabs.users')}
-          {authEnabled && (
-            <span className="w-2 h-2 rounded-full bg-green-400" />
-          )}
-        </button>
-        <button
-          onClick={() => handleTabChange('backup')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'backup'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Database className="w-4 h-4" />
-          {t('settings.tabs.backup')}
-          <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && gitBackupStatus?.configured && gitBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
-        </button>
-      </div>
+    <div className="p-4 md:p-6 space-y-4">
+      {pageChrome}
       {/* ══════ GENERAL TAB ══════ */}
       {activeTab === 'general' && (
       <div className="flex flex-col lg:flex-row gap-4">
@@ -1778,6 +1834,36 @@ export function SettingsPage() {
                   {t('settings.defaultPrinterDescription')}
                 </p>
               </div>
+              {/* Where slicing runs. Rendered only once more than one engine is
+                  actually usable — while the sidecar is the only one, a picker
+                  with a single entry is noise, and an entry the user can see
+                  but never select reads as a broken feature. Adding a browser
+                  engine to lib/sliceEngines.ts is what makes this appear. */}
+              {hasEngineChoice() && (
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('settings.sliceEngine')}</label>
+                  <div className="relative">
+                    <select
+                      value={resolveEngine(localSettings.slice_engine)}
+                      onChange={(e) => updateSetting('slice_engine', e.target.value as SliceEngineId)}
+                      className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
+                    >
+                      {availableEngines().map((engine) => (
+                        <option key={engine.id} value={engine.id}>
+                          {t(engine.labelKey)}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                  </div>
+                  <p className="text-xs text-bambu-gray mt-1">
+                    {t(
+                      availableEngines().find((e) => e.id === resolveEngine(localSettings.slice_engine))
+                        ?.descriptionKey ?? 'settings.sliceEngineSidecarHint',
+                    )}
+                  </p>
+                </div>
+              )}
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('settings.preferredSlicer')}
@@ -2615,9 +2701,15 @@ export function SettingsPage() {
                               ? t('settings.dockerImagePullBeta')
                               : t('settings.dockerImagePullStable')}
                           </p>
-                          <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono whitespace-pre-wrap break-all">
-                            {`# docker-compose.yml\nimage: kainpl/bamdude:${updateCheck.is_prerelease ? updateCheck.latest_version : (updateCheck.latest_version ?? 'latest')}\n\n# then\ndocker compose pull && docker compose up -d`}
-                          </code>
+                          <div className="relative">
+                            <code className="block text-xs bg-bambu-dark p-2 pr-9 rounded text-bambu-green font-mono whitespace-pre-wrap break-all">
+                              {`# docker-compose.yml\nimage: kainpl/bamdude:${updateCheck.is_prerelease ? updateCheck.latest_version : (updateCheck.latest_version ?? 'latest')}\n\n# then\n${composeCdPrefix}docker compose pull && docker compose up -d`}
+                            </code>
+                            <CopyButton
+                              value={`${composeCdPrefix}docker compose pull && docker compose up -d`}
+                              className="absolute top-1 right-1 p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors"
+                            />
+                          </div>
                         </div>
 
                         {/* Source-build path — less common but supported */}
@@ -2628,9 +2720,36 @@ export function SettingsPage() {
                           <p className="text-xs text-bambu-gray mb-2">
                             {t('settings.dockerSourceBuildHint')}
                           </p>
-                          <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono whitespace-pre-wrap break-all">
-                            {`git fetch origin --tags --prune --force\ngit checkout v${updateCheck.latest_version ?? '<tag>'}\ndocker compose build --pull\ndocker compose up -d`}
-                          </code>
+                          <div className="relative">
+                            <code className="block text-xs bg-bambu-dark p-2 pr-9 rounded text-bambu-green font-mono whitespace-pre-wrap break-all">
+                              {`${composeCdPrefix}git fetch origin --tags --prune --force\ngit checkout v${updateCheck.latest_version ?? '<tag>'}\ndocker compose build --pull\ndocker compose up -d`}
+                            </code>
+                            <CopyButton
+                              value={`${composeCdPrefix}git fetch origin --tags --prune --force && git checkout v${updateCheck.latest_version ?? '<tag>'} && docker compose build --pull && docker compose up -d`}
+                              className="absolute top-1 right-1 p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors"
+                            />
+                          </div>
+                          {/* The one place the operator can fix a wrong guess,
+                              and the only place the field exists at all — it
+                              means nothing outside these instructions. */}
+                          <div className="mt-2">
+                            <label className="block text-xs text-bambu-gray mb-1">
+                              {t('settings.composeDirLabel')}
+                            </label>
+                            <input
+                              type="text"
+                              value={composeDirInput}
+                              onChange={(e) => setComposeDirInput(e.target.value)}
+                              onBlur={() => {
+                                const next = composeDirInput.trim();
+                                if (next === (settings?.docker_compose_dir ?? '')) return;
+                                updateMutation.mutate({ docker_compose_dir: next });
+                              }}
+                              placeholder={updateCheck.compose_dir_detected || '/opt/bamdude'}
+                              className="w-full px-3 py-1.5 text-xs bg-bambu-dark border border-bambu-dark-tertiary rounded text-white font-mono focus:border-bambu-green focus:outline-none"
+                            />
+                            <p className="text-[11px] text-bambu-gray mt-1">{t('settings.composeDirHint')}</p>
+                          </div>
                         </div>
                       </div>
                     ) : updateCheck?.is_windows_installer ? (
@@ -3178,24 +3297,6 @@ export function SettingsPage() {
                   />
                 </div>
               </div>
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.energyDisplayMode')}
-                </label>
-                <select
-                  value={localSettings.energy_tracking_mode || 'total'}
-                  onChange={(e) => updateSetting('energy_tracking_mode', e.target.value as 'print' | 'total')}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                >
-                  <option value="print">{t('settings.printsOnly')}</option>
-                  <option value="total">{t('settings.totalConsumption')}</option>
-                </select>
-                <p className="text-xs text-bambu-gray mt-1">
-                  {localSettings.energy_tracking_mode === 'print'
-                    ? t('settings.energyModePrintDescription')
-                    : t('settings.energyModeTotalDescription')}
-                </p>
-              </div>
             </CardContent>
           </Card>
         </div>
@@ -3274,6 +3375,114 @@ export function SettingsPage() {
                   ))}
                 </div>
               )}
+            </CardContent>
+          </Card>
+
+          {/* G-code Injection (#422) — per-printer-model start/end snippets
+              spliced into plate gcode at print time. Toggle lives in PrintModal;
+              this card is the place where operators define the snippets.
+
+              Directly under Macros on purpose: both are "gcode this install
+              sends that the slicer did not", and they were a column apart with
+              unrelated cards between them. */}
+          <Card>
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <Code className="w-4 h-4 text-bambu-green" />
+                {t('settings.gcodeInjection')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-bambu-gray">
+                {t('settings.gcodeInjectionDescription')}
+              </p>
+              {(() => {
+                const gcodeSnippets: Record<string, { start_gcode: string; end_gcode: string }> = (() => {
+                  try {
+                    return localSettings.gcode_snippets ? JSON.parse(localSettings.gcode_snippets) : {};
+                  } catch {
+                    return {};
+                  }
+                })();
+                const printerModels = [...new Set((printers || []).filter((p) => p.model).map((p) => p.model as string))].sort();
+
+                const updateSnippet = (model: string, field: 'start_gcode' | 'end_gcode', value: string) => {
+                  const updated = { ...gcodeSnippets };
+                  if (!updated[model]) {
+                    updated[model] = { start_gcode: '', end_gcode: '' };
+                  }
+                  updated[model][field] = value;
+                  if (!updated[model].start_gcode && !updated[model].end_gcode) {
+                    delete updated[model];
+                  }
+                  const newValue = Object.keys(updated).length > 0 ? JSON.stringify(updated) : '';
+                  setLocalSettings(prev => prev ? { ...prev, gcode_snippets: newValue } : null);
+                };
+
+                const saveGcodeSnippets = () => {
+                  if (localSettings.gcode_snippets !== settings?.gcode_snippets) {
+                    updateMutation.mutate({ gcode_snippets: localSettings.gcode_snippets });
+                  }
+                };
+
+                if (printerModels.length === 0) {
+                  return (
+                    <p className="text-sm text-bambu-gray italic">
+                      {t('settings.gcodeInjectionNoPrinters')}
+                    </p>
+                  );
+                }
+
+                return printerModels.map((model) => {
+                  const snippet = gcodeSnippets[model] || { start_gcode: '', end_gcode: '' };
+                  const hasContent = !!(snippet.start_gcode || snippet.end_gcode);
+                  return (
+                    <details
+                      key={model}
+                      open={hasContent}
+                      className="border border-bambu-dark-tertiary rounded-lg px-3 py-2 group"
+                    >
+                      <summary className="cursor-pointer flex items-center gap-2 list-none">
+                        <ChevronDown className="w-4 h-4 text-bambu-gray transition-transform group-open:rotate-180" />
+                        <h4 className="text-sm font-medium text-white">{model}</h4>
+                        {hasContent && (
+                          <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-green/20 text-bambu-green">
+                            {t('settings.gcodeConfigured')}
+                          </span>
+                        )}
+                      </summary>
+                      <div className="space-y-2 mt-2">
+                        <div>
+                          <label className="block text-xs text-bambu-gray mb-1">
+                            {t('settings.gcodeStartLabel')}
+                          </label>
+                          <textarea
+                            value={snippet.start_gcode}
+                            onChange={(e) => updateSnippet(model, 'start_gcode', e.target.value)}
+                            onBlur={saveGcodeSnippets}
+                            placeholder={t('settings.gcodeStartPlaceholder')}
+                            rows={3}
+                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono focus:outline-none focus:border-bambu-green resize-y"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-bambu-gray mb-1">
+                            {t('settings.gcodeEndLabel')}
+                          </label>
+                          <textarea
+                            value={snippet.end_gcode}
+                            onChange={(e) => updateSnippet(model, 'end_gcode', e.target.value)}
+                            onBlur={saveGcodeSnippets}
+                            placeholder={t('settings.gcodeEndPlaceholder')}
+                            rows={3}
+                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono focus:outline-none focus:border-bambu-green resize-y"
+                          />
+                        </div>
+                      </div>
+                    </details>
+                  );
+                });
+              })()}
             </CardContent>
           </Card>
 
@@ -3571,110 +3780,6 @@ export function SettingsPage() {
                 <span className="font-medium text-bambu-gray/90">{t('settings.preheatHardwareTitle')}</span>{' '}
                 {t('settings.preheatHardwareDetail')}
               </p>
-            </CardContent>
-          </Card>
-
-          {/* G-code Injection (#422) — per-printer-model start/end snippets
-              spliced into plate gcode at print time. Toggle lives in PrintModal;
-              this card is the place where operators define the snippets. */}
-          <Card>
-            <CardHeader>
-              <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                <Code className="w-4 h-4 text-bambu-green" />
-                {t('settings.gcodeInjection')}
-              </h3>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <p className="text-xs text-bambu-gray">
-                {t('settings.gcodeInjectionDescription')}
-              </p>
-              {(() => {
-                const gcodeSnippets: Record<string, { start_gcode: string; end_gcode: string }> = (() => {
-                  try {
-                    return localSettings.gcode_snippets ? JSON.parse(localSettings.gcode_snippets) : {};
-                  } catch {
-                    return {};
-                  }
-                })();
-                const printerModels = [...new Set((printers || []).filter((p) => p.model).map((p) => p.model as string))].sort();
-
-                const updateSnippet = (model: string, field: 'start_gcode' | 'end_gcode', value: string) => {
-                  const updated = { ...gcodeSnippets };
-                  if (!updated[model]) {
-                    updated[model] = { start_gcode: '', end_gcode: '' };
-                  }
-                  updated[model][field] = value;
-                  if (!updated[model].start_gcode && !updated[model].end_gcode) {
-                    delete updated[model];
-                  }
-                  const newValue = Object.keys(updated).length > 0 ? JSON.stringify(updated) : '';
-                  setLocalSettings(prev => prev ? { ...prev, gcode_snippets: newValue } : null);
-                };
-
-                const saveGcodeSnippets = () => {
-                  if (localSettings.gcode_snippets !== settings?.gcode_snippets) {
-                    updateMutation.mutate({ gcode_snippets: localSettings.gcode_snippets });
-                  }
-                };
-
-                if (printerModels.length === 0) {
-                  return (
-                    <p className="text-sm text-bambu-gray italic">
-                      {t('settings.gcodeInjectionNoPrinters')}
-                    </p>
-                  );
-                }
-
-                return printerModels.map((model) => {
-                  const snippet = gcodeSnippets[model] || { start_gcode: '', end_gcode: '' };
-                  const hasContent = !!(snippet.start_gcode || snippet.end_gcode);
-                  return (
-                    <details
-                      key={model}
-                      open={hasContent}
-                      className="border border-bambu-dark-tertiary rounded-lg px-3 py-2 group"
-                    >
-                      <summary className="cursor-pointer flex items-center gap-2 list-none">
-                        <ChevronDown className="w-4 h-4 text-bambu-gray transition-transform group-open:rotate-180" />
-                        <h4 className="text-sm font-medium text-white">{model}</h4>
-                        {hasContent && (
-                          <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-green/20 text-bambu-green">
-                            {t('settings.gcodeConfigured')}
-                          </span>
-                        )}
-                      </summary>
-                      <div className="space-y-2 mt-2">
-                        <div>
-                          <label className="block text-xs text-bambu-gray mb-1">
-                            {t('settings.gcodeStartLabel')}
-                          </label>
-                          <textarea
-                            value={snippet.start_gcode}
-                            onChange={(e) => updateSnippet(model, 'start_gcode', e.target.value)}
-                            onBlur={saveGcodeSnippets}
-                            placeholder={t('settings.gcodeStartPlaceholder')}
-                            rows={3}
-                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono focus:outline-none focus:border-bambu-green resize-y"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-bambu-gray mb-1">
-                            {t('settings.gcodeEndLabel')}
-                          </label>
-                          <textarea
-                            value={snippet.end_gcode}
-                            onChange={(e) => updateSnippet(model, 'end_gcode', e.target.value)}
-                            onBlur={saveGcodeSnippets}
-                            placeholder={t('settings.gcodeEndPlaceholder')}
-                            rows={3}
-                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono focus:outline-none focus:border-bambu-green resize-y"
-                          />
-                        </div>
-                      </div>
-                    </details>
-                  );
-                });
-              })()}
             </CardContent>
           </Card>
 
@@ -4183,6 +4288,11 @@ export function SettingsPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* Cloud Link — pairing this farm with a BamDude portal. Panel owns
+              its own status/audit queries and renders nothing without
+              `cloud_link:manage`. */}
+          <CloudLinkSettings />
         </div>
       </div>
       )}
@@ -4376,9 +4486,7 @@ export function SettingsPage() {
           )}
 
           {plugsLoading ? (
-            <div className="flex justify-center py-12">
-              <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-            </div>
+            <LoadingBlock label={t('common.loading')} className="py-12 text-bambu-gray" />
           ) : smartPlugs && smartPlugs.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {smartPlugs.map((plug) => (
@@ -4521,9 +4629,7 @@ export function SettingsPage() {
 
             {/* Provider list - full width, vertical stack */}
             {providersLoading ? (
-              <div className="flex justify-center py-12">
-                <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
-              </div>
+              <LoadingBlock label={t('common.loading')} className="py-12 text-bambu-gray" />
             ) : notificationProviders && notificationProviders.length > 0 ? (
               <div className="space-y-3">
                 {notificationProviders.map((provider) => (
@@ -4560,9 +4666,7 @@ export function SettingsPage() {
             </p>
 
             {templatesLoading ? (
-              <div className="flex justify-center py-8">
-                <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
-              </div>
+              <LoadingBlock label={t('common.loading')} className="py-8 text-bambu-gray" />
             ) : notificationTemplates && notificationTemplates.length > 0 ? (
               (() => {
                 // Per-event metadata: which group it belongs to and which
@@ -4941,6 +5045,18 @@ export function SettingsPage() {
                           <p className="text-xs text-bambu-gray">{t('settings.manageProjectsDescription')}</p>
                         </div>
                       </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newAPIKeyPermissions.can_print_labels}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_print_labels: e.target.checked }))}
+                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                        />
+                        <div>
+                          <span className="text-white">{t('settings.printLabels')}</span>
+                          <p className="text-xs text-bambu-gray">{t('settings.printLabelsDescription')}</p>
+                        </div>
+                      </label>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 pt-2">
@@ -4968,9 +5084,7 @@ export function SettingsPage() {
 
             {/* Existing Keys List */}
             {apiKeysLoading ? (
-              <div className="flex justify-center py-12">
-                <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-              </div>
+              <LoadingBlock label={t('common.loading')} className="py-12 text-bambu-gray" />
             ) : apiKeys && apiKeys.length > 0 ? (
               <div className="space-y-3">
                 {apiKeys.map((key) => (
@@ -5015,6 +5129,9 @@ export function SettingsPage() {
                             )}
                             {key.can_manage_projects && (
                               <span className="px-1.5 py-0.5 bg-lime-100 dark:bg-lime-500/20 text-lime-700 dark:text-lime-400 rounded">{t('settings.projectsBadge')}</span>
+                            )}
+                            {key.can_print_labels && (
+                              <span className="px-1.5 py-0.5 bg-pink-100 dark:bg-pink-500/20 text-pink-700 dark:text-pink-400 rounded">{t('settings.labelsBadge')}</span>
                             )}
                             {key.user_id === null && (
                               <span className="px-1.5 py-0.5 bg-bambu-dark-tertiary text-bambu-gray rounded">{t('settings.legacyBadge')}</span>
@@ -5103,6 +5220,21 @@ export function SettingsPage() {
                 <CameraTokensPanel />
               </CardContent>
             </Card>
+
+            {/* Streaming-overlay URL builder. Sits under the camera tokens it
+                usually needs — an overlay on a login-enabled deployment is a
+                token plus a URL, and both are made here. */}
+            <Card className="mt-6">
+              <CardHeader>
+                <h3 className="text-base font-semibold text-white flex items-center gap-2" id="card-stream-overlay">
+                  <MonitorPlay className="w-4 h-4 text-bambu-green" />
+                  {t('streamOverlay.builder.title')}
+                </h3>
+              </CardHeader>
+              <CardContent>
+                <StreamOverlayBuilder />
+              </CardContent>
+            </Card>
           </div>
 
           {/* Right Column - API Browser */}
@@ -5149,6 +5281,71 @@ export function SettingsPage() {
       {/* ══════ FILAMENT TAB ══════ */}
       {activeTab === 'filament' && localSettings && (
         <>
+        <div className="flex gap-1 border-b border-bambu-dark-tertiary mb-4">
+          <button
+            onClick={() => setFilamentSubTab('general')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              filamentSubTab === 'general'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Cylinder className="w-4 h-4" />
+            {t('settings.tabs.filamentGeneral')}
+          </button>
+          <button
+            onClick={() => setFilamentSubTab('marking')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              filamentSubTab === 'marking'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <Tag className="w-4 h-4" />
+            {t('settings.tabs.filamentMarking')}
+          </button>
+        </div>
+        </>
+      )}
+
+      {activeTab === 'filament' && localSettings && filamentSubTab === 'marking' && (
+        <div className="space-y-4">
+          <Card id="card-label-designs">
+            <CardContent>
+              <LabelTemplateEditor />
+            </CardContent>
+          </Card>
+
+          {/* ⚠️ Beside the designs, not inside them. A sheet is paper and says
+              nothing about what goes in a cell — putting it in the design
+              editor would suggest the two are bound, which is exactly the
+              shape the model refuses. */}
+          <Card id="card-label-sheets">
+            <CardContent>
+              <LabelSheetEditor />
+            </CardContent>
+          </Card>
+
+          {/* Adopting a device decides that a machine in another room may
+              receive our labels, so it stays admin-grade wherever it lives. */}
+          {hasPermission('label_devices:manage') && (
+            <Card id="card-label-devices">
+              <CardHeader>
+                <h2 className="text-base font-semibold text-white flex items-center gap-2">
+                  <Printer className="w-4 h-4 text-bambu-green" />
+                  {t('labelDevices.title')}
+                </h2>
+              </CardHeader>
+              <CardContent>
+                <LabelDevicesSettings />
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'filament' && localSettings && filamentSubTab === 'general' && (
+        <>
         <div className="flex flex-col lg:flex-row gap-4">
           {/* Left Column (1/3) - Mode Selector + AMS Thresholds */}
           <div className="lg:w-1/3 space-y-4">
@@ -5175,6 +5372,72 @@ export function SettingsPage() {
                     />
                     <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
                   </label>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <h2 className="text-lg font-semibold text-white">{t('settings.usageAccuracy.title')}</h2>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-white">{t('settings.usageAccuracy.zeroPoint')}</p>
+                    <p className="text-sm text-bambu-gray">{t('settings.usageAccuracy.zeroPointDesc')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.runout_zero_point_enabled ?? true}
+                      onChange={(e) => updateSetting('runout_zero_point_enabled', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-white">{t('settings.usageAccuracy.bidirectional')}</p>
+                    <p className="text-sm text-bambu-gray">{t('settings.usageAccuracy.bidirectionalDesc')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.ams_sync_bidirectional ?? true}
+                      onChange={(e) => updateSetting('ams_sync_bidirectional', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-white">{t('settings.usageAccuracy.purgeGrams')}</p>
+                    <p className="text-sm text-bambu-gray">{t('settings.usageAccuracy.purgeGramsDesc')}</p>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={500}
+                    value={localSettings.runout_purge_grams ?? 0}
+                    onChange={(e) => updateSetting('runout_purge_grams', Math.max(0, parseInt(e.target.value) || 0))}
+                    className="w-20 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-right"
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-white">{t('settings.usageAccuracy.journalRetention')}</p>
+                    <p className="text-sm text-bambu-gray">{t('settings.usageAccuracy.journalRetentionDesc')}</p>
+                  </div>
+                  <input
+                    type="number"
+                    min={1}
+                    max={8760}
+                    value={localSettings.usage_events_retention_hours ?? 72}
+                    onChange={(e) => updateSetting('usage_events_retention_hours', Math.max(1, parseInt(e.target.value) || 72))}
+                    className="w-20 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-right"
+                  />
                 </div>
               </CardContent>
             </Card>

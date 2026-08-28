@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -62,30 +62,79 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+async def subtree_project_ids(db: AsyncSession, root_id: int) -> list[int]:
+    """``root_id`` and every project beneath it, breadth-first.
+
+    ⚠️ Carries a seen-set even though :func:`would_create_project_cycle` refuses
+    to build one: a database written before that guard existed can already
+    contain a loop, and a roll-up that hangs is worse than one that is wrong.
+    """
+    found = [root_id]
+    seen = {root_id}
+    frontier = [root_id]
+    while frontier:
+        rows = await db.execute(select(Project.id).where(Project.parent_id.in_(frontier)))
+        frontier = [pid for pid in rows.scalars().all() if pid not in seen]
+        seen.update(frontier)
+        found.extend(frontier)
+    return found
+
+
+async def would_create_project_cycle(db: AsyncSession, project_id: int, new_parent_id: int) -> bool:
+    """Whether making ``new_parent_id`` the parent of ``project_id`` closes a loop.
+
+    ⚠️ Refusing only ``parent == self`` is not enough: A→B then B→A is two calls
+    apart, and the result is a tree with no root to roll figures up to. Walks
+    upward from the proposed parent, which is at most as deep as the tree.
+    """
+    if new_parent_id == project_id:
+        return True
+    seen: set[int] = set()
+    current: int | None = new_parent_id
+    while current is not None and current not in seen:
+        seen.add(current)
+        if current == project_id:
+            return True
+        row = await db.execute(select(Project.parent_id).where(Project.id == current))
+        current = row.scalar_one_or_none()
+    return False
+
+
 async def compute_project_stats(
-    db: AsyncSession, project_id: int, target_count: int | None = None, target_parts_count: int | None = None
+    db: AsyncSession,
+    project_id: int | list[int],
+    target_count: int | None = None,
+    target_parts_count: int | None = None,
 ) -> ProjectStats:
-    """Compute statistics for a project."""
+    """Compute statistics for one project, or for a whole set of them.
+
+    ⚠️ A single id and a subtree go through **this** function rather than a
+    second copy of the SQL: a master project's roll-up and its own card must
+    agree, and two queries that answer the same question eventually stop
+    agreeing (upstream #1264 consolidated theirs for the same reason).
+
+    ``target_count`` / ``target_parts_count`` are the caller's — for a roll-up
+    that means every target in the tree added together, so the percentage is
+    measured against what the whole tree set out to do.
+    """
+    project_ids = [project_id] if isinstance(project_id, int) else list(project_id)
+    in_scope = PrintArchive.project_id.in_(project_ids)
     # Count total archives (distinct print jobs)
     total_result = await db.execute(
-        select(func.count(PrintArchive.id)).where(
-            PrintArchive.project_id == project_id, PrintArchive.deleted_at.is_(None)
-        )
+        select(func.count(PrintArchive.id)).where(in_scope, PrintArchive.deleted_at.is_(None))
     )
     total_archives = total_result.scalar() or 0
 
     # Sum total items (using quantity field)
     total_items_result = await db.execute(
-        select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(
-            PrintArchive.project_id == project_id, PrintArchive.deleted_at.is_(None)
-        )
+        select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(in_scope, PrintArchive.deleted_at.is_(None))
     )
     total_items = total_items_result.scalar() or 0
 
     # Count failed archives (number of print jobs) - includes all failure states
     failed_result = await db.execute(
         select(func.count(PrintArchive.id)).where(
-            PrintArchive.project_id == project_id,
+            in_scope,
             PrintArchive.deleted_at.is_(None),
             PrintArchive.status.in_(["failed", "aborted", "cancelled", "stopped"]),
         )
@@ -107,14 +156,14 @@ async def compute_project_stats(
             func.coalesce(func.sum(PrintArchive.cost), 0).label("total_filament_cost"),
             func.coalesce(func.sum(PrintArchive.energy_kwh), 0).label("total_energy"),
             func.coalesce(func.sum(PrintArchive.energy_cost), 0).label("total_energy_cost"),
-        ).where(PrintArchive.project_id == project_id, PrintArchive.deleted_at.is_(None))
+        ).where(in_scope, PrintArchive.deleted_at.is_(None))
     )
     sums = sums_result.first()
 
     # Count queued items
     queued_result = await db.execute(
         select(func.count(PrintQueueItem.id)).where(
-            PrintQueueItem.project_id == project_id, PrintQueueItem.status == "pending"
+            PrintQueueItem.project_id.in_(project_ids), PrintQueueItem.status == "pending"
         )
     )
     queued_prints = queued_result.scalar() or 0
@@ -126,7 +175,7 @@ async def compute_project_stats(
     # "0 in progress" with a machine visibly running the project's job.
     in_progress_result = await db.execute(
         select(func.count(PrintArchive.id)).where(
-            PrintArchive.project_id == project_id,
+            in_scope,
             PrintArchive.deleted_at.is_(None),
             PrintArchive.status == "printing",
         )
@@ -144,7 +193,7 @@ async def compute_project_stats(
             func.coalesce(func.sum(PrintArchive.quantity), 0).label("printed"),
             func.coalesce(func.sum(PrintArchive.defective_count), 0).label("defective"),
         ).where(
-            PrintArchive.project_id == project_id,
+            in_scope,
             PrintArchive.deleted_at.is_(None),
             PrintArchive.status == "completed",
         )
@@ -175,7 +224,7 @@ async def compute_project_stats(
                 "completed"
             ),
             func.coalesce(func.sum(ProjectBOMItem.unit_price * ProjectBOMItem.quantity_needed), 0).label("bom_cost"),
-        ).where(ProjectBOMItem.project_id == project_id)
+        ).where(ProjectBOMItem.project_id.in_(project_ids))
     )
     bom_stats = bom_result.first()
 
@@ -308,6 +357,8 @@ async def list_projects(
                 description=project.description,
                 color=project.color,
                 status=project.status,
+                parent_id=project.parent_id,
+                is_template=project.is_template,
                 target_count=project.target_count,
                 target_parts_count=project.target_parts_count,
                 budget=project.budget,
@@ -422,6 +473,8 @@ async def list_templates(
                 description=project.description,
                 color=project.color,
                 status=project.status,
+                parent_id=project.parent_id,
+                is_template=project.is_template,
                 target_count=project.target_count,
                 target_parts_count=project.target_parts_count,
                 budget=project.budget,
@@ -583,6 +636,23 @@ async def get_project(
 
     stats = await compute_project_stats(db, project.id, project.target_count, project.target_parts_count)
 
+    # Roll the whole tree up, targets included: a master project's progress is
+    # measured against what the tree set out to do, not against its own plate
+    # count. Skipped entirely for a project with no children — there would be
+    # nothing to add, and a duplicate card saying the same numbers reads as a
+    # bug.
+    rollup_stats = None
+    if children:
+        subtree = await subtree_project_ids(db, project.id)
+        targets = await db.execute(
+            select(
+                func.coalesce(func.sum(Project.target_count), 0),
+                func.coalesce(func.sum(Project.target_parts_count), 0),
+            ).where(Project.id.in_(subtree))
+        )
+        tree_target, tree_parts_target = targets.first()
+        rollup_stats = await compute_project_stats(db, subtree, tree_target or None, tree_parts_target or None)
+
     return ProjectResponse(
         id=project.id,
         name=project.name,
@@ -607,6 +677,7 @@ async def get_project(
         created_at=project.created_at,
         updated_at=project.updated_at,
         stats=stats,
+        rollup_stats=rollup_stats,
     )
 
 
@@ -663,13 +734,15 @@ async def update_project(
         # non-http(s) inputs, so anything reaching here is safe to store.
         project.url = data.url
     if data.parent_id is not None:
-        # Verify parent exists and prevent circular reference
-        if data.parent_id == project_id:
-            raise HTTPException(status_code=400, detail="Project cannot be its own parent")
         if data.parent_id != 0:  # 0 means remove parent
             parent_result = await db.execute(select(Project).where(Project.id == data.parent_id))
             if not parent_result.scalar_one_or_none():
                 raise HTTPException(status_code=400, detail="Parent project not found")
+            # ⚠️ The whole chain, not just "is this me". A→B followed by B→A is
+            # two calls apart and leaves a tree with no root to roll figures up
+            # to — which the stats walk then has to defend itself against.
+            if await would_create_project_cycle(db, project_id, data.parent_id):
+                raise HTTPException(status_code=400, detail="A project cannot be nested inside itself")
             project.parent_id = data.parent_id
         else:
             project.parent_id = None
@@ -727,6 +800,12 @@ async def delete_project(
 
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # ⚠️ Children move UP to this project's own parent, not out to the top
+    # level. The FK carries no ``ondelete``, so SQLAlchemy would nullify it and
+    # a mid-tree project's sub-projects would silently leave the tree they
+    # belong to — losing the grouping that is the point of nesting them.
+    await db.execute(update(Project).where(Project.parent_id == project_id).values(parent_id=project.parent_id))
 
     await db.delete(project)
 

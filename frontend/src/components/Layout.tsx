@@ -158,6 +158,20 @@ export function Layout() {
   const ThemeIcon = { dark: Sun, light: Monitor, system: Moon }[mode];
   const themeSwitchTitle = t({ dark: 'nav.switchToLight', light: 'nav.switchToSystem', system: 'nav.switchToDark' }[mode]);
   const isSidebarCompact = useIsSidebarCompact();
+
+  // Bug-report panel state lives here because the trigger MOVES. Below the
+  // sidebar-compact breakpoint the floating disc is replaced by a button in
+  // the compact header: the bottom-right corner is the most contended region
+  // in the app — the Profiles scroll-to-top button, the floating camera window
+  // and its resize handle, bulk-selection toolbars and per-card action buttons
+  // all live there — and a fixed 48px disc sits on top of whichever of them
+  // happens to be underneath. Moving out of the corner is the only fix that
+  // covers in-flow content as well as fixed overlays.
+  //
+  // ⚠️ Not a hide switch: the bubble is the only entry to the report form, and
+  // that form runs the printer diagnostic, the log scan and the debug capture.
+  // Hiding it yields reports with nothing attached.
+  const [bugReportOpen, setBugReportOpen] = useState(false);
   // Re-render Layout (and downstream pages) when the color catalog finishes loading
   // so cached getColorName() results refresh from HSL fallback to catalog names.
   useColorCatalogVersion();
@@ -789,6 +803,15 @@ export function Layout() {
               className="h-8"
             />
           </a>
+          {/* Bug report — the compact-layout home of the floating bubble. */}
+          <button
+            onClick={() => setBugReportOpen(true)}
+            className="ml-auto p-2 -mr-2 rounded-lg text-red-500 hover:bg-bambu-dark-tertiary transition-colors"
+            title={t('bugReport.title')}
+            aria-label={t('bugReport.title')}
+          >
+            <Bug className="w-5 h-5" />
+          </button>
         </header>
       )}
 
@@ -1497,7 +1520,16 @@ export function Layout() {
         </div>
       )}
 
-      <BugReportBubble />
+      {/* ⚠️ The panel always mounts HERE, at the Layout root. It must not move
+          into the header alongside its compact-layout trigger: the header is
+          `fixed z-40` and so its own stacking context, which would cap the
+          z-50 panel at the header's level and bury it under every ordinary
+          modal in the app. */}
+      <BugReportBubble
+        showTrigger={!isSidebarCompact}
+        open={bugReportOpen}
+        onOpenChange={setBugReportOpen}
+      />
     </div>
   );
 }

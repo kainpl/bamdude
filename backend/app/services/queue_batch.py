@@ -1,7 +1,12 @@
-"""Helpers for creating grouped batches of queue items (quantity > 1)."""
+"""Helpers for creating queue items outside the ordinary add-to-queue route.
+
+Two shapes live here: the grouped batch a quantity>1 direct print leaves behind,
+and the single already-claimed row a direct print takes for itself.
+"""
 
 import json
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,7 +14,116 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.schemas.calibration_mode import normalize_mode
-from backend.app.services.queue_counters import update_queue_counters
+from backend.app.services.queue_counters import set_queue_printing, update_queue_counters
+
+
+def _item_columns(
+    *,
+    archive_id: int | None,
+    library_file_id: int | None,
+    options: dict | None,
+    project_id: int | None,
+) -> dict:
+    """Dispatch options → queue-item columns.
+
+    Reads with ``.get()`` because the caller's dict comes from
+    ``model_dump(exclude_none=True)`` — an option left at its default is simply
+    absent, not None.
+
+    ⚠️ ``created_by_id`` is deliberately NOT in here. It is passed explicitly at
+    each ``PrintQueueItem(...)`` site because ``test_queue_item_attribution``
+    reads those sites with the AST and cannot see through a ``**`` unpack —
+    hiding the owner in this dict would silence the guard for the whole module.
+    """
+    opts = options or {}
+    bed_mode = normalize_mode(opts.get("bed_levelling", True))
+    flow_mode = normalize_mode(opts.get("flow_cali", True))
+    nozzle_mode = normalize_mode(opts.get("nozzle_offset_cali", True))
+    ams_mapping = opts.get("ams_mapping")
+    swap_events = opts.get("swap_macro_events")
+    selected_macro_ids = opts.get("selected_macro_ids")
+    execute_swap_macros = bool(opts.get("execute_swap_macros", False))
+
+    return {
+        "archive_id": archive_id,
+        "library_file_id": library_file_id,
+        "ams_mapping": json.dumps(ams_mapping) if ams_mapping else None,
+        "plate_id": opts.get("plate_id"),
+        "bed_levelling": bed_mode == "on",
+        "bed_levelling_mode": bed_mode,
+        "flow_cali": flow_mode == "on",
+        "flow_cali_mode": flow_mode,
+        "layer_inspect": bool(opts.get("layer_inspect", False)),
+        "timelapse": bool(opts.get("timelapse", False)),
+        "timelapse_storage": opts.get("timelapse_storage"),
+        "use_ams": bool(opts.get("use_ams", True)),
+        "nozzle_offset_cali": nozzle_mode == "on",
+        "nozzle_offset_cali_mode": nozzle_mode,
+        "mesh_mode_fast_check": bool(opts.get("mesh_mode_fast_check", True)),
+        "gcode_injection": bool(opts.get("gcode_injection", False)),
+        "execute_swap_macros": execute_swap_macros,
+        "swap_macro_events": json.dumps(swap_events) if execute_swap_macros and swap_events else None,
+        "selected_macro_ids": json.dumps(selected_macro_ids) if selected_macro_ids is not None else None,
+        "auto_off_after": bool(opts.get("auto_off_after", False)),
+        "project_id": project_id,
+    }
+
+
+async def claim_printer_for_direct_print(
+    db: AsyncSession,
+    *,
+    printer_id: int,
+    archive_id: int | None = None,
+    library_file_id: int | None = None,
+    options: dict | None = None,
+    created_by_id: int | None = None,
+    project_id: int | None = None,
+) -> PrintQueueItem | None:
+    """Take the printer's queue claim for a print being dispatched right now.
+
+    "Print now" used to claim nothing until ``on_print_start`` — i.e. until the
+    printer had already started — so for the whole upload the queue saw an idle
+    printer and dispatched over the job on its way. The row created here is the
+    same claim the scheduler takes before its own dispatch, and it is read by
+    the same ``PrinterQueue.status='printing'`` seed in ``check_queue``.
+
+    ⚠️ ``status='printing'``, not ``pending``: the scheduler's dispatch flip is a
+    compare-and-set gated on ``pending``, which is what stops this row being
+    dispatched a second time. ``position=0`` keeps it out of the pending
+    ordering, which is computed over pending rows only.
+
+    Returns ``None`` when the printer has no queue row — the caller carries on
+    and dispatches unclaimed, exactly as before this existed. A missing queue is
+    a broken install, not a reason to refuse somebody's print.
+
+    The caller owns the release: see ``background_dispatch``.
+    """
+    result = await db.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer_id))
+    queue = result.scalar_one_or_none()
+    if not queue:
+        return None
+
+    item = PrintQueueItem(
+        queue_id=queue.id,
+        position=0,
+        status="printing",
+        started_at=datetime.now(timezone.utc),
+        created_by_id=created_by_id,
+        **_item_columns(
+            archive_id=archive_id,
+            library_file_id=library_file_id,
+            options=options,
+            project_id=project_id,
+        ),
+    )
+    db.add(item)
+    await db.flush()
+
+    await set_queue_printing(db, queue.id, item.id)
+    await update_queue_counters(db, queue.id)
+    await db.commit()
+    await db.refresh(item)
+    return item
 
 
 async def enqueue_batch_copies(

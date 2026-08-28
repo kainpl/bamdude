@@ -287,12 +287,16 @@ def test_hex_code_skipped_on_malformed_rgba():
     assert b"#NOT" not in pdf.upper(), "Malformed rgba must not render as a hex code"
 
 
-def test_brand_uses_helvetica_bold_on_box_label():
+def test_brand_uses_the_bold_face_on_box_label():
     """#809 follow-up: brand line is bolder than before so it reads cleanly at
-    arm's length. The uncompressed PDF must reference the Helvetica-Bold font."""
+    arm's length. Pinned by weight, not by font name — the built-in Helvetica
+    faces were replaced by a Unicode TTF and the assertion must survive that.
+    """
+    from backend.app.services.label_renderer import _FONT_BOLD  # noqa: PLC0415
+
     data = [_sample(brand="Polymaker", name="Polymaker Ivory")]
     pdf = _render_uncompressed("box_62x29", data)
-    assert b"Helvetica-Bold" in pdf, "Brand line on roomy layouts must use Helvetica-Bold"
+    assert _FONT_BOLD.encode() in pdf, "Brand line on roomy layouts must use the bold face"
 
 
 # ── #1870: low-res thermal-printer optimisations ──
@@ -361,3 +365,50 @@ def test_roomy_qr_size_has_floor_for_narrow_labels():
     inner_h_big = 55 * mm - 2 * pad
     size_big = _roomy_qr_size(inner_w_big, inner_h_big)
     assert 12 * mm <= size_big <= 18 * mm
+
+
+# ── Unicode fonts: a Ukrainian spool name used to print as black squares ──
+
+
+def test_cyrillic_text_does_not_fall_back_to_dingbat_squares():
+    """reportlab's built-in Type-1 faces are WinAnsi-encoded, so handed Cyrillic
+    they silently switch to ZapfDingbats — whose ``n`` glyph is a filled black
+    square. A spool named "Чорний матовий" in location "Полиця 3" therefore
+    printed as ``■■■■■■ ■■■■■■■`` / ``■■■■■■ 3`` on every template, with no
+    error raised anywhere and Latin text unaffected, which is why it survived.
+    ``uk`` is one of two first-class locales, so labels are drawn with a
+    registered Unicode TTF instead.
+    """
+    data = [
+        _sample(
+            brand="Пластик Україна",
+            name="Чорний матовий",
+            subtype="Матовий",
+            storage_location="Полиця 3",
+        )
+    ]
+    for template in ("box_62x29", "box_40x30", "ams_holder_75x55", "avery_l7160"):
+        pdf = _render_uncompressed(template, data)
+        assert b"ZapfDingbats" not in pdf, f"{template}: Cyrillic fell back to the Dingbats substitute"
+
+
+def test_unicode_fonts_are_shipped_and_registered():
+    """The renderer falls back to the built-in faces when the TTFs are absent —
+    correct at runtime (a label must still print) but it re-hides the bug above.
+    Pin the files and the registration so a packaging slip fails here instead of
+    on somebody's label.
+    """
+    from backend.app.services.label_renderer import (  # noqa: PLC0415
+        _FONT_BOLD,
+        _FONT_FILES,
+        _FONT_ITALIC,
+        _FONT_REGULAR,
+    )
+
+    missing = [str(p) for p in _FONT_FILES.values() if not p.is_file()]
+    assert not missing, f"Label font files missing from the repo: {missing}"
+    assert (_FONT_REGULAR, _FONT_BOLD, _FONT_ITALIC) != (
+        "Helvetica",
+        "Helvetica-Bold",
+        "Helvetica-Oblique",
+    ), "Fell back to the built-in faces — registration did not happen"

@@ -43,6 +43,10 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [onPrinterError, setOnPrinterError] = useState(provider?.on_printer_error ?? false);
   const [onAiFailureDetection, setOnAiFailureDetection] = useState(provider?.on_ai_failure_detection ?? false);
   const [onFilamentLow, setOnFilamentLow] = useState(provider?.on_filament_low ?? false);
+  const [onFilamentRunout, setOnFilamentRunout] = useState(provider?.on_filament_runout ?? false);
+  // Defaults ON: it fires only when the shortfall can be proved, so it is
+  // quiet by construction rather than by the operator remembering to enable it.
+  const [onFilamentDeficit, setOnFilamentDeficit] = useState(provider?.on_filament_deficit ?? true);
   const [onMaintenanceDue, setOnMaintenanceDue] = useState(provider?.on_maintenance_due ?? false);
   const [onStockReorderAlert, setOnStockReorderAlert] = useState(provider?.on_stock_reorder_alert ?? false);
   const [onStockBreakAlert, setOnStockBreakAlert] = useState(provider?.on_stock_break_alert ?? false);
@@ -192,6 +196,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       on_printer_error: onPrinterError,
       on_ai_failure_detection: onAiFailureDetection,
       on_filament_low: onFilamentLow,
+      on_filament_runout: onFilamentRunout,
+      on_filament_deficit: onFilamentDeficit,
       on_maintenance_due: onMaintenanceDue,
       on_stock_reorder_alert: onStockReorderAlert,
       on_stock_break_alert: onStockBreakAlert,
@@ -653,6 +659,14 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                   <Toggle checked={onFilamentLow} onChange={setOnFilamentLow} />
                 </div>
                 <div className="flex items-center justify-between">
+                  <span className="text-sm text-white">{t('notifications.filamentRunout')}</span>
+                  <Toggle checked={onFilamentRunout} onChange={setOnFilamentRunout} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-white">{t('notifications.filamentDeficit')}</span>
+                  <Toggle checked={onFilamentDeficit} onChange={setOnFilamentDeficit} />
+                </div>
+                <div className="flex items-center justify-between">
                   <span className="text-sm text-white">{t('notifications.maintenance')}</span>
                   <Toggle checked={onMaintenanceDue} onChange={setOnMaintenanceDue} />
                 </div>
@@ -696,6 +710,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               if (onPrinterError) enabledEvents.push({ key: 'on_printer_error', label: t('notifications.error') });
               if (onAiFailureDetection) enabledEvents.push({ key: 'on_ai_failure_detection', label: t('notifications.aiFailureDetection') });
               if (onFilamentLow) enabledEvents.push({ key: 'on_filament_low', label: t('notifications.lowFilament') });
+              if (onFilamentRunout) enabledEvents.push({ key: 'on_filament_runout', label: t('notifications.filamentRunout') });
+              if (onFilamentDeficit) enabledEvents.push({ key: 'on_filament_deficit', label: t('notifications.filamentDeficit') });
               if (onMaintenanceDue) enabledEvents.push({ key: 'on_maintenance_due', label: t('notifications.maintenance') });
               if (onStockReorderAlert) enabledEvents.push({ key: 'on_stock_reorder_alert', label: t('notifications.stockReorderAlert') });
               if (onStockBreakAlert) enabledEvents.push({ key: 'on_stock_break_alert', label: t('notifications.stockBreakAlert') });

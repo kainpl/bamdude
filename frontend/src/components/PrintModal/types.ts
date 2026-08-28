@@ -1,4 +1,4 @@
-import type { CalibrationMode, PrintQueueItem, Printer } from '../../api/client';
+import type { AutoQueueItem, CalibrationMode, PrintQueueItem, Printer } from '../../api/client';
 import type { AutoCalibrationCaps } from '../../utils/printerCapabilities';
 
 /**
@@ -6,8 +6,9 @@ import type { AutoCalibrationCaps } from '../../utils/printerCapabilities';
  * - 'reprint': Immediate print from archive (no schedule options)
  * - 'add-to-queue': Schedule print to queue (includes schedule options)
  * - 'edit-queue-item': Edit existing queue item (all options + existing values)
+ * - 'edit-auto-item': Edit a pending auto-queue item (or its whole batch)
  */
-export type PrintModalMode = 'reprint' | 'add-to-queue' | 'edit-queue-item';
+export type PrintModalMode = 'reprint' | 'add-to-queue' | 'edit-queue-item' | 'edit-auto-item';
 
 /**
  * Props for the unified PrintModal component.
@@ -27,6 +28,10 @@ export interface PrintModalProps {
   archiveName: string;
   /** Existing queue item (only for edit-queue-item mode) */
   queueItem?: PrintQueueItem;
+  /** Existing auto-queue item (only for edit-auto-item mode) */
+  autoQueueItem?: AutoQueueItem;
+  /** >1 = edit every pending copy of the item's batch at once */
+  autoQueueBatchCount?: number;
   /** Pre-select specific printers when opening the modal */
   initialSelectedPrinterIds?: number[];
   /** Open with this plate already chosen instead of the file's first plate.
@@ -269,6 +274,15 @@ export interface PlateSelectorProps {
   onDeselectAll?: () => void;
   /** Whether multi-select (checkboxes) is enabled - true in add-to-queue mode */
   multiSelect?: boolean;
+  /** How many runs of each plate are wanted, keyed by plate index. A plate
+   *  absent from the map takes the dialog's shared Quantity — which is what
+   *  every plate took before per-plate counts existed. */
+  quantities?: Record<number, number>;
+  /** Omitted where per-plate counts make no sense (reprint, edit). The stepper
+   *  is only drawn when this is supplied AND more than one plate is selected:
+   *  with one plate the shared Quantity field already answers the question, and
+   *  two controls for it would be two sources of truth. */
+  onQuantityChange?: (plateIndex: number, quantity: number) => void;
 }
 
 /**

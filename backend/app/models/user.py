@@ -41,14 +41,19 @@ class User(Base):
 
     # Per-user Bambu Cloud credentials (when auth is enabled, each user has their own)
     cloud_token: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
+    # Bambu's refreshToken from the same login response (m152, spec A §3
+    # hardening) — lets the server renew the pair on the genuine expiry 401
+    # instead of forcing a re-login. NULL for token-auth sign-ins (no refresh
+    # token exists for a hand-pasted access token).
+    cloud_refresh_token: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
     cloud_email: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     cloud_region: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
     # Stamped the first time Bambu answers its genuine expiry 401 to a call made
-    # with this user's stored token; cleared on a fresh login/logout. Bambu's
-    # access token is opaque (no readable expiry) and we don't persist the
-    # refresh token, so without this flag a dead credential is indistinguishable
-    # from a live one and every cloud surface keeps claiming "connected"
-    # (upstream #2562). Migration m109.
+    # with this user's stored token (and, since m152, only after a refresh
+    # attempt failed); cleared on a fresh login/logout. Bambu's access token is
+    # opaque (no readable expiry), so without this flag a dead credential is
+    # indistinguishable from a live one and every cloud surface keeps claiming
+    # "connected" (upstream #2562). Migration m109.
     cloud_token_invalid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
     # Per-user Orca Cloud credentials. Unlike Bambu Cloud, Orca uses Supabase PKCE
@@ -59,6 +64,8 @@ class User(Base):
     orca_cloud_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     orca_cloud_email: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     orca_cloud_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    # Granted scope from the last token response — the UI gates push controls on it (m154).
+    orca_cloud_scope: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
     # Transient PKCE state held between /orca-cloud/auth/start and /orca-cloud/auth/finish.
     # Cleared on successful finish; expires after 10 minutes if the user abandons the flow.
     orca_cloud_pending_verifier: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)

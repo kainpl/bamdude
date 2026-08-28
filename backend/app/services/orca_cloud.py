@@ -63,20 +63,20 @@ ORCA_API_BASE = os.environ.get("ORCA_CLOUD_API_BASE", _DEFAULT_API_BASE).rstrip(
 # browser-visible requests — but it must accompany every /oauth/device/code and
 # /oauth/token call (incl. refreshes) or the server returns ``invalid_client``.
 #
-# The default is the upstream project's registered id, carried over so pairing
-# works out of the box. Open question, deliberately left visible rather than
-# silently inherited: this id is what Orca names on the approval card and files
-# the pairing under, so a BamDude-specific one is probably what we want —
-# override with ORCA_CLOUD_CLIENT_ID once that's settled.
-ORCA_CLIENT_ID = os.environ.get("ORCA_CLOUD_CLIENT_ID", "oc_app_e873d49ce7dbcc7dca8ba386")
+# BamDude's OWN registered id, issued by the Orca Cloud team 2026-08-24
+# (developer guide: temp/external_app_pairing_developer_guide.md). Until then
+# the default was the upstream project's id inherited with the integration
+# port — switching ids invalidates every pairing made under the old one, which
+# is why the scope bump to sync:write shipped in the same release: users
+# re-pair exactly once.
+ORCA_CLIENT_ID = os.environ.get("ORCA_CLOUD_CLIENT_ID", "oc_app_69bdc4a77b23b2335cdb212d")
 
 
-# Scope requested at pairing time. BamDude currently only READS the user's
-# Orca Cloud profiles (list + view), so we request the minimum — read-only.
-# ``sync:read`` grants pull + versions; bump to ``sync:write`` here if/when a
-# push-to-cloud feature lands (which forces existing users to re-pair, since
-# the granted scope is baked into the issued token).
-ORCA_SCOPE = os.environ.get("ORCA_CLOUD_SCOPE", "sync:read")
+# Scope requested at pairing time. ``sync:write`` implies read (guide §Scopes)
+# and feeds the authored-family push leg; the granted scope is baked into the
+# issued token, so this changed together with the client id above — one
+# re-pair covers both. Override to ``sync:read`` for a read-only deployment.
+ORCA_SCOPE = os.environ.get("ORCA_CLOUD_SCOPE", "sync:write")
 
 # Honest client identity. Same posture as the Bambu Cloud client: identifies
 # BamDude without impersonating Orca's desktop client. Also the thing that
@@ -132,6 +132,20 @@ class OrcaCloudAuthError(OrcaCloudError):
     pass
 
 
+class OrcaCloudConflict(OrcaCloudError):
+    """A 409 from the push endpoint. ``code``/``reason`` per the developer
+    guide: -1 timestamp_conflict (profile changed since original_updated_time),
+    -2 duplicate_profile_uuid (creating with an existing id), -3
+    tombstone_uuid_conflict (id belongs to a recently deleted profile).
+    ``server_profile`` is the cloud's ProfileMetadata, or None."""
+
+    def __init__(self, code: int, reason: str, server_profile: dict | None):
+        super().__init__(f"Orca Cloud push conflict ({reason})")
+        self.code = code
+        self.reason = reason
+        self.server_profile = server_profile
+
+
 _shared_http_client: httpx.AsyncClient | None = None
 
 
@@ -161,6 +175,8 @@ class OrcaCloudService:
         self.access_token: str | None = None
         self.refresh_token: str | None = None
         self.token_expiry: datetime | None = None
+        # Last granted scope seen in a token response (space-separated list).
+        self.granted_scope: str | None = None
         # Mirror the bambu_cloud pattern for client ownership: prefer injected
         # client (tests), fall back to app-scoped shared client (production),
         # else create our own so ad-hoc scripts still work.
@@ -209,6 +225,7 @@ class OrcaCloudService:
         self.access_token = None
         self.refresh_token = None
         self.token_expiry = None
+        self.granted_scope = None
 
     def _api_headers(self) -> dict[str, str]:
         """Headers for calls to the external API. Requires a bearer token —
@@ -356,6 +373,11 @@ class OrcaCloudService:
             self.token_expiry = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
         else:
             self.token_expiry = None
+        # The granted scope rides every token response; the UI gates the push
+        # controls on it, so keep the last known value when a response omits it.
+        scope = data.get("scope")
+        if scope:
+            self.granted_scope = str(scope)
 
     # ------------------------------------------------------------------
     # External API
@@ -414,6 +436,75 @@ class OrcaCloudService:
             return data
         logger.warning("Orca Cloud /external/sync/pull returned unexpected shape: %r", type(data).__name__)
         return []
+
+    async def push_profile(
+        self,
+        *,
+        profile_id: str,
+        name: str,
+        content: Any,
+        original_updated_time: int | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one profile (``POST /api/v1/external/sync/push``).
+
+        For updates pass the server ``updated_time`` we last saw as
+        ``original_updated_time`` — the server rejects the write with a 409
+        (:class:`OrcaCloudConflict`) if the profile changed since. Omit it
+        when creating. Returns ProfileMetadata; take ``updated_time`` from it
+        as the anchor for the next push."""
+        body: dict[str, Any] = {"id": profile_id, "name": name, "content": content}
+        if original_updated_time is not None:
+            body["original_updated_time"] = int(original_updated_time)
+        return await self._push_request("push", body)
+
+    async def force_push_profile(self, *, profile_id: str, name: str, content: Any) -> dict[str, Any]:
+        """Overwrite the cloud copy, skipping the optimistic-lock check.
+        Reserve for explicit user intent — the guide is blunt about this."""
+        body = {"id": profile_id, "name": name, "content": content}
+        return await self._push_request("force-push", body)
+
+    async def _push_request(self, endpoint: str, body: dict[str, Any]) -> dict[str, Any]:
+        url = f"{ORCA_API_BASE}/api/v1/external/sync/{endpoint}"
+        try:
+            resp = await self._client.post(url, json=body, headers=self._api_headers())
+        except httpx.HTTPError as e:
+            raise OrcaCloudError(f"Network error pushing Orca Cloud profile: {e}") from e
+        if resp.status_code == 401:
+            raise OrcaCloudAuthError("Orca Cloud push unauthorized — token expired or revoked")
+        if resp.status_code == 409:
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {}
+            raise OrcaCloudConflict(
+                code=int(data.get("code", 0)),
+                reason=str(data.get("reason", "conflict")),
+                server_profile=data.get("server_profile") if isinstance(data.get("server_profile"), dict) else None,
+            )
+        if resp.status_code == 413:
+            raise OrcaCloudError("Orca Cloud rejected the profile: payload exceeds the 1 MB cap")
+        if resp.status_code >= 400:
+            raise OrcaCloudError(f"Orca Cloud push failed ({resp.status_code}): {resp.text[:200]}")
+        return resp.json()
+
+    async def delete_profiles(self, ids: list[str]) -> dict[str, Any]:
+        """Delete profiles (``DELETE /delete?resource=profiles``). Returns the
+        server's report verbatim — 200 ok / 207 partial_failure / 404 none
+        matched all carry ``{status, deleted?, failed?}`` bodies and the
+        best-effort caller decides what a partial result means."""
+        url = f"{ORCA_API_BASE}/api/v1/external/sync/delete?resource=profiles"
+        try:
+            resp = await self._client.request("DELETE", url, json={"ids": ids}, headers=self._api_headers())
+        except httpx.HTTPError as e:
+            raise OrcaCloudError(f"Network error deleting Orca Cloud profiles: {e}") from e
+        if resp.status_code == 401:
+            raise OrcaCloudAuthError("Orca Cloud delete unauthorized — token expired or revoked")
+        if resp.status_code in (200, 207, 404):
+            try:
+                return resp.json()
+            except ValueError:
+                return {"status": "failed", "failed": []}
+        raise OrcaCloudError(f"Orca Cloud delete failed ({resp.status_code}): {resp.text[:200]}")
 
     async def get_profile(self, profile_id: str) -> dict[str, Any]:
         """Fetch a single profile's full content. The external sync API has no

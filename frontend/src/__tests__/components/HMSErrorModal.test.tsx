@@ -108,6 +108,24 @@ describe('HMSErrorModal', () => {
     vi.clearAllMocks();
   });
 
+  describe('catalogue still loading', () => {
+    it('shows a loading placeholder, never "unknown code", while the fetch is in flight', async () => {
+      // The catalogue is megabytes and loads once per model+language — the
+      // first HMS of a session used to flash "Unknown HMS code" and then
+      // blink into the real text when the fetch landed (live, 2026-08-25).
+      const { delay } = await import('msw');
+      server.use(
+        http.get('/api/v1/hms/descriptions', async () => {
+          await delay('infinite');
+          return HttpResponse.json({});
+        })
+      );
+      render(<HMSErrorModal {...defaultProps} />);
+      expect(screen.queryByText(/Unknown HMS code/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Loading description/)).toBeInTheDocument();
+    });
+  });
+
   describe('rendering', () => {
     it('renders the modal title with printer name', () => {
       render(<HMSErrorModal {...defaultProps} />);
@@ -122,14 +140,15 @@ describe('HMSErrorModal', () => {
       expect(await screen.findByText('The task was canceled.')).toBeInTheDocument();
     });
 
-    it('shows an unknown error rather than the empty state', () => {
+    it('shows an unknown error rather than the empty state', async () => {
       // The empty state now means what it says: nothing was reported. It used
       // to also mean "everything reported was unrecognised", which is the
       // opposite of empty and is exactly how a real fault went unnoticed.
+      // Awaited: "unknown" is only claimed once the catalogue has arrived.
       render(<HMSErrorModal {...defaultProps} errors={[unknownError]} />);
       expect(screen.queryByText('No errors')).not.toBeInTheDocument();
       expect(
-        screen.getByText('Unknown HMS code — see the Bambu Lab wiki for details.')
+        await screen.findByText('Unknown HMS code — see the Bambu Lab wiki for details.')
       ).toBeInTheDocument();
     });
 
@@ -279,13 +298,13 @@ describe('HMSErrorModal', () => {
       full_code: 'FFFFFFFF',
     };
 
-    it('surfaces an uncataloged fault that carries firmware actions', () => {
+    it('surfaces an uncataloged fault that carries firmware actions', async () => {
       render(<HMSErrorModal {...defaultProps} errors={[actionableUncataloged]} />);
       // Not the empty state — the fault is shown even without a catalog entry.
       expect(screen.queryByText('No errors')).not.toBeInTheDocument();
-      // Falls back to the unknown-code description.
+      // Falls back to the unknown-code description once the catalogue arrives.
       expect(
-        screen.getByText('Unknown HMS code — see the Bambu Lab wiki for details.')
+        await screen.findByText('Unknown HMS code — see the Bambu Lab wiki for details.')
       ).toBeInTheDocument();
       // And still renders the action button so the user can act on it.
       expect(screen.getByText('Ignore this and Resume')).toBeInTheDocument();

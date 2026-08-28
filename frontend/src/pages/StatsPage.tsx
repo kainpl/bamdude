@@ -32,6 +32,7 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { Button } from '../components/Button';
+import { LoadingBlock } from '../components/LoadingBlock';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { api, type ArchiveSlim, type Printer } from '../api/client';
@@ -118,60 +119,25 @@ const RECHARTS_TOOLTIP_STYLE = {
 };
 
 // Widget Components
-function QuickStatsWidget({
-  stats,
-  currency,
-}: {
-  stats: {
-    total_prints: number;
-    successful_prints: number;
-    failed_prints: number;
-    total_print_time_hours: number;
-    total_filament_grams: number;
-    total_cost: number;
-    total_energy_kwh: number;
-    total_energy_cost: number;
-    energy_data_warming_up?: boolean;
-  } | undefined;
-  currency: string;
-}) {
-  const { t } = useTranslation();
+type StatTile = {
+  icon: typeof Package;
+  color: string;
+  label: string;
+  value: string;
+  warning?: boolean;
+  tooltip?: string;
+};
 
-  const warmingUp = stats?.energy_data_warming_up === true;
-  const warmingUpTooltip = warmingUp ? t('stats.energyWarmingUpTooltip') : undefined;
-
-  const items: Array<{
-    icon: typeof Package;
-    color: string;
-    label: string;
-    value: string;
-    warning?: boolean;
-    tooltip?: string;
-  }> = [
-    { icon: Package, color: 'text-bambu-green', label: t('stats.totalPrints'), value: `${stats?.total_prints || 0}` },
-    { icon: Clock, color: 'text-blue-600 dark:text-blue-400', label: t('stats.printTime'), value: `${stats?.total_print_time_hours?.toFixed(1) ?? '0'}h` },
-    { icon: Package, color: 'text-orange-600 dark:text-orange-400', label: t('stats.filamentUsed'), value: formatWeight(stats?.total_filament_grams || 0) },
-    { icon: DollarSign, color: 'text-green-600 dark:text-green-400', label: t('stats.filamentCost'), value: `${currency} ${stats?.total_cost?.toFixed(2) ?? '0.00'}` },
-    {
-      icon: Zap,
-      color: 'text-yellow-600 dark:text-yellow-400',
-      label: t('stats.energyUsed'),
-      value: `${stats?.total_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
-      warning: warmingUp,
-      tooltip: warmingUpTooltip,
-    },
-    {
-      icon: DollarSign,
-      color: 'text-yellow-500',
-      label: t('stats.energyCost'),
-      value: `${currency} ${stats?.total_energy_cost?.toFixed(2) ?? '0.00'}`,
-      warning: warmingUp,
-      tooltip: warmingUpTooltip,
-    },
-  ];
-
+/**
+ * The tile grid both stat widgets draw — one shape, so the two cards match.
+ *
+ * Two columns at every width, not two-then-three. Each card is a quarter of the
+ * dashboard and carries exactly four tiles, so two columns is a 2×2 block; the
+ * three-column step left one tile alone on a second row.
+ */
+function StatTiles({ items }: { items: StatTile[] }) {
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+    <div className="grid grid-cols-2 gap-4">
       {items.map((item) => (
         <div key={item.label} className="flex items-start gap-3" title={item.tooltip}>
           <div className={`p-2 rounded-lg bg-bambu-dark ${item.color}`}>
@@ -187,6 +153,105 @@ function QuickStatsWidget({
         </div>
       ))}
     </div>
+  );
+}
+
+function QuickStatsWidget({
+  stats,
+  currency,
+}: {
+  stats: {
+    total_prints: number;
+    total_print_time_hours: number;
+    total_filament_grams: number;
+    total_cost: number;
+  } | undefined;
+  currency: string;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <StatTiles
+      items={[
+        { icon: Package, color: 'text-bambu-green', label: t('stats.totalPrints'), value: `${stats?.total_prints || 0}` },
+        { icon: Package, color: 'text-orange-600 dark:text-orange-400', label: t('stats.filamentUsed'), value: formatWeight(stats?.total_filament_grams || 0) },
+        { icon: Clock, color: 'text-blue-600 dark:text-blue-400', label: t('stats.printTime'), value: `${stats?.total_print_time_hours?.toFixed(1) ?? '0'}h` },
+        { icon: DollarSign, color: 'text-green-600 dark:text-green-400', label: t('stats.filamentCost'), value: `${currency} ${stats?.total_cost?.toFixed(2) ?? '0.00'}` },
+      ]}
+    />
+  );
+}
+
+/**
+ * Energy, answered twice.
+ *
+ * ⚠️ Two pairs, not one figure shown twice. What the prints drew is measured
+ * between each print's start and end; what the plugs counted includes
+ * everything between them — idle, warm-up, and anything else on the socket.
+ * The gap between the pairs is what standing still costs, and it is the reason
+ * both are here.
+ *
+ * This used to be a setting: one pair of tiles whose meaning depended on
+ * `energy_tracking_mode`, so the number on the page could not be read without
+ * opening Settings to find out which question it had answered. Showing both
+ * costs one card and removes the question.
+ */
+function EnergyWidget({
+  stats,
+  currency,
+}: {
+  stats: {
+    print_energy_kwh: number;
+    print_energy_cost: number;
+    total_energy_kwh: number;
+    total_energy_cost: number;
+    energy_data_warming_up?: boolean;
+  } | undefined;
+  currency: string;
+}) {
+  const { t } = useTranslation();
+
+  // ⚠️ Only the plug-side pair can be warming up: it is the one read from
+  // hourly snapshots when a date filter is on. The per-print pair is a column
+  // on rows that already exist.
+  const warmingUp = stats?.energy_data_warming_up === true;
+  const warmingUpTooltip = warmingUp ? t('stats.energyWarmingUpTooltip') : undefined;
+
+  return (
+    <StatTiles
+      items={[
+        {
+          icon: Zap,
+          color: 'text-yellow-600 dark:text-yellow-400',
+          label: t('stats.energyWhilePrinting'),
+          value: `${stats?.print_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
+          tooltip: t('stats.energyWhilePrintingTooltip'),
+        },
+        {
+          icon: Zap,
+          color: 'text-amber-600 dark:text-amber-400',
+          label: t('stats.energyAtThePlug'),
+          value: `${stats?.total_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
+          warning: warmingUp,
+          tooltip: warmingUpTooltip ?? t('stats.energyAtThePlugTooltip'),
+        },
+        {
+          icon: DollarSign,
+          color: 'text-yellow-500',
+          label: t('stats.energyCostWhilePrinting'),
+          value: `${currency} ${stats?.print_energy_cost?.toFixed(2) ?? '0.00'}`,
+          tooltip: t('stats.energyWhilePrintingTooltip'),
+        },
+        {
+          icon: DollarSign,
+          color: 'text-amber-500',
+          label: t('stats.energyCostAtThePlug'),
+          value: `${currency} ${stats?.total_energy_cost?.toFixed(2) ?? '0.00'}`,
+          warning: warmingUp,
+          tooltip: warmingUpTooltip ?? t('stats.energyAtThePlugTooltip'),
+        },
+      ]}
+    />
   );
 }
 
@@ -768,9 +833,7 @@ function FailureAnalysisWidget({ size = 1, dateFrom, dateTo, preset }: {
 
   if (isLoading) {
     return (
-      <div className="flex justify-center py-4">
-        <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
-      </div>
+      <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
     );
   }
 
@@ -1122,14 +1185,6 @@ export function StatsPage() {
   const printerById = new Map((printers || []).map((p) => [String(p.id), p]));
   const printDates = useMemo(() => archives?.map((a) => a.created_at) || [], [archives]);
 
-  if (isLoading) {
-    return (
-      <div className="p-4 md:p-8">
-        <div className="text-center py-12 text-bambu-gray">{t('stats.loadingStats')}</div>
-      </div>
-    );
-  }
-
   // Define dashboard widgets
   // Sizes: 1 = quarter (1/4), 2 = half (1/2), 4 = full width
   // Widgets can use render functions to receive the current size for responsive content
@@ -1138,7 +1193,16 @@ export function StatsPage() {
       id: 'quick-stats',
       title: t('stats.quickStats'),
       component: <QuickStatsWidget stats={stats} currency={currency} />,
-      defaultSize: 2,
+      defaultSize: 1,
+    },
+    {
+      // ⚠️ Registered next to Quick Stats, which is where a fresh layout puts
+      // it. A saved one keeps its own order and appends new widgets at the end
+      // — Reset layout, or a drag, moves it up.
+      id: 'energy',
+      title: t('stats.energy'),
+      component: <EnergyWidget stats={stats} currency={currency} />,
+      defaultSize: 1,
     },
     {
       id: 'success-rate',
@@ -1185,13 +1249,10 @@ export function StatsPage() {
   ];
 
   return (
-    <div className="p-4 md:p-6">
+    <div className="p-4 md:p-6 space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <div>
-          <div className="flex items-center gap-3">
-            <BarChart3 className="w-6 h-6 text-bambu-green" />
-            <h1 className="text-2xl font-bold text-white">{t('stats.title')}</h1>
-          </div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3"><BarChart3 className="w-6 h-6 text-bambu-green" />{t('stats.title')}</h1>
           <p className="text-sm text-bambu-gray mt-1 ml-9">{t('stats.subtitle')}</p>
         </div>
 
@@ -1327,7 +1388,7 @@ export function StatsPage() {
                           value={timeframe.dateFrom || ''}
                           max={timeframe.dateTo || new Date().toISOString().split('T')[0]}
                           onChange={(e) => setTimeframe(prev => ({ ...prev, dateFrom: e.target.value || undefined }))}
-                          className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-sm text-white [color-scheme:dark]"
+                          className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-sm text-white"
                         />
                       </div>
                       <div>
@@ -1338,7 +1399,7 @@ export function StatsPage() {
                           min={timeframe.dateFrom}
                           max={new Date().toISOString().split('T')[0]}
                           onChange={(e) => setTimeframe(prev => ({ ...prev, dateTo: e.target.value || undefined }))}
-                          className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-sm text-white [color-scheme:dark]"
+                          className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-sm text-white"
                         />
                       </div>
                       <Button
@@ -1357,13 +1418,26 @@ export function StatsPage() {
         </div>
       </div>
 
-      <Dashboard
-        key={dashboardKey}
-        widgets={widgets}
-        storageKey="bambusy-dashboard-layout-v2"
-        stackBelow={640}
-        hideControls
-      />
+      {/* ⚠️ Only the dashboard waits, not the page.
+          This used to be an early return that replaced EVERYTHING — title,
+          timeframe picker, export buttons — with one line of centred text, so
+          on a farm with a long archive the page looked broken for as long as
+          the query took, and the controls that could have narrowed it were the
+          part you could not reach.
+          The widgets themselves already tolerate `stats` being undefined; what
+          they cannot do is say WHY they are empty, which is what the spinner
+          is for. */}
+      {isLoading ? (
+        <LoadingBlock label={t('stats.loadingStats')} />
+      ) : (
+        <Dashboard
+          key={dashboardKey}
+          widgets={widgets}
+          storageKey="bambusy-dashboard-layout-v2"
+          stackBelow={640}
+          hideControls
+        />
+      )}
     </div>
   );
 }

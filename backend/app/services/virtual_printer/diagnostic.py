@@ -15,6 +15,7 @@ id + status.
 
 import asyncio
 import logging
+import os
 
 from backend.app.models.virtual_printer import VirtualPrinter
 from backend.app.schemas.printer import DiagnosticCheck
@@ -29,6 +30,43 @@ PORT_BIND = 3002  # bind/detect (TLS) — slicer discovery handshake
 PORT_BIND_PLAIN = 3000  # bind/detect (plain) — legacy / some slicer models
 
 _PORT_PROBE_TIMEOUT = 2.0
+
+# Ports below this need a capability a normal user does not have.
+_PRIVILEGED_PORT_CEILING = 1024
+# CAP_NET_BIND_SERVICE, from linux/capability.h.
+_CAP_NET_BIND_SERVICE = 10
+
+
+def can_bind_privileged_ports() -> bool | None:
+    """Whether this process may bind ports below 1024.
+
+    ``None`` when that cannot be determined — no procfs to read and not running
+    as root, i.e. macOS or Windows, where this capability model does not apply
+    and the caller should skip rather than guess.
+
+    Reading the **effective** set covers every way the permission is granted,
+    because all of them are visible at runtime: ``AmbientCapabilities`` in the
+    systemd unit, ``cap_add: [NET_BIND_SERVICE]`` in Docker, and ``setcap
+    cap_net_bind_service=+ep`` on the interpreter.
+
+    ⚠️ This answers "does the process hold the capability", **not** "can port
+    990 be bound". A host with ``net.ipv4.ip_unprivileged_port_start`` lowered
+    binds it while holding nothing, and an iptables REDIRECT fronts it another
+    way again. So a False here is a *possible explanation* for a port that
+    failed, never proof on its own — which is why the caller reports it only
+    when a privileged port actually failed to answer.
+    """
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is not None and geteuid() == 0:
+        return True
+    try:
+        with open("/proc/self/status", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("CapEff:"):
+                    return bool((int(line.split(":", 1)[1].strip(), 16) >> _CAP_NET_BIND_SERVICE) & 1)
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 async def _check_port(ip: str, port: int, timeout: float = _PORT_PROBE_TIMEOUT) -> bool:
@@ -108,6 +146,10 @@ async def run_vp_diagnostic(vp: VirtualPrinter, instance) -> VPDiagnosticResult:
     # bound (port already in use, permission denied) because start errors are
     # logged and swallowed. Probe the bind IP directly.
     bind_ip = vp.bind_ip
+    # (port, answered) for every port actually probed — the privileged-port
+    # check below reads this instead of assuming 990, because proxy mode binds
+    # whatever the proxy manager handed out.
+    probed: list[tuple[int | None, bool]] = []
     if not running or not bind_ip:
         for cid, port in (("port_ftps", PORT_FTPS), ("port_mqtt", PORT_MQTT), ("port_bind", PORT_BIND)):
             checks.append(DiagnosticCheck(id=cid, status="skip", params={"port": port}))
@@ -119,6 +161,7 @@ async def run_vp_diagnostic(vp: VirtualPrinter, instance) -> VPDiagnosticResult:
         mqtt_port = proxy_status.get("mqtt_port")
         ftp_ok = await _check_port(bind_ip, ftp_port) if ftp_port else False
         mqtt_ok = await _check_port(bind_ip, mqtt_port) if mqtt_port else False
+        probed += [(ftp_port, ftp_ok), (mqtt_port, mqtt_ok)]
         checks.append(
             DiagnosticCheck(
                 id="port_ftps",
@@ -145,6 +188,12 @@ async def run_vp_diagnostic(vp: VirtualPrinter, instance) -> VPDiagnosticResult:
             _check_port(bind_ip, PORT_BIND),
             _check_port(bind_ip, PORT_BIND_PLAIN),
         )
+        probed += [
+            (PORT_FTPS, ftp_ok),
+            (PORT_MQTT, mqtt_ok),
+            (PORT_BIND, bind_tls_ok),
+            (PORT_BIND_PLAIN, bind_plain_ok),
+        ]
         checks.append(DiagnosticCheck(id="port_ftps", status="pass" if ftp_ok else "fail", params={"port": PORT_FTPS}))
         checks.append(DiagnosticCheck(id="port_mqtt", status="pass" if mqtt_ok else "fail", params={"port": PORT_MQTT}))
         checks.append(
@@ -152,6 +201,31 @@ async def run_vp_diagnostic(vp: VirtualPrinter, instance) -> VPDiagnosticResult:
                 id="port_bind",
                 status="pass" if (bind_tls_ok and bind_plain_ok) else "fail",
                 params={"port": PORT_BIND, "port_plain": PORT_BIND_PLAIN},
+            )
+        )
+
+    # --- Permission to bind privileged ports ---
+    # The VP binds below 1024 (990 in server mode, and whatever the proxy took).
+    # Without CAP_NET_BIND_SERVICE those sockets never open, and every other
+    # symptom is downstream: the slicer simply never sees the printer. The
+    # EACCES is one line in the journal, and the port checks above report the
+    # same "nothing is listening" as an ordinary port conflict — indistinguishable
+    # from the outside, which is the whole reason this check exists.
+    #
+    # ⚠️ Only raised when a privileged port actually failed. The capability can
+    # legitimately be absent where the ports are fronted another way (an
+    # iptables REDIRECT is the documented alternative), and flagging a working
+    # setup would be noise on every macOS and Windows install.
+    privileged_failures = [port for port, ok in probed if port and port < _PRIVILEGED_PORT_CEILING and not ok]
+    has_cap = can_bind_privileged_ports() if privileged_failures else None
+    if has_cap is None:
+        checks.append(DiagnosticCheck(id="privileged_ports", status="skip"))
+    else:
+        checks.append(
+            DiagnosticCheck(
+                id="privileged_ports",
+                status="pass" if has_cap else "fail",
+                params={"port": privileged_failures[0]},
             )
         )
 

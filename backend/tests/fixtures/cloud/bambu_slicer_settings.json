@@ -1,0 +1,27 @@
+{
+  "filament": {
+    "private": [
+      {"setting_id": "PFUS_CHILD_OF_GENERIC", "version": "1.10.0.35", "update_time": "2026-04-09 06:16:58",
+       "name": "My Sunlu PETG", "nickname": null, "base_id": "GFSG99_00", "filament_vendor": "Sunlu",
+       "filament_id": "GFG99", "filament_type": "PETG", "filament_is_support": false,
+       "nozzle_temperature": [220, 270], "nozzle_hrc": 3, "inherits": "Generic PETG @BBL A1M"},
+      {"setting_id": "PFUS_CUSTOM_ROOT", "version": "2.8.0.4", "update_time": "2026-08-10 22:38:20",
+       "name": "test PETG Basic @Bambu Lab A1 mini 0.4 nozzle", "nickname": null, "base_id": null,
+       "filament_vendor": "test", "filament_id": "P122e532", "filament_type": "PETG",
+       "filament_is_support": false, "nozzle_temperature": [220, 260], "nozzle_hrc": 3, "inherits": ""},
+      {"setting_id": "PFUS_CUSTOM_CHILD", "version": "2.8.0.4", "update_time": "2026-08-23 00:52:14",
+       "name": "test PETG Basic @Bambu Lab A1 mini 0.4 nozzle 2", "nickname": null,
+       "base_id": "PFUS_CUSTOM_ROOT", "filament_vendor": "test", "filament_id": "P122e532",
+       "filament_type": "PETG", "filament_is_support": false, "nozzle_temperature": [220, 260],
+       "nozzle_hrc": 3, "inherits": "test PETG Basic @Bambu Lab A1 mini 0.4 nozzle"}
+    ],
+    "public": [
+      {"setting_id": "GFSG99", "version": "02.08.00.05", "update_time": "2026-08-21 18:42:29",
+       "name": "Generic PETG", "base_id": null, "filament_id": "GFG99", "filament_vendor": null,
+       "filament_type": null, "filament_is_support": null, "nozzle_temperature": null, "nozzle_hrc": null}
+    ]
+  },
+  "print": {"private": [], "public": []},
+  "printer": {"private": [], "public": []},
+  "code": null, "error": null, "message": "success", "settings": {}
+}

@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 import httpx
 
 from backend.app.core.config import APP_VERSION
-from backend.app.services.bambu_cloud import is_expiry_401
+from backend.app.services.bambu_cloud import is_captcha_challenge, is_expiry_401
 
 logger = logging.getLogger(__name__)
 
@@ -301,10 +301,17 @@ class MakerWorldService:
             # without a real browser. Surface the upstream message so the
             # user can recognise it and reach for the "Open on MakerWorld"
             # fallback instead of thinking the feature is broken.
-            upstream = _extract_upstream_error(response)
-            if upstream and "robot" in upstream.lower():
+            #
+            # ⚠️ The same challenge lands on the Bambu Cloud sign-in endpoint,
+            # so the shape test lives in ``bambu_cloud`` and is shared. It used
+            # to be a bare "robot" substring on the error text here, which
+            # missed a challenge worded any other way and reported it as an
+            # unexplained block.
+            if is_captcha_challenge(response):
+                upstream = _extract_upstream_error(response)
+                detail = f" ({upstream})" if upstream else ""
                 raise MakerWorldUnavailableError(
-                    f"MakerWorld is challenging this IP with a CAPTCHA ({upstream}). "
+                    f"MakerWorld is challenging this IP with a CAPTCHA{detail}. "
                     "This usually clears within a few hours. In the meantime, use "
                     "'Open on MakerWorld' below to download the 3MF manually."
                 )
