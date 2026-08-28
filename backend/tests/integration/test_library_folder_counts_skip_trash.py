@@ -102,7 +102,11 @@ class TestTheTreeCount:
         import re
         from pathlib import Path
 
-        source = Path("backend/app/api/routes/library.py").read_text(encoding="utf-8")
+        # Anchored on __file__, not the cwd: CI runs pytest from backend/,
+        # local runs from the repo root, and a relative path serves only one.
+        source = (Path(__file__).resolve().parents[2] / "app" / "api" / "routes" / "library.py").read_text(
+            encoding="utf-8"
+        )
         counts = [m.start() for m in re.finditer(r"func\.count\(LibraryFile\.id\)", source)]
         assert counts, "no file count found — has the query moved?"
 

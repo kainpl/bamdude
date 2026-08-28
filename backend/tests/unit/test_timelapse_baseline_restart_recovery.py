@@ -104,6 +104,12 @@ async def test_running_observed_skips_when_baseline_already_present():
     with (
         patch("backend.app.main.async_session") as mock_session_maker,
         patch("backend.app.main._list_timelapse_videos", new=AsyncMock()) as mock_list,
+        # The attribution-recovery half of the handler deliberately runs
+        # BEFORE the baseline early-return and opens its own session when the
+        # printer has live state. Pin get_status to None so this test stays
+        # about the TIMELAPSE half — under xdist, a neighbouring test can
+        # leave printer 1 registered and flip that branch on.
+        patch("backend.app.main.printer_manager.get_status", return_value=None),
     ):
         from backend.app.main import on_print_running_observed
 
