@@ -96,6 +96,12 @@ class NotificationProviderBase(BaseModel):
     on_stock_break_alert: bool = Field(default=False, description="Notify when an SKU will run out within lead time")
 
     # Quiet hours
+    progress_min_duration_minutes: int | None = Field(
+        default=None,
+        ge=0,
+        le=10080,
+        description="Mute 25/50/75% milestones for prints shorter than this (null or 0 = always send; ignored for telegram — chats carry their own)",
+    )
     quiet_hours_enabled: bool = Field(default=False, description="Enable quiet hours")
     quiet_hours_start: str | None = Field(default=None, description="Start time in HH:MM format")
     quiet_hours_end: str | None = Field(default=None, description="End time in HH:MM format")
@@ -193,6 +199,7 @@ class NotificationProviderUpdate(BaseModel):
     on_stock_break_alert: bool | None = None
 
     # Quiet hours
+    progress_min_duration_minutes: int | None = Field(default=None, ge=0, le=10080)
     quiet_hours_enabled: bool | None = None
     quiet_hours_start: str | None = None
     quiet_hours_end: str | None = None

@@ -56,26 +56,18 @@ class TestTheFloorDecision:
 
 class TestPerChatOverride:
     def test_the_chat_carries_its_own_floor_nullable(self):
-        """m157: NULL inherits the global setting — an admin's 60-minute floor
-        must not decide for an operator's chat that wants 10."""
+        """m157: each chat carries its own floor (NULL or 0 = always send) —
+        an admin's 60-minute floor must not decide for an operator's chat
+        that wants 10."""
         from backend.app.models.telegram_chat import TelegramChat
 
         column = TelegramChat.__table__.c.progress_min_duration_minutes
         assert column.nullable
 
+    def test_the_provider_carries_its_own_floor_nullable(self):
+        """m158: every non-telegram provider carries its own floor too — a
+        phone push and an email digest legitimately want different floors."""
+        from backend.app.models.notification import NotificationProvider
 
-class TestTheSettingExists:
-    def test_default_is_zero_meaning_always_send(self):
-        from backend.app.schemas.settings import AppSettings
-
-        assert AppSettings().notify_progress_min_duration_minutes == 0
-
-    def test_the_settings_route_coerces_it_to_int(self):
-        """The key must sit in the route's int-coercion list, or the frontend
-        receives a string and the number input silently misbehaves."""
-        import inspect
-
-        from backend.app.api.routes import settings as settings_route
-
-        source = inspect.getsource(settings_route)
-        assert '"notify_progress_min_duration_minutes"' in source
+        column = NotificationProvider.__table__.c.progress_min_duration_minutes
+        assert column.nullable

@@ -2238,10 +2238,6 @@ export default {
     currentVersion: 'Поточна версія',
     // Notifications
     bedCooledThreshold: 'Поріг охолодження столу',
-    progressMilestoneMinDuration: 'Проміжний прогрес лише для довгих друків',
-    progressMilestoneMinDurationDescription:
-      'Слати сповіщення 25/50/75% лише коли очікувана тривалість друку довша за це значення. 0 = слати завжди.',
-    progressMilestoneMinDurationUnit: 'хв',
     userNotificationsEnabled: 'Сповіщення користувачів',
     userNotificationsEnabledDescription: 'Увімкнути меню сповіщень користувачів та email сповіщення про події друку. Потребує розширеної автентифікації.',
     addProvider: 'Додати провайдер',
@@ -7173,7 +7169,6 @@ export default {
     printResumedDescription: 'Сповіщати при переході PAUSE→RUNNING (включає тривалість паузи)',
     progressMilestones: 'Етапи прогресу',
     progressMilestonesDescription: 'Сповіщати при 25%, 50%, 75%',
-    progressMilestonesFloorHint: 'Глушиться для друків, коротших за {{minutes}} хв (глобальне налаштування)',
     printerOffline: 'Принтер офлайн',
     printerError: 'Помилка принтера',
     aiFailureDetection: 'Виявлення збою ШІ',
@@ -7243,7 +7238,7 @@ export default {
     printerFilter: 'Фільтр принтера',
     onlyFromPrinter: 'Надсилати сповіщення лише для подій від цього принтера',
     progressFloorLabel: 'Лише для друків довших за',
-    progressFloorUnit: 'хв — порожньо = глобальне ({{minutes}}), 0 = завжди',
+    progressFloorUnit: 'хв — порожньо або 0 = слати завжди',
     quietHoursDnd: 'Тихі години (не турбувати)',
     quietStart: 'Початок',
     quietEnd: 'Кінець',

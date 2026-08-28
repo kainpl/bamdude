@@ -135,6 +135,7 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         "on_stock_reorder_alert": provider.on_stock_reorder_alert,
         "on_stock_break_alert": provider.on_stock_break_alert,
         # Quiet hours
+        "progress_min_duration_minutes": provider.progress_min_duration_minutes,
         "quiet_hours_enabled": provider.quiet_hours_enabled,
         "quiet_hours_start": provider.quiet_hours_start,
         "quiet_hours_end": provider.quiet_hours_end,
@@ -225,6 +226,7 @@ async def create_notification_provider(
         on_stock_reorder_alert=provider_data.on_stock_reorder_alert,
         on_stock_break_alert=provider_data.on_stock_break_alert,
         # Quiet hours
+        progress_min_duration_minutes=provider_data.progress_min_duration_minutes,
         quiet_hours_enabled=provider_data.quiet_hours_enabled,
         quiet_hours_start=provider_data.quiet_hours_start,
         quiet_hours_end=provider_data.quiet_hours_end,

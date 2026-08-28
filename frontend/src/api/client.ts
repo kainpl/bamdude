@@ -1798,7 +1798,6 @@ export interface AppSettings {
   forecast_global_lead_time_days: number;
   // User email notifications toggle
   user_notifications_enabled: boolean;
-  notify_progress_min_duration_minutes: number;
   // Default sidebar order (admin-set for all users)
   default_sidebar_order: string;
   // Staggered start settings (electrical load management for farms)
@@ -3627,6 +3626,8 @@ export interface NotificationProvider {
   // Stock forecasting (scaffold, upstream #1184)
   on_stock_reorder_alert: boolean;
   on_stock_break_alert: boolean;
+  // Progress-milestone duration floor (#28): null = inherit global
+  progress_min_duration_minutes: number | null;
   // Quiet hours
   quiet_hours_enabled: boolean;
   quiet_hours_start: string | null;
@@ -3697,6 +3698,7 @@ export interface NotificationProviderCreate {
   // Stock forecasting (scaffold)
   on_stock_reorder_alert?: boolean;
   on_stock_break_alert?: boolean;
+  progress_min_duration_minutes?: number | null;
   // Quiet hours
   quiet_hours_enabled?: boolean;
   quiet_hours_start?: string | null;
@@ -3760,6 +3762,7 @@ export interface NotificationProviderUpdate {
   // Stock forecasting (scaffold)
   on_stock_reorder_alert?: boolean;
   on_stock_break_alert?: boolean;
+  progress_min_duration_minutes?: number | null;
   // Quiet hours
   quiet_hours_enabled?: boolean;
   quiet_hours_start?: string | null;

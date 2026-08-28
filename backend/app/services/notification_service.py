@@ -1762,27 +1762,26 @@ class NotificationService:
         """Handle print progress milestone (25%, 50%, 75%).
 
         The duration floor (#28) is applied HERE, per recipient, not before
-        the fan-out: telegram chats each carry their own floor (NULL inherits
-        the global setting, 0 always sends) because an admin's 60-minute
-        floor must not decide for an operator's chat that wants 10. Non-chat
-        providers follow the global setting. ``image_supplier`` keeps the
-        ~15 s camera grab lazy — it runs only once somebody is actually
-        going to receive the message.
+        the fan-out: every telegram chat carries its own floor and every other
+        provider its own (m157/m158) — an admin's 60-minute floor must not
+        decide for an operator's chat that wants 10, and a phone push and an
+        email digest legitimately want different floors. There is NO global
+        value: unset (or 0) simply means "always send". ``image_supplier``
+        keeps the ~15 s camera grab lazy — it runs only once somebody is
+        actually going to receive the message.
         """
         providers = await self._get_providers_for_event(db, "on_print_progress", printer_id)
         if not providers:
             return
 
-        from backend.app.api.routes.settings import get_setting
-
-        try:
-            global_floor = int(await get_setting(db, "notify_progress_min_duration_minutes") or 0)
-        except (TypeError, ValueError):
-            global_floor = 0
+        def _own_floor(row) -> int:
+            floor = getattr(row, "progress_min_duration_minutes", None)
+            # Anything that isn't an honest integer — NULL, or a test double —
+            # means "no floor was set", never "guess one".
+            return floor if isinstance(floor, int) else 0
 
         def _chat_passes(chat) -> bool:
-            floor = getattr(chat, "progress_min_duration_minutes", None)
-            return self._passes_progress_floor(global_floor if floor is None else floor, estimated_minutes)
+            return self._passes_progress_floor(_own_floor(chat), estimated_minutes)
 
         kept = []
         any_recipients = False
@@ -1791,7 +1790,7 @@ class NotificationService:
             if p.provider_type == "telegram":
                 kept.append(p)
                 has_telegram = True
-            elif self._passes_progress_floor(global_floor, estimated_minutes):
+            elif self._passes_progress_floor(_own_floor(p), estimated_minutes):
                 kept.append(p)
                 any_recipients = True
 

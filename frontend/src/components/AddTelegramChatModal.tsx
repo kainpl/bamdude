@@ -41,10 +41,6 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
   // not carry. Telegram chat setup is an admin screen anyway.
   const { data: users } = useQuery({ queryKey: ['users'], queryFn: api.getUsers });
   const { data: eventTypes } = useQuery({ queryKey: ['telegram-events'], queryFn: api.getTelegramEvents });
-  // Global progress-milestone duration floor (#28) — read-only here, but this
-  // per-chat dialog is the only event surface a TG operator ever sees.
-  const { data: appSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
-  const milestoneFloor = appSettings?.notify_progress_min_duration_minutes ?? 0;
 
   // Pull the telegram provider so we can warn the operator when the
   // chat-side daily_digest opt-in won't take effect (provider digest off).
@@ -361,10 +357,10 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
                           {EVENT_LABEL_KEYS[event.event_type] ? t(EVENT_LABEL_KEYS[event.event_type]) : event.label}
                           {/* TG events are configured strictly per chat (m045), so
                               the duration floor (#28) is a PER-CHAT value edited
-                              right here — an admin's 60-minute floor must not
-                              decide for an operator's chat that wants 10. A click
-                              on the input is interactive, so it does not toggle
-                              the surrounding checkbox label. */}
+                              right here — no global fallback, each chat carries
+                              its own (empty/0 = always). A click on the input is
+                              interactive, so it does not toggle the surrounding
+                              checkbox label. */}
                           {event.event_type === 'print_progress' && (
                             <span className="mt-0.5 flex items-center gap-1.5 text-[10px] leading-tight text-bambu-gray">
                               {t('notifications.progressFloorLabel')}
@@ -374,11 +370,11 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
                                 max={10080}
                                 step={5}
                                 value={progressMinDuration}
-                                placeholder={String(milestoneFloor)}
+                                placeholder="0"
                                 onChange={(e) => setProgressMinDuration(e.target.value)}
                                 className="w-14 px-1 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-[10px] text-center focus:border-bambu-green focus:outline-none"
                               />
-                              {t('notifications.progressFloorUnit', { minutes: milestoneFloor })}
+                              {t('notifications.progressFloorUnit')}
                             </span>
                           )}
                         </span>

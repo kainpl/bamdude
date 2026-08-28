@@ -22,7 +22,7 @@ class TelegramChatCreate(BaseModel):
         default=None,
         ge=0,
         le=10080,
-        description="Mute 25/50/75% milestones for prints estimated shorter than this (null = inherit global, 0 = always send)",
+        description="Mute 25/50/75% milestones for prints estimated shorter than this (null or 0 = always send)",
     )
 
 

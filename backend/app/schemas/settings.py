@@ -522,18 +522,6 @@ class AppSettings(BaseModel):
         description="Enable user email notifications for print job events (requires Advanced Authentication)",
     )
 
-    # Progress milestones only for prints longer than this (#28). 0 = always.
-    # Deliberately GLOBAL, gated before the provider fan-out: telegram's
-    # per-event authority is the chat (m045) and provider-level knobs there
-    # are frozen, so one threshold above every channel is the only shape that
-    # treats all of them the same.
-    notify_progress_min_duration_minutes: int = Field(
-        default=0,
-        ge=0,
-        le=10080,
-        description="Send 25/50/75% progress notifications only when the estimated print duration exceeds this many minutes (0 = always)",
-    )
-
     # Local login (#1589 / G8-H1) — when False, /auth/login rejects username+password
     # (HTTP 401, generic) and the login page hides the credentials form, leaving only
     # OIDC SSO. LDAP has its own ldap_enabled toggle and is unaffected.
@@ -720,7 +708,6 @@ class AppSettingsUpdate(BaseModel):
     session_max_hours: int | None = Field(default=None, ge=1, le=720)
     forecast_global_lead_time_days: int | None = Field(default=None, ge=0)
     user_notifications_enabled: bool | None = None
-    notify_progress_min_duration_minutes: int | None = Field(default=None, ge=0, le=10080)
     ldap_enabled: bool | None = None
     ldap_server_url: str | None = None
     ldap_bind_dn: str | None = None

@@ -1821,9 +1821,9 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                 remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
 
                 # #28: whole-print duration estimated statelessly at the
-                # crossing — the duration floors (global + per telegram chat)
-                # are applied inside on_print_progress, per recipient. The
-                # snapshot is handed over as a supplier so a fully muted
+                # crossing — the duration floors (per provider, per telegram
+                # chat) are applied inside on_print_progress, per recipient.
+                # The snapshot is handed over as a supplier so a fully muted
                 # milestone never pays for the ~15 s grab.
                 estimated_minutes = _estimated_total_print_minutes(progress, state.remaining_time)
 

@@ -1302,8 +1302,7 @@ export function SettingsPage() {
       baseline.prometheus_enabled !== localSettings.prometheus_enabled ||
       baseline.prometheus_token !== localSettings.prometheus_token ||
       (baseline.session_max_hours ?? 720) !== (localSettings.session_max_hours ?? 720) ||
-      (baseline.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true) ||
-      (baseline.notify_progress_min_duration_minutes ?? 0) !== (localSettings.notify_progress_min_duration_minutes ?? 0);
+      (baseline.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true);
 
     if (!hasChanges) {
       return;
@@ -1402,7 +1401,6 @@ export function SettingsPage() {
         prometheus_token: localSettings.prometheus_token,
         session_max_hours: localSettings.session_max_hours,
         user_notifications_enabled: localSettings.user_notifications_enabled,
-        notify_progress_min_duration_minutes: localSettings.notify_progress_min_duration_minutes,
       };
       updateMutation.mutate(settingsToSave);
     }, 500);
@@ -4575,38 +4573,6 @@ export function SettingsPage() {
                 </Button>
               </div>
             </div>
-
-            {/* Progress-milestone duration floor (#28) — global on purpose:
-                it gates the event BEFORE the provider fan-out, so telegram's
-                per-chat authority (m045) stays untouched and every channel is
-                treated the same. */}
-            <Card className="mb-4">
-              <CardContent className="py-3">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-white text-sm font-medium">{t('settings.progressMilestoneMinDuration')}</p>
-                    <p className="text-xs text-bambu-gray">{t('settings.progressMilestoneMinDurationDescription')}</p>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <input
-                      type="number"
-                      min="0"
-                      max="10080"
-                      step="5"
-                      value={localSettings.notify_progress_min_duration_minutes ?? 0}
-                      onChange={(e) =>
-                        updateSetting(
-                          'notify_progress_min_duration_minutes',
-                          Math.min(10080, Math.max(0, parseInt(e.target.value) || 0))
-                        )
-                      }
-                      className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
-                    />
-                    <span className="text-xs text-bambu-gray">{t('settings.progressMilestoneMinDurationUnit')}</span>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
 
             {/* User Notifications Toggle */}
             {advancedAuthStatus?.advanced_auth_enabled && (

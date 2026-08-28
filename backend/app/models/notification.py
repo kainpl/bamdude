@@ -126,6 +126,12 @@ class NotificationProvider(Base):
     on_stock_reorder_alert = Column(Boolean, default=False)  # SKU crossed reorder point
     on_stock_break_alert = Column(Boolean, default=False)  # SKU will run out within lead time
 
+    # Per-provider floor for progress milestones (#28): NULL or 0 = always
+    # send, N mutes prints estimated shorter than N minutes. Ignored for
+    # telegram, whose authority is the chat (each chat carries its own floor).
+    # There is no global fallback: every provider carries its own value.
+    progress_min_duration_minutes = Column(Integer, nullable=True)
+
     # Quiet hours (do not disturb)
     quiet_hours_enabled = Column(Boolean, default=False)
     quiet_hours_start = Column(String(5), nullable=True)  # HH:MM format, e.g., "22:00"

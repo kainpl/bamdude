@@ -2226,10 +2226,6 @@ export default {
     currentVersion: 'Current Version',
     // Notifications
     bedCooledThreshold: 'Bed Cooled Threshold',
-    progressMilestoneMinDuration: 'Progress milestones only for long prints',
-    progressMilestoneMinDurationDescription:
-      'Send 25/50/75% progress notifications only when the print is estimated to run longer than this. 0 = always send.',
-    progressMilestoneMinDurationUnit: 'min',
     userNotificationsEnabled: 'User Notifications',
     userNotificationsEnabledDescription: 'Enable the user notifications menu and email notifications for print job events. Requires Advanced Authentication.',
     addProvider: 'Add Provider',
@@ -7141,7 +7137,6 @@ export default {
     printResumedDescription: 'Notify when print transitions PAUSE→RUNNING (includes pause duration)',
     progressMilestones: 'Progress Milestones',
     progressMilestonesDescription: 'Notify at 25%, 50%, 75%',
-    progressMilestonesFloorHint: 'Muted for prints estimated under {{minutes}} min (global setting)',
     printerOffline: 'Printer Offline',
     printerError: 'Printer Error',
     aiFailureDetection: 'AI Failure Detection',
@@ -7211,7 +7206,7 @@ export default {
     printerFilter: 'Printer Filter',
     onlyFromPrinter: 'Only send notifications for events from this printer',
     progressFloorLabel: 'Only for prints longer than',
-    progressFloorUnit: 'min — empty inherits the global value ({{minutes}}), 0 = always',
+    progressFloorUnit: 'min — empty or 0 = always send',
     quietHoursDnd: 'Quiet Hours (Do Not Disturb)',
     quietStart: 'Start',
     quietEnd: 'End',

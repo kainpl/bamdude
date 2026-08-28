@@ -110,11 +110,11 @@ class TelegramChat(Base):
     # Daily digest - receive daily summary
     daily_digest: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # Per-chat floor for progress milestones (#28): NULL inherits the global
-    # notify_progress_min_duration_minutes, 0 always sends, N mutes prints
-    # estimated shorter than N minutes. Per chat because that is telegram's
-    # whole authority model (m045) — an admin's 60-minute floor must not
-    # decide for an operator's chat that wants 10.
+    # Per-chat floor for progress milestones (#28): NULL or 0 = always send,
+    # N mutes prints estimated shorter than N minutes. Per chat because that
+    # is telegram's whole authority model (m045) — an admin's 60-minute floor
+    # must not decide for an operator's chat that wants 10. There is no
+    # global fallback: every chat carries its own value.
     progress_min_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Quiet hours - suppress notifications during these hours

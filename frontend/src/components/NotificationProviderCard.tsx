@@ -89,11 +89,6 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
         enabled: isTelegram,
     });
 
-    // Global progress-milestone duration floor (#28) — shown beside the
-    // per-provider progress toggle so an active floor is never invisible.
-    const {data: appSettings} = useQuery({queryKey: ['settings'], queryFn: api.getSettings});
-    const milestoneFloor = appSettings?.notify_progress_min_duration_minutes ?? 0;
-
     // Fetch printers for linking
     const {data: printers} = useQuery({
         queryKey: ['printers'],
@@ -522,11 +517,32 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                     <div>
                                         <p className="text-sm text-white">{t('notifications.progressMilestones')}</p>
                                         <p className="text-xs text-bambu-gray">{t('notifications.progressMilestonesDescription')}</p>
-                                        {milestoneFloor > 0 && (
-                                            <p className="text-xs text-amber-500">
-                                                {t('notifications.progressMilestonesFloorHint', {minutes: milestoneFloor})}
-                                            </p>
-                                        )}
+                                        {/* Per-provider duration floor (#28): each provider
+                                            carries its own value, empty or 0 = always send. */}
+                                        <p className="mt-0.5 flex items-center gap-1.5 text-xs text-bambu-gray">
+                                            {t('notifications.progressFloorLabel')}
+                                            <input
+                                                key={`floor-${provider.id}-${provider.progress_min_duration_minutes ?? 'inherit'}`}
+                                                type="number"
+                                                min={0}
+                                                max={10080}
+                                                step={5}
+                                                defaultValue={provider.progress_min_duration_minutes ?? ''}
+                                                placeholder="0"
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Enter') e.currentTarget.blur();
+                                                }}
+                                                onBlur={(e) => {
+                                                    const raw = e.currentTarget.value;
+                                                    const next = raw === '' ? null : Math.min(10080, Math.max(0, parseInt(raw) || 0));
+                                                    if (next !== (provider.progress_min_duration_minutes ?? null)) {
+                                                        updateMutation.mutate({progress_min_duration_minutes: next});
+                                                    }
+                                                }}
+                                                className="w-16 px-1.5 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-xs text-center focus:border-bambu-green focus:outline-none"
+                                            />
+                                            {t('notifications.progressFloorUnit')}
+                                        </p>
                                     </div>
                                     <Toggle
                                         checked={provider.on_print_progress}
