@@ -794,11 +794,16 @@ class CloudLinkClient:
         the camera module and gets a frame instead.
 
         ⚠️ **Chunks must go out back-to-back — this is load-bearing for the
-        portal, not just tidy.** It does not set a sync's ``lastSeq`` until the
-        act's LAST chunk arrives, and drops any ``status_batch`` it sees while
-        a sync is still open; a ``status_batch`` wedged between two chunks of
-        this same act would be silently discarded. There is no explicit lock
-        scoping this whole for-loop, and none is added: each ``await
+        portal, not just tidy.** A ``status_batch`` wedged between two chunks
+        of this same act is not dropped — it APPLIES, seq consecutive with
+        whatever the portal already has. The damage lands when the act's LAST
+        chunk arrives moments later: completion overwrites the printer set
+        with that (now-stale) snapshot and rolls ``lastSeq`` back to
+        ``base_seq``, so the farm's very next batch reads to the portal as a
+        gap — a self-inflicted resync loop, not a lost message.
+
+        There is no explicit lock scoping this whole for-loop, and none is
+        added: each ``await
         self._send(ws, frame)`` is only the one uncontended lock acquisition
         and one small local ``ws.send_str`` — neither actually suspends back to
         the event loop under ordinary conditions — so nothing else queued on

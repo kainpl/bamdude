@@ -650,6 +650,10 @@ async def test_no_status_batch_interleaves_the_chunks_of_one_snapshot_act(sessio
             f"act {sid} was split by {[f['type'] for f in span]} — "
             f"a status_batch mid-act is one the portal would silently drop"
         )
+        assert len({f["data"]["sync_id"] for f in span}) == 1, (
+            f"act {sid}'s span contains a chunk from another sync_id — two acts' chunks "
+            f"alternating within these positions would pass the type-only check above"
+        )
 
 
 async def test_an_inbound_heartbeat_from_the_portal_is_tolerated(session_factory, portal):

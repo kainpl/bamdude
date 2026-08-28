@@ -671,7 +671,7 @@ async def archive_printer(
     printer_manager.disconnect_printer(printer_id)
     # A ``CloudLinkPrinter`` row survives archiving on purpose, so the allowlist
     # still names this machine — availability is filtered on the READ side, in
-    # ``Uplink.build_snapshot``. A running link is holding the set that snapshot
+    # ``Uplink.build_snapshot_chunks``. A running link is holding the set that snapshot
     # produced, and nothing about archiving reaches it: the printer is gone from
     # the whole app while the portal is still being told about it. This is what
     # makes it re-ask. Safe with no link running — the service returns at once.
