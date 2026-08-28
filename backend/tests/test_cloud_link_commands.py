@@ -33,12 +33,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.models.cloud_link import CloudLinkAudit
 from backend.app.services.cloud_link import commands
+from backend.app.services.cloud_link.client import AGENT_CAPABILITIES
 from backend.app.services.cloud_link.commands import (
     ALLOWED_COMMANDS,
     CommandContext,
     PostAction,
     dispatch,
 )
+from backend.app.services.cloud_link.remote_ops import REMOTE_OPS
 from backend.app.services.cloud_link.schemas import Cmd, CmdData, make_frame
 from backend.app.services.cloud_link.uplink import Uplink
 
@@ -229,6 +231,45 @@ async def test_a_refused_camera_snapshot_says_nothing_the_portal_did_not_ask(ctx
     result, _post = await dispatch(cmd_frame("camera_snapshot", args={}), ctx)
 
     assert make_frame(result)["data"] == {"ok": False, "error": "bad_args"}
+
+
+# -------------------------------------------------------------- the remote ops
+
+
+def test_capabilities_are_within_the_release_pinned_reach():
+    """The ``hello`` claim never outruns what the agent can actually run.
+
+    ``AGENT_CAPABILITIES`` is announced to the portal; ``ALLOWED_COMMANDS`` and
+    ``REMOTE_OPS`` are the two release-pinned sets ``dispatch`` will actually
+    route a name to. A capability outside their union would be a button the
+    portal can offer that fails the moment somebody clicks it.
+    """
+    assert set(AGENT_CAPABILITIES) <= (ALLOWED_COMMANDS | set(REMOTE_OPS))
+
+
+async def test_dispatch_routes_a_remote_op(ctx):
+    """A name in ``REMOTE_OPS`` — not the built-in allowlist — still gets a
+    correlated ``cmd_result``, via :func:`~backend.app.services.cloud_link.
+    remote_ops.dispatch_remote_op` rather than the ``_HANDLERS`` table."""
+    frame = cmd_frame("inventory.list_spools", {})
+
+    result, post = await dispatch(frame, ctx)
+
+    assert result.type == "cmd_result" and post is None
+    assert result.re == frame.id, "correlated to the request it answers"
+    assert result.data.ok is True
+
+
+async def test_dispatch_still_refuses_an_unknown_name(ctx):
+    """A name that is in neither ``ALLOWED_COMMANDS`` nor ``REMOTE_OPS`` falls
+    all the way through to the same refusal an unrecognised built-in gets —
+    the extra lookup does not turn a miss into anything but ``unknown_command``.
+    """
+    result, post = await dispatch(cmd_frame("inventory.nope"), ctx)
+
+    assert result.data.ok is False
+    assert result.data.error == "unknown_command"
+    assert post is None
 
 
 # ----------------------------------------------------------------- the refusals

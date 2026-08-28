@@ -118,14 +118,15 @@ ENVELOPE_VERSION = 1
 #: of inferring it from a version number.
 #:
 #: ⚠️ **A claim, not a grant.** Every name here must also be in
-#: ``commands.ALLOWED_COMMANDS`` — a test pins that — because a capability the
-#: portal can see but the agent will not run is a button that fails on click.
-#: The reverse is fine and deliberate: the allowlist is what the agent *does*,
-#: and it stays the security artifact whatever this tuple says.
+#: ``commands.ALLOWED_COMMANDS`` or ``remote_ops.REMOTE_OPS`` — a test pins
+#: that — because a capability the portal can see but the agent will not run
+#: is a button that fails on click. The reverse is fine and deliberate: those
+#: two sets are what the agent *does*, and they stay the security artifact
+#: whatever this tuple says.
 #:
 #: A tuple because the set is a fact about the release and not a collection
 #: anything mutates — the same reason ``commands.ALLOWED_COMMANDS`` is frozen.
-AGENT_CAPABILITIES = ("camera_snapshot",)
+AGENT_CAPABILITIES = ("camera_snapshot", "inventory.list_spools", "inventory.edit_spool")
 
 #: Bounds establishing the TCP/TLS connection, and nothing else — the socket
 #: itself is long-lived, so a total timeout would kill a healthy link.

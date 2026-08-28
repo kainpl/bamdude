@@ -60,6 +60,7 @@ from backend.app.services.cloud_link.client import (
     ws_url,
 )
 from backend.app.services.cloud_link.commands import ALLOWED_COMMANDS, CommandContext, PostAction, dispatch
+from backend.app.services.cloud_link.remote_ops import REMOTE_OPS
 from backend.app.services.cloud_link.schemas import Cmd, CmdData, Event, EventData
 from backend.app.services.cloud_link.store import get_config, save_credentials
 from backend.app.services.cloud_link.uplink import Uplink
@@ -390,19 +391,21 @@ async def test_the_handshake_says_who_we_are_and_what_we_speak(session_factory, 
         "secret": "the-secret",
         "agent_version": APP_VERSION,
         "envelope_versions": [1],
-        "capabilities": ["camera_snapshot"],
+        "capabilities": ["camera_snapshot", "inventory.list_spools", "inventory.edit_spool"],
     }, "the version comes from the constant, never a literal"
 
 
-def test_every_capability_the_hello_claims_is_a_command_the_agent_answers():
+def test_every_capability_the_hello_claims_is_something_the_agent_answers():
     """Drift guard between the two halves of one promise.
 
     ``capabilities`` is what the portal reads to decide which buttons to offer;
-    ``ALLOWED_COMMANDS`` is what the agent will actually run. A capability with
-    no command behind it is a portal feature that fails on click, and it is
-    invisible on both sides until a user finds it.
+    ``ALLOWED_COMMANDS`` and ``REMOTE_OPS`` are what the agent will actually
+    run — the administrative allowlist and the scoped remote-op registry
+    ``commands.dispatch`` routes to, respectively. A capability with neither a
+    command nor a registered op behind it is a portal feature that fails on
+    click, and it is invisible on both sides until a user finds it.
     """
-    assert set(AGENT_CAPABILITIES) <= set(ALLOWED_COMMANDS)
+    assert set(AGENT_CAPABILITIES) <= (set(ALLOWED_COMMANDS) | set(REMOTE_OPS))
 
 
 def test_the_hello_cannot_be_talked_into_a_shared_capability_list():

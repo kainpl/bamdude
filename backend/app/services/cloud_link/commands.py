@@ -268,25 +268,45 @@ async def dispatch(cmd_frame: Cmd, ctx: CommandContext) -> tuple[CmdResult, Post
     written above. ``args`` is data *for* a handler and never part of choosing
     one.
 
+    A name outside :data:`ALLOWED_COMMANDS` is then tried against
+    :data:`~backend.app.services.cloud_link.remote_ops.REMOTE_OPS` — the
+    scoped, record-level ops from that module — before falling through to
+    ``unknown_command``. That module owns its own gate (membership, API-key
+    scope, arg validation) and always answers, so this function only routes;
+    it never decides whether a remote op may run.
+
     Never raises for a command it does not like: an unknown name is an answer
     (``ok=False, error="unknown_command"``), not an exception, because the
     portal is owed a result for every request it correlates. An exception from
     a *handler* is a different animal and is deliberately NOT caught here —
     containing it belongs to the client loop's reader, which is the task that
     must survive it, and swallowing it here would hide a real fault behind a
-    result frame that says the farm is fine.
+    result frame that says the farm is fine. ``dispatch_remote_op`` gives the
+    same guarantee for :data:`REMOTE_OPS` on its own side, so that property
+    holds for every name this function can route to.
     """
     name = cmd_frame.data.cmd
     # Two names for one fact, and they are pinned equal by a test. If they ever
     # diverge the answer is a refusal rather than a KeyError on the reader task.
     handler = _HANDLERS.get(name) if name in ALLOWED_COMMANDS else None
 
-    if handler is None:
-        await _audit(ctx, "cmd:unknown", f"refused unknown command {_bounded(name)!r}", ok=False)
-        return _result(cmd_frame, CmdResultData(ok=False, error="unknown_command")), None
+    if handler is not None:
+        data, post_action = await handler(cmd_frame, ctx)
+        return _result(cmd_frame, data), post_action
 
-    data, post_action = await handler(cmd_frame, ctx)
-    return _result(cmd_frame, data), post_action
+    # Late, function-local import: remote_ops imports CommandContext FROM this
+    # module, so a module-level import here would close that into a cycle.
+    # Python caches the module after the first call, so the per-call cost of
+    # re-importing is negligible — see the module docstring's note on the
+    # one-way import direction.
+    from backend.app.services.cloud_link.remote_ops import REMOTE_OPS, dispatch_remote_op
+
+    if name in REMOTE_OPS:
+        data = await dispatch_remote_op(name, cmd_frame.data.args, ctx)
+        return _result(cmd_frame, data), None
+
+    await _audit(ctx, "cmd:unknown", f"refused unknown command {_bounded(name)!r}", ok=False)
+    return _result(cmd_frame, CmdResultData(ok=False, error="unknown_command")), None
 
 
 # ------------------------------------------------------------------ handlers
