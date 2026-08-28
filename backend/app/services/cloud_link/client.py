@@ -153,11 +153,12 @@ DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 #: progress bar can see.
 MIN_THROTTLE_S = 0.5
 
-#: How long the pump waits after emptying the uplink before looking again. The
-#: uplink has no "something arrived" signal — it is fed from a synchronous
-#: broadcast callback — so this is a poll, and 0.2 s is imperceptible next to
-#: the per-printer status throttle the portal sets.
-IDLE_SLEEP_S = 0.2
+#: The pump's tick interval — how often it asks the uplink what has changed.
+#: The uplink has no "something arrived" signal — it is fed from a synchronous
+#: broadcast callback — so this is a poll, and 1 s is imperceptible next to the
+#: per-printer status throttle the portal sets, while staying well clear of a
+#: busy-loop on a farm this pump does no other work for.
+TICK_S = 1.0
 
 #: Reconnection backoff: 1 s, doubling, capped at five minutes, ±20 % jitter so
 #: a farm of agents does not return as one synchronised wave after a portal
@@ -228,9 +229,9 @@ class CloudLinkClient:
     """The connection to one portal, from hello to reconnect.
 
     One instance per link, driven by exactly one :meth:`run`. Everything with a
-    duration — the heartbeat, the backoff, the pump's idle wait, the two
-    timeouts — is injectable, so the tests exercise the real loop at
-    millisecond scale instead of mocking it away.
+    duration — the heartbeat, the backoff, the pump's tick, the two timeouts —
+    is injectable, so the tests exercise the real loop at millisecond scale
+    instead of mocking it away.
     """
 
     def __init__(
@@ -240,7 +241,7 @@ class CloudLinkClient:
         uplink: Uplink,
         backoff_base_s: float = BACKOFF_BASE_S,
         backoff_cap_s: float = BACKOFF_CAP_S,
-        idle_sleep_s: float = IDLE_SLEEP_S,
+        tick_s: float = TICK_S,
         connect_timeout_s: float = CONNECT_TIMEOUT_S,
         handshake_timeout_s: float = HANDSHAKE_TIMEOUT_S,
         unknown_command_limit: int = UNKNOWN_COMMAND_AUDIT_LIMIT,
@@ -263,7 +264,7 @@ class CloudLinkClient:
         self._heartbeat_interval_s = DEFAULT_HEARTBEAT_INTERVAL_S
         self._backoff_base_s = backoff_base_s
         self._backoff_cap_s = backoff_cap_s
-        self._idle_sleep_s = idle_sleep_s
+        self._tick_s = tick_s
         self._connect_timeout_s = connect_timeout_s
         self._handshake_timeout_s = handshake_timeout_s
         self._unknown_command_limit = unknown_command_limit
@@ -451,8 +452,8 @@ class CloudLinkClient:
 
         The reset comes before the snapshot is *built*, not merely before it is
         sent — building it also reseeds the uplink's identity and connection
-        caches, and a stale outbox frame drained between the two would be
-        describing the world the snapshot is in the middle of replacing.
+        caches, and a stale frame flushed between the two would be describing
+        the world the snapshot is in the middle of replacing.
         """
         interval = hello_ok.data.heartbeat_interval_s
         if interval <= 0:
@@ -755,42 +756,80 @@ class CloudLinkClient:
             await self._send(ws, Heartbeat(v=1, id=new_frame_id(), ts=frame_timestamp(), type="heartbeat"))
 
     async def _pump_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
-        """Empty the uplink, then wait, then empty it again.
+        """One tick: send whatever the uplink has, send a requested snapshot,
+        then wait for the next tick.
 
-        ⚠️ **Drain until it says ``None``.** One ``drain`` is not one cycle's
-        work: a connection edge produces an event *and* the status behind it,
-        and the uplink hands those over in two calls. Draining once per cycle
-        would deliver the second one a full idle-sleep late, every time.
+        ⚠️ **``flush()`` is the whole tick's work in one call.** It replaced a
+        per-message ``drain`` that had to be polled until it returned ``None``
+        — a connection edge's event and the status behind it now come back
+        from the SAME call, in order, so one pass over what it returns is
+        every frame this tick owes the wire. Calling it more than once per
+        tick would only ever see an empty list the second time; the uplink has
+        nothing left to say until the next broadcast lands in its dirty map.
 
-        ⚠️ **A requested snapshot goes out AFTER the drain, never before.** The
-        queued frames were built from broadcasts the snapshot has already
+        ⚠️ **A requested snapshot goes out AFTER the flush, never before.** The
+        frames just sent were built from broadcasts the snapshot has already
         absorbed — it reads the live state, so it is newer than all of them.
-        Sending it first would let the backlog land on top and replay readings
-        the snapshot had just superseded: the same trap ``reset_transient``
-        exists to close on reconnect.
+        Sending it first would let this tick's frames land on top and replay
+        readings the snapshot had just superseded: the same trap
+        ``reset_transient`` exists to close on reconnect, preserved here by
+        construction — flush happens first in the same iteration.
         """
         while True:
-            frame = await self._uplink.drain()
-            while frame is not None:
+            for frame in self._uplink.flush():
                 await self._send(ws, frame)
-                frame = await self._uplink.drain()
             if self._snapshot_requested.is_set():
                 self._snapshot_requested.clear()
                 await self._send_snapshot(ws)
-            await asyncio.sleep(self._idle_sleep_s)
+            await asyncio.sleep(self._tick_s)
 
     async def _send_snapshot(self, ws: aiohttp.ClientWebSocketResponse) -> None:
-        """Build the farm's full picture and send it. Its own session, held
-        only for the read — the socket write is not the database's business.
+        """Build the farm's full picture, as one or more chunks sharing a
+        ``sync_id``, and send every chunk in order. Its own session, held only
+        for the read — the socket write is not the database's business.
 
-        The local is ``frame`` and not ``snapshot`` on purpose: :mod:`snapshot`
-        is a module this file imports, and shadowing it inside the one method
-        whose name matches is how a later edit here reaches for the camera
-        module and gets a frame instead.
+        The local is ``frames``/``frame`` and not ``snapshot`` on purpose:
+        :mod:`snapshot` is a module this file imports, and shadowing it inside
+        the one method whose name matches is how a later edit here reaches for
+        the camera module and gets a frame instead.
+
+        ⚠️ **Chunks must go out back-to-back — this is load-bearing for the
+        portal, not just tidy.** It does not set a sync's ``lastSeq`` until the
+        act's LAST chunk arrives, and drops any ``status_batch`` it sees while
+        a sync is still open; a ``status_batch`` wedged between two chunks of
+        this same act would be silently discarded. There is no explicit lock
+        scoping this whole for-loop, and none is added: each ``await
+        self._send(ws, frame)`` is only the one uncontended lock acquisition
+        and one small local ``ws.send_str`` — neither actually suspends back to
+        the event loop under ordinary conditions — so nothing else queued on
+        the SAME ``_send_lock`` (the heartbeat, the pump's own flush) gets a
+        turn between two chunks. This holds because nothing here does more
+        than that, not because of a guarantee asyncio makes generally — do not
+        add a real await (a sleep, a second query, backpressure-prone I/O)
+        inside this loop without re-checking
+        ``test_no_status_batch_interleaves_the_chunks_of_one_snapshot_act``,
+        which fails the moment a genuine yield point opens between two chunks.
+
+        ⚠️ **A resync's chunks can still carry one bounded-stale reading.** A
+        printer that is dirty but still inside its throttle window survives
+        ``flush()`` un-sent (coalescing, not dropping) — see
+        :meth:`Uplink.flush`. If that printer is ALSO in the set this method
+        reads from the database, the chunk it lands in can be up to
+        ``min_interval_s`` older than what ``flush`` will send moments later
+        on its own. This is deliberately NOT fixed by clearing the uplink's
+        dirty map here: unlike the reconnect path, a resync is mid-connection,
+        and zeroing ``_seq``/``_dirty`` there would restart the connection's
+        sequence numbering under a live socket. The staleness is bounded (at
+        most one throttle window), self-corrects on the very next flush, and a
+        printer that goes offline mid-window still broadcasts that edge
+        immediately — no throttle applies to it — so there is no phantom
+        "still online" reading left standing. Leave this as is; do not clear
+        ``_dirty`` on this path.
         """
         async with self._session_factory() as session:
-            frame = await self._uplink.build_snapshot(session)
-        await self._send(ws, frame)
+            frames = await self._uplink.build_snapshot_chunks(session)
+        for frame in frames:
+            await self._send(ws, frame)
 
     async def _send(self, ws: aiohttp.ClientWebSocketResponse, frame: AnyFrame) -> None:
         async with self._send_lock:
