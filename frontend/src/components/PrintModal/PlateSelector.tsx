@@ -253,8 +253,8 @@ export function PlateSelector({
             <span className="w-8 text-center text-sm text-white tabular-nums">{quantityOf(active.index)}</span>
             <button
               type="button"
-              onClick={() => onQuantityChange!(active.index, Math.min(50, quantityOf(active.index) + 1))}
-              disabled={quantityOf(active.index) >= 50}
+              onClick={() => onQuantityChange!(active.index, Math.min(999, quantityOf(active.index) + 1))}
+              disabled={quantityOf(active.index) >= 999}
               className="w-7 h-7 rounded bg-bambu-dark-tertiary text-white disabled:opacity-40"
               aria-label={t('printModal.increaseQuantity', 'More')}
             >

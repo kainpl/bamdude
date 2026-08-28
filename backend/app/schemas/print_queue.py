@@ -54,8 +54,11 @@ class PrintQueueItemCreate(BaseModel):
     # falls through: this override → max(filament-map[loaded tray]) → 0.
     preheat_override: Literal["inherit", "on", "off"] = "inherit"
     preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=MAX_CHAMBER_TEMP_C)
-    # Batch: create N identical items sharing a batch_id (1..50)
-    quantity: int = Field(default=1, ge=1, le=50)
+    # Batch: create N identical items sharing a batch_id (1..999). Copies are
+    # cheap — one ORM row each, single transaction, the 3MF stored once — so
+    # the bound is a fat-finger guard, not a capacity limit (was 50, an
+    # arbitrary round number inherited from the upstream batch feature).
+    quantity: int = Field(default=1, ge=1, le=999)
     # Project to associate the resulting archive with (when triggered from project view)
     project_id: int | None = None
 

@@ -83,8 +83,8 @@ class AutoQueueItemCreate(BaseModel):
     auto_off_after: bool = False
     require_previous_success: bool = False
 
-    # Batch: create N copies sharing a batch_id (1..50), like print_queue
-    quantity: int = Field(default=1, ge=1, le=50)
+    # Batch: create N copies sharing a batch_id (1..999), like print_queue
+    quantity: int = Field(default=1, ge=1, le=999)
 
     @model_validator(mode="before")
     @classmethod
@@ -94,17 +94,16 @@ class AutoQueueItemCreate(BaseModel):
     @field_validator("plate_quantities")
     @classmethod
     def _plate_quantities_in_range(cls, value: dict[int, int] | None) -> dict[int, int] | None:
-        """Same 1..50 bound ``quantity`` carries.
+        """Same 1..999 bound ``quantity`` carries.
 
-        Bounded on the field rather than clamped in the route: a caller asking
-        for 200 copies of a plate has made a mistake, and silently giving them
-        50 hides it.
+        Bounded on the field rather than clamped in the route: a caller far
+        past the bound has made a mistake, and silently clamping hides it.
         """
         if value is None:
             return None
         for plate_id, count in value.items():
-            if count < 1 or count > 50:
-                raise ValueError(f"plate {plate_id}: quantity must be between 1 and 50")
+            if count < 1 or count > 999:
+                raise ValueError(f"plate {plate_id}: quantity must be between 1 and 999")
         return value
 
 

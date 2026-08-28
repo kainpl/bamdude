@@ -122,12 +122,12 @@ async def test_a_single_run_is_not_a_batch(async_client: AsyncClient, db_session
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_an_absurd_count_is_refused_rather_than_clamped(async_client: AsyncClient, db_session):
-    """Asking for 200 copies is a mistake, and silently giving 50 hides it."""
+    """Asking for 2000 copies is a mistake, and silently clamping hides it."""
     archive = await _archive(db_session)
 
     response = await async_client.post(
         "/api/v1/auto-queue/",
-        json={"archive_id": archive.id, "plate_ids": [1], "plate_quantities": {"1": 200}},
+        json={"archive_id": archive.id, "plate_ids": [1], "plate_quantities": {"1": 2000}},
     )
 
     assert response.status_code == 422
