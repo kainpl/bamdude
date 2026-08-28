@@ -206,3 +206,43 @@ async def test_budget_reset_starts_a_fresh_connections_count(session_factory):
 
     assert budget.written == 0
     assert budget.suppressed == 0
+
+
+@pytest.mark.asyncio
+async def test_list_spools_answers_the_slim_projection_with_paging_metadata(ctx, session_factory):
+    """The wire shape is the six-field projection + total/limit/offset — never a
+    full SpoolResponse dump (a real inventory dumped whole weighed ~700 KB in
+    one frame and the portal's ws cap killed the link — measured 2026-08-29)."""
+    async with session_factory() as session:
+        for i in range(3):
+            session.add(Spool(material="PLA", brand=f"B{i}", color_name="Black", rgba="000000FF"))
+        await session.commit()
+
+    res = await dispatch_remote_op("inventory.list_spools", {"limit": 2, "offset": 0}, ctx)
+    assert res.ok is True
+    assert res.payload["total"] == 3 and res.payload["limit"] == 2 and res.payload["offset"] == 0
+    assert len(res.payload["spools"]) == 2
+    assert set(res.payload["spools"][0]) == {"id", "material", "brand", "color_name", "note", "archived_at"}
+
+    page2 = await dispatch_remote_op("inventory.list_spools", {"limit": 2, "offset": 2}, ctx)
+    assert page2.ok is True and len(page2.payload["spools"]) == 1
+    ids = {s["id"] for s in res.payload["spools"]} | {s["id"] for s in page2.payload["spools"]}
+    assert len(ids) == 3  # pages don't overlap
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_payload_is_refused_not_sent(ctx, monkeypatch):
+    """The frame-budget backstop: an op whose answer would blow the portal's ws
+    cap must come back payload_too_large — never reach the wire and kill the link."""
+    from backend.app.services.cloud_link.remote_ops_schemas import ListSpoolsArgs
+
+    async def _huge(db, args):
+        return {"blob": "x" * (remote_ops.MAX_RESULT_PAYLOAD_BYTES + 1)}
+
+    bogus = remote_ops.RemoteOp(
+        op="x.huge", permission=Permission.INVENTORY_READ, args_model=ListSpoolsArgs, run=_huge
+    )
+    monkeypatch.setitem(remote_ops.REMOTE_OPS, "x.huge", bogus)
+
+    res = await dispatch_remote_op("x.huge", {}, ctx)
+    assert res.ok is False and res.error == "payload_too_large"

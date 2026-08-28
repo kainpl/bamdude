@@ -57,6 +57,7 @@ downlink reader that dies on a shape nobody anticipated.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -67,7 +68,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.core.auth import _resolve_apikey_scope
 from backend.app.core.permissions import Permission
-from backend.app.schemas.spool import SpoolResponse, SpoolUpdate
+from backend.app.schemas.spool import SpoolUpdate
 from backend.app.services import inventory_service
 from backend.app.services.cloud_link.commands import PER_CONNECTION_AUDIT_LIMIT, CommandContext
 from backend.app.services.cloud_link.remote_ops_schemas import EditSpoolArgs, ListSpoolsArgs
@@ -75,6 +76,16 @@ from backend.app.services.cloud_link.schemas import CmdResultData
 from backend.app.services.cloud_link.store import write_audit
 
 logger = logging.getLogger(__name__)
+
+#: The largest serialized ``payload`` a remote op may answer with. Derivation:
+#: the portal's ws server hard-kills the link at 512 KiB (``maxPayload``,
+#: close 1009 — measured live when a ~700 KB spool dump did exactly that,
+#: 2026-08-29) and its gateway refuses frames past its soft 256 KiB cap — so
+#: the farm targets the soft cap with margin for the envelope wrapper. An op
+#: whose answer would exceed this is refused (``payload_too_large``) rather
+#: than sent; pagination (``ListSpoolsArgs.limit``) is what keeps honest
+#: answers below it in the first place.
+MAX_RESULT_PAYLOAD_BYTES = 240 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,15 +96,46 @@ class RemoteOp:
     run: Callable[[Any, BaseModel], Awaitable[dict]]  # (db, validated_args) -> the FULL payload dict (already nested)
 
 
+def _slim_spool(spool: Any) -> dict:
+    """The wire projection of one spool — exactly what the portal renders.
+
+    ⚠️ Deliberately NOT a full ``SpoolResponse`` dump. A real inventory dumped
+    that way weighed ~700 KB in ONE ``cmd_result`` frame — past the portal's
+    hard 512 KiB ws cap, so the ws server killed the link with 1009 on every
+    load of the portal's Inventory tab (measured live, 2026-08-29). The
+    portal's ``RemoteSpool`` interface reads these six fields and nothing
+    else; ~150 B/spool keeps thousands of spools inside one frame. Widening
+    this projection is a cross-repo decision (portal renders + this list +
+    :data:`MAX_RESULT_PAYLOAD_BYTES`), not a local edit.
+    """
+    archived_at = getattr(spool, "archived_at", None)
+    return {
+        "id": spool.id,
+        "material": spool.material,
+        "brand": spool.brand,
+        "color_name": spool.color_name,
+        "note": spool.note,
+        "archived_at": archived_at.isoformat() if archived_at is not None else None,
+    }
+
+
 async def _list_spools(db: AsyncSession, args: ListSpoolsArgs) -> dict:
-    spools = await inventory_service.list_spools(db, include_archived=args.include_archived)
-    return {"spools": [SpoolResponse.model_validate(s, from_attributes=True).model_dump(mode="json") for s in spools]}
+    spools = await inventory_service.list_spools(
+        db, include_archived=args.include_archived, limit=args.limit, offset=args.offset
+    )
+    total = await inventory_service.count_spools(db, include_archived=args.include_archived)
+    return {
+        "spools": [_slim_spool(s) for s in spools],
+        "total": total,
+        "limit": args.limit,
+        "offset": args.offset,
+    }
 
 
 async def _edit_spool(db: AsyncSession, args: EditSpoolArgs) -> dict:
     patch = SpoolUpdate.model_validate(args.patch)  # ValueError/ValidationError shape -> mapped to bad_args below
     spool = await inventory_service.update_spool(db, args.spool_id, patch)
-    return {"spool": SpoolResponse.model_validate(spool, from_attributes=True).model_dump(mode="json")}
+    return {"spool": _slim_spool(spool)}
 
 
 #: Release-pinned. Slice 1 is exactly these two — a new op is a new literal
@@ -246,6 +288,16 @@ async def dispatch_remote_op(name: str, args: dict, ctx: CommandContext) -> CmdR
     try:
         async with ctx.session_factory() as db:
             payload = await op.run(db, validated)
+        # The frame-budget guard. The portal's ws server hard-kills the whole
+        # link (close 1009) on any message past 512 KiB, and its gateway
+        # refuses past 256 KiB — so an oversized result must become an honest
+        # refusal here, never a frame on the wire. This is the backstop; each
+        # op's own projection (see _slim_spool) is what keeps real answers far
+        # below it.
+        if len(json.dumps(payload)) > MAX_RESULT_PAYLOAD_BYTES:
+            logger.warning("Cloud Link remote op %r produced an oversized payload — refused", name)
+            await budget.write(f"{name!r} failed: payload_too_large", ok=False)
+            return CmdResultData(ok=False, error="payload_too_large")
         return CmdResultData(ok=True, payload=payload)
     except inventory_service.SpoolNotFoundError:
         await budget.write(f"{name!r} failed: not_found", ok=False)

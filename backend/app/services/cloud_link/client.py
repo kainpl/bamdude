@@ -875,7 +875,22 @@ class CloudLinkClient:
 
     async def _send(self, ws: aiohttp.ClientWebSocketResponse, frame: AnyFrame) -> None:
         async with self._send_lock:
-            await ws.send_str(json.dumps(make_frame(frame)))
+            payload = json.dumps(make_frame(frame))
+            # The portal's ws server hard-kills the whole link at 512 KiB
+            # ("Max payload size exceeded", close 1009) and its gateway refuses
+            # past 256 KiB — a fate this warning exists to make diagnosable: it
+            # was exactly how a ~700 KB inventory cmd_result silently churned
+            # the link for a day (2026-08-29) before one log line named it.
+            # Every producer is expected to stay far below this (remote ops are
+            # budget-checked in remote_ops.py; batches/chunks are count-capped),
+            # so a line here means a NEW producer has outgrown the frame budget.
+            if len(payload) > 245_760:  # remote_ops.MAX_RESULT_PAYLOAD_BYTES
+                logger.warning(
+                    "Cloud Link: outbound %s frame is %d bytes — over the portal frame budget, the link is at risk",
+                    getattr(frame, "type", "?"),
+                    len(payload),
+                )
+            await ws.send_str(payload)
 
     # -------------------------------------------------------------- the record
 

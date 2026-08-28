@@ -3,7 +3,7 @@ so it can be called directly — not only through HTTP — by the cloud portal's
 registry (see docs/superpowers/sdd/2026-08-28-cloud-portal-phase2-remote-inventory-agent).
 """
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -16,14 +16,38 @@ class SpoolNotFoundError(Exception):
     """No spool with the given id."""
 
 
-async def list_spools(db: AsyncSession, *, include_archived: bool = False) -> list[Spool]:
-    """List all spools, excluding archived by default."""
+async def list_spools(
+    db: AsyncSession,
+    *,
+    include_archived: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[Spool]:
+    """List spools, excluding archived by default.
+
+    ``limit``/``offset`` page the stable material/brand/colour ordering.
+    ``None`` (the default) keeps the historical unbounded behaviour the local
+    HTTP route relies on; the Cloud Link remote op always passes a real limit
+    (its answer must fit one ws frame — see ``remote_ops._slim_spool``).
+    """
     query = select(Spool).options(selectinload(Spool.k_profiles))
     if not include_archived:
         query = query.where(Spool.archived_at.is_(None))
     query = query.order_by(Spool.material, Spool.brand, Spool.color_name)
+    if offset:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
     result = await db.execute(query)
     return list(result.scalars().all())
+
+
+async def count_spools(db: AsyncSession, *, include_archived: bool = False) -> int:
+    """How many spools :func:`list_spools` would page over — its ``total``."""
+    query = select(func.count()).select_from(Spool)
+    if not include_archived:
+        query = query.where(Spool.archived_at.is_(None))
+    return int((await db.execute(query)).scalar_one())
 
 
 async def update_spool(db: AsyncSession, spool_id: int, spool_data: SpoolUpdate) -> Spool:
