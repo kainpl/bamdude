@@ -1798,6 +1798,7 @@ export interface AppSettings {
   forecast_global_lead_time_days: number;
   // User email notifications toggle
   user_notifications_enabled: boolean;
+  notify_progress_min_duration_minutes: number;
   // Default sidebar order (admin-set for all users)
   default_sidebar_order: string;
   // Staggered start settings (electrical load management for farms)

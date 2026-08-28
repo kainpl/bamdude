@@ -139,6 +139,7 @@ async def get_settings(
                 "mqtt_port",
                 "stagger_concurrent",
                 "stagger_interval_minutes",
+                "notify_progress_min_duration_minutes",
                 "forecast_global_lead_time_days",
                 "firmware_batch_concurrency",
                 "session_max_hours",

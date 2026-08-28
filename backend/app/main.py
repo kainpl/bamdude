@@ -453,6 +453,23 @@ _active_macro_selection: dict[int, list[int]] = {}
 # Milestones are 25, 50, 75. Value of 0 means no milestone notified yet for current print.
 _last_progress_milestone: dict[int, int] = {}
 
+
+def _estimated_total_print_minutes(progress: int, remaining_minutes: int | None) -> float | None:
+    """Whole-print duration estimated at a progress point, in minutes.
+
+    ``remaining / (1 - progress/100)`` — at 25% with 90 min left the print is
+    a 120-minute job. Stateless on purpose (#28): capturing the total at print
+    start would need a per-print store that must survive restarts, while this
+    is answerable at every milestone crossing from the live state alone, and
+    for a "longer than N minutes" gate its precision is ample. ``None`` when
+    the inputs can't answer (no remaining time reported, or progress at an
+    edge) — callers treat that as "don't gate".
+    """
+    if not remaining_minutes or remaining_minutes < 0 or progress <= 0 or progress >= 100:
+        return None
+    return remaining_minutes / (1.0 - progress / 100.0)
+
+
 # Track whether first layer complete notification has been sent for current print
 _first_layer_notified: dict[int, bool] = {}
 
@@ -1789,6 +1806,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if current_milestone > last_milestone:
             _last_progress_milestone[printer_id] = current_milestone
             try:
+                from backend.app.api.routes.settings import get_setting
                 from backend.app.models.printer import Printer
 
                 # Read the printer in a short session and release the connection
@@ -1797,26 +1815,56 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                 async with async_session() as db:
                     result = await db.execute(select(Printer).where(Printer.id == printer_id))
                     printer = result.scalar_one_or_none()
+                    _raw_min = await get_setting(db, "notify_progress_min_duration_minutes")
 
-                printer_name = printer.name if printer else f"Printer {printer_id}"
-                filename = state.subtask_name or state.gcode_file or "Unknown"
-                # remaining_time is in minutes, convert to seconds for notification
-                remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
+                # #28: milestones only for prints longer than the configured
+                # floor. The whole-print duration is estimated statelessly at
+                # the crossing (remaining time / share still to print), so the
+                # verdict survives restarts and needs no per-print bookkeeping;
+                # an unknown remaining time fails open. Decided BEFORE the
+                # camera snapshot — a muted milestone must not cost a ~15 s
+                # grab. The milestone marker above has already advanced, so a
+                # muted print's later crossings are judged the same way rather
+                # than queueing up.
+                try:
+                    _min_minutes = int(_raw_min) if _raw_min is not None else 0
+                except (TypeError, ValueError):
+                    _min_minutes = 0
+                _muted = False
+                if _min_minutes > 0:
+                    _est = _estimated_total_print_minutes(progress, state.remaining_time)
+                    _muted = _est is not None and _est < _min_minutes
+                    if _muted:
+                        logging.getLogger(__name__).debug(
+                            "Progress milestone %s%% muted for printer %s: estimated %.0f min < %s min floor",
+                            current_milestone,
+                            printer_id,
+                            _est,
+                            _min_minutes,
+                        )
 
-                # Capture camera snapshot for notification image attachment (no DB held).
-                image_data = await _capture_snapshot_for_notification(printer_id, printer, logging.getLogger(__name__))
+                if not _muted:
+                    printer_name = printer.name if printer else f"Printer {printer_id}"
+                    filename = state.subtask_name or state.gcode_file or "Unknown"
+                    # remaining_time is in minutes, convert to seconds for notification
+                    remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
 
-                # Notification send needs a session (provider/template lookups).
-                async with async_session() as db:
-                    await notification_service.on_print_progress(
-                        printer_id,
-                        printer_name,
-                        filename,
-                        current_milestone,
-                        db,
-                        remaining_time_seconds,
-                        image_data=image_data,
+                    # Capture camera snapshot for notification image attachment (no DB held).
+                    image_data = await _capture_snapshot_for_notification(
+                        printer_id, printer, logging.getLogger(__name__)
                     )
+
+                    # Notification send needs a session (provider/template lookups).
+                    async with async_session() as db:
+                        await notification_service.on_print_progress(
+                            printer_id,
+                            printer_name,
+                            filename,
+                            current_milestone,
+                            db,
+                            remaining_time_seconds,
+                            image_data=image_data,
+                        )
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Progress milestone notification failed: {e}")
     elif progress < 5:

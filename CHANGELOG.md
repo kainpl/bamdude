@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Added
+
+- **Progress milestones can be limited to long prints** (#28). A 30-minute job used to collect six notifications — plate cleared, first layer, 25%, 50%, 75%, done. A new setting under Settings → Notifications mutes just the three middle ones for prints estimated shorter than the minutes you choose (0 keeps today's behaviour). The duration is estimated at each milestone from the printer's own remaining-time report, so it needs no bookkeeping and survives restarts; when the printer reports no estimate, the notification is sent rather than guessed away. Applies to every notification channel equally, Telegram's per-chat subscriptions included.
+
 ### Fixed
 
 - **A finished print can no longer slip the next job past an unconfirmed plate.** Completion released the printer's queue claim ~70 ms before it armed the "clear the plate" gate, and a scheduler tick landing in that gap dispatched the next item over an uncleared plate. Seen live on an X2D printing batch copies: the premature dispatch then lost its freshly-uploaded 3MF to the finished print's own cleanup — same filename, byte-identical content, so every safety check honestly passed — and the printer refused with `0500-4002 Unsupported print file path`, stuck in FINISH until the 90 s watchdog failed the job. The gate now arms *before* the claim is released, and post-print cleanup refuses to touch any file a dispatch in flight has already registered as the next print — which also protects queues that run back-to-back copies with the plate confirmation switched off.

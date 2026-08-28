@@ -2238,6 +2238,10 @@ export default {
     currentVersion: 'Поточна версія',
     // Notifications
     bedCooledThreshold: 'Поріг охолодження столу',
+    progressMilestoneMinDuration: 'Проміжний прогрес лише для довгих друків',
+    progressMilestoneMinDurationDescription:
+      'Слати сповіщення 25/50/75% лише коли очікувана тривалість друку довша за це значення. 0 = слати завжди.',
+    progressMilestoneMinDurationUnit: 'хв',
     userNotificationsEnabled: 'Сповіщення користувачів',
     userNotificationsEnabledDescription: 'Увімкнути меню сповіщень користувачів та email сповіщення про події друку. Потребує розширеної автентифікації.',
     addProvider: 'Додати провайдер',

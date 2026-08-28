@@ -2226,6 +2226,10 @@ export default {
     currentVersion: 'Current Version',
     // Notifications
     bedCooledThreshold: 'Bed Cooled Threshold',
+    progressMilestoneMinDuration: 'Progress milestones only for long prints',
+    progressMilestoneMinDurationDescription:
+      'Send 25/50/75% progress notifications only when the print is estimated to run longer than this. 0 = always send.',
+    progressMilestoneMinDurationUnit: 'min',
     userNotificationsEnabled: 'User Notifications',
     userNotificationsEnabledDescription: 'Enable the user notifications menu and email notifications for print job events. Requires Advanced Authentication.',
     addProvider: 'Add Provider',
