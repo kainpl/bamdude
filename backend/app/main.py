@@ -957,6 +957,28 @@ def withdraw_expected_print(printer_id: int, filename: str) -> None:
         )
 
 
+def is_expected_print_file(printer_id: int, remote_path: str) -> bool:
+    """True when this path names the file a just-dispatched print is about to run.
+
+    Post-print cleanup and the next dispatch of the SAME file overlap in time
+    and in every identity check there is: same name, and — the file being the
+    same 3MF — byte-identical content, so the content proof passes too. Live
+    incident 2026-08-28 (X2D, batch copies): cleanup of the finished job
+    deleted ``/X.3mf`` 0.7 s after the next copy's print command referenced
+    it, and the printer answered 0500_4002 "Unsupported print file path".
+    ``register_expected_print`` runs before the print command goes out, so at
+    the moment cleanup reaches for a file this registry already knows whether
+    that name belongs to the NEXT job. Checked per destructive call, not at
+    candidate-list time — the registration can land mid-cleanup.
+    """
+    name = remote_path.rsplit("/", 1)[-1]
+    forms = {name}
+    for suffix in (".gcode.3mf", ".3mf"):
+        if name.endswith(suffix):
+            forms.add(name[: -len(suffix)])
+    return any((printer_id, f) in _expected_prints for f in forms)
+
+
 def register_macro_selection(printer_id: int, options: dict) -> None:
     """Register the per-print macro selection for *printer_id*.
 
@@ -5658,7 +5680,14 @@ async def on_print_complete(printer_id: int, data: dict):
                                         }
                                         for f in cache_files
                                     ],
-                                    wanted=derived_copy_names_wanted,
+                                    # Filtered at call time, not list-build time: a name the
+                                    # NEXT dispatch has since registered as its expected print
+                                    # is that job's working copy, not this job's leftover.
+                                    wanted={
+                                        n
+                                        for n in derived_copy_names_wanted
+                                        if not is_expected_print_file(printer_id, n)
+                                    },
                                     expected_hashes=expected_hashes,
                                     read_bytes=lambda p: download_file_bytes_async(
                                         printer.ip_address, printer.access_code, p, printer_model=printer.model
@@ -5710,6 +5739,13 @@ async def on_print_complete(printer_id: int, data: dict):
                         any_real_failure = False
                         any_not_found = False
                         for remote_3mf in threemf_candidates:
+                            if is_expected_print_file(printer_id, remote_3mf):
+                                logger.info(
+                                    "SD cleanup: leaving %s in place — a dispatch in flight has "
+                                    "registered it as the next print's file",
+                                    remote_3mf,
+                                )
+                                continue
                             deleted = False
                             for attempt in range(1, 4):
                                 try:
@@ -5756,6 +5792,13 @@ async def on_print_complete(printer_id: int, data: dict):
                     else:
                         # Move .3mf to /cache/
                         for remote_3mf in threemf_candidates:
+                            if is_expected_print_file(printer_id, remote_3mf):
+                                logger.info(
+                                    "SD cleanup: not moving %s — a dispatch in flight has "
+                                    "registered it as the next print's file",
+                                    remote_3mf,
+                                )
+                                continue
                             cache_3mf = f"/cache/{remote_3mf.lstrip('/')}"
                             moved = False
                             for attempt in range(1, 4):
@@ -5801,7 +5844,14 @@ async def on_print_complete(printer_id: int, data: dict):
                                 internal = transport_for(printer, INTERNAL)
                                 await remove_verified_copies(
                                     entries=[e.as_dict() for e in await internal.list_files("/")],
-                                    wanted=derived_copy_names_wanted,
+                                    # Filtered at call time, not list-build time: a name the
+                                    # NEXT dispatch has since registered as its expected print
+                                    # is that job's working copy, not this job's leftover.
+                                    wanted={
+                                        n
+                                        for n in derived_copy_names_wanted
+                                        if not is_expected_print_file(printer_id, n)
+                                    },
                                     expected_hashes=expected_hashes,
                                     read_bytes=internal.read_bytes,
                                     delete=internal.delete,
@@ -5945,6 +5995,62 @@ async def on_print_complete(printer_id: int, data: dict):
                     logger.debug(
                         "[SWAP] failed to remove swap_mode_change_table from pending for archive %s: %s", archive_id, e
                     )
+
+    # Arm the plate-clear gate if the printer is configured to require it and
+    # no swap path already cleared the plate. Persisted to DB so an Auto Off
+    # power cycle can't let the queue bypass the confirmation (#961).
+    #
+    # ⚠️ MUST run BEFORE the queue-item update below releases the printer's
+    # queue claim. This block used to sit at the very end of
+    # ``on_print_complete``, ~70 ms after ``set_queue_idle`` — and a
+    # ``check_queue`` tick threading that window saw "queue idle, state
+    # FINISH, gate unarmed" and dispatched the next item over an uncleared
+    # plate (live incident 2026-08-28: the premature dispatch then lost its
+    # uploaded 3MF to this print's own cleanup and died on 0500_4002). Both
+    # inputs are final here: ``archive_id`` is resolved at the top, and both
+    # ``_plate_auto_cleared_by_swap`` writers (swap_compatible check,
+    # change_table macro) run above this line.
+    if archive_id and not _plate_auto_cleared_by_swap:
+        try:
+            from backend.app.models.printer import Printer
+
+            async with async_session() as db:
+                _r = await db.execute(select(Printer.require_plate_clear).where(Printer.id == printer_id))
+                _require = _r.scalar_one_or_none()
+            if _require:
+                printer_manager.set_awaiting_plate_clear(printer_id, True)
+                logger.info("[PLATE] Armed awaiting_plate_clear gate for printer %s", printer_id)
+        except Exception as e:
+            logger.warning("[PLATE] Failed to arm awaiting_plate_clear: %s", e)
+    elif archive_id:
+        # The swap path cleared the plate for real — so RELEASE the gate, don't
+        # merely skip arming it. Skipping was the whole bug: the flag is
+        # persisted to ``printers.awaiting_plate_clear`` and restored at
+        # startup, so once anything armed it, a swap printer stayed gated
+        # forever. Every subsequent print logged "plate auto-cleared", left the
+        # flag standing, and the queue quietly refused to dispatch to that
+        # printer — quietly because the auto-queue distributor logs its
+        # per-tick decisions at DEBUG, so an INFO-level support bundle shows
+        # nothing wrong at all. Reported from a farm of three swap A1 Minis
+        # where the queue "just stopped moving" and clicking Clear Plate — the
+        # only other caller of this setter — started the prints.
+        #
+        # Two ways in: a print started from the printer's own screen (no
+        # dispatch, so no swap config is registered, so no auto-clear and the
+        # arm block above fires), or any cancelled / failed print.
+        #
+        # Safe to release, and provably: ``_plate_auto_cleared_by_swap`` is set
+        # in exactly two places and both require a successful print — the
+        # swap_compatible branch is guarded by ``_swap_status_ok``, and the
+        # change_table branch sets it only under ``if _sw_ok``, after the macro
+        # reports success. A failed, aborted or cancelled print reaches neither,
+        # so "the part is still on the bed" keeps its manual gate.
+        if printer_manager.is_awaiting_plate_clear(printer_id):
+            printer_manager.set_awaiting_plate_clear(printer_id, False)
+            logger.info(
+                "[PLATE] Released a stale awaiting_plate_clear gate for printer %s — the swap path cleared the plate",
+                printer_id,
+            )
 
     # Update queue item status early - must run before the archive_id early-return
     # so queue items don't get stuck in "printing" when archive lookup fails.
@@ -7060,54 +7166,8 @@ async def on_print_complete(printer_id: int, data: dict):
         )
         log_timing("Timelapse scan scheduled")
 
-    # Arm the plate-clear gate if the printer is configured to require it
-    # and no swap path already cleared the plate. Persisted to DB so an
-    # Auto Off power cycle can't let the queue bypass the confirmation (#961).
-    if archive_id and not _plate_auto_cleared_by_swap:
-        try:
-            # ⚠️ Imported here rather than relied on from further up: the name
-            # used to leak out of the cleanup block, which now runs in a task of
-            # its own and no longer puts anything in this scope.
-            from backend.app.models.printer import Printer
-
-            async with async_session() as db:
-                _r = await db.execute(select(Printer.require_plate_clear).where(Printer.id == printer_id))
-                _require = _r.scalar_one_or_none()
-            if _require:
-                printer_manager.set_awaiting_plate_clear(printer_id, True)
-                logger.info("[PLATE] Armed awaiting_plate_clear gate for printer %s", printer_id)
-        except Exception as e:
-            logger.warning("[PLATE] Failed to arm awaiting_plate_clear: %s", e)
-    elif archive_id:
-        # The swap path cleared the plate for real — so RELEASE the gate, don't
-        # merely skip arming it. Skipping was the whole bug: the flag is
-        # persisted to ``printers.awaiting_plate_clear`` and restored at
-        # startup, so once anything armed it, a swap printer stayed gated
-        # forever. Every subsequent print logged "plate auto-cleared", left the
-        # flag standing, and the queue quietly refused to dispatch to that
-        # printer — quietly because the auto-queue distributor logs its
-        # per-tick decisions at DEBUG, so an INFO-level support bundle shows
-        # nothing wrong at all. Reported from a farm of three swap A1 Minis
-        # where the queue "just stopped moving" and clicking Clear Plate — the
-        # only other caller of this setter — started the prints.
-        #
-        # Two ways in: a print started from the printer's own screen (no
-        # dispatch, so no swap config is registered, so no auto-clear and the
-        # arm block above fires), or any cancelled / failed print.
-        #
-        # Safe to release, and provably: ``_plate_auto_cleared_by_swap`` is set
-        # in exactly two places and both require a successful print — the
-        # swap_compatible branch is guarded by ``_swap_status_ok``, and the
-        # change_table branch sets it only under ``if _sw_ok``, after the macro
-        # reports success. A failed, aborted or cancelled print reaches neither,
-        # so "the part is still on the bed" keeps its manual gate.
-        if printer_manager.is_awaiting_plate_clear(printer_id):
-            printer_manager.set_awaiting_plate_clear(printer_id, False)
-            logger.info(
-                "[PLATE] Released a stale awaiting_plate_clear gate for printer %s — the swap path cleared the plate",
-                printer_id,
-            )
-
+    # (The plate-clear gate is armed/released ABOVE, before the queue-item
+    # update releases the printer's queue claim — see the comment there.)
     logger.info("[CALLBACK] on_print_complete finished for printer %s, archive %s", printer_id, archive_id)
 
 

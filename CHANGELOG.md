@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed
+
+- **A finished print can no longer slip the next job past an unconfirmed plate.** Completion released the printer's queue claim ~70 ms before it armed the "clear the plate" gate, and a scheduler tick landing in that gap dispatched the next item over an uncleared plate. Seen live on an X2D printing batch copies: the premature dispatch then lost its freshly-uploaded 3MF to the finished print's own cleanup — same filename, byte-identical content, so every safety check honestly passed — and the printer refused with `0500-4002 Unsupported print file path`, stuck in FINISH until the 90 s watchdog failed the job. The gate now arms *before* the claim is released, and post-print cleanup refuses to touch any file a dispatch in flight has already registered as the next print — which also protects queues that run back-to-back copies with the plate confirmation switched off.
+
 ## [0.5.5] - 2026-08-28
 
 Image: `ghcr.io/kainpl/bamdude:0.5.5` / `kainpl/bamdude:0.5.5` (`:latest` tracks this).
