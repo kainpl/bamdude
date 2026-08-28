@@ -214,6 +214,16 @@ class CommandContext:
     uplink: Uplink
     budget: InitVar[CameraAuditBudget | None] = None
     _camera_audit: CameraAuditBudget = field(init=False)
+    #: Cache slot for :mod:`~backend.app.services.cloud_link.remote_ops`'s own
+    #: per-connection audit budget. Typed ``Any`` and left ``None`` here — not
+    #: auto-created the way :attr:`camera_audit` is — because the budget's
+    #: class lives in ``remote_ops.py``, and that import runs one-way
+    #: (``remote_ops`` imports :class:`CommandContext`, never the reverse; see
+    #: that module's docstring). ``dispatch_remote_op`` creates the real
+    #: object on first use and caches it here via :meth:`cache_remote_op_audit`,
+    #: so the same instance — and its running count — carries across every
+    #: call made against this connection, exactly like ``camera_audit`` does.
+    _remote_op_audit: Any = field(init=False, default=None)
 
     def __post_init__(self, budget: CameraAuditBudget | None) -> None:
         self._camera_audit = budget or CameraAuditBudget(session_factory=self.session_factory)
@@ -222,6 +232,26 @@ class CommandContext:
     def camera_audit(self) -> CameraAuditBudget:
         """The connection's budget — always present, never ``None``."""
         return self._camera_audit
+
+    @property
+    def remote_op_audit(self) -> Any:
+        """The connection's remote-op audit budget, or ``None`` before first use.
+
+        ``None`` here does not mean "no bound" — it means nobody has dispatched
+        a remote op on this connection yet. See :meth:`cache_remote_op_audit`.
+        """
+        return self._remote_op_audit
+
+    def cache_remote_op_audit(self, budget: Any) -> None:
+        """Store the lazily-created remote-op audit budget for reuse.
+
+        Called by :mod:`~backend.app.services.cloud_link.remote_ops` the first
+        time it needs a budget for this connection. A second call would drop
+        whatever count the first budget was holding, so callers must check
+        :attr:`remote_op_audit` before creating a new one — which
+        ``dispatch_remote_op`` does.
+        """
+        self._remote_op_audit = budget
 
 
 #: A handler answers with the ``data`` half of the result and, optionally, work
