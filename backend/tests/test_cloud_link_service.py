@@ -406,8 +406,8 @@ class TestRequestSnapshot:
             await service.request_snapshot()
 
             # 3 is gone at once — an untick must take effect immediately. 9 is
-            # NOT added here: only ``build_snapshot`` may add, because only it
-            # checks that the printer is available.
+            # NOT added here: only ``build_snapshot_chunks`` may add, because
+            # only it checks that the printer is available.
             assert client.uplink.published == {7}
             assert client.snapshots_requested == 1
 

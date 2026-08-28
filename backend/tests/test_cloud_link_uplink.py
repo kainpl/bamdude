@@ -45,6 +45,7 @@ from backend.app.services.cloud_link.schemas import Temps, make_frame, parse_fra
 from backend.app.services.cloud_link.uplink import (
     BATCH_MAX_PRINTERS,
     EVENTS_MAXSIZE,
+    EVENTS_PER_FLUSH,
     SNAPSHOT_CHUNK_PRINTERS,
     STATUS_FIELDS,
     TEMPERATURE_FIELDS,
@@ -724,6 +725,12 @@ def test_an_overflowing_events_backlog_drops_the_oldest_without_raising():
     events backlog left unflushed for a very long time must drop its OLDEST
     entries, the same overflow policy the old unified queue used, now scoped
     to the one structure that can still overflow.
+
+    Drained over several flushes, not one — ``flush`` caps how many events it
+    emits per tick (:data:`EVENTS_PER_FLUSH`), so the 90 survivors of a
+    100-deep backlog take more than a single call to fully appear; the point
+    pinned here is what survives overall, not how many ticks that takes (a
+    dedicated test covers the per-tick split).
     """
     uplink = make_uplink({1})
 
@@ -732,10 +739,43 @@ def test_an_overflowing_events_backlog_drops_the_oldest_without_raising():
 
     assert uplink.dropped == 10
 
-    frames = uplink.flush()
-    finished = [f for f in frames if f.data.kind == "print_finished"]
+    finished = []
+    while uplink.pending:
+        finished.extend(f for f in uplink.flush() if f.data.kind == "print_finished")
+
     assert len(finished) == EVENTS_MAXSIZE
     assert finished[0].data.detail["status"] == "job-10", "the survivors start after the dropped ten"
+
+
+def test_flush_caps_events_per_tick_spreading_a_backlog_across_ticks():
+    """A long outage's WHOLE event backlog going out the moment the link is
+    back is itself a burst the portal never asked for — see
+    :data:`EVENTS_PER_FLUSH`. 50 queued events split 20 / 20 / 10 across three
+    flushes, in order, nothing dropped; and a dirty printer's own batch still
+    rides the SAME tick as its events, capped or not.
+    """
+    uplink = make_uplink({1}, min_interval_s=0.0)
+
+    for i in range(50):
+        uplink.feed(print_complete_message(1, status=f"job-{i}"))
+    uplink.feed(status_message(1))
+
+    assert uplink.dropped == 0, "well under EVENTS_MAXSIZE — nothing here should overflow"
+
+    first = uplink.flush()
+    first_events = [f for f in first if f.type == "event"]
+    first_batches = [f for f in first if f.type == "status_batch"]
+    assert len(first_events) == EVENTS_PER_FLUSH
+    assert [f.data.detail["status"] for f in first_events] == [f"job-{i}" for i in range(20)]
+    assert len(first_batches) == 1, "the dirty printer's own batch still rides this tick, capped events or not"
+
+    second = [f for f in uplink.flush() if f.type == "event"]
+    third = [f for f in uplink.flush() if f.type == "event"]
+
+    assert [len(second), len(third)] == [EVENTS_PER_FLUSH, 10]
+    assert [f.data.detail["status"] for f in second] == [f"job-{i}" for i in range(20, 40)]
+    assert [f.data.detail["status"] for f in third] == [f"job-{i}" for i in range(40, 50)]
+    assert uplink.pending == 0, "fully drained after three ticks"
 
 
 @pytest.mark.parametrize(
@@ -1082,6 +1122,34 @@ async def test_1200_published_printers_split_into_three_chunks_sharing_one_sync_
     assert all(c.data.of == 3 for c in chunks)
     assert [len(c.data.printers) for c in chunks] == [SNAPSHOT_CHUNK_PRINTERS, SNAPSHOT_CHUNK_PRINTERS, 200]
     assert sum(len(c.data.printers) for c in chunks) == total
+
+
+async def test_a_mid_connection_resync_carries_the_running_seq_not_zero(db_session: AsyncSession):
+    """``base_seq`` on a resync act is the connection's RUNNING ``status_batch``
+    count, never 0 — only :meth:`Uplink.reset_transient` (an actual reconnect)
+    restarts the numbering. The live portal keys its ``lastSeq`` off this
+    value, so a resync that reported 0 here would read as the farm rewinding
+    every batch it had already sent, and ``seq`` must keep counting past the
+    act afterwards too — a resync is not a second connection.
+    """
+    await _add_printer(db_session, 1, "X2D Front-Left", "X2D")
+    await _publish(db_session, 1)
+
+    uplink = make_uplink({1}, min_interval_s=0.0)
+    uplink.feed(status_message(1))
+    first = [f for f in uplink.flush() if f.type == "status_batch"]
+    assert [f.data.seq for f in first] == [1], "sanity check on the pre-resync seq"
+
+    uplink.feed(status_message(1, progress=50.0))
+    second = [f for f in uplink.flush() if f.type == "status_batch"]
+    assert [f.data.seq for f in second] == [2]
+
+    chunks = await uplink.build_snapshot_chunks(db_session)
+    assert all(c.data.base_seq == 2 for c in chunks), "the resync's act carries the running seq, not a reset one"
+
+    uplink.feed(status_message(1, progress=75.0))
+    third = [f for f in uplink.flush() if f.type == "status_batch"]
+    assert [f.data.seq for f in third] == [3], "seq keeps counting past the resync — it is not reset mid-connection"
 
 
 async def test_a_small_farm_snapshot_is_one_chunk_of_one(db_session: AsyncSession):

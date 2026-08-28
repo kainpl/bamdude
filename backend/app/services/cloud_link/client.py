@@ -296,6 +296,11 @@ class CloudLinkClient:
         the pump exists only while a connection does, and a reconnect sends a
         snapshot of its own, which is why :meth:`_after_hello` clears the flag
         instead of letting it fire a redundant second one.
+
+        Also the READER's own path for a ``resync`` command's post-action —
+        see :meth:`_handle_cmd`. It asks rather than sends directly for the
+        same reason an outside caller does: only the pump may build and send
+        an act mid-connection, see the ⚠️ note on :meth:`_send_snapshot`.
         """
         self._snapshot_requested.set()
 
@@ -664,7 +669,11 @@ class CloudLinkClient:
         if post_action is None:
             return None
         if post_action.kind == "send_snapshot":
-            await self._send_snapshot(ws)
+            # NOT ``await self._send_snapshot(ws)`` here — see the ⚠️ atomicity
+            # note on ``_send_snapshot``. Mid-connection, only the pump task
+            # may build and send an act; the reader only asks for one, exactly
+            # like :meth:`request_snapshot` already does for an external caller.
+            self.request_snapshot()
         elif post_action.kind == "teardown_revoked":
             return _REVOKED
         elif post_action.kind == "upload_snapshot":
@@ -802,18 +811,46 @@ class CloudLinkClient:
         ``base_seq``, so the farm's very next batch reads to the portal as a
         gap — a self-inflicted resync loop, not a lost message.
 
-        There is no explicit lock scoping this whole for-loop, and none is
-        added: each ``await
-        self._send(ws, frame)`` is only the one uncontended lock acquisition
-        and one small local ``ws.send_str`` — neither actually suspends back to
-        the event loop under ordinary conditions — so nothing else queued on
-        the SAME ``_send_lock`` (the heartbeat, the pump's own flush) gets a
-        turn between two chunks. This holds because nothing here does more
-        than that, not because of a guarantee asyncio makes generally — do not
-        add a real await (a sleep, a second query, backpressure-prone I/O)
-        inside this loop without re-checking
-        ``test_no_status_batch_interleaves_the_chunks_of_one_snapshot_act``,
-        which fails the moment a genuine yield point opens between two chunks.
+        ⚠️ **The atomicity this needs comes from single ownership, not from a
+        lock.** A ``snapshot_chunk`` act is built and sent from exactly ONE
+        place mid-connection — the pump's own tick (:meth:`_pump_loop`), which
+        calls this only after that same tick's ``flush()`` has already fully
+        returned. Nothing else may call this mid-connection: :meth:`_handle_cmd`
+        answers a ``resync`` command's ``send_snapshot`` post-action with
+        :meth:`request_snapshot`, never a direct call here — see that method's
+        comment. (The one other caller, :meth:`_after_hello`, is fine calling
+        this directly: it runs before ``_live`` starts the pump task, so there
+        is no second sender to race yet.)
+
+        That is not a style preference — this method used to be called
+        straight from the READER task on ``resync``, concurrently with the
+        pump's own ``flush()``, and a real per-frame ``_send_lock`` did NOT
+        make that safe:
+
+        1. Under WebSocket backpressure ``ws.send_str`` genuinely suspends
+           (``_drain_helper``) — a chunk can be ~100 KB, past aiohttp's 64 KB
+           write-buffer high-water mark — and the lock is FIFO, so a queued
+           pump send got scheduled BETWEEN two chunks of the reader's act. The
+           lock only ever serialised one SEND; it never serialised one ACT.
+        2. Independent of backpressure: ``base_seq`` is read at the START of
+           :meth:`Uplink.build_snapshot_chunks`, but this method's ``async
+           with self._session_factory()`` block still has to EXIT — a real
+           await — before the for-loop below sends a single chunk. A
+           ``flush()`` landing in that window bumped ``self._seq`` and put a
+           batch at ``base_seq + 1`` on the wire before the act's own chunks
+           arrived — the identical rollback-to-``base_seq`` damage described
+           above, arriving from the other direction.
+
+        Making the pump the sole owner of both ``flush()`` and this method
+        closes both: the next ``flush()`` cannot run until the ``await`` that
+        calls this method returns, because they now live in the SAME task's
+        sequential tick loop, not two tasks racing one lock. This is not a
+        claim that one ``await self._send(ws, frame)`` below is itself atomic
+        — it is not — only that nothing else is left standing that could
+        start a SECOND act or a status batch while this one is mid-flight.
+        ``test_no_status_batch_interleaves_the_chunks_of_one_snapshot_act``
+        pins this end-to-end with a genuinely multi-chunk act sent alongside a
+        continuously-dirty printer.
 
         ⚠️ **A resync's chunks can still carry one bounded-stale reading.** A
         printer that is dirty but still inside its throttle window survives

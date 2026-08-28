@@ -123,6 +123,16 @@ class HelloErr(_Base):
 
 # --- telemetry -------------------------------------------------------------
 
+# ⚠️ **``Snapshot``/``Status`` below are LEGACY, superseded by
+# ``StatusBatch``/``SnapshotChunk`` further down.** The delta-transport rework
+# replaced a single unbounded ``snapshot`` (one frame, every printer, no size
+# bound) and a single ``status`` (one printer, one frame, no coalescing) with
+# the chunked/batched pair — see :mod:`~backend.app.services.cloud_link.uplink`.
+# This farm no longer emits either class; both are kept only as a contract
+# mirror (the golden fixtures under ``backend/tests/fixtures/cloud_link/``
+# still exercise them, and an older agent or a portal built against the prior
+# shape may still send or expect one). New code should never construct either.
+
 
 class SnapshotData(_Model):
     printers: list[UplinkPrinter]
@@ -158,6 +168,12 @@ class Heartbeat(_Base):
     data: dict = {}
 
 
+# The coalescing counterpart to the legacy ``status`` above: one printer's
+# reading, coalesced with whatever else changed the same tick, into a batch of
+# up to BATCH_MAX_PRINTERS. ``seq`` is scoped to ONE connection (see
+# ``Uplink._seq`` / ``reset_transient``) and orders batches within it — the
+# portal keys ``lastSeq`` off it, so a gap or an out-of-order arrival reads as
+# a resync trigger, not silent corruption.
 class StatusBatchData(_Model):
     seq: Annotated[int, Field(ge=1)]
     printers: list[UplinkPrinter]
@@ -168,6 +184,14 @@ class StatusBatch(_Base):
     data: StatusBatchData
 
 
+# The coalescing counterpart to the legacy ``snapshot`` above: a farm past
+# SNAPSHOT_CHUNK_PRINTERS splits into several of these sharing one ``sync_id``.
+# ``chunk``/``of`` are 1-based; deliberately NOT cross-validated here
+# (``chunk <= of``) — the portal's own zod schema carries no such check
+# either, and a stricter one here than the wire contract enforces would break
+# byte-parity with the golden fixtures the moment a hand-authored one exercises
+# an edge case. ``base_seq`` is the ``status_batch`` sequence this act is
+# consistent with — see ``Uplink.build_snapshot_chunks``.
 class SnapshotChunkData(_Model):
     sync_id: Annotated[str, Field(min_length=1)]
     chunk: Annotated[int, Field(ge=1)]

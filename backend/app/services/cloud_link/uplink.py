@@ -126,6 +126,22 @@ SNAPSHOT_CHUNK_PRINTERS = 500
 #: genuinely lost, not merely stale.
 EVENTS_MAXSIZE = 100
 
+#: How many queued events one :meth:`Uplink.flush` call may emit, however many
+#: are actually waiting. Events go out AHEAD of every status batch that same
+#: tick (see :meth:`flush`), so an uncapped flush after a long outage could put
+#: the full backlog on the wire before the first status a portal has been
+#: waiting for — at the full :data:`EVENTS_MAXSIZE`, plus that tick's own
+#: status batches, worst-case first-10s-post-reconnect traffic runs to roughly
+#: 111 of the portal's own 120-frame/10s budget at a 500-printer farm, and the
+#: portal's ingest is reported to break outright around 600-800 events in one
+#: act — an order of magnitude under the thousands-of-printers scale this farm
+#: is meant to reach. The remainder is stale by definition (it waited out the
+#: whole outage already), so spreading it across a few more ticks costs
+#: nothing anyone would notice. Whoever next raises ``EVENTS_MAXSIZE`` or
+#: :data:`BATCH_MAX_PRINTERS` should re-run this math against the new numbers
+#: before assuming this cap still covers them.
+EVENTS_PER_FLUSH = 20
+
 #: Seconds between two ``status_batch`` frames for the SAME printer, until the
 #: portal says otherwise in ``hello_ok``. Assign to :attr:`Uplink.min_interval_s`
 #: when it does.
@@ -376,8 +392,9 @@ class Uplink:
     # -------------------------------------------------------------- the flush
 
     def flush(self) -> list[AnyFrame]:
-        """This tick's frames, in order: every event first, then a batch per
-        :data:`BATCH_MAX_PRINTERS` published, unthrottled, dirty printers.
+        """This tick's frames, in order: up to :data:`EVENTS_PER_FLUSH` events
+        first, then a batch per :data:`BATCH_MAX_PRINTERS` published,
+        unthrottled, dirty printers.
 
         Events go first and unconditionally — see the module docstring on why
         a connection edge's event must precede the batch that carries its
@@ -385,6 +402,17 @@ class Uplink:
         **stays dirty**: it is neither popped nor batched, so the next flush
         sees it again with whatever is newest by then. Only a dirty printer
         that is emitted (batched, or as an edge) or unpublished is popped.
+
+        ⚠️ **The event backlog is capped per-tick, not just in total.** A
+        healthy link never has more than a handful of events queued at once;
+        the ones that pile up are the ones a long outage produced, and the
+        WHOLE backlog going out in a single flush the moment the link comes
+        back is itself a burst the portal did not ask for — see
+        :data:`EVENTS_PER_FLUSH` for the arithmetic. Anything past the cap
+        simply stays queued: it is popped on a LATER tick, in the same order,
+        never dropped by this — only :attr:`_events`'s own bound
+        (:data:`EVENTS_MAXSIZE`) drops anything, and only the oldest, before it
+        ever reaches here.
 
         ⚠️ **One printer's failure cannot cost the tick.** Building a printer's
         entry is wrapped per-printer, not around the whole loop: an exception
@@ -397,8 +425,10 @@ class Uplink:
         Never touches the database — see the module docstring.
         """
         frames: list[AnyFrame] = []
-        while self._events:
+        popped = 0
+        while self._events and popped < EVENTS_PER_FLUSH:
             frame = self._normalize_event(self._events.popleft())
+            popped += 1
             if frame is not None:
                 frames.append(frame)
 

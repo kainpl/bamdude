@@ -154,8 +154,8 @@ async def set_up(
         await session.commit()
 
     uplink = Uplink(manager=FakeManager())
-    # What ``build_snapshot`` would have left behind: the publish set as it
-    # stood at connect time.
+    # What ``build_snapshot_chunks`` would have left behind: the publish set
+    # as it stood at connect time.
     uplink.set_publish_set({printer_id} if published else set())
     return uplink
 
@@ -271,8 +271,8 @@ async def test_a_printer_no_longer_available_is_refused_though_the_allowlist_sti
 
     The in-memory publish set is only as current as the last snapshot, so a
     printer archived a second ago would still be in it. ``is_active AND NOT
-    archived`` — the same definition ``build_snapshot`` filters on — is what
-    actually decides, and it is read from the database at capture time.
+    archived`` — the same definition ``build_snapshot_chunks`` filters on — is
+    what actually decides, and it is read from the database at capture time.
     """
     portal, url = await upload_portal()
     uplink = await set_up(session_factory, url, **{field: value})

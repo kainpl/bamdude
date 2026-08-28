@@ -568,11 +568,15 @@ async def test_a_snapshot_asked_for_while_the_link_was_down_is_not_sent_twice(se
 
 
 async def test_no_status_batch_interleaves_the_chunks_of_one_snapshot_act(session_factory, portal, monkeypatch):
-    """A cross-repo invariant, from the portal's own review: it does not set a
-    sync's ``lastSeq`` until that act's LAST chunk arrives, and drops any
-    ``status_batch`` it sees while a sync is still open. So every chunk of one
-    ``snapshot_chunk`` act must reach the wire back-to-back — nothing of
-    another kind, ``status_batch`` above all, may land between two of them.
+    """A cross-repo invariant, from the portal's own review: a ``status_batch``
+    wedged between two chunks of one act is not dropped — it APPLIES, seq
+    consecutive with whatever the portal already has. The damage lands when
+    the act's LAST chunk arrives moments later: completion overwrites the
+    printer set with that now-stale snapshot and rolls ``lastSeq`` back to
+    ``base_seq``, so the farm's very next batch reads to the portal as a gap —
+    a self-inflicted resync loop. So every chunk of one ``snapshot_chunk`` act
+    must reach the wire back-to-back — nothing of another kind, ``status_batch``
+    above all, may land between two of them.
 
     Forced to a genuinely multi-chunk act by shrinking the chunk size to one
     printer; a printer is kept dirty for the whole test so the pump has
@@ -647,8 +651,8 @@ async def test_no_status_batch_interleaves_the_chunks_of_one_snapshot_act(sessio
         ]
         span = instance.frames[positions[0] : positions[-1] + 1]
         assert all(f["type"] == "snapshot_chunk" for f in span), (
-            f"act {sid} was split by {[f['type'] for f in span]} — "
-            f"a status_batch mid-act is one the portal would silently drop"
+            f"act {sid} was split by {[f['type'] for f in span]} — a status_batch mid-act applies, then gets "
+            f"rolled back by this act's own completion, turning the farm's next batch into an apparent gap"
         )
         assert len({f["data"]["sync_id"] for f in span}) == 1, (
             f"act {sid}'s span contains a chunk from another sync_id — two acts' chunks "
