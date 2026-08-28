@@ -3725,15 +3725,18 @@ export function FileManagerPage() {
       )}
       {showNewFolderModal && (
         <NewFolderModal
-          // A virtual folder cannot live inside an external share (it would
-          // be a phantom in a mirrored filesystem — and the backend refuses
-          // it). With an external selected, the new folder goes to the root,
-          // and the modal SAYS so — the freshly linked external is
-          // auto-selected, which is exactly how folders used to land there
-          // unnoticed.
-          parentId={selectedFolder?.is_external ? null : selectedFolderId}
-          parentName={selectedFolder?.is_external ? null : (selectedFolder?.name ?? null)}
-          externalRedirected={!!selectedFolder?.is_external}
+          // Inside a WRITABLE external the backend creates a real directory
+          // on the share (mirroring upload semantics). A READ-ONLY external
+          // cannot take one, so the folder goes to the library root and the
+          // modal says so — the freshly linked external is auto-selected,
+          // which is exactly how folders used to land somewhere unnoticed.
+          parentId={selectedFolder?.is_external && selectedFolder.external_readonly ? null : selectedFolderId}
+          parentName={
+            selectedFolder?.is_external && selectedFolder.external_readonly
+              ? null
+              : (selectedFolder?.name ?? null)
+          }
+          externalRedirected={!!(selectedFolder?.is_external && selectedFolder.external_readonly)}
           onClose={() => setShowNewFolderModal(false)}
           onSave={(data) => createFolderMutation.mutate(data)}
           isLoading={createFolderMutation.isPending}

@@ -1095,15 +1095,67 @@ async def create_folder(
         parent = parent_result.scalar_one_or_none()
         if not parent:
             raise HTTPException(status_code=404, detail="Parent folder not found")
-        # An external folder's children mirror a real filesystem the scanner
-        # owns. A virtual folder in that tree is a phantom: it looks like part
-        # of the share but its files live in managed storage — and the freshly
-        # linked external is AUTO-SELECTED, so "New folder" right after
-        # linking used to land here silently (measured live 2026-08-28).
+        # An external folder mirrors a real filesystem, so a folder created
+        # inside it must be a REAL directory on the share — a virtual row
+        # would be a phantom that looks like part of the NAS while its files
+        # live in managed storage (and the freshly linked external is
+        # AUTO-SELECTED, so "New folder" right after linking used to land
+        # here silently — measured live 2026-08-28). Same gate ladder as
+        # uploads into externals (#1112): readonly → 403, broken path → 400.
         if parent.is_external:
-            raise HTTPException(
-                status_code=422,
-                detail="Folders cannot be created inside an external folder — it mirrors a real filesystem.",
+            if parent.external_readonly:
+                raise HTTPException(status_code=403, detail="Cannot create a folder in a read-only external folder")
+            if not parent.external_path:
+                raise HTTPException(status_code=400, detail="External folder has no configured path")
+            ext_dir = Path(parent.external_path)
+            if not ext_dir.exists() or not ext_dir.is_dir():
+                raise HTTPException(status_code=400, detail=f"External path is not accessible: {parent.external_path}")
+            if not os.access(ext_dir, os.W_OK):
+                raise HTTPException(status_code=400, detail=f"External path is not writable: {parent.external_path}")
+            dest = (ext_dir / data.name).resolve()  # SEC-PATH-OK: containment guard below raises HTTP 400 on traversal
+            try:
+                dest.relative_to(ext_dir.resolve())
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid folder name") from None
+            if dest.parent != ext_dir.resolve():
+                # A name with separators would silently nest deeper than asked.
+                raise HTTPException(status_code=400, detail="Invalid folder name")
+            if dest.exists():
+                raise HTTPException(status_code=409, detail="A folder with this name already exists on the share")
+            try:
+                dest.mkdir()
+            except OSError as exc:
+                raise HTTPException(status_code=400, detail=f"Could not create the directory: {exc}") from None
+            # The same row shape the scanner creates for an on-disk subfolder
+            # (library_scan): the next walk recognises it as its own instead
+            # of treating it as a stranger.
+            folder = LibraryFolder(
+                name=data.name,
+                parent_id=parent.id,
+                is_external=True,
+                external_path=str(dest),
+                external_readonly=False,
+                external_show_hidden=parent.external_show_hidden,
+                archive_id=data.archive_id,
+            )
+            folder.projects = await _resolve_projects_for_assign(db, data.project_ids)
+            db.add(folder)
+            await db.commit()
+            return FolderResponse(
+                id=folder.id,
+                name=folder.name,
+                parent_id=folder.parent_id,
+                projects=_project_refs(folder.projects),
+                archive_id=folder.archive_id,
+                archive_name=None,
+                is_external=True,
+                external_path=folder.external_path,
+                external_readonly=folder.external_readonly,
+                external_show_hidden=folder.external_show_hidden,
+                file_count=0,
+                latest_activity_at=folder_activity_at(folder),
+                created_at=folder.created_at,
+                updated_at=folder.updated_at,
             )
 
     # m044: validate every requested project exists in one IN-list query.

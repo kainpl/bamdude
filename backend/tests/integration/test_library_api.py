@@ -69,21 +69,47 @@ class TestLibraryFoldersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_virtual_folder_refused_inside_an_external(self, async_client: AsyncClient, db_session):
-        """An external folder mirrors a real filesystem the scanner owns; a
-        virtual child there is a phantom — and the freshly linked external is
-        auto-selected in the UI, which is exactly how folders used to land
-        there unnoticed (live, 2026-08-28)."""
+    async def test_folder_in_a_writable_external_is_a_real_directory(
+        self, async_client: AsyncClient, db_session, tmp_path
+    ):
+        """Inside a writable external the folder is a REAL directory on the
+        share, registered in the scanner's own row shape — a virtual row
+        there would be a phantom that looks like part of the NAS while its
+        files live in managed storage (live, 2026-08-28)."""
         from backend.app.models.library import LibraryFolder
 
-        ext = LibraryFolder(name="NAS", is_external=True, external_path="/mnt/nas")
+        ext = LibraryFolder(name="NAS", is_external=True, external_path=str(tmp_path), external_readonly=False)
+        db_session.add(ext)
+        await db_session.commit()
+        await db_session.refresh(ext)
+
+        response = await async_client.post("/api/v1/library/folders", json={"name": "parts", "parent_id": ext.id})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["is_external"] is True
+        assert body["external_path"] == str(tmp_path / "parts")
+        assert (tmp_path / "parts").is_dir()
+
+        # Same name again: the directory exists — refused, not duplicated.
+        repeat = await async_client.post("/api/v1/library/folders", json={"name": "parts", "parent_id": ext.id})
+        assert repeat.status_code == 409
+
+        # A separator-bearing name must not nest deeper than asked.
+        sneaky = await async_client.post("/api/v1/library/folders", json={"name": "a/b", "parent_id": ext.id})
+        assert sneaky.status_code == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_folder_refused_in_a_readonly_external(self, async_client: AsyncClient, db_session, tmp_path):
+        from backend.app.models.library import LibraryFolder
+
+        ext = LibraryFolder(name="NAS-RO", is_external=True, external_path=str(tmp_path), external_readonly=True)
         db_session.add(ext)
         await db_session.commit()
         await db_session.refresh(ext)
 
         response = await async_client.post("/api/v1/library/folders", json={"name": "phantom", "parent_id": ext.id})
-        assert response.status_code == 422
-        assert "external" in response.json()["detail"].lower()
+        assert response.status_code == 403
 
     async def test_get_folder(self, async_client: AsyncClient, folder_factory, db_session):
         """Verify single folder can be retrieved."""

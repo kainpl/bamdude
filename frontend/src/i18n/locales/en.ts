@@ -4453,7 +4453,7 @@ export default {
     uploadFiles: 'Upload Files',
     newFolder: 'New Folder',
     newFolderDestination: 'Will be created in: {{destination}}',
-    newFolderExternalRedirect: 'An external folder is selected — it mirrors a real filesystem, so the new folder goes to the library root instead.',
+    newFolderExternalRedirect: 'A read-only external folder is selected — the new folder goes to the library root instead.',
     folderName: 'Folder Name',
     folderNamePlaceholder: 'e.g., Functional Parts',
     filterByUser: 'Filter by user',
