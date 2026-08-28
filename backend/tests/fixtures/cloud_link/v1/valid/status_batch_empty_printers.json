@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "type": "status_batch",
+  "id": "f-status-batch-empty",
+  "ts": "2026-08-24T12:00:00Z",
+  "data": {
+    "seq": 1,
+    "printers": []
+  }
+}

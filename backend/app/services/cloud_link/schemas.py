@@ -158,6 +158,29 @@ class Heartbeat(_Base):
     data: dict = {}
 
 
+class StatusBatchData(_Model):
+    seq: Annotated[int, Field(ge=1)]
+    printers: list[UplinkPrinter]
+
+
+class StatusBatch(_Base):
+    type: Literal["status_batch"]
+    data: StatusBatchData
+
+
+class SnapshotChunkData(_Model):
+    sync_id: Annotated[str, Field(min_length=1)]
+    chunk: Annotated[int, Field(ge=1)]
+    of: Annotated[int, Field(ge=1)]
+    base_seq: Annotated[int, Field(ge=0)]
+    printers: list[UplinkPrinter]
+
+
+class SnapshotChunk(_Base):
+    type: Literal["snapshot_chunk"]
+    data: SnapshotChunkData
+
+
 # --- commands --------------------------------------------------------------
 
 
@@ -196,7 +219,9 @@ class CmdResult(_Base):
     data: CmdResultData
 
 
-AnyFrame = Hello | HelloOk | HelloErr | Snapshot | Status | Event | Heartbeat | Cmd | CmdResult
+AnyFrame = (
+    Hello | HelloOk | HelloErr | Snapshot | Status | Event | Heartbeat | StatusBatch | SnapshotChunk | Cmd | CmdResult
+)
 Frame = Annotated[AnyFrame, Field(discriminator="type")]
 
 _adapter: TypeAdapter[AnyFrame] = TypeAdapter(Frame)
