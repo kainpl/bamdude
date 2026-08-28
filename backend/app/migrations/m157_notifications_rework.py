@@ -35,7 +35,7 @@ a ``DEBUG=true`` re-run after the fact is a no-op.
 
 from sqlalchemy import text
 
-from backend.app.migrations.helpers import add_column, column_exists, drop_column
+from backend.app.migrations.helpers import add_column, column_exists, drop_column, recreate_table
 
 version = 157
 name = "notifications_rework"
@@ -123,7 +123,9 @@ async def upgrade(conn):
                 "WHERE printer_id IS NOT NULL AND printer_ids IS NULL"
             )
         )
-        await drop_column(conn, "notification_providers", "printer_id")
+        # The DROP itself happens at the very end (see the recreate below):
+        # ``printer_id`` sits inside the table's FOREIGN KEY clause, and
+        # SQLite's ALTER DROP COLUMN refuses a column named by an FK.
 
     # --- 4: subscriptions become one JSON list ---------------------------
     await add_column(conn, "notification_providers", "subscribed_events TEXT")
@@ -150,3 +152,47 @@ async def upgrade(conn):
 
     for col in _LEGACY_EVENT_COLUMNS:
         await drop_column(conn, "notification_providers", col)
+
+    # --- 3b, the drop: retire ``printer_id`` via table recreate ----------
+    # It cannot go through ``drop_column``: the column is named in the
+    # table's FOREIGN KEY clause and SQLite's ALTER DROP COLUMN refuses
+    # (measured live 2026-08-29). Runs LAST so the DDL below is simply the
+    # table's final shape. Fresh installs skip (create_all never makes the
+    # column), and so does a DEBUG re-run.
+    if await column_exists(conn, "notification_providers", "printer_id"):
+        keep = (
+            "id, name, provider_type, enabled, config, quiet_hours_enabled, quiet_hours_start, "
+            "quiet_hours_end, daily_digest_enabled, daily_digest_time, last_success, last_error, "
+            "last_error_at, created_at, updated_at, progress_min_duration_minutes, subscribed_events, "
+            "printer_ids"
+        )
+        await recreate_table(
+            conn,
+            "notification_providers",
+            """CREATE TABLE notification_providers (
+                id INTEGER NOT NULL,
+                name VARCHAR(100) NOT NULL,
+                provider_type VARCHAR(50) NOT NULL,
+                enabled BOOLEAN,
+                config TEXT NOT NULL,
+                quiet_hours_enabled BOOLEAN,
+                quiet_hours_start VARCHAR(5),
+                quiet_hours_end VARCHAR(5),
+                daily_digest_enabled BOOLEAN,
+                daily_digest_time VARCHAR(5),
+                last_success DATETIME,
+                last_error TEXT,
+                last_error_at DATETIME,
+                created_at DATETIME,
+                updated_at DATETIME,
+                progress_min_duration_minutes INTEGER,
+                subscribed_events TEXT,
+                printer_ids TEXT,
+                PRIMARY KEY (id)
+            )""",
+            keep,
+        )
+        # The recreate does not carry indexes over.
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_notification_providers_id ON notification_providers (id)")
+        )
