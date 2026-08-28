@@ -32,7 +32,7 @@ async def test_a_printer_scoped_provider_does_not_receive_sensor_alerts(db_sessi
     asked for that printer's news."""
     from backend.app.services.notification_service import NotificationService
 
-    await _provider(db_session, name="bound", on_sensor_threshold=True, printer_id=1)
+    await _provider(db_session, name="bound", on_sensor_threshold=True, printer_ids=[1])
 
     service = NotificationService()
     providers = await service._get_providers_for_event(db_session, "on_sensor_threshold", unscoped_only=True)

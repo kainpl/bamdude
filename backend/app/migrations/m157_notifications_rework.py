@@ -14,6 +14,10 @@ unreleased line — none ever shipped, so the freeze rule does not apply):
    NULL = all printers), covering notifications AND bot control. An
    existing provider-level binding is copied down onto the chats and
    cleared; ``_coerce_telegram_provider_fields`` keeps it cleared.
+3b. **Per-provider printer scope** — the non-telegram channels get the
+   same all/one/several shape: ``notification_providers.printer_ids``
+   (JSON list, NULL = all) replaces the single-printer ``printer_id``
+   column, an existing binding becoming a one-element list.
 4. **One JSON subscription list instead of 34 per-event boolean columns**
    — ``notification_providers.subscribed_events`` (``on_*`` keys, the API
    contract's own names). The backfill materialises each row's current
@@ -88,22 +92,38 @@ async def upgrade(conn):
     await add_column(conn, "telegram_chats", "printer_ids TEXT")
 
     # Copy a telegram provider's printer binding down onto the chats, then
-    # clear it (only where the chat has no scope of its own yet).
-    result = await conn.execute(
-        text(
-            "SELECT printer_id FROM notification_providers "
-            "WHERE provider_type = 'telegram' AND printer_id IS NOT NULL "
-            "ORDER BY id LIMIT 1"
-        )
-    )
-    row = result.first()
-    if row and row[0] is not None:
-        await conn.execute(
-            text("UPDATE telegram_chats SET printer_ids = :scope WHERE printer_ids IS NULL").bindparams(
-                scope=f"[{int(row[0])}]"
+    # clear it (only where the chat has no scope of its own yet). Guarded:
+    # on a fresh replay the legacy ``printer_id`` column no longer exists
+    # (part 3b below retires it, and create_all never makes it).
+    if await column_exists(conn, "notification_providers", "printer_id"):
+        result = await conn.execute(
+            text(
+                "SELECT printer_id FROM notification_providers "
+                "WHERE provider_type = 'telegram' AND printer_id IS NOT NULL "
+                "ORDER BY id LIMIT 1"
             )
         )
-    await conn.execute(text("UPDATE notification_providers SET printer_id = NULL WHERE provider_type = 'telegram'"))
+        row = result.first()
+        if row and row[0] is not None:
+            await conn.execute(
+                text("UPDATE telegram_chats SET printer_ids = :scope WHERE printer_ids IS NULL").bindparams(
+                    scope=f"[{int(row[0])}]"
+                )
+            )
+        await conn.execute(text("UPDATE notification_providers SET printer_id = NULL WHERE provider_type = 'telegram'"))
+
+    # --- 3b: per-provider printer scope (non-telegram channels) ----------
+    await add_column(conn, "notification_providers", "printer_ids TEXT")
+    if await column_exists(conn, "notification_providers", "printer_id"):
+        # '[' || id || ']' is valid JSON for a one-element int list and works
+        # on both dialects (PG's textanycat casts the integer).
+        await conn.execute(
+            text(
+                "UPDATE notification_providers SET printer_ids = '[' || printer_id || ']' "
+                "WHERE printer_id IS NOT NULL AND printer_ids IS NULL"
+            )
+        )
+        await drop_column(conn, "notification_providers", "printer_id")
 
     # --- 4: subscriptions become one JSON list ---------------------------
     await add_column(conn, "notification_providers", "subscribed_events TEXT")

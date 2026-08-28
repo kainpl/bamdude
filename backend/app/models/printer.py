@@ -115,7 +115,6 @@ class Printer(Base):
     # hardware that outlive the printer they were wired to, so deleting the
     # printer unbinds them rather than deleting them.
     smart_sensors: Mapped[list["SmartSensor"]] = relationship(back_populates="printer")
-    notification_providers: Mapped[list["NotificationProvider"]] = relationship(back_populates="printer")
     maintenance_items: Mapped[list["PrinterMaintenance"]] = relationship(
         back_populates="printer", cascade="all, delete-orphan"
     )
@@ -131,7 +130,6 @@ class Printer(Base):
 from backend.app.models.ams_history import AMSSensorHistory  # noqa: E402
 from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.maintenance import PrinterMaintenance  # noqa: E402
-from backend.app.models.notification import NotificationProvider  # noqa: E402
 from backend.app.models.printer_sensor_history import PrinterSensorHistory  # noqa: E402, F401
 from backend.app.models.smart_plug import SmartPlug  # noqa: E402
 from backend.app.models.smart_sensor import SmartSensor  # noqa: E402

@@ -97,14 +97,14 @@ class TestNotificationsAPI:
             "name": "Printer Ntfy",
             "provider_type": "ntfy",
             "config": {"server": "https://ntfy.sh", "topic": "test-topic"},
-            "printer_id": printer.id,
+            "printer_ids": [printer.id],
         }
 
         response = await async_client.post("/api/v1/notifications/", json=data)
 
         assert response.status_code == 200
         result = response.json()
-        assert result["printer_id"] == printer.id
+        assert result["printer_ids"] == [printer.id]
 
     # ========================================================================
     # Get single endpoint

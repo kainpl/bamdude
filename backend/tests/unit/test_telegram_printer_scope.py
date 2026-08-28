@@ -65,18 +65,31 @@ class TestProviderKnobRetired:
         from backend.app.models.notification import NotificationProvider
 
         provider = NotificationProvider(provider_type="telegram", name="t", config="{}")
-        provider.printer_id = 5
+        provider.printer_ids = [5]
         _coerce_telegram_provider_fields(provider)
-        assert provider.printer_id is None
+        assert provider.printer_ids is None
 
     def test_non_telegram_provider_keeps_its_binding(self):
         from backend.app.api.routes.notifications import _coerce_telegram_provider_fields
         from backend.app.models.notification import NotificationProvider
 
         provider = NotificationProvider(provider_type="ntfy", name="n", config="{}")
-        provider.printer_id = 5
+        provider.printer_ids = [5]
         _coerce_telegram_provider_fields(provider)
-        assert provider.printer_id == 5
+        assert provider.printer_ids == [5]
+
+    def test_provider_scope_all_one_several(self):
+        """m157 3b: non-telegram providers carry the same all/one/several
+        list shape the chats do."""
+        from backend.app.models.notification import NotificationProvider
+
+        p = NotificationProvider(provider_type="ntfy", name="n", config="{}")
+        assert p.allows_printer(7)  # NULL scope = everything
+        p.printer_ids = [3]
+        assert p.allows_printer(3) and not p.allows_printer(4)
+        p.printer_ids = [3, 10]
+        assert p.allows_printer(10)
+        assert p.allows_printer(None)  # unattributed events pass
 
     def test_the_chat_scope_column_is_nullable(self):
         column = TelegramChat.__table__.c.printer_ids

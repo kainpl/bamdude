@@ -95,7 +95,10 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
         queryFn: api.getPrinters,
     });
 
-    const linkedPrinter = printers?.find(p => p.id === provider.printer_id);
+    // m157 3b: the scope is a list — show the names it resolves to.
+    const linkedPrinters = provider.printer_ids == null
+        ? []
+        : (printers ?? []).filter(p => provider.printer_ids!.includes(p.id));
 
     // Update mutation
     const updateMutation = useMutation({
@@ -183,14 +186,17 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                         </div>
                     </div>
 
-                    {/* Linked Printer */}
-                    {linkedPrinter && (
+                    {/* Printer scope — all / one / several (m157 3b) */}
+                    {provider.printer_ids != null ? (
                         <div className="mb-3 px-2 py-1.5 bg-bambu-dark rounded-lg">
                             <span className="text-xs text-bambu-gray">{t('notifications.printer')} </span>
-                            <span className="text-sm text-white">{linkedPrinter.name}</span>
+                            <span className="text-sm text-white">
+                                {linkedPrinters.length > 0
+                                    ? linkedPrinters.map((p) => p.name).join(', ')
+                                    : `#${provider.printer_ids.join(', #')}`}
+                            </span>
                         </div>
-                    )}
-                    {!linkedPrinter && !provider.printer_id && (
+                    ) : (
                         <div className="mb-3 px-2 py-1.5 bg-bambu-dark rounded-lg">
                             <span className="text-xs text-bambu-gray">{t('notifications.allPrinters')}</span>
                         </div>
