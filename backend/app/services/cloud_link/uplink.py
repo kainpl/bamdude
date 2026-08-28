@@ -18,23 +18,29 @@ Four rules hold the module together.
   open, where a reviewer sees it.
 * **:meth:`Uplink.feed` cannot fail and cannot block.** It runs inside
   ``ConnectionManager.broadcast``, on the event loop, ahead of every browser
-  write in the product. It takes the message, puts it in a bounded deque, and
-  returns. All the thinking happens in :meth:`Uplink.drain`, which the link's
-  own loop calls.
-* **No database on the hot path.** ``drain`` works entirely from in-memory
-  state: the publish set, each printer's name and model, and its last-known
-  ``connected``. :meth:`Uplink.build_snapshot` is the one method that holds a
-  session, and it refreshes all three while it is there — one query answering
-  every question ``drain`` is not allowed to ask.
+  write in the product. For a status it does the least work that still keeps
+  the projection correct: a type check, a printer-id check, and an overwrite
+  into :attr:`_dirty` — the newest reading replaces whatever was there, so a
+  printer that pushes fifty times between two ticks costs one dict write, not
+  fifty queued messages. For an event it appends to a small bounded deque and
+  returns. All the thinking happens in :meth:`Uplink.flush`, which the link's
+  own loop calls once per tick.
+* **No database on the hot path.** ``flush`` works entirely from in-memory
+  state: the dirty map, the event backlog, the publish set, each printer's
+  name and model, and its last-known ``connected``.
+  :meth:`Uplink.build_snapshot_chunks` is the one method that holds a
+  session, and it refreshes all three while it is there — one query
+  answering every question ``flush`` is not allowed to ask.
 * **Availability is the database's answer, and it reaches BOTH paths.** A
   ``CloudLinkPrinter`` row survives archiving on purpose (the allowlist has no
   opinion about a machine's lifecycle, and rebuilding it on archive would lose
   a user's choice if they restored the printer). So the read side filters:
   "available" here is ``is_active AND NOT archived``, the same definition the
-  rest of the codebase uses. ⚠️ The set ``build_snapshot`` hands ``drain`` is
-  the FILTERED one — an archived printer stays MQTT-connected and goes on
-  broadcasting, so seeding the raw allowlist would keep it out of the snapshot
-  and put it in every status frame after it, which is the louder of the two.
+  rest of the codebase uses. ⚠️ The set ``build_snapshot_chunks`` hands
+  ``flush`` is the FILTERED one — an archived printer stays MQTT-connected and
+  goes on broadcasting, so seeding the raw allowlist would keep it out of the
+  snapshot and put it in every status batch after it, which is the louder of
+  the two.
 
 ⚠️ **A printer's contract id is its local integer as a decimal string** —
 printer 7 is ``"7"``. The contract types the field as an opaque string and the
@@ -42,26 +48,31 @@ portal's own fixtures use ``"p-001"``, but a prefix here would need parsing
 back off every inbound ``cmd``; ``int()`` is the whole mapping and there is
 nothing to keep in sync.
 
-⚠️ **A connection change emits two frames**, in this order: the
-``printer_online`` / ``printer_offline`` event, then the status carrying the
-new state — and that status is exempt from the throttle. A printer that has
-gone offline sends no further ``printer_status`` broadcast, so its edge status
-is the last word about it; dropping it would leave the portal on whatever the
-machine was doing when it vanished.
+⚠️ **A connection change emits two frames within the SAME tick, in order**:
+the ``printer_online`` / ``printer_offline`` event first, then that printer's
+reading inside the batch that follows — and that reading is exempt from the
+throttle. A printer that has gone offline sends no further ``printer_status``
+broadcast, so its edge status is the last word about it; throttling it away
+would leave the portal on whatever the machine was doing when it vanished.
+:meth:`flush` guarantees the order by construction — every event it produces
+goes into the returned list before the first batch does — rather than by
+holding the status back for a second call the way the old per-message
+``drain`` had to.
 
 Two things this module deliberately does NOT do:
 
 * **It emits no ``hms_error`` event.** The kind exists in the contract, but a
-  printer's fault already rides on every ``status`` frame in
+  printer's fault already rides on every batched reading in
   ``UplinkPrinter.error``, so an event would be a second telling of the same
   fact with its own de-duplication problem to solve. Add it when the portal
   needs to react to the edge rather than read the state.
-* **It does not coalesce a backlog.** When the link has been down, the queue
-  holds many statuses for one printer and the throttle answers the first, then
-  discards the rest. That first frame is therefore as old as the backlog — for
-  about one drain cycle, because the snapshot sent at connect has already told
-  the portal where everything stands. Keeping only the newest per printer would
-  be a better queue; it is not worth the machinery until a measurement says so.
+* **It does not keep more than one reading in flight per printer.** A printer
+  that pushes between two ticks has its :attr:`_dirty` entry overwritten each
+  time — coalescing is the whole point of the dirty map, not an optimisation
+  bolted onto a queue afterwards. The one place that changes real behaviour: a
+  printer still inside its throttle window when :meth:`flush` runs stays
+  dirty rather than being dropped, so the NEXT tick sends whatever is newest
+  *then*, not nothing.
 """
 
 from __future__ import annotations
@@ -81,10 +92,10 @@ from backend.app.services.cloud_link.schemas import (
     Event,
     EventData,
     PrinterError,
-    Snapshot,
-    SnapshotData,
-    Status,
-    StatusData,
+    SnapshotChunk,
+    SnapshotChunkData,
+    StatusBatch,
+    StatusBatchData,
     Temps,
     UplinkPrinter,
     frame_timestamp,
@@ -94,22 +105,40 @@ from backend.app.services.cloud_link.store import get_publish_set
 
 logger = logging.getLogger(__name__)
 
-#: How many broadcast messages may wait for a drain. Two orders of magnitude
-#: more than a farm produces between two drains of a healthy link — so reaching
-#: it means the link is down, and what is being protected is memory, not
-#: latency.
-QUEUE_MAXSIZE = 500
+#: How many printers one ``status_batch`` frame may carry. An oversized tick —
+#: more dirty, published, unthrottled printers than this — is split into
+#: consecutive batches, each with its own :attr:`Uplink._seq`, rather than one
+#: frame growing without bound.
+BATCH_MAX_PRINTERS = 500
 
-#: Seconds between two ``status`` frames for the SAME printer, until the portal
-#: says otherwise in ``hello_ok``. Assign to :attr:`Uplink.min_interval_s` when
-#: it does.
+#: How many printers one ``snapshot_chunk`` act may carry. Deliberately equal
+#: to :data:`BATCH_MAX_PRINTERS` — the portal caps a sync at ``of <= 64`` acts
+#: (its ``MAX_SNAPSHOT_CHUNKS``), so at this size the ceiling is a ~32,000
+#: printer farm, which nothing here approaches. There is no pressure to raise
+#: it and no reason it should differ from the batch size for a system meant to
+#: be understood as one shape.
+SNAPSHOT_CHUNK_PRINTERS = 500
+
+#: How many ``print_start``/``print_complete`` broadcasts may wait for a
+#: flush. Comfortably more than a healthy link produces between two ticks, so
+#: reaching it means the link has been down for a long time. Unlike a status,
+#: an event has no later message to correct it, so what overflows here is
+#: genuinely lost, not merely stale.
+EVENTS_MAXSIZE = 100
+
+#: Seconds between two ``status_batch`` frames for the SAME printer, until the
+#: portal says otherwise in ``hello_ok``. Assign to :attr:`Uplink.min_interval_s`
+#: when it does.
 DEFAULT_MIN_INTERVAL_S = 5.0
 
-#: The broadcast types the uplink has any use for. Filtering here rather than
-#: in ``drain`` keeps the bounded queue for messages that can become a frame:
-#: during a library scan the archive/library/inventory broadcasts outnumber
-#: printer pushes by orders of magnitude, and letting them in would flush every
-#: printer status out of a 500-deep queue before the link drained one.
+#: The broadcast types the uplink has any use for. Filtering here — in
+#: ``feed``, before a message reaches either the dirty map or the event deque
+#: — matters most for the events: during a library scan the archive/library/
+#: inventory broadcasts outnumber printer pushes by orders of magnitude, and
+#: letting them into a 100-deep event deque would push a real
+#: ``print_complete`` out of it before the link ever flushed one. The dirty
+#: map cannot be flooded the same way — it holds at most one entry per printer
+#: this farm owns, however fast ``feed`` is called.
 INTERESTING_TYPES = frozenset({"printer_status", "print_start", "print_complete"})
 
 #: What "available" means to this link, as SQL criteria — the product's own
@@ -117,7 +146,7 @@ INTERESTING_TYPES = frozenset({"printer_status", "print_start", "print_complete"
 #: to "may the portal see this printer" (the first is the publish set).
 #:
 #: A shared constant because it is asked in two places that must never drift:
-#: :meth:`Uplink.build_snapshot` filters the whole set with it, and
+#: :meth:`Uplink.build_snapshot_chunks` filters the whole set with it, and
 #: :mod:`~backend.app.services.cloud_link.snapshot` re-asks it for the one
 #: printer a ``camera_snapshot`` names. A camera is the more sensitive of the
 #: two, so the looser of two definitions would be the wrong one to have there.
@@ -184,8 +213,9 @@ def _hms_short_code(entry: Mapping[str, Any]) -> str:
 class Uplink:
     """Turns this farm's broadcasts into envelope frames for one portal link.
 
-    One instance per link. It owns the queue, the throttle clock and the
-    in-memory publish set; the client loop owns when to drain it.
+    One instance per link. It owns the dirty map, the event backlog, the
+    throttle clock and the in-memory publish set; the client loop owns when to
+    flush it.
     """
 
     def __init__(
@@ -194,13 +224,12 @@ class Uplink:
         min_interval_s: float = DEFAULT_MIN_INTERVAL_S,
         now: Callable[[], float] = time.monotonic,
         manager: Any | None = None,
-        maxsize: int = QUEUE_MAXSIZE,
     ):
         """
         Args:
-            min_interval_s: Seconds between two ``status`` frames for one
-                printer. Public and reassignable — the portal sets the real
-                value in ``hello_ok``.
+            min_interval_s: Seconds between two ``status_batch`` frames
+                carrying the same printer. Public and reassignable — the
+                portal sets the real value in ``hello_ok``.
             now: The clock. Injected so the throttle can be tested without
                 sleeping, and monotonic by default because a wall clock that
                 steps backwards over an NTP correction would silence a printer
@@ -208,137 +237,205 @@ class Uplink:
             manager: The printer manager. Defaults to the singleton, resolved
                 lazily so importing this module does not drag the MQTT stack
                 in behind it.
-            maxsize: Queue depth. See :data:`QUEUE_MAXSIZE`.
         """
         self.min_interval_s = min_interval_s
         self._now = now
         self._manager = manager
-        # ⚠️ ``maxlen`` IS the overflow policy: a full deque discards from the
-        # left on append. When the link is down the newest reading is the one
-        # worth keeping — dropping the newest instead would freeze the queue on
-        # the moment the connection died and never move on.
-        self._queue: deque[dict] = deque(maxlen=maxsize)
+        # printer_id -> the NEWEST broadcast data for a printer with
+        # something unsent to say. Overwritten, never appended to —
+        # coalescing IS the storage, not a policy layered on top of a queue.
+        # Bounded by construction: it can never hold more entries than this
+        # farm has printers, whatever the message rate.
+        self._dirty: dict[int, Mapping[str, Any]] = {}
+        # Raw print_start/print_complete broadcasts, oldest first. Bounded so
+        # a link that is down for a very long time cannot grow this without
+        # limit; unlike a status, one lost here has no later message to
+        # correct it — see EVENTS_MAXSIZE.
+        self._events: deque[dict] = deque(maxlen=EVENTS_MAXSIZE)
         self._dropped = 0
+        # This connection's status_batch counter. The first batch this
+        # instance ever sends is seq 1 — see ``flush``. Reset to 0 by
+        # ``reset_transient`` on every reconnect: the portal's protocol scopes
+        # seq to one connection, not to this process's lifetime.
+        self._seq = 0
         self._publish: set[int] = set()
         self._last_status_at: dict[int, float] = {}
-        # Frames built but not yet handed over. Holds at most one today — a
-        # connection edge emits an event and the status behind it, and
-        # ``drain`` answers the outbox before it pops the queue again.
-        self._outbox: deque[AnyFrame] = deque()
         # Last ``connected`` we reported per printer, for the online/offline
         # edge. Absent means "never seen" — see ``_connection_event``. Seeded
-        # by ``build_snapshot`` so a reconnect does not swallow the next edge.
+        # by ``build_snapshot_chunks`` so a reconnect does not swallow the
+        # next edge.
         self._connected: dict[int, bool] = {}
-        # id -> (name, model), filled by ``build_snapshot`` from the database.
-        # The status path has no session, and this is more authoritative than
-        # the manager's connect-time cache: a rename lands here at the next
-        # snapshot instead of at the next MQTT reconnect.
+        # id -> (name, model), filled by ``build_snapshot_chunks`` from the
+        # database. The status path has no session, and this is more
+        # authoritative than the manager's connect-time cache: a rename lands
+        # here at the next snapshot instead of at the next MQTT reconnect.
         self._identity: dict[int, tuple[str, str]] = {}
 
     # ------------------------------------------------------------- properties
 
     @property
     def dropped(self) -> int:
-        """How many messages the queue has discarded since this link started."""
+        """How many event broadcasts the event backlog has discarded since
+        this link started. Statuses never count here — they coalesce, they
+        cannot overflow."""
         return self._dropped
 
     @property
     def pending(self) -> int:
-        """How many messages are waiting for a drain."""
-        return len(self._queue)
+        """How many printers and events are waiting for a flush.
+
+        The sum of the dirty map and the event backlog — the two things a
+        flush drains. Not a queue depth any more, but the same question a
+        caller asks it for: "is there a backlog building up".
+        """
+        return len(self._dirty) + len(self._events)
 
     @property
     def published(self) -> frozenset[int]:
-        """The printer ids ``drain`` currently lets through.
+        """The printer ids ``flush`` currently lets through.
 
         A copy, and frozen: the service narrows this set when the allowlist
         changes, and it must do that through :meth:`set_publish_set` — a caller
-        mutating the live set would be editing the filter between two pops of
-        one drain.
+        mutating the live set would be editing the filter mid-flush.
         """
         return frozenset(self._publish)
 
     # ------------------------------------------------------------- the intake
 
     def feed(self, message: dict) -> None:
-        """Take one broadcast message. Synchronous, enqueue-only, never raises.
+        """Take one broadcast message. Synchronous, never blocks, never raises.
 
         This is the callback registered with
         ``ConnectionManager.add_internal_listener``, so it executes ahead of
-        every browser write in the product. It does the least possible: a type
-        check, a membership test, an append.
+        every browser write in the product. A ``printer_status`` overwrites
+        this printer's entry in :attr:`_dirty` — the coalescing itself, done
+        here rather than deferred to :meth:`flush` so a flush never has to
+        choose among several readings for one printer, only ever has one. A
+        ``print_start``/``print_complete`` is appended to the bounded event
+        backlog instead; unlike a status it has no later message to correct
+        it, so it cannot be coalesced away.
         """
         try:
             if not isinstance(message, dict) or message.get("type") not in INTERESTING_TYPES:
                 return
-            if len(self._queue) == self._queue.maxlen:
+            printer_id = message.get("printer_id")
+            if not isinstance(printer_id, int) or isinstance(printer_id, bool):
+                return
+
+            if message["type"] == "printer_status":
+                data = message.get("data")
+                if isinstance(data, Mapping):
+                    self._dirty[printer_id] = data
+                return
+
+            if len(self._events) == self._events.maxlen:
                 self._dropped += 1
-                # Loud on the first, then every hundredth: a full queue means
-                # the link is down and the alternative is either silence or a
-                # log line per broadcast for as long as it stays down.
+                # Loud on the first, then every hundredth: a full backlog
+                # means the link is down and the alternative is either
+                # silence or a log line per broadcast for as long as it stays
+                # down.
                 if self._dropped == 1 or self._dropped % 100 == 0:
                     logger.warning(
-                        "Cloud Link: uplink queue full — %d message(s) dropped so far (link not draining?)",
+                        "Cloud Link: uplink events backlog full — %d message(s) dropped so far (link not draining?)",
                         self._dropped,
                     )
-            self._queue.append(message)
+            self._events.append(message)
         except Exception as e:  # pragma: no cover — the body above has no reachable raise
             logger.debug("Cloud Link: uplink dropped a malformed broadcast: %s", e)
 
     def set_publish_set(self, ids: set[int]) -> None:
-        """Replace the in-memory allowlist ``drain`` filters against."""
+        """Replace the in-memory allowlist ``flush`` filters against."""
         self._publish = set(ids)
 
     def reset_transient(self) -> None:
-        """Drop frames that were built for a connection which no longer exists.
+        """Drop the per-connection state that describes a link which no
+        longer exists.
 
         The client loop calls this after every successful hello and **before**
-        it builds the fresh snapshot. The outbox can be holding the second half
-        of a connection edge whose first half went out over a socket that then
-        died: delivered after the reconnect it would reach the portal *behind*
-        the snapshot, overwriting that printer's current reading with a moment
-        the snapshot has already superseded.
+        it builds the fresh snapshot chunks.
 
-        ⚠️ **The message queue is deliberately NOT cleared.** Those are raw
-        broadcasts that were never turned into frames, so nothing about them
-        was ever sent to anybody; they are the farm's backlog, and the throttle
-        in :meth:`drain` already collapses whatever is stale among them.
-        Clearing them would throw away the ``print_finished`` that arrived
-        while the link was down — the one message with no later push to correct
-        it.
+        ⚠️ **``_dirty`` is cleared, and ``_seq`` restarts at 0.** The snapshot
+        about to be built reads the LIVE state, so it is newer than anything
+        still coalesced in ``_dirty`` for the connection that just died —
+        keeping it would flush stale readings behind a snapshot that has
+        already superseded them. ``_seq`` is scoped to one connection by the
+        portal's own protocol (reset on reconnect, the snapshot's ``base_seq``
+        is whatever it is when the chunks are built), so restarting it here,
+        before those chunks are built, is what keeps the two in step.
+
+        ⚠️ **``_events`` is deliberately NOT cleared.** Those are raw
+        ``print_start``/``print_complete`` broadcasts that arrived while the
+        link was down; unlike a status they have no later message to correct
+        them — a ``print_finished`` that never went out is gone for good, not
+        merely superseded. The next flush drains them, ahead of the fresh
+        state's first batch.
         """
-        self._outbox.clear()
+        self._dirty.clear()
+        self._seq = 0
 
-    # -------------------------------------------------------------- the drain
+    # -------------------------------------------------------------- the flush
 
-    async def drain(self) -> AnyFrame | None:
-        """The next frame to send, or ``None`` when there is nothing to say.
+    def flush(self) -> list[AnyFrame]:
+        """This tick's frames, in order: every event first, then a batch per
+        :data:`BATCH_MAX_PRINTERS` published, unthrottled, dirty printers.
 
-        Pops until it has a frame rather than returning ``None`` on the first
-        unpublished or throttled message: otherwise a queue whose head is a
-        throttled status would hide the ``print_finished`` sitting behind it
-        until the caller polled again.
+        Events go first and unconditionally — see the module docstring on why
+        a connection edge's event must precede the batch that carries its
+        printer's own reading. A dirty printer whose window has not reopened
+        **stays dirty**: it is neither popped nor batched, so the next flush
+        sees it again with whatever is newest by then. Only a dirty printer
+        that is emitted (batched, or as an edge) or unpublished is popped.
 
-        The outbox is answered first, so a connection edge's two frames leave
-        in order and neither can be overtaken by a message queued after them.
-
-        Async because the caller is an async loop and because the seam should
-        not have to change if a future frame ever needs to await something. It
-        deliberately touches no database — see the module docstring.
+        Never touches the database — see the module docstring.
         """
-        if self._outbox:
-            return self._outbox.popleft()
-
-        while self._queue:
-            frame = self._normalize(self._queue.popleft())
+        frames: list[AnyFrame] = []
+        while self._events:
+            frame = self._normalize_event(self._events.popleft())
             if frame is not None:
-                return frame
-        return None
+                frames.append(frame)
+
+        batch: list[UplinkPrinter] = []
+        for pid in list(self._dirty):
+            if pid not in self._publish:
+                self._dirty.pop(pid)
+                continue
+
+            data = self._dirty[pid]
+            edge = self._connection_event(pid, data)
+            if edge is not None:
+                frames.append(edge)
+                # Stamp the window as used: the batched reading below IS this
+                # printer's report for now, and an unstamped clock would let
+                # the very next ordinary push through immediately behind it.
+                self._last_status_at[pid] = self._now()
+            elif not self._may_send_status(pid):
+                continue  # stays dirty for a later tick
+            self._dirty.pop(pid)
+            batch.append(self._printer_from_status(pid, data))
+
+        for start in range(0, len(batch), BATCH_MAX_PRINTERS):
+            self._seq += 1
+            frames.append(
+                StatusBatch(
+                    v=1,
+                    id=new_frame_id(),
+                    ts=frame_timestamp(),
+                    type="status_batch",
+                    data=StatusBatchData(seq=self._seq, printers=batch[start : start + BATCH_MAX_PRINTERS]),
+                )
+            )
+        return frames
 
     # --------------------------------------------------------- the normalizer
 
-    def _normalize(self, message: dict) -> AnyFrame | None:
-        """One broadcast message → one frame, or ``None`` if it says nothing."""
+    def _normalize_event(self, message: dict) -> AnyFrame | None:
+        """One ``print_start``/``print_complete`` broadcast → one event frame,
+        or ``None`` if it says nothing.
+
+        The event half of what used to be one status-and-event normalizer —
+        the status half dissolved into :meth:`flush`'s own loop, which already
+        holds a validated, published printer id and its data.
+        """
         try:
             printer_id = message.get("printer_id")
             if not isinstance(printer_id, int) or isinstance(printer_id, bool):
@@ -351,8 +448,6 @@ class Uplink:
                 return None
 
             kind = message.get("type")
-            if kind == "printer_status":
-                return self._status_or_connection_event(printer_id, data)
             if kind == "print_start":
                 return self._event("print_started", printer_id, {"job_name": self._job_name_of(data)})
             if kind == "print_complete":
@@ -362,49 +457,10 @@ class Uplink:
                     {"job_name": self._job_name_of(data), "status": str(data.get("status") or "")},
                 )
         except Exception as e:
-            # A malformed push must cost one frame, not the link. The queue has
-            # already been popped, so the loop simply moves on.
+            # A malformed push must cost one frame, not the link. The event
+            # has already been popped, so the loop simply moves on.
             logger.warning("Cloud Link: could not normalize a %s broadcast: %s", message.get("type"), e)
         return None
-
-    def _status_or_connection_event(self, printer_id: int, data: Mapping[str, Any]) -> AnyFrame | None:
-        """A ``status`` frame, preceded by an event when the connection changed.
-
-        ⚠️ **A connection edge emits BOTH frames, and the status is not
-        throttled.** The event announces the transition; the status is the new
-        steady state that follows it, so the event goes first and the status
-        waits one ``drain`` in the outbox.
-
-        Sending only the event was a bug with no second chance to correct it: a
-        printer that has gone offline produces no further ``printer_status``
-        broadcast at all, so the last status the portal ever received was the
-        one saying ``printing`` — and it would have gone on saying so until the
-        machine came back. Throttling the status would reintroduce exactly that
-        hole whenever the edge landed inside a window, which for a printer
-        pushing several times a second is almost always.
-        """
-        edge = self._connection_event(printer_id, data)
-        if edge is None:
-            if not self._may_send_status(printer_id):
-                return None
-            return self._status_frame(printer_id, data)
-
-        # Stamp the window as used: the status below IS this printer's report
-        # for now, and an unstamped clock would let the next ordinary push
-        # through immediately after.
-        self._last_status_at[printer_id] = self._now()
-        self._outbox.append(self._status_frame(printer_id, data))
-        return edge
-
-    def _status_frame(self, printer_id: int, data: Mapping[str, Any]) -> AnyFrame:
-        """One ``status`` frame. The throttle is the caller's question."""
-        return Status(
-            v=1,
-            id=new_frame_id(),
-            ts=frame_timestamp(),
-            type="status",
-            data=StatusData(printer=self._printer_from_status(printer_id, data)),
-        )
 
     def _connection_event(self, printer_id: int, data: Mapping[str, Any]) -> AnyFrame | None:
         """``printer_online`` / ``printer_offline`` on a change, else ``None``.
@@ -588,23 +644,34 @@ class Uplink:
 
     # ----------------------------------------------------------- the snapshot
 
-    async def build_snapshot(self, session: AsyncSession) -> Snapshot:
-        """Every published, available printer as it stands right now.
+    async def build_snapshot_chunks(self, session: AsyncSession) -> list[SnapshotChunk]:
+        """Every published, available printer as it stands right now, split
+        into chunks of :data:`SNAPSHOT_CHUNK_PRINTERS` sharing one ``sync_id``.
 
-        Sent at connect, so it is also where everything ``drain`` is forbidden
-        to ask about is refreshed: the in-memory publish set, the identity
-        cache, and each printer's last-known ``connected``. One pass over the
-        database answering all of it.
+        Sent at connect (and on a portal-requested resync), so this is also
+        where everything ``flush`` is forbidden to ask about is refreshed: the
+        in-memory publish set, the identity cache, and each printer's
+        last-known ``connected``. One database pass answers all of it.
 
         ⚠️ **Availability is filtered here, and the filtered set is what
-        ``drain`` gets.** A ``CloudLinkPrinter`` row survives archiving — the
+        ``flush`` gets.** A ``CloudLinkPrinter`` row survives archiving — the
         allowlist has no opinion about a machine's lifecycle — so
         ``is_active AND NOT archived`` is what decides whether the portal hears
         about a printer, the same definition used everywhere else in the
-        codebase. Seeding ``drain`` with the RAW allowlist would have made that
+        codebase. Seeding ``flush`` with the RAW allowlist would have made that
         filter cosmetic: an archived printer stays MQTT-connected and goes on
         broadcasting, so it would have been absent from the snapshot and
-        present in every status frame after it.
+        present in every status batch after it.
+
+        ⚠️ **An empty farm still returns one chunk.** ``chunk=1, of=1,
+        printers=[]`` is how the portal learns "this farm publishes nothing"
+        and gets a ``base_seq`` to anchor whatever comes after — an empty
+        return here would tell it nothing at all.
+
+        ``base_seq`` is ``self._seq`` at the moment the chunks are built, which
+        is 0 for the connect snapshot — the client loop calls
+        ``reset_transient`` before this — and whatever the running count is for
+        a portal-requested resync mid-connection.
         """
         published = await get_publish_set(session)
 
@@ -639,13 +706,21 @@ class Uplink:
 
         self.set_publish_set(available)
 
-        return Snapshot(
-            v=1,
-            id=new_frame_id(),
-            ts=frame_timestamp(),
-            type="snapshot",
-            data=SnapshotData(printers=printers),
-        )
+        sync_id = new_frame_id()
+        chunks = [
+            printers[i : i + SNAPSHOT_CHUNK_PRINTERS] for i in range(0, len(printers), SNAPSHOT_CHUNK_PRINTERS)
+        ] or [[]]
+        of = len(chunks)
+        return [
+            SnapshotChunk(
+                v=1,
+                id=new_frame_id(),
+                ts=frame_timestamp(),
+                type="snapshot_chunk",
+                data=SnapshotChunkData(sync_id=sync_id, chunk=i + 1, of=of, base_seq=self._seq, printers=chunk),
+            )
+            for i, chunk in enumerate(chunks)
+        ]
 
 
 #: The chamber keys ``printer_state_to_dict`` removes for a model without a
