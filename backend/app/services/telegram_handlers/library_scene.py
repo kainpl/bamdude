@@ -12,6 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.telegram_handlers.common import (
     NS,
+    deny_out_of_scope,
     get_printers_data,
     has_perm,
     next_queue_position,
@@ -175,7 +176,7 @@ async def cb_library_select_file(
     await state.update_data(file_id=file_id, file_name=lib_file.filename, sliced_for_model=sliced_for_model)
 
     # Show idle printers, filtered by model if available
-    printers = await get_printers_data()
+    printers = await get_printers_data(tg_chat)
     idle_printers = [p for p in printers if p["connected"] and p["state"] in ("IDLE", "FINISH")]
     if sliced_for_model:
         compatible = [p for p in idle_printers if p["model"] and p["model"].upper() == sliced_for_model.upper()]
@@ -236,12 +237,14 @@ async def cb_library_select_printer(
     """Printer selected - show confirmation."""
     lang = await get_language()
     printer_id = int(callback.data.split(":")[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     await callback.answer()
 
     data = await state.get_data()
     file_name = data.get("file_name", "?")
 
-    printers = await get_printers_data()
+    printers = await get_printers_data(tg_chat)
     printer = next((p for p in printers if p["id"] == printer_id), None)
     printer_name = printer["name"] if printer else f"#{printer_id}"
 

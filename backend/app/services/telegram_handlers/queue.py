@@ -8,7 +8,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from backend.app.i18n import escape_md, get_language, t
-from backend.app.services.telegram_handlers.common import NS, has_perm
+from backend.app.services.telegram_handlers.common import NS, deny_out_of_scope, has_perm
 from backend.app.services.telegram_handlers.pagination import build_page_nav
 
 if TYPE_CHECKING:
@@ -43,29 +43,40 @@ async def render_queue(target, tg_chat: TelegramChat | None = None, offset: int 
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer import Printer
 
+    # m159 printer scope: a chat watching two machines sees two machines'
+    # queue — counts and list alike. This file already equates queue_id with
+    # the printer id (the 1:1 queue-per-printer construction, see the
+    # printer-name lookup below), so the scope filters on queue_id.
+    def _scoped(query):
+        if tg_chat is not None and tg_chat.printer_ids is not None:
+            return query.where(PrintQueueItem.queue_id.in_(tg_chat.printer_ids))
+        return query
+
     async with async_session() as db:
         # Total counts
         total_pending = (
-            await db.execute(select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "pending"))
+            await db.execute(_scoped(select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "pending")))
         ).scalar() or 0
         total_printing = (
-            await db.execute(select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "printing"))
+            await db.execute(_scoped(select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "printing")))
         ).scalar() or 0
 
         # Active items (pending + printing) for list
         total_active = (
             await db.execute(
-                select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status.in_(["pending", "printing"]))
+                _scoped(select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status.in_(["pending", "printing"])))
             )
         ).scalar() or 0
 
         # Paginated items
         result = await db.execute(
-            select(PrintQueueItem)
-            .where(PrintQueueItem.status.in_(["pending", "printing"]))
-            .order_by(PrintQueueItem.position)
-            .offset(offset)
-            .limit(PAGE_SIZE)
+            _scoped(
+                select(PrintQueueItem)
+                .where(PrintQueueItem.status.in_(["pending", "printing"]))
+                .order_by(PrintQueueItem.position)
+                .offset(offset)
+                .limit(PAGE_SIZE)
+            )
         )
         items = list(result.scalars().all())
 
@@ -190,6 +201,9 @@ async def cb_queue_detail(
             await callback.message.edit_text(escape_md("Item not found"))
             return
 
+        if await deny_out_of_scope(callback, tg_chat, item.queue_id):
+            return
+
         printer_name = None
         if item.queue_id:
             p = await db.get(Printer, item.queue_id)
@@ -283,6 +297,9 @@ async def cb_queue_move(callback: CallbackQuery, tg_chat: TelegramChat | None = 
         item = result.scalar_one_or_none()
         if not item:
             await callback.answer("Not found", show_alert=True)
+            return
+
+        if await deny_out_of_scope(callback, tg_chat, item.queue_id):
             return
 
         # Find adjacent item

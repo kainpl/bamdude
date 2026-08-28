@@ -24,6 +24,10 @@ class TelegramChatCreate(BaseModel):
         le=10080,
         description="Mute 25/50/75% milestones for prints estimated shorter than this (null or 0 = always send)",
     )
+    printer_ids: list[int] | None = Field(
+        default=None,
+        description="Printer scope for notifications and bot control (null = all printers)",
+    )
 
 
 class TelegramChatUpdate(BaseModel):
@@ -39,6 +43,7 @@ class TelegramChatUpdate(BaseModel):
     quiet_hours_start: str | None = None
     quiet_hours_end: str | None = None
     progress_min_duration_minutes: int | None = Field(default=None, ge=0, le=10080)
+    printer_ids: list[int] | None = None
 
 
 class TelegramChatResponse(BaseModel):
@@ -58,6 +63,7 @@ class TelegramChatResponse(BaseModel):
     quiet_hours_start: str | None
     quiet_hours_end: str | None
     progress_min_duration_minutes: int | None = None
+    printer_ids: list[int] | None = None
     created_at: datetime
     updated_at: datetime
 

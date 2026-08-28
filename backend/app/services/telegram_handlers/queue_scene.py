@@ -12,6 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.telegram_handlers.common import (
     NS,
+    deny_out_of_scope,
     get_printers_data,
     has_perm,
     next_queue_position,
@@ -144,7 +145,7 @@ async def cb_qadd_select_file(callback: CallbackQuery, state: FSMContext, tg_cha
     await state.update_data(file_id=file_id, file_name=lib_file.filename, sliced_for_model=sliced_for_model)
 
     # Show target options: specific printers + model-based
-    printers = await get_printers_data()
+    printers = await get_printers_data(tg_chat)
     active_printers = [p for p in printers if p["connected"]]
 
     # Filter by compatible model if known
@@ -208,9 +209,11 @@ async def cb_qadd_select_printer(
     """Specific printer selected."""
     lang = await get_language()
     printer_id = int(callback.data.split(":")[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     await callback.answer()
 
-    printers = await get_printers_data()
+    printers = await get_printers_data(tg_chat)
     printer = next((p for p in printers if p["id"] == printer_id), None)
     printer_name = printer["name"] if printer else f"#{printer_id}"
 

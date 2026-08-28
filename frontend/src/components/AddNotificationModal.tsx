@@ -481,7 +481,9 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             </div>
           )}
 
-          {/* Link to Printer */}
+          {/* Link to Printer — not for telegram: the printer scope lives on
+              each chat there (m159), like every other telegram knob. */}
+          {providerType !== 'telegram' && (
           <div>
             <label className="block text-sm text-bambu-gray mb-1">{t('notifications.printerFilter')}</label>
             <select
@@ -500,6 +502,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               {t('notifications.onlyFromPrinter')}
             </p>
           </div>
+          )}
 
           {/* Telegram-only hint: per-event opt-ins and quiet hours live on
               each chat now (m045). Provider keeps only enabled + digest. */}

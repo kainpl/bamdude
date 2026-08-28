@@ -526,9 +526,14 @@ class NotificationService:
         if not chats:
             return False, "No active Telegram chats configured"
 
-        # Filter chats subscribed to this event (plus the event's own
-        # per-chat criteria, when it brought any).
-        target_chats = [c for c in chats if c.should_notify(event_type) and (chat_filter is None or chat_filter(c))]
+        # Filter chats subscribed to this event, inside their printer scope
+        # (m159 — NULL scope = every printer, unattributed events pass for
+        # all), plus the event's own per-chat criteria, when it brought any.
+        target_chats = [
+            c
+            for c in chats
+            if c.should_notify(event_type) and c.allows_printer(printer_id) and (chat_filter is None or chat_filter(c))
+        ]
         if not target_chats:
             return True, f"No chats subscribed to {event_type}"
 

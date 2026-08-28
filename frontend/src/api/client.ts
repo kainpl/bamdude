@@ -9435,6 +9435,7 @@ export interface TelegramChat {
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
   progress_min_duration_minutes: number | null;
+  printer_ids: number[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -9451,6 +9452,7 @@ export interface TelegramChatCreate {
   quiet_hours_start?: string | null;
   quiet_hours_end?: string | null;
   progress_min_duration_minutes?: number | null;
+  printer_ids?: number[] | null;
 }
 
 export interface TelegramChatUpdate {
@@ -9464,6 +9466,7 @@ export interface TelegramChatUpdate {
   quiet_hours_start?: string | null;
   quiet_hours_end?: string | null;
   progress_min_duration_minutes?: number | null;
+  printer_ids?: number[] | null;
 }
 
 export interface NotifyEventInfo {

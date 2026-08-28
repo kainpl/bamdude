@@ -9,7 +9,13 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.printer_manager import is_printer_busy, printer_manager
-from backend.app.services.telegram_handlers.common import NS, ensure_fresh, get_printers_data, has_perm
+from backend.app.services.telegram_handlers.common import (
+    NS,
+    deny_out_of_scope,
+    ensure_fresh,
+    get_printers_data,
+    has_perm,
+)
 
 if TYPE_CHECKING:
     from backend.app.models.telegram_chat import TelegramChat
@@ -96,9 +102,11 @@ async def cb_calibration_show(callback: CallbackQuery, tg_chat: TelegramChat | N
         return
 
     printer_id = int(callback.data.split(":")[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     await callback.answer()
 
-    printers = await get_printers_data()
+    printers = await get_printers_data(tg_chat)
     printer = next((p for p in printers if p["id"] == printer_id), None)
     model = printer["model"] if printer else None
     name = printer["name"] if printer else f"#{printer_id}"
@@ -113,6 +121,8 @@ async def cb_calibration_toggle(callback: CallbackQuery, tg_chat: TelegramChat |
     lang = await get_language()
     parts = callback.data.split(":")
     printer_id = int(parts[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     cal_type = parts[3]
 
     chat_id = callback.message.chat.id
@@ -122,7 +132,7 @@ async def cb_calibration_toggle(callback: CallbackQuery, tg_chat: TelegramChat |
 
     await callback.answer()
 
-    printers = await get_printers_data()
+    printers = await get_printers_data(tg_chat)
     printer = next((p for p in printers if p["id"] == printer_id), None)
     text, keyboard = _render_calibration_screen(
         lang,
@@ -142,6 +152,8 @@ async def cb_calibration_start(callback: CallbackQuery, tg_chat: TelegramChat | 
         return
 
     printer_id = int(callback.data.split(":")[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     selected = _calib_selections.pop(callback.message.chat.id, set())
 
     if not selected:

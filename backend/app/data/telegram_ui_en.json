@@ -240,6 +240,7 @@
     "registered": "Chat registered. Ask admin to activate and assign a role in Settings.",
     "disabled": "This chat is disabled. Contact admin.",
     "pending_setup": "This chat is pending setup. Contact admin.",
-    "no_permission": "No permission"
+    "no_permission": "No permission",
+    "not_in_scope": "This printer is outside your chat's scope"
   }
 }

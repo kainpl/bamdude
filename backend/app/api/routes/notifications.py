@@ -82,6 +82,9 @@ def _coerce_telegram_provider_fields(provider: NotificationProvider) -> None:
     provider.quiet_hours_enabled = False
     provider.quiet_hours_start = None
     provider.quiet_hours_end = None
+    # m159: the printer scope lives on each chat (``printer_ids``) — the last
+    # provider-level telegram knob, retired like the rest.
+    provider.printer_id = None
 
 
 def _provider_to_dict(provider: NotificationProvider) -> dict:
