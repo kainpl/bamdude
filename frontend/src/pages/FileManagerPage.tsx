@@ -98,13 +98,19 @@ type TFunction = (key: string, options?: Record<string, unknown>) => string;
 // New Folder Modal
 interface NewFolderModalProps {
   parentId: number | null;
+  /** Where the folder will land, for the destination line. */
+  parentName: string | null;
+  /** True when the current selection is an external folder — the new folder
+   *  then goes to the ROOT (virtual folders cannot live inside a mirrored
+   *  filesystem), and the modal says so instead of landing there silently. */
+  externalRedirected: boolean;
   onClose: () => void;
   onSave: (data: LibraryFolderCreate) => void;
   isLoading: boolean;
   t: TFunction;
 }
 
-function NewFolderModal({ parentId, onClose, onSave, isLoading, t }: NewFolderModalProps) {
+function NewFolderModal({ parentId, parentName, externalRedirected, onClose, onSave, isLoading, t }: NewFolderModalProps) {
   const [name, setName] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -117,6 +123,16 @@ function NewFolderModal({ parentId, onClose, onSave, isLoading, t }: NewFolderMo
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-sm border border-bambu-dark-tertiary">
         <div className="p-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">{t('fileManager.newFolder')}</h2>
+          <p className="text-xs text-bambu-gray mt-1">
+            {t('fileManager.newFolderDestination', {
+              destination: parentId !== null && parentName ? parentName : t('fileManager.allFiles'),
+            })}
+          </p>
+          {externalRedirected && (
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+              {t('fileManager.newFolderExternalRedirect')}
+            </p>
+          )}
         </div>
         <form onSubmit={handleSubmit} className="p-4 space-y-4">
           <div>
@@ -3709,7 +3725,15 @@ export function FileManagerPage() {
       )}
       {showNewFolderModal && (
         <NewFolderModal
-          parentId={selectedFolderId}
+          // A virtual folder cannot live inside an external share (it would
+          // be a phantom in a mirrored filesystem — and the backend refuses
+          // it). With an external selected, the new folder goes to the root,
+          // and the modal SAYS so — the freshly linked external is
+          // auto-selected, which is exactly how folders used to land there
+          // unnoticed.
+          parentId={selectedFolder?.is_external ? null : selectedFolderId}
+          parentName={selectedFolder?.is_external ? null : (selectedFolder?.name ?? null)}
+          externalRedirected={!!selectedFolder?.is_external}
           onClose={() => setShowNewFolderModal(false)}
           onSave={(data) => createFolderMutation.mutate(data)}
           isLoading={createFolderMutation.isPending}

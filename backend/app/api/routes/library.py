@@ -1092,8 +1092,19 @@ async def create_folder(
     # Verify parent exists if specified
     if data.parent_id is not None:
         parent_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.parent_id))
-        if not parent_result.scalar_one_or_none():
+        parent = parent_result.scalar_one_or_none()
+        if not parent:
             raise HTTPException(status_code=404, detail="Parent folder not found")
+        # An external folder's children mirror a real filesystem the scanner
+        # owns. A virtual folder in that tree is a phantom: it looks like part
+        # of the share but its files live in managed storage — and the freshly
+        # linked external is AUTO-SELECTED, so "New folder" right after
+        # linking used to land here silently (measured live 2026-08-28).
+        if parent.is_external:
+            raise HTTPException(
+                status_code=422,
+                detail="Folders cannot be created inside an external folder — it mirrors a real filesystem.",
+            )
 
     # m044: validate every requested project exists in one IN-list query.
     project_rows = await _resolve_projects_for_assign(db, data.project_ids)

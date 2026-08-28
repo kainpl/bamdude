@@ -4482,6 +4482,8 @@ export default {
     },
     uploadFiles: 'Завантажити файли',
     newFolder: 'Нова папка',
+    newFolderDestination: 'Буде створено у: {{destination}}',
+    newFolderExternalRedirect: 'Вибрано зовнішню папку — вона віддзеркалює реальну файлову систему, тож нову папку буде створено в корені бібліотеки.',
     folderName: 'Назва папки',
     folderNamePlaceholder: 'напр., Функціональні деталі',
     filterByUser: 'Фільтр за користувачем',

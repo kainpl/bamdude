@@ -69,6 +69,22 @@ class TestLibraryFoldersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_virtual_folder_refused_inside_an_external(self, async_client: AsyncClient, db_session):
+        """An external folder mirrors a real filesystem the scanner owns; a
+        virtual child there is a phantom — and the freshly linked external is
+        auto-selected in the UI, which is exactly how folders used to land
+        there unnoticed (live, 2026-08-28)."""
+        from backend.app.models.library import LibraryFolder
+
+        ext = LibraryFolder(name="NAS", is_external=True, external_path="/mnt/nas")
+        db_session.add(ext)
+        await db_session.commit()
+        await db_session.refresh(ext)
+
+        response = await async_client.post("/api/v1/library/folders", json={"name": "phantom", "parent_id": ext.id})
+        assert response.status_code == 422
+        assert "external" in response.json()["detail"].lower()
+
     async def test_get_folder(self, async_client: AsyncClient, folder_factory, db_session):
         """Verify single folder can be retrieved."""
         folder = await folder_factory(name="Test Folder")
