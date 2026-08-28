@@ -1879,6 +1879,14 @@ export function FileManagerPage() {
     return sortLevel(folders);
   }, [folders, folderSortField, folderSortDirection]);
 
+  // #1621 promised "external folders are surfaced separately below" but the
+  // tree rendered one interleaved alphabetical list, so a linked NAS root sat
+  // in the middle of the user's own folders — and everything after the
+  // "External" header read as its child. Split at ROOT level only: an
+  // external living deeper in the tree belongs to its parent and stays put.
+  const ownRootFolders = useMemo(() => sortedFolders?.filter((f) => !f.is_external), [sortedFolders]);
+  const externalRootFolders = useMemo(() => sortedFolders?.filter((f) => f.is_external), [sortedFolders]);
+
   // Trash count for the header badge (#1008). Empty/error treated as zero so a
   // broken trash endpoint doesn't break the File Manager.
   const { data: trashCount } = useQuery({
@@ -2521,6 +2529,33 @@ export function FileManagerPage() {
     return findFolder(folders);
   }, [selectedFolderId, folders]);
 
+  // The "External" root is a virtual node whose children are linked shares —
+  // "New folder" has nothing meaningful to create there (it used to silently
+  // create at the library root), so the button disables and points at Link.
+  const atExternalRoot = selectedFolderId === null && topLevelView === 'external';
+
+  // One renderer for both root groups of the sidebar tree (own folders under
+  // "All files", external roots under the "External" header) so the split
+  // can't let their props drift apart.
+  const renderRootFolder = (folder: LibraryFolderTree) => (
+    <FolderTreeItem
+      key={`${folder.id}-${collapseFoldersByDefault ? 'c' : 'e'}`}
+      folder={folder}
+      depth={1}
+      selectedFolderId={selectedFolderId}
+      onSelect={setSelectedFolderId}
+      onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
+      onLink={setLinkFolder}
+      onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
+      wrapNames={wrapFolderNames}
+      defaultExpanded={!collapseFoldersByDefault}
+      hasPermission={hasPermission}
+      t={t}
+      timeFormat={timeFormat}
+      dateFormat={dateFormat}
+    />
+  );
+
   return (
     <div className="p-4 md:p-6 min-h-[calc(100vh)] lg:h-[calc(100vh)] flex flex-col">
       {/* Header */}
@@ -2588,8 +2623,14 @@ export function FileManagerPage() {
             variant="outline"
             size="sm"
             onClick={() => setShowNewFolderModal(true)}
-            disabled={!hasPermission('library:upload')}
-            title={!hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : undefined}
+            disabled={!hasPermission('library:upload') || atExternalRoot}
+            title={
+              !hasPermission('library:upload')
+                ? t('fileManager.noPermissionCreateFolder')
+                : atExternalRoot
+                  ? t('fileManager.newFolderExternalRootHint')
+                  : undefined
+            }
           >
             <FolderPlus className="w-4 h-4 mr-2" />
             {t('fileManager.newFolder')}
@@ -2682,11 +2723,10 @@ export function FileManagerPage() {
             }}
             className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg px-3 py-2.5 text-white focus:outline-none focus:border-bambu-green"
           >
+            {/* Same grouping as the desktop sidebar: own folders under
+                "All files", external roots after the "External" entry. */}
             <option value="__top:internal">📁 {t('fileManager.allFiles')}</option>
-            {folders?.some((f) => f.is_external) && (
-              <option value="__top:external">🔗 {t('fileManager.allExternal')}</option>
-            )}
-            {sortedFolders && (() => {
+            {(() => {
               // Flatten folder tree for mobile selector
               const flattenFolders = (items: LibraryFolderTree[], depth = 0): { id: number; name: string; fileCount: number; depth: number }[] => {
                 const result: { id: number; name: string; fileCount: number; depth: number }[] = [];
@@ -2698,11 +2738,21 @@ export function FileManagerPage() {
                 }
                 return result;
               };
-              return flattenFolders(sortedFolders).map((folder) => (
-                <option key={folder.id} value={folder.id}>
-                  {'│ '.repeat(folder.depth)}📂 {folder.name} {folder.fileCount > 0 ? `(${folder.fileCount})` : ''}
-                </option>
-              ));
+              const toOptions = (items: LibraryFolderTree[] | undefined) =>
+                flattenFolders(items ?? [], 1).map((folder) => (
+                  <option key={folder.id} value={folder.id}>
+                    {'│ '.repeat(folder.depth)}📂 {folder.name} {folder.fileCount > 0 ? `(${folder.fileCount})` : ''}
+                  </option>
+                ));
+              return (
+                <>
+                  {toOptions(ownRootFolders)}
+                  {folders?.some((f) => f.is_external) && (
+                    <option value="__top:external">🔗 {t('fileManager.allExternal')}</option>
+                  )}
+                  {toOptions(externalRootFolders)}
+                </>
+              );
             })()}
           </select>
         </div>
@@ -2806,9 +2856,10 @@ export function FileManagerPage() {
             </div>
           </div>
           <div className="flex-1 overflow-y-auto p-2">
-            {/* All Files = the user's own uploaded / managed-storage files
-                only. External folders are surfaced separately below to keep
-                a linked NAS from drowning the user's own uploads (#1621). */}
+            {/* "Internal" root = the user's own uploaded / managed-storage
+                files only; its folders render indented beneath it. External
+                roots live under the "External" header below, so a linked NAS
+                can't drown the user's own uploads (#1621). */}
             <div
               className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
                 selectedFolderId === null && topLevelView === 'internal'
@@ -2823,6 +2874,13 @@ export function FileManagerPage() {
               <FileBox className="w-4 h-4" />
               <span className="text-sm">{t('fileManager.allFiles')}</span>
             </div>
+
+            {/* Folder tree — re-key on the collapse toggle so flipping it
+                remounts every FolderTreeItem, which re-reads defaultExpanded
+                and makes the preference take effect immediately. Own folders
+                render here, under "All files"; external roots render below,
+                under the "External" header — each header heads its group. */}
+            {ownRootFolders?.map(renderRootFolder)}
 
             {/* External (combined) — only shown when at least one external
                 folder is linked. Single-folder users don't need a combined
@@ -2843,27 +2901,7 @@ export function FileManagerPage() {
                 <span className="text-sm">{t('fileManager.allExternal')}</span>
               </div>
             )}
-
-            {/* Folder tree — re-key on the collapse toggle so flipping it
-                remounts every FolderTreeItem, which re-reads defaultExpanded
-                and makes the preference take effect immediately. */}
-            {sortedFolders?.map((folder) => (
-              <FolderTreeItem
-                key={`${folder.id}-${collapseFoldersByDefault ? 'c' : 'e'}`}
-                folder={folder}
-                selectedFolderId={selectedFolderId}
-                onSelect={setSelectedFolderId}
-                onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
-                onLink={setLinkFolder}
-                onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
-                wrapNames={wrapFolderNames}
-                defaultExpanded={!collapseFoldersByDefault}
-                hasPermission={hasPermission}
-                t={t}
-                timeFormat={timeFormat}
-                dateFormat={dateFormat}
-              />
-            ))}
+            {externalRootFolders?.map(renderRootFolder)}
           </div>
         </div>
 

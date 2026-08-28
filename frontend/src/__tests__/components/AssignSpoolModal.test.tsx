@@ -201,7 +201,7 @@ describe('AssignSpoolModal', () => {
     fireEvent.click(screen.getByText(/Polymaker/));
 
     // Unticked: a plain assignment — the correction path, no prompt.
-    let buttons = screen.getAllByRole('button', { name: /Assign Spool/ });
+    const buttons = screen.getAllByRole('button', { name: /Assign Spool/ });
     fireEvent.click(buttons[buttons.length - 1]);
     await waitFor(() =>
       expect(api.assignSpool).toHaveBeenCalledWith(expect.objectContaining({ mid_print_replacement: false }))
