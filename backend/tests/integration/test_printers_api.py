@@ -263,10 +263,11 @@ class TestPrintersAPI:
     ):
         """A ``CloudLinkPrinter`` row survives archiving on purpose — the
         allowlist has no opinion about a printer's lifecycle — so availability
-        is filtered on the read side, in ``Uplink.build_snapshot``. A link that
-        is already running holds the set that snapshot produced, and nothing
-        about archiving reaches it: the machine is gone from the whole app while
-        the portal is still being told about it, until the next reconnect.
+        is filtered on the read side, in ``Uplink.build_snapshot_chunks``. A
+        link that is already running holds the set that snapshot produced, and
+        nothing about archiving reaches it: the machine is gone from the whole
+        app while the portal is still being told about it, until the next
+        reconnect.
         """
         from backend.app.services.cloud_link.service import cloud_link_service
 

@@ -48,8 +48,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.core.config import APP_VERSION
-from backend.app.models.cloud_link import CloudLinkAudit
-from backend.app.services.cloud_link import client as client_module, snapshot as snapshot_module
+from backend.app.models.cloud_link import CloudLinkAudit, CloudLinkPrinter
+from backend.app.models.printer import Printer
+from backend.app.services.cloud_link import (
+    client as client_module,
+    snapshot as snapshot_module,
+    uplink as uplink_module,
+)
 from backend.app.services.cloud_link.client import (
     AGENT_CAPABILITIES,
     BACKOFF_CAP_S,
@@ -245,7 +250,7 @@ def make_client(session_factory, uplink: Uplink | None = None, **overrides) -> C
     settings = {
         "backoff_base_s": 0.01,
         "backoff_cap_s": 0.05,
-        "idle_sleep_s": 0.01,
+        "tick_s": 0.01,
         "connect_timeout_s": 2.0,
         "handshake_timeout_s": 2.0,
     }
@@ -425,8 +430,8 @@ def test_the_hello_cannot_be_talked_into_a_shared_capability_list():
 
 
 async def test_a_successful_hello_is_followed_by_a_snapshot_then_heartbeats(session_factory, portal):
-    """The snapshot is the portal's whole picture of the farm; the heartbeats
-    are what tell it the picture is still current."""
+    """The snapshot act is the portal's whole picture of the farm; the
+    heartbeats are what tell it the picture is still current."""
 
     async def script(ws, instance, index):
         await instance.accept(ws, index, heartbeat_interval_s=0.05)
@@ -435,13 +440,14 @@ async def test_a_successful_hello_is_followed_by_a_snapshot_then_heartbeats(sess
     await pair_with(session_factory, url)
 
     async with running(make_client(session_factory)):
-        snapshot = await instance.expect(is_type("snapshot"))
+        chunk = await instance.expect(is_type("snapshot_chunk"))
         await instance.expect(is_type("heartbeat"))
 
-    assert snapshot["data"] == {"printers": []}, "nothing is published, so the portal is told exactly that"
+    assert chunk["data"]["printers"] == [], "nothing is published, so the portal is told exactly that"
+    assert chunk["data"] == {"sync_id": chunk["data"]["sync_id"], "chunk": 1, "of": 1, "base_seq": 0, "printers": []}
     types = [frame["type"] for frame in instance.frames]
     assert types[0] == "hello"
-    assert types[1] == "snapshot", "the snapshot goes out before anything else the agent has to say"
+    assert types[1] == "snapshot_chunk", "the snapshot act goes out before anything else the agent has to say"
 
 
 async def test_connecting_stamps_the_row_and_records_it_in_the_audit(session_factory, portal):
@@ -456,7 +462,7 @@ async def test_connecting_stamps_the_row_and_records_it_in_the_audit(session_fac
         await session.commit()
 
     async with running(make_client(session_factory)):
-        await instance.expect(is_type("snapshot"))
+        await instance.expect(is_type("snapshot_chunk"))
 
     config = await read_config(session_factory)
     assert config.last_connected_at is not None
@@ -470,7 +476,7 @@ async def test_connecting_stamps_the_row_and_records_it_in_the_audit(session_fac
 async def test_a_ping_is_answered_with_a_result_carrying_the_requests_id(session_factory, portal):
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         await ws.send_json(cmd("ping", "cmd-ping-1"))
 
     instance, url = await portal(script)
@@ -485,24 +491,32 @@ async def test_a_ping_is_answered_with_a_result_carrying_the_requests_id(session
     assert result["data"]["payload"] == {"pong": True}
 
 
-async def test_a_resync_produces_a_second_snapshot_after_its_result(session_factory, portal):
-    """The post-action runs after the acknowledgement, never instead of it."""
+async def test_a_resync_produces_a_second_snapshot_act_after_its_result(session_factory, portal):
+    """The post-action runs after the acknowledgement, never instead of it.
+
+    "A second snapshot" is now a second act — at least one ``snapshot_chunk``
+    sharing its own ``sync_id`` — not a second frame of a single type.
+    """
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         await ws.send_json(cmd("resync", "cmd-resync-1"))
 
     instance, url = await portal(script)
     await pair_with(session_factory, url)
 
     async with running(make_client(session_factory)):
-        first = await instance.expect(is_type("snapshot"))
+        first = await instance.expect(is_type("snapshot_chunk"))
         await instance.expect(is_type("cmd_result"))
-        await instance.expect(lambda f: f["type"] == "snapshot" and f is not first)
+        await instance.expect(lambda f: f["type"] == "snapshot_chunk" and f is not first)
 
-    types = [frame["type"] for frame in instance.frames if frame["type"] in {"snapshot", "cmd_result"}]
-    assert types[:3] == ["snapshot", "cmd_result", "snapshot"]
+    types = [frame["type"] for frame in instance.frames if frame["type"] in {"snapshot_chunk", "cmd_result"}]
+    assert types[:3] == ["snapshot_chunk", "cmd_result", "snapshot_chunk"]
+
+    chunks = [f for f in instance.frames if f["type"] == "snapshot_chunk"]
+    assert len(chunks) == 2, "one chunk per act — nothing is published, so each act is trivially one chunk"
+    assert chunks[0]["data"]["sync_id"] != chunks[1]["data"]["sync_id"], "two acts, not one repeated"
 
 
 async def test_a_requested_snapshot_is_sent_by_the_pump(session_factory, portal):
@@ -515,18 +529,18 @@ async def test_a_requested_snapshot_is_sent_by_the_pump(session_factory, portal)
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
 
     instance, url = await portal(script)
     await pair_with(session_factory, url)
     client = make_client(session_factory)
 
     async with running(client):
-        first = await instance.expect(is_type("snapshot"))
+        first = await instance.expect(is_type("snapshot_chunk"))
         client.request_snapshot()
-        await instance.expect(lambda f: f["type"] == "snapshot" and f is not first)
+        await instance.expect(lambda f: f["type"] == "snapshot_chunk" and f is not first)
 
-    assert [f["type"] for f in instance.frames].count("snapshot") == 2
+    assert [f["type"] for f in instance.frames].count("snapshot_chunk") == 2
 
 
 async def test_a_snapshot_asked_for_while_the_link_was_down_is_not_sent_twice(session_factory, portal):
@@ -538,7 +552,7 @@ async def test_a_snapshot_asked_for_while_the_link_was_down_is_not_sent_twice(se
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
 
     instance, url = await portal(script)
     await pair_with(session_factory, url)
@@ -546,11 +560,104 @@ async def test_a_snapshot_asked_for_while_the_link_was_down_is_not_sent_twice(se
     client.request_snapshot()  # while there is no connection at all
 
     async with running(client):
-        await instance.expect(is_type("snapshot"))
-        # Several pump cycles at the injected 0.01 s idle sleep.
+        await instance.expect(is_type("snapshot_chunk"))
+        # Several pump ticks at the injected 0.01 s cadence.
         await asyncio.sleep(0.1)
 
-    assert [f["type"] for f in instance.frames].count("snapshot") == 1
+    assert [f["type"] for f in instance.frames].count("snapshot_chunk") == 1
+
+
+async def test_no_status_batch_interleaves_the_chunks_of_one_snapshot_act(session_factory, portal, monkeypatch):
+    """A cross-repo invariant, from the portal's own review: a ``status_batch``
+    wedged between two chunks of one act is not dropped — it APPLIES, seq
+    consecutive with whatever the portal already has. The damage lands when
+    the act's LAST chunk arrives moments later: completion overwrites the
+    printer set with that now-stale snapshot and rolls ``lastSeq`` back to
+    ``base_seq``, so the farm's very next batch reads to the portal as a gap —
+    a self-inflicted resync loop. So every chunk of one ``snapshot_chunk`` act
+    must reach the wire back-to-back — nothing of another kind, ``status_batch``
+    above all, may land between two of them.
+
+    Forced to a genuinely multi-chunk act by shrinking the chunk size to one
+    printer; a printer is kept dirty for the whole test so the pump has
+    something to send on every tick it gets a turn, giving a broken
+    implementation every opportunity to interleave it into the act.
+    """
+    monkeypatch.setattr(uplink_module, "SNAPSHOT_CHUNK_PRINTERS", 1)
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index, heartbeat_interval_s=30.0)
+        # The connect act's own last chunk — wait for it in full before asking
+        # for the second act whose chunks are the ones under test.
+        await instance.expect(
+            lambda f: f["type"] == "snapshot_chunk" and f["data"]["chunk"] == f["data"]["of"] == 2,
+            connection=index,
+        )
+        await ws.send_json(cmd("resync", "cmd-resync-1"))
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+
+    async with session_factory() as session:
+        session.add_all(
+            Printer(
+                id=pid,
+                name=f"Printer {pid}",
+                serial_number=f"SN{pid:06d}",
+                ip_address="192.168.1.10",
+                access_code="12345678",
+                model="X2D",
+            )
+            for pid in (1, 2)
+        )
+        session.add_all(CloudLinkPrinter(printer_id=pid) for pid in (1, 2))
+        await session.commit()
+
+    uplink = Uplink(manager=FakeManager())
+    client = make_client(session_factory, uplink=uplink, tick_s=0.001)
+
+    async def keep_feeding():
+        while True:
+            uplink.feed(
+                {
+                    "type": "printer_status",
+                    "printer_id": 1,
+                    "data": {"connected": True, "state": "IDLE", "progress": None, "temperatures": {}},
+                }
+            )
+            await asyncio.sleep(0.002)
+
+    async with running(client):
+        feeder = asyncio.create_task(keep_feeding())
+        try:
+            await instance.expect(lambda f: f.get("re") == "cmd-resync-1")
+            # A few more ticks so the resync's own act, and whatever the
+            # feeder produces around it, are both on the wire to inspect.
+            await asyncio.sleep(0.1)
+        finally:
+            feeder.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await feeder
+
+    sync_ids: list[str] = []
+    for f in instance.frames:
+        if f["type"] == "snapshot_chunk" and f["data"]["sync_id"] not in sync_ids:
+            sync_ids.append(f["data"]["sync_id"])
+    assert len(sync_ids) >= 2, "the connect act and at least the resync's own act"
+
+    for sid in sync_ids:
+        positions = [
+            i for i, f in enumerate(instance.frames) if f["type"] == "snapshot_chunk" and f["data"]["sync_id"] == sid
+        ]
+        span = instance.frames[positions[0] : positions[-1] + 1]
+        assert all(f["type"] == "snapshot_chunk" for f in span), (
+            f"act {sid} was split by {[f['type'] for f in span]} — a status_batch mid-act applies, then gets "
+            f"rolled back by this act's own completion, turning the farm's next batch into an apparent gap"
+        )
+        assert len({f["data"]["sync_id"] for f in span}) == 1, (
+            f"act {sid}'s span contains a chunk from another sync_id — two acts' chunks "
+            f"alternating within these positions would pass the type-only check above"
+        )
 
 
 async def test_an_inbound_heartbeat_from_the_portal_is_tolerated(session_factory, portal):
@@ -560,7 +667,7 @@ async def test_an_inbound_heartbeat_from_the_portal_is_tolerated(session_factory
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         await ws.send_json(portal_frame("heartbeat"))
         await ws.send_json(cmd("ping", "after-the-beat"))
 
@@ -580,7 +687,7 @@ async def test_a_frame_that_is_not_a_valid_envelope_is_ignored_not_fatal(session
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         await ws.send_str("not json at all")
         await ws.send_str("[1, 2, 3]")
         await ws.send_json({"v": 1, "type": "cmd"})  # no id, no ts, no data
@@ -616,7 +723,7 @@ async def test_a_handler_that_raises_costs_one_command_and_leaves_it_unanswered(
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         await ws.send_json(cmd("ping", "boom"))
         await ws.send_json(cmd("ping", "survivor"))
 
@@ -654,7 +761,7 @@ async def test_a_camera_snapshot_is_answered_first_and_uploaded_after(session_fa
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         await ws.send_json(
             cmd(
                 "camera_snapshot",
@@ -695,7 +802,7 @@ async def test_a_camera_snapshot_with_bad_arguments_never_reaches_the_camera(ses
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         await ws.send_json(cmd("camera_snapshot", "cmd-snap-bad", args={"printer_id": "7"}))
         await ws.send_json(cmd("ping", "after-bad"))
 
@@ -727,7 +834,7 @@ async def test_a_failing_upload_costs_the_snapshot_and_never_the_link(session_fa
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         await ws.send_json(
             cmd(
                 "camera_snapshot",
@@ -806,7 +913,7 @@ async def test_unknown_commands_are_answered_forever_but_audited_only_five_times
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         for i, name in enumerate(names):
             await ws.send_json(cmd(name, f"unknown-{i}"))
 
@@ -845,7 +952,7 @@ async def test_every_camera_snapshot_row_shares_one_cap_per_connection(session_f
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         for frame_id in names:
             # The first three are refused for their shape, by the dispatcher;
             # the rest are well-formed and refused by the capture, because no
@@ -903,7 +1010,7 @@ async def test_more_than_five_remote_ops_on_one_connection_all_reach_dispatch(se
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         for frame_id in names:
             await ws.send_json(cmd("inventory.list_spools", frame_id))
 
@@ -945,7 +1052,7 @@ async def test_the_remote_op_budget_resets_across_reconnects(session_factory, po
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         if index == 0:
             for i in range(7):
                 await ws.send_json(
@@ -981,7 +1088,7 @@ async def test_a_revoke_command_persists_the_revocation_and_ends_the_run(session
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         await ws.send_json(cmd("revoke", "cmd-revoke-1"))
 
     instance, url = await portal(script)
@@ -1068,7 +1175,7 @@ async def test_other_hello_errors_are_retried_because_they_may_be_the_portals_pr
     await pair_with(session_factory, url)
 
     async with running(make_client(session_factory)):
-        await instance.expect(is_type("snapshot"))
+        await instance.expect(is_type("snapshot_chunk"))
 
     assert instance.connections >= 2, "the agent came back"
     config = await read_config(session_factory)
@@ -1086,7 +1193,7 @@ async def test_a_socket_that_drops_mid_session_brings_the_agent_back(session_fac
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         if index < 2:  # the observer's cap: drop twice, then stay up
             await ws.close()
 
@@ -1094,11 +1201,11 @@ async def test_a_socket_that_drops_mid_session_brings_the_agent_back(session_fac
     await pair_with(session_factory, url)
 
     async with running(make_client(session_factory)):
-        await instance.expect(is_type("snapshot"), connection=2)
+        await instance.expect(is_type("snapshot_chunk"), connection=2)
 
     assert instance.connections == 3
     for conversation in instance.per_connection[:3]:
-        assert [f["type"] for f in conversation][:2] == ["hello", "snapshot"]
+        assert [f["type"] for f in conversation][:2] == ["hello", "snapshot_chunk"]
     assert "disconnect" in await audit_kinds(session_factory)
 
 
@@ -1188,7 +1295,7 @@ async def test_every_successful_hello_clears_what_the_dead_socket_left_behind(se
     uplink = Uplink(manager=FakeManager())
     calls: list[str] = []
     real_reset = uplink.reset_transient
-    real_build = uplink.build_snapshot
+    real_build = uplink.build_snapshot_chunks
 
     def spy_reset():
         calls.append("reset")
@@ -1199,11 +1306,11 @@ async def test_every_successful_hello_clears_what_the_dead_socket_left_behind(se
         return await real_build(session)
 
     uplink.reset_transient = spy_reset  # type: ignore[method-assign]
-    uplink.build_snapshot = spy_build  # type: ignore[method-assign]
+    uplink.build_snapshot_chunks = spy_build  # type: ignore[method-assign]
 
     async def script(ws, instance_, index):
         await instance_.accept(ws, index)
-        await instance_.expect(is_type("snapshot"), connection=index)
+        await instance_.expect(is_type("snapshot_chunk"), connection=index)
         if index == 0:
             await ws.close()
 
@@ -1211,34 +1318,33 @@ async def test_every_successful_hello_clears_what_the_dead_socket_left_behind(se
     await pair_with(session_factory, url)
 
     async with running(make_client(session_factory, uplink=uplink)):
-        await instance.expect(is_type("snapshot"), connection=1)
+        await instance.expect(is_type("snapshot_chunk"), connection=1)
 
     assert calls == ["reset", "snapshot", "reset", "snapshot"], (
         "one reset per successful hello, each before that hello's snapshot is built"
     )
 
 
-async def test_resetting_the_transient_state_empties_the_outbox():
-    """The unit behind the ordering test above. The outbox is the only state
+def test_resetting_the_transient_state_empties_the_outbox():
+    """The unit behind the ordering test above. ``_dirty`` is the only state
     that survives a dead socket holding a frame nobody will ever want."""
     uplink = Uplink(manager=FakeManager())
     uplink.set_publish_set({1})
     uplink._connected[1] = False  # a first sighting, so the next push is an edge
     uplink.feed({"type": "printer_status", "printer_id": 1, "data": {"connected": True, "state": "IDLE"}})
-
-    edge = await uplink.drain()
-    assert edge is not None and edge.type == "event", "the edge frame, with its status waiting behind it"
+    assert 1 in uplink._dirty, "the status is sitting in the dirty map, waiting for a flush"
 
     uplink.reset_transient()
-    assert await uplink.drain() is None, "the status the dead socket never got is gone"
+    assert uplink.flush() == [], "the status the dead socket never got is gone"
 
 
 # ------------------------------------------------------------------ the pump
 
 
 class TwoFrameUplink(Uplink):
-    """An uplink holding a connection edge's two frames — the real producer of
-    more than one frame per drain (``_status_or_connection_event``)."""
+    """An uplink whose ``flush`` hands back more than one frame in a single
+    call — the real shape a connection edge produces (its own event, plus the
+    batch carrying the reading behind it, from the SAME tick)."""
 
     def __init__(self):
         super().__init__(manager=FakeManager())
@@ -1252,18 +1358,23 @@ class TwoFrameUplink(Uplink):
             )
             for n in (1, 2)
         ]
+        self._served = False
 
-    async def drain(self):
-        return self._scripted.pop(0) if self._scripted else None
+    def flush(self):
+        if self._served:
+            return []
+        self._served = True
+        return list(self._scripted)
 
 
-async def test_the_pump_drains_until_it_is_told_there_is_nothing_left(session_factory, portal):
-    """One drain is not one cycle's work.
+async def test_the_pump_sends_every_frame_one_flush_returns_before_it_sleeps(session_factory, portal):
+    """One flush is not one frame.
 
-    ``Uplink.drain`` answers an outbox before it pops the queue, so a
-    connection edge hands over two frames in two calls. A pump that drained
-    once per cycle would deliver the second one an idle-sleep late — which the
-    long sleep injected here turns from a latency bug into a visible failure.
+    ``Uplink.flush`` can hand back several frames for a single tick — a
+    connection edge's event ahead of the batch carrying its own reading — and
+    the pump has to send every one of them before it ever sleeps, or the
+    second would arrive a whole tick late. The long tick injected here turns
+    that into a visible failure rather than a latency bug.
     """
 
     async def script(ws, instance, index):
@@ -1271,13 +1382,13 @@ async def test_the_pump_drains_until_it_is_told_there_is_nothing_left(session_fa
 
     instance, url = await portal(script)
     await pair_with(session_factory, url)
-    client = make_client(session_factory, uplink=TwoFrameUplink(), idle_sleep_s=30.0)
+    client = make_client(session_factory, uplink=TwoFrameUplink(), tick_s=30.0)
 
     async with running(client):
         await instance.expect(lambda f: f.get("id") == "edge-2")
 
     ids = [f["id"] for f in instance.frames if f["type"] == "event"]
-    assert ids == ["edge-1", "edge-2"], "both frames of one edge, in order, in one cycle"
+    assert ids == ["edge-1", "edge-2"], "both frames from one flush, in order, in one tick"
 
 
 async def test_the_portals_throttle_becomes_the_uplinks(session_factory, portal):
@@ -1293,7 +1404,7 @@ async def test_the_portals_throttle_becomes_the_uplinks(session_factory, portal)
     assert uplink.min_interval_s != 12.5
 
     async with running(make_client(session_factory, uplink=uplink)):
-        await instance.expect(is_type("snapshot"))
+        await instance.expect(is_type("snapshot_chunk"))
 
     assert uplink.min_interval_s == 12.5
 
@@ -1316,7 +1427,7 @@ async def test_a_portal_asking_for_no_throttle_at_all_gets_the_floor(session_fac
     uplink = Uplink(manager=FakeManager())
 
     async with running(make_client(session_factory, uplink=uplink)):
-        await instance.expect(is_type("snapshot"))
+        await instance.expect(is_type("snapshot_chunk"))
 
     assert uplink.min_interval_s == MIN_THROTTLE_S
 
@@ -1335,7 +1446,7 @@ async def test_a_negative_throttle_gets_the_floor_too(session_factory, portal):
     uplink.min_interval_s = 42.0
 
     async with running(make_client(session_factory, uplink=uplink)):
-        await instance.expect(is_type("snapshot"))
+        await instance.expect(is_type("snapshot_chunk"))
 
     assert uplink.min_interval_s == MIN_THROTTLE_S
 
@@ -1373,7 +1484,7 @@ async def test_the_socket_is_opened_with_a_protocol_level_heartbeat(session_fact
     await pair_with(session_factory, url)
 
     async with running(make_client(session_factory)):
-        await instance.expect(is_type("snapshot"))
+        await instance.expect(is_type("snapshot_chunk"))
 
     assert seen == [DEFAULT_HEARTBEAT_INTERVAL_S], "the first connection has nothing negotiated yet"
 
@@ -1397,14 +1508,14 @@ async def test_the_next_socket_carries_the_interval_the_portal_negotiated(sessio
         if index == 0:
             # Drop the first connection so the agent comes back with what it
             # has just learned.
-            await instance.expect(is_type("snapshot"), connection=0)
+            await instance.expect(is_type("snapshot_chunk"), connection=0)
             await ws.close()
 
     instance, url = await portal(script)
     await pair_with(session_factory, url)
 
     async with running(make_client(session_factory)):
-        await instance.expect(is_type("snapshot"), connection=1)
+        await instance.expect(is_type("snapshot_chunk"), connection=1)
 
     assert seen[0] == DEFAULT_HEARTBEAT_INTERVAL_S
     assert seen[1] == 7.5
@@ -1453,7 +1564,7 @@ async def test_stopping_the_agent_closes_the_socket_and_returns(session_factory,
     before = set(asyncio.all_tasks())
     stop = asyncio.Event()
     task = asyncio.create_task(client.run(stop))
-    await instance.expect(is_type("snapshot"))
+    await instance.expect(is_type("snapshot_chunk"))
     stop.set()
     await asyncio.wait_for(task, 5)
 
@@ -1475,7 +1586,7 @@ async def test_a_portal_that_never_answers_the_handshake_is_retried(session_fact
     await pair_with(session_factory, url)
 
     async with running(make_client(session_factory, handshake_timeout_s=0.2)):
-        await instance.expect(is_type("snapshot"))
+        await instance.expect(is_type("snapshot_chunk"))
 
     assert instance.connections >= 2
     assert (await read_config(session_factory)).revoked is False
@@ -1536,7 +1647,7 @@ async def test_an_audit_that_cannot_be_written_never_breaks_the_loop(session_fac
 
     async def script(ws, instance, index):
         await instance.accept(ws, index)
-        await instance.expect(is_type("snapshot"), connection=index)
+        await instance.expect(is_type("snapshot_chunk"), connection=index)
         if index == 0:
             await ws.close()
             return

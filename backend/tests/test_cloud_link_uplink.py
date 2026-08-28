@@ -22,6 +22,12 @@ normalizer read nothing.
 payload under ``raw_data``, and the internal temperature dict carries private
 bookkeeping keys. Both are in the fixtures on purpose, so the tests can assert
 they do not come out the other end.
+
+**``flush`` is a tick, not a pop.** It replaced a per-message ``drain`` that a
+caller polled until it returned ``None``. Most tests below call it once and
+inspect the returned list — where the old suite called ``drain`` twice to get
+two frames, this one calls ``flush`` once and indexes ``frames[0]``/``frames[1]``,
+because both frames now come back from the SAME tick, in order.
 """
 
 from __future__ import annotations
@@ -37,7 +43,10 @@ from backend.app.models.printer import Printer
 from backend.app.services.bambu_mqtt import HMSError, PrinterState
 from backend.app.services.cloud_link.schemas import Temps, make_frame, parse_frame
 from backend.app.services.cloud_link.uplink import (
-    QUEUE_MAXSIZE,
+    BATCH_MAX_PRINTERS,
+    EVENTS_MAXSIZE,
+    EVENTS_PER_FLUSH,
+    SNAPSHOT_CHUNK_PRINTERS,
     STATUS_FIELDS,
     TEMPERATURE_FIELDS,
     Uplink,
@@ -168,6 +177,26 @@ class Clock:
         self.t += seconds
 
 
+def one_status(uplink: Uplink):
+    """Flush and return the single printer inside the tick's single
+    ``status_batch`` — the shape most of these tests need."""
+    frames = uplink.flush()
+    assert len(frames) == 1, f"expected exactly one frame, got {[f.type for f in frames]}"
+    assert frames[0].type == "status_batch"
+    assert len(frames[0].data.printers) == 1
+    return frames[0].data.printers[0]
+
+
+async def one_chunk(uplink: Uplink, session: AsyncSession):
+    """Build the snapshot and return its single chunk — the shape every test
+    of an unfragmented (<= SNAPSHOT_CHUNK_PRINTERS printer) farm needs."""
+    chunks = await uplink.build_snapshot_chunks(session)
+    assert len(chunks) == 1
+    assert chunks[0].data.chunk == 1
+    assert chunks[0].data.of == 1
+    return chunks[0]
+
+
 # ------------------------------------------------------- the tap on broadcast
 
 
@@ -254,15 +283,12 @@ def test_the_temperature_allowlist_is_exactly_the_contracts_temps():
 # ------------------------------------------------------------- the normalizer
 
 
-async def test_a_published_printers_status_becomes_a_status_frame():
+def test_a_published_printers_status_becomes_a_batch_frame():
     uplink = make_uplink({1})
     uplink.feed(status_message(1))
 
-    frame = await uplink.drain()
+    printer = one_status(uplink)
 
-    assert frame is not None
-    assert frame.type == "status"
-    printer = frame.data.printer
     assert printer.id == "1"
     assert printer.name == "X2D Front-Left"
     assert printer.model == "X2D"
@@ -278,30 +304,35 @@ async def test_a_published_printers_status_becomes_a_status_frame():
         "chamber": 38.0,
     }, "exactly the five the contract names — the heating flags and the internal set-time stay home"
 
-    # And what comes out is a frame the portal's own parser accepts.
-    assert parse_frame(make_frame(frame)).type == "status"
+
+def test_a_published_printers_status_frame_round_trips_the_contract():
+    """The frame ``flush`` builds is one the portal's own parser accepts."""
+    uplink = make_uplink({1})
+    uplink.feed(status_message(1))
+
+    frames = uplink.flush()
+    assert parse_frame(make_frame(frames[0])).type == "status_batch"
 
 
-async def test_an_unpublished_printers_status_is_dropped():
+def test_an_unpublished_printers_status_is_dropped():
     """The allowlist is the control that keeps a machine off the internet. A
     printer nobody ticked produces no frame at all — not an anonymised one."""
     uplink = make_uplink({1})
     uplink.feed(status_message(2))
 
-    assert await uplink.drain() is None
+    assert uplink.flush() == []
 
 
-async def test_the_publish_set_can_be_replaced_between_drains():
+def test_the_publish_set_can_be_replaced_between_flushes():
     uplink = make_uplink({1})
     uplink.set_publish_set({2})
 
     uplink.feed(status_message(1))
     uplink.feed(status_message(2))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.printer.id == "2"
-    assert await uplink.drain() is None
+    printer = one_status(uplink)
+    assert printer.id == "2"
+    assert uplink.flush() == []
 
 
 @pytest.mark.parametrize(
@@ -318,7 +349,7 @@ async def test_the_publish_set_can_be_replaced_between_drains():
         ("SOMETHING_FIRMWARE_INVENTED", "unknown"),
     ],
 )
-async def test_the_internal_gcode_state_maps_to_a_contract_state(gcode_state: str, expected: str):
+def test_the_internal_gcode_state_maps_to_a_contract_state(gcode_state: str, expected: str):
     """The literals are Bambu's ``gcode_state``, taken from
     ``bambu_mqtt._ACTIVE_PRINT_STATES`` and the completion branches beside it.
 
@@ -329,12 +360,10 @@ async def test_the_internal_gcode_state_maps_to_a_contract_state(gcode_state: st
     uplink = make_uplink({1})
     uplink.feed(status_message(1, state=gcode_state))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.printer.state == expected
+    assert one_status(uplink).state == expected
 
 
-async def test_a_disconnected_printer_is_offline_whatever_it_last_said():
+def test_a_disconnected_printer_is_offline_whatever_it_last_said():
     """``connected`` outranks ``gcode_state``. The last push before a printer
     dropped off the network says RUNNING forever, and a portal showing a
     machine as printing hours after it went dark is worse than showing nothing.
@@ -342,44 +371,38 @@ async def test_a_disconnected_printer_is_offline_whatever_it_last_said():
     uplink = make_uplink({1})
     uplink.feed(status_message(1, connected=False, state="RUNNING"))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.printer.state == "offline"
-    assert frame.data.printer.progress is None
+    printer = one_status(uplink)
+    assert printer.state == "offline"
+    assert printer.progress is None
 
 
-async def test_progress_and_job_name_are_null_when_nothing_is_printing():
+def test_progress_and_job_name_are_null_when_nothing_is_printing():
     """The contract's ``progress`` is "null while nothing is printing", so a
     stale 100 from the last job must not be reported as this one's."""
     uplink = make_uplink({1})
     uplink.feed(status_message(1, state="FINISH", progress=100.0))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.printer.progress is None
-    assert frame.data.printer.job_name is None
+    printer = one_status(uplink)
+    assert printer.progress is None
+    assert printer.job_name is None
 
 
-async def test_a_progress_reading_outside_the_range_is_clamped_not_raised():
+def test_a_progress_reading_outside_the_range_is_clamped_not_raised():
     """The contract bounds progress 0–100 and pydantic enforces it. A firmware
     reading of 255 must cost one clamped frame, not an exception on the tap."""
     uplink = make_uplink({1})
     uplink.feed(status_message(1, progress=255.0))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.printer.progress == 100.0
+    assert one_status(uplink).progress == 100.0
 
 
-async def test_a_missing_temperature_is_null_not_zero():
+def test_a_missing_temperature_is_null_not_zero():
     """A model without a chamber reports nothing for it, and ``0.0`` would read
     as a freezing chamber rather than an absent sensor."""
     uplink = make_uplink({1})
     uplink.feed(status_message(1, temperatures={"bed": 24.0, "nozzle": 25.5}))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.printer.temps.model_dump() == {
+    assert one_status(uplink).temps.model_dump() == {
         "bed": 24.0,
         "bed_target": None,
         "nozzle": 25.5,
@@ -388,7 +411,7 @@ async def test_a_missing_temperature_is_null_not_zero():
     }
 
 
-async def test_an_hms_error_crosses_as_a_code_and_a_message():
+def test_an_hms_error_crosses_as_a_code_and_a_message():
     """The status dict carries ``{code, attr, module, severity}`` and no text.
     The operator-facing code is the ``MMMM_EEEE`` short form composed from
     ``attr`` and ``code`` — the same one the printer's own screen shows."""
@@ -397,38 +420,36 @@ async def test_an_hms_error_crosses_as_a_code_and_a_message():
         status_message(1, hms_errors=[{"code": "0x8004", "attr": 0x03000000, "module": 3, "severity": 2}]),
     )
 
-    frame = await uplink.drain()
-    assert frame is not None
-    error = frame.data.printer.error
+    error = one_status(uplink).error
     assert error is not None
     assert error.code == "0300_8004"
     assert error.message, "a code with no message is half an error — the contract says so"
 
 
-async def test_an_hms_error_does_not_by_itself_make_the_state_error():
+def test_an_hms_error_does_not_by_itself_make_the_state_error():
     """A machine can print through a chamber-regulation warning. The error rides
     alongside the state; it does not replace it, or every PETG print on an
     enclosed machine would show as failed in the portal."""
     uplink = make_uplink({1})
     uplink.feed(status_message(1, hms_errors=[{"code": "0x8004", "attr": 0x03000000, "module": 3, "severity": 4}]))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.printer.state == "printing"
-    assert frame.data.printer.error is not None
+    printer = one_status(uplink)
+    assert printer.state == "printing"
+    assert printer.error is not None
 
 
 # ----------------------------------------------------------------- the events
 
 
-async def test_a_print_start_becomes_a_print_started_event_without_the_raw_payload():
+def test_a_print_start_becomes_a_print_started_event_without_the_raw_payload():
     """``send_print_start`` broadcasts the entire MQTT push under ``raw_data``,
     serial number and all. The event carries the job name and nothing else."""
     uplink = make_uplink({1})
     uplink.feed(print_start_message(1))
 
-    frame = await uplink.drain()
-    assert frame is not None
+    frames = uplink.flush()
+    assert len(frames) == 1
+    frame = frames[0]
     assert frame.type == "event"
     assert frame.data.kind == "print_started"
     assert frame.data.printer_id == "1"
@@ -439,135 +460,164 @@ async def test_a_print_start_becomes_a_print_started_event_without_the_raw_paylo
     assert "sequence_id" not in on_the_wire
 
 
-async def test_a_print_complete_becomes_a_print_finished_event_carrying_its_outcome():
+def test_a_print_complete_becomes_a_print_finished_event_carrying_its_outcome():
     uplink = make_uplink({1})
     uplink.feed(print_complete_message(1, status="failed"))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.kind == "print_finished"
-    assert frame.data.detail == {"job_name": "bracket_v3", "status": "failed"}
+    frames = uplink.flush()
+    assert len(frames) == 1
+    assert frames[0].data.kind == "print_finished"
+    assert frames[0].data.detail == {"job_name": "bracket_v3", "status": "failed"}
 
 
-async def test_an_unpublished_printers_print_start_is_dropped():
+def test_an_unpublished_printers_print_start_is_dropped():
     uplink = make_uplink({1})
     uplink.feed(print_start_message(2))
 
-    assert await uplink.drain() is None
+    assert uplink.flush() == []
 
 
-async def test_the_connection_edge_becomes_an_online_or_offline_event():
+def test_the_connection_edge_becomes_an_online_or_offline_event():
     """There is no dedicated connect/disconnect broadcast in the product — the
     connection state travels inside ``printer_status.data.connected``, so the
     edge is what the uplink watches.
 
-    Each edge yields TWO frames, in this order: the event that announces the
-    transition, then the status that is the new steady state.
+    Each edge yields TWO frames from the SAME ``flush`` call, in this order:
+    the event that announces the transition, then the batch carrying the new
+    steady state.
     """
     uplink = make_uplink({1})
 
     uplink.feed(status_message(1, connected=True))
-    assert (await uplink.drain()).type == "status", "the first sighting is a status, not an event"
+    frames = uplink.flush()
+    assert len(frames) == 1 and frames[0].type == "status_batch", "the first sighting is a batch, not an event"
 
     uplink.feed(status_message(1, connected=False, state="IDLE"))
-    assert (await uplink.drain()).data.kind == "printer_offline"
-    assert (await uplink.drain()).data.printer.state == "offline"
+    frames = uplink.flush()
+    assert len(frames) == 2
+    assert frames[0].type == "event" and frames[0].data.kind == "printer_offline"
+    assert frames[1].type == "status_batch" and frames[1].data.printers[0].state == "offline"
 
     uplink.feed(status_message(1, connected=True, state="IDLE"))
-    assert (await uplink.drain()).data.kind == "printer_online"
-    assert (await uplink.drain()).data.printer.state == "idle"
+    frames = uplink.flush()
+    assert len(frames) == 2
+    assert frames[0].data.kind == "printer_online"
+    assert frames[1].data.printers[0].state == "idle"
 
 
-async def test_the_offline_edge_carries_its_status_even_inside_the_throttle_window():
-    """The portal must not be left holding "printing" for a printer that is gone.
+def test_offline_edge_bypasses_throttle_and_event_precedes_batch():
+    """The portal must not be left holding "printing" for a printer that is
+    gone, and it must never see that status appear before the event that
+    explains it.
 
     A disconnected printer produces no further ``printer_status`` broadcast at
-    all, so the status accompanying the edge is the LAST word on that machine
-    until it comes back. Throttling it away — which is what would happen almost
-    every time, since the edge lands inside a window opened milliseconds
-    earlier by the previous push — would leave the last delivered status saying
-    the machine was mid-print, for as long as it stayed off.
+    all, so the batched reading that rides the edge is the LAST word on that
+    machine until it comes back. Throttling it away — which is what would
+    happen almost every time, since the edge lands inside a window opened
+    milliseconds earlier by the previous push — would leave the portal
+    thinking the machine was mid-print for as long as it stayed off.
     """
     clock = Clock()
     uplink = make_uplink({1}, min_interval_s=60.0, now=clock)
 
     uplink.feed(status_message(1, connected=True, state="RUNNING", progress=42.0))
-    assert (await uplink.drain()).data.printer.state == "printing"
+    assert one_status(uplink).state == "printing"
 
     clock.advance(1.0)
     uplink.feed(status_message(1, connected=False, state="RUNNING", progress=42.0))
 
-    assert (await uplink.drain()).data.kind == "printer_offline"
-    stale_check = await uplink.drain()
-    assert stale_check is not None
-    assert stale_check.type == "status"
-    assert stale_check.data.printer.state == "offline"
-    assert stale_check.data.printer.progress is None
+    frames = uplink.flush()
+    assert len(frames) == 2, "the edge event and the batch carrying its status leave in the SAME tick"
+    assert frames[0].type == "event" and frames[0].data.kind == "printer_offline"
+    assert frames[1].type == "status_batch"
+    offline_printer = frames[1].data.printers[0]
+    assert offline_printer.state == "offline"
+    assert offline_printer.progress is None
 
 
-async def test_the_edge_status_still_spends_the_throttle_window():
-    """The status that rides an edge IS that printer's report for now. Leaving
+def test_the_edge_status_still_spends_the_throttle_window():
+    """The reading that rides an edge IS that printer's report for now. Leaving
     the window unspent would let the very next ordinary push through
     immediately behind it."""
     clock = Clock()
     uplink = make_uplink({1}, min_interval_s=5.0, now=clock)
 
     uplink.feed(status_message(1, connected=True))
-    await uplink.drain()
+    uplink.flush()
 
     clock.advance(5.0)
     uplink.feed(status_message(1, connected=False, state="IDLE"))
-    assert (await uplink.drain()).data.kind == "printer_offline"
-    assert (await uplink.drain()).type == "status"
+    frames = uplink.flush()
+    assert frames[0].data.kind == "printer_offline"
+    assert frames[1].type == "status_batch"
 
     clock.advance(1.0)
     uplink.feed(status_message(1, connected=False, state="IDLE"))
-    assert await uplink.drain() is None
+    assert uplink.flush() == []
 
 
-async def test_the_first_sighting_of_a_printer_raises_no_connection_event():
+def test_the_first_sighting_of_a_printer_raises_no_connection_event():
     """The snapshot sent at connect already says whether each printer is up.
     An event on the first status push would be a duplicate of it, arriving
     every time the agent reconnects."""
     uplink = make_uplink({1})
     uplink.feed(status_message(1, connected=False, state="IDLE"))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.type == "status"
-    assert frame.data.printer.state == "offline"
+    assert one_status(uplink).state == "offline"
 
 
 # --------------------------------------------------------------- the throttle
 
 
-async def test_two_statuses_inside_the_window_yield_one_frame():
+def test_two_statuses_inside_the_window_yield_no_batch():
     clock = Clock()
     uplink = make_uplink({1}, min_interval_s=5.0, now=clock)
 
     uplink.feed(status_message(1))
-    assert await uplink.drain() is not None
+    assert len(uplink.flush()) == 1
 
     clock.advance(1.0)
     uplink.feed(status_message(1, progress=43.0))
-    assert await uplink.drain() is None
+    assert uplink.flush() == []
 
 
-async def test_a_status_after_the_window_passes():
+def test_a_status_after_the_window_passes():
     clock = Clock()
     uplink = make_uplink({1}, min_interval_s=5.0, now=clock)
 
     uplink.feed(status_message(1))
-    await uplink.drain()
+    uplink.flush()
 
     clock.advance(5.0)
     uplink.feed(status_message(1, progress=43.0))
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.printer.progress == 43.0
+    assert one_status(uplink).progress == 43.0
 
 
-async def test_the_throttle_is_kept_per_printer():
+def test_throttled_printer_stays_dirty_for_the_next_tick():
+    """A printer inside its throttle window is not dropped — it stays in the
+    dirty map, coalescing whatever arrives, until a LATER tick's window has
+    reopened. Two consecutive empty flushes must not lose the reading; the
+    third, once the window is open, must send the NEWEST one, not the first."""
+    clock = Clock()
+    uplink = make_uplink({1}, min_interval_s=5.0, now=clock)
+
+    uplink.feed(status_message(1))
+    assert len(uplink.flush()) == 1  # spends the window, stamps last_status_at
+
+    clock.advance(1.0)
+    uplink.feed(status_message(1, progress=50.0))
+    assert uplink.flush() == [], "still inside the window — nothing sent, nothing lost"
+
+    clock.advance(1.0)
+    uplink.feed(status_message(1, progress=75.0))  # coalesces over the 50.0 push
+    assert uplink.flush() == [], "still inside the window"
+
+    clock.advance(3.0)  # 5.0s since the window opened — it has now reopened
+    printer = one_status(uplink)
+    assert printer.progress == 75.0, "the newest coalesced reading — the stale 50.0 never had to be sent"
+
+
+def test_the_throttle_is_kept_per_printer():
     """A busy machine must not silence a quiet one. The window is one printer's
     minimum reporting interval, not the link's."""
     clock = Clock()
@@ -576,12 +626,12 @@ async def test_the_throttle_is_kept_per_printer():
     uplink.feed(status_message(1))
     uplink.feed(status_message(2))
 
-    first = await uplink.drain()
-    second = await uplink.drain()
-    assert {first.data.printer.id, second.data.printer.id} == {"1", "2"}
+    frames = uplink.flush()
+    assert len(frames) == 1, "both are dirty and unthrottled in the same tick — one batch carries both"
+    assert {p.id for p in frames[0].data.printers} == {"1", "2"}
 
 
-async def test_events_are_never_throttled():
+def test_events_are_never_throttled():
     """A status is a sample of a continuous thing and skipping one costs
     latency. An event is discrete: dropping ``print_finished`` means the portal
     shows a print that never ends."""
@@ -589,53 +639,143 @@ async def test_events_are_never_throttled():
     uplink = make_uplink({1}, min_interval_s=60.0, now=clock)
 
     uplink.feed(status_message(1))
-    assert (await uplink.drain()).type == "status"
+    assert uplink.flush()[0].type == "status_batch"
 
     uplink.feed(print_start_message(1))
     uplink.feed(print_complete_message(1))
 
-    assert (await uplink.drain()).data.kind == "print_started"
-    assert (await uplink.drain()).data.kind == "print_finished"
+    frames = uplink.flush()
+    assert len(frames) == 2
+    assert frames[0].data.kind == "print_started"
+    assert frames[1].data.kind == "print_finished"
 
 
-async def test_a_throttled_status_does_not_hide_the_event_behind_it():
-    """``drain`` pops until it has something to send. A queue whose head is a
-    throttled status must not make the caller poll again to reach the event
-    sitting behind it."""
+def test_a_throttled_printer_does_not_hide_the_event_beside_it():
+    """A throttled status produces no batch, but must never swallow an event
+    queued in the same tick — the two live in separate structures precisely so
+    neither can block the other."""
     clock = Clock()
     uplink = make_uplink({1}, min_interval_s=60.0, now=clock)
 
     uplink.feed(status_message(1))
-    await uplink.drain()
+    uplink.flush()
 
-    uplink.feed(status_message(1, progress=43.0))
+    uplink.feed(status_message(1, progress=43.0))  # inside the window — stays dirty
     uplink.feed(print_complete_message(1))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.kind == "print_finished"
+    frames = uplink.flush()
+    assert len(frames) == 1
+    assert frames[0].data.kind == "print_finished"
 
 
 # ------------------------------------------------------------------ the queue
 
 
-async def test_an_overflowing_queue_drops_the_oldest_without_raising():
+def test_a_hundred_updates_one_printer_flush_to_one_entry():
+    uplink = make_uplink({1})
+    for i in range(100):
+        uplink.feed(status_message(1, progress=float(i)))
+
+    frames = uplink.flush()
+    batches = [f for f in frames if f.type == "status_batch"]
+    assert len(batches) == 1 and len(batches[0].data.printers) == 1
+    assert batches[0].data.printers[0].progress == 99.0, "the NEWEST won"
+    assert batches[0].data.seq == 1
+
+
+def test_a_hundred_status_pushes_never_touch_dropped():
+    """Coalescing means overflow is impossible by construction for a status —
+    only the bounded events backlog can overflow, and only events count
+    against ``dropped``."""
+    uplink = make_uplink({1}, min_interval_s=0.0)
+
+    for progress in range(600):
+        uplink.feed(status_message(1, progress=float(progress)))
+
+    assert uplink.dropped == 0
+    assert uplink.pending == 1, "600 pushes for one printer coalesce to a single dirty entry"
+
+
+def test_seq_increments_across_flushes_and_oversized_ticks_split():
+    """``BATCH_MAX_PRINTERS`` published, dirty printers in one tick is split
+    into consecutive batches with consecutive ``seq`` values, and the counter
+    keeps counting into the NEXT tick rather than restarting."""
+    total = BATCH_MAX_PRINTERS * 2 + 200  # 1200 at the current 500/batch
+    uplink = make_uplink(set(range(1, total + 1)), min_interval_s=0.0)
+    for pid in range(1, total + 1):
+        uplink.feed(status_message(pid))
+
+    frames = uplink.flush()
+    batches = [f for f in frames if f.type == "status_batch"]
+    assert len(batches) == 3
+    assert [b.data.seq for b in batches] == [1, 2, 3]
+    assert [len(b.data.printers) for b in batches] == [BATCH_MAX_PRINTERS, BATCH_MAX_PRINTERS, 200]
+    assert sum(len(b.data.printers) for b in batches) == total
+
+    uplink.feed(status_message(1, progress=99.0))
+    next_frames = uplink.flush()
+    next_batches = [f for f in next_frames if f.type == "status_batch"]
+    assert len(next_batches) == 1
+    assert next_batches[0].data.seq == 4, "seq keeps counting from where the oversized tick left off"
+
+
+def test_an_overflowing_events_backlog_drops_the_oldest_without_raising():
     """The tap runs inside ``broadcast``, so it cannot block and it cannot
-    fail. When the link is down and nothing drains, the newest reading is the
-    one worth keeping — a queue that dropped the newest would hold a snapshot
-    of the moment the connection died and never move on.
+    fail. Unlike a status, an event has no later message to correct it — so an
+    events backlog left unflushed for a very long time must drop its OLDEST
+    entries, the same overflow policy the old unified queue used, now scoped
+    to the one structure that can still overflow.
+
+    Drained over several flushes, not one — ``flush`` caps how many events it
+    emits per tick (:data:`EVENTS_PER_FLUSH`), so the 90 survivors of a
+    100-deep backlog take more than a single call to fully appear; the point
+    pinned here is what survives overall, not how many ticks that takes (a
+    dedicated test covers the per-tick split).
+    """
+    uplink = make_uplink({1})
+
+    for i in range(EVENTS_MAXSIZE + 10):
+        uplink.feed(print_complete_message(1, status=f"job-{i}"))
+
+    assert uplink.dropped == 10
+
+    finished = []
+    while uplink.pending:
+        finished.extend(f for f in uplink.flush() if f.data.kind == "print_finished")
+
+    assert len(finished) == EVENTS_MAXSIZE
+    assert finished[0].data.detail["status"] == "job-10", "the survivors start after the dropped ten"
+
+
+def test_flush_caps_events_per_tick_spreading_a_backlog_across_ticks():
+    """A long outage's WHOLE event backlog going out the moment the link is
+    back is itself a burst the portal never asked for — see
+    :data:`EVENTS_PER_FLUSH`. 50 queued events split 20 / 20 / 10 across three
+    flushes, in order, nothing dropped; and a dirty printer's own batch still
+    rides the SAME tick as its events, capped or not.
     """
     uplink = make_uplink({1}, min_interval_s=0.0)
 
-    for progress in range(QUEUE_MAXSIZE + 10):
-        uplink.feed(status_message(1, progress=float(progress % 100)))
+    for i in range(50):
+        uplink.feed(print_complete_message(1, status=f"job-{i}"))
+    uplink.feed(status_message(1))
 
-    assert uplink.dropped == 10
-    assert uplink.pending == QUEUE_MAXSIZE
+    assert uplink.dropped == 0, "well under EVENTS_MAXSIZE — nothing here should overflow"
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.printer.progress == 10.0, "the survivors start after the dropped ten"
+    first = uplink.flush()
+    first_events = [f for f in first if f.type == "event"]
+    first_batches = [f for f in first if f.type == "status_batch"]
+    assert len(first_events) == EVENTS_PER_FLUSH
+    assert [f.data.detail["status"] for f in first_events] == [f"job-{i}" for i in range(20)]
+    assert len(first_batches) == 1, "the dirty printer's own batch still rides this tick, capped events or not"
+
+    second = [f for f in uplink.flush() if f.type == "event"]
+    third = [f for f in uplink.flush() if f.type == "event"]
+
+    assert [len(second), len(third)] == [EVENTS_PER_FLUSH, 10]
+    assert [f.data.detail["status"] for f in second] == [f"job-{i}" for i in range(20, 40)]
+    assert [f.data.detail["status"] for f in third] == [f"job-{i}" for i in range(40, 50)]
+    assert uplink.pending == 0, "fully drained after three ticks"
 
 
 @pytest.mark.parametrize(
@@ -649,25 +789,102 @@ async def test_an_overflowing_queue_drops_the_oldest_without_raising():
         {"type": "printer_status", "printer_id": 1, "data": None},
     ],
 )
-async def test_feed_never_raises_and_drain_survives_junk(junk):
+def test_feed_never_raises_and_flush_survives_junk(junk):
     """``feed`` is called synchronously from the product's broadcast path. It
     has one job — take the message — and no input may make it throw."""
     uplink = make_uplink({1})
     uplink.feed(junk)
 
-    assert await uplink.drain() is None
+    assert uplink.flush() == []
 
 
-async def test_a_message_the_uplink_has_no_use_for_never_enters_the_queue():
+def test_a_message_the_uplink_has_no_use_for_never_enters_the_dirty_map_or_events():
     """Archive, library and inventory broadcasts outnumber printer pushes
-    during a library scan. Letting them into a 500-deep queue would flush every
-    printer status out of it before the link ever drained one."""
+    during a library scan. Letting them into the 100-deep event deque would
+    push real ``print_complete`` broadcasts out of it before the link ever
+    flushed one."""
     uplink = make_uplink({1})
     uplink.feed({"type": "library_file_added", "data": {"id": 7}})
     uplink.feed({"type": "archive_created", "data": {"id": 9}})
 
     assert uplink.pending == 0
-    assert await uplink.drain() is None
+    assert uplink.flush() == []
+
+
+# ------------------------------------------------------------ reset_transient
+
+
+def test_reset_transient_clears_dirty_resets_seq_keeps_events():
+    """The client loop calls this on every reconnect, before building the
+    fresh snapshot chunks. Three things must all be true at once: the stale
+    dirty entry is gone (the snapshot supersedes it), the queued event
+    survives (nothing else will ever carry it), and ``seq`` restarts at 1 for
+    this connection's first batch."""
+    uplink = make_uplink({1}, min_interval_s=0.0)
+    uplink.feed(status_message(1))
+    first = uplink.flush()
+    assert first[0].data.seq == 1, "sanity check on the pre-reset seq"
+
+    uplink.feed(status_message(1, progress=77.0))  # goes dirty, never sent
+    uplink.feed(print_start_message(1))  # queued as an event
+
+    uplink.reset_transient()
+
+    assert uplink.pending == 1, "dirty was cleared; the queued event was not"
+
+    uplink.feed(status_message(1, progress=88.0))  # freshly dirty after the reset
+    frames = uplink.flush()
+
+    assert [f.type for f in frames] == ["event", "status_batch"]
+    assert frames[1].data.seq == 1, "seq restarted — this reads as a brand new connection's first batch"
+    assert frames[1].data.printers[0].progress == 88.0, "the pre-reset 77.0 reading was dropped, not sent stale"
+
+
+def test_flush_with_nothing_dirty_returns_no_frames():
+    uplink = make_uplink({1})
+    assert uplink.flush() == []
+
+
+# --------------------------------------------- the per-printer failure boundary
+
+
+def test_a_broken_printer_build_does_not_cost_the_tick():
+    """One printer's build failure must not discard the events, or the OTHER
+    printers' batch entries, already computed this same ``flush`` call.
+
+    Before the per-printer ``try/except``, an exception escaping mid-loop
+    unwound all the way out of ``flush`` — discarding the local ``frames``
+    list (every event, every earlier printer's batch entry) since the
+    function never reached its ``return``. A poisoned identity lookup for one
+    printer must cost only that printer's own entry.
+    """
+    uplink = make_uplink({1, 2})
+    real_printer_from_status = uplink._printer_from_status
+
+    def poisoned(pid, data):
+        if pid == 2:
+            raise RuntimeError("a poisoned identity lookup")
+        return real_printer_from_status(pid, data)
+
+    uplink._printer_from_status = poisoned  # type: ignore[method-assign]
+
+    uplink.feed(status_message(1))
+    uplink.feed(status_message(2))
+    uplink.feed(print_start_message(1))
+
+    frames = uplink.flush()
+
+    events = [f for f in frames if f.type == "event"]
+    batches = [f for f in frames if f.type == "status_batch"]
+    assert len(events) == 1 and events[0].data.kind == "print_started", (
+        "the event survives a completely unrelated printer's build failure"
+    )
+    assert len(batches) == 1
+    assert [p.id for p in batches[0].data.printers] == ["1"], "printer 2's broken build cost only its own entry"
+
+    # Popped after the failed attempt is an acceptable outcome — the log is
+    # the record. It must not still be sitting there to retry-loop on forever.
+    assert 2 not in uplink._dirty
 
 
 # --------------------------------------------------------------- the snapshot
@@ -709,15 +926,15 @@ async def test_the_snapshot_holds_exactly_the_published_printers(db_session: Asy
     await _publish(db_session, 1)
 
     uplink = Uplink(manager=FakeManager(states={1: _running_state(), 2: _running_state()}))
-    snapshot = await uplink.build_snapshot(db_session)
+    chunk = await one_chunk(uplink, db_session)
 
-    assert [p.id for p in snapshot.data.printers] == ["1"]
-    only = snapshot.data.printers[0]
+    assert [p.id for p in chunk.data.printers] == ["1"]
+    only = chunk.data.printers[0]
     assert only.name == "X2D Front-Left"
     assert only.model == "X2D"
     assert only.state == "printing"
     assert only.progress == 42.0
-    assert parse_frame(make_frame(snapshot)).type == "snapshot"
+    assert parse_frame(make_frame(chunk)).type == "snapshot_chunk"
 
 
 async def test_an_archived_printer_is_excluded_even_when_it_is_published(db_session: AsyncSession):
@@ -731,9 +948,9 @@ async def test_an_archived_printer_is_excluded_even_when_it_is_published(db_sess
     await _publish(db_session, 1, 2)
 
     uplink = Uplink(manager=FakeManager(states={1: _running_state(), 2: _running_state()}))
-    snapshot = await uplink.build_snapshot(db_session)
+    chunk = await one_chunk(uplink, db_session)
 
-    assert [p.id for p in snapshot.data.printers] == ["2"]
+    assert [p.id for p in chunk.data.printers] == ["2"]
 
 
 async def test_an_inactive_printer_is_excluded_even_when_it_is_published(db_session: AsyncSession):
@@ -744,9 +961,9 @@ async def test_an_inactive_printer_is_excluded_even_when_it_is_published(db_sess
     await _publish(db_session, 1)
 
     uplink = Uplink(manager=FakeManager(states={1: _running_state()}))
-    snapshot = await uplink.build_snapshot(db_session)
+    chunk = await one_chunk(uplink, db_session)
 
-    assert snapshot.data.printers == []
+    assert chunk.data.printers == []
 
 
 async def test_a_published_printer_with_no_live_state_is_offline_in_the_snapshot(db_session: AsyncSession):
@@ -757,9 +974,9 @@ async def test_a_published_printer_with_no_live_state_is_offline_in_the_snapshot
     await _publish(db_session, 1)
 
     uplink = Uplink(manager=FakeManager())
-    snapshot = await uplink.build_snapshot(db_session)
+    chunk = await one_chunk(uplink, db_session)
 
-    printer = snapshot.data.printers[0]
+    printer = chunk.data.printers[0]
     assert printer.state == "offline"
     assert printer.progress is None
     assert printer.job_name is None
@@ -780,13 +997,13 @@ async def test_a_printer_with_no_model_recorded_still_makes_the_snapshot(db_sess
     await _publish(db_session, 1)
 
     uplink = Uplink(manager=FakeManager())
-    snapshot = await uplink.build_snapshot(db_session)
+    chunk = await one_chunk(uplink, db_session)
 
-    assert snapshot.data.printers[0].model == ""
+    assert chunk.data.printers[0].model == ""
 
 
 async def test_the_snapshot_refreshes_the_in_memory_publish_set(db_session: AsyncSession):
-    """``drain`` may not touch the database, so something has to keep its
+    """``flush`` may not touch the database, so something has to keep its
     filter current. The snapshot already reads the allowlist for its own sake —
     doing it there means one query answers both questions."""
     await _add_printer(db_session, 1, "X2D Front-Left", "X2D")
@@ -794,16 +1011,16 @@ async def test_the_snapshot_refreshes_the_in_memory_publish_set(db_session: Asyn
 
     uplink = Uplink(manager=FakeManager(names={1: ("X2D Front-Left", "X2D")}))
     uplink.feed(status_message(1))
-    assert await uplink.drain() is None, "nothing is published until the set has been read"
+    assert uplink.flush() == [], "nothing is published until the set has been read"
 
-    await uplink.build_snapshot(db_session)
+    await uplink.build_snapshot_chunks(db_session)
 
     uplink.feed(status_message(1))
-    assert await uplink.drain() is not None
+    assert uplink.flush() != []
 
 
 async def test_an_archived_printer_stops_producing_status_frames_too(db_session: AsyncSession):
-    """The availability filter has to reach ``drain``, not only the snapshot.
+    """The availability filter has to reach ``flush``, not only the snapshot.
 
     An archived printer is retired from the app, not unplugged: it may still be
     MQTT-connected at the moment it is archived, and every push it makes is
@@ -816,13 +1033,13 @@ async def test_an_archived_printer_stops_producing_status_frames_too(db_session:
     await _publish(db_session, 1, 2)
 
     uplink = Uplink(manager=FakeManager(names={1: ("Retired X1C", "X1C"), 2: ("P1S Shelf", "P1S")}))
-    await uplink.build_snapshot(db_session)
+    await uplink.build_snapshot_chunks(db_session)
 
     uplink.feed(status_message(1))
-    assert await uplink.drain() is None, "archived means gone from the portal, status frames included"
+    assert uplink.flush() == [], "archived means gone from the portal, status frames included"
 
     uplink.feed(status_message(2))
-    assert await uplink.drain() is not None
+    assert uplink.flush() != []
 
 
 async def test_a_printer_in_maintenance_mode_stops_producing_status_frames_too(db_session: AsyncSession):
@@ -831,10 +1048,10 @@ async def test_a_printer_in_maintenance_mode_stops_producing_status_frames_too(d
     await _publish(db_session, 1)
 
     uplink = Uplink(manager=FakeManager(names={1: ("Parked X2D", "X2D")}))
-    await uplink.build_snapshot(db_session)
+    await uplink.build_snapshot_chunks(db_session)
 
     uplink.feed(status_message(1))
-    assert await uplink.drain() is None
+    assert uplink.flush() == []
 
 
 async def test_the_snapshot_seeds_the_connection_watcher(db_session: AsyncSession):
@@ -847,14 +1064,14 @@ async def test_the_snapshot_seeds_the_connection_watcher(db_session: AsyncSessio
     await _publish(db_session, 1)
 
     uplink = Uplink(manager=FakeManager(states={1: _running_state()}, names={1: ("X2D Front-Left", "X2D")}))
-    snapshot = await uplink.build_snapshot(db_session)
-    assert snapshot.data.printers[0].state == "printing", "the snapshot says it is up"
+    chunk = await one_chunk(uplink, db_session)
+    assert chunk.data.printers[0].state == "printing", "the snapshot says it is up"
 
     uplink.feed(status_message(1, connected=False, state="RUNNING"))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.kind == "printer_offline"
+    frames = uplink.flush()
+    assert frames[0].type == "event"
+    assert frames[0].data.kind == "printer_offline"
 
 
 async def test_a_snapshot_of_a_disconnected_printer_seeds_the_watcher_the_other_way(db_session: AsyncSession):
@@ -865,13 +1082,95 @@ async def test_a_snapshot_of_a_disconnected_printer_seeds_the_watcher_the_other_
     await _publish(db_session, 1)
 
     uplink = Uplink(manager=FakeManager(names={1: ("X2D Front-Left", "X2D")}))
-    assert (await uplink.build_snapshot(db_session)).data.printers[0].state == "offline"
+    chunk = await one_chunk(uplink, db_session)
+    assert chunk.data.printers[0].state == "offline"
 
     uplink.feed(status_message(1, connected=True))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.kind == "printer_online"
+    frames = uplink.flush()
+    assert frames[0].data.kind == "printer_online"
+
+
+# ---------------------------------------------------------------- the chunks
+
+
+async def test_1200_published_printers_split_into_three_chunks_sharing_one_sync_id(db_session: AsyncSession):
+    """The other side of :data:`SNAPSHOT_CHUNK_PRINTERS`: a farm larger than
+    one chunk splits into consecutive, ``sync_id``-linked acts the portal can
+    reassemble."""
+    total = SNAPSHOT_CHUNK_PRINTERS * 2 + 200  # 1200 at the current 500/chunk
+    db_session.add_all(
+        Printer(
+            id=pid,
+            name=f"Printer {pid}",
+            serial_number=f"SN{pid:06d}",
+            ip_address="192.168.1.10",
+            access_code="12345678",
+            model="X2D",
+        )
+        for pid in range(1, total + 1)
+    )
+    db_session.add_all(CloudLinkPrinter(printer_id=pid) for pid in range(1, total + 1))
+    await db_session.commit()
+
+    uplink = Uplink(manager=FakeManager())
+    chunks = await uplink.build_snapshot_chunks(db_session)
+
+    assert len(chunks) == 3
+    assert len({c.data.sync_id for c in chunks}) == 1, "every chunk of one act shares one sync_id"
+    assert [c.data.chunk for c in chunks] == [1, 2, 3]
+    assert all(c.data.of == 3 for c in chunks)
+    assert [len(c.data.printers) for c in chunks] == [SNAPSHOT_CHUNK_PRINTERS, SNAPSHOT_CHUNK_PRINTERS, 200]
+    assert sum(len(c.data.printers) for c in chunks) == total
+
+
+async def test_a_mid_connection_resync_carries_the_running_seq_not_zero(db_session: AsyncSession):
+    """``base_seq`` on a resync act is the connection's RUNNING ``status_batch``
+    count, never 0 — only :meth:`Uplink.reset_transient` (an actual reconnect)
+    restarts the numbering. The live portal keys its ``lastSeq`` off this
+    value, so a resync that reported 0 here would read as the farm rewinding
+    every batch it had already sent, and ``seq`` must keep counting past the
+    act afterwards too — a resync is not a second connection.
+    """
+    await _add_printer(db_session, 1, "X2D Front-Left", "X2D")
+    await _publish(db_session, 1)
+
+    uplink = make_uplink({1}, min_interval_s=0.0)
+    uplink.feed(status_message(1))
+    first = [f for f in uplink.flush() if f.type == "status_batch"]
+    assert [f.data.seq for f in first] == [1], "sanity check on the pre-resync seq"
+
+    uplink.feed(status_message(1, progress=50.0))
+    second = [f for f in uplink.flush() if f.type == "status_batch"]
+    assert [f.data.seq for f in second] == [2]
+
+    chunks = await uplink.build_snapshot_chunks(db_session)
+    assert all(c.data.base_seq == 2 for c in chunks), "the resync's act carries the running seq, not a reset one"
+
+    uplink.feed(status_message(1, progress=75.0))
+    third = [f for f in uplink.flush() if f.type == "status_batch"]
+    assert [f.data.seq for f in third] == [3], "seq keeps counting past the resync — it is not reset mid-connection"
+
+
+async def test_a_small_farm_snapshot_is_one_chunk_of_one(db_session: AsyncSession):
+    await _add_printer(db_session, 1, "X2D Front-Left", "X2D")
+    await _publish(db_session, 1)
+
+    uplink = Uplink(manager=FakeManager())
+    chunk = await one_chunk(uplink, db_session)
+
+    assert chunk.data.chunk == 1
+    assert chunk.data.of == 1
+
+
+async def test_an_empty_publish_set_still_sends_one_empty_chunk(db_session: AsyncSession):
+    """The portal learns "this farm publishes nothing" and gets a
+    ``base_seq`` to anchor whatever comes after from this one act — an empty
+    return here would tell it nothing at all."""
+    uplink = Uplink(manager=FakeManager())
+    chunk = await one_chunk(uplink, db_session)
+
+    assert chunk.data.printers == []
 
 
 # ------------------------------------------------ the chamber that isn't there
@@ -892,9 +1191,9 @@ async def test_a_model_without_a_chamber_sensor_reports_no_chamber_in_the_snapsh
     await _publish(db_session, 1)
 
     uplink = Uplink(manager=FakeManager(states={1: _running_state()}))
-    snapshot = await uplink.build_snapshot(db_session)
+    chunk = await one_chunk(uplink, db_session)
 
-    temps = snapshot.data.printers[0].temps
+    temps = chunk.data.printers[0].temps
     assert temps.chamber is None
     # The rest of the readings are untouched — this filter is about one sensor.
     assert temps.bed == 60.0
@@ -910,9 +1209,9 @@ async def test_a_model_with_a_chamber_sensor_keeps_its_reading_in_the_snapshot(
     await _publish(db_session, 1)
 
     uplink = Uplink(manager=FakeManager(states={1: _running_state()}))
-    snapshot = await uplink.build_snapshot(db_session)
+    chunk = await one_chunk(uplink, db_session)
 
-    assert snapshot.data.printers[0].temps.chamber == 38.0
+    assert chunk.data.printers[0].temps.chamber == 38.0
 
 
 async def test_a_printer_with_no_model_recorded_reports_no_chamber(db_session: AsyncSession):
@@ -924,9 +1223,9 @@ async def test_a_printer_with_no_model_recorded_reports_no_chamber(db_session: A
     await _publish(db_session, 1)
 
     uplink = Uplink(manager=FakeManager(states={1: _running_state()}))
-    snapshot = await uplink.build_snapshot(db_session)
+    chunk = await one_chunk(uplink, db_session)
 
-    assert snapshot.data.printers[0].temps.chamber is None
+    assert chunk.data.printers[0].temps.chamber is None
 
 
 def test_the_snapshot_adapter_strips_the_same_chamber_keys_the_browser_path_does():
@@ -968,10 +1267,9 @@ async def test_the_status_path_arrives_already_filtered_for_a_chamberless_model(
     )
     await manager.send_printer_status(7, printer_state_to_dict(state, 7, "P1S"))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.printer.temps.chamber is None
-    assert frame.data.printer.temps.bed == 60.0
+    printer = one_status(uplink)
+    assert printer.temps.chamber is None
+    assert printer.temps.bed == 60.0
 
     manager.remove_internal_listener(uplink.feed)
 
@@ -979,7 +1277,7 @@ async def test_the_status_path_arrives_already_filtered_for_a_chamberless_model(
 # --------------------------------------------------------------- end to end
 
 
-async def test_a_real_broadcast_reaches_the_portal_as_a_status_frame():
+async def test_a_real_broadcast_reaches_the_portal_as_a_status_batch():
     """The one test with nothing hand-copied in it.
 
     Every other fixture here is a transcription of what a helper builds, and a
@@ -1003,10 +1301,10 @@ async def test_a_real_broadcast_reaches_the_portal_as_a_status_frame():
     )
     await manager.send_printer_status(7, printer_state_to_dict(state, 7, "X2D"))
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.type == "status"
-    printer = frame.data.printer
+    frames = uplink.flush()
+    assert len(frames) == 1
+    assert frames[0].type == "status_batch"
+    printer = frames[0].data.printers[0]
     assert printer.id == "7"
     assert printer.state == "printing"
     assert printer.progress == 42.0
@@ -1018,7 +1316,9 @@ async def test_a_real_broadcast_reaches_the_portal_as_a_status_frame():
         "nozzle_target": 220.0,
         "chamber": 38.0,
     }
-    assert parse_frame(make_frame(frame)).type == "status"
+    # The one test with nothing hand-copied also proves the real broadcast
+    # path survives the portal's own contract parser.
+    assert parse_frame(make_frame(frames[0])).type == "status_batch"
 
     manager.remove_internal_listener(uplink.feed)
 
@@ -1035,10 +1335,10 @@ async def test_a_real_print_complete_broadcast_reaches_the_portal_as_an_event():
         {"status": "completed", "filename": "Metadata/plate_1.gcode", "subtask_name": "bracket_v3"},
     )
 
-    frame = await uplink.drain()
-    assert frame is not None
-    assert frame.data.kind == "print_finished"
-    assert frame.data.printer_id == "7"
+    frames = uplink.flush()
+    assert len(frames) == 1
+    assert frames[0].data.kind == "print_finished"
+    assert frames[0].data.printer_id == "7"
 
     manager.remove_internal_listener(uplink.feed)
 
@@ -1069,6 +1369,6 @@ async def test_an_hms_error_on_a_snapshot_printer_crosses(db_session: AsyncSessi
     state.hms_errors = [HMSError(code="0x8004", attr=0x03000000, module=3, severity=2)]
 
     uplink = Uplink(manager=FakeManager(states={1: state}))
-    snapshot = await uplink.build_snapshot(db_session)
+    chunk = await one_chunk(uplink, db_session)
 
-    assert snapshot.data.printers[0].error.code == "0300_8004"
+    assert chunk.data.printers[0].error.code == "0300_8004"
