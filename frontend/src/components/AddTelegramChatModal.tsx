@@ -36,6 +36,10 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
   // not carry. Telegram chat setup is an admin screen anyway.
   const { data: users } = useQuery({ queryKey: ['users'], queryFn: api.getUsers });
   const { data: eventTypes } = useQuery({ queryKey: ['telegram-events'], queryFn: api.getTelegramEvents });
+  // Global progress-milestone duration floor (#28) — read-only here, but this
+  // per-chat dialog is the only event surface a TG operator ever sees.
+  const { data: appSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const milestoneFloor = appSettings?.notify_progress_min_duration_minutes ?? 0;
 
   // Pull the telegram provider so we can warn the operator when the
   // chat-side daily_digest opt-in won't take effect (provider digest off).
@@ -346,7 +350,18 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
                           onChange={() => toggleEvent(event.event_type)}
                           className="w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                         />
-                        {EVENT_LABEL_KEYS[event.event_type] ? t(EVENT_LABEL_KEYS[event.event_type]) : event.label}
+                        <span>
+                          {EVENT_LABEL_KEYS[event.event_type] ? t(EVENT_LABEL_KEYS[event.event_type]) : event.label}
+                          {/* TG events are configured strictly per chat, so this
+                              dialog is the ONE place a TG operator would look —
+                              surface the global duration floor here or they
+                              can't know why short prints stay silent (#28). */}
+                          {event.event_type === 'print_progress' && milestoneFloor > 0 && (
+                            <span className="block text-[10px] leading-tight text-bambu-gray">
+                              {t('notifications.progressMilestonesFloorHint', { minutes: milestoneFloor })}
+                            </span>
+                          )}
+                        </span>
                       </label>
                     ))}
                   </div>

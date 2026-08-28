@@ -7141,6 +7141,7 @@ export default {
     printResumedDescription: 'Notify when print transitions PAUSE→RUNNING (includes pause duration)',
     progressMilestones: 'Progress Milestones',
     progressMilestonesDescription: 'Notify at 25%, 50%, 75%',
+    progressMilestonesFloorHint: 'Muted for prints estimated under {{minutes}} min (global setting)',
     printerOffline: 'Printer Offline',
     printerError: 'Printer Error',
     aiFailureDetection: 'AI Failure Detection',

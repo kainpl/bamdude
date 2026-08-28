@@ -89,6 +89,11 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
         enabled: isTelegram,
     });
 
+    // Global progress-milestone duration floor (#28) — shown beside the
+    // per-provider progress toggle so an active floor is never invisible.
+    const {data: appSettings} = useQuery({queryKey: ['settings'], queryFn: api.getSettings});
+    const milestoneFloor = appSettings?.notify_progress_min_duration_minutes ?? 0;
+
     // Fetch printers for linking
     const {data: printers} = useQuery({
         queryKey: ['printers'],
@@ -517,6 +522,11 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                     <div>
                                         <p className="text-sm text-white">{t('notifications.progressMilestones')}</p>
                                         <p className="text-xs text-bambu-gray">{t('notifications.progressMilestonesDescription')}</p>
+                                        {milestoneFloor > 0 && (
+                                            <p className="text-xs text-amber-500">
+                                                {t('notifications.progressMilestonesFloorHint', {minutes: milestoneFloor})}
+                                            </p>
+                                        )}
                                     </div>
                                     <Toggle
                                         checked={provider.on_print_progress}

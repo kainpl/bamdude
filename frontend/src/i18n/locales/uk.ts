@@ -7173,6 +7173,7 @@ export default {
     printResumedDescription: 'Сповіщати при переході PAUSE→RUNNING (включає тривалість паузи)',
     progressMilestones: 'Етапи прогресу',
     progressMilestonesDescription: 'Сповіщати при 25%, 50%, 75%',
+    progressMilestonesFloorHint: 'Глушиться для друків, коротших за {{minutes}} хв (глобальне налаштування)',
     printerOffline: 'Принтер офлайн',
     printerError: 'Помилка принтера',
     aiFailureDetection: 'Виявлення збою ШІ',
