@@ -92,7 +92,7 @@ Upstream can send a Telegram message — a notification channel, one way, over t
 - **Maintenance** — see what is overdue, mark it done, edit the hours
 - **Add a printer** — type an IP and let SSDP fill in the serial, name and model
 - **Multi-chat with roles** — every chat gets its own permission group, so a shop-floor chat and an admin chat are not the same thing
-- **Per-chat notification settings** — event types, quiet hours and the daily digest belong to the chat, not to a global switch
+- **Per-chat notification settings** — event types, printer scope, milestone floor, quiet hours and the daily digest belong to the chat, not to a global switch
 - **Actionable notifications** — "Clear plate" and "Mark maintenance done" are buttons in the message itself
 
 ### Zigbee, with no hub in between
@@ -316,6 +316,8 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - Telegram (auto-restart bot on config change), Discord, Email, Pushover, ntfy, CallMeBot, **Bark** (free iOS push, no account)
 - Home Assistant, custom webhooks
 - Customizable message templates (MarkdownV2 editor)
+- **Printer scope on every channel — all, one, or several printers** per provider, and per Telegram chat (where it also scopes the bot itself: lists, cameras, queue, controls)
+- **Progress-milestone duration floor** — mute 25/50/75% for prints shorter than N minutes, per chat and per provider
 - Per-chat quiet hours & daily digest (Telegram)
 - Actionable buttons: clear plate, mark maintenance done, pause/stop on progress
 - Print finish photo, filament usage details
