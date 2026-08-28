@@ -888,6 +888,89 @@ async def test_the_capped_refusal_is_the_same_answer_the_dispatcher_would_give(s
     assert refused.data.model_dump() == dispatched.data.model_dump()
 
 
+async def test_more_than_five_remote_ops_on_one_connection_all_reach_dispatch(session_factory, portal):
+    """Regression for the seam where the unknown-command cap ate remote ops.
+
+    ``inventory.list_spools`` is deliberately NOT in ``ALLOWED_COMMANDS`` — it
+    is routed to ``dispatch_remote_op`` via ``REMOTE_OPS`` instead — so the
+    reader's ``unknown`` counter must never count it. Before the fix, the
+    pre-filter at the top of ``_reader_loop`` only checked ``ALLOWED_COMMANDS``,
+    so every remote op incremented ``unknown``, and the sixth one on any single
+    connection was ``refuse_unknown``'d before it ever reached ``dispatch`` —
+    the feature died after five calls on a long-lived connection.
+    """
+    names = [f"list-{i}" for i in range(8)]
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index)
+        await instance.expect(is_type("snapshot"), connection=index)
+        for frame_id in names:
+            await ws.send_json(cmd("inventory.list_spools", frame_id))
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+
+    async with running(make_client(session_factory)):
+        await instance.expect(lambda f: f.get("re") == "list-7")
+
+    results = {f["re"]: f["data"] for f in instance.frames if f["type"] == "cmd_result"}
+    assert set(results) == set(names), "every request is still answered"
+    assert all(data.get("ok") is True and "payload" in data for data in results.values()), (
+        "all eight reached dispatch_remote_op and came back ok — none was refuse_unknown'd "
+        "by the unknown-command cap, which is exactly what the bug did to the sixth onward"
+    )
+
+    async with session_factory() as session:
+        unknown_rows = await session.scalar(
+            select(func.count()).select_from(CloudLinkAudit).where(CloudLinkAudit.kind == "cmd:unknown")
+        )
+    assert unknown_rows == 0, "a registered remote op must never be treated as an unknown command"
+
+
+async def test_the_remote_op_budget_resets_across_reconnects(session_factory, portal):
+    """Finding 2. ``self._ctx`` — and the ``RemoteOpAuditBudget`` it lazily
+    caches on first remote-op dispatch — is reused across reconnects. If the
+    reader only reset ``camera_audit`` at connection entry (as it did before
+    this fix), a connection that filled the five-row cap would leave every
+    later connection unable to write a single ``cmd:remote_op`` audit row,
+    because the cached budget's ``written`` counter would never go back to
+    zero.
+
+    The first connection fills the cap with seven failing edits (spool ids
+    that don't exist -> ``not_found``, budget capped at five). The second
+    connection sends one more failing edit; if the budget was reset at this
+    connection's entry, that produces a sixth row. If it was not, the budget
+    was still sitting at its limit from connection 0 and no row appears.
+    """
+
+    async def script(ws, instance, index):
+        await instance.accept(ws, index)
+        await instance.expect(is_type("snapshot"), connection=index)
+        if index == 0:
+            for i in range(7):
+                await ws.send_json(
+                    cmd("inventory.edit_spool", f"edit-0-{i}", args={"spool_id": 900000 + i, "patch": {}})
+                )
+            await instance.expect(lambda f: f.get("re") == "edit-0-6", connection=index)
+            await ws.close()
+        else:
+            await ws.send_json(cmd("inventory.edit_spool", "edit-1-0", args={"spool_id": 900100, "patch": {}}))
+
+    instance, url = await portal(script)
+    await pair_with(session_factory, url)
+
+    async with running(make_client(session_factory)):
+        await instance.expect(lambda f: f.get("re") == "edit-1-0", connection=1)
+
+    async with session_factory() as session:
+        audited = await session.scalar(
+            select(func.count()).select_from(CloudLinkAudit).where(CloudLinkAudit.kind == "cmd:remote_op")
+        )
+    assert audited == 6, (
+        "five from the first connection's cap plus one more once the second connection's entry reset it"
+    )
+
+
 # ------------------------------------------------------------- the teardown
 
 

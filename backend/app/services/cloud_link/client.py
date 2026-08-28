@@ -81,6 +81,7 @@ from backend.app.services.cloud_link.commands import (
     PostAction,
     dispatch,
 )
+from backend.app.services.cloud_link.remote_ops import REMOTE_OPS
 from backend.app.services.cloud_link.schemas import (
     AnyFrame,
     Cmd,
@@ -541,27 +542,42 @@ class CloudLinkClient:
         """Inbound frames, until the socket ends or a revoke tears it down.
 
         ⚠️ **The audit caps are write bounds, not rate limits.** Every audit row
-        a portal can drive is bounded per connection, and there are two ways it
-        can drive one. An unknown command is refused by :func:`dispatch`, which
-        audits it — right for the handful an operator will ever see, wrong for a
-        portal that has been taken over and is spraying names — so after
-        :data:`UNKNOWN_COMMAND_AUDIT_LIMIT` refusals the reader answers them
-        itself. A ``camera_snapshot`` *is* in the allowlist, so it reaches a
-        handler however hostile the portal is, and the row it produces (bad
-        arguments here, a refused printer or destination in :mod:`snapshot`, a
-        failed upload in either) is bounded by the shared
+        a portal can drive is bounded per connection, and there are three ways it
+        can drive one. An unknown command — one in neither :data:`ALLOWED_COMMANDS`
+        nor :data:`~backend.app.services.cloud_link.remote_ops.REMOTE_OPS` — is
+        refused by :func:`dispatch`, which audits it — right for the handful an
+        operator will ever see, wrong for a portal that has been taken over and
+        is spraying names — so after :data:`UNKNOWN_COMMAND_AUDIT_LIMIT` refusals
+        the reader answers them itself. A ``camera_snapshot`` *is* in the
+        allowlist, so it reaches a handler however hostile the portal is, and the
+        row it produces (bad arguments here, a refused printer or destination in
+        :mod:`snapshot`, a failed upload in either) is bounded by the shared
         :class:`~backend.app.services.cloud_link.commands.CameraAuditBudget`
-        instead.
+        instead. A name in :data:`~backend.app.services.cloud_link.remote_ops.
+        REMOTE_OPS` is neither of those — it must clear this pre-filter (below)
+        to reach :func:`~backend.app.services.cloud_link.remote_ops.
+        dispatch_remote_op` at all, and once there its own refusals are bounded
+        by the connection's :class:`~backend.app.services.cloud_link.remote_ops.
+        RemoteOpAuditBudget`, lazily created on first dispatch and reset here
+        exactly like ``camera_audit`` — see :attr:`CommandContext.remote_op_audit`.
 
-        Both are per connection, because a reconnect is the natural place for an
-        operator's mistyped command to be forgiven, and an attacker gains only
-        one further row per socket. Neither changes what the portal is told:
-        every request still gets its ``cmd_result``, and a capped snapshot is
-        guarded, attempted and uploaded exactly as an uncapped one.
+        All three are per connection, because a reconnect is the natural place for
+        an operator's mistyped command to be forgiven, and an attacker gains only
+        one further row per socket. None changes what the portal is told: every
+        request still gets its ``cmd_result``, and a capped op is still guarded,
+        attempted and answered exactly as an uncapped one.
         """
         unknown = 0
         camera_audit = self._ctx.camera_audit
         camera_audit.reset()
+        # The remote-op budget is lazily created by ``dispatch_remote_op`` on
+        # this connection's first remote op — ``None`` here means none has run
+        # yet, not "no bound". Reset it too when it exists, so a budget filled
+        # by a PREVIOUS connection on this reused ``self._ctx`` does not carry
+        # its count into this one (see the module docstring: ``_ctx`` outlives
+        # any one socket).
+        if (remote_op_audit := self._ctx.remote_op_audit) is not None:
+            remote_op_audit.reset()
         try:
             async for msg in ws:
                 if msg.type is WSMsgType.ERROR:
@@ -581,7 +597,7 @@ class CloudLinkClient:
                     logger.debug("Cloud Link: ignoring an inbound %s frame", frame.type)
                     continue
 
-                if frame.data.cmd not in ALLOWED_COMMANDS:
+                if frame.data.cmd not in ALLOWED_COMMANDS and frame.data.cmd not in REMOTE_OPS:
                     unknown += 1
                     if unknown > self._unknown_command_limit:
                         await self._send(ws, refuse_unknown(frame))
@@ -605,6 +621,16 @@ class CloudLinkClient:
                     "Cloud Link: %d camera snapshot outcome(s) went unaudited on this connection (cap %d)",
                     camera_audit.suppressed,
                     camera_audit.limit,
+                )
+            # Read fresh rather than reusing the entry-time local: a budget
+            # that was ``None`` when this connection started (no remote op had
+            # ever run) may have been lazily created and filled during it.
+            remote_op_audit = self._ctx.remote_op_audit
+            if remote_op_audit is not None and remote_op_audit.suppressed:
+                logger.info(
+                    "Cloud Link: %d remote op outcome(s) went unaudited on this connection (cap %d)",
+                    remote_op_audit.suppressed,
+                    remote_op_audit.limit,
                 )
         return _CLOSED
 
