@@ -5610,7 +5610,19 @@ class BambuMQTTClient:
             # stale 8-char runout code also kept the runout detector armed.
             # print_error entries are the 8-char full_codes; hms[] entries are
             # 16-char and are not touched here.
-            self.state.hms_errors = [e for e in self.state.hms_errors if len(e.full_code or "") != 8]
+            #
+            # One exception: the device-busy NOISE a reconnect storm emits
+            # mid-print (0500_4004 while in an active print state, suppressed
+            # and cleared below) is not the register honestly moving — treating
+            # it as a supersede would take an unrelated standing fault down
+            # with the noise, which is exactly what the narrow guard promises
+            # not to do.
+            _busy_noise = False
+            if print_error:
+                _pe_short = f"{(print_error >> 16) & 0xFFFF:04X}_{print_error & 0xFFFF:04X}"
+                _busy_noise = _pe_short == _DEVICE_BUSY_CODE and self.state.state in _ACTIVE_PRINT_STATES
+            if not _busy_noise:
+                self.state.hms_errors = [e for e in self.state.hms_errors if len(e.full_code or "") != 8]
             if print_error and print_error != 0:
                 # Extract components: MMMMEEEE -> MMMM_EEEE
                 module = (print_error >> 16) & 0xFFFF  # High 16 bits (e.g., 0x0500)
