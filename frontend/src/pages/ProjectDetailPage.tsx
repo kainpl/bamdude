@@ -1315,11 +1315,33 @@ export function ProjectDetailPage() {
                         >
                           <Minus className="w-3.5 h-3.5" />
                         </button>
-                        <span
-                          className="min-w-[2ch] text-center text-sm text-white font-medium tabular-nums"
-                          title={t('projectDetail.files.copies')}
-                        >
-                          ×{item.copies}
+                        {/* Editable count: type a number, commit on blur/Enter.
+                            Uncontrolled + keyed on the server value so a
+                            confirmed mutation remounts the field fresh and a
+                            discarded edit falls back to what the server holds. */}
+                        <span className="flex items-center text-sm text-white font-medium" title={t('projectDetail.files.copies')}>
+                          ×
+                          <input
+                            key={`${item.library_file_id}:${item.copies}`}
+                            type="number"
+                            min={1}
+                            max={999}
+                            defaultValue={item.copies}
+                            disabled={updateCopiesMutation.isPending}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') e.currentTarget.blur();
+                            }}
+                            onBlur={(e) => {
+                              const v = parseInt(e.currentTarget.value, 10);
+                              const next = Number.isFinite(v) ? Math.min(999, Math.max(1, v)) : item.copies;
+                              if (next !== item.copies) {
+                                updateCopiesMutation.mutate({ fileId: item.library_file_id, copies: next });
+                              } else {
+                                e.currentTarget.value = String(item.copies);
+                              }
+                            }}
+                            className="w-10 text-center text-sm text-white font-medium tabular-nums bg-transparent border border-transparent hover:border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none rounded disabled:opacity-50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                          />
                         </span>
                         <button
                           onClick={() =>
