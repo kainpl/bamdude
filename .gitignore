@@ -92,3 +92,6 @@ bin/
 # artifacts; not part of the public repo.
 docs/
 graphify-out/
+
+# Subagent-driven-development scratch (ledger, briefs, review packages).
+.superpowers/
