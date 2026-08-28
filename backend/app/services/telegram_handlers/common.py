@@ -52,7 +52,7 @@ async def deny_out_of_scope(callback, tg_chat: TelegramChat | None, printer_id: 
 
 
 def chat_allows_printer(tg_chat: TelegramChat | None, printer_id: int | None) -> bool:
-    """m159 printer scope, the CONTROL half.
+    """m157 printer scope, the CONTROL half.
 
     Listings are already scoped by ``get_printers_data(tg_chat)``, so an
     in-scope operator never sees out-of-scope buttons — this guards the
@@ -86,7 +86,7 @@ def format_time(lang: str, minutes: int | None) -> str:
 async def get_printers_data(tg_chat=None) -> list[dict]:
     """Get printers with their status from printer_manager.
 
-    ``tg_chat`` scopes the answer to the chat's ``printer_ids`` (m159) —
+    ``tg_chat`` scopes the answer to the chat's ``printer_ids`` (m157) —
     notifications and bot CONTROL follow the same list, so a chat watching
     two machines browses, prints to and commands exactly those two. None
     (no chat in context) = unscoped, e.g. internal callers.

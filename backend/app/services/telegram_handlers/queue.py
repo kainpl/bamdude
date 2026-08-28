@@ -43,7 +43,7 @@ async def render_queue(target, tg_chat: TelegramChat | None = None, offset: int 
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer import Printer
 
-    # m159 printer scope: a chat watching two machines sees two machines'
+    # m157 printer scope: a chat watching two machines sees two machines'
     # queue — counts and list alike. This file already equates queue_id with
     # the printer id (the 1:1 queue-per-printer construction, see the
     # printer-name lookup below), so the scope filters on queue_id.

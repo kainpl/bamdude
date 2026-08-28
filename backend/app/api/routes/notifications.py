@@ -30,7 +30,7 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 
 # Telegram-specific coercion: per-event opt-in, quiet hours, digest opt-in and
-# the printer scope all live on each TelegramChat row (m045, m159). The
+# the printer scope all live on each TelegramChat row (m045/m157). The
 # provider row only carries enabled + digest schedule. Events are coerced to
 # the FULL list so any legacy fallback path consulting ``wants_event`` for a
 # telegram provider stays dispatch-transparent.
@@ -41,7 +41,7 @@ def _coerce_telegram_provider_fields(provider: NotificationProvider) -> None:
     provider.quiet_hours_enabled = False
     provider.quiet_hours_start = None
     provider.quiet_hours_end = None
-    # m159: the printer scope lives on each chat (``printer_ids``) — the last
+    # m157: the printer scope lives on each chat (``printer_ids``) — the last
     # provider-level telegram knob, retired like the rest.
     provider.printer_id = None
 
@@ -56,7 +56,7 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         "config": json.loads(provider.config) if isinstance(provider.config, str) else provider.config,
         # Print lifecycle events
         # All 34 event booleans, computed from the JSON subscription list
-        # (m160) — the wire contract is unchanged.
+        # (m157) — the wire contract is unchanged.
         **provider.events_map(),
         # Quiet hours
         "progress_min_duration_minutes": provider.progress_min_duration_minutes,
@@ -107,7 +107,7 @@ async def create_notification_provider(
         provider_type=provider_data.provider_type.value,
         enabled=provider_data.enabled,
         config=json.dumps(provider_data.config),
-        # One JSON list instead of 34 boolean kwargs (m160): the schema
+        # One JSON list instead of 34 boolean kwargs (m157): the schema
         # still speaks booleans; they fold into the explicit list here.
         subscribed_events=sorted(field for field in PROVIDER_EVENT_DEFAULTS if getattr(provider_data, field)),
         # Quiet hours
@@ -380,7 +380,7 @@ async def update_notification_provider(
         elif key == "provider_type" and value is not None:
             setattr(provider, key, value.value)
         elif key in PROVIDER_EVENT_DEFAULTS:
-            # Event booleans fold into the JSON subscription list (m160);
+            # Event booleans fold into the JSON subscription list (m157);
             # the wire contract still speaks per-event booleans.
             if value is not None:
                 provider.set_event(key, bool(value))

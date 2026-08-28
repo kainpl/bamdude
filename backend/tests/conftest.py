@@ -648,7 +648,7 @@ def notification_provider_factory(db_session):
             config = json.dumps(config)
 
         # The factory keeps accepting per-event ``on_*`` booleans (the shape
-        # every test has always used) and folds them into the m160 JSON
+        # every test has always used) and folds them into the m157 JSON
         # subscription list. Baseline: print start/complete/failed/stopped on,
         # everything else off — the factory's historical defaults, kept so no
         # test's expectations move.

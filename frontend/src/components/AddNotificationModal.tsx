@@ -482,7 +482,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           )}
 
           {/* Link to Printer — not for telegram: the printer scope lives on
-              each chat there (m159), like every other telegram knob. */}
+              each chat there (m157), like every other telegram knob. */}
           {providerType !== 'telegram' && (
           <div>
             <label className="block text-sm text-bambu-gray mb-1">{t('notifications.printerFilter')}</label>

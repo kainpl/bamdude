@@ -29,7 +29,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
   const [progressMinDuration, setProgressMinDuration] = useState<string>(
     chat?.progress_min_duration_minutes != null ? String(chat.progress_min_duration_minutes) : ''
   );
-  // Printer scope (m159): null = all printers, [ids] = only those.
+  // Printer scope (m157): null = all printers, [ids] = only those.
   const [printerIds, setPrinterIds] = useState<number[] | null>(chat?.printer_ids ?? null);
   const [quietHoursEnabled, setQuietHoursEnabled] = useState(chat?.quiet_hours_enabled ?? false);
   const [quietHoursStart, setQuietHoursStart] = useState(chat?.quiet_hours_start ?? '22:00');
@@ -286,7 +286,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
             />
           </div>
 
-          {/* Printer scope (m159): which printers this chat sees —
+          {/* Printer scope (m157): which printers this chat sees —
               notifications AND bot control. All printers by default; a
               narrowed chat browses, prints to and commands only its list. */}
           <div className="space-y-2">

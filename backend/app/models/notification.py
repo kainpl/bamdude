@@ -102,7 +102,7 @@ class NotificationProvider(Base):
 
     # Which events this provider wants — ONE JSON list of event keys
     # (``on_print_start``-style names, matching the API contract), replacing
-    # 34 boolean columns that grew one migration at a time (m160). NULL =
+    # 34 boolean columns that grew one migration at a time (m157). NULL =
     # the defaults in ``PROVIDER_EVENT_DEFAULTS``. Adding a new event is now
     # a registry row + a schema field — never a column, never DDL.
     # Ignored for telegram: per-chat ``notify_events`` is the authority
@@ -175,7 +175,7 @@ class NotificationProvider(Base):
 
 # ⚠️ LEGACY SCHEMA SHIM — the 23 event columns m045 (frozen) UPDATEs BY NAME.
 # A fresh install replays the whole migration chain against the create_all
-# schema, so these columns must EXIST when m045 runs — and m160 drops them at
+# schema, so these columns must EXIST when m045 runs — and m157 drops them at
 # its own point in the chain, on fresh installs and upgrades alike. They are
 # appended to the TABLE only, never mapped: no attribute, no reader, no
 # writer. The post-m045 event columns are absent here on purpose — their

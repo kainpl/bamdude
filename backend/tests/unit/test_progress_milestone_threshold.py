@@ -65,7 +65,7 @@ class TestPerChatOverride:
         assert column.nullable
 
     def test_the_provider_carries_its_own_floor_nullable(self):
-        """m158: every non-telegram provider carries its own floor too — a
+        """m157: every non-telegram provider carries its own floor too — a
         phone push and an email digest legitimately want different floors."""
         from backend.app.models.notification import NotificationProvider
 

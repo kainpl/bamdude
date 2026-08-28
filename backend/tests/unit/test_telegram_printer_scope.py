@@ -1,4 +1,4 @@
-"""Per-chat printer scope for the Telegram bot (m159).
+"""Per-chat printer scope for the Telegram bot (m157).
 
 ``NotificationProvider.printer_id`` was the last provider-level telegram
 knob. It moved onto the chat as a LIST: the farm admin's chat watches every
@@ -59,7 +59,7 @@ class TestControlGuard:
 
 class TestProviderKnobRetired:
     def test_coercion_clears_the_provider_printer_binding(self):
-        """m159: telegram's printer scope lives on each chat — the provider
+        """m157: telegram's printer scope lives on each chat — the provider
         binding is forced clear like every other provider-level knob (m045)."""
         from backend.app.api.routes.notifications import _coerce_telegram_provider_fields
         from backend.app.models.notification import NotificationProvider

@@ -527,7 +527,7 @@ class NotificationService:
             return False, "No active Telegram chats configured"
 
         # Filter chats subscribed to this event, inside their printer scope
-        # (m159 — NULL scope = every printer, unattributed events pass for
+        # (m157 — NULL scope = every printer, unattributed events pass for
         # all), plus the event's own per-chat criteria, when it brought any.
         target_chats = [
             c
@@ -1312,7 +1312,7 @@ class NotificationService:
             NotificationProvider.provider_type == "telegram",
         )
         # Non-telegram: the provider-level event gate — a JSON subscription
-        # list since m160, so membership is decided in Python on the fetched
+        # list since m157, so membership is decided in Python on the fetched
         # rows (a handful per install) rather than in SQL.
         other_q = select(NotificationProvider).where(
             enabled_filter,
@@ -1769,7 +1769,7 @@ class NotificationService:
 
         The duration floor (#28) is applied HERE, per recipient, not before
         the fan-out: every telegram chat carries its own floor and every other
-        provider its own (m157/m158) — an admin's 60-minute floor must not
+        provider its own (m157) — an admin's 60-minute floor must not
         decide for an operator's chat that wants 10, and a phone push and an
         email digest legitimately want different floors. There is NO global
         value: unset (or 0) simply means "always send". ``image_supplier``

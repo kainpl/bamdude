@@ -8,7 +8,7 @@ async def _provider(db_session, **kwargs):
 
     from backend.app.models.notification import PROVIDER_EVENT_DEFAULTS, NotificationProvider
 
-    # ``on_*`` kwargs fold into the m160 JSON subscription list.
+    # ``on_*`` kwargs fold into the m157 JSON subscription list.
     events = sorted(f for f in list(kwargs) if f in PROVIDER_EVENT_DEFAULTS and kwargs.pop(f))
     row = NotificationProvider(
         name=kwargs.pop("name", "ntfy"),

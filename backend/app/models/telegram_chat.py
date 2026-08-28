@@ -113,7 +113,7 @@ class TelegramChat(Base):
     # Daily digest - receive daily summary
     daily_digest: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # Printer scope (m159): which printers this chat sees — notifications AND
+    # Printer scope (m157): which printers this chat sees — notifications AND
     # bot control alike. NULL = all printers, [id, ...] = only those. Moved
     # here from NotificationProvider.printer_id (the last provider-level
     # telegram knob): a farm admin's chat watches everything while a
