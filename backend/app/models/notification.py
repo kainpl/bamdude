@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from backend.app.core.database import Base
@@ -46,6 +46,47 @@ class NotificationLog(Base):
     provider = relationship("NotificationProvider", back_populates="logs")
 
 
+# One registry, one source of truth: event key -> default subscription for a
+# NEW provider. The API schema mirrors these defaults (pinned by a test); the
+# order is the order the events were born in, purely cosmetic.
+PROVIDER_EVENT_DEFAULTS: dict[str, bool] = {
+    "on_print_start": False,
+    "on_print_complete": True,
+    "on_print_failed": True,
+    "on_print_stopped": True,
+    "on_print_progress": False,
+    "on_print_missing_spool_assignment": False,
+    "on_print_paused": True,
+    "on_print_resumed": True,
+    "on_printer_offline": False,
+    "on_printer_error": False,
+    "on_ai_failure_detection": False,
+    "on_filament_low": False,
+    "on_filament_runout": False,
+    "on_filament_deficit": True,
+    "on_maintenance_due": False,
+    "on_ams_humidity_high": False,
+    "on_ams_temperature_high": False,
+    "on_ams_drying_suspended": True,
+    "on_ams_ht_humidity_high": False,
+    "on_ams_ht_temperature_high": False,
+    "on_sensor_threshold": False,
+    "on_sensor_silent": False,
+    "on_plate_not_empty": True,
+    "on_bed_cooled": False,
+    "on_first_layer_complete": False,
+    "on_queue_job_added": False,
+    "on_queue_job_started": False,
+    "on_queue_job_waiting": True,
+    "on_queue_job_skipped": True,
+    "on_queue_job_failed": True,
+    "on_queue_completed": False,
+    "on_printer_queue_completed": True,
+    "on_stock_reorder_alert": False,
+    "on_stock_break_alert": False,
+}
+
+
 class NotificationProvider(Base):
     """Model for notification providers (WhatsApp, ntfy, Pushover, etc.)."""
 
@@ -59,72 +100,15 @@ class NotificationProvider(Base):
     # Provider-specific configuration stored as JSON string
     config = Column(Text, nullable=False)
 
-    # Event triggers - print lifecycle
-    on_print_start = Column(Boolean, default=False)
-    on_print_complete = Column(Boolean, default=True)
-    on_print_failed = Column(Boolean, default=True)
-    on_print_stopped = Column(Boolean, default=True)  # User cancelled/stopped print
-    on_print_progress = Column(Boolean, default=False)  # 25%, 50%, 75% milestones
-    on_print_missing_spool_assignment = Column(Boolean, default=False)  # Print started with unassigned required tray(s)
-    on_print_paused = Column(Boolean, default=True)  # Print transitioned RUNNING→PAUSE
-    on_print_resumed = Column(Boolean, default=True)  # Print transitioned PAUSE→RUNNING
-
-    # Event triggers - printer status
-    on_printer_offline = Column(Boolean, default=False)
-    on_printer_error = Column(Boolean, default=False)  # AMS issues, etc.
-    on_ai_failure_detection = Column(Boolean, default=False)  # Obico spaghetti / failure detection (#1794)
-    on_filament_low = Column(Boolean, default=False)
-    # A detected filament runout (pause / AMS backup switch / external holder).
-    # DDL for existing installs rides m153.
-    on_filament_runout = Column(Boolean, default=False)
-    # "this print needs more than the slot holds" — a comparison against a job,
-    # unlike on_filament_low, which is a threshold on a spool. Defaults True:
-    # it fires rarely by construction and only when we can prove the shortfall.
-    on_filament_deficit = Column(Boolean, default=True)
-    on_maintenance_due = Column(Boolean, default=False)  # Maintenance reminder
-
-    # Event triggers - AMS environmental alarms (regular AMS with 4 slots)
-    on_ams_humidity_high = Column(Boolean, default=False)  # AMS humidity above threshold
-    on_ams_temperature_high = Column(Boolean, default=False)  # AMS temperature above threshold
-    # ⚠️ Defaults TRUE, unlike its neighbours. It fires at most once per AMS
-    # unit, and only to say BamDude has STOPPED doing something it was doing
-    # before — silence there reads as "still drying", which is exactly how the
-    # reported re-arm loop cost two days.
-    on_ams_drying_suspended = Column(Boolean, default=True)  # auto-drying gave up on a unit
-
-    # Event triggers - AMS-HT environmental alarms (single slot heated AMS)
-    on_ams_ht_humidity_high = Column(Boolean, default=False)  # AMS-HT humidity above threshold
-    on_ams_ht_temperature_high = Column(Boolean, default=False)  # AMS-HT temperature above threshold
-
-    # Event triggers - Zigbee sensor alerts. Two columns rather than one per
-    # situation: the raise and its all-clear are never divided — switching off
-    # the all-clear while keeping the alarm is the AMS fault this avoids. The
-    # cut that IS useful is "tell me about the room" versus "tell me about the
-    # device".
-    on_sensor_threshold = Column(Boolean, default=False)  # reading left / returned to its limits
-    on_sensor_silent = Column(Boolean, default=False)  # sensor stopped / resumed reporting
-
-    # Event triggers - Build plate detection
-    on_plate_not_empty = Column(Boolean, default=True)  # Objects detected on plate before print
-
-    # Event triggers - Bed cooled after print
-    on_bed_cooled = Column(Boolean, default=False)  # Bed cooled below threshold after print
-    on_first_layer_complete = Column(Boolean, default=False)  # First layer finished printing
-
-    # Event triggers - Print queue
-    on_queue_job_added = Column(Boolean, default=False)  # Job added to queue
-    on_queue_job_started = Column(Boolean, default=False)  # Queue job started printing
-    on_queue_job_waiting = Column(Boolean, default=True)  # Job waiting for filament or printer
-    on_queue_job_skipped = Column(Boolean, default=True)  # Job skipped (previous print failed)
-    on_queue_job_failed = Column(Boolean, default=True)  # Job failed to start
-    on_queue_completed = Column(Boolean, default=False)  # All pending jobs finished (every printer)
-    on_printer_queue_completed = Column(Boolean, default=True)  # A single printer's queue drained
-
-    # Event triggers - Stock forecasting (upstream #1184). Scaffold only — no
-    # backend trigger fires these today; ForecastPanel renders alerts client-
-    # side. Toggles reserved for a future scheduled aggregation task.
-    on_stock_reorder_alert = Column(Boolean, default=False)  # SKU crossed reorder point
-    on_stock_break_alert = Column(Boolean, default=False)  # SKU will run out within lead time
+    # Which events this provider wants — ONE JSON list of event keys
+    # (``on_print_start``-style names, matching the API contract), replacing
+    # 34 boolean columns that grew one migration at a time (m160). NULL =
+    # the defaults in ``PROVIDER_EVENT_DEFAULTS``. Adding a new event is now
+    # a registry row + a schema field — never a column, never DDL.
+    # Ignored for telegram: per-chat ``notify_events`` is the authority
+    # there (m045), and the dispatch includes telegram providers without
+    # consulting this list at all.
+    subscribed_events = Column(JSON, nullable=True)
 
     # Per-provider floor for progress milestones (#28): NULL or 0 = always
     # send, N mutes prints estimated shorter than N minutes. Ignored for
@@ -156,4 +140,71 @@ class NotificationProvider(Base):
     # Relationships
     printer = relationship("Printer", back_populates="notification_providers")
     logs = relationship("NotificationLog", back_populates="provider", cascade="all, delete-orphan")
+
+    def wants_event(self, event_field: str) -> bool:
+        """Does this provider subscribe to an event (``on_*`` key)?
+
+        NULL = the registry defaults; a stored list is an explicit full
+        selection, so an event ABSENT from it is off — including events born
+        after the list was saved (the operator has a custom selection; a new
+        event joining it unasked is the m045-era failure mode).
+        """
+        if self.subscribed_events is None:
+            return PROVIDER_EVENT_DEFAULTS.get(event_field, False)
+        return event_field in self.subscribed_events
+
+    def events_map(self) -> dict[str, bool]:
+        """Every known event as the boolean the API contract promises."""
+        return {field: self.wants_event(field) for field in PROVIDER_EVENT_DEFAULTS}
+
+    def set_event(self, event_field: str, value: bool) -> None:
+        """Flip one event, materialising the defaults into an explicit list."""
+        current = (
+            set(self.subscribed_events)
+            if self.subscribed_events is not None
+            else {f for f, d in PROVIDER_EVENT_DEFAULTS.items() if d}
+        )
+        if value:
+            current.add(event_field)
+        else:
+            current.discard(event_field)
+        self.subscribed_events = sorted(current & set(PROVIDER_EVENT_DEFAULTS))
+
     digest_queue = relationship("NotificationDigestQueue", back_populates="provider", cascade="all, delete-orphan")
+
+
+# ⚠️ LEGACY SCHEMA SHIM — the 23 event columns m045 (frozen) UPDATEs BY NAME.
+# A fresh install replays the whole migration chain against the create_all
+# schema, so these columns must EXIST when m045 runs — and m160 drops them at
+# its own point in the chain, on fresh installs and upgrades alike. They are
+# appended to the TABLE only, never mapped: no attribute, no reader, no
+# writer. The post-m045 event columns are absent here on purpose — their
+# migrations start with ``add_column`` and self-heal. Do not "clean this up"
+# before the migration chain itself is re-baselined.
+_M045_SHIM_COLUMNS = (
+    "on_print_start",
+    "on_print_complete",
+    "on_print_failed",
+    "on_print_stopped",
+    "on_print_progress",
+    "on_print_missing_spool_assignment",
+    "on_printer_offline",
+    "on_printer_error",
+    "on_filament_low",
+    "on_maintenance_due",
+    "on_ams_humidity_high",
+    "on_ams_temperature_high",
+    "on_ams_ht_humidity_high",
+    "on_ams_ht_temperature_high",
+    "on_plate_not_empty",
+    "on_bed_cooled",
+    "on_first_layer_complete",
+    "on_queue_job_added",
+    "on_queue_job_started",
+    "on_queue_job_waiting",
+    "on_queue_job_skipped",
+    "on_queue_job_failed",
+    "on_queue_completed",
+)
+for _shim_name in _M045_SHIM_COLUMNS:
+    NotificationProvider.__table__.append_column(Column(_shim_name, Boolean))

@@ -43,19 +43,23 @@ async def _telegram_provider(
         provider_type="telegram",
         enabled=enabled,
         config=json.dumps({"bot_token": "test-token"}),
-        on_print_start=True,
-        on_print_complete=on_print_complete,
-        on_print_failed=True,
-        on_print_stopped=True,
-        on_print_progress=True,
-        on_print_missing_spool_assignment=True,
-        on_printer_offline=True,
-        on_printer_error=True,
-        on_filament_low=True,
-        on_maintenance_due=True,
-        on_ams_humidity_high=True,
-        on_ams_temperature_high=True,
-        on_bed_cooled=True,
+        subscribed_events=sorted(
+            {
+                "on_print_start",
+                "on_print_failed",
+                "on_print_stopped",
+                "on_print_progress",
+                "on_print_missing_spool_assignment",
+                "on_printer_offline",
+                "on_printer_error",
+                "on_filament_low",
+                "on_maintenance_due",
+                "on_ams_humidity_high",
+                "on_ams_temperature_high",
+                "on_bed_cooled",
+            }
+            | ({"on_print_complete"} if on_print_complete else set())
+        ),
         quiet_hours_enabled=False,
         daily_digest_enabled=daily_digest_enabled,
         daily_digest_time=daily_digest_time,
@@ -72,7 +76,7 @@ async def _email_provider(db_session: AsyncSession, *, on_print_complete: bool) 
         provider_type="email",
         enabled=True,
         config=json.dumps({"smtp_host": "x", "smtp_port": 25, "from_email": "x@y", "to_email": "y@z"}),
-        on_print_complete=on_print_complete,
+        subscribed_events=["on_print_complete"] if on_print_complete else [],
     )
     db_session.add(p)
     await db_session.commit()

@@ -6,7 +6,15 @@
 
 - **A Telegram chat can be scoped to specific printers — all, one, or several.** The printer filter moved from the bot (provider) level down to each chat, where every other Telegram setting already lives: the farm admin's chat keeps watching everything while a partner's chat on the same bot sees only the machines they run. The scope covers **both directions** — notifications arrive only from the chat's printers, and the bot itself shows and commands only them: printer lists, cameras, queue view, controls; a button from an old message aimed at an out-of-scope printer is refused. Events that name no printer (test messages, farm-wide news) still reach every chat. The old provider-level filter is migrated onto existing chats automatically, so nothing changes until you narrow a chat.
 
+### Changed
+
+- **Notification event subscriptions are one list now, not thirty-four database columns.** Every provider's per-event toggles moved into a single JSON field (the API and the settings UI are unchanged) — the table had grown a column per event, migration after migration, and a future event is now a registry entry instead of DDL. Existing selections are carried over exactly.
+
 ### Fixed
+
+- **Telegram chats never received filament-runout notifications.** The runout event was missing from the chat vocabulary, and the backup-switch flavour was sent under an event name no chat could ever subscribe to — so the runout notification added in 0.5.5 worked for every channel except Telegram. One per-chat "Filament runout" toggle now covers both flavours (waiting for filament, and switched to backup).
+
+- **Two default-on events could not be turned off per chat.** "Auto-Drying Suspended" and "Filament Will Run Out" were in every chat's default subscription but missing from the chat dialog's checkbox list — subscribed invisibly, with no way to untick them. Both now appear in the dialog, and a drift-guard test keeps the vocabulary, the dialog's categories and the labels in lock-step so an event can't go missing from one of them again.
 
 - **A finished print can no longer slip the next job past an unconfirmed plate.** Completion released the printer's queue claim ~70 ms before it armed the "clear the plate" gate, and a scheduler tick landing in that gap dispatched the next item over an uncleared plate. Seen live on an X2D printing batch copies: the premature dispatch then lost its freshly-uploaded 3MF to the finished print's own cleanup — same filename, byte-identical content, so every safety check honestly passed — and the printer refused with `0500-4002 Unsupported print file path`, stuck in FINISH until the 90 s watchdog failed the job. The gate now arms *before* the claim is released, and post-print cleanup refuses to touch any file a dispatch in flight has already registered as the next print — which also protects queues that run back-to-back copies with the plate confirmation switched off.
 

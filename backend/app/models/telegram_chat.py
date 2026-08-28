@@ -45,6 +45,9 @@ ALL_NOTIFY_EVENTS = [
     "ai_failure_detection",
     "filament_low",
     "filament_deficit",
+    # One chat toggle covers BOTH runout flavours (waiting for filament /
+    # switched to backup) — the sender normalises the event_type.
+    "filament_runout",
     "maintenance_due",
     # AMS environmental
     "ams_humidity_high",

@@ -6,14 +6,17 @@ import pytest
 async def _provider(db_session, **kwargs):
     import json
 
-    from backend.app.models.notification import NotificationProvider
+    from backend.app.models.notification import PROVIDER_EVENT_DEFAULTS, NotificationProvider
 
+    # ``on_*`` kwargs fold into the m160 JSON subscription list.
+    events = sorted(f for f in list(kwargs) if f in PROVIDER_EVENT_DEFAULTS and kwargs.pop(f))
     row = NotificationProvider(
         name=kwargs.pop("name", "ntfy"),
         provider_type="ntfy",
         enabled=True,
         # The column stores JSON as text; a dict reaches sqlite3 unbindable.
         config=json.dumps({"topic": "bamdude", "server_url": "https://ntfy.sh"}),
+        subscribed_events=events,
         **kwargs,
     )
     db_session.add(row)

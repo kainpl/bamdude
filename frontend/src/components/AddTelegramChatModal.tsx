@@ -158,6 +158,8 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
     printer_error: 'notifications.printerError',
     ai_failure_detection: 'notifications.aiFailureDetection',
     filament_low: 'notifications.lowFilamentLabel',
+    filament_deficit: 'notifications.filamentDeficit',
+    filament_runout: 'notifications.filamentRunout',
     stock_break_alert: 'notifications.stockBreakAlert',
     stock_reorder_alert: 'notifications.stockReorderAlert',
     maintenance_due: 'notifications.maintenanceDue',

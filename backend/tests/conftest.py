@@ -641,30 +641,30 @@ def notification_provider_factory(db_session):
     """Factory to create test notification providers."""
 
     async def _create_provider(**kwargs):
-        from backend.app.models.notification import NotificationProvider
+        from backend.app.models.notification import PROVIDER_EVENT_DEFAULTS, NotificationProvider
 
         config = kwargs.pop("config", {"server": "https://ntfy.sh", "topic": "test-topic"})
         if isinstance(config, dict):
             config = json.dumps(config)
+
+        # The factory keeps accepting per-event ``on_*`` booleans (the shape
+        # every test has always used) and folds them into the m160 JSON
+        # subscription list. Baseline: print start/complete/failed/stopped on,
+        # everything else off — the factory's historical defaults, kept so no
+        # test's expectations move.
+        events = dict.fromkeys(PROVIDER_EVENT_DEFAULTS, False)
+        for field in ("on_print_start", "on_print_complete", "on_print_failed", "on_print_stopped"):
+            events[field] = True
+        for field in list(kwargs):
+            if field in PROVIDER_EVENT_DEFAULTS:
+                events[field] = bool(kwargs.pop(field))
 
         defaults = {
             "name": "Test Provider",
             "provider_type": "ntfy",
             "enabled": True,
             "config": config,
-            "on_print_start": True,
-            "on_print_complete": True,
-            "on_print_failed": True,
-            "on_print_stopped": True,
-            "on_print_progress": False,
-            "on_print_missing_spool_assignment": False,
-            "on_printer_offline": False,
-            "on_printer_error": False,
-            "on_filament_low": False,
-            "on_maintenance_due": False,
-            "on_ams_humidity_high": False,
-            "on_ams_temperature_high": False,
-            "on_bed_cooled": False,
+            "subscribed_events": sorted(f for f, v in events.items() if v),
             "quiet_hours_enabled": False,
             "daily_digest_enabled": False,
         }
