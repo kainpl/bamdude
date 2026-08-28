@@ -43,7 +43,7 @@ def _coerce_telegram_provider_fields(provider: NotificationProvider) -> None:
     provider.quiet_hours_end = None
     # m157: the printer scope lives on each chat (``printer_ids``) — the last
     # provider-level telegram knob, retired like the rest.
-    provider.printer_id = None
+    provider.printer_ids = None
 
 
 def _provider_to_dict(provider: NotificationProvider) -> dict:
@@ -67,7 +67,7 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         "daily_digest_enabled": provider.daily_digest_enabled,
         "daily_digest_time": provider.daily_digest_time,
         # Printer filter
-        "printer_id": provider.printer_id,
+        "printer_ids": provider.printer_ids,
         # Status tracking
         "last_success": provider.last_success,
         "last_error": provider.last_error,
@@ -119,7 +119,7 @@ async def create_notification_provider(
         daily_digest_enabled=provider_data.daily_digest_enabled,
         daily_digest_time=provider_data.daily_digest_time,
         # Printer filter
-        printer_id=provider_data.printer_id,
+        printer_ids=provider_data.printer_ids,
     )
 
     _coerce_telegram_provider_fields(provider)

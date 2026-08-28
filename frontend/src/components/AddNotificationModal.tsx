@@ -22,7 +22,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
 
   const [name, setName] = useState(provider?.name || '');
   const [providerType, setProviderType] = useState<ProviderType>(provider?.provider_type || 'email');
-  const [printerId, setPrinterId] = useState<number | null>(provider?.printer_id || null);
+  // Printer scope (m157 3b): null = all printers, [ids] = only those.
+  const [printerIds, setPrinterIds] = useState<number[] | null>(provider?.printer_ids ?? null);
   const [quietHoursEnabled, setQuietHoursEnabled] = useState(provider?.quiet_hours_enabled || false);
   const [quietHoursStart, setQuietHoursStart] = useState(provider?.quiet_hours_start || '22:00');
   const [quietHoursEnd, setQuietHoursEnd] = useState(provider?.quiet_hours_end || '07:00');
@@ -177,7 +178,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       name: name.trim(),
       provider_type: providerType,
       config: finalConfig,
-      printer_id: printerId,
+      printer_ids: printerIds,
       quiet_hours_enabled: quietHoursEnabled,
       quiet_hours_start: quietHoursEnabled ? quietHoursStart : null,
       quiet_hours_end: quietHoursEnabled ? quietHoursEnd : null,
@@ -481,26 +482,51 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             </div>
           )}
 
-          {/* Link to Printer — not for telegram: the printer scope lives on
-              each chat there (m157), like every other telegram knob. */}
+          {/* Printer scope — all / one / several (m157 3b). Not for
+              telegram: the scope lives on each chat there, like every other
+              telegram knob. */}
           {providerType !== 'telegram' && (
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">{t('notifications.printerFilter')}</label>
-            <select
-              value={printerId ?? ''}
-              onChange={(e) => setPrinterId(e.target.value ? Number(e.target.value) : null)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-            >
-              <option value="">{t('notifications.allPrinters')}</option>
-              {printers?.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-bambu-gray mt-1">
-              {t('notifications.onlyFromPrinter')}
-            </p>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="block text-sm text-white">{t('notifications.printerFilter')}</label>
+                <p className="text-xs text-bambu-gray">{t('notifications.onlyFromPrinter')}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-bambu-gray">{t('notifications.allPrinters')}</span>
+                <Toggle
+                  checked={printerIds === null}
+                  onChange={(all) => setPrinterIds(all ? null : [])}
+                />
+              </div>
+            </div>
+            {printerIds !== null && (
+              <div className="space-y-1 bg-bambu-dark rounded border border-bambu-dark-tertiary p-3 max-h-40 overflow-y-auto">
+                {(printers ?? []).map((p) => (
+                  <label
+                    key={p.id}
+                    className="flex items-center gap-2 text-xs text-white cursor-pointer hover:bg-bambu-dark-tertiary rounded px-1 py-0.5"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={printerIds.includes(p.id)}
+                      onChange={() =>
+                        setPrinterIds(
+                          printerIds.includes(p.id)
+                            ? printerIds.filter((id) => id !== p.id)
+                            : [...printerIds, p.id]
+                        )
+                      }
+                      className="w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    />
+                    {p.name}
+                  </label>
+                ))}
+                {printerIds.length === 0 && (
+                  <p className="text-[10px] text-amber-500">{t('telegram.printerScopeEmpty')}</p>
+                )}
+              </div>
+            )}
           </div>
           )}
 

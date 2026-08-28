@@ -1300,11 +1300,6 @@ class NotificationService:
         want.
         """
         enabled_filter = NotificationProvider.enabled.is_(True)
-        printer_filter = None
-        if printer_id is not None:
-            printer_filter = (NotificationProvider.printer_id.is_(None)) | (
-                NotificationProvider.printer_id == printer_id
-            )
 
         # Telegram: ignore on_* — always include if enabled.
         telegram_q = select(NotificationProvider).where(
@@ -1318,17 +1313,17 @@ class NotificationService:
             enabled_filter,
             NotificationProvider.provider_type != "telegram",
         )
-        if printer_filter is not None:
-            telegram_q = telegram_q.where(printer_filter)
-            other_q = other_q.where(printer_filter)
-
-        if unscoped_only:
-            telegram_q = telegram_q.where(NotificationProvider.printer_id.is_(None))
-            other_q = other_q.where(NotificationProvider.printer_id.is_(None))
-
         with db.no_autoflush:
             rows = list((await db.execute(telegram_q)).scalars().all())
             rows.extend(p for p in (await db.execute(other_q)).scalars().all() if p.wants_event(event_field))
+        # Printer scope (m157 3b — JSON list, decided in Python like the event
+        # gate): a scoped provider receives only its printers' events, and
+        # ``unscoped_only`` farm-wide news reaches unscoped providers only —
+        # the same semantics the single-printer binding had.
+        if unscoped_only:
+            rows = [p for p in rows if p.printer_ids is None]
+        else:
+            rows = [p for p in rows if p.allows_printer(printer_id)]
         return rows
 
     async def _log_notification(

@@ -111,7 +111,9 @@ class NotificationProviderBase(BaseModel):
     daily_digest_time: str | None = Field(default=None, description="Time to send digest in HH:MM format")
 
     # Printer filter
-    printer_id: int | None = Field(default=None, description="Specific printer ID or null for all")
+    printer_ids: list[int] | None = Field(
+        default=None, description="Printer scope: null = all printers, [ids] = only those"
+    )
 
     @field_validator("quiet_hours_start", "quiet_hours_end", "daily_digest_time")
     @classmethod
@@ -209,7 +211,7 @@ class NotificationProviderUpdate(BaseModel):
     daily_digest_time: str | None = None
 
     # Printer filter
-    printer_id: int | None = None
+    printer_ids: list[int] | None = None
 
 
 class NotificationProviderResponse(NotificationProviderBase):
@@ -300,6 +302,8 @@ class NotificationLogResponse(BaseModel):
     message: str
     success: bool
     error_message: str | None = None
+    # The single printer this LOG ROW was about — unrelated to the
+    # provider's ``printer_ids`` scope.
     printer_id: int | None = None
     printer_name: str | None = None
     created_at: datetime

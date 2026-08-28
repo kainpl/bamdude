@@ -3635,8 +3635,8 @@ export interface NotificationProvider {
   // Daily digest
   daily_digest_enabled: boolean;
   daily_digest_time: string | null;
-  // Printer filter
-  printer_id: number | null;
+  // Printer scope: null = all printers, [ids] = only those
+  printer_ids: number[] | null;
   // Status tracking
   last_success: string | null;
   last_error: string | null;
@@ -3706,8 +3706,8 @@ export interface NotificationProviderCreate {
   // Daily digest
   daily_digest_enabled?: boolean;
   daily_digest_time?: string | null;
-  // Printer filter
-  printer_id?: number | null;
+  // Printer scope: null = all printers, [ids] = only those
+  printer_ids?: number[] | null;
 }
 
 export interface NotificationProviderUpdate {
@@ -3770,8 +3770,8 @@ export interface NotificationProviderUpdate {
   // Daily digest
   daily_digest_enabled?: boolean;
   daily_digest_time?: string | null;
-  // Printer filter
-  printer_id?: number | null;
+  // Printer scope: null = all printers, [ids] = only those
+  printer_ids?: number[] | null;
 }
 
 // Git Backup types

@@ -125,8 +125,10 @@ class NotificationProvider(Base):
     daily_digest_enabled = Column(Boolean, default=False)
     daily_digest_time = Column(String(5), nullable=True)  # HH:MM format, e.g., "08:00"
 
-    # Optional: Link to specific printer (NULL = all printers)
-    printer_id = Column(Integer, ForeignKey("printers.id", ondelete="SET NULL"), nullable=True)
+    # Printer scope (m157 3b): NULL = all printers, [id, ...] = only those —
+    # the same all/one/several shape telegram chats carry. Ignored for
+    # telegram (chats are the authority there); ``_coerce`` keeps it NULL.
+    printer_ids = Column(JSON, nullable=True)
 
     # Status tracking
     last_success = Column(DateTime, nullable=True)
@@ -138,7 +140,6 @@ class NotificationProvider(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    printer = relationship("Printer", back_populates="notification_providers")
     logs = relationship("NotificationLog", back_populates="provider", cascade="all, delete-orphan")
 
     def wants_event(self, event_field: str) -> bool:
@@ -169,6 +170,18 @@ class NotificationProvider(Base):
         else:
             current.discard(event_field)
         self.subscribed_events = sorted(current & set(PROVIDER_EVENT_DEFAULTS))
+
+    def allows_printer(self, printer_id: int | None) -> bool:
+        """Is this printer inside the provider's scope?
+
+        NULL scope = everything. An event with no printer attribution passes
+        for every provider — except the ``unscoped_only`` farm-wide news
+        (sensor alarms), which ``_get_providers_for_event`` keeps away from
+        scoped providers, exactly as the single-printer binding always did.
+        """
+        if self.printer_ids is None or printer_id is None:
+            return True
+        return printer_id in self.printer_ids
 
     digest_queue = relationship("NotificationDigestQueue", back_populates="provider", cascade="all, delete-orphan")
 
