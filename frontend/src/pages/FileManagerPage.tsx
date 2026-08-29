@@ -2000,6 +2000,11 @@ export function FileManagerPage() {
   useEffect(() => {
     if (meta && page > meta.last_page) {
       setPage(meta.last_page || 1);
+      // Third page-mutation path, same reasoning as the other two: whatever
+      // was ticked on the page that just stopped existing must not keep
+      // handing the bulk bar (Move / Delete / Tag) an id for a row that is
+      // no longer on screen.
+      setSelectedFiles([]);
     }
   }, [meta, page]);
 
