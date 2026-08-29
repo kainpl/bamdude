@@ -404,6 +404,32 @@ describe('FileManagerPage', () => {
       });
     });
 
+    it('offers a type present only on this page even when it is outside the common list', async () => {
+      // `file_type` is an OPEN set (`detect_file_type` returns any extension
+      // verbatim) — a MakerWorld ZIP's `instructions.pdf` is exactly the kind
+      // of oddball type the common hardcoded list was never going to carry,
+      // so the dropdown has to union it in from what this page actually has.
+      server.use(
+        http.get('/api/v1/library/files', () => {
+          const items = [
+            ...mockFiles,
+            { ...mockFiles[0], id: 99, filename: 'instructions.pdf', file_type: 'pdf', print_name: null },
+          ];
+          return HttpResponse.json({
+            items,
+            meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
+        }),
+      );
+
+      render(<FileManagerPage />);
+      await screen.findByText('Benchy');
+
+      const select = screen.getByDisplayValue('All types') as HTMLSelectElement;
+      const optionValues = Array.from(select.options).map((o) => o.value);
+      expect(optionValues).toContain('pdf');
+    });
+
     it('has sort options', async () => {
       render(<FileManagerPage />);
 

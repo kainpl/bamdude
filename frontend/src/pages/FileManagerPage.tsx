@@ -109,14 +109,19 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced;
 }
 
-// Closed set of `LibraryFile.file_type` values the backend can ever produce
-// — `detect_file_type` in backend/app/services/library_helpers.py, driven by
-// `_SCANNABLE_EXTENSIONS` in backend/app/api/routes/library.py. Static on
-// purpose (task 2, 2026-08-29 server-driven-lists fix round): deriving this
-// from the fetched files (`files.map(f => f.file_type)`) only ever offered
-// the types present on the CURRENT server-filtered/paginated page, so a type
-// filtered or paged out of view silently vanished from its own dropdown.
-const LIBRARY_FILE_TYPES = [
+// Common `LibraryFile.file_type` values — a STABLE baseline for the filter
+// dropdown, NOT a closed set. `detect_file_type` (backend/app/services/
+// library_helpers.py:74-80) ends in `return ext[1:]`: any extension becomes
+// its own file_type (plus `"unknown"` for none), so a MakerWorld ZIP's
+// `instructions.pdf` / `notes.txt`, or any future extension, produces a type
+// this list has never heard of. `_SCANNABLE_EXTENSIONS`
+// (backend/app/api/routes/library.py) only gates EXTERNAL FOLDER
+// SCANNING — plain uploads and ZIP imports are not restricted to it. The
+// `fileTypes` memo below unions this list with whatever `file_type` values
+// are actually present in the CURRENT page's response (task 2 fix round,
+// 2026-08-29), so an oddball type on this page is still offered even though
+// it isn't common enough to hardcode here.
+const COMMON_LIBRARY_FILE_TYPES = [
   '3mf', 'gcode', 'stl', 'obj', 'step', 'stp',
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'md',
 ] as const;
@@ -1941,6 +1946,10 @@ export function FileManagerPage() {
     setPrevPageResetSignature(pageResetSignature);
     setPage(1);
     effectivePage = 1;
+    // A filter change swaps out the rows under any selection made before it
+    // — same reasoning as `onPageChange` below, just triggered by a filter
+    // instead of the pager.
+    setSelectedFiles([]);
   }
 
   // Server-driven (task 2, 2026-08-29 server-driven-lists) — every filter,
@@ -1980,6 +1989,20 @@ export function FileManagerPage() {
   const files = filesPage?.items;
   const meta = filesPage?.meta;
 
+  // Out-of-range page clamp: the server, not a local guess, is what says
+  // `page` no longer exists (the last item on it was deleted, or the
+  // narrowing filter this page was fetched under no longer matches enough
+  // rows) — that only becomes known once its response lands, unlike the
+  // filter-driven reset above, which is decided from state that's already
+  // available at render time. Left unclamped this renders "No files yet"
+  // (an empty items array reads as an empty library, not a stale page) with
+  // the pager itself showing `current_page > last_page`.
+  useEffect(() => {
+    if (meta && page > meta.last_page) {
+      setPage(meta.last_page || 1);
+    }
+  }, [meta, page]);
+
   const { data: stats } = useQuery({
     queryKey: ['library-stats'],
     queryFn: () => api.getLibraryStats(),
@@ -1994,12 +2017,19 @@ export function FileManagerPage() {
     queryFn: api.getUsersSlim,
   });
 
-  // File types for the filter dropdown — the static closed set (see
-  // LIBRARY_FILE_TYPES above), not derived from `files`. A per-page
-  // derivation only ever offered the types present on the current
-  // server-filtered/paginated result, so a type filtered or paged out of
-  // view silently vanished from its own dropdown.
-  const fileTypes = LIBRARY_FILE_TYPES;
+  // File types for the filter dropdown: the common list ∪ whatever
+  // `file_type` values the CURRENT page's rows actually carry — file_type is
+  // an OPEN set (see COMMON_LIBRARY_FILE_TYPES above), so a type outside the
+  // common list must still be offered when this page contains one. Stable
+  // order: common types first (their fixed, hand-picked order), then any
+  // extra types alphabetically, deduplicated.
+  const fileTypes = useMemo(() => {
+    const common: readonly string[] = COMMON_LIBRARY_FILE_TYPES;
+    const extras = Array.from(
+      new Set((files ?? []).map((f) => f.file_type).filter((t) => !common.includes(t))),
+    ).sort();
+    return [...COMMON_LIBRARY_FILE_TYPES, ...extras];
+  }, [files]);
 
   // Filtering, sorting and paging all happen server-side now (task 1 + this
   // task's params above) — this is a pass-through so every render call site
@@ -3668,7 +3698,14 @@ export function FileManagerPage() {
               // select would render with nothing selected on first load.
               // 200 matches the backend's `per_page` upper bound (le=200).
               perPageOptions={[25, 50, 100, 200]}
-              onPageChange={setPage}
+              // Selection is page-scoped — a row ticked on page 1 is not on
+              // screen once page 2 renders, and leaving it selected would
+              // hand the bulk bar (Move / Delete / Tag) an ID for a row the
+              // operator can no longer see, ticked or not.
+              onPageChange={(newPage) => {
+                setPage(newPage);
+                setSelectedFiles([]);
+              }}
               onPerPageChange={(size) => {
                 setPerPage(size);
                 setPage(1);

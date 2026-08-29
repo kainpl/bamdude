@@ -37,10 +37,14 @@ class LibraryFolder(Base):
     external_show_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     external_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
-    # Link to archive (optional). Project links live in the
-    # ``library_folder_projects`` pivot — see ``projects`` below.
+    # DORMANT (2026-08-29) — the folder-to-archive link was removed; no route
+    # reads or writes this column any more (archives are print history, not a
+    # filing destination). Left in place because migrations are frozen —
+    # dropping the column + its unique index is a future migration. Project
+    # links live in the ``library_folder_projects`` pivot — see ``projects``
+    # below — and are unaffected.
     #
-    # ⚠️ **One archive belongs to at most one folder** — the unique index in
+    # ⚠️ **One archive belonged to at most one folder** — the unique index in
     # ``__table_args__`` (and m133 for existing installs). It was a plain FK, so
     # several folders could claim one archive while the archive page only ever
     # drew the first it found: the second binding existed in the database and
