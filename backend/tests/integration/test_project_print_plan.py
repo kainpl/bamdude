@@ -117,8 +117,14 @@ async def test_update_copies_multiplies_totals(async_client: AsyncClient, db_ses
     )
     await async_client.put(f"/api/v1/library/folders/{folder_id}", json={"project_ids": [project_id]})
 
+    plan = (await async_client.get(f"/api/v1/projects/{project_id}/print-plan")).json()
+    item_id = plan["items"][0]["id"]
+    assert plan["items"][0]["library_file_id"] == file_id
+
     # Bump copies to 3
-    patch_resp = await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/{file_id}", json={"copies": 3})
+    patch_resp = await async_client.patch(
+        f"/api/v1/projects/{project_id}/print-plan/items/{item_id}", json={"copies": 3}
+    )
     assert patch_resp.status_code == 200, patch_resp.text
     item = patch_resp.json()
     assert item["copies"] == 3
@@ -137,10 +143,16 @@ async def test_copies_minimum_is_one(async_client: AsyncClient, db_session):
     file_id = await _add_library_file(db_session, folder_id=folder_id)
     await async_client.put(f"/api/v1/library/folders/{folder_id}", json={"project_ids": [project_id]})
 
-    resp = await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/{file_id}", json={"copies": 0})
+    plan = (await async_client.get(f"/api/v1/projects/{project_id}/print-plan")).json()
+    item_id = plan["items"][0]["id"]
+    assert plan["items"][0]["library_file_id"] == file_id
+
+    resp = await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/items/{item_id}", json={"copies": 0})
     assert resp.status_code == 400
 
-    resp_neg = await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/{file_id}", json={"copies": -2})
+    resp_neg = await async_client.patch(
+        f"/api/v1/projects/{project_id}/print-plan/items/{item_id}", json={"copies": -2}
+    )
     assert resp_neg.status_code == 400
 
 
@@ -227,7 +239,11 @@ async def test_cost_uses_default_filament_cost_setting(async_client: AsyncClient
     file_id = await _add_library_file(db_session, folder_id=folder_id, filament_grams=200.0)
     await async_client.put(f"/api/v1/library/folders/{folder_id}", json={"project_ids": [project_id]})
 
-    await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/{file_id}", json={"copies": 2})
+    plan = (await async_client.get(f"/api/v1/projects/{project_id}/print-plan")).json()
+    item_id = plan["items"][0]["id"]
+    assert plan["items"][0]["library_file_id"] == file_id
+
+    await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/items/{item_id}", json={"copies": 2})
 
     plan = (await async_client.get(f"/api/v1/projects/{project_id}/print-plan")).json()
     assert plan["default_filament_cost_per_kg"] == pytest.approx(30.0)
@@ -259,7 +275,8 @@ async def test_file_linked_to_two_projects_has_independent_plan_rows(async_clien
     assert [i["library_file_id"] for i in plan2["items"]] == [file_id]
 
     # Bump copies on project A only — project B's plan row stays at 1.
-    await async_client.patch(f"/api/v1/projects/{p1}/print-plan/{file_id}", json={"copies": 4})
+    item1_id = plan1["items"][0]["id"]
+    await async_client.patch(f"/api/v1/projects/{p1}/print-plan/items/{item1_id}", json={"copies": 4})
     plan1 = (await async_client.get(f"/api/v1/projects/{p1}/print-plan")).json()
     plan2 = (await async_client.get(f"/api/v1/projects/{p2}/print-plan")).json()
     assert plan1["items"][0]["copies"] == 4
@@ -317,7 +334,10 @@ async def test_plan_progress_counts_completed_archives(async_client: AsyncClient
     folder_id = await _create_folder(db_session)
     file_id = await _add_library_file(db_session, folder_id=folder_id)
     await async_client.put(f"/api/v1/library/folders/{folder_id}", json={"project_ids": [project_id]})
-    await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/{file_id}", json={"copies": 5})
+    plan = (await async_client.get(f"/api/v1/projects/{project_id}/print-plan")).json()
+    item_id = plan["items"][0]["id"]
+    assert plan["items"][0]["library_file_id"] == file_id
+    await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/items/{item_id}", json={"copies": 5})
 
     # Seed 2× completed + 1× failed for this (project, file). Only the
     # completed ones should count towards printed.
@@ -363,7 +383,7 @@ async def test_plan_progress_counts_completed_archives(async_client: AsyncClient
         )
     )
     await db_session.commit()
-    await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/{file_id}", json={"copies": 1})
+    await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/items/{item_id}", json={"copies": 1})
     plan = (await async_client.get(f"/api/v1/projects/{project_id}/print-plan")).json()
     item = plan["items"][0]
     assert item["printed_count"] == 3
