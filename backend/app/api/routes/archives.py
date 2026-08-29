@@ -20,6 +20,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.timezones import client_timezone, day_bounds
 from backend.app.models.archive import PrintArchive
+from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.models.user import User
 from backend.app.schemas.archive import (
@@ -124,6 +125,7 @@ def archive_to_response(
     duplicate_count: int = 0,
     duplicate_sequence: int = 0,
     original_archive_id: int | None = None,
+    part_rows: list[PrintArchivePart] | None = None,
 ) -> dict:
     """Convert archive model to response dict with computed fields."""
     data = {
@@ -173,6 +175,16 @@ def archive_to_response(
         "failure_reason": archive.failure_reason,
         "quantity": archive.quantity,
         "defective_count": archive.defective_count,
+        # Detail views only (part_rows passed in) — list callers leave this
+        # [] rather than paying for a per-archive query on every page.
+        "parts": (
+            [
+                {"id": p.id, "name": p.name, "name_key": p.name_key, "quantity": p.quantity, "defective": p.defective}
+                for p in part_rows
+            ]
+            if part_rows is not None
+            else []
+        ),
         "energy_kwh": archive.energy_kwh,
         "energy_cost": archive.energy_cost,
         # Queue attribution (m019) + verbose error_message twin for failures.
@@ -1427,7 +1439,20 @@ async def get_archive(
         print_name=archive.print_name,
         makerworld_model_id=makerworld_id,
     )
-    return archive_to_response(archive, duplicates)
+
+    part_rows = (
+        (
+            await db.execute(
+                select(PrintArchivePart)
+                .where(PrintArchivePart.archive_id == archive.id)
+                .order_by(PrintArchivePart.name_key)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    return archive_to_response(archive, duplicates, part_rows=part_rows)
 
 
 @router.get("/{archive_id}/similar")
@@ -1492,8 +1517,23 @@ async def update_archive(
         if archive.created_by_id != user.id:
             raise HTTPException(403, "You can only update your own archives")
 
-    for field, value in update_data.model_dump(exclude_unset=True).items():
+    # parts_defective is not a PrintArchive column — it is applied separately
+    # below against PrintArchivePart rows and must never reach setattr.
+    for field, value in update_data.model_dump(exclude_unset=True, exclude={"parts_defective"}).items():
         setattr(archive, field, value)
+
+    if update_data.parts_defective:
+        rows = (
+            (await db.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id == archive.id)))
+            .scalars()
+            .all()
+        )
+        by_id = {r.id: r for r in rows}
+        for item in update_data.parts_defective:
+            row = by_id.get(item.id)  # foreign ids are ignored, not an error
+            if row is not None:
+                row.defective = min(item.defective, row.quantity)
+        archive.defective_count = sum(r.defective or 0 for r in rows)
 
     await db.commit()
 
