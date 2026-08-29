@@ -8813,8 +8813,6 @@ export const api = {
   getLibraryScanJob: (jobId: number) => request<LibraryScanJob>(`/library/scan-jobs/${jobId}`),
   getLibraryFoldersByProject: (projectId: number) =>
     request<LibraryFolder[]>(`/library/folders/by-project/${projectId}`),
-  getLibraryFoldersByArchive: (archiveId: number) =>
-    request<LibraryFolder[]>(`/library/folders/by-archive/${archiveId}`),
 
   getLibraryFiles: (
     folderId?: number | null,
@@ -9675,8 +9673,6 @@ export interface LibraryFolderTree {
   parent_id: number | null;
   // m044: M2M project links. Empty array = unattached.
   projects: ProjectRef[];
-  archive_id: number | null;
-  archive_name: string | null;
   is_external: boolean;
   external_path: string | null;
   external_readonly: boolean;
@@ -9713,8 +9709,6 @@ export interface LibraryFolder {
   name: string;
   parent_id: number | null;
   projects: ProjectRef[];
-  archive_id: number | null;
-  archive_name: string | null;
   is_external: boolean;
   external_path: string | null;
   external_readonly: boolean;
@@ -9737,7 +9731,6 @@ export interface LibraryFolderCreate {
   parent_id?: number | null;
   // m044: list of project IDs to associate the folder with on creation.
   project_ids?: number[];
-  archive_id?: number | null;
 }
 
 export interface ExternalFolderCreate {
@@ -9754,7 +9747,6 @@ export interface LibraryFolderUpdate {
   // m044: undefined = leave links untouched, [] = unlink from every
   // project, otherwise replace the whole list.
   project_ids?: number[];
-  archive_id?: number | null;  // 0 to unlink
 }
 
 export interface LibraryFileDuplicate {

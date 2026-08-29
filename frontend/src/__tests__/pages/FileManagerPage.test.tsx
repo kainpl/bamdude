@@ -24,8 +24,6 @@ const mockFolders = [
     parent_id: null,
     file_count: 5,
     projects: [],
-    archive_id: null,
-    archive_name: null,
     children: [
       {
         id: 2,
@@ -33,8 +31,6 @@ const mockFolders = [
         parent_id: 1,
         file_count: 3,
         projects: [],
-        archive_id: null,
-        archive_name: null,
         children: [],
       },
     ],
@@ -45,8 +41,6 @@ const mockFolders = [
     parent_id: null,
     file_count: 2,
     projects: [{ id: 1, name: 'My Art Project', color: null }],
-    archive_id: null,
-    archive_name: null,
     children: [],
   },
 ];
@@ -154,9 +148,6 @@ describe('FileManagerPage', () => {
       http.get('/api/v1/projects/', () => {
         return HttpResponse.json([{ id: 1, name: 'Test Project', color: '#00ae42' }]);
       }),
-      http.get('/api/v1/archives/', () => {
-        return HttpResponse.json([{ id: 1, print_name: 'Test Archive', filename: 'test.3mf' }]);
-      })
     );
   });
 
@@ -932,10 +923,6 @@ describe('FileManagerPage', () => {
         name: 'NAS Library',
         parent_id: null,
         file_count: 200,
-        project_id: null,
-        archive_id: null,
-        project_name: null,
-        archive_name: null,
         is_external: true,
         external_readonly: false,
         external_path: '/mnt/nas',
