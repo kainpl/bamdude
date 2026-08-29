@@ -137,7 +137,33 @@ function setupHandlers(spools: unknown[] = [MOCK_SPOOL]) {
         spoolman_report_partial_usage: 'true',
       })
     ),
-    http.get('/api/v1/inventory/spools', () => HttpResponse.json(spools)),
+    // Server-driven paged list (task 4): `page` flips the endpoint to the
+    // envelope of slim rows — k_profiles null unless the cards view's
+    // include opt-in asked for the array. The bare call keeps the flat shape
+    // (SpoolFormModal's own legacy fetch rides it).
+    http.get('/api/v1/inventory/spools/facets', () =>
+      HttpResponse.json({ materials: [], brands: [], categories: [], catalog_ids: [], colors: [] })
+    ),
+    http.get('/api/v1/inventory/spools/ids', () => HttpResponse.json({ ids: [] })),
+    http.get('/api/v1/inventory/spools', ({ request }) => {
+      const url = new URL(request.url);
+      if (!url.searchParams.has('page')) return HttpResponse.json(spools);
+      const include = url.searchParams.get('include_k_profiles') === 'true';
+      return HttpResponse.json({
+        items: (spools as Array<Record<string, unknown>>).map((s) => ({
+          ...s,
+          k_profile_count: 0,
+          k_profiles: include ? [] : null,
+        })),
+        meta: { total: spools.length, current_page: 1, per_page: 24, last_page: 1 },
+      });
+    }),
+    // The table row's edit/copy click now fetches the FULL spool first
+    // (slim paged rows carry k_profiles: null — spec §3.2 detail fetch).
+    http.get('/api/v1/inventory/spools/:id', ({ params }) => {
+      const found = (spools as Array<{ id: number }>).find((s) => String(s.id) === params.id);
+      return found ? HttpResponse.json(found) : new HttpResponse(null, { status: 404 });
+    }),
     http.get('/api/v1/inventory/assignments', () => HttpResponse.json([])),
     http.get('/api/v1/inventory/catalog', () => HttpResponse.json([])),
     // SpoolFormModal kicks off these fetches the moment it opens. Without

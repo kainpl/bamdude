@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 from typing import Literal
 
 import httpx
@@ -26,6 +27,7 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_catalog import SpoolCatalogEntry
 from backend.app.models.spool_k_profile import SpoolKProfile
 from backend.app.models.user import User
+from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.location import LocationCreate, LocationResponse, LocationUpdate
 from backend.app.schemas.spool import (
     SpoolAssignmentCreate,
@@ -36,6 +38,8 @@ from backend.app.schemas.spool import (
     SpoolCreate,
     SpoolKProfileBase,
     SpoolKProfileResponse,
+    SpoolListItem,
+    SpoolListPage,
     SpoolResponse,
     SpoolUpdate,
 )
@@ -992,15 +996,378 @@ async def sync_from_filamentcolors(
 
 # ── Spool CRUD ───────────────────────────────────────────────────────────────
 
+# Every endpoint taking ``location_id`` MUST declare it with this pattern —
+# anything else reaches ``int(location_id)`` in ``build_spool_filters``, where
+# a non-numeric value raises ValueError uncaught into a 500 (T1 review finding
+# 3). One shared constant so the list/ids endpoints can't drift apart; a
+# pattern mismatch becomes a clean 422 like any other bad param.
+_LOCATION_ID_PATTERN = r"^(__none__|\d+)$"
 
-@router.get("/spools", response_model=list[SpoolResponse])
+# Sanity cap for ``GET /spools/ids`` (spec §3.4): nobody bulk-edits this many
+# spools; a bigger answer means a pathological call, refused with a 400 rather
+# than materializing an unbounded id list.
+_SPOOL_IDS_CAP = 50_000
+
+
+def _spool_to_list_item(s: Spool, *, include_k_profiles: bool = False) -> SpoolListItem:
+    """Slim list-row projection — every ``SpoolListItem`` field, built
+    explicitly (never ``model_validate(s)``: ``k_profile_count`` has no
+    matching ORM attribute). ``s.k_profiles`` must already be eager-loaded
+    (``list_spools`` always ``selectinload``s it) — the async ORM has no
+    implicit lazy load, so touching an unloaded relationship here would raise,
+    not silently N+1.
+
+    ``include_k_profiles`` (task 4, 2026-08-29): serialize the full
+    ``k_profiles`` array too — the cards-view opt-in (see
+    ``SpoolListItem``'s docstring). The rows are eager-loaded regardless, so
+    this is a serialization-only switch, never an extra query."""
+    return SpoolListItem(
+        id=s.id,
+        material=s.material,
+        subtype=s.subtype,
+        color_name=s.color_name,
+        rgba=s.rgba,
+        brand=s.brand,
+        label_weight=s.label_weight,
+        core_weight=s.core_weight,
+        core_weight_catalog_id=s.core_weight_catalog_id,
+        weight_used=s.weight_used,
+        weight_used_baseline=s.weight_used_baseline,
+        slicer_filament=s.slicer_filament,
+        slicer_filament_name=s.slicer_filament_name,
+        filament_family_id=s.filament_family_id,
+        nozzle_temp_min=s.nozzle_temp_min,
+        nozzle_temp_max=s.nozzle_temp_max,
+        note=s.note,
+        added_full=s.added_full,
+        tag_uid=s.tag_uid,
+        tray_uuid=s.tray_uuid,
+        data_origin=s.data_origin,
+        tag_type=s.tag_type,
+        cost_per_kg=s.cost_per_kg,
+        purchase_date=s.purchase_date,
+        last_used=s.last_used,
+        encode_time=s.encode_time,
+        filament_diameter=s.filament_diameter,
+        lot=s.lot,
+        weight_locked=s.weight_locked,
+        last_scale_weight=s.last_scale_weight,
+        last_weighed_at=s.last_weighed_at,
+        extra_colors=s.extra_colors,
+        effect_type=s.effect_type,
+        category=s.category,
+        low_stock_threshold_pct=s.low_stock_threshold_pct,
+        storage_location=s.storage_location,
+        location_id=s.location_id,
+        purchase_location=s.purchase_location,
+        archived_at=s.archived_at,
+        created_at=s.created_at,
+        updated_at=s.updated_at,
+        k_profile_count=len(s.k_profiles),
+        k_profiles=([SpoolKProfileResponse.model_validate(kp) for kp in s.k_profiles] if include_k_profiles else None),
+    )
+
+
+class SpoolGroupItem(BaseModel):
+    """One row of the grouped list mode (``group_similar=true``, task 3): the
+    7-column group key + membership + the min(id) member as representative
+    (slim list projection — same ``SpoolListItem`` the flat paged mode
+    returns). The text key fields carry the COALESCED key value (``''`` where
+    the underlying column is NULL — the client key's ``|| ''`` fold); ``lot``
+    stays raw (``?? ''`` semantics: the all-NULL-lots group reports null,
+    lot=0 is its own group)."""
+
+    material: str
+    subtype: str
+    brand: str
+    color_name: str
+    rgba: str
+    label_weight: int
+    lot: int | None
+    group_count: int
+    ids: list[int]
+    representative: SpoolListItem
+
+
+class SpoolGroupPage(BaseModel):
+    items: list[SpoolGroupItem]
+    meta: PaginationMeta
+
+
+@router.get("/spools", response_model=None)
 async def list_spools(
     include_archived: bool = False,
+    archived: str | None = Query(None, description="'active' or 'archived' — paged mode only"),
+    usage: str | None = Query(None, description="'used', 'new', or 'lowstock'"),
+    material: str | None = Query(None),
+    brand: str | None = Query(None),
+    colors: list[str] = Query(
+        default_factory=list,
+        description="Raw color_name values (resolved-name matching stays client-side — see facets, task 2)",
+    ),
+    color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
+    category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
+    catalog_id: int | None = Query(None),
+    location_id: str | None = Query(
+        None,
+        # A stale/hand-edited deep-link is exactly the shape this endpoint
+        # bakes into a shareable URL, so this must never be a 500 — see
+        # _LOCATION_ID_PATTERN's comment (review finding 3).
+        pattern=_LOCATION_ID_PATTERN,
+        description="Location id, or '__none__' for no location",
+    ),
+    stock: str | None = Query(None, description="'stock' or 'configured'"),
+    assigned: str | None = Query(None, description="'assigned' or 'unassigned'"),
+    q: str | None = Query(
+        None, description="Tokenised match over brand/material/color_name/subtype/note/slicer_filament_name"
+    ),
+    sort_by: str | None = Query(
+        None,
+        description=(
+            "<column>_asc|_desc — see inventory_service._spool_sort_columns plus "
+            "the special-cased 'display_name' and 'location' keys. Omitted keeps "
+            "the legacy material/brand/color_name ordering."
+        ),
+    ),
+    page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
+    per_page: int = Query(50, ge=1, le=200),
+    all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
+    group_similar: bool = Query(
+        False,
+        description=(
+            "Paged mode only: rows become GROUPS of similar spools "
+            "(material|subtype|brand|color_name|rgba|label_weight|lot) — "
+            "see SpoolGroupItem. Requires page; restricts sort_by to the "
+            "group-key subset (400 otherwise)."
+        ),
+    ),
+    include_k_profiles: bool = Query(
+        False,
+        description=(
+            "Paged mode only: serialize the full k_profiles array on each "
+            "row (and on grouped representatives) instead of null — the "
+            "cards-view opt-in (task 4). Serialization-only: the rows are "
+            "eager-loaded either way."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
-):
-    """List all spools, excluding archived by default."""
-    return await inventory_service.list_spools(db, include_archived=include_archived)
+) -> list[SpoolResponse] | SpoolListPage | SpoolGroupPage:
+    """List spools.
+
+    Server-driven list (task 1, 2026-08-29 — mirrors ``ArchiveService.
+    list_archives`` / the library file list): every filter param feeds
+    ``inventory_service.build_spool_filters``, the SAME list driving both the
+    page query and ``meta.total``. ``page`` is the compat switch — omit it
+    (and every param below except ``include_archived``) and the response
+    stays today's flat ``list[SpoolResponse]`` (full shape, ``k_profiles``
+    included) — every existing caller (4 other frontend components, the
+    Cloud Link remote op) depends on exactly that shape and never sends
+    ``page``. Pass ``page`` and the response becomes
+    ``{"items": [...], "meta": {total, current_page, per_page, last_page}}``
+    of the slimmer ``SpoolListItem`` (see its docstring for what's dropped).
+
+    ⚠️ **``include_archived`` is read ONLY on the legacy (no-``page``) branch —
+    the paged branch ignores it entirely and relies on the new ``archived``
+    param instead.** The deleted client's Active/Archived tab was strictly
+    binary (never both at once); omitting ``archived`` in paged mode is,
+    correctly per this endpoint's general "omit a param, get no filter for
+    that dimension" contract, "show both" — not "active only" like the old
+    default. A caller migrating to the paged mode (Task 4) must always send
+    ``archived=active`` or ``archived=archived`` explicitly; sending
+    ``page=1&include_archived=false`` and expecting the archived rows to stay
+    hidden is a silent no-op (review finding 6).
+
+    **Grouped mode (task 3):** ``group_similar=true`` (paged mode only —
+    without ``page`` it's a 400, never a silent flat-shaped answer) makes the
+    rows ``SpoolGroupItem`` GROUPS under the SAME filters: filters first,
+    then grouping, then pagination over GROUPS — ``meta.total`` counts
+    groups. The key and the merge-eligibility rule (used/assigned spools
+    never merge) port the deleted client's ``spoolGroupKey`` + consumers
+    exactly — see ``inventory_service._spool_group_key_exprs``. ``sort_by``
+    is restricted to the group-key subset (``display_name``, ``material``,
+    ``brand``, ``color_name`` — 400 otherwise, deliberately stricter than
+    the flat mode's permissive fallback).
+    """
+    if page is None:
+        if group_similar:
+            raise HTTPException(
+                status_code=400,
+                detail="group_similar requires the paged mode — send page (grouped rows only exist in the envelope)",
+            )
+        spools = await inventory_service.list_spools(db, include_archived=include_archived)
+        return [SpoolResponse.model_validate(s) for s in spools]
+
+    if group_similar:
+        # Fail fast, before any DB work — the service re-checks for direct
+        # callers (same defense-in-depth as build_spool_filters' ValueError
+        # contract on location_id).
+        try:
+            inventory_service.assert_group_sort_supported(sort_by)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    filters = await inventory_service.build_spool_filters(
+        db,
+        archived=archived,
+        usage=usage,
+        material=material,
+        brand=brand,
+        colors=colors or None,
+        color_rgbas=color_rgbas or None,
+        category=category,
+        catalog_id=catalog_id,
+        location_id=location_id,
+        stock=stock,
+        assigned=assigned,
+        q=q,
+    )
+
+    offset, limit = (0, None) if all else ((page - 1) * per_page, per_page)
+
+    if group_similar:
+        total = await inventory_service.count_spool_groups(db, filters=filters)
+        groups = await inventory_service.list_spool_groups(
+            db, filters=filters, sort_by=sort_by, limit=limit, offset=offset
+        )
+        return SpoolGroupPage(
+            items=[
+                SpoolGroupItem(
+                    material=g["material"],
+                    subtype=g["subtype"],
+                    brand=g["brand"],
+                    color_name=g["color_name"],
+                    rgba=g["rgba"],
+                    label_weight=g["label_weight"],
+                    lot=g["lot"],
+                    group_count=g["group_count"],
+                    ids=g["ids"],
+                    representative=_spool_to_list_item(g["representative"], include_k_profiles=include_k_profiles),
+                )
+                for g in groups
+            ],
+            meta=PaginationMeta(
+                total=total,
+                current_page=1 if all else page,
+                per_page=(total or 1) if all else per_page,
+                last_page=1 if all else max(1, math.ceil(total / per_page)),
+            ),
+        )
+
+    total = await inventory_service.count_spools(db, filters=filters)
+    spools = await inventory_service.list_spools(db, filters=filters, sort_by=sort_by, limit=limit, offset=offset)
+
+    last_page = 1 if all else max(1, math.ceil(total / per_page))
+    return SpoolListPage(
+        items=[_spool_to_list_item(s, include_k_profiles=include_k_profiles) for s in spools],
+        meta=PaginationMeta(
+            total=total,
+            current_page=1 if all else page,
+            per_page=(total or 1) if all else per_page,
+            last_page=last_page,
+        ),
+    )
+
+
+# ── Ids + facets — server-driven selection feeds (task 2, 2026-08-29) ────────
+# Declared (like /spools/export below) before the dynamic `/spools/{spool_id}`
+# route so the literal `ids` / `facets` segments match here instead of being
+# parsed as an int id.
+
+
+class SpoolIdsResponse(BaseModel):
+    ids: list[int]
+
+
+class SpoolColorFacet(BaseModel):
+    color_name: str | None
+    rgba: str | None
+
+
+class SpoolFacetsResponse(BaseModel):
+    materials: list[str]
+    brands: list[str]
+    categories: list[str]
+    catalog_ids: list[int]
+    colors: list[SpoolColorFacet]
+
+
+@router.get("/spools/ids", response_model=SpoolIdsResponse)
+async def list_spool_ids(
+    archived: str | None = Query(None, description="'active' or 'archived'"),
+    usage: str | None = Query(None, description="'used', 'new', or 'lowstock'"),
+    material: str | None = Query(None),
+    brand: str | None = Query(None),
+    colors: list[str] = Query(default_factory=list, description="Raw color_name values"),
+    color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
+    category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
+    catalog_id: int | None = Query(None),
+    location_id: str | None = Query(
+        None,
+        pattern=_LOCATION_ID_PATTERN,
+        description="Location id, or '__none__' for no location",
+    ),
+    stock: str | None = Query(None, description="'stock' or 'configured'"),
+    assigned: str | None = Query(None, description="'assigned' or 'unassigned'"),
+    q: str | None = Query(
+        None, description="Tokenised match over brand/material/color_name/subtype/note/slicer_filament_name"
+    ),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> SpoolIdsResponse:
+    """The ids of every spool matching the given filters — the "Select all N
+    matching the filter" feed (spec §3.4).
+
+    Takes the SAME filter + ``q`` params as the paged ``GET /spools`` (both
+    feed ``inventory_service.build_spool_filters``, so the id set is exactly
+    the rows the list shows), no paging/sort. The client materializes the
+    answer into an explicit selection id set — bulk actions stay
+    selection-scoped, never filter-scoped (the CLAUDE.md invariant). Refuses
+    with 400 when more than ``_SPOOL_IDS_CAP`` rows match.
+    """
+    filters = await inventory_service.build_spool_filters(
+        db,
+        archived=archived,
+        usage=usage,
+        material=material,
+        brand=brand,
+        colors=colors or None,
+        color_rgbas=color_rgbas or None,
+        category=category,
+        catalog_id=catalog_id,
+        location_id=location_id,
+        stock=stock,
+        assigned=assigned,
+        q=q,
+    )
+    ids = await inventory_service.list_spool_ids(db, filters=filters, limit=_SPOOL_IDS_CAP + 1)
+    if len(ids) > _SPOOL_IDS_CAP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"More than {_SPOOL_IDS_CAP} spools match — narrow the filter before selecting all",
+        )
+    return SpoolIdsResponse(ids=ids)
+
+
+@router.get("/spools/facets", response_model=SpoolFacetsResponse)
+async def spool_facets(
+    archived: str | None = Query(None, description="'active' or 'archived' — scope the facets to one tab"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> SpoolFacetsResponse:
+    """Distinct filter-dropdown values under the active archived tab (spec
+    §3.6) — the server-driven replacement for deriving dropdown options from
+    the full client-side array.
+
+    Carries ONLY the dimensions with no existing source: materials, brands,
+    categories, used catalog ids, and RAW ``(color_name, rgba)`` pairs (the
+    client resolves and groups those by display name — the colour catalog
+    lives client-side in ``ColorCatalogProvider``). Locations deliberately
+    absent: the dropdown already reads ``GET /inventory/locations``.
+    """
+    filters = await inventory_service.build_spool_filters(db, archived=archived)
+    facets = await inventory_service.spool_facets(db, filters=filters)
+    return SpoolFacetsResponse(**facets)
 
 
 # ── CSV import / export (#1576) ──────────────────────────────────────────────

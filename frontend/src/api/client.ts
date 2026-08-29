@@ -4155,7 +4155,141 @@ export interface InventorySpool {
   storage_location?: string | null;
   location_id?: number | null;
   purchase_location?: string | null;
-  k_profiles?: SpoolKProfile[];
+  /** Nested K-profiles. `null` on paged list rows unless the request sent
+   *  `include_k_profiles=true` (task 4) — "not requested", distinct from
+   *  "requested, none" (`[]`). Legacy flat responses always carry the array. */
+  k_profiles?: SpoolKProfile[] | null;
+}
+
+// ── Server-driven spool list (task 4, 2026-08-29 server-driven-lists) ────────
+// Params for the paged GET /inventory/spools surface (tasks 1-3). Consumed
+// only by getSpoolsPaged / getSpoolGroupsPaged / getSpoolIds below — every
+// other consumer stays on the legacy flat `getSpools`.
+export interface SpoolListParams {
+  /** ⚠️ ALWAYS send this from tab-scoped UI: the paged branch ignores the
+   *  legacy `include_archived` entirely, and omitting `archived` means "both
+   *  tabs at once" — a view the old client never had (T1 review finding 6). */
+  archived?: 'active' | 'archived';
+  usage?: 'used' | 'new' | 'lowstock';
+  material?: string;
+  brand?: string;
+  /** Raw color_name values. Colour-name resolution stays client-side (the
+   *  colour catalog lives in ColorCatalogProvider): the page groups the
+   *  facets' raw (color_name, rgba) pairs by resolved name and sends the
+   *  chosen group's raw lists back — see the facets endpoint (task 2). */
+  colors?: string[];
+  /** Raw rgba values, matched only where color_name IS NULL. */
+  color_rgbas?: string[];
+  /** Exact category, or '__none__' for uncategorised. */
+  category?: string;
+  catalog_id?: number;
+  /** Location id digits, or '__none__' for no location. */
+  location_id?: string;
+  stock?: 'stock' | 'configured';
+  assigned?: 'assigned' | 'unassigned';
+  q?: string;
+  /** `<column>_asc|_desc` over the server sort map (task 1). Grouped mode
+   *  accepts only display_name/material/brand/color_name — the page
+   *  sanitizes before sending (a 400 must be unreachable from the UI). */
+  sort_by?: string;
+  page?: number;
+  per_page?: number;
+  all?: boolean;
+  /** Cards-view opt-in: serialize each row's full k_profiles array (JSON
+   *  null otherwise). Serialization-only on the server — rows are
+   *  eager-loaded either way. */
+  include_k_profiles?: boolean;
+}
+
+/** Slim paged list row — an InventorySpool whose `k_profiles` is null unless
+ *  `include_k_profiles` asked for it, plus the scalar count. */
+export type SpoolListItem = InventorySpool & { k_profile_count: number };
+
+export interface SpoolListPage {
+  items: SpoolListItem[];
+  meta: PaginationMeta;
+}
+
+/** One grouped-mode row (`group_similar=true`, task 3). Text key fields come
+ *  back COALESCED (`''` where the column is NULL — that IS the key); compare
+ *  null-vs-empty against `representative`'s raw fields, never these. */
+export interface SpoolGroupItem {
+  material: string;
+  subtype: string;
+  brand: string;
+  color_name: string;
+  rgba: string;
+  label_weight: number;
+  lot: number | null;
+  group_count: number;
+  /** Complete member ids, ascending — group expansion + selection feed. */
+  ids: number[];
+  /** The min(id) member, in the slim list projection. */
+  representative: SpoolListItem;
+}
+
+export interface SpoolGroupPage {
+  items: SpoolGroupItem[];
+  meta: PaginationMeta;
+}
+
+export interface SpoolFacetColor {
+  color_name: string | null;
+  rgba: string | null;
+}
+
+/** Distinct dropdown values under one archived tab (task 2). Locations are
+ *  deliberately absent — the dropdown already reads GET /inventory/locations.
+ *  ⚠️ Exactly these five keys: `hasUncategorized`/`hasUnsetStorageLocation`
+ *  are NOT in the contract — the page offers the "None" buckets
+ *  unconditionally instead (a zero-row filter is harmless). */
+export interface SpoolFacets {
+  materials: string[];
+  brands: string[];
+  categories: string[];
+  catalog_ids: number[];
+  colors: SpoolFacetColor[];
+}
+
+/** Shared query-string builder for the paged spool surface. `page` is ALWAYS
+ *  sent — it is the compat switch that flips GET /inventory/spools from the
+ *  legacy flat array to the `{items, meta}` envelope (same convention as
+ *  getLibraryFilesPaged). */
+function spoolListSearchParams(params: SpoolListParams): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (params.archived) qs.set('archived', params.archived);
+  if (params.usage) qs.set('usage', params.usage);
+  if (params.material) qs.set('material', params.material);
+  if (params.brand) qs.set('brand', params.brand);
+  for (const c of params.colors ?? []) qs.append('colors', c);
+  for (const r of params.color_rgbas ?? []) qs.append('color_rgbas', r);
+  if (params.category) qs.set('category', params.category);
+  if (params.catalog_id !== undefined) qs.set('catalog_id', String(params.catalog_id));
+  if (params.location_id) qs.set('location_id', params.location_id);
+  if (params.stock) qs.set('stock', params.stock);
+  if (params.assigned) qs.set('assigned', params.assigned);
+  if (params.q) qs.set('q', params.q);
+  if (params.sort_by) qs.set('sort_by', params.sort_by);
+  if (params.include_k_profiles) qs.set('include_k_profiles', 'true');
+  qs.set('page', String(params.page ?? 1));
+  if (params.all) {
+    qs.set('all', 'true');
+  } else if (params.per_page) {
+    qs.set('per_page', String(params.per_page));
+  }
+  return qs;
+}
+
+/** The filter-only subset for GET /inventory/spools/ids — same predicates as
+ *  the paged list, no paging/sort (the endpoint takes none). */
+function spoolFilterSearchParams(params: SpoolListParams): URLSearchParams {
+  const qs = spoolListSearchParams(params);
+  qs.delete('page');
+  qs.delete('per_page');
+  qs.delete('all');
+  qs.delete('sort_by');
+  qs.delete('include_k_profiles');
+  return qs;
 }
 
 // Spool label printing (B.1).
@@ -8011,8 +8145,32 @@ export const api = {
   getAuthoredFamilies: () => request<{ families: AuthoredFamily[] }>('/filament-families/authored'),
 
   // Inventory
+  // ⚠️ LEGACY flat list — signature and shape pinned (task 4, 2026-08-29
+  // server-driven-lists). Never send `page` from here: `page` flips the
+  // endpoint to the `{items, meta}` envelope. Four consumers depend on
+  // exactly this flat full shape (re-grepped 2026-08-29):
+  //   AssignSpoolModal.tsx, ConfigureAmsSlotModal.tsx,
+  //   SpoolDisplayNameSettings.tsx, SpoolFormModal.tsx.
+  // InventoryPage itself now rides the paged fns below.
   getSpools: (includeArchived = false) =>
     request<InventorySpool[]>(`/inventory/spools?include_archived=${includeArchived}`),
+  // Server-driven variants (task 4) — the ONLY callers allowed to set `page`.
+  getSpoolsPaged: (params: SpoolListParams = {}) =>
+    request<SpoolListPage>(`/inventory/spools?${spoolListSearchParams(params)}`),
+  getSpoolGroupsPaged: (params: SpoolListParams = {}) => {
+    const qs = spoolListSearchParams(params);
+    qs.set('group_similar', 'true');
+    return request<SpoolGroupPage>(`/inventory/spools?${qs}`);
+  },
+  /** Every id matching the filters — the explicit "Select all N matching"
+   *  feed (task 2). The caller materializes the answer into a selection id
+   *  set; bulk actions stay selection-scoped, never filter-scoped. 400 over
+   *  the server's sanity cap (50 000). */
+  getSpoolIds: (params: SpoolListParams = {}) =>
+    request<{ ids: number[] }>(`/inventory/spools/ids?${spoolFilterSearchParams(params)}`),
+  /** Distinct dropdown values under one archived tab (task 2). */
+  getSpoolFacets: (archived?: 'active' | 'archived') =>
+    request<SpoolFacets>(`/inventory/spools/facets${archived ? `?archived=${archived}` : ''}`),
   getSpool: (id: number) => request<InventorySpool>(`/inventory/spools/${id}`),
   // ── CSV import/export (#1576) ────────────────────────────────────────────
   // dry_run=true → preview (no write); omitted → real import. Both share one

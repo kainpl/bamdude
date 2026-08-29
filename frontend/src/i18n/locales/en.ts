@@ -5272,6 +5272,12 @@ export default {
     colorNamePlaceholder: 'Jade White, Fire Red...',
     color: 'Color',
     hexColor: 'Hex Color',
+    // Loading one spool's full detail shape failed — the ?spool= deep-link
+    // and (since task 4) the row-click edit path, whose paged rows are slim.
+    // Both keys were referenced by the page but missing from the locales;
+    // added 2026-08-29 while the fetch-before-edit path made them common.
+    deepLinkSpoolNotFound: 'That spool no longer exists',
+    deepLinkFetchFailed: 'Could not load the spool',
     bulk: {
       selectRow: 'Select this spool',
       selectGroup: 'Select every spool in this group',
@@ -5279,6 +5285,10 @@ export default {
       selectedCount_one: '{{count}} selected',
       selectedCount_other: '{{count}} selected',
       selectAllFiltered: 'Select all {{count}} matching the filter',
+      // Grouped mode: the list pages over GROUPS, so the flat spool count
+      // isn't known up front — the action stays, the number goes.
+      selectAllFilteredNoCount: 'Select all matching the filter',
+      selectAllFailed: 'Could not select the matching spools',
       clear: 'Clear selection',
       done: '{{action}}: {{count}} spools',
       partial: '{{action}}: {{ok}} done, {{failed}} failed',

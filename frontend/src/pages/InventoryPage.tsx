@@ -13,7 +13,14 @@ import {
 } from 'lucide-react';
 import { ForecastPanel } from '../components/ForecastPanel';
 import { api, ApiError } from '../api/client';
-import type { InventorySpool, SpoolAssignment, SpoolCatalogEntry } from '../api/client';
+import type {
+  InventorySpool,
+  SpoolAssignment,
+  SpoolCatalogEntry,
+  SpoolGroupItem,
+  SpoolListItem,
+  SpoolListParams,
+} from '../api/client';
 import { Button } from '../components/Button';
 import { PaginationBar } from '../components/PaginationBar';
 import { SpoolFormModal, type SpoolFormMode } from '../components/SpoolFormModal';
@@ -60,7 +67,11 @@ type SortState = { column: string; direction: SortDirection } | null;
 
 type DisplayItem =
   | { type: 'single'; spool: InventorySpool }
-  | { type: 'group'; key: string; spools: InventorySpool[]; representative: InventorySpool };
+  // `ids` is always the complete member list. `spools` carries the member
+  // objects when the source has them inline (Spoolman mode's client-side
+  // grouping); in server mode (task 4) it stays undefined and the members
+  // are fetched lazily on expansion via their ids.
+  | { type: 'group'; key: string; ids: number[]; representative: InventorySpool; spools?: InventorySpool[] };
 
 /**
  * B.1 / A.17 — render the swatch as a layered CSS background composed by the
@@ -83,7 +94,53 @@ function spoolSwatchStyle(s: InventorySpool): CSSProperties {
 function spoolGroupKey(s: InventorySpool): string {
   // Lot is part of the key so sequential-lot copies (a purchase bundle) stay
   // distinct cards instead of collapsing into one aggregate.
+  // ⚠️ Spoolman-mode only since task 4 — the local inventory groups
+  // server-side by the same 7-column key (see serverGroupKey below).
   return `${s.material}|${s.subtype || ''}|${s.brand || ''}|${s.color_name || ''}|${s.rgba || ''}|${s.label_weight}|${s.lot ?? ''}`;
+}
+
+/**
+ * Stable client key for a SERVER group row (task 4): built from the row's
+ * own key fields, which arrive already coalesced (`''`, never null), so it
+ * matches `spoolGroupKey`'s shape and survives paging/refetches — the
+ * `expandedGroups` set stays valid across both.
+ */
+function serverGroupKey(g: SpoolGroupItem): string {
+  return `${g.material}|${g.subtype}|${g.brand}|${g.color_name}|${g.rgba}|${g.label_weight}|${g.lot ?? ''}`;
+}
+
+/**
+ * Debounces a rapidly-changing value (300ms, same as FileManagerPage /
+ * ArchivesPage) — the search box is a free-text field that would otherwise
+ * fire one server round-trip per keystroke.
+ */
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+/**
+ * The sort keys grouped mode accepts server-side (task 3's
+ * `GROUP_SORT_KEYS`) — anything else is a 400, so the page must sanitize
+ * BEFORE sending: a header click outside this set is ignored while grouped,
+ * and toggling Group ON resets an incompatible sort (never fire the 400).
+ */
+const GROUP_SORT_COLUMNS = new Set(['display_name', 'material', 'brand', 'color_name']);
+
+/**
+ * Map a table column id to its server sort key.
+ *
+ * OPERATOR RULING (2026-08-29, plan B): the swatch columns (`rgba` /
+ * `color_combined`) REMAP to the colour-NAME sort — the server has no rgba
+ * sort key and never learns one; the perceptual-hue client order is
+ * superseded. Every other sortable column id matches its server key 1:1.
+ */
+function mapServerSortColumn(colId: string): string {
+  return colId === 'rgba' || colId === 'color_combined' ? 'color_name' : colId;
 }
 
 // Column definitions for the inventory table
@@ -393,7 +450,10 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     <span className="text-sm text-bambu-gray max-w-[150px] truncate block" title={spool.note || undefined}>{spool.note || '-'}</span>
   ),
   pa_k: ({ spool }) => {
-    const count = spool.k_profiles?.length ?? 0;
+    // Server-driven list rows are slim: `k_profiles` is null and the scalar
+    // `k_profile_count` (SpoolListItem, task 1) carries the presence answer;
+    // Spoolman/legacy shapes keep the array.
+    const count = (spool as Partial<SpoolListItem>).k_profile_count ?? spool.k_profiles?.length ?? 0;
     if (count === 0) return <span className="text-sm text-bambu-gray">-</span>;
     return (
       <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-bambu-green/20 text-bambu-green">
@@ -655,8 +715,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const { showToast } = useToast();
   const { hasPermission, loading: authLoading } = useAuth();
   // Forecast tab gated on perm + non-Spoolman mode (Spoolman proxies spools, so we
-  // can't read spool_usage_history through the iframe).
-  const canViewForecast = !authLoading && !spoolmanMode && hasPermission('inventory:forecast_read');
+  // can't read spool_usage_history through the iframe). `spoolmanModeReady` keeps
+  // the answer NO until the mode is actually known — on a cold load spoolmanMode
+  // reads false while the settings are still in flight, and that window must not
+  // mount the ForecastPanel (whose local-inventory feed would fire once) in a
+  // session that turns out to be Spoolman (task-5 review, Minor 1).
+  const canViewForecast =
+    !authLoading && spoolmanModeReady && !spoolmanMode && hasPermission('inventory:forecast_read');
   const [searchParams, setSearchParams] = useSearchParams();
   const [formModal, setFormModal] = useState<{ spool?: InventorySpool | null; mode: SpoolFormMode } | null>(null);
   const deepLinkHandled = useRef(false);
@@ -665,8 +730,11 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     | { type: 'reset-all-consumed-counters' }
     | null
   >(null);
-  // Label printing (B.1 #809). null = closed; otherwise the IDs to pre-check.
-  const [labelPickerSpoolIds, setLabelPickerSpoolIds] = useState<number[] | null>(null);
+  // Label printing (B.1 #809). null = closed; an id list pre-checks exactly
+  // those; 'all' pre-checks the whole filtered set (resolved at render —
+  // from `filteredSpools` in Spoolman mode, from the label-set fetch in
+  // server mode).
+  const [labelPickerSpoolIds, setLabelPickerSpoolIds] = useState<number[] | 'all' | null>(null);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
 
   // Filter state
@@ -772,14 +840,22 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     ? t('inventory.csv.spoolmanHint', 'In Spoolman mode, use Spoolman\'s built-in CSV import/export.')
     : undefined;
 
-  // Query key and fetch function differ based on data source
+  // Query key PREFIX per data source. In local mode every server-driven
+  // sub-query below (paged list, grouped list, facets, all-slim, group
+  // members, label set) is keyed UNDER ['inventory-spools'], so the existing
+  // mutation invalidations — this helper, and SpoolFormModal's own
+  // invalidation of `spoolsQueryKey` — refresh all of them by prefix without
+  // touching a single mutation.
   const spoolsQueryKey = spoolmanMode ? ['spoolman-inventory-spools'] : ['inventory-spools'];
   const refreshSpoolQueries = () => invalidateSpoolAndLocationQueries(queryClient, spoolsQueryKey);
+  // LEGACY full-array query — Spoolman mode ONLY (the plan keeps its whole
+  // client-side pipeline untouched). The local mode is server-driven (task 4)
+  // and never downloads the full inventory for the list again.
   const { data: spools, isLoading } = useQuery({
-    queryKey: spoolsQueryKey,
-    queryFn: () =>
-      spoolmanMode ? api.getSpoolmanInventorySpools(true) : api.getSpools(true),
+    queryKey: ['spoolman-inventory-spools'],
+    queryFn: () => api.getSpoolmanInventorySpools(true),
     refetchInterval: 30000,
+    enabled: spoolmanMode,
   });
 
   // Structured storage-location catalog + spool counts (upstream #1505).
@@ -799,6 +875,171 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         ? _rawLocationParam
         : '';
 
+  // ── Server-driven local mode (task 4, 2026-08-29 server-driven-lists) ────
+  // Every filter/sort/search/page state becomes request params → queryKey →
+  // server (the archives pattern); the client filter/sort/group/slice
+  // pipeline below survives ONLY for Spoolman mode.
+  const serverMode = !spoolmanMode;
+
+  // Search goes to the server as `q` — debounced so it doesn't fire one
+  // request per keystroke. Spoolman mode keeps filtering on the raw value.
+  const debouncedSearch = useDebouncedValue(search, 300);
+
+  // Dropdown options come from the facets endpoint under the ACTIVE tab
+  // (spec §3.6 — all five dimensions uniformly tab-scoped; the old client's
+  // colour list skipped archived rows on both tabs, a quirk deliberately
+  // normalized in task 2).
+  const { data: facets } = useQuery({
+    queryKey: ['inventory-spools', 'facets', archiveFilter],
+    queryFn: () => api.getSpoolFacets(archiveFilter),
+    enabled: serverMode,
+  });
+
+  // The colour dropdown groups the facets' RAW (color_name, rgba) pairs by
+  // RESOLVED display name (the colour catalog lives client-side — plan
+  // architecture); picking a name sends the group's raw lists back as the
+  // filter. `colorCatalogVersion` re-groups once the catalog loads.
+  const colorFacetGroups = useMemo(() => {
+    void colorCatalogVersion;
+    const map = new Map<string, { names: Set<string>; rgbas: Set<string> }>();
+    for (const pair of facets?.colors ?? []) {
+      const resolved = resolveSpoolColorName(pair.color_name, pair.rgba);
+      if (!resolved) continue;
+      let entry = map.get(resolved);
+      if (!entry) {
+        entry = { names: new Set(), rgbas: new Set() };
+        map.set(resolved, entry);
+      }
+      if (pair.color_name != null) entry.names.add(pair.color_name);
+      else if (pair.rgba != null) entry.rgbas.add(pair.rgba);
+    }
+    return map;
+  }, [facets, colorCatalogVersion]);
+
+  // Any filter/sort/scope change invalidates the current page AND the
+  // selection — adjusted right here during render (the FileManagerPage
+  // pattern): a `useEffect` would land one render late and let a stale-page
+  // request fire first with {newFilter, oldPage}. The selection clear is the
+  // bulk invariant's teeth — the library cycle twice shipped a page change
+  // that skipped it and left the bulk bar armed over invisible rows.
+  const listResetSignature = JSON.stringify([
+    archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter,
+    spoolFilter, storageLocationFilter, stockFilter, assignedFilter,
+    serverMode ? debouncedSearch : search, groupSimilar, spoolmanMode, sortState,
+  ]);
+  const [prevListResetSignature, setPrevListResetSignature] = useState(listResetSignature);
+  let effectivePageIndex = pageIndex;
+  if (listResetSignature !== prevListResetSignature) {
+    setPrevListResetSignature(listResetSignature);
+    setPageIndex(0);
+    effectivePageIndex = 0;
+    if (selectedIds.size > 0) setSelectedIds(new Set());
+  }
+
+  // Sort state → server sort key, sanitized: swatch columns remap to
+  // color_name (operator ruling — see mapServerSortColumn), and grouped mode
+  // drops anything outside its allowed subset instead of firing a 400.
+  const serverSortBy = useMemo(() => {
+    if (!sortState) return undefined;
+    const key = mapServerSortColumn(sortState.column);
+    if (groupSimilar && !GROUP_SORT_COLUMNS.has(key)) return undefined;
+    return `${key}_${sortState.direction}`;
+  }, [sortState, groupSimilar]);
+
+  // The filter params shared by the list, ids and label-set queries.
+  // ⚠️ `archived` is ALWAYS sent: the paged branch ignores the legacy
+  // `include_archived` entirely, and omitting `archived` would mean "both
+  // tabs at once" — a view the tabs never show (T1 review finding 6).
+  const filterParams = useMemo(() => {
+    const p: SpoolListParams = { archived: archiveFilter };
+    if (usageFilter !== 'all') p.usage = usageFilter;
+    if (materialFilter) p.material = materialFilter;
+    if (brandFilter) p.brand = brandFilter;
+    if (colorFilter) {
+      const entry = colorFacetGroups.get(colorFilter);
+      if (entry && (entry.names.size > 0 || entry.rgbas.size > 0)) {
+        if (entry.names.size > 0) p.colors = [...entry.names].sort();
+        if (entry.rgbas.size > 0) p.color_rgbas = [...entry.rgbas].sort();
+      } else {
+        // Facets not loaded yet, or a stale persisted name: send the chosen
+        // name itself. Readable stored names resolve to themselves, so this
+        // matches exactly those rows; a truly stale name yields zero rows —
+        // the same answer the old client-side filter gave.
+        p.colors = [colorFilter];
+      }
+    }
+    if (categoryFilter) p.category = categoryFilter;
+    if (spoolFilter) p.catalog_id = Number(spoolFilter);
+    if (storageLocationFilter) p.location_id = storageLocationFilter;
+    if (stockFilter !== 'all') p.stock = stockFilter;
+    if (assignedFilter !== 'all') p.assigned = assignedFilter;
+    if (debouncedSearch.trim()) p.q = debouncedSearch.trim();
+    return p;
+  }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, colorFacetGroups,
+      categoryFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, debouncedSearch]);
+
+  const listParams = useMemo((): SpoolListParams => ({
+    ...filterParams,
+    ...(serverSortBy ? { sort_by: serverSortBy } : {}),
+    page: effectivePageIndex + 1,
+    ...(pageSize === -1 ? { all: true } : { per_page: pageSize }),
+    // The cards view renders per-profile chips (the T1 projection gap) — the
+    // opt-in fills `k_profiles` on each row; the table needs only the count.
+    ...(viewMode === 'cards' ? { include_k_profiles: true } : {}),
+  }), [filterParams, serverSortBy, effectivePageIndex, pageSize, viewMode]);
+
+  // The paged list — flat or grouped, one enabled at a time. The 30s poll
+  // the full-array query used to run now refetches the CURRENT PAGE only.
+  const flatPageQuery = useQuery({
+    queryKey: ['inventory-spools', 'page', listParams],
+    queryFn: () => api.getSpoolsPaged(listParams),
+    enabled: serverMode && !groupSimilar,
+    refetchInterval: 30000,
+    placeholderData: (prev) => prev,
+  });
+  const groupPageQuery = useQuery({
+    queryKey: ['inventory-spools', 'grouped', listParams],
+    queryFn: () => api.getSpoolGroupsPaged(listParams),
+    enabled: serverMode && groupSimilar,
+    refetchInterval: 30000,
+    placeholderData: (prev) => prev,
+  });
+  const serverMeta = groupSimilar ? groupPageQuery.data?.meta : flatPageQuery.data?.meta;
+
+  // Out-of-range page (rows deleted under us, per-page grown): clamp to the
+  // last real page, and drop the selection with it — a page mutation the
+  // user never asked for still must not leave the bulk bar armed over rows
+  // that are no longer on screen. Render-phase like the signature reset
+  // above; the inequality guard makes it settle in one extra render.
+  if (serverMode && serverMeta && pageSize !== -1 && effectivePageIndex > serverMeta.last_page - 1) {
+    setPageIndex(serverMeta.last_page - 1);
+    if (selectedIds.size > 0) setSelectedIds(new Set());
+  }
+
+  // The full-set feed the stats cards, "Reset all usage" and the bulk-edit
+  // modal's suggestion pool still need — one SLIM `all=true` fetch
+  // (SpoolListItem — no k_profiles fat), spanning both tabs (stats count
+  // archived consumption). Deliberately NO refetchInterval: the 30s poll is
+  // page-scoped now; this refreshes on window focus and on every spool
+  // mutation via the ['inventory-spools'] prefix invalidation. The Forecast
+  // tab no longer feeds from here — ForecastPanel owns its own tab-gated
+  // copy of this feed since task 5.
+  const { data: allSpoolsSlim } = useQuery({
+    queryKey: ['inventory-spools', 'all-slim'],
+    queryFn: async () => (await api.getSpoolsPaged({ page: 1, all: true })).items,
+    enabled: serverMode,
+  });
+
+  // The label picker's candidate pool: the CURRENT FILTERED SET (every page
+  // of it), fetched once when the picker opens — so "print labels for
+  // everything matching my filter" still spans pages, exactly what the old
+  // full-array `filteredSpools` handed it.
+  const labelSetQuery = useQuery({
+    queryKey: ['inventory-spools', 'label-set', filterParams],
+    queryFn: async () => (await api.getSpoolsPaged({ ...filterParams, page: 1, all: true })).items,
+    enabled: serverMode && labelPickerSpoolIds !== null,
+  });
+
   // Deep-link: open edit modal for ?spool=<id>
   // Prefer the already-loaded spool list (no extra API call); fall back to a
   // targeted fetch for the rare case where the full list hasn't arrived yet.
@@ -810,7 +1051,11 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     _rawSpoolParam && /^\d+$/.test(_rawSpoolParam) && Number(_rawSpoolParam) > 0
       ? Number(_rawSpoolParam)
       : null;
-  const deepLinkInList = spools?.find((s) => s.id === deepLinkSpoolId) ?? null;
+  // Spoolman mode still prefers the already-loaded full list; local mode
+  // always takes the targeted fetch below — its paged rows are slim (no
+  // k_profiles), and the edit dialog initializes its K-profile links from
+  // the spool it is handed (spec §3.2: dialogs ride the detail fetch).
+  const deepLinkInList = spoolmanMode ? (spools?.find((s) => s.id === deepLinkSpoolId) ?? null) : null;
 
   const clearDeepLinkParam = useCallback(() => {
     deepLinkHandled.current = true;
@@ -866,6 +1111,30 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     showToast,
     t,
   ]);
+
+  /**
+   * Open the edit/copy dialog with a FULL spool. Paged local-mode rows are
+   * slim (`k_profiles: null`), and SpoolFormModal initializes its K-profile
+   * link state from the spool it is handed at open — so local mode fetches
+   * the detail shape first (spec §3.2: dialogs ride `GET /spools/{id}`).
+   * Spoolman rows, and shapes that already carry `k_profiles` (a cards-view
+   * row under the include opt-in, a deep-link fetch), open directly.
+   */
+  const openSpoolEditor = useCallback(
+    async (spool: InventorySpool, mode: SpoolFormMode) => {
+      if (spoolmanMode || spool.k_profiles != null) {
+        setFormModal({ spool, mode });
+        return;
+      }
+      try {
+        const full = await api.getSpool(spool.id);
+        setFormModal({ spool: full, mode });
+      } catch {
+        showToast(t('inventory.deepLinkFetchFailed'), 'error');
+      }
+    },
+    [spoolmanMode, showToast, t],
+  );
 
   const { data: assignments } = useQuery({
     queryKey: ['spool-assignments'],
@@ -1038,11 +1307,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     onError: (error: Error) => showToast(error.message || t('inventory.bulk.failedGeneric'), 'error'),
   });
 
+  // The full-set source for the stats cards, "Reset all usage" and the
+  // bulk-edit suggestion pool: Spoolman's legacy array, or the slim
+  // `all=true` feed in server-driven local mode (task 4).
+  const statsSourceSpools = spoolmanMode ? spools : allSpoolsSlim;
+
   // ``resetableSpoolIds`` is the target of the "Reset all usage" bulk
   // action. Includes archived spools so a one-click "clear the lifetime
   // counter" actually clears the lifetime counter — archived consumed
   // weight now counts in Total Consumed too (#1390 follow-up).
-  const resetableSpoolIds = useMemo(() => (spools ?? []).map((s) => s.id), [spools]);
+  const resetableSpoolIds = useMemo(() => (statsSourceSpools ?? []).map((s) => s.id), [statsSourceSpools]);
 
   // Low stock threshold from backend settings
   const lowStockThreshold = settings?.low_stock_threshold ?? 20;
@@ -1070,6 +1344,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
   // Stats calculation (active spools only)
   const stats = useMemo(() => {
+    const spools = statsSourceSpools;
     if (!spools) return null;
     let totalWeight = 0;
     let totalConsumed = 0;
@@ -1098,7 +1373,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       byMaterial[mat].weight += remaining;
     }
     return { totalWeight, totalConsumed, lowStock, byMaterial, totalSpools: activeCount };
-  }, [spools, lowStockThreshold]);
+  }, [statsSourceSpools, lowStockThreshold]);
 
   const inPrinterCount =
     (assignments?.length ?? 0) + (spoolmanMode ? spoolmanSlotAssignments.length : 0);
@@ -1165,9 +1440,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     return Object.entries(stats.byMaterial).sort((a, b) => b[1].weight - a[1].weight);
   }, [stats]);
 
-  // Filtering pipeline
+  // Filtering pipeline — SPOOLMAN MODE ONLY since task 4 (2026-08-29): the
+  // local inventory sends every one of these predicates to the server as
+  // params (see filterParams above; the deleted client chain was ported to
+  // SQL as the behavioral spec in task 1). Spoolman proxies an external
+  // system with its own API shape and deliberately keeps this path.
   const filteredSpools = useMemo(() => {
-    let filtered = spools || [];
+    let filtered = spoolmanMode ? spools || [] : [];
 
     // Archive filter
     if (archiveFilter === 'active') {
@@ -1279,7 +1558,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     }
 
     return filtered;
-  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, assignmentMap, search, spoolDisplayTemplate, lowStockThreshold, storageLocations]);
+  }, [spoolmanMode, spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, assignmentMap, search, spoolDisplayTemplate, lowStockThreshold, storageLocations]);
 
   // Reset page on filter changes
   const resetPage = () => setPageIndex(0);
@@ -1297,14 +1576,22 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     resetPage();
   }, [setSearchParams]);
 
-  // Unique values for filter dropdowns
-  const uniqueMaterials = [...new Set(spools?.map((s) => s.material) || [])].sort();
-  const uniqueBrands = [...new Set(spools?.map((s) => s.brand).filter(Boolean) || [])].sort() as string[];
-  // Colour options come from EXISTING (non-archived) spools only, by resolved
-  // colour name. ``colorCatalogVersion`` is referenced so the list re-resolves
-  // once the colour catalog loads.
+  // Unique values for filter dropdowns. Server mode reads the facets
+  // endpoint (tab-scoped distincts, task 2); Spoolman mode keeps deriving
+  // from its full client array.
+  const uniqueMaterials = spoolmanMode
+    ? [...new Set(spools?.map((s) => s.material) || [])].sort()
+    : [...(facets?.materials ?? [])].sort();
+  const uniqueBrands = spoolmanMode
+    ? ([...new Set(spools?.map((s) => s.brand).filter(Boolean) || [])].sort() as string[])
+    : [...(facets?.brands ?? [])].sort();
+  // Colour options by RESOLVED colour name. Server mode groups the facets'
+  // raw pairs (colorFacetGroups above); Spoolman keeps the array walk.
+  // ``colorCatalogVersion`` is referenced so the list re-resolves once the
+  // colour catalog loads.
   const uniqueColors = useMemo(() => {
     void colorCatalogVersion;
+    if (!spoolmanMode) return [...colorFacetGroups.keys()].sort((a, b) => a.localeCompare(b));
     const set = new Set<string>();
     for (const s of spools || []) {
       if (s.archived_at) continue;
@@ -1312,17 +1599,30 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       if (name) set.add(name);
     }
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [spools, colorCatalogVersion]);
-  const uniqueSpoolCatalogIds = [...new Set(spools?.map((s) => s.core_weight_catalog_id).filter((id): id is number => id != null) || [])].sort((a, b) => {
+  }, [spoolmanMode, spools, colorFacetGroups, colorCatalogVersion]);
+  const uniqueSpoolCatalogIds = (
+    spoolmanMode
+      ? [...new Set(spools?.map((s) => s.core_weight_catalog_id).filter((id): id is number => id != null) || [])]
+      : [...(facets?.catalog_ids ?? [])]
+  ).sort((a, b) => {
     const nameA = (catalogMap[a]?.name || '').toLowerCase();
     const nameB = (catalogMap[b]?.name || '').toLowerCase();
     return nameA.localeCompare(nameB);
   });
-  const uniqueCategories = [...new Set(spools?.map((s) => s.category?.trim()).filter(Boolean) as string[] || [])].sort();
-  const hasUncategorized = (spools ?? []).some((s) => !s.category);
+  const uniqueCategories = spoolmanMode
+    ? [...new Set((spools?.map((s) => s.category?.trim()).filter(Boolean) as string[]) || [])].sort()
+    : [...(facets?.categories ?? [])].sort();
+  // The "None"/"Unfiled" bucket options: the facets contract carries exactly
+  // five keys — hasUncategorized/hasUnsetStorageLocation are deliberately
+  // NOT in it (task 2 ruling), so server mode offers both buckets
+  // UNCONDITIONALLY: a bucket that matches zero rows is harmless, a missing
+  // one strands the rows it names. Spoolman keeps the derived booleans.
+  const hasUncategorized = spoolmanMode ? (spools ?? []).some((s) => !s.category) : true;
   // Storage-location options now come from the catalog query (upstream #1505);
   // the chip only needs to know whether an "unfiled" bucket should be offered.
-  const hasUnsetStorageLocation = (spools ?? []).some((s) => !s.location_id && !s.storage_location?.trim());
+  const hasUnsetStorageLocation = spoolmanMode
+    ? (spools ?? []).some((s) => !s.location_id && !s.storage_location?.trim())
+    : true;
 
   // Check if any filters are non-default
   const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!colorFilter || !!categoryFilter || !!spoolFilter || !!storageLocationFilter || stockFilter !== 'all' || assignedFilter !== 'all' || !!search;
@@ -1354,8 +1654,20 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     return columnHeaders[colId]?.(t) ?? colId;
   };
 
+  /**
+   * Whether a column header sorts right now. Server-driven grouped mode
+   * accepts only the group-key subset (task 3 400s on anything else) — the
+   * header must not offer what a click cannot deliver. Spoolman mode keeps
+   * sorting everything client-side.
+   */
+  const isColumnSortable = (colId: string): boolean => {
+    if (!columnSortValues[colId]) return false;
+    if (serverMode && groupSimilar) return GROUP_SORT_COLUMNS.has(mapServerSortColumn(colId));
+    return true;
+  };
+
   const handleSort = (colId: string) => {
-    if (!columnSortValues[colId]) return; // Not sortable
+    if (!isColumnSortable(colId)) return; // Not sortable (here and now)
     setSortState((prev) => {
       let next: SortState;
       if (prev?.column === colId) {
@@ -1398,8 +1710,11 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     return sorted;
   }, [filteredSpools, sortState, assignmentMap, spoolDisplayTemplate]);
 
-  // Group similar spools when toggle is active
-  const displayItems = useMemo((): DisplayItem[] => {
+  // Group similar spools when toggle is active — Spoolman's CLIENT-side
+  // grouping; the local mode receives ready-made group rows from the server
+  // (`group_similar=true`, task 3) and never runs this walk.
+  const clientDisplayItems = useMemo((): DisplayItem[] => {
+    if (!spoolmanMode) return [];
     if (!groupSimilar) return sortedSpools.map((s) => ({ type: 'single' as const, spool: s }));
 
     const groups = new Map<string, InventorySpool[]>();
@@ -1432,28 +1747,64 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       if (members.length === 1) {
         items.push({ type: 'single', spool: members[0] });
       } else {
-        items.push({ type: 'group', key, spools: members, representative: members[0] });
+        items.push({
+          type: 'group',
+          key,
+          ids: members.map((m) => m.id),
+          representative: members[0],
+          spools: members,
+        });
       }
     }
     return items;
-  }, [sortedSpools, groupSimilar, assignmentMap]);
+  }, [spoolmanMode, sortedSpools, groupSimilar, assignmentMap]);
 
-  // Pagination (after sorting) - pageSize -1 means "All"
+  // Server rows → DisplayItems. A `group_count === 1` row renders as a
+  // single — exactly how the old client rendered singleton groups, which is
+  // also how every used/assigned spool arrives (the ported eligibility rule
+  // keeps them singletons, task 3). Multi-member group rows carry ids only;
+  // members are fetched lazily on expansion.
+  const serverDisplayItems = useMemo((): DisplayItem[] => {
+    if (spoolmanMode) return [];
+    if (groupSimilar) {
+      return (groupPageQuery.data?.items ?? []).map((g): DisplayItem => {
+        if (g.group_count === 1) return { type: 'single', spool: g.representative };
+        return { type: 'group', key: serverGroupKey(g), ids: g.ids, representative: g.representative };
+      });
+    }
+    return (flatPageQuery.data?.items ?? []).map((s): DisplayItem => ({ type: 'single', spool: s }));
+  }, [spoolmanMode, groupSimilar, groupPageQuery.data, flatPageQuery.data]);
+
+  // Pagination. Spoolman still slices client-side (pageSize -1 = "All");
+  // in server mode the fetched rows ARE the page and `meta` carries the
+  // arithmetic (PaginationBar off meta — the archives pattern).
   const showAll = pageSize === -1;
-  const totalDisplayItems = displayItems.length;
-  const effectivePageSize = showAll ? totalDisplayItems || 1 : pageSize;
-  const totalPages = Math.max(1, Math.ceil(totalDisplayItems / effectivePageSize));
-  const safePageIndex = showAll ? 0 : Math.min(pageIndex, totalPages - 1);
-  const pagedItems = showAll
-    ? displayItems
-    : displayItems.slice(safePageIndex * effectivePageSize, (safePageIndex + 1) * effectivePageSize);
+  const clientTotalRows = clientDisplayItems.length;
+  const clientEffectivePageSize = showAll ? clientTotalRows || 1 : pageSize;
+  const clientTotalPages = Math.max(1, Math.ceil(clientTotalRows / clientEffectivePageSize));
+  const clientSafePageIndex = showAll ? 0 : Math.min(pageIndex, clientTotalPages - 1);
+  const pagedItems = spoolmanMode
+    ? showAll
+      ? clientDisplayItems
+      : clientDisplayItems.slice(
+          clientSafePageIndex * clientEffectivePageSize,
+          (clientSafePageIndex + 1) * clientEffectivePageSize,
+        )
+    : serverDisplayItems;
+  // ⚠️ In grouped server mode `totalRows` counts GROUPS (meta.total counts
+  // what the list pages over) — the flat spool total is deliberately not
+  // fetched twice.
+  const totalRows = spoolmanMode ? clientTotalRows : (serverMeta?.total ?? 0);
+  const totalPages = spoolmanMode ? clientTotalPages : (serverMeta?.last_page ?? 1);
+  const currentPage = spoolmanMode
+    ? clientSafePageIndex + 1
+    : showAll
+      ? 1
+      : Math.min(effectivePageIndex + 1, totalPages);
   // Ids on screen right now — what the header checkbox ticks. Groups are
   // flattened, because a collapsed group still represents its members.
   const visibleSpoolIds = useMemo(
-    () =>
-      pagedItems.flatMap((item) =>
-        item.type === 'group' ? item.spools.map((sp) => sp.id) : [item.spool.id],
-      ),
+    () => pagedItems.flatMap((item) => (item.type === 'group' ? item.ids : [item.spool.id])),
     [pagedItems],
   );
 
@@ -1468,24 +1819,30 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter,
       categoryFilter, spoolFilter, stockFilter, assignedFilter, search, viewMode]);
 
-  // Drop the selection whenever the visible set changes underneath it. A
-  // toolbar reading "12 selected" over a list that no longer contains those
-  // rows is how a Delete lands on the wrong spools.
-  //
-  // ⚠️ Category, spool, storage location and stock were missing from this list,
-  // so narrowing by those kept a selection made under the previous one.
-  useEffect(() => {
-    setSelectedIds(new Set());
-  }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter,
-      spoolFilter, storageLocationFilter, stockFilter, assignedFilter, search, groupSimilar, spoolmanMode]);
+  // (The selection-clearing effect that lived here moved into the
+  // render-phase `listResetSignature` block above — an effect landed one
+  // render late, which is exactly the window the reset pattern closes.)
 
+  // The FULL spool objects behind the current selection. Server mode
+  // materializes them from the all-slim feed — the selection can span pages
+  // ("Select all N matching"), and filtering only the visible page would
+  // silently shrink what the bulk-edit modal is handed.
   const selectedSpools = useMemo(
-    () => filteredSpools.filter((sp) => selectedIds.has(sp.id)),
-    [filteredSpools, selectedIds],
+    () => (spoolmanMode ? filteredSpools : (statsSourceSpools ?? [])).filter((sp) => selectedIds.has(sp.id)),
+    [spoolmanMode, filteredSpools, statsSourceSpools, selectedIds],
   );
 
   const toggleGroupSimilar = () => {
     const next = !groupSimilar;
+    // Grouped server mode accepts only the group-key sorts (task 3 400s on
+    // the rest) — turning Group ON with an incompatible sort active RESETS
+    // it to the default order rather than letting the page fire a 400. The
+    // header indicator follows, so the UI never claims a sort that is not
+    // applied.
+    if (next && serverMode && sortState && !GROUP_SORT_COLUMNS.has(mapServerSortColumn(sortState.column))) {
+      setSortState(null);
+      saveSortState(null);
+    }
     setGroupSimilar(next);
     setExpandedGroups(new Set());
     resetPage();
@@ -1504,7 +1861,35 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const handlePageSizeChange = (size: number) => {
     setPageSize(size);
     setPageIndex(0);
+    // Every page mutation drops the selection in server mode (the bulk
+    // invariant's page-clear rule — see the listResetSignature comment).
+    if (serverMode) clearSelection();
     try { localStorage.setItem('bamdude-inventory-pageSize', String(size)); } catch { /* ignore */ }
+  };
+
+  // Initial-load gate for the list area. `placeholderData` keeps it false
+  // across page/filter transitions, so only the very first fetch blanks the
+  // list — same feel the archives list has.
+  const listLoading = spoolmanMode
+    ? isLoading
+    : groupSimilar
+      ? groupPageQuery.isLoading
+      : flatPageQuery.isLoading;
+
+  /**
+   * "Select all N matching the filter" — the EXPLICIT cross-page action the
+   * bulk invariant allows (CLAUDE.md): it materializes an id set from the
+   * ids endpoint under the SAME filter params the list rides, so bulk
+   * actions stay selection-scoped, never filter-scoped. 400 = the server's
+   * 50k sanity cap.
+   */
+  const selectAllMatching = async () => {
+    try {
+      const { ids } = await api.getSpoolIds(filterParams);
+      setSelectedIds(new Set(ids));
+    } catch {
+      showToast(t('inventory.bulk.selectAllFailed'), 'error');
+    }
   };
 
   /**
@@ -1516,13 +1901,24 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
    */
   const paginationBar = (variant: 'card' | 'bare') => (
     <PaginationBar
-      page={safePageIndex + 1}
+      page={currentPage}
       totalPages={totalPages}
       perPage={pageSize}
-      total={totalDisplayItems}
-      items={totalDisplayItems !== 1 ? t('inventory.spools') : t('inventory.spool')}
+      total={totalRows}
+      items={
+        serverMode && groupSimilar
+          ? t('inventory.groupedRows')
+          : totalRows !== 1
+            ? t('inventory.spools')
+            : t('inventory.spool')
+      }
       variant={variant}
-      onPageChange={(p) => setPageIndex(p - 1)}
+      onPageChange={(p) => {
+        setPageIndex(p - 1);
+        // A page change swaps out the rows under any selection made before
+        // it — same page-clear rule as handlePageSizeChange above.
+        if (serverMode) clearSelection();
+      }}
       onPerPageChange={handlePageSizeChange}
     />
   );
@@ -1562,7 +1958,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           {!spoolmanMode && hasPermission('inventory:update') && (
             <Button
               variant="secondary"
-              disabled={filteredSpools.length === 0}
+              disabled={totalRows === 0}
               onClick={() => setShowBulkEdit(true)}
               title={t('inventory.bulkEdit.title')}
             >
@@ -1572,15 +1968,23 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           )}
           <Button
             variant="secondary"
-            disabled={filteredSpools.length === 0}
-            // Pre-select every visible spool so the user lands in "all
+            disabled={spoolmanMode ? filteredSpools.length === 0 : totalRows === 0}
+            // Pre-select every MATCHING spool so the user lands in "all
             // checked", then refines downward in the modal. Per-card icon
             // pre-selects only that spool — both flows share the same picker.
-            onClick={() => setLabelPickerSpoolIds(filteredSpools.map((s) => s.id))}
+            // 'all' resolves at render: Spoolman from its client array, the
+            // server mode from the label-set fetch (every page of the filter).
+            onClick={() => setLabelPickerSpoolIds('all')}
             title={
-              filteredSpools.length === 0
+              (spoolmanMode ? filteredSpools.length === 0 : totalRows === 0)
                 ? t('inventory.labels.noSpoolsTitle')
-                : t('inventory.labels.bulkTitle', { count: filteredSpools.length })
+                : spoolmanMode
+                  ? t('inventory.labels.bulkTitle', { count: filteredSpools.length })
+                  : groupSimilar
+                    ? // Grouped meta counts GROUPS — a spool count would need
+                      // a second query for a tooltip; the plain label is honest.
+                      t('inventory.labels.printLabels')
+                    : t('inventory.labels.bulkTitle', { count: totalRows })
             }
           >
             <Printer className="w-4 h-4" />
@@ -1610,7 +2014,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       </div>
 
       {/* Stats Bar */}
-      {stats && !isLoading && (
+      {stats && !listLoading && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
           {/* Total Inventory */}
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
@@ -2110,19 +2514,41 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           </>
         )}
 
-        {/* Results count */}
+        {/* Results count. Grouped server mode counts GROUPS (meta.total is
+            what the list pages over) — the flat spool total would be a
+            second count query for one label. */}
         <span className="ml-auto text-xs text-bambu-gray">
-          {sortedSpools.length} {sortedSpools.length !== 1 ? t('inventory.spools') : t('inventory.spool')}
-          {groupSimilar && totalDisplayItems < sortedSpools.length && ` (${totalDisplayItems} ${t('inventory.groupedRows')})`}
+          {spoolmanMode ? (
+            <>
+              {sortedSpools.length} {sortedSpools.length !== 1 ? t('inventory.spools') : t('inventory.spool')}
+              {groupSimilar && clientTotalRows < sortedSpools.length && ` (${clientTotalRows} ${t('inventory.groupedRows')})`}
+            </>
+          ) : groupSimilar ? (
+            <>
+              {totalRows} {t('inventory.groupedRows')}
+            </>
+          ) : (
+            <>
+              {totalRows} {totalRows !== 1 ? t('inventory.spools') : t('inventory.spool')}
+            </>
+          )}
         </span>
       </div>
 
       {/* Content */}
-      {isLoading ? (
+      {listLoading ? (
         <LoadingBlock label={t('common.loading')} />
-      ) : viewMode === 'forecast' ? (
-        /* Forecast view (upstream #1184) */
-        <ForecastPanel spools={spools || []} />
+      ) : viewMode === 'forecast' && canViewForecast ? (
+        /* Forecast view (upstream #1184). The panel owns its full-set feed
+           since task 5 — mounted, and therefore fetching, only while this
+           tab is open; its exp-decay math needs the FULL set, which the
+           server-paged list no longer holds. The canViewForecast guard keeps
+           a stale PERSISTED viewMode from mounting the panel where the tab
+           itself is unreachable — above all Spoolman mode, where the panel's
+           local-inventory feed would silently compute a forecast over the
+           OTHER backend's spools (task-5 review, Minor 1); it falls back to
+           the table below instead. */
+        <ForecastPanel />
       ) : viewMode === 'cards' ? (
         /* Cards view */
         pagedItems.length > 0 ? (
@@ -2130,69 +2556,17 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {pagedItems.map((item) => {
                 if (item.type === 'group') {
-                  const { key, spools: groupSpools, representative: rep } = item;
-                  // Total remaining filament across the group (#1368) — the
-                  // headline number for the collapsed card, vs one member's.
-                  const groupRemaining = groupSpools.reduce(
-                    (sum, s) => sum + Math.max(0, s.label_weight - s.weight_used),
-                    0,
-                  );
-                  const colorStyle = rep.rgba ? `#${rep.rgba.substring(0, 6)}` : '#808080';
-                  const isExpanded = expandedGroups.has(key);
                   return (
-                    <div key={`group-${key}`} className="col-span-full">
-                      {/* Group header card */}
-                      <div
-                        className="bg-bambu-dark-secondary rounded-lg overflow-hidden border border-bambu-green/30 hover:border-bambu-green transition-colors cursor-pointer"
-                        onClick={() => toggleGroupExpand(key)}
-                      >
-                        <div className="h-10 flex items-center px-4 gap-3" style={{ backgroundColor: colorStyle }}>
-                          <span className="bg-white/90 text-gray-800 px-3 py-0.5 rounded-full text-sm font-medium">
-                            {resolveSpoolColorName(rep.color_name, rep.rgba) || '-'}
-                          </span>
-                        </div>
-                        <div className="px-4 py-3 flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <ChevronDown className={`w-4 h-4 text-bambu-gray transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
-                            <div>
-                              <h3 className="font-semibold text-white">{rep.material}{rep.subtype ? ` ${rep.subtype}` : ''}</h3>
-                              <p className="text-sm text-bambu-gray">{rep.brand || '-'}</p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm text-bambu-gray" title={t('inventory.remaining')}>
-                              {formatWeight(groupRemaining)}
-                            </span>
-                            <span className="text-xs font-medium bg-bambu-green/20 text-bambu-green px-2 py-0.5 rounded-full">
-                              {t('inventory.groupedSpools', { count: groupSpools.length })}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                      {/* Expanded individual spools */}
-                      {isExpanded && (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mt-2 ml-4">
-                          {groupSpools.map((spool) => {
-                            const remaining = Math.max(0, spool.label_weight - spool.weight_used);
-                            const pct = spool.label_weight > 0 ? (remaining / spool.label_weight) * 100 : 0;
-                            const spoolColor = spool.rgba ? `#${spool.rgba.substring(0, 6)}` : '#808080';
-                            return (
-                              <SpoolCard
-                                key={spool.id}
-                                spool={spool}
-                                remaining={remaining}
-                                pct={pct}
-                                colorStyle={spoolColor}
-                                onClick={() => setFormModal({ spool, mode: 'edit' })}
-                                onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
-                                onCopy={() => setFormModal({ spool, mode: 'copy' })}
-                                t={t}
-                              />
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
+                    <SpoolCardGroup
+                      key={`group-${item.key}`}
+                      item={item}
+                      isExpanded={expandedGroups.has(item.key)}
+                      onToggle={() => toggleGroupExpand(item.key)}
+                      onEditSpool={(s) => void openSpoolEditor(s, 'edit')}
+                      onCopySpool={(s) => void openSpoolEditor(s, 'copy')}
+                      onPrintLabel={(id) => setLabelPickerSpoolIds([id])}
+                      t={t}
+                    />
                   );
                 }
                 const spool = item.spool;
@@ -2206,9 +2580,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                     remaining={remaining}
                     pct={pct}
                     colorStyle={colorStyle}
-                    onClick={() => setFormModal({ spool, mode: 'edit' })}
+                    onClick={() => void openSpoolEditor(spool, 'edit')}
                     onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
-                    onCopy={() => setFormModal({ spool, mode: 'copy' })}
+                    onCopy={() => void openSpoolEditor(spool, 'copy')}
                     t={t}
                   />
                 );
@@ -2240,14 +2614,27 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               </span>
               {/* Preserves the pre-#1795 behaviour — "act on everything the
                   filter shows" — as an explicit, visible action rather than an
-                  implicit default. */}
-              {selectedIds.size < filteredSpools.length && (
+                  implicit default. Server mode materializes the id set from
+                  the ids endpoint under the same filter params; in grouped
+                  mode the flat spool total isn't known up front (meta counts
+                  groups), so the label goes uncounted rather than wrong. */}
+              {(spoolmanMode
+                ? selectedIds.size < filteredSpools.length
+                : groupSimilar || selectedIds.size < (serverMeta?.total ?? 0)) && (
                 <button
                   type="button"
-                  onClick={() => setManySelected(filteredSpools.map((sp) => sp.id), true)}
+                  onClick={() =>
+                    spoolmanMode
+                      ? setManySelected(filteredSpools.map((sp) => sp.id), true)
+                      : void selectAllMatching()
+                  }
                   className="px-2 py-1 text-xs rounded bg-bambu-dark text-bambu-gray hover:text-white transition-colors"
                 >
-                  {t('inventory.bulk.selectAllFiltered', { count: filteredSpools.length })}
+                  {spoolmanMode
+                    ? t('inventory.bulk.selectAllFiltered', { count: filteredSpools.length })
+                    : groupSimilar
+                      ? t('inventory.bulk.selectAllFilteredNoCount')
+                      : t('inventory.bulk.selectAllFiltered', { count: serverMeta?.total ?? 0 })}
                 </button>
               )}
               <div className="flex-1" />
@@ -2339,8 +2726,15 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                       />
                     </th>
                     {renderColumns.map((colId) => {
-                      const sortable = !!columnSortValues[colId];
-                      const isActive = sortState?.column === colId;
+                      const sortable = isColumnSortable(colId);
+                      // `&& sortable`: a PERSISTED sort outside grouped mode's
+                      // key subset stays in state deliberately — serverSortBy
+                      // already drops it from the request, and turning Group
+                      // off restores the user's sort exactly; sanitizing it
+                      // away on load would destroy that preference. The tint
+                      // just must not claim a sort the list isn't applying
+                      // (review round 2, finding 2).
+                      const isActive = sortable && sortState?.column === colId;
                       return (
                         <th
                           key={colId}
@@ -2368,27 +2762,17 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                 <tbody>
                   {pagedItems.map((item) => {
                     if (item.type === 'group') {
-                      const { key, spools: groupSpools } = item;
-                      const isExpanded = expandedGroups.has(key);
-                      // Header row shows group totals (#1368): an aggregate
-                      // spool plus remaining / pct summed across all members.
-                      const headerSpool = aggregateGroupSpool(groupSpools);
-                      const remaining = Math.max(0, headerSpool.label_weight - headerSpool.weight_used);
-                      const pct = headerSpool.label_weight > 0 ? (remaining / headerSpool.label_weight) * 100 : 0;
                       return (
-                        <SpoolTableGroup
-                          key={`group-${key}`}
-                          spools={groupSpools}
+                        <SpoolTableGroupContainer
+                          key={`group-${item.key}`}
+                          item={item}
                           selectedIds={selectedIds}
                           onToggleSelected={toggleSelected}
                           onToggleGroupSelected={setManySelected}
-                          headerSpool={headerSpool}
-                          remaining={remaining}
-                          pct={pct}
-                          isExpanded={isExpanded}
-                          onToggle={() => toggleGroupExpand(key)}
-                          onEdit={(s) => setFormModal({ spool: s, mode: 'edit' })}
-                          onCopy={(s) => setFormModal({ spool: s, mode: 'copy' })}
+                          isExpanded={expandedGroups.has(item.key)}
+                          onToggle={() => toggleGroupExpand(item.key)}
+                          onEdit={(s) => void openSpoolEditor(s, 'edit')}
+                          onCopy={(s) => void openSpoolEditor(s, 'copy')}
                           onArchive={(id) => setConfirmAction({ type: 'archive', spoolId: id })}
                           onDelete={(id) => setConfirmAction({ type: 'delete', spoolId: id })}
                           onPrintLabel={(id) => setLabelPickerSpoolIds([id])}
@@ -2414,8 +2798,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                         pct={pct}
                         isSelected={selectedIds.has(spool.id)}
                         onToggleSelected={() => toggleSelected(spool.id)}
-                        onEdit={() => setFormModal({ spool, mode: 'edit' })}
-                        onCopy={() => setFormModal({ spool, mode: 'copy' })}
+                        onEdit={() => void openSpoolEditor(spool, 'edit')}
+                        onCopy={() => void openSpoolEditor(spool, 'copy')}
                         onRestore={() => restoreMutation.mutate(spool.id)}
                         onArchive={() => setConfirmAction({ type: 'archive', spoolId: spool.id })}
                         onDelete={() => setConfirmAction({ type: 'delete', spoolId: spool.id })}
@@ -2539,11 +2923,19 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       {/* Label printing (B.1 #809). The picker routes to either the internal
           `/inventory/labels` or the `/spoolman/labels` endpoint based on the
           current inventory backend — the unified UI exposes both. */}
+      {/* The candidate pool is the current FILTERED set in both modes —
+          Spoolman's client array, or the label-set fetch (server mode waits
+          for it before opening, so the picker never flashes empty and then
+          fills). 'all' pre-checks the whole pool. */}
       <LabelTemplatePickerModal
-        isOpen={labelPickerSpoolIds !== null}
+        isOpen={labelPickerSpoolIds !== null && (spoolmanMode || labelSetQuery.data !== undefined)}
         onClose={() => setLabelPickerSpoolIds(null)}
-        availableSpools={filteredSpools}
-        initialSelectedIds={labelPickerSpoolIds ?? []}
+        availableSpools={spoolmanMode ? filteredSpools : (labelSetQuery.data ?? [])}
+        initialSelectedIds={
+          labelPickerSpoolIds === 'all'
+            ? (spoolmanMode ? filteredSpools : (labelSetQuery.data ?? [])).map((s) => s.id)
+            : (labelPickerSpoolIds ?? [])
+        }
         spoolmanMode={spoolmanMode}
         spoolDisplayTemplate={spoolDisplayTemplate}
       />
@@ -2551,7 +2943,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         <BulkEditSpoolsModal
           isOpen
           spools={selectedSpools}
-          allSpools={spools || []}
+          allSpools={statsSourceSpools || []}
           catalogEntries={catalogEntries || []}
           spoolDisplayTemplate={spoolDisplayTemplate}
           onClose={() => setShowBulkEdit(false)}
@@ -2693,6 +3085,114 @@ function SpoolCard({
   );
 }
 
+/**
+ * A group's member spools. Spoolman-mode groups pass them inline
+ * (`preloaded`); server-mode groups (task 4) carry ids only and fetch the
+ * members on FIRST expansion — full detail shapes, so expanded rows/cards
+ * render everything (k_profiles chips included) exactly as before. A group
+ * is a purchase bundle (tens at most, bounded by the row's own id list) and
+ * the fetch fires only on the expand click — never per rendered row.
+ */
+function useGroupMembers(
+  ids: number[],
+  preloaded: InventorySpool[] | undefined,
+  isExpanded: boolean,
+): InventorySpool[] | undefined {
+  const { data } = useQuery({
+    queryKey: ['inventory-spools', 'group-members', ids.join('-')],
+    queryFn: () => Promise.all(ids.map((id) => api.getSpool(id))),
+    enabled: isExpanded && !preloaded,
+  });
+  return preloaded ?? data;
+}
+
+/**
+ * Grouped card (cards view). Owns the lazy member fetch — see
+ * useGroupMembers. The collapsed header renders off the representative
+ * (identity fields are the group key, shared by construction).
+ */
+function SpoolCardGroup({
+  item, isExpanded, onToggle, onEditSpool, onCopySpool, onPrintLabel, t,
+}: {
+  item: Extract<DisplayItem, { type: 'group' }>;
+  isExpanded: boolean;
+  onToggle: () => void;
+  onEditSpool: (spool: InventorySpool) => void;
+  onCopySpool: (spool: InventorySpool) => void;
+  onPrintLabel: (id: number) => void;
+  t: TFn;
+}) {
+  const members = useGroupMembers(item.ids, item.spools, isExpanded);
+  const rep = item.representative;
+  // Total remaining filament across the group (#1368) — the headline number
+  // for the collapsed card. Inline members (Spoolman) sum exactly; server
+  // groups contain only UNUSED members (the ported eligibility rule — a
+  // used or assigned spool never merges), so count × the representative's
+  // remaining IS that sum.
+  const groupRemaining = item.spools
+    ? item.spools.reduce((sum, s) => sum + Math.max(0, s.label_weight - s.weight_used), 0)
+    : item.ids.length * Math.max(0, rep.label_weight - rep.weight_used);
+  const colorStyle = rep.rgba ? `#${rep.rgba.substring(0, 6)}` : '#808080';
+  return (
+    <div className="col-span-full">
+      {/* Group header card */}
+      <div
+        className="bg-bambu-dark-secondary rounded-lg overflow-hidden border border-bambu-green/30 hover:border-bambu-green transition-colors cursor-pointer"
+        onClick={onToggle}
+      >
+        <div className="h-10 flex items-center px-4 gap-3" style={{ backgroundColor: colorStyle }}>
+          <span className="bg-white/90 text-gray-800 px-3 py-0.5 rounded-full text-sm font-medium">
+            {resolveSpoolColorName(rep.color_name, rep.rgba) || '-'}
+          </span>
+        </div>
+        <div className="px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <ChevronDown className={`w-4 h-4 text-bambu-gray transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
+            <div>
+              <h3 className="font-semibold text-white">{rep.material}{rep.subtype ? ` ${rep.subtype}` : ''}</h3>
+              <p className="text-sm text-bambu-gray">{rep.brand || '-'}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-bambu-gray" title={t('inventory.remaining')}>
+              {formatWeight(groupRemaining)}
+            </span>
+            <span className="text-xs font-medium bg-bambu-green/20 text-bambu-green px-2 py-0.5 rounded-full">
+              {t('inventory.groupedSpools', { count: item.ids.length })}
+            </span>
+          </div>
+        </div>
+      </div>
+      {/* Expanded individual spools — fetched on demand in server mode */}
+      {isExpanded &&
+        (members ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mt-2 ml-4">
+            {members.map((spool) => {
+              const remaining = Math.max(0, spool.label_weight - spool.weight_used);
+              const pct = spool.label_weight > 0 ? (remaining / spool.label_weight) * 100 : 0;
+              const spoolColor = spool.rgba ? `#${spool.rgba.substring(0, 6)}` : '#808080';
+              return (
+                <SpoolCard
+                  key={spool.id}
+                  spool={spool}
+                  remaining={remaining}
+                  pct={pct}
+                  colorStyle={spoolColor}
+                  onClick={() => onEditSpool(spool)}
+                  onPrintLabel={() => onPrintLabel(spool.id)}
+                  onCopy={() => onCopySpool(spool)}
+                  t={t}
+                />
+              );
+            })}
+          </div>
+        ) : (
+          <div className="mt-2 ml-4 text-sm text-bambu-gray">{t('common.loading')}</div>
+        ))}
+    </div>
+  );
+}
+
 /* Single spool row for table view */
 function SpoolTableRow({
   spool, remaining, pct, onEdit, onCopy, onRestore, onArchive, onDelete, onPrintLabel, onResetConsumedCounter,
@@ -2788,14 +3288,93 @@ function SpoolTableRow({
   );
 }
 
+/**
+ * Table-view group row wrapper — owns the lazy member fetch and the header
+ * aggregate. Inline members (Spoolman) aggregate exactly (#1368); server
+ * groups synthesize count × representative: the identity fields are the
+ * group key (shared by construction), weight_used is 0 on every member (the
+ * eligibility rule keeps used/assigned spools singletons), and core_weight
+ * approximates by the representative's (not part of the key — divergence
+ * inside a purchase bundle is rare and only cosmetic in the header sums).
+ */
+function SpoolTableGroupContainer({
+  item, isExpanded, onToggle, selectedIds, onToggleSelected, onToggleGroupSelected,
+  onEdit, onCopy, onArchive, onDelete, onPrintLabel, onResetConsumedCounter,
+  visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, spoolDisplayTemplate,
+}: {
+  item: Extract<DisplayItem, { type: 'group' }>;
+  isExpanded: boolean;
+  onToggle: () => void;
+  selectedIds?: Set<number>;
+  onToggleSelected?: (id: number) => void;
+  onToggleGroupSelected?: (ids: number[], selected: boolean) => void;
+  onEdit: (spool: InventorySpool) => void;
+  onCopy?: (spool: InventorySpool) => void;
+  onArchive: (id: number) => void;
+  onDelete: (id: number) => void;
+  onPrintLabel?: (spoolId: number) => void;
+  onResetConsumedCounter?: (id: number) => void;
+  visibleColumns: string[];
+  assignmentMap: Record<number, LocationDisplay>;
+  catalogMap: Record<number, SpoolCatalogEntry>;
+  currencySymbol: string;
+  dateFormat: DateFormat;
+  t: TFn;
+  spoolDisplayTemplate: string;
+}) {
+  const members = useGroupMembers(item.ids, item.spools, isExpanded);
+  const headerSpool = item.spools
+    ? aggregateGroupSpool(item.spools)
+    : {
+        ...item.representative,
+        label_weight: item.representative.label_weight * item.ids.length,
+        weight_used: item.representative.weight_used * item.ids.length,
+        core_weight: item.representative.core_weight * item.ids.length,
+      };
+  const remaining = Math.max(0, headerSpool.label_weight - headerSpool.weight_used);
+  const pct = headerSpool.label_weight > 0 ? (remaining / headerSpool.label_weight) * 100 : 0;
+  return (
+    <SpoolTableGroup
+      memberIds={item.ids}
+      spools={members}
+      headerSpool={headerSpool}
+      remaining={remaining}
+      pct={pct}
+      isExpanded={isExpanded}
+      onToggle={onToggle}
+      selectedIds={selectedIds}
+      onToggleSelected={onToggleSelected}
+      onToggleGroupSelected={onToggleGroupSelected}
+      onEdit={onEdit}
+      onCopy={onCopy}
+      onArchive={onArchive}
+      onDelete={onDelete}
+      onPrintLabel={onPrintLabel}
+      onResetConsumedCounter={onResetConsumedCounter}
+      visibleColumns={visibleColumns}
+      assignmentMap={assignmentMap}
+      catalogMap={catalogMap}
+      currencySymbol={currencySymbol}
+      dateFormat={dateFormat}
+      t={t}
+      spoolDisplayTemplate={spoolDisplayTemplate}
+    />
+  );
+}
+
 /* Grouped spool rows for table view */
 function SpoolTableGroup({
-  spools, headerSpool, remaining, pct, isExpanded, onToggle,
+  spools, memberIds, headerSpool, remaining, pct, isExpanded, onToggle,
   onEdit, onCopy, onArchive, onDelete, onPrintLabel, onResetConsumedCounter,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
   spoolDisplayTemplate, selectedIds, onToggleSelected, onToggleGroupSelected,
 }: {
-  spools: InventorySpool[];
+  /** Member spool objects — undefined while a server-mode group is still
+   *  fetching them for expansion (the header renders without them). */
+  spools?: InventorySpool[];
+  /** The complete member id list — always known, drives the checkbox and
+   *  the counts whether or not the objects have arrived. */
+  memberIds: number[];
   /** Bulk selection (#1795). The group header ticks every member at once. */
   selectedIds?: Set<number>;
   onToggleSelected?: (id: number) => void;
@@ -2835,14 +3414,14 @@ function SpoolTableGroup({
           <td className="py-3 pl-4 pr-0 w-8" onClick={(e) => e.stopPropagation()}>
             <input
               type="checkbox"
-              checked={spools.every((sp) => selectedIds?.has(sp.id))}
+              checked={memberIds.every((id) => selectedIds?.has(id))}
               ref={(el) => {
                 if (el) {
-                  const picked = spools.filter((sp) => selectedIds?.has(sp.id)).length;
-                  el.indeterminate = picked > 0 && picked < spools.length;
+                  const picked = memberIds.filter((id) => selectedIds?.has(id)).length;
+                  el.indeterminate = picked > 0 && picked < memberIds.length;
                 }
               }}
-              onChange={(e) => onToggleGroupSelected(spools.map((sp) => sp.id), e.target.checked)}
+              onChange={(e) => onToggleGroupSelected(memberIds, e.target.checked)}
               aria-label={t('inventory.bulk.selectGroup')}
               className="w-4 h-4 accent-bambu-green cursor-pointer"
             />
@@ -2857,7 +3436,7 @@ function SpoolTableGroup({
               </div>
             ) : colId === 'id' ? (
               <span className="text-xs font-medium bg-bambu-green/20 text-bambu-green px-2 py-0.5 rounded-full">
-                {t('inventory.groupedSpools', { count: spools.length })}
+                {t('inventory.groupedSpools', { count: memberIds.length })}
               </span>
             ) : (
               columnCells[colId]?.({ spool: headerSpool, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight, spoolDisplayTemplate })
@@ -2866,12 +3445,23 @@ function SpoolTableGroup({
         ))}
         <td className="py-3 px-4">
           <span className="text-xs text-bambu-gray">
-            {spools.map((s) => `#${s.id}`).join(', ')}
+            {memberIds.map((id) => `#${id}`).join(', ')}
           </span>
         </td>
       </tr>
-      {/* Expanded individual rows */}
-      {isExpanded && spools.map((spool) => {
+      {/* Expanded individual rows — a server-mode group shows a loading row
+          until its members arrive (the fetch fires on the expand click). */}
+      {isExpanded && !spools && (
+        <tr className="border-b border-bambu-dark-tertiary/50">
+          <td
+            colSpan={visibleColumns.length + (onToggleGroupSelected ? 2 : 1)}
+            className="py-3 px-4 text-sm text-bambu-gray"
+          >
+            {t('common.loading')}
+          </td>
+        </tr>
+      )}
+      {isExpanded && spools?.map((spool) => {
         const r = Math.max(0, spool.label_weight - spool.weight_used);
         const p = spool.label_weight > 0 ? (r / spool.label_weight) * 100 : 0;
         return (

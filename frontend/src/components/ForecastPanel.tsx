@@ -22,6 +22,7 @@ import {
 import type { InventorySpool, SpoolUsageRecord, FilamentSkuSettings, ShoppingListItem } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { LoadingBlock } from './LoadingBlock';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -56,6 +57,10 @@ type ChartDays = 7 | 30 | 180;
 
 const Z_95 = 1.65;
 const CHART_COLORS = ['#1DB954', '#3B82F6', '#F59E0B', '#EF4444', '#8B5CF6'];
+
+// Stable empty set while the panel's own feed is loading — a fresh [] per
+// render would re-run every downstream memo keyed on `spools`.
+const EMPTY_SPOOLS: InventorySpool[] = [];
 
 // Sort preferences survive reloads, same pattern as the inventory table.
 const FORECAST_SORT_KEY = 'bamdude-forecast-sort';
@@ -210,7 +215,7 @@ function buildProjectionSeries(
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
+export function ForecastPanel() {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { t } = useTranslation();
@@ -232,6 +237,25 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
   const [cartModal, setCartModal] = useState<SkuForecast | null>(null);
   const [listOpen, setListOpen] = useState(false);
   const [chartDays, setChartDays] = useState<ChartDays>(30);
+
+  // ── The panel's OWN full-set feed (task 5, 2026-08-29 server-driven-lists).
+  // The page's list is server-paged now, but the forecast math needs EVERY
+  // spool — a single page would silently produce wrong rates and alerts with
+  // no error (spec §3.5). Same span as the old `getSpools(true)` prop: BOTH
+  // tabs, deliberately no `archived` param (archived history still feeds the
+  // rates), slim rows (the math never reads k_profiles — task-5 step-1 grep).
+  // The panel is mounted only while the Forecast tab is open, so this fetch
+  // fires exactly then — never on a plain inventory visit; `canRead` keeps
+  // the locked no-access view from fetching what it may not read. Keyed
+  // under the ['inventory-spools'] prefix so every existing spool-mutation
+  // invalidation reaches it for free (task-4 seam ruling — a standalone
+  // ['forecast-spools'] key would sit outside that refresh).
+  const { data: ownSpools, isLoading: spoolsLoading } = useQuery({
+    queryKey: ['inventory-spools', 'forecast-slim'],
+    queryFn: async () => (await api.getSpoolsPaged({ page: 1, all: true })).items,
+    enabled: canRead,
+  });
+  const spools: InventorySpool[] = ownSpools ?? EMPTY_SPOOLS;
 
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, enabled: canRead });
   const { data: skuSettingsList = [] } = useQuery({ queryKey: ['sku-settings'], queryFn: api.getSkuSettings, staleTime: 60_000, enabled: canRead });
@@ -517,7 +541,11 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
       {top5.length > 0 && <UsageChart forecasts={top5} days={chartDays} onDaysChange={setChartDays} />}
 
       {/* ── Table ── */}
-      {forecasts.length === 0 ? (
+      {spoolsLoading ? (
+        /* The feed starts at tab-open now, not page-open — without this
+           guard the first open would flash the "no spools" empty state. */
+        <LoadingBlock label={t('common.loading')} />
+      ) : forecasts.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-bambu-gray">
           <TrendingDown className="w-10 h-10 mb-3 opacity-40" />
           <p className="text-sm">{t('forecast.noSpools')}</p>
