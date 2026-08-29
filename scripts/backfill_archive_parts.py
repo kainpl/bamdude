@@ -11,6 +11,7 @@ Skips archives that already have part rows. After seeding, the legacy flat
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import sys
 from pathlib import Path
@@ -66,13 +67,15 @@ async def main(dry_run: bool) -> None:
                         attributed += 1
                 else:
                     no_parts += 1
+                if not dry_run:
+                    await db.commit()
             except Exception as e:  # noqa: BLE001
+                with contextlib.suppress(Exception):
+                    await db.rollback()
                 failed += 1
                 logger.warning("Failed to backfill archive %s: %s", archive.id, e)
         if dry_run:
             await db.rollback()
-        else:
-            await db.commit()
     print(
         f"seeded={seeded} defect_attributed={attributed} already_had_rows={skipped} file_missing={missing} "
         f"no_parts={no_parts} failed={failed}"
