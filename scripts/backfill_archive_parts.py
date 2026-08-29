@@ -61,14 +61,17 @@ async def main(dry_run: bool) -> None:
                     .scalars()
                     .all()
                 )
+                did_attribute = False
                 if rows:
-                    seeded += 1
-                    if apply_flat_defective(rows, archive.defective_count or 0):
-                        attributed += 1
+                    did_attribute = apply_flat_defective(rows, archive.defective_count or 0)
                 else:
                     no_parts += 1
                 if not dry_run:
                     await db.commit()
+                if rows:
+                    seeded += 1
+                    if did_attribute:
+                        attributed += 1
             except Exception as e:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     await db.rollback()
