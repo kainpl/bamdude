@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -23,12 +23,14 @@ from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
+from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.library_project_links import library_file_projects, library_folder_projects
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.project import Project
 from backend.app.models.project_bom import ProjectBOMItem
+from backend.app.models.project_part import ProjectPart
 from backend.app.models.project_print_plan import ProjectPrintPlanItem
 from backend.app.models.user import User
 from backend.app.schemas.project import (
@@ -47,6 +49,9 @@ from backend.app.schemas.project import (
     ProjectDuplicate,
     ProjectImport,
     ProjectListResponse,
+    ProjectPartRow,
+    ProjectPartsResponse,
+    ProjectPartsUpdate,
     ProjectResponse,
     ProjectStats,
     ProjectUpdate,
@@ -2657,3 +2662,128 @@ async def reorder_project_print_plan(
 
     await db.commit()
     return await _load_print_plan(db, project_id)
+
+
+# ============ Parts Ledger Endpoints (m158) ============
+
+
+async def _read_project_parts(db: AsyncSession, project_id: int) -> ProjectPartsResponse:
+    """The parts ledger: targets merged with per-part print history.
+
+    History rows without a target are returned too (target_qty=None) —
+    what was printed is never hidden by not having set a goal for it.
+    """
+    targets = (await db.execute(select(ProjectPart).where(ProjectPart.project_id == project_id))).scalars().all()
+
+    agg_rows = (
+        await db.execute(
+            select(
+                PrintArchivePart.name_key,
+                func.max(PrintArchivePart.name).label("name"),
+                func.coalesce(
+                    func.sum(case((PrintArchive.status == "completed", PrintArchivePart.quantity), else_=0)), 0
+                ).label("printed"),
+                func.coalesce(
+                    func.sum(case((PrintArchive.status == "completed", PrintArchivePart.defective), else_=0)), 0
+                ).label("defective"),
+                func.coalesce(
+                    func.sum(case((PrintArchive.status == "printing", PrintArchivePart.quantity), else_=0)), 0
+                ).label("in_progress"),
+            )
+            .join(PrintArchive, PrintArchive.id == PrintArchivePart.archive_id)
+            .where(PrintArchive.project_id == project_id, PrintArchive.deleted_at.is_(None))
+            .group_by(PrintArchivePart.name_key)
+        )
+    ).all()
+    history = {row.name_key: row for row in agg_rows}
+
+    parts: list[ProjectPartRow] = []
+    for target in targets:
+        h = history.pop(target.name_key, None)
+        printed = int(h.printed) if h else 0
+        defective = int(h.defective) if h else 0
+        usable = max(0, printed - defective)
+        parts.append(
+            ProjectPartRow(
+                name=target.name,
+                name_key=target.name_key,
+                target_qty=target.target_qty,
+                printed=printed,
+                in_progress=int(h.in_progress) if h else 0,
+                defective=defective,
+                usable=usable,
+                remaining=max(0, target.target_qty - usable),
+            )
+        )
+    for key, h in history.items():  # history without a target
+        printed = int(h.printed)
+        defective = int(h.defective)
+        parts.append(
+            ProjectPartRow(
+                name=h.name,
+                name_key=key,
+                target_qty=None,
+                printed=printed,
+                in_progress=int(h.in_progress),
+                defective=defective,
+                usable=max(0, printed - defective),
+                remaining=None,
+            )
+        )
+    parts.sort(key=lambda p: p.name_key)
+    return ProjectPartsResponse(parts=parts)
+
+
+@router.get("/{project_id}/parts", response_model=ProjectPartsResponse)
+async def get_project_parts(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The parts ledger: targets merged with per-part print history."""
+    return await _read_project_parts(db, project_id)
+
+
+@router.patch("/{project_id}/parts", response_model=ProjectPartsResponse)
+async def update_project_parts(
+    project_id: int,
+    data: ProjectPartsUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Upsert target quantities by name_key."""
+    existing = {
+        r.name_key: r
+        for r in (await db.execute(select(ProjectPart).where(ProjectPart.project_id == project_id))).scalars().all()
+    }
+    for item in data.parts:
+        row = existing.get(item.name_key)
+        if row is not None:
+            row.target_qty = item.target_qty
+        else:
+            db.add(
+                ProjectPart(
+                    project_id=project_id,
+                    name=item.name or item.name_key,
+                    name_key=item.name_key,
+                    target_qty=item.target_qty,
+                )
+            )
+    await db.commit()
+    return await _read_project_parts(db, project_id)
+
+
+@router.delete("/{project_id}/parts")
+async def delete_project_part(
+    project_id: int,
+    name_key: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Remove a target row (query param dodges name_key URL-encoding traps).
+
+    History rows are untouched — the part simply goes back to 'untargeted'.
+    """
+    await db.execute(delete(ProjectPart).where(ProjectPart.project_id == project_id, ProjectPart.name_key == name_key))
+    await db.commit()
+    return {"status": "ok"}

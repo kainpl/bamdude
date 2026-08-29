@@ -23,6 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.models.library import LibraryFile
 from backend.app.models.project_print_plan import ProjectPrintPlanItem
+from backend.app.services.project_parts import seed_project_parts_for_file
 
 
 def _is_plan_eligible(file_type: str | None) -> bool:
@@ -105,6 +106,10 @@ async def sync_plan_for_file(
                 order_index=order_index,
             )
         )
+
+    # Plant ledger target rows (m158) for every linked project — idempotent,
+    # so re-linking an already-linked file adds nothing.
+    await seed_project_parts_for_file(db, library_file_id=library_file_id, project_ids=list(desired))
 
 
 async def inherit_folder_projects(

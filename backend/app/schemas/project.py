@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 def _validate_project_url(value: str | None) -> str | None:
@@ -398,3 +398,30 @@ class ProjectImport(BaseModel):
     budget: float | None = None
     bom_items: list[BOMItemExport] = []
     linked_folders: list[LinkedFolderExport] = []
+
+
+class ProjectPartRow(BaseModel):
+    """One canonical part in the project ledger, targets merged with history."""
+
+    name: str
+    name_key: str
+    target_qty: int | None = None  # None = seen in archives but no target set
+    printed: int = 0
+    in_progress: int = 0
+    defective: int = 0
+    usable: int = 0
+    remaining: int | None = None  # None when there is no target
+
+
+class ProjectPartsResponse(BaseModel):
+    parts: list[ProjectPartRow]
+
+
+class ProjectPartTargetUpdate(BaseModel):
+    name_key: str
+    name: str | None = None  # display name for a row created by hand
+    target_qty: int = Field(ge=0)
+
+
+class ProjectPartsUpdate(BaseModel):
+    parts: list[ProjectPartTargetUpdate]
