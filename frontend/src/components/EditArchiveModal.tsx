@@ -67,6 +67,13 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const [status, setStatus] = useState(archive.status);
   const [quantity, setQuantity] = useState(archive.quantity ?? 1);
   const [defectiveCount, setDefectiveCount] = useState(archive.defective_count ?? 0);
+  // Per-part defective counts, keyed by part id. Only meaningful when
+  // archive.parts is non-empty — see the render block below.
+  const [partsDefective, setPartsDefective] = useState<Record<number, number>>(
+    Object.fromEntries((archive.parts ?? []).map((p) => [p.id, p.defective])),
+  );
+  const hasParts = (archive.parts?.length ?? 0) > 0;
+  const partsDefectiveSum = Object.values(partsDefective).reduce((sum, n) => sum + n, 0);
   const [photos, setPhotos] = useState<string[]>(archive.photos || []);
   const [externalUrl, setExternalUrl] = useState(archive.external_url || '');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -199,9 +206,16 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       notes: notes || undefined,
       tags: tags || undefined,
       quantity: quantity,
-      defective_count: defectiveCount,
+      defective_count: hasParts ? partsDefectiveSum : defectiveCount,
       external_url: externalUrl || null,
     };
+
+    if (hasParts) {
+      updateData.parts_defective = Object.entries(partsDefective).map(([id, defective]) => ({
+        id: Number(id),
+        defective,
+      }));
+    }
 
     // Only include status if changed
     if (status !== archive.status) {
@@ -311,28 +325,66 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
             </p>
           </div>
 
-          {/* Defective parts — scrap out of the plate above. Capped at the
-              quantity: a defective part has to be one of the parts printed. */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">
-              <PackageX className="w-4 h-4 inline mr-1" />
-              {t('editArchive.defectiveParts')}
-            </label>
-            <input
-              type="number"
-              min={0}
-              max={quantity}
-              value={defectiveCount}
-              onChange={(e) =>
-                setDefectiveCount(Math.min(quantity, Math.max(0, parseInt(e.target.value) || 0)))
-              }
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-              placeholder="0"
-            />
-            <p className="text-xs text-bambu-gray mt-1">
-              {t('editArchive.defectivePartsHelp')}
-            </p>
-          </div>
+          {/* Defective parts — scrap out of the plate above. When the archive
+              has parts-ledger rows, scrap is entered per part (each capped at
+              that part's own quantity) instead of as one flat total. */}
+          {hasParts ? (
+            <div>
+              <label className="block text-sm text-bambu-gray mb-1">
+                <PackageX className="w-4 h-4 inline mr-1" />
+                {t('editArchive.partsDefectiveTitle')}
+              </label>
+              <div className="space-y-2">
+                {archive.parts!.map((part) => (
+                  <div key={part.id} className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-white truncate flex-1">{part.name}</span>
+                    <span className="text-xs text-bambu-gray whitespace-nowrap">&times; {part.quantity}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={part.quantity}
+                      value={partsDefective[part.id] ?? 0}
+                      onChange={(e) => {
+                        const raw = parseInt(e.target.value) || 0;
+                        const clamped = Math.min(part.quantity, Math.max(0, raw));
+                        setPartsDefective((prev) => ({ ...prev, [part.id]: clamped }));
+                      }}
+                      data-testid={`part-defective-${part.id}`}
+                      className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                ))}
+              </div>
+              <p className="text-sm text-white mt-2" data-testid="parts-defective-total">
+                {t('editArchive.partsDefectiveTotal')}: {partsDefectiveSum}
+              </p>
+              <p className="text-xs text-bambu-gray mt-1">
+                {t('editArchive.partsDefectiveHelp')}
+              </p>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-sm text-bambu-gray mb-1">
+                <PackageX className="w-4 h-4 inline mr-1" />
+                {t('editArchive.defectiveParts')}
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={quantity}
+                value={defectiveCount}
+                onChange={(e) =>
+                  setDefectiveCount(Math.min(quantity, Math.max(0, parseInt(e.target.value) || 0)))
+                }
+                data-testid="defective-count-input"
+                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                placeholder="0"
+              />
+              <p className="text-xs text-bambu-gray mt-1">
+                {t('editArchive.defectivePartsHelp')}
+              </p>
+            </div>
+          )}
 
           {/* Notes */}
           <div>
