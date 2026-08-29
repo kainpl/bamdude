@@ -342,6 +342,46 @@ async def _reconcile_complete_archive(
     # bound.
     archive.completed_at = _recovered_completed_at(archive.started_at, archive.print_time_seconds, now)
 
+    # A finished print books its filament exactly like a supervised one —
+    # measured hole 2026-08-29: six overnight prints closed by this sweep left
+    # ~1.77 kg unbooked. Completed only: a reconciled "failed" carries no layer
+    # information, and booking the full estimate for a partial print would be
+    # worse than the gap it fills. The persisted print-start session survives
+    # the outage (that is what it is for), so the dispatched mapping is intact;
+    # ``expected_print_name`` keeps a session belonging to a DIFFERENT print
+    # from lending its mapping. Skipped when the archive already has history —
+    # a re-entered sweep must not double-book. Best-effort: a booking failure
+    # must never break the sweep.
+    if status == "completed" and archive.printer_id is not None:
+        try:
+            from sqlalchemy import func as _func
+
+            from backend.app.models.spool_usage_history import SpoolUsageHistory
+            from backend.app.services import usage_tracker
+            from backend.app.services.printer_manager import printer_manager as _pm
+
+            already_booked = (
+                await db.execute(
+                    select(_func.count(SpoolUsageHistory.id)).where(SpoolUsageHistory.archive_id == archive.id)
+                )
+            ).scalar()
+            if not already_booked:
+                persisted_name = await usage_tracker.get_persisted_print_name(db, archive.printer_id)
+                await usage_tracker.on_print_complete(
+                    archive.printer_id,
+                    {"status": "completed"},
+                    _pm,
+                    db,
+                    archive_id=archive.id,
+                    expected_print_name=archive.print_name,
+                )
+                # Drop the start row only when it belonged to THIS print — a
+                # row for the printer's next job must survive untouched.
+                if persisted_name and archive.print_name and persisted_name == archive.print_name:
+                    await usage_tracker.clear_persisted_session(db, archive.printer_id)
+        except Exception:
+            logger.exception("reconcile: usage booking failed for archive %s", archive.id)
+
     # Audit flags — reassign the dict so SQLAlchemy flags the JSON column dirty.
     extra = dict(archive.extra_data or {})
     extra["recovered_by_startup_sweep"] = True

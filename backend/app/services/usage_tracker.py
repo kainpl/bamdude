@@ -1237,6 +1237,7 @@ async def on_print_complete(
     db: AsyncSession,
     archive_id: int | None = None,
     ams_mapping: list[int] | None = None,
+    expected_print_name: str | None = None,
 ) -> list[dict]:
     """Compute consumption deltas and update spool weight_used/last_used.
 
@@ -1262,6 +1263,14 @@ async def on_print_complete(
         except Exception:
             logger.exception("[UsageTracker] Failed to restore print session for printer %d", printer_id)
         session = _active_sessions.pop(printer_id, None)
+
+    # Reconcile-driven completions name the print they are closing. A session
+    # that belongs to a DIFFERENT print (the printer moved on during an
+    # unsupervised gap) must not lend its mapping — put it back untouched and
+    # book from the 3MF estimate alone.
+    if session is not None and expected_print_name and session.print_name and session.print_name != expected_print_name:
+        _active_sessions[printer_id] = session
+        session = None
 
     # The caller's mapping comes from the MQTT request-topic capture and the
     # in-memory ``_print_ams_mappings`` dict, both of which a restart destroys.
