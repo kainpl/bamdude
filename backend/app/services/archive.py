@@ -2433,8 +2433,10 @@ class ArchiveService:
 
         # Seed the per-part plate state (m158). Source bytes, not dispatched:
         # the patcher touches gcode, never slice_info, and the on-disk copy is
-        # the unpatched original anyway.
-        await seed_archive_parts(self.db, archive, source_file.read_bytes())
+        # the unpatched original anyway. Pass the Path, not the bytes — the
+        # read happens inside seed_archive_parts' own guard so a transient
+        # read error can never raise out of archive creation.
+        await seed_archive_parts(self.db, archive, source_file)
 
         await self.db.commit()
         await self.db.refresh(archive)
@@ -2737,8 +2739,10 @@ class ArchiveService:
 
             # Seed the per-part plate state (m158) — same contract as
             # archive_print's call, now that archive.file_path points at
-            # the freshly attached 3MF.
-            await seed_archive_parts(self.db, archive, source_file.read_bytes())
+            # the freshly attached 3MF. Pass the Path — this whole method is
+            # wrapped in a try/except that returns False on any failure, so
+            # a read error here would otherwise fail the entire attach.
+            await seed_archive_parts(self.db, archive, source_file)
 
             await self.db.commit()
             await self.db.refresh(archive)

@@ -72,6 +72,13 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const [partsDefective, setPartsDefective] = useState<Record<number, number>>(
     Object.fromEntries((archive.parts ?? []).map((p) => [p.id, p.defective])),
   );
+  // Whether the user has touched any per-part stepper this session. A
+  // backfilled multi-part archive can legitimately hold a flat, unattributed
+  // legacy defective_count with every part row at defective=0 (the backfill's
+  // mono-plate rule). Sending parts_defective + its sum unconditionally would
+  // silently zero that real historical count on a save that only touched,
+  // say, notes — so parts/defective_count are only included when dirty.
+  const [partsDirty, setPartsDirty] = useState(false);
   const hasParts = (archive.parts?.length ?? 0) > 0;
   const partsDefectiveSum = Object.values(partsDefective).reduce((sum, n) => sum + n, 0);
   const [photos, setPhotos] = useState<string[]>(archive.photos || []);
@@ -206,15 +213,22 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       notes: notes || undefined,
       tags: tags || undefined,
       quantity: quantity,
-      defective_count: hasParts ? partsDefectiveSum : defectiveCount,
       external_url: externalUrl || null,
     };
 
     if (hasParts) {
-      updateData.parts_defective = Object.entries(partsDefective).map(([id, defective]) => ({
-        id: Number(id),
-        defective,
-      }));
+      // Only send defect data when a stepper was actually touched — see the
+      // partsDirty declaration above for why an untouched save must omit
+      // both fields rather than resend the (unattributed) zeroed sum.
+      if (partsDirty) {
+        updateData.parts_defective = Object.entries(partsDefective).map(([id, defective]) => ({
+          id: Number(id),
+          defective,
+        }));
+        updateData.defective_count = partsDefectiveSum;
+      }
+    } else {
+      updateData.defective_count = defectiveCount;
     }
 
     // Only include status if changed
@@ -348,6 +362,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
                         const raw = parseInt(e.target.value) || 0;
                         const clamped = Math.min(part.quantity, Math.max(0, raw));
                         setPartsDefective((prev) => ({ ...prev, [part.id]: clamped }));
+                        setPartsDirty(true);
                       }}
                       data-testid={`part-defective-${part.id}`}
                       className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"

@@ -8,6 +8,7 @@ a print must never fail because of the ledger.
 import io
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -99,6 +100,18 @@ async def test_garbage_bytes_do_not_raise(db_session):
     """Best-effort: the ledger must never fail the print path."""
     archive = await _archive(db_session)
     await seed_archive_parts(db_session, archive, b"not a zip at all")
+    await db_session.commit()
+
+    assert await _rows(db_session, archive.id) == []
+
+
+@pytest.mark.asyncio
+async def test_a_path_that_does_not_exist_does_not_raise(db_session):
+    """The Path form does the read INSIDE the guard — a transient/missing
+    file must never raise out of seed_archive_parts and into the caller
+    (print dispatch, 3MF attach)."""
+    archive = await _archive(db_session)
+    await seed_archive_parts(db_session, archive, Path("Z:/definitely/not/there.3mf"))
     await db_session.commit()
 
     assert await _rows(db_session, archive.id) == []

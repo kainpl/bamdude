@@ -151,4 +151,59 @@ describe('per-part defective entry', () => {
     // 1 (lid) + 1 (base.stl) = 2
     expect(sentBody!.defective_count).toBe(2);
   });
+
+  it('omits parts_defective and defective_count on a save that never touched a stepper', async () => {
+    // A backfilled multi-part archive can legitimately hold a flat,
+    // unattributed legacy defective_count with every part row at
+    // defective=0 — saving after editing only e.g. notes must not resend
+    // the (zeroed) per-part sum and clobber that historical count.
+    const user = userEvent.setup();
+    let sentBody: Record<string, unknown> | null = null;
+    server.use(
+      http.patch('/api/v1/archives/:id', async ({ request }) => {
+        sentBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ ...baseArchive, ...sentBody, parts: [] });
+      })
+    );
+
+    render(<EditArchiveModal archive={baseArchive} onClose={mockOnClose} />);
+
+    await user.type(screen.getByPlaceholderText('Add notes about this print...'), 'just a note');
+    await user.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => {
+      expect(sentBody).not.toBeNull();
+    });
+    expect(sentBody!.notes).toBe('just a note');
+    expect(sentBody!).not.toHaveProperty('parts_defective');
+    expect(sentBody!).not.toHaveProperty('defective_count');
+  });
+
+  it('sends both fields once any stepper is touched, defective_count equal to the sum', async () => {
+    const user = userEvent.setup();
+    let sentBody: Record<string, unknown> | null = null;
+    server.use(
+      http.patch('/api/v1/archives/:id', async ({ request }) => {
+        sentBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ ...baseArchive, ...sentBody, parts: [] });
+      })
+    );
+
+    render(<EditArchiveModal archive={baseArchive} onClose={mockOnClose} />);
+
+    const baseStl = screen.getByTestId('part-defective-2') as HTMLInputElement;
+    fireEvent.change(baseStl, { target: { value: '3' } });
+
+    await user.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => {
+      expect(sentBody).not.toBeNull();
+    });
+    expect(sentBody!.parts_defective).toEqual([
+      { id: 1, defective: 0 },
+      { id: 2, defective: 3 },
+    ]);
+    // 0 (lid, untouched) + 3 (base.stl, edited) = 3
+    expect(sentBody!.defective_count).toBe(3);
+  });
 });

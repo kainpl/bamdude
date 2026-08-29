@@ -418,8 +418,8 @@ class ProjectPartsResponse(BaseModel):
 
 
 class ProjectPartTargetUpdate(BaseModel):
-    name_key: str
-    name: str | None = None  # display name for a row created by hand
+    name_key: str = Field(min_length=1, max_length=512)
+    name: str | None = Field(default=None, max_length=512)  # display name for a row created by hand
     target_qty: int = Field(ge=0)
 
 

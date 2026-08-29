@@ -141,3 +141,16 @@ async def test_target_upsert_and_delete(async_client, db_session):
     assert resp.status_code == 200
     rows = (await db_session.execute(select(ProjectPart).where(ProjectPart.project_id == project.id))).scalars().all()
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_target_upsert_rejects_an_oversized_name_key(async_client, db_session):
+    """PG's name_key column is VARCHAR(512) — an unbounded string 500s instead
+    of 422ing before it ever reaches the DB."""
+    project = await _project(db_session)
+
+    resp = await async_client.patch(
+        f"/api/v1/projects/{project.id}/parts",
+        json={"parts": [{"name_key": "x" * 600, "name": "Lid", "target_qty": 5}]},
+    )
+    assert resp.status_code == 422

@@ -4,7 +4,11 @@ Called wherever an archive gains (or corrects) its 3MF: dispatch
 (``archive_print``), external-print attach (``attach_3mf_to_archive``),
 the adoption branch in main.py, the retry-download path (via attach) and
 the backfill script. Best-effort by contract: any failure logs and seeds
-nothing — a print must never fail because of the ledger.
+nothing — a print must never fail because of the ledger. That includes
+the file read itself: callers may pass a ``Path`` and let
+``seed_archive_parts`` do the ``read_bytes()`` inside its own guard,
+rather than reading at the call site where a transient I/O error would
+raise out of the caller's own operation.
 """
 
 import logging
@@ -21,16 +25,26 @@ from backend.app.services.part_names import tally_objects
 logger = logging.getLogger(__name__)
 
 
-async def seed_archive_parts(db: AsyncSession, archive: PrintArchive, data: bytes) -> None:
+async def seed_archive_parts(db: AsyncSession, archive: PrintArchive, data: bytes | Path) -> None:
     """(Re)build the archive's part rows from 3MF bytes.
 
     Replace, not merge — the plate may have changed (plate-corrected
     re-download). ``defective`` carries over by ``name_key`` for parts still
     present, capped at the new quantity; the flat ``defective_count`` is
     never lowered here.
+
+    ``data`` may be raw bytes or a ``Path`` to the 3MF on disk. Passing a
+    ``Path`` lets the ``.read_bytes()`` happen inside this function's own
+    try/except, so a transient read error (missing/locked file, races with
+    cleanup, …) is swallowed here rather than raised at the call site —
+    where it would fail the caller's own operation (print dispatch, 3MF
+    attach), violating the never-fail contract above.
     """
     try:
         from backend.app.services.archive import extract_printable_objects_from_3mf
+
+        if isinstance(data, Path):
+            data = data.read_bytes()
 
         objects = extract_printable_objects_from_3mf(data, plate_number=archive.plate_index)
         if not isinstance(objects, dict) or not objects:
