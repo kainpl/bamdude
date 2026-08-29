@@ -97,6 +97,32 @@ type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
+/**
+ * Debounces a rapidly-changing value (300ms, same as ArchivesPage's search
+ * box) — both the search box and the username filter below are free-text
+ * fields that would otherwise fire one server round-trip per keystroke.
+ */
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+// Closed set of `LibraryFile.file_type` values the backend can ever produce
+// — `detect_file_type` in backend/app/services/library_helpers.py, driven by
+// `_SCANNABLE_EXTENSIONS` in backend/app/api/routes/library.py. Static on
+// purpose (task 2, 2026-08-29 server-driven-lists fix round): deriving this
+// from the fetched files (`files.map(f => f.file_type)`) only ever offered
+// the types present on the CURRENT server-filtered/paginated page, so a type
+// filtered or paged out of view silently vanished from its own dropdown.
+const LIBRARY_FILE_TYPES = [
+  '3mf', 'gcode', 'stl', 'obj', 'step', 'stp',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'md',
+] as const;
+
 // New Folder Modal
 interface NewFolderModalProps {
   parentId: number | null;
@@ -1785,14 +1811,9 @@ export function FileManagerPage() {
 
   // Filter and sort state (persist sort preferences to localStorage)
   const [searchQuery, setSearchQuery] = useState('');
-  // Debounced the same way ArchivesPage debounces its search box (300ms) —
-  // the search value now goes to the server as `q` (task 1), so an
-  // undebounced value would fire one request per keystroke.
-  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(searchQuery);
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearchQuery(searchQuery), 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
+  // The search value now goes to the server as `q` (task 1) — debounced so
+  // an undebounced value doesn't fire one request per keystroke.
+  const debouncedSearchQuery = useDebouncedValue(searchQuery, 300);
   const [filterType, setFilterType] = useState<string>('all');
   // Deliberately NOT persisted, unlike the grid/list view mode: this is a
   // question, not a preference. Restored silently it would show a partial
@@ -1806,6 +1827,8 @@ export function FileManagerPage() {
   // and reaching into a user's browser storage to tidy up is a bigger action
   // than the tidiness is worth.
   const [filterUsername, setFilterUsername] = useState('');
+  // Free-text, same reasoning (and the same 300ms) as the search box above.
+  const debouncedFilterUsername = useDebouncedValue(filterUsername, 300);
   const [sortField, setSortField] = useState<SortField>(() => {
     const saved = localStorage.getItem('library-sort-field');
     return (saved as SortField) || 'name';
@@ -2003,6 +2026,34 @@ export function FileManagerPage() {
   // while the other waits out the debounce would refetch twice for one type.
   const searchExpandsSubfolders = selectedFolderId !== null && debouncedSearchQuery.trim().length > 0;
 
+  // Any filter/sort/scope change invalidates the current page — staying on
+  // page 4 of a narrower result is a page nobody asked for. Resetting this in
+  // a `useEffect` lands one render late: the query would fire once with
+  // {newFilter, oldPage} on the render the filter itself changed, then a
+  // SECOND time after the effect's `setPage(1)` commits. Adjusting `page`
+  // right here during render (React's documented "you might not need an
+  // effect" idiom) means the mismatched render is thrown away before it
+  // commits — its `useQuery` never gets a chance to fetch — so the query
+  // only ever sees the correct, already-reset combination.
+  const pageResetSignature = JSON.stringify([
+    selectedFolderId,
+    topLevelView,
+    tagFilterKey,
+    debouncedSearchQuery,
+    filterType,
+    unprintedOnly,
+    debouncedFilterUsername,
+    sortField,
+    sortDirection,
+  ]);
+  const [prevPageResetSignature, setPrevPageResetSignature] = useState(pageResetSignature);
+  let effectivePage = page;
+  if (pageResetSignature !== prevPageResetSignature) {
+    setPrevPageResetSignature(pageResetSignature);
+    setPage(1);
+    effectivePage = 1;
+  }
+
   // Server-driven (task 2, 2026-08-29 server-driven-lists) — every filter,
   // the sort and the page all become request params; task 1's envelope
   // ({items, meta}) replaces the flat array this used to fetch, so there is
@@ -2026,9 +2077,9 @@ export function FileManagerPage() {
     q: debouncedSearchQuery.trim() || undefined,
     file_type: filterType !== 'all' ? filterType : undefined,
     unprinted_only: unprintedOnly,
-    username: filterUsername.trim() || undefined,
+    username: debouncedFilterUsername.trim() || undefined,
     sort_by: `${sortField}_${sortDirection}`,
-    page,
+    page: effectivePage,
     per_page: perPage === -1 ? undefined : perPage,
     all: perPage === -1 ? true : undefined,
   };
@@ -2039,25 +2090,6 @@ export function FileManagerPage() {
   });
   const files = filesPage?.items;
   const meta = filesPage?.meta;
-
-  // Any filter/sort/scope change invalidates the current page — staying on
-  // page 4 of a narrower result is a page nobody asked for (matches
-  // ArchivesPage's per-control `setPage(1)`, folded into one effect here
-  // because folder navigation, tag toggling and the toolbar controls are
-  // scattered across many call sites).
-  useEffect(() => {
-    setPage(1);
-  }, [
-    selectedFolderId,
-    topLevelView,
-    tagFilterKey,
-    debouncedSearchQuery,
-    filterType,
-    unprintedOnly,
-    filterUsername,
-    sortField,
-    sortDirection,
-  ]);
 
   const { data: stats } = useQuery({
     queryKey: ['library-stats'],
@@ -2073,17 +2105,12 @@ export function FileManagerPage() {
     queryFn: api.getUsersSlim,
   });
 
-  // Get unique file types for filter dropdown. ⚠️ Scoped to the CURRENT page
-  // of an already-filtered, already-paginated result (server-driven now, see
-  // task-2 report) — a type entirely filtered/paged out of view will not
-  // appear here. Task 1 added no filter-options endpoint the way Archives has
-  // one (`getArchiveFilterOptions`), so this is a known gap versus that
-  // pattern, not a silent regression to chase down inside this task.
-  const fileTypes = useMemo(() => {
-    if (!files) return [];
-    const types = new Set(files.map((f) => f.file_type));
-    return Array.from(types).sort();
-  }, [files]);
+  // File types for the filter dropdown — the static closed set (see
+  // LIBRARY_FILE_TYPES above), not derived from `files`. A per-page
+  // derivation only ever offered the types present on the current
+  // server-filtered/paginated result, so a type filtered or paged out of
+  // view silently vanished from its own dropdown.
+  const fileTypes = LIBRARY_FILE_TYPES;
 
   // Filtering, sorting and paging all happen server-side now (task 1 + this
   // task's params above) — this is a pass-through so every render call site
@@ -3751,6 +3778,10 @@ export function FileManagerPage() {
               total={meta.total}
               items={t('fileManager.fileCount', { count: meta.total })}
               variant="bare"
+              // Default 50 isn't in PaginationBar's own [12,24,48,96] — the
+              // select would render with nothing selected on first load.
+              // 200 matches the backend's `per_page` upper bound (le=200).
+              perPageOptions={[25, 50, 100, 200]}
               onPageChange={setPage}
               onPerPageChange={(size) => {
                 setPerPage(size);

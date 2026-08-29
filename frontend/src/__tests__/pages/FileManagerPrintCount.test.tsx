@@ -162,18 +162,11 @@ describe('library print count', () => {
   it('combines with the type filter rather than replacing it', async () => {
     // "unprinted AND sliced" is the real question — what have I prepared and
     // never actually run.
-    //
-    // Type selected BEFORE the toggle: the dropdown's own options are now
-    // server-driven (task 2, 2026-08-29) — scoped to whatever the CURRENT
-    // filters already narrowed to — so "gcode" is only offered while
-    // unprintedOnly is still off (all three mock files, two of them gcode).
-    // The combined query the server sees is identical either way; only the
-    // order the two controls can be clicked in changed.
     render(<FileManagerPage />);
     await screen.findByText('Benchy');
 
-    await userEvent.selectOptions(screen.getByDisplayValue('All types'), 'gcode');
     await userEvent.click(screen.getByRole('button', { name: 'Not printed' }));
+    await userEvent.selectOptions(screen.getByDisplayValue('All types'), 'gcode');
 
     // bracket.stl is unprinted but not gcode; Benchy and Cube are gcode but
     // printed. Nothing survives both — which proves they compose rather than
@@ -184,15 +177,11 @@ describe('library print count', () => {
   it('is cleared by the clear-filters button', async () => {
     // The button promises a reset; leaving one filter on leaves the library
     // looking empty with nothing on screen saying why.
-    //
-    // Type selected before the toggle — see the note in "combines with the
-    // type filter" above: the dropdown's options are server-driven now, and
-    // only offer "gcode" while unprintedOnly is still off.
     render(<FileManagerPage />);
     await screen.findByText('Benchy');
 
-    await userEvent.selectOptions(screen.getByDisplayValue('All types'), 'gcode');
     await userEvent.click(screen.getByRole('button', { name: 'Not printed' }));
+    await userEvent.selectOptions(screen.getByDisplayValue('All types'), 'gcode');
     await userEvent.click(await screen.findByRole('button', { name: 'Clear filters' }));
 
     expect(await screen.findByText('Benchy')).toBeInTheDocument();

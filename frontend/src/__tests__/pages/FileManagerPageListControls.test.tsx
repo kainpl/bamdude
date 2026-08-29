@@ -1,0 +1,122 @@
+/**
+ * FileManagerPage's paging controls (task 2 fix round, 2026-08-29).
+ *
+ * Three things a reviewer flagged as unverified:
+ *
+ * - Paging under the rows actually asks the server for the page clicked.
+ * - A filter change while on page 2 must never let the query see the STALE
+ *   page combined with the NEW filter — that would be one wasted request
+ *   (the mismatched combination), fired before a second, correct one. The
+ *   fix moved the reset from a post-commit `useEffect` to a render-time
+ *   adjustment specifically so the mismatched render is thrown away before
+ *   its `useQuery` ever gets a chance to fetch.
+ * - The per-page selector shows the actual default (50) on first load —
+ *   PaginationBar's own built-in options ([12,24,48,96]) don't include it,
+ *   which used to render the select with nothing selected.
+ */
+
+import { describe, it, expect, beforeEach } from 'vitest';
+import { screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
+import { render } from '../utils';
+import { server } from '../mocks/server';
+import { FileManagerPage } from '../../pages/FileManagerPage';
+
+const file = (id: number, name: string) => ({
+  id,
+  filename: `${name}.gcode.3mf`,
+  file_path: `/library/${name}.gcode.3mf`,
+  file_size: 1024,
+  file_type: 'gcode',
+  file_tags: ['gcode', '3mf', 'sliced'],
+  folder_id: null,
+  thumbnail_path: null,
+  print_name: name,
+  print_time_seconds: 3600,
+  duplicate_count: 0,
+  print_count: 0,
+  created_at: '2024-01-01T00:00:00Z',
+});
+
+/** Every request's full query-string, newest last. */
+let requests: URLSearchParams[] = [];
+
+function mockLibrary() {
+  server.use(
+    http.get('/api/v1/library/folders', () => HttpResponse.json([])),
+    // The mock echoes back whatever `page` was actually requested (never a
+    // hardcoded value) — the whole point of these tests is checking WHICH
+    // page the query asked for, so the response has to reflect that.
+    http.get('/api/v1/library/files', ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      requests.push(params);
+      const page = Number(params.get('page') ?? '1');
+      return HttpResponse.json({
+        items: [file(1, 'Benchy'), file(2, 'Bracket')],
+        meta: { current_page: page, per_page: 50, total: 100, last_page: 2 },
+      });
+    }),
+    http.get('/api/v1/library/stats', () =>
+      HttpResponse.json({
+        total_files: 100,
+        total_folders: 0,
+        total_size_bytes: 1024,
+        disk_free_bytes: 1,
+        disk_total_bytes: 2,
+      }),
+    ),
+    http.get('/api/v1/settings/', () =>
+      HttpResponse.json({ check_updates: false, check_printer_firmware: false, library_disk_warning_gb: 5 }),
+    ),
+    http.get('/api/v1/projects/', () => HttpResponse.json([])),
+    http.get('/api/v1/library/tags', () => HttpResponse.json([])),
+  );
+}
+
+const bar = () => document.querySelector('[data-pagination]') as HTMLElement;
+
+describe('FileManagerPage pagination', () => {
+  beforeEach(() => {
+    requests = [];
+    localStorage.clear();
+    mockLibrary();
+  });
+
+  it('requests the new page when the next-page control is used', async () => {
+    render(<FileManagerPage />);
+    await waitFor(() => expect(bar()).toBeTruthy());
+
+    await userEvent.click(within(bar()).getByRole('button', { name: /next page/i }));
+
+    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('2'));
+  });
+
+  it('never combines a new filter with the stale page — a filter change on page 2 fires exactly once, already on page 1', async () => {
+    render(<FileManagerPage />);
+    await waitFor(() => expect(bar()).toBeTruthy());
+
+    // Get onto page 2 for real (the internal `page` state, not just what the
+    // mock happens to report) before touching a filter.
+    await userEvent.click(within(bar()).getByRole('button', { name: /next page/i }));
+    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('2'));
+
+    requests = []; // only the requests caused by the filter click matter below
+    await userEvent.click(screen.getByRole('button', { name: 'Not printed' }));
+
+    await waitFor(() => expect(requests.length).toBeGreaterThan(0));
+    // Exactly one request — an effect-based reset would have fired a first
+    // one with the STALE page (2) and the NEW filter, then a second with
+    // page reset to 1.
+    expect(requests).toHaveLength(1);
+    expect(requests[0].get('unprinted_only')).toBe('true');
+    expect(requests[0].get('page')).toBe('1');
+  });
+
+  it('shows the selected per-page value on first load', async () => {
+    render(<FileManagerPage />);
+    await waitFor(() => expect(bar()).toBeTruthy());
+
+    expect(within(bar()).getByRole('combobox', { name: /show/i })).toHaveValue('50');
+  });
+});
