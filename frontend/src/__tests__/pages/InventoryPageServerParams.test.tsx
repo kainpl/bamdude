@@ -18,8 +18,9 @@
  * - the cards view opts into `include_k_profiles` (the slim-projection gap).
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor, fireEvent } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { focusManager } from '@tanstack/react-query';
 import { render } from '../utils';
 import InventoryPageRouter from '../../pages/InventoryPage';
 import { http, HttpResponse } from 'msw';
@@ -270,5 +271,102 @@ describe('InventoryPage — server-driven params (task 4)', () => {
     await waitFor(() =>
       expect(pageRequests().some((u) => u.searchParams.get('include_k_profiles') === 'true')).toBe(true)
     );
+  });
+});
+
+describe('InventoryPage — page mutations drop the selection (review round 2, finding 1)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    setupHandlers();
+  });
+
+  // The clamp test drives a background refetch through TanStack's public
+  // focusManager; restore its automatic behaviour so no state leaks into
+  // the other tests in this file.
+  afterEach(() => {
+    focusManager.setFocused(undefined);
+  });
+
+  /**
+   * Shadows the default spools handler with a MULTI-PAGE, mutable-meta pool:
+   * the pager renders its arrows only when last_page > 1, and shrinking
+   * `state.lastPage` between requests reproduces the background-shrink race
+   * the out-of-range clamp exists for.
+   */
+  function useMultiPagePool(state: { lastPage: number; total: number }) {
+    server.use(
+      http.get('/api/v1/inventory/spools', ({ request }) => {
+        const url = new URL(request.url);
+        if (!url.searchParams.has('page')) return HttpResponse.json(SPOOLS);
+        listRequests.push(url);
+        if (url.searchParams.get('all') === 'true') {
+          return HttpResponse.json({
+            items: SPOOLS.map((s) => ({ ...s, k_profile_count: 0, k_profiles: null })),
+            meta: { total: SPOOLS.length, current_page: 1, per_page: SPOOLS.length, last_page: 1 },
+          });
+        }
+        return HttpResponse.json({
+          items: SPOOLS.map((s) => ({ ...s, k_profile_count: 0, k_profiles: null })),
+          meta: {
+            total: state.total,
+            current_page: Number(url.searchParams.get('page') ?? '1'),
+            per_page: 24,
+            last_page: state.lastPage,
+          },
+        });
+      }),
+    );
+  }
+
+  it('a pager click clears the selection — the bulk bar never stays armed over swapped-out rows', async () => {
+    useMultiPagePool({ lastPage: 2, total: 30 });
+    render(<InventoryPageRouter />);
+    await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
+
+    fireEvent.click(screen.getAllByLabelText('Select this spool')[0]);
+    expect(await screen.findByText('1 selected')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+
+    // The handler serves the SAME rows on page 2, so if the clear were
+    // removed the still-selected id would keep the bar reading "1 selected"
+    // — this waitFor would time out (verified red under exactly that
+    // mutation).
+    await waitFor(() => expect(screen.queryByText('1 selected')).not.toBeInTheDocument());
+  });
+
+  it('an out-of-range clamp drops the selection with the page — the twice-shipped library bug', async () => {
+    const state = { lastPage: 2, total: 30 };
+    useMultiPagePool(state);
+    render(<InventoryPageRouter />);
+    await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
+
+    // Land on page 2 while it legitimately exists.
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    await waitFor(() =>
+      expect(pageRequests().some((u) => u.searchParams.get('page') === '2')).toBe(true)
+    );
+
+    // Arm a selection on the later page.
+    fireEvent.click(screen.getAllByLabelText('Select this spool')[0]);
+    expect(await screen.findByText('1 selected')).toBeInTheDocument();
+
+    // The inventory shrinks under us; the next background refetch (driven
+    // deterministically through the same focusManager transition a real
+    // window refocus produces) answers page 2 with last_page=1 → the
+    // render-phase clamp must reset the page AND drop the selection.
+    state.lastPage = 1;
+    state.total = 2;
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+
+    await waitFor(() => expect(screen.queryByText('1 selected')).not.toBeInTheDocument());
+    // And the clamp corrected the page — the follow-up request asks page 1.
+    await waitFor(() => {
+      const reqs = pageRequests();
+      expect(reqs[reqs.length - 1].searchParams.get('page')).toBe('1');
+    });
   });
 });

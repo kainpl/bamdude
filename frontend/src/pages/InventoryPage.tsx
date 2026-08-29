@@ -2717,7 +2717,14 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                     </th>
                     {renderColumns.map((colId) => {
                       const sortable = isColumnSortable(colId);
-                      const isActive = sortState?.column === colId;
+                      // `&& sortable`: a PERSISTED sort outside grouped mode's
+                      // key subset stays in state deliberately — serverSortBy
+                      // already drops it from the request, and turning Group
+                      // off restores the user's sort exactly; sanitizing it
+                      // away on load would destroy that preference. The tint
+                      // just must not claim a sort the list isn't applying
+                      // (review round 2, finding 2).
+                      const isActive = sortable && sortState?.column === colId;
                       return (
                         <th
                           key={colId}
