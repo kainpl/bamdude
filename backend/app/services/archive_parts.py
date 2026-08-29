@@ -82,3 +82,14 @@ async def refresh_archive_parts(archive_id: int) -> None:
             await db.commit()
     except Exception as e:  # noqa: BLE001
         logger.warning("refresh_archive_parts failed for archive %s: %s", archive_id, e)
+
+
+def apply_flat_defective(rows: list[PrintArchivePart], flat: int) -> bool:
+    """Backfill rule: a plate holding copies of exactly ONE part can adopt the
+    legacy flat defective_count as that part's scrap (capped at quantity).
+    A multi-part plate cannot — we don't know which part went in the bin.
+    """
+    if flat <= 0 or len(rows) != 1:
+        return False
+    rows[0].defective = min(flat, rows[0].quantity)
+    return True

@@ -149,3 +149,22 @@ async def test_attach_seeds_rows_on_a_fallback_archive(db_session, tmp_path, pri
     assert ok
     rows = await _rows(db_session, archive.id)
     assert [r.name_key for r in rows] == ["lid"]
+
+
+def test_flat_defective_attributes_only_on_a_mono_part_plate():
+    from backend.app.services.archive_parts import apply_flat_defective
+
+    lid = PrintArchivePart(archive_id=1, name="lid", name_key="lid", identify_ids=[1, 2, 3], quantity=3)
+    assert apply_flat_defective([lid], 2) is True
+    assert lid.defective == 2
+
+    lid2 = PrintArchivePart(archive_id=1, name="lid", name_key="lid", identify_ids=[1], quantity=1)
+    assert apply_flat_defective([lid2], 5) is True
+    assert lid2.defective == 1, "capped at quantity"
+
+    a = PrintArchivePart(archive_id=1, name="a", name_key="a", identify_ids=[1], quantity=1)
+    b = PrintArchivePart(archive_id=1, name="b", name_key="b", identify_ids=[2], quantity=1)
+    assert apply_flat_defective([a, b], 1) is False, "multi-part plates stay unattributed"
+    assert (a.defective or 0) == 0 and (b.defective or 0) == 0
+
+    assert apply_flat_defective([], 3) is False
