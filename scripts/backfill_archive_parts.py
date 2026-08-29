@@ -11,6 +11,7 @@ Skips archives that already have part rows. After seeding, the legacy flat
 
 import argparse
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -24,9 +25,11 @@ from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.archive_part import PrintArchivePart  # noqa: E402
 from backend.app.services.archive_parts import apply_flat_defective, seed_archive_parts  # noqa: E402
 
+logger = logging.getLogger(__name__)
+
 
 async def main(dry_run: bool) -> None:
-    seeded = attributed = skipped = missing = 0
+    seeded = attributed = skipped = missing = no_parts = failed = 0
     async with async_session() as db:
         archives = (
             (
@@ -50,22 +53,30 @@ async def main(dry_run: bool) -> None:
             if not path.is_file():
                 missing += 1
                 continue
-            await seed_archive_parts(db, archive, path.read_bytes())
-            await db.flush()
-            rows = (
-                (await db.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id == archive.id)))
-                .scalars()
-                .all()
-            )
-            if rows:
-                seeded += 1
-                if apply_flat_defective(rows, archive.defective_count or 0):
-                    attributed += 1
+            try:
+                await seed_archive_parts(db, archive, path.read_bytes())
+                rows = (
+                    (await db.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id == archive.id)))
+                    .scalars()
+                    .all()
+                )
+                if rows:
+                    seeded += 1
+                    if apply_flat_defective(rows, archive.defective_count or 0):
+                        attributed += 1
+                else:
+                    no_parts += 1
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                logger.warning("Failed to backfill archive %s: %s", archive.id, e)
         if dry_run:
             await db.rollback()
         else:
             await db.commit()
-    print(f"seeded={seeded} defect_attributed={attributed} already_had_rows={skipped} file_missing={missing}")
+    print(
+        f"seeded={seeded} defect_attributed={attributed} already_had_rows={skipped} file_missing={missing} "
+        f"no_parts={no_parts} failed={failed}"
+    )
 
 
 if __name__ == "__main__":
