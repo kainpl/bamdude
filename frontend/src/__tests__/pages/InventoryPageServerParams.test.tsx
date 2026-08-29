@@ -248,6 +248,87 @@ describe('InventoryPage — server-driven params (task 4)', () => {
     await waitFor(() => expect(screen.getByText('Bulk edit spools')).toBeInTheDocument());
   });
 
+  it('a FAILED id fetch leaves the reset dialog dismissable — and refuses to post an empty list', async () => {
+    // Review finding 2. ConfirmModal treats `isLoading` as modal-WIDE: it
+    // disables Cancel as well as Confirm, swallows Escape and nulls the
+    // backdrop click. A failed fetch settles with `data === undefined`
+    // forever, so gating on data alone left the dialog with two dead buttons
+    // and no way out but a page reload — losing filters and selection.
+    let resetPosts = 0;
+    server.use(
+      http.get('/api/v1/inventory/stats', () =>
+        HttpResponse.json({ ...STATS, total_consumed_g: 1234, total_spools: 2 })
+      ),
+      http.get('/api/v1/inventory/spools', ({ request }) => {
+        const url = new URL(request.url);
+        if (url.searchParams.get('all') === 'true') return new HttpResponse(null, { status: 500 });
+        if (!url.searchParams.has('page')) return HttpResponse.json(SPOOLS);
+        listRequests.push(url);
+        return HttpResponse.json({
+          items: SPOOLS.map((s) => ({ ...s, k_profile_count: 0, k_profiles: null })),
+          meta: { total: SPOOLS.length, current_page: 1, per_page: 24, last_page: 1 },
+        });
+      }),
+      http.post('/api/v1/inventory/spools/reset-consumed-counter-bulk', () => {
+        resetPosts += 1;
+        return HttpResponse.json({ reset: 0 });
+      })
+    );
+    render(<InventoryPageRouter />);
+
+    fireEvent.click(await screen.findByLabelText('Reset all counters'));
+    const cancel = await screen.findByRole('button', { name: 'Cancel' });
+    // The query's one retry has to burn before it settles into error.
+    await waitFor(() => expect(cancel).toBeEnabled(), { timeout: 5000 });
+
+    // Confirming in this state must not report success over nothing…
+    fireEvent.click(screen.getByRole('button', { name: 'Reset counter' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull());
+    expect(resetPosts).toBe(0);
+
+    // …and the way out is a working Cancel, not a page reload.
+    fireEvent.click(await screen.findByLabelText('Reset all counters'));
+    const cancelAgain = await screen.findByRole('button', { name: 'Cancel' });
+    await waitFor(() => expect(cancelAgain).toBeEnabled(), { timeout: 5000 });
+    fireEvent.click(cancelAgain);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull());
+  });
+
+  it('a FAILED full-set fetch makes "Bulk edit" say so instead of dying silently', async () => {
+    // Review finding 3, the twin of the loading guards: "error is not
+    // loading". The modal renders nothing until the set arrives, so without
+    // this the button simply stops responding — and re-clicking it re-sets
+    // state it already holds, so nothing re-renders and nothing refetches.
+    let fullSetAttempts = 0;
+    server.use(
+      http.get('/api/v1/inventory/spools', ({ request }) => {
+        const url = new URL(request.url);
+        if (url.searchParams.get('all') === 'true') {
+          fullSetAttempts += 1;
+          return new HttpResponse(null, { status: 500 });
+        }
+        if (!url.searchParams.has('page')) return HttpResponse.json(SPOOLS);
+        listRequests.push(url);
+        return HttpResponse.json({
+          items: SPOOLS.map((s) => ({ ...s, k_profile_count: 0, k_profiles: null })),
+          meta: { total: SPOOLS.length, current_page: 1, per_page: 24, last_page: 1 },
+        });
+      })
+    );
+    render(<InventoryPageRouter />);
+    await waitFor(() => expect(pageRequests().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: /Bulk edit/ }));
+    expect(await screen.findByText('Bulk action failed')).toBeInTheDocument();
+    expect(screen.queryByText('Bulk edit spools')).toBeNull();
+
+    // And the button is live again: closing on the error disables the query,
+    // so the next click re-enables it and a fresh attempt starts.
+    const attemptsAfterFirst = fullSetAttempts;
+    fireEvent.click(screen.getByRole('button', { name: /Bulk edit/ }));
+    await waitFor(() => expect(fullSetAttempts).toBeGreaterThan(attemptsAfterFirst), { timeout: 5000 });
+  });
+
   it('"Reset all counters" offers itself off the SERVED count and fetches its ids only once armed', async () => {
     // The button used to be gated on a fetched id list — which is why the
     // list had to be fetched on every visit. It now reads the served counts,

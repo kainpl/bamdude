@@ -1050,6 +1050,19 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     enabled: serverMode && (showBulkEdit || resetAllArmed),
   });
 
+  // Bulk edit renders nothing until the set arrives, so a FAILED fetch would
+  // leave the button silently dead — clicking it again re-sets `showBulkEdit`
+  // to the value it already holds, which re-renders nothing and refetches
+  // nothing. Say so and close: dropping `showBulkEdit` disables the query, so
+  // the next click re-enables it and TanStack starts a fresh attempt. ("Error
+  // is not loading" — the twin of the loading guards above.)
+  useEffect(() => {
+    if (showBulkEdit && fullSpoolSetQuery.isError) {
+      showToast(t('inventory.bulk.failedGeneric'), 'error');
+      setShowBulkEdit(false);
+    }
+  }, [showBulkEdit, fullSpoolSetQuery.isError, showToast, t]);
+
   // The label picker's candidate pool: the CURRENT FILTERED SET (every page
   // of it), fetched once when the picker opens — so "print labels for
   // everything matching my filter" still spans pages, exactly what the old
@@ -1340,7 +1353,15 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // The ids arrive only once the confirmation is armed — the dialog stays in
   // its loading state until then, so a fast click cannot fire the mutation
   // with an empty id list and report "0 reset".
-  const resetAllIdsPending = resetAllArmed && serverMode && fullSpoolSetQuery.data === undefined;
+  //
+  // ⚠️ `isError` MUST stay in this condition. ConfirmModal treats `isLoading`
+  // as modal-WIDE: it disables Cancel as well as Confirm, swallows Escape and
+  // nulls the backdrop click. A failed fetch settles with `data === undefined`
+  // forever, so without the error edge the dialog becomes undismissable and
+  // the page needs a reload. The empty-list refusal in `onConfirm` below is
+  // what keeps the "never fire []" property once the buttons come back.
+  const resetAllIdsPending =
+    resetAllArmed && serverMode && fullSpoolSetQuery.data === undefined && !fullSpoolSetQuery.isError;
 
   // Low stock threshold from backend settings
   const lowStockThreshold = settings?.low_stock_threshold ?? 20;
@@ -1358,6 +1379,15 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     mutationFn: (threshold: number) => api.updateSettings({ low_stock_threshold: threshold }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
+      // The low-stock COUNT is served now (task 5), so the threshold is no
+      // longer a memo dependency that recomputes it for free — this is the one
+      // mutation on the page that changes what the server would answer without
+      // touching a spool, so it must invalidate the spool prefix like every
+      // other one. Without it the card reads "3" under a caption saying
+      // "< 60%", which is exactly when the number is being read. The prefix
+      // also carries the `usage=lowstock` LIST filter, whose query key has no
+      // threshold in it either.
+      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
       showToast(t('common.saved'), 'success');
       setShowThresholdInput(false);
     },
@@ -2964,6 +2994,14 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             } else if (confirmAction.type === 'reset-consumed-counter') {
               resetConsumedCounterMutation.mutate(confirmAction.spoolId);
             } else {
+              // The id fetch can have failed (the buttons are live again in
+              // that state, deliberately — see `resetAllIdsPending`). Posting
+              // an empty list would report "0 counters reset" as a success.
+              if (resetableSpoolIds.length === 0) {
+                showToast(t('inventory.bulk.failedGeneric'), 'error');
+                setConfirmAction(null);
+                return;
+              }
               bulkResetConsumedCounterMutation.mutate(resetableSpoolIds);
             }
             setConfirmAction(null);

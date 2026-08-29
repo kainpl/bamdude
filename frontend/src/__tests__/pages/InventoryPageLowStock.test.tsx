@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import InventoryPageRouter from '../../pages/InventoryPage';
@@ -170,22 +170,37 @@ const mockSpools = [
   },
 ];
 
+/** The threshold the fake server currently holds. The stats handler computes
+ *  `low_stock_count` from it, so the CARD moves when the setting moves —
+ *  exactly as the real endpoint does. A hardcoded count would leave this
+ *  suite pinning only the "< N%" caption, and the caption and the count are
+ *  two answers to the same question (review finding 1). */
+let currentThreshold = 20;
+
+/** The Low Stock stat card, reached from its "< N%" caption — the one text on
+ *  the page unique to it ("Low Stock" alone also matches the usage filter's
+ *  option). Scoping matters: the other stat cards render bare numbers too. */
+const lowStockCard = (caption: RegExp) =>
+  screen.getByText(caption).closest('.bg-bambu-dark-secondary') as HTMLElement;
+
 describe('InventoryPage - Low Stock Threshold', () => {
   beforeEach(() => {
     // Clear localStorage to ensure we're not relying on it
     localStorage.clear();
+    currentThreshold = 20;
 
     server.use(
       http.get('/api/v1/settings/', () => {
-        return HttpResponse.json(mockSettings);
+        return HttpResponse.json({ ...mockSettings, low_stock_threshold: currentThreshold });
       }),
       http.put('/api/v1/settings/', async ({ request }) => {
         const body = (await request.json()) as Partial<typeof mockSettings>;
+        if (typeof body.low_stock_threshold === 'number') currentThreshold = body.low_stock_threshold;
         return HttpResponse.json({ ...mockSettings, ...body });
       }),
       // The stats bar is server-aggregated since task 5 (forecast-server-side)
-      // — the low-stock CARD reads this endpoint, while the "< N%" threshold
-      // beside it still comes from settings, which is what these tests pin.
+      // — the low-stock CARD reads this endpoint, while the "< N%" caption
+      // beside it comes from settings.
       http.get('/api/v1/inventory/stats', () =>
         HttpResponse.json({
           total_spools: mockSpools.length,
@@ -197,7 +212,9 @@ describe('InventoryPage - Low Stock Threshold', () => {
             { material: 'ABS', count: 1, remaining_g: 150 },
             { material: 'PLA', count: 1, remaining_g: 100 },
           ],
-          low_stock_count: 2,
+          low_stock_count: mockSpools.filter(
+            (s) => ((s.label_weight - s.weight_used) / s.label_weight) * 100 < currentThreshold
+          ).length,
         })
       ),
       // Server-driven paged list (task 4): the page's list sends `page` and
@@ -316,6 +333,32 @@ describe('InventoryPage - Low Stock Threshold', () => {
       await waitFor(() => {
         expect(updatedSettings).toEqual({ low_stock_threshold: 15.5 });
       });
+    });
+
+    it('re-reads the served COUNT after a save, not just the caption', async () => {
+      // Review finding 1. The count used to be a memo with the threshold in
+      // its dependency list, so it moved for free; served, it moves only if
+      // the save invalidates the spool prefix. Tuning the threshold *to find
+      // out how many spools are low* is the one moment this number is read,
+      // and a stale one contradicts the caption printed beside it.
+      const user = userEvent.setup();
+      render(<InventoryPageRouter />);
+
+      // 20% → the 10% and 15% spools.
+      await waitFor(() => expect(within(lowStockCard(/< 20%/i)).getByText('2')).toBeInTheDocument());
+
+      const editButton = screen
+        .getByText(/< 20%/i)
+        .parentElement!.querySelector('button[title]') as HTMLElement;
+      await user.click(editButton);
+      const input = screen.getByDisplayValue('20');
+      await user.clear(input);
+      await user.type(input, '85');
+      await user.click(screen.getByRole('button', { name: /save/i }));
+
+      // 85% takes the 80%-remaining spool in too — the caption AND the number.
+      await waitFor(() => expect(screen.getByText(/< 85%/i)).toBeInTheDocument());
+      await waitFor(() => expect(within(lowStockCard(/< 85%/i)).getByText('3')).toBeInTheDocument());
     });
 
     it('validates threshold input range', async () => {

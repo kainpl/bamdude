@@ -38,18 +38,21 @@ at the time of porting)::
       return { totalWeight, totalConsumed, lowStock, byMaterial, totalSpools: activeCount };
     }, [statsSourceSpools, lowStockThreshold]);
 
-Two fields on the response have no counterpart in the memo and exist because
-the SAME full-table fetch fed a second consumer:
+ONE field on the response has no counterpart in the memo, and it exists
+because the SAME full-table fetch fed a second consumer:
 
 * ``total_spools`` counts EVERY row, archived included — the memo's
-  ``totalSpools`` is the active count (served as ``active_spools``). The
+  ``totalSpools`` is the active count, served as ``active_spools``. The
   archived-inclusive count is what ``resetableSpoolIds.length`` supplied to the
   "Reset all usage" button's visibility gate and its confirmation count.
 
 ``lowStockThreshold`` in the memo is ``settings?.low_stock_threshold ?? 20``
 (``InventoryPage.tsx:1323``) — the same global the server resolves through
 ``usage_tracker._global_low_stock_threshold``, so the card, the ``lowstock``
-list filter and the ``filament_low`` notification cannot disagree.
+list filter and the ``filament_low`` notification cannot disagree. That
+"cannot" is pinned by :class:`TestLowStockAgreesWithTheListFilter` below, not
+merely argued: the two suites otherwise mirror each other case-for-case
+without ever meeting over one farm.
 """
 
 from __future__ import annotations
@@ -61,6 +64,7 @@ from httpx import AsyncClient
 
 from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
+from backend.app.services import inventory_service
 
 pytestmark = pytest.mark.asyncio
 
@@ -92,6 +96,15 @@ async def _spool(db, **kwargs) -> Spool:
 async def _set_global_threshold(db, pct: float) -> None:
     db.add(Settings(key="low_stock_threshold", value=str(pct)))
     await db.commit()
+
+
+async def _filtered_ids(db, **kwargs) -> list[int]:
+    """The ids the LIST filter returns — the `test_inventory_list_server_driven`
+    helper, borrowed so the card and the filter can be asked the same question
+    over one farm (see :class:`TestLowStockAgreesWithTheListFilter`)."""
+    filters = await inventory_service.build_spool_filters(db, **kwargs)
+    spools = await inventory_service.list_spools(db, filters=filters, limit=None)
+    return [s.id for s in spools]
 
 
 async def _limited_token(username: str, permissions: list[str]) -> str:
@@ -301,11 +314,68 @@ class TestInventoryStatsLowStock:
         assert body["total_spools"] == 1, "it is still counted as a row"
 
 
+class TestLowStockAgreesWithTheListFilter:
+    """The card and the ``usage=lowstock`` filter beside it, over ONE farm.
+
+    Both resolve the threshold through the same
+    ``usage_tracker._global_low_stock_threshold`` and build the same
+    ``coalesce(low_stock_threshold_pct, global)`` comparison against the same
+    ``_remaining_pct_expr()`` — one owner, no copy. But the two test suites
+    mirror each other case-for-case and never MEET, so a future edit to that
+    resolver could keep both green while the number on the card and the rows
+    the filter returns disagree by one. This is the meeting point.
+
+    The filter is asked with ``archived="active"`` because that is the card's
+    own scope (the memo's ``if (s.archived_at) continue``); comparing against
+    an unscoped filter would be comparing two different questions.
+    """
+
+    async def test_the_count_and_the_filtered_rows_are_the_same_spools(self, async_client: AsyncClient, db_session):
+        await _set_global_threshold(db_session, 20.0)
+        # Exactly ON the line — strict ``<`` puts it in NEITHER answer. This is
+        # the row a ``<=`` regression would move, and it would move it in only
+        # one of the two places if they ever stopped sharing the expression.
+        boundary = await _spool(db_session, brand="Boundary", weight_used=800.0)  # 20.0%
+        just_under = await _spool(db_session, brand="JustUnder", weight_used=801.0)  # 19.9% → low
+        override_low = await _spool(  # 30% remaining, but its own threshold is 50 → low
+            db_session, brand="Override", weight_used=700.0, low_stock_threshold_pct=50
+        )
+        await _spool(db_session, brand="Healthy", weight_used=100.0)  # 90% → not low
+        # Archived and nearly empty: outside BOTH answers, for two different
+        # reasons (the card live-gates, the filter is asked for the active tab).
+        await _spool(db_session, brand="Retired", weight_used=950.0, archived_at=_naive(NOW - timedelta(days=1)))
+
+        served = (await async_client.get(URL)).json()["low_stock_count"]
+        filtered = set(await _filtered_ids(db_session, usage="lowstock", archived="active"))
+
+        assert filtered == {just_under.id, override_low.id}
+        assert boundary.id not in filtered
+        assert served == len(filtered) == 2
+
+
 class TestInventoryStatsPermissions:
     async def test_inventory_read_opens_the_endpoint(self, async_client: AsyncClient):
         token = await _limited_token("statsreader", ["inventory:read"])
         rsp = await async_client.get(URL, headers={"Authorization": f"Bearer {token}"})
         assert rsp.status_code == 200, rsp.text
+
+    async def test_forecast_read_alone_is_403_because_stats_is_not_a_forecast_surface(self, async_client: AsyncClient):
+        """DELIBERATE, not an oversight. Spec §2.4 and the plan's Interfaces
+        block both specify ``RequirePermission(INVENTORY_READ)`` here — NOT the
+        ``RequireAnyPermission(INVENTORY_READ, INVENTORY_FORECAST_READ)`` pair
+        the four forecast endpoints carry. The stats bar is an inventory
+        surface that happens to ride along in this cycle.
+
+        The consequence is benign and unchanged from before the endpoint
+        existed: such a user's `serverStats` stays undefined, `stats` is null
+        and the bar simply does not render — the full-table feed this replaced
+        also required ``inventory:read``. Without this case, a later "make the
+        forecast endpoints consistent" sweep would widen the permission with no
+        test turning red.
+        """
+        token = await _limited_token("statsforecastonly", ["inventory:forecast_read"])
+        rsp = await async_client.get(URL, headers={"Authorization": f"Bearer {token}"})
+        assert rsp.status_code == 403, rsp.text
 
     async def test_no_permission_is_403(self, async_client: AsyncClient):
         token = await _limited_token("statsnoperms", [])
