@@ -4901,6 +4901,10 @@ export default {
       applyTotals: 'Застосувати до проекту',
       applyTotalsTitle: 'Застосувати до проекту: {{plates}} плит / {{parts}} деталей / бюджет {{budget}}',
     },
+    plan: {
+      plate: 'Стіл {{n}}',
+      allPlates: 'Всі столи',
+    },
     bom: {
       title: 'Специфікація матеріалів',
       acquired: '{{completed}}/{{total}} придбано',

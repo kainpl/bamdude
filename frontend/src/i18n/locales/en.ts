@@ -4860,6 +4860,10 @@ export default {
       applyTotals: 'Apply to project',
       applyTotalsTitle: 'Apply to project: {{plates}} plates / {{parts}} parts / budget {{budget}}',
     },
+    plan: {
+      plate: 'Plate {{n}}',
+      allPlates: 'All plates',
+    },
     bom: {
       title: 'Bill of Materials',
       acquired: '{{completed}}/{{total}} acquired',

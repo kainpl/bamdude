@@ -228,6 +228,10 @@ export function ProjectDetailPage() {
   const [notesContent, setNotesContent] = useState('');
   const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
   const [scheduleFile, setScheduleFile] = useState<LibraryFileListItem | null>(null);
+  // Which plate a print/queue action was pinned to — set only when the
+  // action came from a plate CHILD row; the parent's whole-file print/
+  // schedule leaves it null so PrintModal's sequencer offers every plate.
+  const [printPlate, setPrintPlate] = useState<number | null>(null);
 
   const projectId = parseInt(id || '0', 10);
 
@@ -303,9 +307,14 @@ export function ProjectDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['project-print-plan', projectId] });
   };
 
-  const updateCopiesMutation = useMutation({
-    mutationFn: ({ fileId, copies }: { fileId: number; copies: number }) =>
-      api.updatePrintPlanItem(projectId, fileId, copies),
+  // ⚠️ Keyed by the plan ITEM id, not the library file id — a file with
+  // several plate rows (Task 5) has one PrintPlanItem per plate, and the
+  // PATCH route addresses items/{itemId}. Passing library_file_id here
+  // silently PATCHed the wrong row (or a stale flat-file id) whenever a
+  // file had more than one plate.
+  const updatePlanItemMutation = useMutation({
+    mutationFn: ({ itemId, copies }: { itemId: number; copies: number }) =>
+      api.updatePrintPlanItem(projectId, itemId, copies),
     onSuccess: invalidatePlan,
     onError: (e: Error) => showToast(e.message, 'error'),
   });
@@ -330,12 +339,29 @@ export function ProjectDetailPage() {
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
+  // Two-level plan: group items by library_file_id, preserving plan order.
+  // A file with a single plate_index===0 row is a legacy/whole-file entry
+  // and renders flat; a file with real plate rows (Task 5) renders as one
+  // parent + its plate children. Reorder still operates on FILES — the
+  // API payload is a library_file_id list — so this is also what
+  // movePlanItem walks.
+  const fileGroups = useMemo(() => {
+    const order: number[] = [];
+    const byFile = new Map<number, PrintPlanItem[]>();
+    for (const item of printPlan?.items ?? []) {
+      if (!byFile.has(item.library_file_id)) {
+        byFile.set(item.library_file_id, []);
+        order.push(item.library_file_id);
+      }
+      byFile.get(item.library_file_id)!.push(item);
+    }
+    return order.map(fileId => ({ fileId, items: byFile.get(fileId)! }));
+  }, [printPlan]);
+
   const movePlanItem = (index: number, delta: -1 | 1) => {
-    if (!printPlan) return;
-    const items = printPlan.items;
     const target = index + delta;
-    if (target < 0 || target >= items.length) return;
-    const order = items.map(i => i.library_file_id);
+    if (target < 0 || target >= fileGroups.length) return;
+    const order = fileGroups.map(g => g.fileId);
     [order[index], order[target]] = [order[target], order[index]];
     reorderPlanMutation.mutate(order);
   };
@@ -348,13 +374,40 @@ export function ProjectDetailPage() {
     return map;
   }, [allProjectFiles]);
 
+  // Whole-file open (parent row / flat row): every plate goes through
+  // PrintModal's own sequencer, so no plate is pinned.
   const openPrint = (item: PrintPlanItem) => {
     const file = filesById.get(item.library_file_id);
-    if (file) setPrintFile(file);
+    if (file) {
+      setPrintPlate(null);
+      setPrintFile(file);
+    }
   };
   const openSchedule = (item: PrintPlanItem) => {
     const file = filesById.get(item.library_file_id);
-    if (file) setScheduleFile(file);
+    if (file) {
+      setPrintPlate(null);
+      setScheduleFile(file);
+    }
+  };
+
+  // Per-plate open (child row): pins PrintModal to this plate via
+  // preselectedPlateId. Queue reuses the same PrintModal, in its
+  // add-to-queue mode — there is no separate plate-aware schedule flow,
+  // so this IS the "closest existing mechanism".
+  const openPrintPlate = (item: PrintPlanItem) => {
+    const file = filesById.get(item.library_file_id);
+    if (file) {
+      setPrintPlate(item.plate_index);
+      setPrintFile(file);
+    }
+  };
+  const openSchedulePlate = (item: PrintPlanItem) => {
+    const file = filesById.get(item.library_file_id);
+    if (file) {
+      setPrintPlate(item.plate_index);
+      setScheduleFile(file);
+    }
   };
 
   const currency = getCurrencySymbol(settings?.currency || 'USD');
@@ -1204,193 +1257,439 @@ export function ProjectDetailPage() {
           ) : (
             <>
               <div className="space-y-1">
-                {printPlan.items.map((item, idx) => {
+                {fileGroups.map((group, idx) => {
                   const isFirst = idx === 0;
-                  const isLast = idx === printPlan.items.length - 1;
-                  const file = filesById.get(item.library_file_id);
-                  const printable = file ? isPrintable(file) : false;
-                  return (
-                    <div
-                      key={item.id}
-                      className="flex items-center gap-2 p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
-                    >
-                      {/* Reorder arrows */}
-                      <div className="flex flex-col gap-0.5 shrink-0">
-                        <button
-                          onClick={() => movePlanItem(idx, -1)}
-                          disabled={isFirst || reorderPlanMutation.isPending}
-                          title={t('projectDetail.files.moveUp')}
-                          className="p-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-                        >
-                          <ArrowUp className="w-3 h-3" />
-                        </button>
-                        <button
-                          onClick={() => movePlanItem(idx, 1)}
-                          disabled={isLast || reorderPlanMutation.isPending}
-                          title={t('projectDetail.files.moveDown')}
-                          className="p-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-                        >
-                          <ArrowDown className="w-3 h-3" />
-                        </button>
-                      </div>
+                  const isLast = idx === fileGroups.length - 1;
+                  const isFlat = group.items.length === 1 && group.items[0].plate_index === 0;
 
-                      {/* Thumbnail */}
-                      <div className="w-10 h-10 shrink-0 rounded bg-bambu-dark overflow-hidden flex items-center justify-center">
-                        {item.thumbnail_path ? (
-                          <img
-                            src={api.getLibraryFileThumbnailUrl(item.library_file_id)}
-                            alt={item.print_name || item.filename}
-                            className="w-full h-full object-contain"
-                          />
-                        ) : (
-                          <FileBox className="w-5 h-5 text-bambu-gray/40" />
-                        )}
-                      </div>
+                  const reorderArrows = (
+                    <div className="flex flex-col gap-0.5 shrink-0">
+                      <button
+                        onClick={() => movePlanItem(idx, -1)}
+                        disabled={isFirst || reorderPlanMutation.isPending}
+                        title={t('projectDetail.files.moveUp')}
+                        className="p-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                      >
+                        <ArrowUp className="w-3 h-3" />
+                      </button>
+                      <button
+                        onClick={() => movePlanItem(idx, 1)}
+                        disabled={isLast || reorderPlanMutation.isPending}
+                        title={t('projectDetail.files.moveDown')}
+                        className="p-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                      >
+                        <ArrowDown className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
 
-                      {/* Name + inline metadata */}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-white truncate" title={item.print_name || item.filename}>
-                          {item.print_name || item.filename}
-                        </p>
-                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                          <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-bambu-green/20 text-bambu-green">
-                            {item.file_type.toUpperCase()}
-                          </span>
-                          {item.total_filament_grams != null && item.total_filament_grams > 0 && (
-                            <span className="flex items-center gap-1 text-xs text-bambu-gray">
-                              <Package className="w-3 h-3" />
-                              {item.total_filament_grams.toFixed(1)}g
-                            </span>
-                          )}
-                          {item.total_objects != null && item.total_objects > 0 && (
-                            <span className="flex items-center gap-1 text-xs text-bambu-gray">
-                              <Box className="w-3 h-3" />
-                              {item.total_objects}
-                            </span>
-                          )}
-                          {item.total_print_time_seconds != null && item.total_print_time_seconds > 0 && (
-                            <span className="flex items-center gap-1 text-xs text-bambu-gray">
-                              <Clock className="w-3 h-3" />
-                              {formatDuration(item.total_print_time_seconds)}
-                            </span>
-                          )}
-                          {item.total_cost != null && item.total_cost > 0 && (
-                            <span className="flex items-center gap-1 text-xs text-bambu-gray">
-                              <Coins className="w-3 h-3" />
-                              {currency}{item.total_cost.toFixed(2)}
-                            </span>
+                  // Single-plate (or legacy) file: the flat row, unchanged.
+                  if (isFlat) {
+                    const item = group.items[0];
+                    const file = filesById.get(item.library_file_id);
+                    const printable = file ? isPrintable(file) : false;
+                    return (
+                      <div
+                        key={item.id}
+                        className="flex items-center gap-2 p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
+                      >
+                        {reorderArrows}
+
+                        {/* Thumbnail */}
+                        <div className="w-10 h-10 shrink-0 rounded bg-bambu-dark overflow-hidden flex items-center justify-center">
+                          {item.thumbnail_path ? (
+                            <img
+                              src={api.getLibraryFileThumbnailUrl(item.library_file_id)}
+                              alt={item.print_name || item.filename}
+                              className="w-full h-full object-contain"
+                            />
+                          ) : (
+                            <FileBox className="w-5 h-5 text-bambu-gray/40" />
                           )}
                         </div>
-                      </div>
 
-                      {/* Per-(project, file) progress — read-only.
-                          ``printed_count`` counts only completed archives
-                          attributed to this exact project, so a file in
-                          two projects keeps independent tallies. */}
-                      <div className="flex items-center gap-2 shrink-0 text-sm tabular-nums">
-                        <span
-                          className="flex items-center gap-1 text-bambu-green"
-                          title={t('projectDetail.files.printed')}
-                        >
-                          <CheckCircle className="w-4 h-4" />
-                          {item.printed_count}
-                        </span>
-                        <span
-                          className="flex items-center gap-1 text-bambu-gray"
-                          title={t('projectDetail.files.remaining')}
-                        >
-                          <ListTodo className="w-4 h-4" />
-                          {item.remaining_count}
-                        </span>
-                      </div>
+                        {/* Name + inline metadata */}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-white truncate" title={item.print_name || item.filename}>
+                            {item.print_name || item.filename}
+                          </p>
+                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                            <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-bambu-green/20 text-bambu-green">
+                              {item.file_type.toUpperCase()}
+                            </span>
+                            {item.total_filament_grams != null && item.total_filament_grams > 0 && (
+                              <span className="flex items-center gap-1 text-xs text-bambu-gray">
+                                <Package className="w-3 h-3" />
+                                {item.total_filament_grams.toFixed(1)}g
+                              </span>
+                            )}
+                            {item.total_objects != null && item.total_objects > 0 && (
+                              <span className="flex items-center gap-1 text-xs text-bambu-gray">
+                                <Box className="w-3 h-3" />
+                                {item.total_objects}
+                              </span>
+                            )}
+                            {item.total_print_time_seconds != null && item.total_print_time_seconds > 0 && (
+                              <span className="flex items-center gap-1 text-xs text-bambu-gray">
+                                <Clock className="w-3 h-3" />
+                                {formatDuration(item.total_print_time_seconds)}
+                              </span>
+                            )}
+                            {item.total_cost != null && item.total_cost > 0 && (
+                              <span className="flex items-center gap-1 text-xs text-bambu-gray">
+                                <Coins className="w-3 h-3" />
+                                {currency}{item.total_cost.toFixed(2)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
 
-                      {/* Copies stepper */}
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          onClick={() =>
-                            updateCopiesMutation.mutate({
-                              fileId: item.library_file_id,
-                              copies: Math.max(1, item.copies - 1),
-                            })
-                          }
-                          disabled={item.copies <= 1 || updateCopiesMutation.isPending}
-                          title={t('projectDetail.files.copies')}
-                          className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-                        >
-                          <Minus className="w-3.5 h-3.5" />
-                        </button>
-                        {/* Editable count: type a number, commit on blur/Enter.
-                            Uncontrolled + keyed on the server value so a
-                            confirmed mutation remounts the field fresh and a
-                            discarded edit falls back to what the server holds. */}
-                        <span className="flex items-center text-sm text-white font-medium" title={t('projectDetail.files.copies')}>
-                          ×
-                          <input
-                            key={`${item.library_file_id}:${item.copies}`}
-                            type="number"
-                            min={1}
-                            max={999}
-                            defaultValue={item.copies}
-                            disabled={updateCopiesMutation.isPending}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') e.currentTarget.blur();
-                            }}
-                            onBlur={(e) => {
-                              const v = parseInt(e.currentTarget.value, 10);
-                              const next = Number.isFinite(v) ? Math.min(999, Math.max(1, v)) : item.copies;
-                              if (next !== item.copies) {
-                                updateCopiesMutation.mutate({ fileId: item.library_file_id, copies: next });
-                              } else {
-                                e.currentTarget.value = String(item.copies);
-                              }
-                            }}
-                            className="w-10 text-center text-sm text-white font-medium tabular-nums bg-transparent border border-transparent hover:border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none rounded disabled:opacity-50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                          />
-                        </span>
-                        <button
-                          onClick={() =>
-                            updateCopiesMutation.mutate({
-                              fileId: item.library_file_id,
-                              copies: item.copies + 1,
-                            })
-                          }
-                          disabled={updateCopiesMutation.isPending}
-                          title={t('projectDetail.files.copies')}
-                          className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                        {/* Per-(project, file) progress — read-only.
+                            ``printed_count`` counts only completed archives
+                            attributed to this exact project, so a file in
+                            two projects keeps independent tallies. */}
+                        <div className="flex items-center gap-2 shrink-0 text-sm tabular-nums">
+                          <span
+                            className="flex items-center gap-1 text-bambu-green"
+                            title={t('projectDetail.files.printed')}
+                          >
+                            <CheckCircle className="w-4 h-4" />
+                            {item.printed_count}
+                          </span>
+                          <span
+                            className="flex items-center gap-1 text-bambu-gray"
+                            title={t('projectDetail.files.remaining')}
+                          >
+                            <ListTodo className="w-4 h-4" />
+                            {item.remaining_count}
+                          </span>
+                        </div>
 
-                      {/* Print actions for sliced files */}
-                      {printable && (
+                        {/* Copies stepper */}
                         <div className="flex items-center gap-1 shrink-0">
                           <button
-                            onClick={() => openPrint(item)}
-                            title={t('projectDetail.files.print')}
-                            className="p-1.5 rounded hover:bg-bambu-green/20 text-bambu-green transition-colors"
+                            onClick={() =>
+                              updatePlanItemMutation.mutate({
+                                itemId: item.id,
+                                copies: Math.max(1, item.copies - 1),
+                              })
+                            }
+                            disabled={item.copies <= 1 || updatePlanItemMutation.isPending}
+                            title={t('projectDetail.files.copies')}
+                            className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
                           >
-                            <Play className="w-4 h-4" />
+                            <Minus className="w-3.5 h-3.5" />
                           </button>
+                          {/* Editable count: type a number, commit on blur/Enter.
+                              Uncontrolled + keyed on the server value so a
+                              confirmed mutation remounts the field fresh and a
+                              discarded edit falls back to what the server holds. */}
+                          <span className="flex items-center text-sm text-white font-medium" title={t('projectDetail.files.copies')}>
+                            ×
+                            <input
+                              key={`${item.id}:${item.copies}`}
+                              type="number"
+                              min={1}
+                              max={999}
+                              defaultValue={item.copies}
+                              disabled={updatePlanItemMutation.isPending}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') e.currentTarget.blur();
+                              }}
+                              onBlur={(e) => {
+                                const v = parseInt(e.currentTarget.value, 10);
+                                const next = Number.isFinite(v) ? Math.min(999, Math.max(1, v)) : item.copies;
+                                if (next !== item.copies) {
+                                  updatePlanItemMutation.mutate({ itemId: item.id, copies: next });
+                                } else {
+                                  e.currentTarget.value = String(item.copies);
+                                }
+                              }}
+                              className="w-10 text-center text-sm text-white font-medium tabular-nums bg-transparent border border-transparent hover:border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none rounded disabled:opacity-50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            />
+                          </span>
                           <button
-                            onClick={() => openSchedule(item)}
-                            title={t('projectDetail.files.addToQueue')}
-                            className="p-1.5 rounded hover:bg-blue-500/20 text-blue-700 dark:text-blue-400 transition-colors"
+                            onClick={() =>
+                              updatePlanItemMutation.mutate({
+                                itemId: item.id,
+                                copies: item.copies + 1,
+                              })
+                            }
+                            disabled={updatePlanItemMutation.isPending}
+                            title={t('projectDetail.files.copies')}
+                            className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
                           >
-                            <CalendarPlus className="w-4 h-4" />
+                            <Plus className="w-3.5 h-3.5" />
                           </button>
                         </div>
-                      )}
 
-                      {/* Unlink from project — backend sync removes the plan row */}
-                      <button
-                        onClick={() => unlinkFileMutation.mutate(item.library_file_id)}
-                        disabled={unlinkFileMutation.isPending}
-                        title={t('projectDetail.files.unlinkFile')}
-                        className="p-1.5 rounded hover:bg-red-500/20 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent transition-colors shrink-0"
+                        {/* Print actions for sliced files */}
+                        {printable && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() => openPrint(item)}
+                              title={t('projectDetail.files.print')}
+                              className="p-1.5 rounded hover:bg-bambu-green/20 text-bambu-green transition-colors"
+                            >
+                              <Play className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => openSchedule(item)}
+                              title={t('projectDetail.files.addToQueue')}
+                              className="p-1.5 rounded hover:bg-blue-500/20 text-blue-700 dark:text-blue-400 transition-colors"
+                            >
+                              <CalendarPlus className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Unlink from project — backend sync removes the plan row */}
+                        <button
+                          onClick={() => unlinkFileMutation.mutate(item.library_file_id)}
+                          disabled={unlinkFileMutation.isPending}
+                          title={t('projectDetail.files.unlinkFile')}
+                          className="p-1.5 rounded hover:bg-red-500/20 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent transition-colors shrink-0"
+                        >
+                          <Unlink className="w-4 h-4" />
+                        </button>
+                      </div>
+                    );
+                  }
+
+                  // Multi-plate file: one parent row (whole-file controls +
+                  // totals summed across its plates) plus a child row per
+                  // plate — own copies, own printed/remaining, own
+                  // print+queue pinned to that plate.
+                  const first = group.items[0];
+                  const file = filesById.get(group.fileId);
+                  const printable = file ? isPrintable(file) : false;
+                  const summed = group.items.reduce(
+                    (acc, i) => ({
+                      filament: acc.filament + (i.total_filament_grams ?? 0),
+                      objects: acc.objects + (i.total_objects ?? 0),
+                      time: acc.time + (i.total_print_time_seconds ?? 0),
+                      cost: acc.cost + (i.total_cost ?? 0),
+                      printed: acc.printed + i.printed_count,
+                      remaining: acc.remaining + i.remaining_count,
+                    }),
+                    { filament: 0, objects: 0, time: 0, cost: 0, printed: 0, remaining: 0 },
+                  );
+
+                  return (
+                    <div key={group.fileId} className="space-y-0.5">
+                      <div
+                        data-testid={`plan-parent-${group.fileId}`}
+                        className="flex items-center gap-2 p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
                       >
-                        <Unlink className="w-4 h-4" />
-                      </button>
+                        {reorderArrows}
+
+                        {/* Thumbnail */}
+                        <div className="w-10 h-10 shrink-0 rounded bg-bambu-dark overflow-hidden flex items-center justify-center">
+                          {first.thumbnail_path ? (
+                            <img
+                              src={api.getLibraryFileThumbnailUrl(group.fileId)}
+                              alt={first.print_name || first.filename}
+                              className="w-full h-full object-contain"
+                            />
+                          ) : (
+                            <FileBox className="w-5 h-5 text-bambu-gray/40" />
+                          )}
+                        </div>
+
+                        {/* Name + summed metadata */}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-white truncate" title={first.print_name || first.filename}>
+                            {first.print_name || first.filename}
+                          </p>
+                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                            <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-bambu-green/20 text-bambu-green">
+                              {first.file_type.toUpperCase()}
+                            </span>
+                            <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-bambu-dark text-bambu-gray">
+                              {t('projectDetail.plan.allPlates')} · {group.items.length}
+                            </span>
+                            {summed.filament > 0 && (
+                              <span className="flex items-center gap-1 text-xs text-bambu-gray">
+                                <Package className="w-3 h-3" />
+                                {summed.filament.toFixed(1)}g
+                              </span>
+                            )}
+                            {summed.objects > 0 && (
+                              <span className="flex items-center gap-1 text-xs text-bambu-gray">
+                                <Box className="w-3 h-3" />
+                                {summed.objects}
+                              </span>
+                            )}
+                            {summed.time > 0 && (
+                              <span className="flex items-center gap-1 text-xs text-bambu-gray">
+                                <Clock className="w-3 h-3" />
+                                {formatDuration(summed.time)}
+                              </span>
+                            )}
+                            {summed.cost > 0 && (
+                              <span className="flex items-center gap-1 text-xs text-bambu-gray">
+                                <Coins className="w-3 h-3" />
+                                {currency}{summed.cost.toFixed(2)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Summed per-(project, file) progress — read-only */}
+                        <div className="flex items-center gap-2 shrink-0 text-sm tabular-nums">
+                          <span
+                            className="flex items-center gap-1 text-bambu-green"
+                            title={t('projectDetail.files.printed')}
+                          >
+                            <CheckCircle className="w-4 h-4" />
+                            {summed.printed}
+                          </span>
+                          <span
+                            className="flex items-center gap-1 text-bambu-gray"
+                            title={t('projectDetail.files.remaining')}
+                          >
+                            <ListTodo className="w-4 h-4" />
+                            {summed.remaining}
+                          </span>
+                        </div>
+
+                        {/* Whole-file print/schedule — PrintModal's own
+                            sequencer offers every plate; not plate-pinned. */}
+                        {printable && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() => openPrint(first)}
+                              title={t('projectDetail.files.print')}
+                              className="p-1.5 rounded hover:bg-bambu-green/20 text-bambu-green transition-colors"
+                            >
+                              <Play className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => openSchedule(first)}
+                              title={t('projectDetail.files.addToQueue')}
+                              className="p-1.5 rounded hover:bg-blue-500/20 text-blue-700 dark:text-blue-400 transition-colors"
+                            >
+                              <CalendarPlus className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Unlink from project — backend sync removes every plate row */}
+                        <button
+                          onClick={() => unlinkFileMutation.mutate(group.fileId)}
+                          disabled={unlinkFileMutation.isPending}
+                          title={t('projectDetail.files.unlinkFile')}
+                          className="p-1.5 rounded hover:bg-red-500/20 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent transition-colors shrink-0"
+                        >
+                          <Unlink className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {group.items.map((item) => (
+                        <div
+                          key={item.id}
+                          data-testid={`plan-plate-${item.id}`}
+                          className="flex items-center gap-2 py-1.5 pl-10 pr-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
+                        >
+                          <span className="text-xs text-bambu-gray w-20 shrink-0">
+                            {t('projectDetail.plan.plate', { n: item.plate_index })}
+                          </span>
+
+                          {/* Own printed/remaining for this plate */}
+                          <div className="flex-1 min-w-0 flex items-center gap-2 text-sm tabular-nums">
+                            <span
+                              className="flex items-center gap-1 text-bambu-green"
+                              title={t('projectDetail.files.printed')}
+                            >
+                              <CheckCircle className="w-3.5 h-3.5" />
+                              {item.printed_count}
+                            </span>
+                            <span
+                              className="flex items-center gap-1 text-bambu-gray"
+                              title={t('projectDetail.files.remaining')}
+                            >
+                              <ListTodo className="w-3.5 h-3.5" />
+                              {item.remaining_count}
+                            </span>
+                          </div>
+
+                          {/* Copies stepper — own to this plate */}
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() =>
+                                updatePlanItemMutation.mutate({
+                                  itemId: item.id,
+                                  copies: Math.max(1, item.copies - 1),
+                                })
+                              }
+                              disabled={item.copies <= 1 || updatePlanItemMutation.isPending}
+                              title={t('projectDetail.files.copies')}
+                              className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                            >
+                              <Minus className="w-3.5 h-3.5" />
+                            </button>
+                            <span className="flex items-center text-sm text-white font-medium" title={t('projectDetail.files.copies')}>
+                              ×
+                              <input
+                                key={`${item.id}:${item.copies}`}
+                                type="number"
+                                min={1}
+                                max={999}
+                                defaultValue={item.copies}
+                                disabled={updatePlanItemMutation.isPending}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') e.currentTarget.blur();
+                                }}
+                                onBlur={(e) => {
+                                  const v = parseInt(e.currentTarget.value, 10);
+                                  const next = Number.isFinite(v) ? Math.min(999, Math.max(1, v)) : item.copies;
+                                  if (next !== item.copies) {
+                                    updatePlanItemMutation.mutate({ itemId: item.id, copies: next });
+                                  } else {
+                                    e.currentTarget.value = String(item.copies);
+                                  }
+                                }}
+                                className="w-10 text-center text-sm text-white font-medium tabular-nums bg-transparent border border-transparent hover:border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none rounded disabled:opacity-50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              />
+                            </span>
+                            <button
+                              onClick={() =>
+                                updatePlanItemMutation.mutate({
+                                  itemId: item.id,
+                                  copies: item.copies + 1,
+                                })
+                              }
+                              disabled={updatePlanItemMutation.isPending}
+                              title={t('projectDetail.files.copies')}
+                              className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
+                          {/* Print/queue pinned to THIS plate */}
+                          {printable && (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                data-testid={`plan-plate-print-${item.id}`}
+                                onClick={() => openPrintPlate(item)}
+                                title={t('projectDetail.files.print')}
+                                className="p-1.5 rounded hover:bg-bambu-green/20 text-bambu-green transition-colors"
+                              >
+                                <Play className="w-4 h-4" />
+                              </button>
+                              <button
+                                data-testid={`plan-plate-queue-${item.id}`}
+                                onClick={() => openSchedulePlate(item)}
+                                title={t('projectDetail.files.addToQueue')}
+                                className="p-1.5 rounded hover:bg-blue-500/20 text-blue-700 dark:text-blue-400 transition-colors"
+                              >
+                                <CalendarPlus className="w-4 h-4" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   );
                 })}
@@ -1947,31 +2246,44 @@ export function ProjectDetailPage() {
         />
       )}
 
-      {/* Print directly from project - reprint mode (closes #930) */}
+      {/* Print directly from project - reprint mode (closes #930).
+          preselectedPlateId is null for the whole-file (parent/flat) print
+          button — PrintModal's own sequencer then offers every plate —
+          and set for a plate child row's print button. */}
       {printFile && (
         <PrintModal
           mode="reprint"
           libraryFileId={printFile.id}
           archiveName={printFile.print_name || printFile.filename}
           projectId={projectId}
-          onClose={() => setPrintFile(null)}
+          preselectedPlateId={printPlate ?? undefined}
+          onClose={() => {
+            setPrintFile(null);
+            setPrintPlate(null);
+          }}
           onSuccess={() => {
             setPrintFile(null);
+            setPrintPlate(null);
             queryClient.invalidateQueries({ queryKey: ['archives'] });
           }}
         />
       )}
 
-      {/* Add to queue from project */}
+      {/* Add to queue from project — same plate-pin as reprint above. */}
       {scheduleFile && (
         <PrintModal
           mode="add-to-queue"
           libraryFileId={scheduleFile.id}
           archiveName={scheduleFile.print_name || scheduleFile.filename}
           projectId={projectId}
-          onClose={() => setScheduleFile(null)}
+          preselectedPlateId={printPlate ?? undefined}
+          onClose={() => {
+            setScheduleFile(null);
+            setPrintPlate(null);
+          }}
           onSuccess={() => {
             setScheduleFile(null);
+            setPrintPlate(null);
             queryClient.invalidateQueries({ queryKey: ['queue'] });
           }}
         />
