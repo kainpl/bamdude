@@ -710,6 +710,60 @@ class TestLibraryFilesAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_list_files_legacy_default_order_vs_explicit_name_asc(
+        self, async_client: AsyncClient, folder_factory, file_factory, db_session
+    ):
+        """The bug this pins: a bare legacy call (`sort_by` omitted entirely)
+        must keep exactly today's `ORDER BY filename` — NOT the `name_asc`
+        default value's `COALESCE(print_name, filename)` — since `sort_by`
+        can't tell "omitted" apart from "explicitly name_asc" unless the route
+        treats them as separate branches. Seeded so filename-order and
+        coalesce-order actively DISAGREE (mixed print_name presence — common,
+        not an edge case): the SAME three files, called two ways, must come
+        back in two DIFFERENT orders."""
+        folder = await folder_factory()
+        # Filename sorts this FIRST, but its print_name would sort it LAST
+        # under coalesce.
+        low_name_high_print = await file_factory(
+            folder_id=folder.id, filename="1_low.3mf", file_metadata={"print_name": "9_high"}
+        )
+        # No print_name at all — coalesce falls back to filename, same order
+        # either way. Keeps the middle position stable so only the outer two
+        # need to flip to prove the branch actually used.
+        mid_name_no_print = await file_factory(folder_id=folder.id, filename="5_mid.3mf")
+        # Filename sorts this LAST, but its print_name would sort it FIRST
+        # under coalesce.
+        high_name_low_print = await file_factory(
+            folder_id=folder.id, filename="9_high.3mf", file_metadata={"print_name": "1_low"}
+        )
+
+        # Bare legacy call — no sort_by at all — must stay in FILENAME order.
+        legacy_response = await async_client.get(f"/api/v1/library/files?folder_id={folder.id}")
+        assert legacy_response.status_code == 200
+        legacy_body = legacy_response.json()
+        assert isinstance(legacy_body, list)  # still the flat legacy shape, not the envelope
+        assert [f["id"] for f in legacy_body] == [
+            low_name_high_print.id,
+            mid_name_no_print.id,
+            high_name_low_print.id,
+        ]
+
+        # Explicit `sort_by=name_asc` on the IDENTICAL data must use the
+        # COALESCE(print_name, filename) order instead — the opposite order on
+        # the two print_name-carrying rows, pinning the two paths apart.
+        explicit_response = await async_client.get(
+            f"/api/v1/library/files?folder_id={folder.id}&sort_by=name_asc&page=1&per_page=50"
+        )
+        assert explicit_response.status_code == 200
+        explicit_items = explicit_response.json()["items"]
+        assert [f["id"] for f in explicit_items] == [
+            high_name_low_print.id,
+            mid_name_no_print.id,
+            low_name_high_print.id,
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_list_files_internal_and_external_mutually_exclusive(self, async_client: AsyncClient, db_session):
         """Both flags together is a caller bug — fail loud (400) rather than
         silently picking one, so a frontend regression is caught immediately."""

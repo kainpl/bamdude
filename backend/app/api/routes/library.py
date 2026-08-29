@@ -1956,13 +1956,15 @@ async def list_files(
         ),
     ),
     username: str | None = Query(None, description="Substring match on the uploader's username"),
-    sort_by: str = Query(
-        "name_asc",
+    sort_by: str | None = Query(
+        None,
         description=(
             "name/date/size/type, each with an _asc or _desc suffix. 'date' sorts "
             "by the same fs_modified_at-or-updated_at activity timestamp the list "
-            "renders (#2680), never bare created_at. Unknown values fall back to "
-            "name_asc rather than erroring."
+            "renders (#2680), never bare created_at. Omitted entirely, the legacy "
+            "plain-filename ordering applies unchanged; any explicit value "
+            "(including 'name_asc') maps through the sort dict below, falling back "
+            "to name_asc on anything unrecognized."
         ),
     ),
     page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
@@ -2003,6 +2005,9 @@ async def list_files(
     ``list[FileListResponse]`` (any caller that predates this change never sends
     ``page``); pass it and the response becomes
     ``{"items": [...], "meta": {total, current_page, per_page, last_page}}``.
+    ``sort_by`` omitted (not merely defaulted to ``"name_asc"``) keeps today's
+    plain ``ORDER BY filename`` too — see the sort-selection block below for why
+    that has to be its own branch.
     """
     if internal_only and external_only:
         raise HTTPException(
@@ -2103,15 +2108,30 @@ async def list_files(
 
     # Sorting — mirrors the frontend's four sort fields (FileManagerPage.tsx),
     # each with an _asc/_desc suffix.
-    sort_key, _, sort_dir = sort_by.rpartition("_")
-    sort_column = _LIBRARY_FILE_SORT_COLUMNS.get(sort_key)
-    if sort_column is None or sort_dir not in ("asc", "desc"):
-        sort_column, sort_dir = _LIBRARY_FILE_SORT_COLUMNS["name"], "asc"
+    #
+    # ⚠️ ``sort_by`` omitted entirely is NOT the same as ``sort_by=name_asc``
+    # explicitly requested, even though ``name_asc`` is the "natural" default:
+    # ``name_asc`` maps to ``COALESCE(print_name, filename)``, which reorders
+    # any row that HAS a print_name (common, not an edge case) relative to
+    # today's plain ``ORDER BY filename``. A bare legacy call — the only kind
+    # every existing caller has ever made — must keep exactly that plain
+    # ordering, so the omitted case is its own branch rather than folding into
+    # the sort-dict default.
+    if sort_by is None:
+        sort_column, sort_dir = LibraryFile.filename, "asc"
+    else:
+        sort_key, _, sort_dir = sort_by.rpartition("_")
+        sort_column = _LIBRARY_FILE_SORT_COLUMNS.get(sort_key)
+        if sort_column is None or sort_dir not in ("asc", "desc"):
+            sort_column, sort_dir = _LIBRARY_FILE_SORT_COLUMNS["name"], "asc"
     # ⚠️ Stable tiebreak — this list PAGES (same rule as
     # ArchiveService.list_archives): rows sharing a sort key have no defined
     # order between two queries, so paging a low-cardinality sort (e.g.
     # type_asc across a library that's mostly one file type) could repeat or
-    # skip a row on page 2. ``id`` is unique and never NULL.
+    # skip a row on page 2. ``id`` is unique and never NULL. Applies on BOTH
+    # branches above — the legacy path never had a defined tiebreak either,
+    # and adding one there only affects ties, never the field-set/shape the
+    # legacy-pin test cares about.
     order_clauses = [sort_column.asc() if sort_dir == "asc" else sort_column.desc(), LibraryFile.id.desc()]
 
     paginate = page is not None
