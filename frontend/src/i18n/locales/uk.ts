@@ -4785,6 +4785,21 @@ export default {
       exported: 'Проєкти експортовано (лише метадані)',
       createdFromTemplate: 'Проєкт створено з шаблону',
       templateDeleted: 'Шаблон видалено'
+    },
+    // Таблиця обліку деталей (сторінка проєкту) — namespace partsLedger,
+    // а не parts, бо projects.parts вище — це вже слово "деталей",
+    // яке використовується по всій ProjectsPage.tsx.
+    partsLedger: {
+      title: 'Деталі',
+      name: 'Деталь',
+      target: 'Ціль',
+      printed: 'Надруковано',
+      inProgress: 'У друці',
+      defective: 'Брак',
+      usable: 'Придатні',
+      remaining: 'Лишилось',
+      empty: 'Деталей ще не знайдено — привʼяжіть нарізані файли або надрукуйте щось.',
+      setTarget: 'Задати ціль'
     }
   },
 

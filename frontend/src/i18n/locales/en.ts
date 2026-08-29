@@ -4746,6 +4746,21 @@ export default {
       exported: 'Projects exported (metadata only)',
       createdFromTemplate: 'Project created from template',
       templateDeleted: 'Template deleted'
+    },
+    // Parts ledger table (project detail page) — namespaced as
+    // partsLedger, not parts, because `projects.parts` above is already
+    // the plain word "parts" used throughout ProjectsPage.tsx.
+    partsLedger: {
+      title: 'Parts',
+      name: 'Part',
+      target: 'Target',
+      printed: 'Printed',
+      inProgress: 'In progress',
+      defective: 'Defective',
+      usable: 'Usable',
+      remaining: 'Remaining',
+      empty: 'No parts discovered yet — link sliced files or print something.',
+      setTarget: 'Set target'
     }
   },
 

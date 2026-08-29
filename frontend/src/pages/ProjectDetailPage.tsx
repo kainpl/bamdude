@@ -54,6 +54,7 @@ import { RichTextEditor } from '../components/RichTextEditor';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { DuplicateProjectModal } from '../components/DuplicateProjectModal';
 import { PrintModal } from '../components/PrintModal';
+import { ProjectPartsTable } from '../components/ProjectPartsTable';
 
 // Project edit modal (reused from ProjectsPage)
 import { ProjectModal } from './ProjectsPage';
@@ -1475,6 +1476,10 @@ export function ProjectDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Parts ledger — self-contained, hides itself when there are no
+          parts discovered yet across this project's archives. */}
+      <ProjectPartsTable projectId={projectId} canEdit={hasPermission('projects:update')} />
 
       {/* BOM Section - Parts to source/purchase */}
       <Card>
