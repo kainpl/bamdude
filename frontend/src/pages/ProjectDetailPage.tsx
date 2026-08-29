@@ -339,7 +339,17 @@ export function ProjectDetailPage() {
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
-  // Two-level plan: group items by library_file_id, preserving plan order.
+  // Two-level plan: group items by library_file_id, preserving FIRST-
+  // OCCURRENCE plan order. Keyed by a Map, not by adjacency — the backend
+  // orders by (order_index, library_file_id, plate_index, id) and same-file
+  // rows normally share order_index, but a re-slice can plant a NEW plate
+  // row (from sync) whose order_index differs from its siblings, landing it
+  // away from the rest of the file in printPlan.items. A later occurrence
+  // of an already-seen library_file_id still joins its existing group here,
+  // regardless of where it sits in the array. Within a group, children are
+  // sorted by plate_index so display order is always plate order — again
+  // independent of raw array position.
+  //
   // A file with a single plate_index===0 row is a legacy/whole-file entry
   // and renders flat; a file with real plate rows (Task 5) renders as one
   // parent + its plate children. Reorder still operates on FILES — the
@@ -355,7 +365,11 @@ export function ProjectDetailPage() {
       }
       byFile.get(item.library_file_id)!.push(item);
     }
-    return order.map(fileId => ({ fileId, items: byFile.get(fileId)! }));
+    return order.map(fileId => {
+      const items = byFile.get(fileId)!;
+      items.sort((a, b) => a.plate_index - b.plate_index);
+      return { fileId, items };
+    });
   }, [printPlan]);
 
   const movePlanItem = (index: number, delta: -1 | 1) => {
