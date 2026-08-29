@@ -637,3 +637,123 @@ async def test_inherit_folder_projects_idempotent_on_second_call(db_session):
         .all()
     )
     assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# m158 part 3: sync_plan_for_file reconciles at (project, file, plate)
+# granularity. A single-plate file (or one with no plate metadata, e.g. raw
+# gcode) owns one row at plate_index=0; an N>1-plate file owns one row per
+# plate index, and re-slicing reconciles the plate set while leaving
+# surviving plates' copies untouched.
+# ---------------------------------------------------------------------------
+
+
+async def _project_and_file(db_session, *, plates: list[int]):
+    """Create a project + a plan-eligible LibraryFile whose file_metadata
+    reports the given plate indices, for the plate-sync tests below."""
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.project import Project
+
+    project = Project(name="Plate Sync Test", description="")
+    db_session.add(project)
+    await db_session.flush()
+
+    file = LibraryFile(
+        filename="plate-test.gcode.3mf",
+        file_path="/tmp/plate-test.gcode.3mf",
+        file_type="gcode",
+        file_size=1,
+        file_hash=None,
+        file_metadata={"plates": [{"index": i} for i in plates]},
+    )
+    db_session.add(file)
+    await db_session.commit()
+    await db_session.refresh(project)
+    await db_session.refresh(file)
+    return project, file
+
+
+async def _plan_rows(db_session, project_id: int, file_id: int):
+    from sqlalchemy import select
+
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+
+    return (
+        (
+            await db_session.execute(
+                select(ProjectPrintPlanItem)
+                .where(
+                    ProjectPrintPlanItem.project_id == project_id,
+                    ProjectPrintPlanItem.library_file_id == file_id,
+                )
+                .order_by(ProjectPrintPlanItem.plate_index)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def test_a_multi_plate_file_plants_one_row_per_plate(db_session):
+    from backend.app.services.print_plan import sync_plan_for_file
+
+    project, file = await _project_and_file(db_session, plates=[1, 2, 3])
+
+    await sync_plan_for_file(db_session, library_file_id=file.id, project_ids=[project.id], file_type="gcode")
+    await db_session.commit()
+
+    rows = await _plan_rows(db_session, project.id, file.id)
+    assert [r.plate_index for r in rows] == [1, 2, 3]
+    assert all(r.copies == 1 for r in rows)
+
+
+async def test_reslicing_reconciles_plates_keeping_survivors_copies(db_session):
+    from backend.app.services.print_plan import sync_plan_for_file
+
+    project, file = await _project_and_file(db_session, plates=[1, 2])
+    await sync_plan_for_file(db_session, library_file_id=file.id, project_ids=[project.id], file_type="gcode")
+    await db_session.commit()
+    rows = await _plan_rows(db_session, project.id, file.id)
+    rows[0].copies = 7  # plate 1
+    await db_session.commit()
+
+    file.file_metadata = {"plates": [{"index": 1}, {"index": 3}]}  # plate 2 gone, 3 new
+    await db_session.commit()
+    await sync_plan_for_file(db_session, library_file_id=file.id, project_ids=[project.id], file_type="gcode")
+    await db_session.commit()
+
+    rows = await _plan_rows(db_session, project.id, file.id)
+    by_plate = {r.plate_index: r for r in rows}
+    assert set(by_plate) == {1, 3}
+    assert by_plate[1].copies == 7, "surviving plates keep their copies"
+    assert by_plate[3].copies == 1
+
+
+async def test_a_legacy_whole_file_row_expands_inheriting_copies(db_session):
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+    from backend.app.services.print_plan import sync_plan_for_file
+
+    project, file = await _project_and_file(db_session, plates=[1, 2])
+    db_session.add(
+        ProjectPrintPlanItem(project_id=project.id, library_file_id=file.id, copies=4, order_index=2, plate_index=0)
+    )
+    await db_session.commit()
+
+    await sync_plan_for_file(db_session, library_file_id=file.id, project_ids=[project.id], file_type="gcode")
+    await db_session.commit()
+
+    rows = await _plan_rows(db_session, project.id, file.id)
+    assert [r.plate_index for r in rows] == [1, 2]
+    assert all(r.copies == 4 and r.order_index == 2 for r in rows)
+
+
+async def test_a_single_plate_file_stays_one_plain_row(db_session):
+    from backend.app.services.print_plan import sync_plan_for_file
+
+    project, file = await _project_and_file(db_session, plates=[1])
+
+    await sync_plan_for_file(db_session, library_file_id=file.id, project_ids=[project.id], file_type="gcode")
+    await db_session.commit()
+
+    rows = await _plan_rows(db_session, project.id, file.id)
+    assert len(rows) == 1 and rows[0].plate_index == 0

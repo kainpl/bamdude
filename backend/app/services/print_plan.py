@@ -55,6 +55,24 @@ async def _next_order_index(db: AsyncSession, project_id: int) -> int:
     return (result.scalar() or -1) + 1
 
 
+def _plate_indices(file_metadata: dict | None) -> list[int]:
+    """Sorted positive plate indices from ``file_metadata["plates"]``.
+
+    Empty (no plate metadata — raw gcode or a file that hasn't been through
+    the 3MF plate-metadata extraction — or a single plate) means "the whole
+    file is one printable unit"; callers collapse that to the single
+    ``plate_index=0`` row. Two or more distinct positive indices mean the
+    file is a multi-plate 3MF, one plan row per plate.
+    """
+    if not file_metadata:
+        return []
+    plates = file_metadata.get("plates") or []
+    indices = {
+        int(p["index"]) for p in plates if isinstance(p, dict) and isinstance(p.get("index"), int) and p["index"] > 0
+    }
+    return sorted(indices)
+
+
 async def sync_plan_for_file(
     db: AsyncSession,
     *,
@@ -62,11 +80,22 @@ async def sync_plan_for_file(
     project_ids: list[int],
     file_type: str,
 ) -> None:
-    """Reconcile plan rows for a single file with its target project list.
+    """Reconcile plan rows for a single file with its target project list,
+    at (project, file, plate) granularity.
 
     Diffs the existing rows against the desired ``project_ids`` set and
-    inserts / deletes to make them match. Non-plan-eligible files just
-    have all their rows removed.
+    inserts / deletes to make the project set match. Non-plan-eligible
+    files just have all their rows removed. For every project that stays
+    (or becomes) linked, the row's *plate* set is reconciled too: a
+    single-plate file (or one with no plate metadata, e.g. raw gcode) owns
+    exactly one row at ``plate_index=0``; an N>1-plate file owns one row
+    per plate index. A legacy ``plate_index=0`` row on a file that turns
+    out to be multi-plate is replaced by per-plate rows that inherit its
+    ``copies``/``order_index`` (same rule m158's seed uses for existing
+    DBs) — new plate rows otherwise start at ``copies=1``. Re-slicing
+    (plate count changes on a file already tracked) drops rows for plates
+    that vanished, plants ``copies=1`` rows for new plates, and leaves
+    surviving plates' rows — and their ``copies`` — untouched.
     """
     existing_rows = (
         (await db.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.library_file_id == library_file_id)))
@@ -94,18 +123,65 @@ async def sync_plan_for_file(
             )
         )
 
-    # Add rows for newly-linked projects (one at a time so order_index
-    # stays correct per project).
-    for project_id in desired - existing_project_ids:
-        order_index = await _next_order_index(db, project_id)
-        db.add(
-            ProjectPrintPlanItem(
-                project_id=project_id,
-                library_file_id=library_file_id,
-                copies=1,
-                order_index=order_index,
+    file_metadata = (
+        await db.execute(select(LibraryFile.file_metadata).where(LibraryFile.id == library_file_id))
+    ).scalar_one_or_none()
+    indices = _plate_indices(file_metadata)
+    wanted_plates: set[int] = set(indices) if len(indices) > 1 else {0}
+
+    rows_by_project: dict[int, list[ProjectPrintPlanItem]] = {}
+    for row in existing_rows:
+        rows_by_project.setdefault(row.project_id, []).append(row)
+
+    # Reconcile the plate set for every project that stays (or becomes)
+    # linked — including ones already in ``existing_project_ids`` that
+    # never left, so a re-slice on an unchanged project list still fans
+    # out into per-plate rows.
+    for project_id in desired:
+        project_rows = rows_by_project.get(project_id, [])
+        existing_plates = {row.plate_index: row for row in project_rows}
+        if existing_plates.keys() == wanted_plates:
+            continue  # already in the wanted shape, nothing to do
+
+        legacy_whole = existing_plates.get(0) if wanted_plates != {0} else None
+        if legacy_whole is not None:
+            # A whole-file row on a file that turned out multi-plate:
+            # replace it with per-plate rows inheriting its copies/order.
+            copies = legacy_whole.copies
+            order_index = legacy_whole.order_index
+            await db.delete(legacy_whole)
+            for plate in sorted(wanted_plates):
+                db.add(
+                    ProjectPrintPlanItem(
+                        project_id=project_id,
+                        library_file_id=library_file_id,
+                        copies=copies,
+                        order_index=order_index,
+                        plate_index=plate,
+                    )
+                )
+            continue
+
+        group_order_index = project_rows[0].order_index if project_rows else await _next_order_index(db, project_id)
+
+        # Drop rows for plates that vanished (re-slice, or a multi-plate
+        # file collapsing back to one plate).
+        for plate, row in existing_plates.items():
+            if plate not in wanted_plates:
+                await db.delete(row)
+
+        # Plant rows for newly-appeared plates; surviving plates' rows are
+        # left untouched so their copies carry over.
+        for plate in sorted(wanted_plates - existing_plates.keys()):
+            db.add(
+                ProjectPrintPlanItem(
+                    project_id=project_id,
+                    library_file_id=library_file_id,
+                    copies=1,
+                    order_index=group_order_index,
+                    plate_index=plate,
+                )
             )
-        )
 
     # Plant ledger target rows (m158) for every linked project — idempotent,
     # so re-linking an already-linked file adds nothing.
