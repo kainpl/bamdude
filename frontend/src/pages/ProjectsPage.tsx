@@ -556,12 +556,13 @@ interface ProjectCardProps {
   onClick: () => void;
   onEdit: () => void;
   onDuplicate: () => void;
+  onArchiveToggle: () => void;
   onDelete: () => void;
   hasPermission: (permission: Permission) => boolean;
   t: TFunction;
 }
 
-function ProjectCard({ project, onClick, onEdit, onDuplicate, onDelete, hasPermission, t }: ProjectCardProps) {
+function ProjectCard({ project, onClick, onEdit, onDuplicate, onArchiveToggle, onDelete, hasPermission, t }: ProjectCardProps) {
   // Plates progress: archive_count / target_count
   const platesProgressPercent = project.target_count
     ? Math.round((project.archive_count / project.target_count) * 100)
@@ -777,6 +778,17 @@ function ProjectCard({ project, onClick, onEdit, onDuplicate, onDelete, hasPermi
                   >
                     <Copy className="w-4 h-4" />
                     {t('projects.duplicate.action')}
+                  </button>
+                  <button
+                    className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 ${
+                      hasPermission('projects:update') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    }`}
+                    onClick={() => { if (hasPermission('projects:update')) { onArchiveToggle(); setShowActions(false); } }}
+                    disabled={!hasPermission('projects:update')}
+                    title={!hasPermission('projects:update') ? t('projects.noEditPermission') : undefined}
+                  >
+                    <Archive className="w-4 h-4" />
+                    {isArchived ? t('projects.unarchive') : t('projects.archive')}
                   </button>
                   <button
                     className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 ${
@@ -1118,6 +1130,19 @@ export function ProjectsPage() {
     },
   });
 
+  const archiveMutation = useMutation({
+    mutationFn: ({ id, status }: { id: number; status: string }) =>
+      api.updateProject(id, { status }),
+    onSuccess: (_, { status }) => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      const toastKey = status === 'archived' ? 'projects.toast.archived' : 'projects.toast.restored';
+      showToast(t(toastKey), 'success');
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
   const importMutation = useMutation({
     mutationFn: (data: ProjectImport) => api.importProject(data),
     onSuccess: () => {
@@ -1415,6 +1440,10 @@ export function ProjectsPage() {
               onClick={() => handleClick(project)}
               onEdit={() => handleEdit(project)}
               onDuplicate={() => setDuplicateTarget(project)}
+              onArchiveToggle={() => {
+                const newStatus = project.status === 'archived' ? 'active' : 'archived';
+                archiveMutation.mutate({ id: project.id, status: newStatus });
+              }}
               onDelete={() => handleDeleteClick(project.id)}
               hasPermission={hasPermission}
               t={t}
