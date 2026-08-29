@@ -325,6 +325,9 @@ class PrintPlanItemResponse(BaseModel):
     library_file_id: int
     copies: int
     order_index: int
+    # 0 = the whole file (single-plate files, raw gcode); 1..N = that plate
+    # of a multi-plate 3MF. Mirrors ProjectPrintPlanItem.plate_index.
+    plate_index: int = 0
 
     # Joined library file fields for display (read-only)
     filename: str

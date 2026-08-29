@@ -2480,14 +2480,39 @@ def _build_plan_item_response(
     default_cost_per_kg: float,
     printed_count: int,
 ) -> PrintPlanItemResponse:
-    """Derive per-row totals from the joined library file's metadata."""
+    """Derive per-row totals from the joined library file's metadata.
+
+    ``plate_index == 0`` (whole-file rows: single-plate files, raw gcode)
+    read the file's top-level metadata exactly as before. A ``plate_index
+    > 0`` row instead reads that plate's own entry in
+    ``file_metadata["plates"]`` — the per-plate dicts written by
+    ``services/archive.py``'s plate extractor, keyed by ``"index"`` and
+    carrying ``filament_used_grams`` / ``print_time_seconds`` /
+    ``object_count`` (the last already an instance count, not a dict to
+    ``len()``) — so each plate's row shows that plate's own numbers rather
+    than the whole file's.
+    """
     meta = file.file_metadata or {}
-    grams = meta.get("filament_used_grams")
-    grams = float(grams) if isinstance(grams, (int, float)) else None
-    secs = meta.get("print_time_seconds")
-    secs = int(secs) if isinstance(secs, (int, float)) else None
-    objs = meta.get("printable_objects")
-    obj_count = len(objs) if isinstance(objs, dict) else None
+
+    if row.plate_index > 0:
+        plate_meta = next(
+            (p for p in (meta.get("plates") or []) if isinstance(p, dict) and p.get("index") == row.plate_index),
+            {},
+        )
+        grams = plate_meta.get("filament_used_grams")
+        grams = float(grams) if isinstance(grams, (int, float)) else None
+        secs = plate_meta.get("print_time_seconds")
+        secs = int(secs) if isinstance(secs, (int, float)) else None
+        obj_count = plate_meta.get("object_count")
+        obj_count = int(obj_count) if isinstance(obj_count, (int, float)) else None
+    else:
+        grams = meta.get("filament_used_grams")
+        grams = float(grams) if isinstance(grams, (int, float)) else None
+        secs = meta.get("print_time_seconds")
+        secs = int(secs) if isinstance(secs, (int, float)) else None
+        objs = meta.get("printable_objects")
+        obj_count = len(objs) if isinstance(objs, dict) else None
+
     # None, not 0.00: with no farm rate set there is nothing to say about
     # what a copy costs, and a zero reads as "free".
     cost_per_copy = (
@@ -2504,6 +2529,7 @@ def _build_plan_item_response(
         library_file_id=row.library_file_id,
         copies=row.copies,
         order_index=row.order_index,
+        plate_index=row.plate_index,
         filename=file.filename,
         print_name=(meta.get("print_name") if isinstance(meta.get("print_name"), str) else None),
         file_type=file.file_type,
@@ -2538,34 +2564,45 @@ async def _load_print_plan(db: AsyncSession, project_id: int) -> PrintPlanRespon
             select(ProjectPrintPlanItem, LibraryFile)
             .join(LibraryFile, ProjectPrintPlanItem.library_file_id == LibraryFile.id)
             .where(ProjectPrintPlanItem.project_id == project_id)
-            .order_by(ProjectPrintPlanItem.order_index, ProjectPrintPlanItem.id)
+            .order_by(
+                ProjectPrintPlanItem.order_index,
+                ProjectPrintPlanItem.library_file_id,
+                ProjectPrintPlanItem.plate_index,
+                ProjectPrintPlanItem.id,
+            )
         )
     ).all()
 
     default_cost_per_kg = await _get_default_filament_cost(db)
 
-    # Per-(project, library_file) printed-count: completed archives only.
-    # One bulk query rather than per-row to keep the endpoint flat.
+    # Per-(library_file, plate) printed-count: completed archives only, one
+    # bulk query grouped by (library_file_id, plate_index) rather than
+    # per-row. A plate_index>0 plan row looks up its own exact group; a
+    # plate_index==0 (whole-file) row sums every group for that file —
+    # today's per-file semantics, unchanged, regardless of which plate
+    # each archive happened to record.
     file_ids = [row.library_file_id for row, _ in rows]
-    printed_counts: dict[int, int] = {}
+    printed_by_file_plate: dict[tuple[int, int | None], int] = {}
     if file_ids:
         printed_rows = (
             await db.execute(
-                select(PrintArchive.library_file_id, func.count(PrintArchive.id))
+                select(PrintArchive.library_file_id, PrintArchive.plate_index, func.count(PrintArchive.id))
                 .where(
                     PrintArchive.project_id == project_id,
                     PrintArchive.library_file_id.in_(file_ids),
                     PrintArchive.status == "completed",
                 )
-                .group_by(PrintArchive.library_file_id)
+                .group_by(PrintArchive.library_file_id, PrintArchive.plate_index)
             )
         ).all()
-        printed_counts = dict(printed_rows)
+        printed_by_file_plate = {(fid, plate): count for fid, plate, count in printed_rows}
 
-    items = [
-        _build_plan_item_response(row, file, default_cost_per_kg, printed_counts.get(row.library_file_id, 0))
-        for row, file in rows
-    ]
+    def _printed_count(row: ProjectPrintPlanItem) -> int:
+        if row.plate_index > 0:
+            return printed_by_file_plate.get((row.library_file_id, row.plate_index), 0)
+        return sum(count for (fid, _plate), count in printed_by_file_plate.items() if fid == row.library_file_id)
+
+    items = [_build_plan_item_response(row, file, default_cost_per_kg, _printed_count(row)) for row, file in rows]
 
     return PrintPlanResponse(
         items=items,
@@ -2590,30 +2627,36 @@ async def get_project_print_plan(
     return await _load_print_plan(db, project_id)
 
 
-@router.patch("/{project_id}/print-plan/{library_file_id}", response_model=PrintPlanItemResponse)
+@router.patch("/{project_id}/print-plan/items/{item_id}", response_model=PrintPlanItemResponse)
 async def update_project_print_plan_item(
     project_id: int,
-    library_file_id: int,
+    item_id: int,
     body: PrintPlanItemUpdate,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
-    """Update a plan row's ``copies``. Minimum 1 — 0 means unlink via file update."""
+    """Update a plan row's ``copies``, addressed by its own row id.
+
+    Since m158 part 3 a file with N>1 plates owns N plan rows (one per
+    plate), so "the row for this file" is no longer unambiguous — the
+    route is keyed on the plan item's own id instead. Minimum copies is 1;
+    0 means unlink via the file/folder project link, not this endpoint.
+    """
     if body.copies < 1:
         raise HTTPException(status_code=400, detail="copies must be >= 1")
 
     row = (
         await db.execute(
             select(ProjectPrintPlanItem).where(
+                ProjectPrintPlanItem.id == item_id,
                 ProjectPrintPlanItem.project_id == project_id,
-                ProjectPrintPlanItem.library_file_id == library_file_id,
             )
         )
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Print plan row not found")
 
-    file = (await db.execute(select(LibraryFile).where(LibraryFile.id == library_file_id))).scalar_one_or_none()
+    file = (await db.execute(select(LibraryFile).where(LibraryFile.id == row.library_file_id))).scalar_one_or_none()
     if file is None:
         raise HTTPException(status_code=404, detail="Library file not found")
 
@@ -2622,15 +2665,14 @@ async def update_project_print_plan_item(
     await db.refresh(row)
 
     default_cost_per_kg = await _get_default_filament_cost(db)
-    printed_count = (
-        await db.execute(
-            select(func.count(PrintArchive.id)).where(
-                PrintArchive.project_id == project_id,
-                PrintArchive.library_file_id == library_file_id,
-                PrintArchive.status == "completed",
-            )
-        )
-    ).scalar() or 0
+    printed_count_query = select(func.count(PrintArchive.id)).where(
+        PrintArchive.project_id == project_id,
+        PrintArchive.library_file_id == row.library_file_id,
+        PrintArchive.status == "completed",
+    )
+    if row.plate_index > 0:
+        printed_count_query = printed_count_query.where(PrintArchive.plate_index == row.plate_index)
+    printed_count = (await db.execute(printed_count_query)).scalar() or 0
     return _build_plan_item_response(row, file, default_cost_per_kg, printed_count)
 
 
