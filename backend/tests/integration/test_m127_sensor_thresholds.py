@@ -66,9 +66,13 @@ async def test_the_sensor_carries_its_own_silence(db_session):
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_providers_gained_the_two_toggles(db_session):
-    from backend.app.models.notification import NotificationProvider
+    """m127 shipped the toggles as ``on_*`` columns; m157 later collapsed
+    every per-event column into ``subscribed_events``, so the durable form of
+    "providers gained the two toggles" is their presence in the events
+    vocabulary the JSON field is validated against."""
+    from backend.app.models.notification import PROVIDER_EVENT_DEFAULTS
 
-    assert {"on_sensor_threshold", "on_sensor_silent"} <= set(NotificationProvider.__table__.columns.keys())
+    assert {"on_sensor_threshold", "on_sensor_silent"} <= set(PROVIDER_EVENT_DEFAULTS)
 
 
 @pytest.mark.asyncio
