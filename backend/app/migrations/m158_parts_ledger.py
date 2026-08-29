@@ -109,6 +109,28 @@ async def upgrade(conn):
         )
         await conn.exec_driver_sql("CREATE INDEX ix_project_parts_project_id ON project_parts (project_id)")
 
+    if not sqlite:
+        # m044 (frozen, released) reshapes this table's unique constraint
+        # under a guard — `_has_constraint_or_index(conn, "uq_plan_project_
+        # file")` — written before plate rows existed, i.e. before this
+        # migration renamed the target to `uq_plan_project_file_plate`. On a
+        # FRESH PostgreSQL install, create_all() already builds the table
+        # with only `uq_plan_project_file_plate`, so m044's guard reads
+        # false-for-"already has it" and its ADD CONSTRAINT branch fires
+        # anyway, planting the old `uq_plan_project_file (project_id,
+        # library_file_id)` unique back onto an otherwise-final table. The
+        # `column_exists(..., "plate_index")` guard below is true on that
+        # same fresh table (plate_index came from create_all() too), so the
+        # ALTER-TABLE swap that would normally remove the old constraint
+        # never runs. Drop it here, unconditionally and independent of the
+        # plate_index guard, so every PostgreSQL install — fresh or
+        # upgraded — ends with only the plate-scoped unique. IF EXISTS makes
+        # this a no-op on upgrade paths where the swap below already
+        # removed it, and on any re-run.
+        await conn.exec_driver_sql(
+            "ALTER TABLE project_print_plan_items DROP CONSTRAINT IF EXISTS uq_plan_project_file"
+        )
+
     # Part 3 (added in the same unreleased cycle): plan rows become
     # per-plate. Existing DBs get the column + widened unique via table
     # recreate (SQLite) or ALTER TABLE (PostgreSQL); fresh installs already

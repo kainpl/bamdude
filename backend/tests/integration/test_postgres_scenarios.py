@@ -122,6 +122,36 @@ class TestFreshInstall:
     def test_starts_with_no_users_so_setup_is_required(self, result):
         assert result["counts"].get("users") == 0
 
+    def test_plan_items_unique_constraint_is_plate_scoped_only(self, result):
+        """m044 (frozen, released) re-adds the pre-plate ``uq_plan_project_
+        file`` unique on a fresh PostgreSQL install — its guard predates the
+        plate-era constraint name m158 introduces. m158 must drop that stale
+        constraint unconditionally, so a fresh install ends with exactly the
+        plate-scoped unique and never forbids two plate rows of one file.
+        """
+        psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
+        import asyncio
+
+        url = _pg_url()
+
+        async def go() -> set[str]:
+            conn = await psycopg.connect(url, timeout=20)
+            try:
+                rows = await conn.fetch(
+                    "SELECT c.conname FROM pg_constraint c "
+                    "JOIN pg_class t ON t.oid = c.conrelid "
+                    "WHERE t.relname = 'project_print_plan_items' AND c.contype = 'u'"
+                )
+                return {r["conname"] for r in rows}
+            finally:
+                await conn.close()
+
+        names = asyncio.run(go())
+        assert names == {"uq_plan_project_file_plate"}, (
+            f"unexpected unique constraints on project_print_plan_items: {names} — "
+            "a fresh PostgreSQL install must not carry the pre-plate uq_plan_project_file"
+        )
+
 
 class TestSqliteMigration:
     """An existing SQLite install must carry its rows across."""
