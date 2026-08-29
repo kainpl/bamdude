@@ -1064,7 +1064,16 @@ async def list_spools(
     color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
     category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
     catalog_id: int | None = Query(None),
-    location_id: str | None = Query(None, description="Location id, or '__none__' for no location"),
+    location_id: str | None = Query(
+        None,
+        # Anything else reaches ``int(location_id)`` in build_spool_filters —
+        # a pattern-mismatch here becomes a clean 422 instead of that raising
+        # ValueError uncaught into a 500 (review finding 3). A stale/hand-edited
+        # deep-link is exactly the shape this endpoint bakes into a shareable
+        # URL, so this must never be a 500.
+        pattern=r"^(__none__|\d+)$",
+        description="Location id, or '__none__' for no location",
+    ),
     stock: str | None = Query(None, description="'stock' or 'configured'"),
     assigned: str | None = Query(None, description="'assigned' or 'unassigned'"),
     q: str | None = Query(
@@ -1097,6 +1106,17 @@ async def list_spools(
     ``page``. Pass ``page`` and the response becomes
     ``{"items": [...], "meta": {total, current_page, per_page, last_page}}``
     of the slimmer ``SpoolListItem`` (see its docstring for what's dropped).
+
+    ⚠️ **``include_archived`` is read ONLY on the legacy (no-``page``) branch —
+    the paged branch ignores it entirely and relies on the new ``archived``
+    param instead.** The deleted client's Active/Archived tab was strictly
+    binary (never both at once); omitting ``archived`` in paged mode is,
+    correctly per this endpoint's general "omit a param, get no filter for
+    that dimension" contract, "show both" — not "active only" like the old
+    default. A caller migrating to the paged mode (Task 4) must always send
+    ``archived=active`` or ``archived=archived`` explicitly; sending
+    ``page=1&include_archived=false`` and expecting the archived rows to stay
+    hidden is a silent no-op (review finding 6).
     """
     if page is None:
         spools = await inventory_service.list_spools(db, include_archived=include_archived)

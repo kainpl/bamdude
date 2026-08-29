@@ -89,12 +89,42 @@ def _weight_check_expr():
     return case((Spool.last_scale_weight.is_(None), -1), else_=func.abs(Spool.last_scale_weight - expected_gross))
 
 
+# The 3 nullable DATETIME sort columns — can't be ``func.coalesce(col, "")``
+# like the nullable TEXT columns below (a timestamp/text CASE type mismatch
+# 500s on PostgreSQL); the equivalent "NULL sorts as the smallest value" is
+# instead applied at ORDER BY time via ``.nulls_first()``/``.nulls_last()``
+# (see :func:`_spool_order_by`) — same final row order the client's ``|| ''``
+# fallback produces (an empty string is lexicographically smaller than any
+# ISO datetime string, so it always sorts first on asc / last on desc; NULL
+# pinned first/last is the identical outcome). ``added_time`` -> created_at is
+# NOT NULL (server_default), so it's deliberately excluded here.
+_DATETIME_NULLABLE_SORT_KEYS = frozenset({"purchase_date", "encode_time", "last_used_time"})
+
+
 def _spool_sort_columns() -> dict[str, Any]:
     """The FULL ``columnSortValues`` port (InventoryPage.tsx:514-565), minus
     ``display_name`` and ``location`` (both handled specially — see
     :func:`_spool_order_by`) and ``rgba``/``color_combined`` (operator ruling
     2026-08-29: the frontend remaps a swatch-header click to
-    ``sort_by=color_name`` instead — the server never learns an rgba key)."""
+    ``sort_by=color_name`` instead — the server never learns an rgba key).
+
+    Nullable TEXT columns are coalesced to ``""`` (mirrors the client's
+    ``s.field || ''`` fallback exactly — review finding 5) so NULL placement
+    stops being dialect-dependent (SQLite defaults NULLS FIRST on asc,
+    PostgreSQL defaults NULLS LAST — the same request would order differently
+    per backend otherwise). Numeric nullable columns already coalesce to
+    ``0`` (unchanged, matches the client's ``?? 0``). The 3 nullable
+    DATETIME columns can't take the same treatment — see
+    :data:`_DATETIME_NULLABLE_SORT_KEYS`.
+
+    ⚠️ Deliberately NOT wrapped in ``func.lower()`` here: ``material``,
+    ``subtype``, ``brand``, ``slicer_filament``, ``purchase_location``,
+    ``note``, ``data_origin``, ``tag_type`` sort case-sensitively today
+    (review finding 2) — ADJUDICATED DEFERRED 2026-08-29 as the same
+    SQLite-collation class the operator has ruled gets solved once for every
+    server-driven list at stage C, not per-list here. Do not add ``lower()``
+    to these without re-opening that ruling.
+    """
     net = _net_weight_expr()
     return {
         "id": Spool.id,
@@ -103,21 +133,24 @@ def _spool_sort_columns() -> dict[str, Any]:
         "encode_time": Spool.encode_time,
         "last_used_time": Spool.last_used,
         "material": Spool.material,
-        "subtype": Spool.subtype,
-        "color_name": func.lower(Spool.color_name),
-        "brand": Spool.brand,
-        "slicer_filament": func.coalesce(Spool.slicer_filament_name, Spool.slicer_filament),
-        "storage_location": func.lower(Spool.storage_location),
-        "purchase_location": Spool.purchase_location,
+        "subtype": func.coalesce(Spool.subtype, ""),
+        "color_name": func.coalesce(func.lower(Spool.color_name), ""),
+        "brand": func.coalesce(Spool.brand, ""),
+        "slicer_filament": func.coalesce(Spool.slicer_filament_name, Spool.slicer_filament, ""),
+        "storage_location": func.coalesce(func.lower(Spool.storage_location), ""),
+        "purchase_location": func.coalesce(Spool.purchase_location, ""),
         "label_weight": Spool.label_weight,
         "net": net,
         "gross": net + Spool.core_weight,
         "used": Spool.weight_used,
         "remaining": _remaining_ratio_expr(),
-        "note": Spool.note,
-        "data_origin": Spool.data_origin,
-        "tag_type": Spool.tag_type,
-        "stock": case((Spool.slicer_filament.isnot(None), 1), else_=0),
+        "note": func.coalesce(Spool.note, ""),
+        "data_origin": func.coalesce(Spool.data_origin, ""),
+        "tag_type": func.coalesce(Spool.tag_type, ""),
+        # ``''`` is unconfigured, same as the ``stock`` FILTER just above (and
+        # the client's ``s.slicer_filament ? 1 : 0`` extractor) — review
+        # finding 4: this used to disagree with both.
+        "stock": case((and_(Spool.slicer_filament.isnot(None), Spool.slicer_filament != ""), 1), else_=0),
         "spool_name": func.coalesce(Spool.core_weight_catalog_id, 0),
         "cost_per_kg": func.coalesce(Spool.cost_per_kg, 0),
         "filament_diameter": Spool.filament_diameter,
@@ -181,7 +214,15 @@ def _spool_order_by(sort_by: str | None) -> tuple[list, bool]:
     if column is None:
         return [*_DEFAULT_ORDER, tiebreak], False
 
-    clause = column.asc() if sort_dir == "asc" else column.desc()
+    if sort_key in _DATETIME_NULLABLE_SORT_KEYS:
+        # These 3 can't be coalesced to "" like the TEXT columns (a
+        # timestamp/text CASE 500s on PostgreSQL) — nulls_first()/
+        # nulls_last() produces the same final ordering the client's ``|| ''``
+        # fallback does (NULL pinned as the smallest value) without a type
+        # mismatch (review finding 5).
+        clause = column.asc().nulls_first() if sort_dir == "asc" else column.desc().nulls_last()
+    else:
+        clause = column.asc() if sort_dir == "asc" else column.desc()
     return [clause, tiebreak], False
 
 
@@ -301,13 +342,25 @@ async def build_spool_filters(
         loc_id_int = int(location_id)
         loc_name = (await db.execute(select(Location.name).where(Location.id == loc_id_int))).scalar_one_or_none()
         if loc_name:
-            norm_name = loc_name.strip().lower()
+            # ⚠️ Fold BOTH sides with the SAME function (SQL ``lower()``), never
+            # SQL lower() on the column vs Python ``.lower()`` on the literal —
+            # SQLite's built-in ``lower()`` folds ASCII only (Cyrillic passes
+            # through unchanged), so a Python-folded literal compared against a
+            # SQL-folded column silently never matches a byte-identical
+            # non-ASCII location name (review finding 1, measured on SQLite
+            # 3.49.1: ``lower('Полиця A')`` stays `'Полиця a'`). Folding both
+            # sides through the same ``func.lower()`` keeps identical-case
+            # matches working regardless of script; only a pure case
+            # difference in non-ASCII text ("ПОЛИЦЯ" vs stored "Полиця") is
+            # inherently unreachable via SQL ``lower()`` on SQLite — the
+            # historical client behaviour for ASCII-only folding, not a new
+            # regression.
             filters.append(
                 or_(
                     Spool.location_id == loc_id_int,
                     and_(
                         Spool.location_id.is_(None),
-                        func.lower(func.trim(Spool.storage_location)) == norm_name,
+                        func.lower(func.trim(Spool.storage_location)) == func.lower(loc_name.strip()),
                     ),
                 )
             )

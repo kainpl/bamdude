@@ -128,6 +128,16 @@ class TestUsageFilter:
         zero_label = await _spool(db_session, brand="ZeroLabel", label_weight=0, weight_used=0)
         assert zero_label.id in set(await _filtered_ids(db_session, usage="lowstock"))
 
+    async def test_lowstock_boundary_is_strict_not_inclusive(self, db_session):
+        """Review finding 7: remaining EXACTLY == threshold is NOT lowstock —
+        both the client and ``_warn_if_low_stock`` (usage_tracker.py) use
+        strict ``<``, the same boundary the notification re-arms on. A ``<=``
+        regression would wrongly include this spool."""
+        exactly_at_threshold = await _spool(
+            db_session, brand="ExactlyAtThreshold", label_weight=1000, weight_used=800, low_stock_threshold_pct=20
+        )  # remaining = (1000-800)/1000*100 = 20.0, threshold = 20 -> 20 < 20 is False
+        assert exactly_at_threshold.id not in set(await _filtered_ids(db_session, usage="lowstock"))
+
 
 class TestMaterialBrandFilters:
     async def test_material(self, db_session):
@@ -216,6 +226,29 @@ class TestLocationIdFilter:
         assert ids == {blank.id, blank_text.id}
         assert with_loc.id not in ids
         assert has_legacy_text.id not in ids
+
+    async def test_legacy_text_fallback_cyrillic_byte_identical(self, db_session):
+        """Review finding 1 regression: the legacy-text fallback used to fold
+        the column with SQL ``lower()`` (SQLite: ASCII-only) but the location
+        NAME with Python ``.lower()`` (full Unicode) — a byte-identical
+        Cyrillic name compared unequal on the default SQLite backend even
+        though nothing differs but case-folding technique. Both sides must
+        now fold through the SAME ``func.lower()``."""
+        loc = await _location(db_session, "Полиця A")
+        legacy_spool = await _spool(db_session, brand="CyrillicLegacy", location_id=None, storage_location="Полиця A")
+        unrelated = await _spool(db_session, brand="Unrelated", location_id=None, storage_location="Інша полиця")
+
+        ids = set(await _filtered_ids(db_session, location_id=str(loc.id)))
+        assert ids == {legacy_spool.id}
+        assert unrelated.id not in ids
+
+    async def test_non_numeric_location_id_does_not_500(self, db_session):
+        """Defense-in-depth companion to the route-level 422 (TestRouteEnvelope):
+        even called directly (bypassing the route's Query pattern), a bogus
+        ``location_id`` must raise a normal, catchable error — never something
+        the caller can't anticipate."""
+        with pytest.raises(ValueError):
+            await inventory_service.build_spool_filters(db_session, location_id="abc")
 
 
 class TestStockFilter:
@@ -459,6 +492,57 @@ class TestPagingTiebreak:
         assert len(set(all_ids)) == 4
 
 
+class TestNullableSortColumnsMatchClientCoalescing:
+    """Review finding 5: the sort matrix fixture never exercised a bare NULL
+    sort value (``sort_matrix_spools``'s nullable fields are always masked by
+    a non-null value or routed through a CASE that already handles NULL).
+    Without an explicit fix, NULL placement here is dialect-dependent
+    (SQLite defaults NULLS FIRST on asc, PostgreSQL NULLS LAST) — the same
+    request would order differently per backend. The client coalesces every
+    nullable extractor to ``''``/``0``, which sorts NULL first on asc/last on
+    desc deterministically; the server must match."""
+
+    async def test_nullable_text_column_coalesces_like_the_client(self, db_session):
+        has_subtype = await _spool(db_session, brand="HasSubtype", subtype="Zzz")
+        null_subtype = await _spool(db_session, brand="NullSubtype", subtype=None)
+        filters = await inventory_service.build_spool_filters(db_session)
+
+        asc = await inventory_service.list_spools(db_session, filters=filters, sort_by="subtype_asc", limit=None)
+        assert [s.id for s in asc] == [null_subtype.id, has_subtype.id]
+
+        desc = await inventory_service.list_spools(db_session, filters=filters, sort_by="subtype_desc", limit=None)
+        assert [s.id for s in desc] == [has_subtype.id, null_subtype.id]
+
+    async def test_nullable_datetime_column_pins_null_first_on_asc_last_on_desc(self, db_session):
+        has_date = await _spool(
+            db_session, brand="HasPurchaseDate", purchase_date=datetime(2026, 1, 1, tzinfo=timezone.utc)
+        )
+        null_date = await _spool(db_session, brand="NullPurchaseDate", purchase_date=None)
+        filters = await inventory_service.build_spool_filters(db_session)
+
+        asc = await inventory_service.list_spools(db_session, filters=filters, sort_by="purchase_date_asc", limit=None)
+        assert [s.id for s in asc] == [null_date.id, has_date.id]
+
+        desc = await inventory_service.list_spools(
+            db_session, filters=filters, sort_by="purchase_date_desc", limit=None
+        )
+        assert [s.id for s in desc] == [has_date.id, null_date.id]
+
+
+class TestStockSortTreatsEmptyStringAsUnconfigured:
+    async def test_empty_string_slicer_filament_sorts_as_unconfigured(self, db_session):
+        """Review finding 4: the ``stock`` SORT used to disagree with the
+        ``stock`` FILTER (and the client extractor) about an empty-string
+        ``slicer_filament`` — the filter already treats it as unconfigured
+        (seeded by ``TestStockFilter``); the sort must agree."""
+        empty_string = await _spool(db_session, brand="EmptyString", slicer_filament="")
+        configured = await _spool(db_session, brand="Configured", slicer_filament="GFL99")
+        filters = await inventory_service.build_spool_filters(db_session)
+
+        asc = await inventory_service.list_spools(db_session, filters=filters, sort_by="stock_asc", limit=None)
+        assert [s.id for s in asc] == [empty_string.id, configured.id]
+
+
 class TestUnrecognizedSortFallsBackGracefully:
     async def test_missing_and_garbage_sort_by(self, db_session):
         a = await _spool(db_session, material="ABS", brand="A")
@@ -545,6 +629,21 @@ class TestRouteEnvelope:
         body = resp.json()
         item = next(i for i in body["items"] if i["id"] == spool.id)
         assert item["k_profile_count"] == 1
+
+    async def test_non_numeric_location_id_is_422_not_500(self, async_client, db_session):
+        """Review finding 3: ``location_id=abc`` used to reach ``int(location_id)``
+        uncaught and 500. The Query pattern must reject it as a normal 4xx —
+        reachable by any INVENTORY_READ consumer via a hand-edited/truncated
+        deep-link (the page writes ``?location_id=`` into the shareable URL)."""
+        resp = await async_client.get("/api/v1/inventory/spools", params={"page": 1, "location_id": "abc"})
+        assert 400 <= resp.status_code < 500
+        assert resp.status_code != 500
+
+        # The two legitimate shapes still work fine.
+        ok_sentinel = await async_client.get("/api/v1/inventory/spools", params={"page": 1, "location_id": "__none__"})
+        assert ok_sentinel.status_code == 200
+        ok_numeric = await async_client.get("/api/v1/inventory/spools", params={"page": 1, "location_id": "1"})
+        assert ok_numeric.status_code == 200
 
 
 class TestLegacyPin:
