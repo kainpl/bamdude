@@ -219,14 +219,14 @@ const libraryFiles = [
 
 let patchCalls: Array<{ itemId: number; copies: number }> = [];
 
-async function renderPlanPage() {
+async function renderPlanPage(items: typeof planItems = planItems) {
   server.use(
     http.get('/api/v1/projects/1', () => HttpResponse.json(project)),
     http.get('/api/v1/projects/1/archives', () => HttpResponse.json([])),
     http.get('/api/v1/projects/1/bom', () => HttpResponse.json([])),
     http.get('/api/v1/projects/1/timeline', () => HttpResponse.json([])),
     http.get('/api/v1/projects/1/folders', () => HttpResponse.json([])),
-    http.get('/api/v1/projects/1/print-plan', () => HttpResponse.json(printPlanResponse)),
+    http.get('/api/v1/projects/1/print-plan', () => HttpResponse.json({ ...printPlanResponse, items })),
     http.get('/api/v1/projects/', () => HttpResponse.json([])),
     http.get('/api/v1/library/files', () => HttpResponse.json(libraryFiles)),
     http.patch('/api/v1/projects/1/print-plan/items/:itemId', async ({ params, request }) => {
@@ -292,5 +292,38 @@ describe('ProjectDetailPage plan — two-level plate rows', () => {
 
     await waitFor(() => expect(patchCalls.length).toBeGreaterThan(0));
     expect(patchCalls[0]).toEqual({ itemId: 2, copies: 9 });
+  });
+
+  it('a file whose plate rows are non-contiguous in the plan still forms one parent', async () => {
+    // Plan order: fileA plate 1, fileB (flat), fileA plate 2 — a re-slice
+    // can plant a new plate row for a file whose order_index puts it away
+    // from its siblings, so grouping must not depend on adjacency. Expect
+    // exactly one plan-parent-10, both plates as its children in plate
+    // order, and fileB (20) still rendering flat.
+    const scattered = [planItems[0], planItems[2], planItems[1]];
+    await renderPlanPage(scattered);
+
+    const parents = await screen.findAllByTestId('plan-parent-10');
+    expect(parents).toHaveLength(1);
+
+    const group = parents[0].parentElement as HTMLElement;
+    // Row containers only — `plan-plate-<id>`, not their nested
+    // `plan-plate-print-<id>` / `plan-plate-queue-<id>` buttons, which
+    // also start with the "plan-plate-" prefix.
+    const childTestIds = Array.from(group.querySelectorAll('[data-testid^="plan-plate-"]'))
+      .map((el) => el.getAttribute('data-testid'))
+      .filter((id): id is string => /^plan-plate-\d+$/.test(id ?? ''));
+    // plate_index 1 then 2, regardless of the scattered input order above.
+    expect(childTestIds).toEqual(['plan-plate-1', 'plan-plate-2']);
+
+    expect(screen.queryByTestId('plan-parent-20')).not.toBeInTheDocument();
+    const flatText = screen.getByText('Single Plate File');
+    expect(flatText).toBeInTheDocument();
+
+    // fileA's first occurrence precedes fileB's in the scattered plan, so
+    // its (single) parent group renders before fileB's flat row — not
+    // split around it.
+    const relativePosition = parents[0].compareDocumentPosition(flatText);
+    expect(relativePosition & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

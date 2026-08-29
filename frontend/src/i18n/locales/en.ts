@@ -4722,6 +4722,9 @@ export default {
     noCreatePermission: 'You do not have permission to create projects',
     noImportPermission: 'You do not have permission to import projects',
     noExportPermission: 'You do not have permission to export projects',
+    // Archive/Unarchive
+    archive: 'Archive',
+    unarchive: 'Unarchive',
     // Duplicate
     duplicate: {
       action: 'Duplicate',
@@ -4740,6 +4743,8 @@ export default {
       updated: 'Project updated',
       deleted: 'Project deleted',
       duplicated: 'Project duplicated',
+      archived: 'Project archived',
+      restored: 'Project restored',
       imported: 'Project imported',
       multipleImported: '{{count}} projects imported',
       importFailed: 'Import failed',

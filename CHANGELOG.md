@@ -16,7 +16,13 @@
 
 - **Projects: per-part counting.** Every archive now records which named parts its plate carried (copy-suffixes like `part.stl_2` fold into one name). The project page gains a Parts table: set a target per part and watch printed / in progress / defective / usable / remaining converge on it — across however many files and plate layouts the part appears in.
 
-- **Per-part defect entry.** Skipping an object attributes the scrap to that part automatically; the archive editor lets you mark exactly which parts came out bad instead of a single number (archives without part data keep the plain counter). A one-shot script backfills part rows for existing archives from their 3MFs.
+- **Per-part defect entry.** Skipping an object attributes the scrap to that part automatically; the archive editor lets you mark exactly which parts came out bad instead of a single number (archives without part data keep the plain counter). Existing archives are backfilled automatically during the upgrade.
+
+- **Templates carry the whole project.** Creating a template — or a project from one — now copies the linked files and folders, the print plan with its quantities, the per-part targets, and the attachments, exactly like project duplication (which now also carries per-part targets).
+
+- **Print plan knows plates.** A multi-plate file shows one row per plate with its own copies counter, printed count, and print/queue buttons that target exactly that plate; the file row keeps the whole-file flow. Existing plans migrate automatically.
+
+- **Archive a project from its card.** The card menu gains Archive/Unarchive next to Duplicate.
 
 ### Changed
 

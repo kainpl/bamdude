@@ -4759,6 +4759,9 @@ export default {
     noCreatePermission: 'У вас немає дозволу створювати проєкти',
     noImportPermission: 'У вас немає дозволу імпортувати проєкти',
     noExportPermission: 'У вас немає дозволу експортувати проєкти',
+    // Archive/Unarchive
+    archive: 'Архівувати',
+    unarchive: 'Розархівувати',
     // Duplicate
     duplicate: {
       action: 'Дублювати',
@@ -4779,6 +4782,8 @@ export default {
       updated: 'Проєкт оновлено',
       deleted: 'Проєкт видалено',
       duplicated: 'Проєкт продубльовано',
+      archived: 'Проект архівовано',
+      restored: 'Проект відновлено',
       imported: 'Проєкт імпортовано',
       multipleImported: '{{count}} проєктів імпортовано',
       importFailed: 'Помилка імпорту',
