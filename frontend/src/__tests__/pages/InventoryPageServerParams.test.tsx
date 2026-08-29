@@ -80,12 +80,54 @@ const SETTINGS = {
 let listRequests: URL[] = [];
 let idsRequests: URL[] = [];
 let facetsRequests: URL[] = [];
+let forecastRequests: URL[] = [];
+
+// The Forecast tab renders SERVER-computed rows since task 4 of the
+// 2026-08-29 forecast-server-side cycle — the panel's old all=true spool
+// feed is gone; opening the tab hits GET /inventory/forecast instead.
+const FORECAST_ROWS = SPOOLS.map((s) => ({
+  material: s.material,
+  subtype: null,
+  brand: s.brand,
+  color_name: s.color_name,
+  rgba: s.rgba,
+  total_spools: 1,
+  total_remaining_g: 1000,
+  total_label_g: 1000,
+  total_used_g: 0,
+  rate_g_day: null,
+  rate_tier: 'none',
+  std_dev: null,
+  eff_lead_time_days: 0,
+  safety_stock_g: 70,
+  reorder_point_g: 0,
+  days_remaining: null,
+  projected_empty_date: null,
+  days_until_rop: null,
+  reorder_trigger_date: null,
+  stock_break_alert: false,
+  reorder_alert: false,
+  alerts_snoozed: false,
+  spool_ids: [s.id],
+}));
 
 function setupHandlers() {
   listRequests = [];
   idsRequests = [];
   facetsRequests = [];
+  forecastRequests = [];
   server.use(
+    http.get('/api/v1/inventory/forecast', ({ request }) => {
+      forecastRequests.push(new URL(request.url));
+      return HttpResponse.json({
+        items: FORECAST_ROWS,
+        meta: { total: FORECAST_ROWS.length, current_page: 1, per_page: 50, last_page: 1 },
+        alert_count: 0,
+        global_lead_time_days: 0,
+      });
+    }),
+    http.get('/api/v1/inventory/forecast/chart', () => HttpResponse.json({ series: [] })),
+    http.get('/api/v1/inventory/forecast/logistics', () => HttpResponse.json([])),
     http.get('/api/v1/settings/', () => HttpResponse.json(SETTINGS)),
     http.get('/api/v1/settings/spoolman', () =>
       HttpResponse.json({ spoolman_enabled: 'false', spoolman_url: '' })
@@ -136,13 +178,12 @@ function setupHandlers() {
   );
 }
 
-/** The list request driving the visible page (the all=true ones are the
- *  separate stats feed and — on the Forecast tab only — the panel's own
- *  feed, task 5). */
+/** The list request driving the visible page (the all=true one is the
+ *  separate stats feed). */
 const pageRequests = () => listRequests.filter((u) => u.searchParams.get('all') !== 'true');
-/** The full-set slim fetches: the page-level stats feed plus, once the
- *  Forecast tab opens, ForecastPanel's own feed. Same URL shape by design —
- *  the tests below pin them apart by COUNT. */
+/** The full-set slim fetches. Since forecast-server-side task 4 the ONLY
+ *  legitimate one is the page-level stats feed — ForecastPanel renders
+ *  server-computed rows and owns no spool feed anymore. */
 const fullSetRequests = () => listRequests.filter((u) => u.searchParams.get('all') === 'true');
 
 describe('InventoryPage — server-driven params (task 4)', () => {
@@ -283,44 +324,52 @@ describe('InventoryPage — the Forecast tab feeds itself (task 5)', () => {
   beforeEach(() => {
     localStorage.clear();
     setupHandlers();
-    // The panel's other feeds — separate endpoints, unchanged by task 5
-    // (spec §3.5); answered empty so opening the tab settles cleanly.
+    // The panel's remaining side feeds — the settings CRUD surfaces and the
+    // shopping list stayed client-called through the forecast-server-side
+    // rewrite; answered empty so opening the tab settles cleanly. The
+    // 5000-row /inventory/usage feed is deliberately NOT handled: the panel
+    // must never call it again, and an unhandled request would fail loudly.
     server.use(
-      http.get('/api/v1/inventory/usage', () => HttpResponse.json([])),
       http.get('/api/v1/inventory/sku-settings', () => HttpResponse.json([])),
       http.get('/api/v1/inventory/shopping-list', () => HttpResponse.json([])),
     );
   });
 
-  it('a plain inventory visit fires exactly ONE all=true fetch (the stats feed) — the forecast feed stays quiet', async () => {
+  it('a plain inventory visit fires exactly ONE all=true fetch (the stats feed) — the forecast endpoints stay quiet', async () => {
     render(<InventoryPageRouter />);
-    // Settle: rows on screen and the stats feed answered. A leaked forecast
-    // query would be a SECOND identical all=true request — mount-time
-    // queries fire in the same tick as the page's own, so by the time the
-    // list has settled it would already be in the count.
+    // Settle: rows on screen and the stats feed answered. A leaked panel
+    // query would show up as a GET /inventory/forecast — mount-time queries
+    // fire in the same tick as the page's own, so by the time the list has
+    // settled it would already be in the count.
     await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
     await waitFor(() => expect(fullSetRequests().length).toBe(1));
     expect(fullSetRequests().length).toBe(1);
+    expect(forecastRequests.length).toBe(0);
   });
 
-  it('opening the Forecast tab fires the panel\'s own full-set feed and renders the SKU table off it', async () => {
+  it('opening the Forecast tab fires the server forecast query — never a full-set spool feed (task 4)', async () => {
     render(<InventoryPageRouter />);
     await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
-    const before = fullSetRequests().length;
+    const fullSetBefore = fullSetRequests().length; // the stats feed
 
     const forecastTab = screen.getByRole('button', { name: /^Forecast$/ });
     await waitFor(() => expect(forecastTab).toBeEnabled());
     fireEvent.click(forecastTab);
 
-    await waitFor(() => expect(fullSetRequests().length).toBe(before + 1));
-    // Same span as the old getSpools(true) prop: both tabs, slim rows.
-    const feed = fullSetRequests()[fullSetRequests().length - 1];
-    expect(feed.searchParams.has('archived')).toBe(false);
-    expect(feed.searchParams.has('include_k_profiles')).toBe(false);
+    // The panel's ONE feed: server-sorted, server-paged forecast rows.
+    await waitFor(() => expect(forecastRequests.length).toBeGreaterThan(0));
+    const u = forecastRequests[0];
+    expect(u.searchParams.get('page')).toBe('1');
+    expect(u.searchParams.get('per_page')).toBe('50');
+    expect(u.searchParams.get('sort_by')).toBe('material_asc');
 
-    // And the panel renders its SKU rows off that feed, not off a prop.
+    // And the panel renders its SKU rows off the served response.
     await waitFor(() => expect(screen.getByText('eSun PLA Blue')).toBeInTheDocument());
     expect(screen.getByText('SUNLU PETG Blue')).toBeInTheDocument();
+
+    // The old panel-owned all=true spool feed (and the 5000-row usage feed)
+    // are DEAD — no new full-set request beyond the page's own stats feed.
+    expect(fullSetRequests().length).toBe(fullSetBefore);
   });
 
   it('Spoolman mode + a stale persisted forecast viewMode never mounts the panel — zero local-inventory traffic (task-6 guard, T5 review Minor 1)', async () => {
@@ -345,13 +394,15 @@ describe('InventoryPage — the Forecast tab feeds itself (task 5)', () => {
     // …the panel never rendered (its SKU rows join brand+material+colour into
     // one label; the table keeps them in separate cells)…
     expect(screen.queryByText('eSun PLA Blue')).toBeNull();
-    // …and the panel's feed never fired. The page-level flat list + all-slim
-    // stats feed each fire ONCE while the spoolman settings are still in
-    // flight (spoolmanMode reads false for that first tick — a pre-existing
-    // cold-load flicker, out of task-6 scope); the panel's feed would be a
-    // SECOND all=true request and a THIRD paged one. If a later cycle gates
-    // those page-level queries on spoolmanModeReady, these counts drop to 0
-    // — lower is better here, only MORE is a regression.
+    // …and the panel's feed never fired: since task 4 that feed is
+    // GET /inventory/forecast, and a mounted panel would have called it.
+    // The page-level flat list + all-slim stats feed each fire ONCE while
+    // the spoolman settings are still in flight (spoolmanMode reads false
+    // for that first tick — a pre-existing cold-load flicker, out of task-6
+    // scope). If a later cycle gates those page-level queries on
+    // spoolmanModeReady, these counts drop to 0 — lower is better here,
+    // only MORE is a regression.
+    expect(forecastRequests.length).toBe(0);
     expect(fullSetRequests().length).toBeLessThanOrEqual(1);
     expect(listRequests.length).toBeLessThanOrEqual(2);
   });

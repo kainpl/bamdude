@@ -1022,8 +1022,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // archived consumption). Deliberately NO refetchInterval: the 30s poll is
   // page-scoped now; this refreshes on window focus and on every spool
   // mutation via the ['inventory-spools'] prefix invalidation. The Forecast
-  // tab no longer feeds from here — ForecastPanel owns its own tab-gated
-  // copy of this feed since task 5.
+  // tab does not feed from here — since the forecast-server-side rewrite
+  // (task 4) ForecastPanel renders server-computed rows and holds no spool
+  // feed at all.
   const { data: allSpoolsSlim } = useQuery({
     queryKey: ['inventory-spools', 'all-slim'],
     queryFn: async () => (await api.getSpoolsPaged({ page: 1, all: true })).items,
@@ -2539,15 +2540,15 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       {listLoading ? (
         <LoadingBlock label={t('common.loading')} />
       ) : viewMode === 'forecast' && canViewForecast ? (
-        /* Forecast view (upstream #1184). The panel owns its full-set feed
-           since task 5 — mounted, and therefore fetching, only while this
-           tab is open; its exp-decay math needs the FULL set, which the
-           server-paged list no longer holds. The canViewForecast guard keeps
-           a stale PERSISTED viewMode from mounting the panel where the tab
-           itself is unreachable — above all Spoolman mode, where the panel's
-           local-inventory feed would silently compute a forecast over the
-           OTHER backend's spools (task-5 review, Minor 1); it falls back to
-           the table below instead. */
+        /* Forecast view (upstream #1184). Since the forecast-server-side
+           rewrite (task 4) the panel renders SERVER-computed rows — it is
+           mounted, and therefore fetching /inventory/forecast, only while
+           this tab is open. The canViewForecast guard keeps a stale
+           PERSISTED viewMode from mounting the panel where the tab itself
+           is unreachable — above all Spoolman mode, where the forecast
+           endpoints would compute over the LOCAL inventory under a Spoolman
+           UI (task-5 review, Minor 1); it falls back to the table below
+           instead. */
         <ForecastPanel />
       ) : viewMode === 'cards' ? (
         /* Cards view */

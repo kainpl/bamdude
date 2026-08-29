@@ -7750,6 +7750,9 @@ export default {
     noUsageData: 'No usage data available - cannot project stock timeline.',
     // Table headers
     sku: 'SKU',
+    // Pagination-bar noun (mid-sentence: "Showing 1-50 of 80 SKUs")
+    skus: 'SKUs',
+    exportFailed: 'Export failed',
     spools: 'Spools',
     material: 'Material',
     stock: 'Stock',

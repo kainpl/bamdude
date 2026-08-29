@@ -4588,8 +4588,9 @@ export interface SpoolAssignment {
 }
 
 // Stock forecasting (upstream #1184) — per-SKU reorder configuration +
-// shopping list. Algorithm runs entirely in ForecastPanel; these types
-// describe the persistence layer.
+// shopping list. The forecast math itself is server-side since the
+// 2026-08-29 forecast-server-side cycle (backend forecast_engine is the one
+// math owner); these types describe the persistence layer.
 export interface FilamentSkuSettings {
   id: number;
   material: string;
@@ -4622,6 +4623,103 @@ export interface ShoppingListItemCreate {
   color_name: string | null;
   quantity_spools: number;
   note?: string | null;
+}
+
+// ── Server-computed forecast (task 4, 2026-08-29 forecast-server-side) ──────
+// Wire mirror of backend/app/schemas/forecast.py — every Optional stays
+// nullable, dates are "YYYY-MM-DD" UTC calendar days rendered as-is (spec
+// §2.1 deviation). The panel is a renderer: nothing here is recomputed.
+
+/** One finished SKU row — `forecast_engine.SkuForecastRow`, serialized. */
+export interface SkuForecastRow {
+  material: string | null;
+  subtype: string | null;
+  brand: string | null;
+  color_name: string | null;
+  /** The group's swatch — first non-null rgba, live spools preferred. */
+  rgba: string | null;
+  total_spools: number;
+  total_remaining_g: number;
+  total_label_g: number;
+  total_used_g: number;
+  rate_g_day: number | null;
+  rate_tier: 'history' | 'delta' | 'none';
+  std_dev: number | null;
+  eff_lead_time_days: number;
+  /** Always a real number in practice (placeholder margin at rate null). */
+  safety_stock_g: number | null;
+  /** 0.0 at rate null — never null in practice; schema mirror keeps the |null. */
+  reorder_point_g: number | null;
+  days_remaining: number | null;
+  projected_empty_date: string | null;
+  days_until_rop: number | null;
+  /** Clamped at today server-side while days_until_rop keeps its raw negative. */
+  reorder_trigger_date: string | null;
+  stock_break_alert: boolean;
+  reorder_alert: boolean;
+  alerts_snoozed: boolean;
+  /** LIVE spools of the group, ascending id — the lazy expanded row's exact
+   *  membership (the spool list cannot filter on subtype or NULL fields). */
+  spool_ids: number[];
+}
+
+export interface ForecastListPage {
+  items: SkuForecastRow[];
+  meta: PaginationMeta;
+  /** Un-snoozed alert rows across the WHOLE farm — filters never move it. */
+  alert_count: number;
+  global_lead_time_days: number;
+}
+
+export interface ForecastListParams {
+  page?: number;
+  per_page?: number;
+  all?: boolean;
+  /** `<key>_asc|_desc` over material|spools|used|days_left|stock|empty_by|
+   *  reorder_by. ⚠️ An unknown key is a REAL 400 — persisted values must be
+   *  sanitized BEFORE they reach a request (ForecastPanel.sanitizeSort). */
+  sort_by?: string;
+  material?: string;
+  brand?: string;
+  alerts_only?: boolean;
+}
+
+export interface ForecastChartSeriesEntry {
+  sku: {
+    material: string | null;
+    subtype: string | null;
+    brand: string | null;
+    color_name: string | null;
+  };
+  rgba: string | null;
+  /** The dashed per-series reference line. */
+  rop_g: number;
+  /** Day-bucketed burn, sparse (only days with usage), ascending dates. */
+  usage: [string, number][];
+  /** Depletion from today at the row's rate; clamps at 0 and stops there. */
+  projection: [string, number][];
+}
+
+export interface ForecastChartResponse {
+  series: ForecastChartSeriesEntry[];
+}
+
+export interface ForecastLogisticsRow {
+  /** Join key to the shopping-list rows the panel already holds. */
+  item_id: number;
+  /** Null = the "no usage data" case (no forecast row, or no positive rate).
+   *  When present the arrival date appears TWICE (pre/post bump) so a
+   *  type="linear" area renders the vertical step. */
+  series: [string, number][] | null;
+  arrival_day: number | null;
+  rop_g: number | null;
+  safety_stock_g: number | null;
+  /** The break banner's headline number — the client's stockBreaksAt memo
+   *  verbatim, served. NOT derivable from the series (rounding zeroes a day
+   *  later in general) — always render from this field. */
+  stock_break_day: number | null;
+  /** Guaranteed === (stock_break_day !== null). */
+  stock_break_before_arrival: boolean;
 }
 
 // Update types
@@ -8497,6 +8595,49 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ status }),
     }),
+  // ── Server-computed forecast (task 4, 2026-08-29 forecast-server-side) ────
+  // The four feeds the Forecast tab renders from — every number computed by
+  // the backend forecast_engine; the panel sends its table state as params.
+  getForecast: (params: ForecastListParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.sort_by) qs.set('sort_by', params.sort_by);
+    if (params.material) qs.set('material', params.material);
+    if (params.brand) qs.set('brand', params.brand);
+    if (params.alerts_only) qs.set('alerts_only', 'true');
+    qs.set('page', String(params.page ?? 1));
+    if (params.all) {
+      qs.set('all', 'true');
+    } else if (params.per_page) {
+      qs.set('per_page', String(params.per_page));
+    }
+    return request<ForecastListPage>(`/inventory/forecast?${qs}`);
+  },
+  getForecastChart: (days: 7 | 30 | 180) =>
+    request<ForecastChartResponse>(`/inventory/forecast/chart?days=${days}`),
+  getForecastLogistics: () => request<ForecastLogisticsRow[]>('/inventory/forecast/logistics'),
+  /** Server-generated shopping-list CSV via the house binary-download idiom
+   *  (direct fetch + blob + anchor — same as exportSpoolsCsv above; request()
+   *  would try to JSON-parse the body). */
+  downloadShoppingListCsv: async (): Promise<void> => {
+    const headers: Record<string, string> = {};
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/inventory/shopping-list/export.csv`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const disposition = response.headers.get('Content-Disposition');
+    const filename = parseContentDispositionFilename(disposition) || 'shopping-list.csv';
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  },
   getFilamentPresets: () =>
     request<SlicerSetting[]>('/cloud/filaments'),
 
