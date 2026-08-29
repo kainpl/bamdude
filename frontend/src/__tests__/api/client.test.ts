@@ -206,3 +206,117 @@ describe('FormData requests include auth header', () => {
     expect(capturedHeaders!.get('Authorization')).toBe('Bearer test-token');
   });
 });
+
+describe('getLibraryFilesPaged (task 2, 2026-08-29 server-driven-lists)', () => {
+  const emptyPage = { items: [], meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 } };
+
+  it('always sends `page` even with no params — the compat switch for the envelope', async () => {
+    let query: URLSearchParams | null = null;
+    server.use(
+      http.get('/api/v1/library/files', ({ request }) => {
+        query = new URL(request.url).searchParams;
+        return HttpResponse.json(emptyPage);
+      }),
+    );
+
+    await api.getLibraryFilesPaged();
+
+    expect(query!.get('page')).toBe('1');
+    // None of the optional filters are sent when omitted.
+    expect(query!.has('folder_id')).toBe(false);
+    expect(query!.has('q')).toBe(false);
+    expect(query!.has('file_type')).toBe(false);
+    expect(query!.has('unprinted_only')).toBe(false);
+    expect(query!.has('username')).toBe(false);
+    expect(query!.has('sort_by')).toBe(false);
+    expect(query!.has('recursive')).toBe(false);
+    expect(query!.getAll('tag_ids')).toEqual([]);
+  });
+
+  it('sends every filter, the sort and the page', async () => {
+    let query: URLSearchParams | null = null;
+    server.use(
+      http.get('/api/v1/library/files', ({ request }) => {
+        query = new URL(request.url).searchParams;
+        return HttpResponse.json(emptyPage);
+      }),
+    );
+
+    await api.getLibraryFilesPaged({
+      folder_id: 7,
+      project_id: 3,
+      include_root: false,
+      scope: 'external',
+      tag_ids: [1, 2],
+      recursive: true,
+      q: 'benchy',
+      file_type: 'gcode',
+      unprinted_only: true,
+      username: 'alice',
+      sort_by: 'date_desc',
+      page: 2,
+      per_page: 25,
+    });
+
+    expect(query!.get('folder_id')).toBe('7');
+    expect(query!.get('project_id')).toBe('3');
+    expect(query!.get('include_root')).toBe('false');
+    expect(query!.get('external_only')).toBe('true');
+    expect(query!.has('internal_only')).toBe(false);
+    expect(query!.getAll('tag_ids')).toEqual(['1', '2']);
+    expect(query!.get('recursive')).toBe('true');
+    expect(query!.get('q')).toBe('benchy');
+    expect(query!.get('file_type')).toBe('gcode');
+    expect(query!.get('unprinted_only')).toBe('true');
+    expect(query!.get('username')).toBe('alice');
+    expect(query!.get('sort_by')).toBe('date_desc');
+    expect(query!.get('page')).toBe('2');
+    expect(query!.get('per_page')).toBe('25');
+  });
+
+  it('maps scope=internal to internal_only, not external_only', async () => {
+    let query: URLSearchParams | null = null;
+    server.use(
+      http.get('/api/v1/library/files', ({ request }) => {
+        query = new URL(request.url).searchParams;
+        return HttpResponse.json(emptyPage);
+      }),
+    );
+
+    await api.getLibraryFilesPaged({ scope: 'internal' });
+
+    expect(query!.get('internal_only')).toBe('true');
+    expect(query!.has('external_only')).toBe(false);
+  });
+
+  it('sends `all=true` and omits `per_page`, but still sends `page`', async () => {
+    let query: URLSearchParams | null = null;
+    server.use(
+      http.get('/api/v1/library/files', ({ request }) => {
+        query = new URL(request.url).searchParams;
+        return HttpResponse.json(emptyPage);
+      }),
+    );
+
+    await api.getLibraryFilesPaged({ all: true, per_page: 25, page: 3 });
+
+    expect(query!.get('all')).toBe('true');
+    expect(query!.has('per_page')).toBe(false);
+    // ⚠️ Backend reads `page is not None` as the paginate switch even under
+    // `all` (offset/limit come from the `all` branch instead) — dropping this
+    // would silently fall back to the legacy flat-array response.
+    expect(query!.get('page')).toBe('3');
+  });
+
+  it('returns the {items, meta} envelope untouched', async () => {
+    const page = {
+      items: [{ id: 1, filename: 'benchy.3mf' }],
+      meta: { total: 1, current_page: 1, per_page: 50, last_page: 1 },
+    };
+    server.use(http.get('/api/v1/library/files', () => HttpResponse.json(page)));
+
+    const result = await api.getLibraryFilesPaged({ page: 1 });
+
+    expect(result).toEqual(page);
+  });
+});

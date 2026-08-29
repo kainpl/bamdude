@@ -18,8 +18,6 @@ const mockFoldersWithExternal = [
     parent_id: null,
     file_count: 3,
     projects: [],
-    archive_id: null,
-    archive_name: null,
     is_external: false,
     external_path: null,
     external_readonly: false,
@@ -31,8 +29,6 @@ const mockFoldersWithExternal = [
     parent_id: null,
     file_count: 5,
     projects: [],
-    archive_id: null,
-    archive_name: null,
     is_external: true,
     external_path: '/mnt/nas/prints',
     external_readonly: true,
@@ -44,8 +40,6 @@ const mockFoldersWithExternal = [
     parent_id: null,
     file_count: 2,
     projects: [],
-    archive_id: null,
-    archive_name: null,
     is_external: true,
     external_path: '/mnt/usb',
     external_readonly: false,
@@ -87,7 +81,12 @@ describe('FileManagerPage - External Folders', () => {
         return HttpResponse.json(mockFoldersWithExternal);
       }),
       http.get('/api/v1/library/files', () => {
-        return HttpResponse.json(mockFiles);
+        // Server-driven (task 2, 2026-08-29): FileManagerPage always sends
+        // `page`, so the endpoint answers with the {items, meta} envelope.
+        return HttpResponse.json({
+          items: mockFiles,
+          meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+        });
       }),
       http.get('/api/v1/library/stats', () => {
         return HttpResponse.json(mockStats);

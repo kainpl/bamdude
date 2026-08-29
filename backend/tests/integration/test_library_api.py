@@ -57,6 +57,46 @@ class TestLibraryFoldersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_create_folder_archive_id_is_a_dead_field(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """The folder-to-archive link was cut from the API (archives are print
+        history, not a filing destination — folder-to-project is the surviving
+        link). A payload that still sends ``archive_id`` is neither rejected nor
+        honoured: pydantic's default ``extra="ignore"`` drops it silently, and
+        the create proceeds as a plain, unlinked folder."""
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+
+        data = {"name": "Still Unlinked", "archive_id": archive.id}
+        response = await async_client.post("/api/v1/library/folders", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["name"] == "Still Unlinked"
+        assert "archive_id" not in result
+        assert "archive_name" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_folder_archive_id_is_a_dead_field(
+        self, async_client: AsyncClient, folder_factory, archive_factory, printer_factory, db_session
+    ):
+        """Same dead field on the update path — re-pointing a folder at an
+        archive via the payload no longer links anything."""
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+        folder = await folder_factory(name="Old Name")
+
+        data = {"name": "New Name", "archive_id": archive.id}
+        response = await async_client.put(f"/api/v1/library/folders/{folder.id}", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["name"] == "New Name"
+        assert "archive_id" not in result
+        assert "archive_name" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_create_nested_folder(self, async_client: AsyncClient, folder_factory, db_session):
         """Verify nested folder can be created."""
         parent = await folder_factory(name="Parent")
@@ -707,6 +747,60 @@ class TestLibraryFilesAPI:
         assert set(row.keys()) == expected_fields
         assert row["id"] == lib_file.id
         assert row["filename"] == "legacy.3mf"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_legacy_default_order_vs_explicit_name_asc(
+        self, async_client: AsyncClient, folder_factory, file_factory, db_session
+    ):
+        """The bug this pins: a bare legacy call (`sort_by` omitted entirely)
+        must keep exactly today's `ORDER BY filename` — NOT the `name_asc`
+        default value's `COALESCE(print_name, filename)` — since `sort_by`
+        can't tell "omitted" apart from "explicitly name_asc" unless the route
+        treats them as separate branches. Seeded so filename-order and
+        coalesce-order actively DISAGREE (mixed print_name presence — common,
+        not an edge case): the SAME three files, called two ways, must come
+        back in two DIFFERENT orders."""
+        folder = await folder_factory()
+        # Filename sorts this FIRST, but its print_name would sort it LAST
+        # under coalesce.
+        low_name_high_print = await file_factory(
+            folder_id=folder.id, filename="1_low.3mf", file_metadata={"print_name": "9_high"}
+        )
+        # No print_name at all — coalesce falls back to filename, same order
+        # either way. Keeps the middle position stable so only the outer two
+        # need to flip to prove the branch actually used.
+        mid_name_no_print = await file_factory(folder_id=folder.id, filename="5_mid.3mf")
+        # Filename sorts this LAST, but its print_name would sort it FIRST
+        # under coalesce.
+        high_name_low_print = await file_factory(
+            folder_id=folder.id, filename="9_high.3mf", file_metadata={"print_name": "1_low"}
+        )
+
+        # Bare legacy call — no sort_by at all — must stay in FILENAME order.
+        legacy_response = await async_client.get(f"/api/v1/library/files?folder_id={folder.id}")
+        assert legacy_response.status_code == 200
+        legacy_body = legacy_response.json()
+        assert isinstance(legacy_body, list)  # still the flat legacy shape, not the envelope
+        assert [f["id"] for f in legacy_body] == [
+            low_name_high_print.id,
+            mid_name_no_print.id,
+            high_name_low_print.id,
+        ]
+
+        # Explicit `sort_by=name_asc` on the IDENTICAL data must use the
+        # COALESCE(print_name, filename) order instead — the opposite order on
+        # the two print_name-carrying rows, pinning the two paths apart.
+        explicit_response = await async_client.get(
+            f"/api/v1/library/files?folder_id={folder.id}&sort_by=name_asc&page=1&per_page=50"
+        )
+        assert explicit_response.status_code == 200
+        explicit_items = explicit_response.json()["items"]
+        assert [f["id"] for f in explicit_items] == [
+            high_name_low_print.id,
+            mid_name_no_print.id,
+            low_name_high_print.id,
+        ]
 
     @pytest.mark.asyncio
     @pytest.mark.integration

@@ -24,8 +24,6 @@ const mockFolders = [
     parent_id: null,
     file_count: 5,
     projects: [],
-    archive_id: null,
-    archive_name: null,
     children: [
       {
         id: 2,
@@ -33,8 +31,6 @@ const mockFolders = [
         parent_id: 1,
         file_count: 3,
         projects: [],
-        archive_id: null,
-        archive_name: null,
         children: [],
       },
     ],
@@ -45,8 +41,6 @@ const mockFolders = [
     parent_id: null,
     file_count: 2,
     projects: [{ id: 1, name: 'My Art Project', color: null }],
-    archive_id: null,
-    archive_name: null,
     children: [],
   },
 ];
@@ -118,7 +112,12 @@ describe('FileManagerPage', () => {
         return HttpResponse.json(mockFolders);
       }),
       http.get('/api/v1/library/files', () => {
-        return HttpResponse.json(mockFiles);
+        // Server-driven (task 2, 2026-08-29): FileManagerPage always sends
+        // `page`, so the endpoint answers with the {items, meta} envelope.
+        return HttpResponse.json({
+          items: mockFiles,
+          meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+        });
       }),
       http.get('/api/v1/library/stats', () => {
         return HttpResponse.json(mockStats);
@@ -149,9 +148,6 @@ describe('FileManagerPage', () => {
       http.get('/api/v1/projects/', () => {
         return HttpResponse.json([{ id: 1, name: 'Test Project', color: '#00ae42' }]);
       }),
-      http.get('/api/v1/archives/', () => {
-        return HttpResponse.json([{ id: 1, print_name: 'Test Archive', filename: 'test.3mf' }]);
-      })
     );
   });
 
@@ -163,7 +159,10 @@ describe('FileManagerPage', () => {
       server.use(
         http.get('/api/v1/library/files', ({ request }) => {
           capturedIncludeRoot = new URL(request.url).searchParams.get('include_root');
-          return HttpResponse.json(mockFiles);
+          return HttpResponse.json({
+            items: mockFiles,
+            meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         }),
       );
 
@@ -187,9 +186,13 @@ describe('FileManagerPage', () => {
           capturedIncludeRoot = new URL(request.url).searchParams.get('include_root');
           // A library where the only file lives inside a subfolder — under
           // include_root=true this would render empty.
-          return HttpResponse.json([
+          const items = [
             { ...mockFiles[0], id: 99, filename: 'nested-only.3mf', folder_id: 2, print_name: null },
-          ]);
+          ];
+          return HttpResponse.json({
+            items,
+            meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         }),
       );
 
@@ -401,6 +404,32 @@ describe('FileManagerPage', () => {
       });
     });
 
+    it('offers a type present only on this page even when it is outside the common list', async () => {
+      // `file_type` is an OPEN set (`detect_file_type` returns any extension
+      // verbatim) — a MakerWorld ZIP's `instructions.pdf` is exactly the kind
+      // of oddball type the common hardcoded list was never going to carry,
+      // so the dropdown has to union it in from what this page actually has.
+      server.use(
+        http.get('/api/v1/library/files', () => {
+          const items = [
+            ...mockFiles,
+            { ...mockFiles[0], id: 99, filename: 'instructions.pdf', file_type: 'pdf', print_name: null },
+          ];
+          return HttpResponse.json({
+            items,
+            meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
+        }),
+      );
+
+      render(<FileManagerPage />);
+      await screen.findByText('Benchy');
+
+      const select = screen.getByDisplayValue('All types') as HTMLSelectElement;
+      const optionValues = Array.from(select.options).map((o) => o.value);
+      expect(optionValues).toContain('pdf');
+    });
+
     it('has sort options', async () => {
       render(<FileManagerPage />);
 
@@ -503,7 +532,7 @@ describe('FileManagerPage', () => {
     it('shows empty state when no files', async () => {
       server.use(
         http.get('/api/v1/library/files', () => {
-          return HttpResponse.json([]);
+          return HttpResponse.json({ items: [], meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 } });
         })
       );
 
@@ -806,7 +835,7 @@ describe('FileManagerPage', () => {
           });
         }),
         http.get('/api/v1/library/files', () => {
-          return HttpResponse.json([
+          const items = [
             {
               id: 1,
               filename: 'test.3mf',
@@ -821,7 +850,11 @@ describe('FileManagerPage', () => {
               created_at: '2024-01-01T00:00:00Z',
               created_by_username: 'testuser',
             },
-          ]);
+          ];
+          return HttpResponse.json({
+            items,
+            meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         })
       );
 
@@ -855,7 +888,7 @@ describe('FileManagerPage', () => {
           });
         }),
         http.get('/api/v1/library/files', () => {
-          return HttpResponse.json([
+          const items = [
             {
               id: 1,
               filename: 'test.3mf',
@@ -870,7 +903,11 @@ describe('FileManagerPage', () => {
               created_at: '2024-01-01T00:00:00Z',
               created_by_username: 'testuser',
             },
-          ]);
+          ];
+          return HttpResponse.json({
+            items,
+            meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         }),
         http.get('/api/v1/users/', () => {
           return HttpResponse.json([
@@ -912,10 +949,6 @@ describe('FileManagerPage', () => {
         name: 'NAS Library',
         parent_id: null,
         file_count: 200,
-        project_id: null,
-        archive_id: null,
-        project_name: null,
-        archive_name: null,
         is_external: true,
         external_readonly: false,
         external_path: '/mnt/nas',
@@ -956,7 +989,10 @@ describe('FileManagerPage', () => {
                 ? 'external'
                 : 'all',
           );
-          return HttpResponse.json(mockFiles);
+          return HttpResponse.json({
+            items: mockFiles,
+            meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         }),
       );
 
@@ -979,7 +1015,7 @@ describe('FileManagerPage', () => {
                 ? 'external'
                 : 'all',
           );
-          return HttpResponse.json([]);
+          return HttpResponse.json({ items: [], meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 } });
         }),
       );
 

@@ -29,7 +29,6 @@ import {
   AlertTriangle,
   X,
   Link2,
-  Archive as ArchiveIcon,
   Briefcase,
   Printer,
   Pencil,
@@ -52,16 +51,17 @@ import { api, ApiError } from '../api/client';
 import type {
   LibraryFolderTree,
   LibraryFileListItem,
+  LibraryFileListParams,
   LibraryFileUpdate,
   LibraryFolderCreate,
   LibraryFolderUpdate,
   ExternalFolderCreate,
   AppSettings,
-  Archive,
   Permission,
 } from '../api/client';
 import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
 import { Button } from '../components/Button';
+import { PaginationBar } from '../components/PaginationBar';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { LibraryPlateGalleryModal } from '../components/LibraryPlateGallery';
 import { PrintModal } from '../components/PrintModal';
@@ -77,7 +77,7 @@ import { MakerWorldIcon } from '../components/BrandIcons';
 import { useToast } from '../contexts/ToastContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useAuth } from '../contexts/AuthContext';
-import { formatDateTime, formatDuration, parseUTCDate, type TimeFormat, type DateFormat } from '../utils/date';
+import { formatDateTime, formatDuration, type TimeFormat, type DateFormat } from '../utils/date';
 import { fileActivityAt, formatFileSize } from '../utils/file';
 import { FileTagBadges } from '../components/FileTagBadges';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
@@ -94,6 +94,37 @@ import { selectableProjects } from '../utils/projects';
 type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
+
+/**
+ * Debounces a rapidly-changing value (300ms, same as ArchivesPage's search
+ * box) — both the search box and the username filter below are free-text
+ * fields that would otherwise fire one server round-trip per keystroke.
+ */
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+// Common `LibraryFile.file_type` values — a STABLE baseline for the filter
+// dropdown, NOT a closed set. `detect_file_type` (backend/app/services/
+// library_helpers.py:74-80) ends in `return ext[1:]`: any extension becomes
+// its own file_type (plus `"unknown"` for none), so a MakerWorld ZIP's
+// `instructions.pdf` / `notes.txt`, or any future extension, produces a type
+// this list has never heard of. `_SCANNABLE_EXTENSIONS`
+// (backend/app/api/routes/library.py) only gates EXTERNAL FOLDER
+// SCANNING — plain uploads and ZIP imports are not restricted to it. The
+// `fileTypes` memo below unions this list with whatever `file_type` values
+// are actually present in the CURRENT page's response (task 2 fix round,
+// 2026-08-29), so an oddball type on this page is still offered even though
+// it isn't common enough to hardcode here.
+const COMMON_LIBRARY_FILE_TYPES = [
+  '3mf', 'gcode', 'stl', 'obj', 'step', 'stp',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'md',
+] as const;
 
 // New Folder Modal
 interface NewFolderModalProps {
@@ -394,16 +425,10 @@ interface LinkFolderModalProps {
 }
 
 function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderModalProps) {
-  // m044: folder ↔ projects is M2M; archive stays single-link.
-  // Mode toggles which surface the operator wants to edit; the modal
-  // submits both halves of the state in one PUT.
-  const [linkType, setLinkType] = useState<'project' | 'archive'>(
-    folder.archive_id ? 'archive' : 'project',
-  );
+  // m044: folder ↔ projects is M2M.
   const [selectedProjectIds, setSelectedProjectIds] = useState<Set<number>>(
     () => new Set(folder.projects.map((p) => p.id)),
   );
-  const [selectedArchiveId, setSelectedArchiveId] = useState<number | null>(folder.archive_id);
 
   const { data: allProjects } = useQuery({
     queryKey: ['projects'],
@@ -416,11 +441,6 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
     [allProjects, selectedProjectIds],
   );
 
-  const { data: archives } = useQuery({
-    queryKey: ['archives-for-link'],
-    queryFn: () => api.getArchives({ per_page: 100 }),
-  });
-
   const toggleProject = (projectId: number) => {
     setSelectedProjectIds((prev) => {
       const next = new Set(prev);
@@ -431,16 +451,9 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
   };
 
   const handleSave = () => {
-    if (linkType === 'project') {
-      // Replace the project list; leave archive untouched. Per-project
-      // unlink happens by deselecting individual chips above; the
-      // legacy "wipe everything" red button is gone.
-      onLink({ project_ids: Array.from(selectedProjectIds) });
-    } else {
-      // Archive is single-link; clearing the selection (× button on the
-      // active-archive row) sends archive_id=0.
-      onLink({ archive_id: selectedArchiveId ?? 0 });
-    }
+    // Replace the project list. Per-project unlink happens by deselecting
+    // individual chips above; the legacy "wipe everything" red button is gone.
+    onLink({ project_ids: Array.from(selectedProjectIds) });
   };
 
   return (
@@ -461,138 +474,59 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
             {t('fileManager.linkFolderDescription', { name: folder.name })}
           </p>
 
-          {/* Link type selector */}
-          <div className="flex gap-2">
-            <button
-              onClick={() => setLinkType('project')}
-              className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
-                linkType === 'project'
-                  ? 'border-bambu-green bg-bambu-green/10 text-bambu-green'
-                  : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white'
-              }`}
-            >
-              <Briefcase className="w-4 h-4" />
-              {t('fileManager.project')}
-            </button>
-            <button
-              onClick={() => setLinkType('archive')}
-              className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
-                linkType === 'archive'
-                  ? 'border-bambu-green bg-bambu-green/10 text-bambu-green'
-                  : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white'
-              }`}
-            >
-              <ArchiveIcon className="w-4 h-4" />
-              {t('fileManager.archive')}
-            </button>
-          </div>
-
-          {linkType === 'project' ? (
-            // Chip multi-select. Each project is a clickable colored chip;
-            // selected = full color + check, unselected = outline only.
-            <div className="bg-bambu-dark rounded-lg p-3">
-              {projects && projects.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5">
-                  {projects.map((project) => {
-                    const selected = selectedProjectIds.has(project.id);
-                    return (
-                      <button
-                        key={project.id}
-                        type="button"
-                        onClick={() => toggleProject(project.id)}
-                        // m044 (post-feedback): selected chips show an
-                        // inline × so the per-project unlink affordance
-                        // is visually obvious — replaces the legacy
-                        // "wipe all" red button.
-                        title={
-                          selected
-                            ? t('fileManager.removeFromProject', { name: project.name })
-                            : project.name
-                        }
-                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                          selected
-                            ? 'border-transparent text-white'
-                            : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
-                        }`}
-                        style={
-                          selected
-                            ? { backgroundColor: project.color || '#00ae42' }
-                            : undefined
-                        }
-                      >
-                        <div
-                          className="w-2 h-2 rounded-full"
-                          style={{ backgroundColor: project.color || '#00ae42' }}
-                        />
-                        {project.name}
-                        {selected && <X className="w-3 h-3 ml-0.5 opacity-80" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="text-sm text-bambu-gray text-center py-4">
-                  {t('fileManager.noProjectsFound')}
-                </p>
-              )}
-              {selectedProjectIds.size === 0 && (
-                <p className="text-xs text-bambu-gray italic mt-2">
-                  {t('fileManager.noProjectsSelected')}
-                </p>
-              )}
-            </div>
-          ) : (
-            <>
-              {/* Currently linked archive — surfaced above the picker so the
-                  per-link unlink affordance (× clears the selection) is
-                  obvious without scrolling through the whole archive list. */}
-              {/* ⚠️ The whole point of this field is invisible from here: the link
-                  puts an "open source folder" shortcut on the ARCHIVE, not anything on
-                  the folder. Unsaid, it reads as a setting with no effect — which is
-                  exactly how it was read. */}
-              <p className="text-xs text-bambu-gray leading-snug">{t('fileManager.archiveLinkHint')}</p>
-              {selectedArchiveId != null && (
-                <div className="flex items-center justify-between gap-2 bg-bambu-dark rounded-lg px-3 py-2">
-                  <div className="flex items-center gap-2 text-sm text-white truncate">
-                    <FileBox className="w-4 h-4 text-bambu-gray flex-shrink-0" />
-                    <span className="truncate">
-                      {archives?.data.find((a: Archive) => a.id === selectedArchiveId)?.print_name
-                        ?? archives?.data.find((a: Archive) => a.id === selectedArchiveId)?.filename
-                        ?? `#${selectedArchiveId}`}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedArchiveId(null)}
-                    className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-red-600 dark:hover:text-red-400"
-                    title={t('fileManager.unlink')}
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-              <div className="max-h-64 overflow-y-auto space-y-1 bg-bambu-dark rounded-lg p-2">
-                {archives?.data && archives.data.length > 0 ? (
-                  archives.data.map((archive: Archive) => (
+          {/* Chip multi-select. Each project is a clickable colored chip;
+              selected = full color + check, unselected = outline only. */}
+          <div className="bg-bambu-dark rounded-lg p-3">
+            {projects && projects.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {projects.map((project) => {
+                  const selected = selectedProjectIds.has(project.id);
+                  return (
                     <button
-                      key={archive.id}
-                      onClick={() => setSelectedArchiveId(archive.id)}
-                      className={`w-full text-left px-3 py-2 rounded transition-colors flex items-center gap-2 ${
-                        selectedArchiveId === archive.id
-                          ? 'bg-bambu-green/20 text-bambu-green'
-                          : 'hover:bg-bambu-dark-tertiary text-white'
+                      key={project.id}
+                      type="button"
+                      onClick={() => toggleProject(project.id)}
+                      // m044 (post-feedback): selected chips show an
+                      // inline × so the per-project unlink affordance
+                      // is visually obvious — replaces the legacy
+                      // "wipe all" red button.
+                      title={
+                        selected
+                          ? t('fileManager.removeFromProject', { name: project.name })
+                          : project.name
+                      }
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                        selected
+                          ? 'border-transparent text-white'
+                          : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
                       }`}
+                      style={
+                        selected
+                          ? { backgroundColor: project.color || '#00ae42' }
+                          : undefined
+                      }
                     >
-                      <FileBox className="w-4 h-4 text-bambu-gray flex-shrink-0" />
-                      <span className="truncate">{archive.print_name || archive.filename}</span>
+                      <div
+                        className="w-2 h-2 rounded-full"
+                        style={{ backgroundColor: project.color || '#00ae42' }}
+                      />
+                      {project.name}
+                      {selected && <X className="w-3 h-3 ml-0.5 opacity-80" />}
                     </button>
-                  ))
-                ) : (
-                  <p className="text-sm text-bambu-gray text-center py-4">{t('fileManager.noArchivesFound')}</p>
-                )}
+                  );
+                })}
               </div>
-            </>
-          )}
+            ) : (
+              <p className="text-sm text-bambu-gray text-center py-4">
+                {t('fileManager.noProjectsFound')}
+              </p>
+            )}
+            {selectedProjectIds.size === 0 && (
+              <p className="text-xs text-bambu-gray italic mt-2">
+                {t('fileManager.noProjectsSelected')}
+              </p>
+            )}
+          </div>
         </div>
 
         <div className="p-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
@@ -608,7 +542,7 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
   );
 }
 
-// Link File Modal — per-file project link (simpler than folder: files have no archive_id)
+// Link File Modal — per-file project link
 interface LinkFileModalProps {
   file: LibraryFileListItem;
   onClose: () => void;
@@ -749,8 +683,8 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [showActions, setShowActions] = useState(false);
   const hasChildren = folder.children.length > 0;
-  // m044: M2M projects + optional single archive.
-  const isLinked = folder.projects.length > 0 || folder.archive_id != null;
+  // m044: M2M projects.
+  const isLinked = folder.projects.length > 0;
   const isExternal = folder.is_external;
   // The row has no room for a date column — the order icon → name → lock →
   // link → count → menu is deliberate and keeps every row's right edge aligned.
@@ -806,31 +740,19 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
           <button
             onClick={(e) => { e.stopPropagation(); onLink(folder); }}
             className="flex-shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 hover:bg-blue-200 dark:hover:bg-blue-500/30 transition-colors"
-            title={
-              folder.projects.length > 0
-                ? folder.projects.map(p => p.name).join(', ')
-                : folder.archive_name
-                  ? `Archive: ${folder.archive_name}`
-                  : ''
-            }
+            title={folder.projects.map(p => p.name).join(', ')}
           >
             <Link2 className="w-3 h-3" />
-            {folder.projects.length > 0 ? (
-              <>
-                <Briefcase className="w-3 h-3" />
-                {folder.projects.length > 1 && (
-                  <span className="text-[10px] font-semibold">×{folder.projects.length}</span>
-                )}
-              </>
-            ) : (
-              <ArchiveIcon className="w-3 h-3" />
+            <Briefcase className="w-3 h-3" />
+            {folder.projects.length > 1 && (
+              <span className="text-[10px] font-semibold">×{folder.projects.length}</span>
             )}
           </button>
         ) : !isExternal ? (
           <button
             onClick={(e) => { e.stopPropagation(); onLink(folder); }}
             className="flex-shrink-0 p-1 rounded hover:bg-bambu-dark-tertiary"
-            title={t('fileManager.linkToProjectOrArchive')}
+            title={t('fileManager.linkToProject')}
           >
             <Link2 className="w-3.5 h-3.5 text-bambu-gray hover:text-bambu-green" />
           </button>
@@ -1783,6 +1705,9 @@ export function FileManagerPage() {
 
   // Filter and sort state (persist sort preferences to localStorage)
   const [searchQuery, setSearchQuery] = useState('');
+  // The search value now goes to the server as `q` (task 1) — debounced so
+  // an undebounced value doesn't fire one request per keystroke.
+  const debouncedSearchQuery = useDebouncedValue(searchQuery, 300);
   const [filterType, setFilterType] = useState<string>('all');
   // Deliberately NOT persisted, unlike the grid/list view mode: this is a
   // question, not a preference. Restored silently it would show a partial
@@ -1796,6 +1721,8 @@ export function FileManagerPage() {
   // and reaching into a user's browser storage to tidy up is a bigger action
   // than the tidiness is worth.
   const [filterUsername, setFilterUsername] = useState('');
+  // Free-text, same reasoning (and the same 300ms) as the search box above.
+  const debouncedFilterUsername = useDebouncedValue(filterUsername, 300);
   const [sortField, setSortField] = useState<SortField>(() => {
     const saved = localStorage.getItem('library-sort-field');
     return (saved as SortField) || 'name';
@@ -1804,6 +1731,16 @@ export function FileManagerPage() {
     const saved = localStorage.getItem('library-sort-direction');
     return (saved as SortDirection) || 'asc';
   });
+  // Paging (task 2, 2026-08-29 server-driven-lists) — same PaginationBar the
+  // Archives list uses. `-1` means "all" (PaginationBar's own convention).
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(() => {
+    const saved = localStorage.getItem('library-per-page');
+    return saved ? Number(saved) : 50;
+  });
+  useEffect(() => {
+    localStorage.setItem('library-per-page', String(perPage));
+  }, [perPage]);
 
   // Mobile detection for touch-friendly UI
   const isMobile = useIsMobile();
@@ -1974,33 +1911,102 @@ export function FileManagerPage() {
   const allFilesRecursive = settings?.library_all_files_recursive ?? false;
   // #1268: when a folder is selected and the user has typed a search query,
   // ask the server to expand the result to every descendant folder so the
-  // client-side filter can match files in subfolders too. Without this the
-  // listing is just the immediate children and "robot.3mf" two levels deep
-  // is invisible from the parent. Only kicks in for folder-scoped views —
-  // root and the internal/external pseudo-nodes already return the union.
-  const searchExpandsSubfolders = selectedFolderId !== null && searchQuery.trim().length > 0;
-  const { data: files, isLoading: filesLoading } = useQuery({
-    queryKey: ['library-files', selectedFolderId, allFilesRecursive, topLevelView, tagFilterKey, searchExpandsSubfolders],
+  // search can match files in subfolders too. Without this the listing is
+  // just the immediate children and "robot.3mf" two levels deep is invisible
+  // from the parent. Only kicks in for folder-scoped views — root and the
+  // internal/external pseudo-nodes already return the union. Keyed off the
+  // DEBOUNCED query (not the raw keystroke value): both this flag and `q`
+  // below drive the same request, and letting one fire on every keystroke
+  // while the other waits out the debounce would refetch twice for one type.
+  const searchExpandsSubfolders = selectedFolderId !== null && debouncedSearchQuery.trim().length > 0;
+
+  // Any filter/sort/scope change invalidates the current page — staying on
+  // page 4 of a narrower result is a page nobody asked for. Resetting this in
+  // a `useEffect` lands one render late: the query would fire once with
+  // {newFilter, oldPage} on the render the filter itself changed, then a
+  // SECOND time after the effect's `setPage(1)` commits. Adjusting `page`
+  // right here during render (React's documented "you might not need an
+  // effect" idiom) means the mismatched render is thrown away before it
+  // commits — its `useQuery` never gets a chance to fetch — so the query
+  // only ever sees the correct, already-reset combination.
+  const pageResetSignature = JSON.stringify([
+    selectedFolderId,
+    topLevelView,
+    tagFilterKey,
+    debouncedSearchQuery,
+    filterType,
+    unprintedOnly,
+    debouncedFilterUsername,
+    sortField,
+    sortDirection,
+  ]);
+  const [prevPageResetSignature, setPrevPageResetSignature] = useState(pageResetSignature);
+  let effectivePage = page;
+  if (pageResetSignature !== prevPageResetSignature) {
+    setPrevPageResetSignature(pageResetSignature);
+    setPage(1);
+    effectivePage = 1;
+    // A filter change swaps out the rows under any selection made before it
+    // — same reasoning as `onPageChange` below, just triggered by a filter
+    // instead of the pager.
+    setSelectedFiles([]);
+  }
+
+  // Server-driven (task 2, 2026-08-29 server-driven-lists) — every filter,
+  // the sort and the page all become request params; task 1's envelope
+  // ({items, meta}) replaces the flat array this used to fetch, so there is
+  // no client-side filter/sort pass left to run over the result.
+  const libraryFileParams: LibraryFileListParams = {
+    folder_id: selectedFolderId,
     // "All Files" (selectedFolderId === null): include_root=false lists every
-    // file across all subfolders recursively (#1499), include_root=true scopes
-    // to root-level files only. Gated on the library_all_files_recursive
+    // file across all subfolders recursively (#1499), include_root=true
+    // scopes to root-level files only. Gated on the library_all_files_recursive
     // setting (default off → root-only, the pre-#1499 behaviour). When a
     // specific folder is selected the backend ignores include_root.
+    include_root: selectedFolderId === null ? !allFilesRecursive : true,
     // At the top level, topLevelView scopes the result to internal managed
     // storage vs the union of every external folder (#1621); per-folder
     // selection passes no scope.
-    // #1268: a non-empty tagFilterKey makes the backend bypass folder/root
-    // scoping entirely (tags are cross-cutting).
-    queryFn: () =>
-      api.getLibraryFiles(
-        selectedFolderId,
-        selectedFolderId === null ? !allFilesRecursive : true,
-        undefined,
-        selectedFolderId === null ? topLevelView : undefined,
-        tagFilterKey,
-        searchExpandsSubfolders,
-      ),
+    scope: selectedFolderId === null ? topLevelView : undefined,
+    // #1268: a non-empty tag_ids makes the backend bypass folder/root scoping
+    // entirely (tags are cross-cutting).
+    tag_ids: tagFilterKey,
+    recursive: searchExpandsSubfolders,
+    q: debouncedSearchQuery.trim() || undefined,
+    file_type: filterType !== 'all' ? filterType : undefined,
+    unprinted_only: unprintedOnly,
+    username: debouncedFilterUsername.trim() || undefined,
+    sort_by: `${sortField}_${sortDirection}`,
+    page: effectivePage,
+    per_page: perPage === -1 ? undefined : perPage,
+    all: perPage === -1 ? true : undefined,
+  };
+  const { data: filesPage, isLoading: filesLoading } = useQuery({
+    queryKey: ['library-files', libraryFileParams],
+    queryFn: () => api.getLibraryFilesPaged(libraryFileParams),
+    placeholderData: (prev) => prev,
   });
+  const files = filesPage?.items;
+  const meta = filesPage?.meta;
+
+  // Out-of-range page clamp: the server, not a local guess, is what says
+  // `page` no longer exists (the last item on it was deleted, or the
+  // narrowing filter this page was fetched under no longer matches enough
+  // rows) — that only becomes known once its response lands, unlike the
+  // filter-driven reset above, which is decided from state that's already
+  // available at render time. Left unclamped this renders "No files yet"
+  // (an empty items array reads as an empty library, not a stale page) with
+  // the pager itself showing `current_page > last_page`.
+  useEffect(() => {
+    if (meta && page > meta.last_page) {
+      setPage(meta.last_page || 1);
+      // Third page-mutation path, same reasoning as the other two: whatever
+      // was ticked on the page that just stopped existing must not keep
+      // handing the bulk bar (Move / Delete / Tag) an id for a row that is
+      // no longer on screen.
+      setSelectedFiles([]);
+    }
+  }, [meta, page]);
 
   const { data: stats } = useQuery({
     queryKey: ['library-stats'],
@@ -2016,75 +2022,24 @@ export function FileManagerPage() {
     queryFn: api.getUsersSlim,
   });
 
-  // Get unique file types for filter dropdown
+  // File types for the filter dropdown: the common list ∪ whatever
+  // `file_type` values the CURRENT page's rows actually carry — file_type is
+  // an OPEN set (see COMMON_LIBRARY_FILE_TYPES above), so a type outside the
+  // common list must still be offered when this page contains one. Stable
+  // order: common types first (their fixed, hand-picked order), then any
+  // extra types alphabetically, deduplicated.
   const fileTypes = useMemo(() => {
-    if (!files) return [];
-    const types = new Set(files.map((f) => f.file_type));
-    return Array.from(types).sort();
+    const common: readonly string[] = COMMON_LIBRARY_FILE_TYPES;
+    const extras = Array.from(
+      new Set((files ?? []).map((f) => f.file_type).filter((t) => !common.includes(t))),
+    ).sort();
+    return [...COMMON_LIBRARY_FILE_TYPES, ...extras];
   }, [files]);
 
-  // Filter and sort files
-  const filteredAndSortedFiles = useMemo(() => {
-    if (!files) return [];
-
-    let result = [...files];
-
-    // Apply search filter
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter(
-        (f) =>
-          f.filename.toLowerCase().includes(query) ||
-          (f.print_name && f.print_name.toLowerCase().includes(query))
-      );
-    }
-
-    // Apply type filter
-    if (filterType !== 'all') {
-      result = result.filter((f) => f.file_type === filterType);
-    }
-    // Successful completions only — a file attempted and failed still counts
-    // as unprinted here, which is the agreed meaning of the number.
-    if (unprintedOnly) {
-      result = result.filter((f) => !f.print_count);
-    }
-    // No tag predicate here any more: BOTH kinds of tag are filtered by the
-    // server through ``tag_ids``, so by the time this list arrives it has
-    // already been narrowed. Re-applying it client-side would be a second,
-    // weaker copy of the same rule.
-
-    // Apply username filter
-    if (filterUsername.trim()) {
-      const query = filterUsername.toLowerCase();
-      result = result.filter(
-        (f) => f.created_by_username && f.created_by_username.toLowerCase().includes(query)
-      );
-    }
-
-    // Apply sorting
-    result.sort((a, b) => {
-      let comparison = 0;
-      switch (sortField) {
-        case 'name':
-          comparison = (a.print_name || a.filename).localeCompare(b.print_name || b.filename);
-          break;
-        case 'date':
-          // Same source as the rendered date — see fileActivityAt (#2680).
-          comparison =
-            (parseUTCDate(fileActivityAt(a))?.getTime() ?? 0) - (parseUTCDate(fileActivityAt(b))?.getTime() ?? 0);
-          break;
-        case 'size':
-          comparison = a.file_size - b.file_size;
-          break;
-        case 'type':
-          comparison = a.file_type.localeCompare(b.file_type);
-          break;
-      }
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
-
-    return result;
-  }, [files, searchQuery, filterType, unprintedOnly, filterUsername, sortField, sortDirection]);
+  // Filtering, sorting and paging all happen server-side now (task 1 + this
+  // task's params above) — this is a pass-through so every render call site
+  // below keeps reading `filteredAndSortedFiles` unmodified.
+  const filteredAndSortedFiles = useMemo(() => files ?? [], [files]);
 
   // Check if disk space is low
   const isDiskSpaceLow = useMemo(() => {
@@ -2250,9 +2205,8 @@ export function FileManagerPage() {
       api.updateLibraryFolder(id, data),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
-      // Invalidate project/archive folder queries so other pages see the update
+      // Invalidate project folder queries so other pages see the update
       queryClient.invalidateQueries({ queryKey: ['project-folders'] });
-      queryClient.invalidateQueries({ queryKey: ['archive-folders'] });
       // Folder→project link rewires every child file's project list AND the
       // affected projects' print plans (server-side `sync_plan_for_folder`
       // plants/drops plan rows for every eligible file in the folder). The
@@ -2264,12 +2218,10 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
       queryClient.invalidateQueries({ queryKey: ['project-print-plan'] });
       setLinkFolder(null);
-      // m044: project_ids is an array; treat empty list + cleared
-      // archive as a full unlink, otherwise as a link/update.
-      const projectsCleared =
+      // m044: project_ids is an array; an empty list is a full unlink,
+      // otherwise it's a link/update.
+      const isUnlink =
         Array.isArray(variables.data.project_ids) && variables.data.project_ids.length === 0;
-      const archiveCleared = variables.data.archive_id === 0;
-      const isUnlink = projectsCleared && archiveCleared;
       showToast(isUnlink ? t('fileManager.toast.folderUnlinked') : t('fileManager.toast.folderLinked'), 'success');
     },
     onError: (error: Error) => showToast(error.message, 'error'),
@@ -3024,8 +2976,12 @@ export function FileManagerPage() {
               </button>
             </div>
           )}
-          {/* Combined toolbar: search/filters/sort (row 1) + selection actions (row 2) */}
-          {files && files.length > 0 && (
+          {/* Combined toolbar: search/filters/sort (row 1) + selection actions (row 2).
+              ⚠️ `files` is now the server-FILTERED page, not the raw
+              folder/tag-scoped fetch — a filter that matches zero rows would
+              otherwise hide this toolbar exactly when it's needed to clear or
+              adjust the filter, so `anyFilterActive` keeps it up regardless. */}
+          {files && (files.length > 0 || anyFilterActive) && (
             <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-0 z-10 lg:static">
             <div className="flex flex-wrap items-stretch gap-2">
               {/* Search */}
@@ -3097,10 +3053,12 @@ export function FileManagerPage() {
                 </div>
               )}
 
-              {/* Results count */}
+              {/* Results count — `total` is now the server's grand total across
+                  every page (`meta.total`), not the size of one client-side
+                  fetch; `showing` is this page's own item count. */}
               {anyFilterActive && (
                 <span className="h-9 flex items-center text-sm text-bambu-gray hidden sm:inline-flex">
-                  {t('fileManager.resultsCount', { showing: filteredAndSortedFiles.length, total: files.length })}
+                  {t('fileManager.resultsCount', { showing: filteredAndSortedFiles.length, total: meta?.total ?? 0 })}
                 </span>
               )}
 
@@ -3730,6 +3688,34 @@ export function FileManagerPage() {
                 ))}
               </div>
             </div>
+          )}
+          {/* Paging — same PaginationBar component as the Archives list,
+              under the rows rather than above them. */}
+          {meta && (
+            <PaginationBar
+              page={meta.current_page}
+              totalPages={meta.last_page}
+              perPage={perPage}
+              total={meta.total}
+              items={t('fileManager.fileCount', { count: meta.total })}
+              variant="bare"
+              // Default 50 isn't in PaginationBar's own [12,24,48,96] — the
+              // select would render with nothing selected on first load.
+              // 200 matches the backend's `per_page` upper bound (le=200).
+              perPageOptions={[25, 50, 100, 200]}
+              // Selection is page-scoped — a row ticked on page 1 is not on
+              // screen once page 2 renders, and leaving it selected would
+              // hand the bulk bar (Move / Delete / Tag) an ID for a row the
+              // operator can no longer see, ticked or not.
+              onPageChange={(newPage) => {
+                setPage(newPage);
+                setSelectedFiles([]);
+              }}
+              onPerPageChange={(size) => {
+                setPerPage(size);
+                setPage(1);
+              }}
+            />
           )}
         </div>
 

@@ -36,7 +36,6 @@ class FolderCreate(BaseModel):
     # m044: list of project IDs to associate the folder with. Empty list
     # = no project links.
     project_ids: list[int] = Field(default_factory=list)
-    archive_id: int | None = None
 
 
 class ExternalFolderCreate(BaseModel):
@@ -59,7 +58,6 @@ class FolderUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=255)
     parent_id: int | None = None
     project_ids: list[int] | None = None
-    archive_id: int | None = None  # 0 to unlink
 
 
 class FolderResponse(BaseModel):
@@ -70,8 +68,6 @@ class FolderResponse(BaseModel):
     parent_id: int | None
     # m044: M2M project links. Empty list = unattached.
     projects: list[ProjectRef] = Field(default_factory=list)
-    archive_id: int | None = None
-    archive_name: str | None = None
     is_external: bool = False
     external_path: str | None = None
     external_readonly: bool = False
@@ -110,8 +106,6 @@ class FolderTreeItem(BaseModel):
     name: str
     parent_id: int | None
     projects: list[ProjectRef] = Field(default_factory=list)
-    archive_id: int | None = None
-    archive_name: str | None = None
     is_external: bool = False
     external_path: str | None = None
     external_readonly: bool = False

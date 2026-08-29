@@ -59,7 +59,12 @@ describe('the unified tag filter row', () => {
       http.get('/api/v1/library/folders', () => HttpResponse.json([])),
       http.get('/api/v1/library/files', ({ request }) => {
         tagIdsSeen.push(new URL(request.url).searchParams.getAll('tag_ids'));
-        return HttpResponse.json(mockFiles);
+        // Server-driven (task 2, 2026-08-29): FileManagerPage always sends
+        // `page`, so the endpoint answers with the {items, meta} envelope.
+        return HttpResponse.json({
+          items: mockFiles,
+          meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+        });
       }),
       http.get('/api/v1/library/stats', () =>
         HttpResponse.json({

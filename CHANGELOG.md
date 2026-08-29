@@ -2,6 +2,8 @@
 
 ### Added
 
+- **The library's file list is now server-driven.** Search finds files the browser never downloaded, an external folder with thousands of files loads a page at a time instead of all at once, and filtering and sorting happen in the database rather than after the whole list has already arrived.
+
 - **Your spool inventory, remotely — the first deep-control surface in BamDude Cloud.** The portal's farm page gains an Inventory section: the spool list (paged, so a thousand-spool inventory travels safely) and inline editing of a spool's note, round-tripping live to the farm over Cloud Link. The farm stays the gatekeeper: every remote operation is authorized on the farm itself with the same scope machinery API keys use, admin-only permissions are unreachable by construction, and the set of operations a portal may invoke is fixed in each release — a compromised portal cannot widen it.
 
 - **Progress milestones can be limited to long prints** (#28). A 30-minute job used to collect six notifications — plate cleared, first layer, 25%, 50%, 75%, done. The three middle ones can now be muted for prints estimated shorter than the minutes you choose — and the value belongs to each recipient, not to the farm: every Telegram chat carries its own floor (set right next to the Progress Milestones checkbox in the chat's settings — an admin's 60-minute floor doesn't decide for an operator's chat that wants 10), and every other notification provider carries its own, on its card beside the same toggle. Empty or 0 keeps today's behaviour. The duration is estimated at each milestone from the printer's own remaining-time report, so it needs no bookkeeping and survives restarts; when the printer reports no estimate, the notification is sent rather than guessed away.
@@ -11,6 +13,8 @@
 - **A Telegram chat can be scoped to specific printers — all, one, or several.** The printer filter moved from the bot (provider) level down to each chat, where every other Telegram setting already lives: the farm admin's chat keeps watching everything while a partner's chat on the same bot sees only the machines they run. The scope covers **both directions** — notifications arrive only from the chat's printers, and the bot itself shows and commands only them: printer lists, cameras, queue view, controls; a button from an old message aimed at an out-of-scope printer is refused. Events that name no printer (test messages, farm-wide news) still reach every chat. The old provider-level filter is migrated onto existing chats automatically, so nothing changes until you narrow a chat.
 
 ### Changed
+
+- **The library no longer links a folder to an archive.** Archives are your print history, and library folders now only link to projects — the folder-to-archive link was rarely used and its "which folder is this archive in" badge was quietly firing a background request for every single archive card on the page. Folder-to-project linking is unaffected.
 
 - **Notification event subscriptions are one list now, not thirty-four database columns.** Every provider's per-event toggles moved into a single JSON field (the API and the settings UI are unchanged) — the table had grown a column per event, migration after migration, and a future event is now a registry entry instead of DDL. Existing selections are carried over exactly.
 

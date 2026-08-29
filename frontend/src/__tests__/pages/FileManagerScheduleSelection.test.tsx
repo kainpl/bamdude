@@ -37,7 +37,14 @@ const RAW = { ...base, id: 2, filename: 'bracket.stl', file_type: 'stl', file_ta
 function mockLibrary(files: unknown[]) {
   server.use(
     http.get('/api/v1/library/folders', () => HttpResponse.json([])),
-    http.get('/api/v1/library/files', () => HttpResponse.json(files)),
+    // Server-driven (task 2, 2026-08-29): FileManagerPage always sends
+    // `page`, so the endpoint answers with the {items, meta} envelope.
+    http.get('/api/v1/library/files', () =>
+      HttpResponse.json({
+        items: files,
+        meta: { total: files.length, current_page: 1, per_page: 50, last_page: 1 },
+      }),
+    ),
     http.get('/api/v1/library/stats', () =>
       HttpResponse.json({
         total_files: files.length,

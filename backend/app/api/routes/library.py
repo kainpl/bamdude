@@ -870,12 +870,9 @@ async def list_folders(
     # m044: load projects via M2M selectinload (one extra IN-list query
     # rather than per-folder lazy fetch).
     result = await db.execute(
-        select(LibraryFolder, PrintArchive.print_name)
-        .outerjoin(PrintArchive, LibraryFolder.archive_id == PrintArchive.id)
-        .options(selectinload(LibraryFolder.projects))
-        .order_by(LibraryFolder.name)
+        select(LibraryFolder).options(selectinload(LibraryFolder.projects)).order_by(LibraryFolder.name)
     )
-    rows = result.all()
+    folders_orm = result.scalars().all()
 
     # Files each folder HAS — the trash excluded.
     #
@@ -909,15 +906,13 @@ async def list_folders(
     folder_map = {}
     root_folders = []
 
-    for folder, archive_name in rows:
+    for folder in folders_orm:
         latest_activity_at = folder_activity_at(folder, latest_file_activity.get(folder.id))
         folder_item = FolderTreeItem(
             id=folder.id,
             name=folder.name,
             parent_id=folder.parent_id,
             projects=_project_refs(folder.projects),
-            archive_id=folder.archive_id,
-            archive_name=archive_name,
             is_external=folder.is_external,
             external_path=folder.external_path,
             external_readonly=folder.external_readonly,
@@ -928,7 +923,7 @@ async def list_folders(
         folder_map[folder.id] = folder_item
 
     # Link children to parents
-    for folder, _ in rows:
+    for folder in folders_orm:
         folder_item = folder_map[folder.id]
         if folder.parent_id is None:
             root_folders.append(folder_item)
@@ -1003,8 +998,6 @@ async def get_folders_by_project(
                 name=folder.name,
                 parent_id=folder.parent_id,
                 projects=_project_refs(folder.projects),
-                archive_id=folder.archive_id,
-                archive_name=None,
                 is_external=folder.is_external,
                 external_path=folder.external_path,
                 external_readonly=folder.external_readonly,
@@ -1017,85 +1010,6 @@ async def get_folders_by_project(
         )
 
     return folders
-
-
-@router.get("/folders/by-archive/{archive_id}", response_model=list[FolderResponse])
-async def get_folders_by_archive(
-    archive_id: int,
-    db: AsyncSession = Depends(get_db),
-    _: tuple[User | None, bool] = Depends(
-        require_ownership_permission(
-            Permission.LIBRARY_READ_ALL,
-            Permission.LIBRARY_READ_OWN,
-        )
-    ),
-):
-    """Get all folders linked to a specific archive."""
-    result = await db.execute(
-        select(LibraryFolder, PrintArchive.print_name)
-        .outerjoin(PrintArchive, LibraryFolder.archive_id == PrintArchive.id)
-        .where(LibraryFolder.archive_id == archive_id)
-        .options(selectinload(LibraryFolder.projects))
-        .order_by(LibraryFolder.name)
-    )
-    rows = result.all()
-
-    folders = []
-    for folder, archive_name in rows:
-        # Get file count + latest file activity (#1770) in one trip
-        agg_result = await db.execute(
-            select(
-                func.count(LibraryFile.id),
-                func.max(_FILE_ACTIVITY),
-            ).where(
-                LibraryFile.folder_id == folder.id,
-                LibraryFile.deleted_at.is_(None),
-            )
-        )
-        file_count, latest_file = agg_result.one()
-        file_count = file_count or 0
-        latest_activity_at = folder_activity_at(folder, latest_file)
-
-        folders.append(
-            FolderResponse(
-                id=folder.id,
-                name=folder.name,
-                parent_id=folder.parent_id,
-                projects=_project_refs(folder.projects),
-                archive_id=folder.archive_id,
-                archive_name=archive_name,
-                is_external=folder.is_external,
-                external_path=folder.external_path,
-                external_readonly=folder.external_readonly,
-                external_show_hidden=folder.external_show_hidden,
-                file_count=file_count,
-                latest_activity_at=latest_activity_at,
-                created_at=folder.created_at,
-                updated_at=folder.updated_at,
-            )
-        )
-
-    return folders
-
-
-async def _assert_archive_unclaimed(db: AsyncSession, archive_id: int, folder_id: int | None = None) -> None:
-    """One archive belongs to at most one folder.
-
-    ⚠️ **Refuses rather than steals.** Re-pointing an archive silently would
-    unlink whichever folder held it — a folder the person doing this is not
-    looking at and may not know exists. Naming the holder costs one extra step
-    and destroys nothing; the database index (m133) is what makes it true, and
-    this is what makes it explainable instead of a 500.
-    """
-    query = select(LibraryFolder).where(LibraryFolder.archive_id == archive_id)
-    if folder_id is not None:
-        query = query.where(LibraryFolder.id != folder_id)
-    holder = (await db.execute(query)).scalars().first()
-    if holder is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"This archive is already linked to the folder '{holder.name}'. Unlink it there first.",
-        )
 
 
 @router.post("/folders", response_model=FolderResponse)
@@ -1153,7 +1067,6 @@ async def create_folder(
                 external_path=str(dest),
                 external_readonly=False,
                 external_show_hidden=parent.external_show_hidden,
-                archive_id=data.archive_id,
             )
             folder.projects = await _resolve_projects_for_assign(db, data.project_ids)
             db.add(folder)
@@ -1163,8 +1076,6 @@ async def create_folder(
                 name=folder.name,
                 parent_id=folder.parent_id,
                 projects=_project_refs(folder.projects),
-                archive_id=folder.archive_id,
-                archive_name=None,
                 is_external=True,
                 external_path=folder.external_path,
                 external_readonly=folder.external_readonly,
@@ -1178,20 +1089,9 @@ async def create_folder(
     # m044: validate every requested project exists in one IN-list query.
     project_rows = await _resolve_projects_for_assign(db, data.project_ids)
 
-    # Verify archive exists if specified
-    archive_name = None
-    if data.archive_id is not None:
-        archive_result = await db.execute(select(PrintArchive).where(PrintArchive.id == data.archive_id))
-        archive = archive_result.scalar_one_or_none()
-        if not archive:
-            raise HTTPException(status_code=404, detail="Archive not found")
-        archive_name = archive.print_name
-        await _assert_archive_unclaimed(db, data.archive_id)
-
     folder = LibraryFolder(
         name=data.name,
         parent_id=data.parent_id,
-        archive_id=data.archive_id,
     )
     folder.projects = project_rows
     db.add(folder)
@@ -1207,8 +1107,6 @@ async def create_folder(
         name=folder.name,
         parent_id=folder.parent_id,
         projects=_project_refs(folder.projects),
-        archive_id=folder.archive_id,
-        archive_name=archive_name,
         is_external=folder.is_external,
         external_path=folder.external_path,
         external_readonly=folder.external_readonly,
@@ -1235,17 +1133,12 @@ async def get_folder(
 ):
     """Get a folder by ID."""
     result = await db.execute(
-        select(LibraryFolder, PrintArchive.print_name)
-        .outerjoin(PrintArchive, LibraryFolder.archive_id == PrintArchive.id)
-        .options(selectinload(LibraryFolder.projects))
-        .where(LibraryFolder.id == folder_id)
+        select(LibraryFolder).options(selectinload(LibraryFolder.projects)).where(LibraryFolder.id == folder_id)
     )
-    row = result.one_or_none()
+    folder = result.scalar_one_or_none()
 
-    if not row:
+    if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
-
-    folder, archive_name = row
 
     # Get file count + latest file activity (#1770) in one trip
     agg_result = await db.execute(
@@ -1266,8 +1159,6 @@ async def get_folder(
         name=folder.name,
         parent_id=folder.parent_id,
         projects=_project_refs(folder.projects),
-        archive_id=folder.archive_id,
-        archive_name=archive_name,
         is_external=folder.is_external,
         external_path=folder.external_path,
         external_readonly=folder.external_readonly,
@@ -1417,18 +1308,6 @@ async def update_folder(
         # project list (one plan row per (project, file) pair).
         await sync_plan_for_folder(db, folder_id=folder_id, project_ids=new_project_ids)
 
-    # Update archive_id (0 to unlink)
-    if data.archive_id is not None:
-        if data.archive_id == 0:
-            folder.archive_id = None
-        else:
-            # Verify archive exists
-            archive_result = await db.execute(select(PrintArchive).where(PrintArchive.id == data.archive_id))
-            if not archive_result.scalar_one_or_none():
-                raise HTTPException(status_code=404, detail="Archive not found")
-            await _assert_archive_unclaimed(db, data.archive_id, folder.id)
-            folder.archive_id = data.archive_id
-
     await db.commit()
 
     # Re-fetch with selectinload after commit. Even with
@@ -1458,20 +1337,11 @@ async def update_folder(
     file_count = file_count or 0
     latest_activity_at = folder_activity_at(refreshed, latest_file)
 
-    archive_name = None
-    if refreshed.archive_id:
-        archive_result = await db.execute(
-            select(PrintArchive.print_name).where(PrintArchive.id == refreshed.archive_id)
-        )
-        archive_name = archive_result.scalar()
-
     return FolderResponse(
         id=refreshed.id,
         name=refreshed.name,
         parent_id=refreshed.parent_id,
         projects=_project_refs(refreshed.projects),
-        archive_id=refreshed.archive_id,
-        archive_name=archive_name,
         is_external=refreshed.is_external,
         external_path=refreshed.external_path,
         external_readonly=refreshed.external_readonly,
@@ -1488,7 +1358,7 @@ async def _restricted_folder_delete_blocker(db: AsyncSession, folder: LibraryFol
 
     Folders carry no ownership, so a user without ``library:delete_all`` may only
     remove one that holds nobody's data: truly empty, not external, not linked
-    to a project or an archive (#1781). Without this a user could create a
+    to a project (#1781). Without this a user could create a
     folder, delete their own files from it, and then need an admin to clear the
     empty shell they left behind.
 
@@ -1501,8 +1371,6 @@ async def _restricted_folder_delete_blocker(db: AsyncSession, folder: LibraryFol
     """
     if folder.is_external:
         return "External folders can only be deleted by users with library:delete_all"
-    if folder.archive_id is not None:
-        return "Folders linked to an archive can only be deleted by users with library:delete_all"
     # ⚡ Ours diverges from upstream here: m044 replaced the folder's single
     # ``project_id`` column with the ``library_folder_projects`` pivot, so the
     # question is "is it linked to ANY project", asked of the pivot.
@@ -1783,7 +1651,6 @@ async def create_external_folder(
         name=folder.name,
         parent_id=folder.parent_id,
         projects=[],
-        archive_id=None,
         is_external=True,
         external_path=folder.external_path,
         external_readonly=folder.external_readonly,
@@ -1956,13 +1823,15 @@ async def list_files(
         ),
     ),
     username: str | None = Query(None, description="Substring match on the uploader's username"),
-    sort_by: str = Query(
-        "name_asc",
+    sort_by: str | None = Query(
+        None,
         description=(
             "name/date/size/type, each with an _asc or _desc suffix. 'date' sorts "
             "by the same fs_modified_at-or-updated_at activity timestamp the list "
-            "renders (#2680), never bare created_at. Unknown values fall back to "
-            "name_asc rather than erroring."
+            "renders (#2680), never bare created_at. Omitted entirely, the legacy "
+            "plain-filename ordering applies unchanged; any explicit value "
+            "(including 'name_asc') maps through the sort dict below, falling back "
+            "to name_asc on anything unrecognized."
         ),
     ),
     page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
@@ -2003,6 +1872,9 @@ async def list_files(
     ``list[FileListResponse]`` (any caller that predates this change never sends
     ``page``); pass it and the response becomes
     ``{"items": [...], "meta": {total, current_page, per_page, last_page}}``.
+    ``sort_by`` omitted (not merely defaulted to ``"name_asc"``) keeps today's
+    plain ``ORDER BY filename`` too — see the sort-selection block below for why
+    that has to be its own branch.
     """
     if internal_only and external_only:
         raise HTTPException(
@@ -2103,15 +1975,30 @@ async def list_files(
 
     # Sorting — mirrors the frontend's four sort fields (FileManagerPage.tsx),
     # each with an _asc/_desc suffix.
-    sort_key, _, sort_dir = sort_by.rpartition("_")
-    sort_column = _LIBRARY_FILE_SORT_COLUMNS.get(sort_key)
-    if sort_column is None or sort_dir not in ("asc", "desc"):
-        sort_column, sort_dir = _LIBRARY_FILE_SORT_COLUMNS["name"], "asc"
+    #
+    # ⚠️ ``sort_by`` omitted entirely is NOT the same as ``sort_by=name_asc``
+    # explicitly requested, even though ``name_asc`` is the "natural" default:
+    # ``name_asc`` maps to ``COALESCE(print_name, filename)``, which reorders
+    # any row that HAS a print_name (common, not an edge case) relative to
+    # today's plain ``ORDER BY filename``. A bare legacy call — the only kind
+    # every existing caller has ever made — must keep exactly that plain
+    # ordering, so the omitted case is its own branch rather than folding into
+    # the sort-dict default.
+    if sort_by is None:
+        sort_column, sort_dir = LibraryFile.filename, "asc"
+    else:
+        sort_key, _, sort_dir = sort_by.rpartition("_")
+        sort_column = _LIBRARY_FILE_SORT_COLUMNS.get(sort_key)
+        if sort_column is None or sort_dir not in ("asc", "desc"):
+            sort_column, sort_dir = _LIBRARY_FILE_SORT_COLUMNS["name"], "asc"
     # ⚠️ Stable tiebreak — this list PAGES (same rule as
     # ArchiveService.list_archives): rows sharing a sort key have no defined
     # order between two queries, so paging a low-cardinality sort (e.g.
     # type_asc across a library that's mostly one file type) could repeat or
-    # skip a row on page 2. ``id`` is unique and never NULL.
+    # skip a row on page 2. ``id`` is unique and never NULL. Applies on BOTH
+    # branches above — the legacy path never had a defined tiebreak either,
+    # and adding one there only affects ties, never the field-set/shape the
+    # legacy-pin test cares about.
     order_clauses = [sort_column.asc() if sort_dir == "asc" else sort_column.desc(), LibraryFile.id.desc()]
 
     paginate = page is not None

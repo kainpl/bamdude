@@ -269,6 +269,9 @@ export function ProjectDetailPage() {
   });
 
   // Single bulk query - replaces the previous N+1 useQueries pattern
+  // Legacy flat call on purpose (task 2, 2026-08-29 server-driven-lists) —
+  // scoped to one project's files, not the library-wide, paginated view; the
+  // paged surface (`getLibraryFilesPaged`) is FileManagerPage's.
   const { data: allProjectFiles } = useQuery({
     queryKey: ['project-files', projectId],
     queryFn: () => api.getLibraryFiles(null, false, projectId),
