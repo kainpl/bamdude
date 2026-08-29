@@ -996,6 +996,18 @@ async def sync_from_filamentcolors(
 
 # ── Spool CRUD ───────────────────────────────────────────────────────────────
 
+# Every endpoint taking ``location_id`` MUST declare it with this pattern —
+# anything else reaches ``int(location_id)`` in ``build_spool_filters``, where
+# a non-numeric value raises ValueError uncaught into a 500 (T1 review finding
+# 3). One shared constant so the list/ids endpoints can't drift apart; a
+# pattern mismatch becomes a clean 422 like any other bad param.
+_LOCATION_ID_PATTERN = r"^(__none__|\d+)$"
+
+# Sanity cap for ``GET /spools/ids`` (spec §3.4): nobody bulk-edits this many
+# spools; a bigger answer means a pathological call, refused with a 400 rather
+# than materializing an unbounded id list.
+_SPOOL_IDS_CAP = 50_000
+
 
 def _spool_to_list_item(s: Spool) -> SpoolListItem:
     """Slim list-row projection — every ``SpoolListItem`` field, built
@@ -1066,12 +1078,10 @@ async def list_spools(
     catalog_id: int | None = Query(None),
     location_id: str | None = Query(
         None,
-        # Anything else reaches ``int(location_id)`` in build_spool_filters —
-        # a pattern-mismatch here becomes a clean 422 instead of that raising
-        # ValueError uncaught into a 500 (review finding 3). A stale/hand-edited
-        # deep-link is exactly the shape this endpoint bakes into a shareable
-        # URL, so this must never be a 500.
-        pattern=r"^(__none__|\d+)$",
+        # A stale/hand-edited deep-link is exactly the shape this endpoint
+        # bakes into a shareable URL, so this must never be a 500 — see
+        # _LOCATION_ID_PATTERN's comment (review finding 3).
+        pattern=_LOCATION_ID_PATTERN,
         description="Location id, or '__none__' for no location",
     ),
     stock: str | None = Query(None, description="'stock' or 'configured'"),
@@ -1153,6 +1163,107 @@ async def list_spools(
             last_page=last_page,
         ),
     )
+
+
+# ── Ids + facets — server-driven selection feeds (task 2, 2026-08-29) ────────
+# Declared (like /spools/export below) before the dynamic `/spools/{spool_id}`
+# route so the literal `ids` / `facets` segments match here instead of being
+# parsed as an int id.
+
+
+class SpoolIdsResponse(BaseModel):
+    ids: list[int]
+
+
+class SpoolColorFacet(BaseModel):
+    color_name: str | None
+    rgba: str | None
+
+
+class SpoolFacetsResponse(BaseModel):
+    materials: list[str]
+    brands: list[str]
+    categories: list[str]
+    catalog_ids: list[int]
+    colors: list[SpoolColorFacet]
+
+
+@router.get("/spools/ids", response_model=SpoolIdsResponse)
+async def list_spool_ids(
+    archived: str | None = Query(None, description="'active' or 'archived'"),
+    usage: str | None = Query(None, description="'used', 'new', or 'lowstock'"),
+    material: str | None = Query(None),
+    brand: str | None = Query(None),
+    colors: list[str] = Query(default_factory=list, description="Raw color_name values"),
+    color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
+    category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
+    catalog_id: int | None = Query(None),
+    location_id: str | None = Query(
+        None,
+        pattern=_LOCATION_ID_PATTERN,
+        description="Location id, or '__none__' for no location",
+    ),
+    stock: str | None = Query(None, description="'stock' or 'configured'"),
+    assigned: str | None = Query(None, description="'assigned' or 'unassigned'"),
+    q: str | None = Query(
+        None, description="Tokenised match over brand/material/color_name/subtype/note/slicer_filament_name"
+    ),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> SpoolIdsResponse:
+    """The ids of every spool matching the given filters — the "Select all N
+    matching the filter" feed (spec §3.4).
+
+    Takes the SAME filter + ``q`` params as the paged ``GET /spools`` (both
+    feed ``inventory_service.build_spool_filters``, so the id set is exactly
+    the rows the list shows), no paging/sort. The client materializes the
+    answer into an explicit selection id set — bulk actions stay
+    selection-scoped, never filter-scoped (the CLAUDE.md invariant). Refuses
+    with 400 when more than ``_SPOOL_IDS_CAP`` rows match.
+    """
+    filters = await inventory_service.build_spool_filters(
+        db,
+        archived=archived,
+        usage=usage,
+        material=material,
+        brand=brand,
+        colors=colors or None,
+        color_rgbas=color_rgbas or None,
+        category=category,
+        catalog_id=catalog_id,
+        location_id=location_id,
+        stock=stock,
+        assigned=assigned,
+        q=q,
+    )
+    ids = await inventory_service.list_spool_ids(db, filters=filters, limit=_SPOOL_IDS_CAP + 1)
+    if len(ids) > _SPOOL_IDS_CAP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"More than {_SPOOL_IDS_CAP} spools match — narrow the filter before selecting all",
+        )
+    return SpoolIdsResponse(ids=ids)
+
+
+@router.get("/spools/facets", response_model=SpoolFacetsResponse)
+async def spool_facets(
+    archived: str | None = Query(None, description="'active' or 'archived' — scope the facets to one tab"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> SpoolFacetsResponse:
+    """Distinct filter-dropdown values under the active archived tab (spec
+    §3.6) — the server-driven replacement for deriving dropdown options from
+    the full client-side array.
+
+    Carries ONLY the dimensions with no existing source: materials, brands,
+    categories, used catalog ids, and RAW ``(color_name, rgba)`` pairs (the
+    client resolves and groups those by display name — the colour catalog
+    lives client-side in ``ColorCatalogProvider``). Locations deliberately
+    absent: the dropdown already reads ``GET /inventory/locations``.
+    """
+    filters = await inventory_service.build_spool_filters(db, archived=archived)
+    facets = await inventory_service.spool_facets(db, filters=filters)
+    return SpoolFacetsResponse(**facets)
 
 
 # ── CSV import / export (#1576) ──────────────────────────────────────────────

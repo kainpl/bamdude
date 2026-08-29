@@ -683,3 +683,190 @@ class TestLegacyPin:
         ids = [s["id"] for s in body]
         assert active.id in ids
         assert archived.id not in ids
+
+
+# ── task 2: ids + facets endpoints ──────────────────────────────────────────
+#
+# ``GET /spools/ids`` powers "Select all N matching the filter" (spec §3.4) —
+# it must answer over the SAME filter semantics as the paged list (both ride
+# ``build_spool_filters``), so a selection can never include a row the list
+# wouldn't show. ``GET /spools/facets`` feeds the filter dropdowns (spec §3.6)
+# — distinct raw values under the active archived tab only; colour pairs stay
+# RAW (the client owns the catalog and resolves/groups them).
+
+
+class TestListSpoolIdsService:
+    async def test_returns_ids_ascending_and_respects_limit(self, db_session):
+        s1 = await _spool(db_session, brand="IdsA")
+        s2 = await _spool(db_session, brand="IdsB")
+        s3 = await _spool(db_session, brand="IdsC")
+
+        ids = await inventory_service.list_spool_ids(db_session, filters=[])
+        assert ids == sorted([s1.id, s2.id, s3.id])
+
+        capped = await inventory_service.list_spool_ids(db_session, filters=[], limit=2)
+        assert capped == sorted([s1.id, s2.id, s3.id])[:2]
+
+    async def test_honours_the_shared_filters(self, db_session):
+        used = await _spool(db_session, brand="IdsUsed", weight_used=100)
+        await _spool(db_session, brand="IdsNew", weight_used=0)
+
+        filters = await inventory_service.build_spool_filters(db_session, usage="used")
+        assert await inventory_service.list_spool_ids(db_session, filters=filters) == [used.id]
+
+
+class TestIdsEndpoint:
+    async def test_ids_honor_filters_and_q(self, async_client, db_session):
+        match = await _spool(db_session, material="PLA", brand="SUNLU", color_name="Black")
+        await _spool(db_session, material="PETG", brand="SUNLU")
+        await _spool(db_session, material="PLA", brand="Overture")
+
+        resp = await async_client.get("/api/v1/inventory/spools/ids", params={"material": "PLA", "q": "SUN"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ids": [match.id]}
+
+    async def test_ids_agree_with_the_paged_list_over_the_same_filters(self, async_client, db_session):
+        """The entire point of the endpoint: the id set it materializes must be
+        exactly the rows the paged list answers with under identical params —
+        both ride ``build_spool_filters``, so this can only break if one of
+        them stops doing so."""
+        a = await _spool(db_session, brand="ParityA", weight_used=100)
+        b = await _spool(db_session, brand="ParityB", weight_used=50)
+        await _spool(db_session, brand="ParityC", weight_used=0)
+
+        list_resp = await async_client.get(
+            "/api/v1/inventory/spools", params={"page": 1, "all": "true", "usage": "used"}
+        )
+        ids_resp = await async_client.get("/api/v1/inventory/spools/ids", params={"usage": "used"})
+        assert ids_resp.status_code == 200
+
+        listed = {item["id"] for item in list_resp.json()["items"]}
+        assert set(ids_resp.json()["ids"]) == listed == {a.id, b.id}
+
+    async def test_over_the_cap_is_400(self, async_client, db_session, monkeypatch):
+        """Spec §3.4's sanity cap: refuse a pathological select-all rather than
+        materialize an unbounded id list. Cap lowered via monkeypatch — seeding
+        50 001 real rows would test nothing extra, slowly."""
+        from backend.app.api.routes import inventory as inventory_routes
+
+        monkeypatch.setattr(inventory_routes, "_SPOOL_IDS_CAP", 2)
+        for i in range(3):
+            await _spool(db_session, brand=f"Cap{i}")
+
+        resp = await async_client.get("/api/v1/inventory/spools/ids")
+        assert resp.status_code == 400
+
+    async def test_exactly_at_the_cap_is_200(self, async_client, db_session, monkeypatch):
+        """The refusal boundary is OVER the cap, not at it."""
+        from backend.app.api.routes import inventory as inventory_routes
+
+        monkeypatch.setattr(inventory_routes, "_SPOOL_IDS_CAP", 3)
+        seeded = [await _spool(db_session, brand=f"AtCap{i}") for i in range(3)]
+
+        resp = await async_client.get("/api/v1/inventory/spools/ids")
+        assert resp.status_code == 200
+        assert set(resp.json()["ids"]) == {s.id for s in seeded}
+
+    async def test_non_numeric_location_id_is_422_not_500(self, async_client, db_session):
+        """T1 review carry-over: every endpoint taking ``location_id`` reuses
+        the same ``Query(pattern=...)`` guard, or ``int("abc")`` in the shared
+        builder re-opens the fixed 500."""
+        await _spool(db_session)
+
+        resp = await async_client.get("/api/v1/inventory/spools/ids", params={"location_id": "abc"})
+        assert 400 <= resp.status_code < 500
+        assert resp.status_code != 500
+
+        ok_sentinel = await async_client.get("/api/v1/inventory/spools/ids", params={"location_id": "__none__"})
+        assert ok_sentinel.status_code == 200
+        ok_numeric = await async_client.get("/api/v1/inventory/spools/ids", params={"location_id": "1"})
+        assert ok_numeric.status_code == 200
+
+
+class TestFacetsEndpoint:
+    async def test_distinct_values_across_all_five_dimensions(self, async_client, db_session):
+        await _spool(db_session, material="PLA", brand="SUNLU", category="Prod", core_weight_catalog_id=None)
+        await _spool(db_session, material="PLA", brand="SUNLU", category="Prod", core_weight_catalog_id=None)
+        await _spool(
+            db_session,
+            material="PETG",
+            brand="eSun",
+            category="Proto",
+            core_weight_catalog_id=7,
+            color_name="Jade White",
+            rgba="FFFFFFFF",
+        )
+
+        resp = await async_client.get("/api/v1/inventory/spools/facets")
+        assert resp.status_code == 200
+        body = resp.json()
+
+        assert set(body.keys()) == {"materials", "brands", "categories", "catalog_ids", "colors"}
+        assert set(body["materials"]) == {"PLA", "PETG"}
+        assert set(body["brands"]) == {"SUNLU", "eSun"}
+        assert set(body["categories"]) == {"Prod", "Proto"}
+        assert body["catalog_ids"] == [7]
+        # The default-seeded pair appears ONCE despite two spools carrying it.
+        pairs = {(c["color_name"], c["rgba"]) for c in body["colors"]}
+        assert pairs == {("Black", "000000FF"), ("Jade White", "FFFFFFFF")}
+
+    async def test_scoped_to_the_archived_tab_param(self, async_client, db_session):
+        """Spec §3.6: facets answer "under the active archived tab" — an
+        archived spool's values must not appear as active-tab dropdown options
+        (and vice versa). Omitting the param spans both, per the endpoint
+        family's usual omit-a-param-get-no-filter contract."""
+        await _spool(db_session, material="PLA", brand="ActiveBrand")
+        await _spool(db_session, material="ASA", brand="ArchivedBrand", archived_at=datetime.now(timezone.utc))
+
+        active = (await async_client.get("/api/v1/inventory/spools/facets", params={"archived": "active"})).json()
+        assert set(active["materials"]) == {"PLA"}
+        assert set(active["brands"]) == {"ActiveBrand"}
+
+        archived = (await async_client.get("/api/v1/inventory/spools/facets", params={"archived": "archived"})).json()
+        assert set(archived["materials"]) == {"ASA"}
+        assert set(archived["brands"]) == {"ArchivedBrand"}
+
+        both = (await async_client.get("/api/v1/inventory/spools/facets")).json()
+        assert set(both["materials"]) == {"PLA", "ASA"}
+
+    async def test_brand_null_and_empty_are_excluded(self, async_client, db_session):
+        """The client dropdown filtered ``.filter(Boolean)`` — NULL/'' brands
+        were never options."""
+        await _spool(db_session, brand=None)
+        await _spool(db_session, brand="")
+        await _spool(db_session, brand="RealBrand")
+
+        body = (await async_client.get("/api/v1/inventory/spools/facets")).json()
+        assert body["brands"] == ["RealBrand"]
+
+    async def test_categories_are_trimmed_and_blank_excluded(self, async_client, db_session):
+        """Client: ``s.category?.trim()`` then ``.filter(Boolean)`` — ' Prod'
+        and 'Prod' merge into one option; NULL/''/whitespace-only vanish."""
+        await _spool(db_session, category=" Prod")
+        await _spool(db_session, category="Prod")
+        await _spool(db_session, category="   ")
+        await _spool(db_session, category=None)
+
+        body = (await async_client.get("/api/v1/inventory/spools/facets")).json()
+        assert body["categories"] == ["Prod"]
+
+    async def test_colors_keep_null_name_pairs_but_drop_the_double_null(self, async_client, db_session):
+        """A NULL-name+rgba pair is a real, filterable option (the raw-pairs
+        colour design exists exactly for it); a pair with BOTH sides NULL can
+        never be filtered on and resolves to nothing client-side — dropped."""
+        await _spool(db_session, color_name=None, rgba="FF0000FF")
+        await _spool(db_session, color_name=None, rgba=None)
+
+        body = (await async_client.get("/api/v1/inventory/spools/facets")).json()
+        pairs = {(c["color_name"], c["rgba"]) for c in body["colors"]}
+        assert (None, "FF0000FF") in pairs
+        assert (None, None) not in pairs
+
+    async def test_catalog_ids_are_distinct_and_non_null(self, async_client, db_session):
+        await _spool(db_session, core_weight_catalog_id=3)
+        await _spool(db_session, core_weight_catalog_id=3)
+        await _spool(db_session, core_weight_catalog_id=1)
+        await _spool(db_session, core_weight_catalog_id=None)
+
+        body = (await async_client.get("/api/v1/inventory/spools/facets")).json()
+        assert body["catalog_ids"] == [1, 3]

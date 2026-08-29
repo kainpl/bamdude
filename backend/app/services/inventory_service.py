@@ -459,6 +459,97 @@ async def count_spools(db: AsyncSession, *, include_archived: bool = False, filt
     return int((await db.execute(query)).scalar_one())
 
 
+async def list_spool_ids(db: AsyncSession, *, filters: list, limit: int | None = None) -> list[int]:
+    """Just the ids of the spools matching ``filters`` — the "Select all N
+    matching the filter" feed (task 2, spec §3.4).
+
+    ``filters`` comes from :func:`build_spool_filters` — the SAME list the
+    paged query and count consume, so the materialized selection can never
+    include a row the list wouldn't show (the whole point of the endpoint;
+    the bulk-action invariant stays selection-scoped, explicit ids only).
+
+    Ordered by ``Spool.id`` ascending — deterministic, and no sort map means
+    no ``location`` join, so a spool with several assignment rows can never
+    duplicate here. ``limit`` exists for the route's sanity cap (it asks for
+    cap+1 and refuses when it gets them); ``None`` returns everything.
+    """
+    query = select(Spool.id).where(*filters).order_by(Spool.id)
+    if limit is not None:
+        query = query.limit(limit)
+    result = await db.execute(query)
+    return [int(spool_id) for spool_id in result.scalars().all()]
+
+
+async def spool_facets(db: AsyncSession, *, filters: list) -> dict[str, list]:
+    """Distinct filter-dropdown values over the spools matching ``filters``
+    (task 2, spec §3.6 — in practice the route passes only the ``archived``
+    tab condition, but taking the shared filters list keeps this on the same
+    contract as list/count/ids).
+
+    Five cheap DISTINCT queries, one per dimension — a UNION contortion would
+    save round-trips and cost readability for a call that fires once per
+    dropdown open. Each mirrors the client derivation it replaces
+    (``InventoryPage.tsx:1301-1321``):
+
+    - ``materials`` — plain distinct (the column is NOT NULL; the client
+      applied no filtering).
+    - ``brands`` — NULL/'' excluded (client ``.filter(Boolean)``).
+    - ``categories`` — trimmed first, then NULL/blank excluded (client
+      ``.map(c?.trim()).filter(Boolean)`` — ' Prod' and 'Prod' are ONE option).
+    - ``catalog_ids`` — distinct non-NULL ids only; the display NAMES stay a
+      client concern (it already holds the catalog via ``GET /catalog``).
+    - ``colors`` — RAW distinct ``(color_name, rgba)`` pairs; resolution and
+      grouping by display name stay client-side where the colour catalog
+      lives (``ColorCatalogProvider``). A pair with BOTH sides NULL is
+      dropped: it can never be sent back as a filter (the rgba branch
+      requires a NULL name AND a concrete rgba) and resolves to nothing.
+
+    Lists come back sorted by the underlying SQL collation for determinism;
+    the client re-sorts for display anyway (same stage-C collation deferral
+    as the sort map — don't add ``lower()`` here either).
+    """
+    materials_q = select(Spool.material).where(*filters).distinct().order_by(Spool.material)
+    materials = list((await db.execute(materials_q)).scalars().all())
+
+    brands_q = (
+        select(Spool.brand).where(*filters, Spool.brand.isnot(None), Spool.brand != "").distinct().order_by(Spool.brand)
+    )
+    brands = list((await db.execute(brands_q)).scalars().all())
+
+    trimmed_category = func.trim(Spool.category)
+    categories_q = (
+        select(trimmed_category)
+        .where(*filters, Spool.category.isnot(None), trimmed_category != "")
+        .distinct()
+        .order_by(trimmed_category)
+    )
+    categories = list((await db.execute(categories_q)).scalars().all())
+
+    catalog_ids_q = (
+        select(Spool.core_weight_catalog_id)
+        .where(*filters, Spool.core_weight_catalog_id.isnot(None))
+        .distinct()
+        .order_by(Spool.core_weight_catalog_id)
+    )
+    catalog_ids = [int(cid) for cid in (await db.execute(catalog_ids_q)).scalars().all()]
+
+    colors_q = (
+        select(Spool.color_name, Spool.rgba)
+        .where(*filters, or_(Spool.color_name.isnot(None), Spool.rgba.isnot(None)))
+        .distinct()
+        .order_by(Spool.color_name, Spool.rgba)
+    )
+    colors = [{"color_name": color_name, "rgba": rgba} for color_name, rgba in (await db.execute(colors_q)).all()]
+
+    return {
+        "materials": materials,
+        "brands": brands,
+        "categories": categories,
+        "catalog_ids": catalog_ids,
+        "colors": colors,
+    }
+
+
 async def update_spool(db: AsyncSession, spool_id: int, spool_data: SpoolUpdate) -> Spool:
     """Update a spool.
 
