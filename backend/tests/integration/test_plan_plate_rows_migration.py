@@ -114,6 +114,55 @@ async def test_seed_expands_a_multi_plate_row_and_leaves_single_plate_alone(db_s
 
 
 @pytest.mark.asyncio
+async def test_seed_skips_a_corrupted_metadata_row_without_aborting(db_session, test_engine):
+    """A junk ``plates`` value must not raise out of the loop and abort seed() —
+    that would leave the migration unrecorded and permanently stuck retrying on
+    every restart. The row is left untouched; a healthy row in the same run
+    still expands."""
+    project = Project(name="P")
+    db_session.add(project)
+    await db_session.flush()
+    garbage = LibraryFile(
+        filename="g.gcode.3mf",
+        file_path="g",
+        file_size=1,
+        file_type="gcode",
+        file_metadata={"plates": "not-a-list"},
+    )
+    healthy = LibraryFile(
+        filename="h.gcode.3mf",
+        file_path="h",
+        file_size=1,
+        file_type="gcode",
+        file_metadata={"plates": [{"index": 1}, {"index": 2}]},
+    )
+    db_session.add_all([garbage, healthy])
+    await db_session.flush()
+    db_session.add(ProjectPrintPlanItem(project_id=project.id, library_file_id=garbage.id, copies=1, order_index=0))
+    db_session.add(ProjectPrintPlanItem(project_id=project.id, library_file_id=healthy.id, copies=3, order_index=1))
+    await db_session.commit()
+
+    maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    await m158_parts_ledger.seed(maker)  # must not raise
+
+    rows = (
+        (
+            await db_session.execute(
+                select(ProjectPrintPlanItem)
+                .where(ProjectPrintPlanItem.project_id == project.id)
+                .order_by(ProjectPrintPlanItem.library_file_id, ProjectPrintPlanItem.plate_index)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    garbage_rows = [r for r in rows if r.library_file_id == garbage.id]
+    healthy_rows = [r for r in rows if r.library_file_id == healthy.id]
+    assert len(garbage_rows) == 1 and garbage_rows[0].plate_index == 0, "corrupted row left untouched"
+    assert [r.plate_index for r in healthy_rows] == [1, 2], "healthy multi-plate row in the same run still expands"
+
+
+@pytest.mark.asyncio
 async def test_seed_backfills_parts_for_an_archive_with_a_file(db_session, test_engine, tmp_path):
     f = tmp_path / "old.gcode.3mf"
     f.write_bytes(_3mf({1: "lid", 2: "lid"}))

@@ -172,23 +172,26 @@ async def seed(session_factory):
         for row_id, project_id, file_id, copies, order_index, raw_meta in rows:
             if (project_id, file_id) in expanded:
                 continue
-            meta = raw_meta if isinstance(raw_meta, dict) else (json.loads(raw_meta) if raw_meta else {})
-            plates = meta.get("plates") or []
-            indices = sorted(
-                {int(p.get("index")) for p in plates if isinstance(p.get("index"), int) and p.get("index") > 0}
-            )
-            if len(indices) <= 1:
-                continue
-            await session.execute(text("DELETE FROM project_print_plan_items WHERE id = :id"), {"id": row_id})
-            for idx in indices:
-                await session.execute(
-                    text(
-                        "INSERT INTO project_print_plan_items "
-                        "(project_id, library_file_id, copies, order_index, plate_index) "
-                        "VALUES (:p, :f, :c, :o, :pl)"
-                    ),
-                    {"p": project_id, "f": file_id, "c": copies, "o": order_index, "pl": idx},
+            try:
+                meta = raw_meta if isinstance(raw_meta, dict) else (json.loads(raw_meta) if raw_meta else {})
+                plates = meta.get("plates") or []
+                indices = sorted(
+                    {int(p.get("index")) for p in plates if isinstance(p.get("index"), int) and p.get("index") > 0}
                 )
+                if len(indices) <= 1:
+                    continue
+                await session.execute(text("DELETE FROM project_print_plan_items WHERE id = :id"), {"id": row_id})
+                for idx in indices:
+                    await session.execute(
+                        text(
+                            "INSERT INTO project_print_plan_items "
+                            "(project_id, library_file_id, copies, order_index, plate_index) "
+                            "VALUES (:p, :f, :c, :o, :pl)"
+                        ),
+                        {"p": project_id, "f": file_id, "c": copies, "o": order_index, "pl": idx},
+                    )
+            except Exception:  # noqa: BLE001 — one corrupted file_metadata row must not abort the migration
+                logger.warning("m158 seed: plan-row expansion skipped row %s", row_id, exc_info=True)
         await session.commit()
 
     # ---- job 2: one-time parts-ledger backfill for pre-existing archives ----
