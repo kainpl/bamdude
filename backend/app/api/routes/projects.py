@@ -1647,6 +1647,7 @@ async def _copy_project_setup(db: AsyncSession, source_id: int, target_id: int) 
                 library_file_id=item.library_file_id,
                 copies=item.copies,
                 order_index=item.order_index,
+                plate_index=item.plate_index,
             )
         )
 

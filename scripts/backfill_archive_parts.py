@@ -1,4 +1,11 @@
-"""One-shot backfill: seed print_archive_parts for every archive with a 3MF on disk.
+"""Manual re-run: seed print_archive_parts for every archive with a 3MF on disk.
+
+First population now happens automatically, on upgrade, in m158's ``seed()``
+(``backend/app/migrations/m158_parts_ledger.py``) — every user gets the
+ledger backfilled the moment they migrate through it, since users upgrade
+through migrations only. This script is NOT part of that path; it stays
+for MANUAL re-runs after a canonicalisation-rule change (``services/
+part_names.py``) or for troubleshooting a specific install.
 
 Run with the backend STOPPED (or against a copy of DATA_DIR):
 
