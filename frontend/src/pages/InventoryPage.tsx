@@ -715,8 +715,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const { showToast } = useToast();
   const { hasPermission, loading: authLoading } = useAuth();
   // Forecast tab gated on perm + non-Spoolman mode (Spoolman proxies spools, so we
-  // can't read spool_usage_history through the iframe).
-  const canViewForecast = !authLoading && !spoolmanMode && hasPermission('inventory:forecast_read');
+  // can't read spool_usage_history through the iframe). `spoolmanModeReady` keeps
+  // the answer NO until the mode is actually known — on a cold load spoolmanMode
+  // reads false while the settings are still in flight, and that window must not
+  // mount the ForecastPanel (whose local-inventory feed would fire once) in a
+  // session that turns out to be Spoolman (task-5 review, Minor 1).
+  const canViewForecast =
+    !authLoading && spoolmanModeReady && !spoolmanMode && hasPermission('inventory:forecast_read');
   const [searchParams, setSearchParams] = useSearchParams();
   const [formModal, setFormModal] = useState<{ spool?: InventorySpool | null; mode: SpoolFormMode } | null>(null);
   const deepLinkHandled = useRef(false);
@@ -2533,11 +2538,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       {/* Content */}
       {listLoading ? (
         <LoadingBlock label={t('common.loading')} />
-      ) : viewMode === 'forecast' ? (
+      ) : viewMode === 'forecast' && canViewForecast ? (
         /* Forecast view (upstream #1184). The panel owns its full-set feed
            since task 5 — mounted, and therefore fetching, only while this
            tab is open; its exp-decay math needs the FULL set, which the
-           server-paged list no longer holds. */
+           server-paged list no longer holds. The canViewForecast guard keeps
+           a stale PERSISTED viewMode from mounting the panel where the tab
+           itself is unreachable — above all Spoolman mode, where the panel's
+           local-inventory feed would silently compute a forecast over the
+           OTHER backend's spools (task-5 review, Minor 1); it falls back to
+           the table below instead. */
         <ForecastPanel />
       ) : viewMode === 'cards' ? (
         /* Cards view */

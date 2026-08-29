@@ -322,6 +322,39 @@ describe('InventoryPage — the Forecast tab feeds itself (task 5)', () => {
     await waitFor(() => expect(screen.getByText('eSun PLA Blue')).toBeInTheDocument());
     expect(screen.getByText('SUNLU PETG Blue')).toBeInTheDocument();
   });
+
+  it('Spoolman mode + a stale persisted forecast viewMode never mounts the panel — zero local-inventory traffic (task-6 guard, T5 review Minor 1)', async () => {
+    // The Forecast tab is unreachable in Spoolman mode (the button is hidden),
+    // but viewMode persists in localStorage: use Forecast in local mode, turn
+    // Spoolman on, revisit — without the render-branch guard the panel would
+    // mount and fetch the LOCAL inventory under a Spoolman UI.
+    localStorage.setItem('bamdude-inventory-filters', JSON.stringify({ viewMode: 'forecast' }));
+    server.use(
+      // Enabled with NO url = the proxied-inventory Spoolman flavor — the
+      // one that renders OUR page with spoolmanMode=true (a url would render
+      // Spoolman's own iframe and never reach this code at all).
+      http.get('/api/v1/settings/spoolman', () =>
+        HttpResponse.json({ spoolman_enabled: 'true', spoolman_url: '' })
+      ),
+      http.get('/api/v1/spoolman/inventory/spools', () => HttpResponse.json(SPOOLS)),
+    );
+    render(<InventoryPageRouter />);
+
+    // The guard falls back to the (Spoolman-fed) table view…
+    await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
+    // …the panel never rendered (its SKU rows join brand+material+colour into
+    // one label; the table keeps them in separate cells)…
+    expect(screen.queryByText('eSun PLA Blue')).toBeNull();
+    // …and the panel's feed never fired. The page-level flat list + all-slim
+    // stats feed each fire ONCE while the spoolman settings are still in
+    // flight (spoolmanMode reads false for that first tick — a pre-existing
+    // cold-load flicker, out of task-6 scope); the panel's feed would be a
+    // SECOND all=true request and a THIRD paged one. If a later cycle gates
+    // those page-level queries on spoolmanModeReady, these counts drop to 0
+    // — lower is better here, only MORE is a regression.
+    expect(fullSetRequests().length).toBeLessThanOrEqual(1);
+    expect(listRequests.length).toBeLessThanOrEqual(2);
+  });
 });
 
 describe('InventoryPage — page mutations drop the selection (review round 2, finding 1)', () => {
