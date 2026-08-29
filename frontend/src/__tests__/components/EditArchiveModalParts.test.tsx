@@ -89,6 +89,9 @@ describe('per-part defective entry', () => {
     server.use(
       http.get('/api/v1/projects/', () => HttpResponse.json([])),
       http.get('/api/v1/archives/tags', () => HttpResponse.json([])),
+      // The detail fetch the modal fires when its prop carries no parts (the
+      // list shape). Default: still no parts — individual tests override.
+      http.get('/api/v1/archives/:id', () => HttpResponse.json({ ...baseArchive, parts: [] })),
       http.patch('/api/v1/archives/:id', async ({ request }) => {
         const body = await request.json();
         // Global constraint: PATCH always answers with parts: [] — the modal
@@ -122,6 +125,25 @@ describe('per-part defective entry', () => {
 
     expect(screen.getByTestId('defective-count-input')).toBeInTheDocument();
     expect(screen.queryByTestId('part-defective-1')).toBeNull();
+  });
+
+  it('fetches the detail when the prop arrives from the list (parts: [])', async () => {
+    // ⚠️ Regression: the Archives page hands the modal a LIST-shaped archive,
+    // and list responses carry parts: [] by design — the steppers were
+    // unreachable until the modal learned to fetch the detail itself.
+    server.use(
+      // tags must outrank :id here — server.use() prepends, and without this
+      // the ':id' pattern would swallow /archives/tags and crash the modal.
+      http.get('/api/v1/archives/tags', () => HttpResponse.json([])),
+      http.get('/api/v1/archives/:id', () => HttpResponse.json(baseArchive)),
+    );
+
+    render(<EditArchiveModal archive={{ ...baseArchive, parts: [] }} onClose={mockOnClose} />);
+
+    expect(await screen.findByTestId('part-defective-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('defective-count-input')).toBeNull();
+    // the late-arriving rows also seed the stepper state (base.stl carries 1)
+    expect(screen.getByTestId('parts-defective-total').textContent).toContain('1');
   });
 
   it('sends parts_defective plus the derived defective_count on save', async () => {

@@ -79,7 +79,26 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   // silently zero that real historical count on a save that only touched,
   // say, notes — so parts/defective_count are only included when dirty.
   const [partsDirty, setPartsDirty] = useState(false);
-  const hasParts = (archive.parts?.length ?? 0) > 0;
+  // ⚠️ The archive prop usually arrives from the LIST endpoint, which returns
+  // parts: [] by design (no per-row query on list screens) — the per-part rows
+  // live only on the DETAIL response. Fetch it when the prop carries none;
+  // without this the steppers below are unreachable from the Archives page.
+  const { data: archiveDetail } = useQuery({
+    queryKey: ['archive-detail', archive.id],
+    queryFn: () => api.getArchive(archive.id),
+    enabled: (archive.parts?.length ?? 0) === 0,
+  });
+  const parts = (archive.parts?.length ? archive.parts : archiveDetail?.parts) ?? [];
+  const hasParts = parts.length > 0;
+  // Late-arriving detail: seed the stepper state once the rows land — unless
+  // the user already touched a stepper (their keystrokes win over a refetch).
+  useEffect(() => {
+    if (!partsDirty && parts.length) {
+      setPartsDefective(Object.fromEntries(parts.map((p) => [p.id, p.defective])));
+    }
+    // `parts` derives from archive.parts / archiveDetail, both stable per fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [archive.parts, archiveDetail, partsDirty]);
   const partsDefectiveSum = Object.values(partsDefective).reduce((sum, n) => sum + n, 0);
   const [photos, setPhotos] = useState<string[]>(archive.photos || []);
   const [externalUrl, setExternalUrl] = useState(archive.external_url || '');
@@ -349,7 +368,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
                 {t('editArchive.partsDefectiveTitle')}
               </label>
               <div className="space-y-2">
-                {archive.parts!.map((part) => (
+                {parts.map((part) => (
                   <div key={part.id} className="flex items-center justify-between gap-3">
                     <span className="text-sm text-white truncate flex-1">{part.name}</span>
                     <span className="text-xs text-bambu-gray whitespace-nowrap">&times; {part.quantity}</span>
