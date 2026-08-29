@@ -1472,6 +1472,7 @@ export interface ProjectImport {
 export interface PrintPlanItem {
   id: number;
   library_file_id: number;
+  plate_index: number;
   copies: number;
   order_index: number;
   filename: string;
@@ -8676,8 +8677,8 @@ export const api = {
   // Print Plan (per-project list of .3mf library files with copies + order)
   getProjectPrintPlan: (projectId: number) =>
     request<PrintPlanResponse>(`/projects/${projectId}/print-plan`),
-  updatePrintPlanItem: (projectId: number, libraryFileId: number, copies: number) =>
-    request<PrintPlanItem>(`/projects/${projectId}/print-plan/${libraryFileId}`, {
+  updatePrintPlanItem: (projectId: number, itemId: number, copies: number) =>
+    request<PrintPlanItem>(`/projects/${projectId}/print-plan/items/${itemId}`, {
       method: 'PATCH',
       body: JSON.stringify({ copies }),
     }),
