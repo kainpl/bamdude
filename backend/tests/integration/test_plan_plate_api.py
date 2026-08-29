@@ -114,3 +114,86 @@ async def test_the_old_per_file_patch_route_is_gone(async_client: AsyncClient, d
     resp = await async_client.patch(f"/api/v1/projects/{project.id}/print-plan/{file.id}", json={"copies": 5})
 
     assert resp.status_code in (404, 405)
+
+
+async def test_a_stale_plate_row_degrades_gracefully(async_client: AsyncClient, db_session):
+    """A plan row can outlive its own plate's metadata — e.g. a row was
+    planted directly by a writer other than ``sync_plan_for_file`` (the
+    setup-copy helper, m158's seed), or the file was re-sliced down to
+    fewer plates without the row ever being reconciled. The plate-metadata
+    lookup in ``_build_plan_item_response`` must degrade to None fields
+    (not raise, not fall back to the whole-file numbers) and the plan's
+    totals must not crash summing a None into the running total."""
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.project import Project
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+
+    project = Project(name="Stale Plate Test", description="")
+    db_session.add(project)
+    await db_session.flush()
+
+    file = LibraryFile(
+        filename="stale-plate.gcode.3mf",
+        file_path="/tmp/stale-plate.gcode.3mf",
+        file_type="gcode",
+        file_size=1,
+        file_hash=None,
+        # Only plates 1 and 2 have metadata — no entry for index 3.
+        file_metadata={
+            "plates": [
+                {"index": 1, "filament_used_grams": 10.0, "print_time_seconds": 600, "object_count": 1},
+                {"index": 2, "filament_used_grams": 20.0, "print_time_seconds": 1200, "object_count": 2},
+            ]
+        },
+    )
+    db_session.add(file)
+    await db_session.commit()
+    await db_session.refresh(project)
+    await db_session.refresh(file)
+
+    # Plant a plate_index=3 row directly — bypassing sync_plan_for_file,
+    # which would never plant a plate absent from the metadata.
+    db_session.add(
+        ProjectPrintPlanItem(project_id=project.id, library_file_id=file.id, copies=1, order_index=0, plate_index=3)
+    )
+    await db_session.commit()
+
+    resp = await async_client.get(f"/api/v1/projects/{project.id}/print-plan")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    item = next(i for i in body["items"] if i["library_file_id"] == file.id and i["plate_index"] == 3)
+    assert item["filament_grams"] is None
+    assert item["print_time_seconds"] is None
+    assert item["object_count"] is None
+    # Totals must not crash on the None contribution.
+    assert body["totals_filament_grams"] == 0.0
+    assert body["totals_print_time_seconds"] == 0
+    assert body["totals_objects"] == 0
+
+
+async def test_patch_is_scoped_to_the_owning_project(async_client: AsyncClient, db_session):
+    """A plan item id is only valid under the project that owns it — a
+    request that gets the id right but the project wrong must 404, not
+    silently patch (or leak) another project's row."""
+    from backend.app.models.project import Project
+
+    project_a, file_a = await _three_plate_setup(db_session)
+
+    project_b = Project(name="Other Project", description="")
+    db_session.add(project_b)
+    await db_session.commit()
+    await db_session.refresh(project_b)
+
+    plan_a = (await async_client.get(f"/api/v1/projects/{project_a.id}/print-plan")).json()
+    item = plan_a["items"][0]
+
+    resp = await async_client.patch(
+        f"/api/v1/projects/{project_b.id}/print-plan/items/{item['id']}", json={"copies": 2}
+    )
+
+    assert resp.status_code == 404
+
+    plan_a_after = (await async_client.get(f"/api/v1/projects/{project_a.id}/print-plan")).json()
+    item_after = next(i for i in plan_a_after["items"] if i["id"] == item["id"])
+    assert item_after["copies"] == item["copies"]
