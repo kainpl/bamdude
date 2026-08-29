@@ -16,6 +16,7 @@ from backend.app.core.config import settings
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
+from backend.app.services.archive_parts import seed_archive_parts
 from backend.app.services.library_helpers import skip_objects_supported_from_metadata
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
@@ -2428,6 +2429,13 @@ class ArchiveService:
         )
 
         self.db.add(archive)
+        await self.db.flush()
+
+        # Seed the per-part plate state (m158). Source bytes, not dispatched:
+        # the patcher touches gcode, never slice_info, and the on-disk copy is
+        # the unpatched original anyway.
+        await seed_archive_parts(self.db, archive, source_file.read_bytes())
+
         await self.db.commit()
         await self.db.refresh(archive)
 
@@ -2726,6 +2734,11 @@ class ArchiveService:
                     .where(PrintQueueItem.plate_id.is_(None))
                     .values(plate_id=archive.plate_index)
                 )
+
+            # Seed the per-part plate state (m158) — same contract as
+            # archive_print's call, now that archive.file_path points at
+            # the freshly attached 3MF.
+            await seed_archive_parts(self.db, archive, source_file.read_bytes())
 
             await self.db.commit()
             await self.db.refresh(archive)

@@ -140,6 +140,7 @@ async def test_engine():
         ams_label,
         api_key,
         archive,
+        archive_part,
         auth_ephemeral,
         auto_queue,
         bug_report,

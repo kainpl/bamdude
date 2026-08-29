@@ -90,6 +90,7 @@ from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.services.archive import ArchiveService, resolve_display_stem
+from backend.app.services.archive_parts import refresh_archive_parts
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch, delete_internal_by_name
 from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
@@ -4450,6 +4451,11 @@ async def on_print_start(printer_id: int, data: dict):
                         # made before the file could prove it. Exactly one row
                         # per physical print — drop the guess.
                         await _discard_provisional_archive(db, archive, logger)
+                        # Re-seed the adopted archive's part rows (m158). It
+                        # already has a 3MF, but a fresh seed here is cheap
+                        # insurance against a row whose parts were never
+                        # written (e.g. created before this ledger existed).
+                        await refresh_archive_parts(hash_match.id)
                         _active_prints[(printer_id, hash_match.filename)] = hash_match.id
                         if subtask_name:
                             _active_prints[(printer_id, f"{subtask_name}.3mf")] = hash_match.id
