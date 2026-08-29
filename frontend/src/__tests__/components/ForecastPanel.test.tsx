@@ -25,7 +25,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
 import { render } from '../utils';
 import { ForecastPanel } from '../../components/ForecastPanel';
-import { http, HttpResponse } from 'msw';
+import { http, HttpResponse, delay } from 'msw';
 import { server } from '../mocks/server';
 import type { SkuForecastRow, ForecastChartSeriesEntry } from '../../api/client';
 
@@ -218,6 +218,17 @@ describe('ForecastPanel — a renderer of server-computed rows', () => {
     expect(forecastRequests[0].searchParams.get('sort_by')).toBe('stock_desc');
   });
 
+  it('sanitizes a garbage sort DIRECTION too — a VALID key with a junk dir', async () => {
+    // The three cases above all bail on the KEY check and never reach the
+    // direction half. With a valid key the dir is the only thing left that
+    // can poison the composed param: a bare `dir as SortDir` would send
+    // sort_by=stock_sideways — a real 400 server-side, i.e. a blank tab.
+    localStorage.setItem(FORECAST_SORT_KEY, JSON.stringify({ key: 'stock', dir: 'sideways' }));
+    render(<ForecastPanel />);
+    await waitFor(() => expect(forecastRequests.length).toBeGreaterThan(0));
+    expect(forecastRequests[0].searchParams.get('sort_by')).toBe('stock_asc');
+  });
+
   it('a header click sends the server sort param; a filter change narrows AND resets to page 1', async () => {
     setupHandlers({ total: 120 }); // 3 pages at 50/page
     render(<ForecastPanel />);
@@ -386,5 +397,132 @@ describe('ForecastPanel — a renderer of server-computed rows', () => {
         )
       ).toBe(true)
     );
+  });
+
+  it('clearing the last alert takes the OPEN banner panel down with its toggle', async () => {
+    // The banner feed is farm-wide and the table is a paged slice, so the two
+    // legitimately carry different SKUs — which is what makes the banner
+    // identifiable here.
+    const alertRow = row({
+      material: 'ABS', brand: 'Polymaker', color_name: 'Red',
+      stock_break_alert: true, days_remaining: 2, spool_ids: [8],
+    });
+    setupHandlers();
+    let alertCount = 1;
+    server.use(
+      http.get('/api/v1/inventory/forecast', ({ request }) => {
+        const url = new URL(request.url);
+        forecastRequests.push(url);
+        const alertsOnly = url.searchParams.get('alerts_only') === 'true';
+        return HttpResponse.json({
+          // ⚠️ The alerts feed deliberately keeps answering with the row. It
+          // goes DISABLED the instant alert_count hits 0, and TanStack never
+          // refetches a disabled query — not even on focus — so its cache
+          // outlives the alert. That cache is what this guard defends against.
+          items: alertsOnly ? [alertRow] : [row()],
+          meta: { total: 1, current_page: 1, per_page: 50, last_page: 1 },
+          alert_count: alertCount,
+          global_lead_time_days: 3,
+        });
+      }),
+      http.post('/api/v1/inventory/sku-settings', () => {
+        alertCount = 0; // the snooze cleared the farm's last alert
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    render(<ForecastPanel />);
+    await waitFor(() => expect(screen.getByText('1 alert')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('1 alert'));
+    await waitFor(() => expect(screen.getByText('Polymaker ABS Red')).toBeInTheDocument());
+
+    // Snooze from the table row's bell — the review's exact scenario.
+    fireEvent.click(screen.getByTitle('Mute alerts for this SKU'));
+
+    // The toggle unmounts at alert_count 0. The banner must go with it, or
+    // the panel keeps asserting an alert with no button left to dismiss it.
+    await waitFor(() => expect(screen.queryByText('1 alert')).toBeNull());
+    expect(screen.queryByText('Polymaker ABS Red')).toBeNull();
+  });
+
+  it('Mark received stays disabled while the cart-rows feed is in flight — no 1000g spools', async () => {
+    setupHandlers({
+      shoppingList: [{
+        id: 1, material: 'PLA', subtype: null, brand: 'eSun', color_name: 'Blue',
+        quantity_spools: 2, note: null, status: 'purchased',
+        purchased_at: '2026-08-02T00:00:00Z', added_at: '2026-08-01T00:00:00Z',
+      }],
+    });
+    let bulkCreates = 0;
+    let statusPatches = 0;
+    server.use(
+      http.get('/api/v1/inventory/forecast', async ({ request }) => {
+        const url = new URL(request.url);
+        forecastRequests.push(url);
+        // The cart-rows feed (all=true) never answers: the window between the
+        // click that OPENS the panel and the row arriving is the whole
+        // finding — until then rowFor() is null and avgSpoolG collapses to
+        // the 1000 g fallback that bulkCreateSpools writes as label_weight.
+        if (url.searchParams.get('all') === 'true') await delay('infinite');
+        return HttpResponse.json({
+          items: [row()],
+          meta: { total: 1, current_page: 1, per_page: 50, last_page: 1 },
+          alert_count: 0,
+          global_lead_time_days: 3,
+        });
+      }),
+      http.post('/api/v1/inventory/spools/bulk', () => {
+        bulkCreates += 1;
+        return HttpResponse.json([]);
+      }),
+      http.patch('/api/v1/inventory/shopping-list/:id/status', () => {
+        statusPatches += 1;
+        return HttpResponse.json({});
+      }),
+    );
+
+    render(<ForecastPanel />);
+    await waitFor(() => expect(screen.getByText('Shopping List')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Shopping List'));
+
+    const received = await screen.findByTitle('Mark as received - adds spools to Stock inventory');
+    expect(received).toBeDisabled();
+
+    // A click inside the window must write nothing at all — permanently
+    // wrong spool sizes are silent, so the gate is the only signal.
+    fireEvent.click(received);
+    await waitFor(() => expect(received).toBeDisabled());
+    expect(bulkCreates).toBe(0);
+    expect(statusPatches).toBe(0);
+  });
+
+  it('the logistics view WAITS instead of claiming "no usage data" while its feed is in flight', async () => {
+    setupHandlers({
+      shoppingList: [{
+        id: 1, material: 'PLA', subtype: null, brand: 'eSun', color_name: 'Blue',
+        quantity_spools: 2, note: null, status: 'pending',
+        purchased_at: null, added_at: '2026-08-01T00:00:00Z',
+      }],
+    });
+    server.use(
+      http.get('/api/v1/inventory/forecast/logistics', async ({ request }) => {
+        logisticsRequests.push(new URL(request.url));
+        await delay('infinite');
+        return HttpResponse.json([]);
+      }),
+    );
+
+    render(<ForecastPanel />);
+    await waitFor(() => expect(screen.getByText('Shopping List')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Shopping List'));
+    fireEvent.click(await screen.findByText('Logistics'));
+
+    // A missing logistics row means "not yet", not "none" — the definitive
+    // negative is the one claim this view exists to make, so making it early
+    // is worse than saying nothing.
+    await waitFor(() => expect(screen.getByRole('status')).toBeInTheDocument());
+    expect(
+      screen.queryByText('No usage data available - cannot project stock timeline.')
+    ).toBeNull();
   });
 });

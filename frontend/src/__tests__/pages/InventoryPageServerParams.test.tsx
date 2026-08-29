@@ -320,7 +320,7 @@ describe('InventoryPage — server-driven params (task 4)', () => {
   });
 });
 
-describe('InventoryPage — the Forecast tab feeds itself (task 5)', () => {
+describe('InventoryPage — the Forecast tab renders server-computed rows', () => {
   beforeEach(() => {
     localStorage.clear();
     setupHandlers();
@@ -342,6 +342,10 @@ describe('InventoryPage — the Forecast tab feeds itself (task 5)', () => {
     // fire in the same tick as the page's own, so by the time the list has
     // settled it would already be in the count.
     await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
+    // ⚠️ T5 flips this to 0 — the stats feed becomes GET /inventory/stats and
+    // all-slim is DELETED. Keeping this green at 1 by leaving all-slim alive
+    // is the exact outcome T5 exists to prevent: change the expectation, not
+    // the code under it.
     await waitFor(() => expect(fullSetRequests().length).toBe(1));
     expect(fullSetRequests().length).toBe(1);
     expect(forecastRequests.length).toBe(0);
@@ -403,6 +407,9 @@ describe('InventoryPage — the Forecast tab feeds itself (task 5)', () => {
     // spoolmanModeReady, these counts drop to 0 — lower is better here,
     // only MORE is a regression.
     expect(forecastRequests.length).toBe(0);
+    // ⚠️ T5 flips this to 0 — the stats feed becomes GET /inventory/stats and
+    // all-slim is DELETED. The ≤1 here is the cold-load flicker allowance
+    // described above, not a licence to keep one all=true fetch alive.
     expect(fullSetRequests().length).toBeLessThanOrEqual(1);
     expect(listRequests.length).toBeLessThanOrEqual(2);
   });

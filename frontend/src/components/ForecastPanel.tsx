@@ -165,8 +165,12 @@ export function ForecastPanel() {
 
   // All hooks must run unconditionally — guard render is deferred until after hooks
   const [alertsOpen, setAlertsOpen] = useState(false);
-  const [sortKey, setSortKey] = useState<SortKey>(() => sanitizeSort(loadSort(FORECAST_SORT_KEY)).key);
-  const [sortDir, setSortDir] = useState<SortDir>(() => sanitizeSort(loadSort(FORECAST_SORT_KEY)).dir);
+  // ONE read of the persisted sort: the two halves share a single stored
+  // object, so a per-initializer sanitizeSort(loadSort(…)) meant two
+  // localStorage round-trips and two JSON.parses for one value.
+  const [initialSort] = useState(() => sanitizeSort(loadSort(FORECAST_SORT_KEY)));
+  const [sortKey, setSortKey] = useState<SortKey>(initialSort.key);
+  const [sortDir, setSortDir] = useState<SortDir>(initialSort.dir);
   const [materialFilter, setMaterialFilter] = useState('');
   const [brandFilter, setBrandFilter] = useState('');
   const [cartModal, setCartModal] = useState<SkuForecastRow | null>(null);
@@ -384,8 +388,14 @@ export function ForecastPanel() {
         </button>
       </div>
 
-      {/* ── Collapsed alerts panel — served alert rows, farm-wide ── */}
-      {alertsOpen && alertRows.length > 0 && (
+      {/* ── Collapsed alerts panel — served alert rows, farm-wide ──
+          ⚠️ alertCount gates the RENDER, not just the toggle above. When the
+          last alert clears (a snooze, or stock moving), alertsQuery goes
+          disabled — and TanStack never refetches a disabled query, not even
+          on focus — so alertRows keeps serving the pre-clear rows. Without
+          this guard the banner panel would keep asserting an alert that no
+          longer exists, with its collapse button already unmounted. */}
+      {alertsOpen && alertCount > 0 && alertRows.length > 0 && (
         <div className="space-y-2">
           {alertRows.map((r) => (
             <AlertBanner
@@ -402,7 +412,13 @@ export function ForecastPanel() {
         <ShoppingListPanel
           items={shoppingList}
           rows={cartRowsQuery.data?.items ?? []}
+          // Both feeds start on the click that OPENS this panel, so "not
+          // answered yet" is a state the user can reach and act inside —
+          // see the disabled Mark-received button and the logistics
+          // loading block, both of which read these.
+          rowsPending={cartRowsQuery.isPending}
           logistics={logisticsQuery.data ?? []}
+          logisticsPending={logisticsQuery.isPending}
           globalLeadTime={globalLeadTime}
           resolveSkuSettings={resolveSkuSettings}
           canWrite={canWrite}
@@ -1279,11 +1295,18 @@ function SafetyMarginField({
 // ── Shopping list panel ───────────────────────────────────────────────────────
 
 function ShoppingListPanel({
-  items, rows, logistics, globalLeadTime, resolveSkuSettings, canWrite, onClose, onRemove, onClear,
+  items, rows, rowsPending, logistics, logisticsPending, globalLeadTime,
+  resolveSkuSettings, canWrite, onClose, onRemove, onClear,
 }: {
   items: ShoppingListItem[];
   rows: SkuForecastRow[];
+  /** The cart-rows feed has not answered yet — every rowFor() is null for a
+   *  reason that is NOT "no such SKU". Gates the received button. */
+  rowsPending: boolean;
   logistics: ForecastLogisticsRow[];
+  /** The logistics feed has not answered yet — a null series is a WAIT, not
+   *  the server's definitive "no usage data". */
+  logisticsPending: boolean;
   globalLeadTime: number;
   resolveSkuSettings: (
     material: string | null, subtype: string | null, brand: string | null, colorName: string | null,
@@ -1452,6 +1475,11 @@ function ShoppingListPanel({
                 const lbl = [item.brand, item.material, item.subtype, item.color_name].filter(Boolean).join(' ');
                 const hasBreak = breakAlerts.some((a) => a.id === item.id);
                 const f = rowFor(item);
+                // ⚠️ 1000 g is the documented fallback for a SKU with no live
+                // spools — but it is ALSO what an unanswered cart-rows feed
+                // produces, and Mark received writes this as a real
+                // label_weight. rowsPending disables that button below; here
+                // the number is display-only.
                 const avgSpoolG = f && f.total_spools > 0 ? f.total_label_g / f.total_spools : 1000;
                 const totalWeightG = Math.round(item.quantity_spools * avgSpoolG);
                 const lt = f?.eff_lead_time_days ?? globalLeadTime ?? 0;
@@ -1526,7 +1554,10 @@ function ShoppingListPanel({
                             {/* Received icon — available only after purchasing */}
                             <button
                               onClick={() => statusMutation.mutate({ id: item.id, status: 'received', item, avgSpoolG })}
-                              disabled={isMutating || !isPurchased || isReceived}
+                              // rowsPending: creating spools at the 1000 g
+                              // fallback because the feed was still in flight
+                              // is silent and permanent — wait for the answer.
+                              disabled={isMutating || !isPurchased || isReceived || rowsPending}
                               title={t('forecast.markReceived')}
                               className="p-1.5 rounded transition-colors text-bambu-green/50 hover:text-bambu-green disabled:opacity-30"
                             >
@@ -1558,6 +1589,7 @@ function ShoppingListPanel({
               key={item.id}
               item={item}
               logistics={logisticsById.get(item.id) ?? null}
+              logisticsPending={logisticsPending}
               row={rowFor(item)}
               skuLeadTime={resolveSkuSettings(item.material, item.subtype, item.brand, item.color_name)?.lead_time_days ?? 0}
               globalLeadTime={globalLeadTime}
@@ -1582,10 +1614,12 @@ function ShoppingListPanel({
  * served numbers: the arrival step height and the bridge-gap spool count.
  */
 function CartLogisticsRow({
-  item, logistics, row, skuLeadTime, globalLeadTime, canWrite, onRemove,
+  item, logistics, logisticsPending, row, skuLeadTime, globalLeadTime, canWrite, onRemove,
 }: {
   item: ShoppingListItem;
   logistics: ForecastLogisticsRow | null;
+  /** The feed is still in flight — a missing row means "not yet", not "none". */
+  logisticsPending: boolean;
   row: SkuForecastRow | null;
   skuLeadTime: number;
   globalLeadTime: number;
@@ -1648,8 +1682,14 @@ function CartLogisticsRow({
         </div>
       )}
 
-      {/* No forecast data — the server's series:null case */}
-      {points === null ? (
+      {/* A WAIT and a definitive negative are different claims: points===null
+          covers both the server's series:null AND a logistics feed that has
+          not answered (the map lookup misses). Only say "no usage data" once
+          the feed has settled — the placeholder is the whole point of this
+          view, so asserting it while loading is the worst possible lie. */}
+      {logisticsPending ? (
+        <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
+      ) : points === null ? (
         <div className="py-4 text-center text-xs text-bambu-gray">
           {t('forecast.noUsageData')}
         </div>
@@ -1806,6 +1846,15 @@ function AddToCartModal({
   // Trivial client arithmetic over the row's served numbers (spec §2.3's
   // carve-out). Avg spool weight comes from the served LIVE totals — the old
   // panel averaged over every spool ever owned, a feed that no longer exists.
+  //
+  // ⚠️ ACCEPTED LOSS, archived-only SKUs. A SKU held by the 90-day
+  // archived-only window has total_spools == 0 AND total_label_g == 0 —
+  // forecast_engine gates BOTH on is_live — so this falls back to 1000 g for
+  // precisely the SKU you are being told to reorder, under-suggesting for
+  // sub-kilo spools and over-suggesting for 3 kg ones. It CANNOT be fixed
+  // here: total_used_g is the only all-spools aggregate served and usage is
+  // not size. The fix is an engine-side avg_spool_label_g computed over
+  // archived spools too; revisit when that field exists.
   const spoolsForDuration = useMemo(() => {
     if (!f.rate_g_day || f.rate_g_day <= 0) return null;
     const neededG = f.rate_g_day * Number(durationDays);
