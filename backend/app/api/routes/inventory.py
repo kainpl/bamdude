@@ -3205,6 +3205,7 @@ async def get_inventory_forecast_logistics(
                     arrival_day=None,
                     rop_g=None,
                     safety_stock_g=None,
+                    stock_break_day=None,
                     stock_break_before_arrival=False,
                 )
             )
@@ -3229,6 +3230,14 @@ async def get_inventory_forecast_logistics(
             else:
                 series.append((day, _js_round(max(0.0, peak_g - rate * (offset - lead)))))
 
+        # The client's stockBreaksAt memo verbatim (ForecastPanel.tsx:1701-1706):
+        # floor(remaining/rate) when it lands before the lead time, else null —
+        # this is the banner's user-facing number, and the flag is exactly its
+        # non-nullness (hasBreak = stockBreaksAt !== null). NOT the series'
+        # first zero: rounding puts that a day later in general.
+        zero_day = math.floor(row.total_remaining_g / rate)
+        stock_break_day = zero_day if zero_day < lead else None
+
         out.append(
             ForecastLogisticsRow(
                 item_id=item.id,
@@ -3236,7 +3245,8 @@ async def get_inventory_forecast_logistics(
                 arrival_day=lead,
                 rop_g=row.reorder_point_g,
                 safety_stock_g=row.safety_stock_g,
-                stock_break_before_arrival=math.floor(row.total_remaining_g / rate) < lead,
+                stock_break_day=stock_break_day,
+                stock_break_before_arrival=stock_break_day is not None,
             )
         )
     return out

@@ -570,6 +570,14 @@ class TestForecastLogistics:
         await _sku_settings(db_session, material="PLA", brand="LG", color_name="Red", lead_time_days=10)
         item_id = await _add_cart_item(async_client, material="PLA", brand="LG", color_name="Red", quantity_spools=2)
 
+        # Layer localizer (T3 review Minor 2): every number below is pure
+        # arithmetic over rate 50 — pin the rate through the ROWS endpoint
+        # first, so if the once-observed harness visibility race ever fires
+        # again the failure names the engine/visibility layer, never the
+        # logistics arithmetic.
+        rows_rsp = await async_client.get("/api/v1/inventory/forecast?material=PLA")
+        assert [r["rate_g_day"] for r in rows_rsp.json()["items"]] == [pytest.approx(50.0)]
+
         rsp = await async_client.get("/api/v1/inventory/forecast/logistics")
         assert rsp.status_code == 200
         row = next(r for r in rsp.json() if r["item_id"] == item_id)
@@ -584,6 +592,14 @@ class TestForecastLogistics:
         assert series[12][1] == 1950  # post-arrival depletion resumes
         # floor(400/50) = 8 < lead 10 → the stock breaks before the parcel lands
         assert row["stock_break_before_arrival"] is True
+        # The banner's headline number (T3 review Important 1): stockBreaksAt =
+        # Math.floor(remaining / rate) — NOT the series' first zero, which
+        # rounding puts a day later in general (rem 420 @ 50: the series
+        # zeroes at d9 while the client banner says 8).
+        assert row["stock_break_day"] == 8
+        # In the client the flag IS the day's non-nullness (hasBreak =
+        # stockBreaksAt !== null, ForecastPanel.tsx:1708) — pin the iff.
+        assert (row["stock_break_day"] is not None) == row["stock_break_before_arrival"]
         # rate 50, lead 10, σ=0: safety = 50·14 = 700; ROP = 50·10 + 700 = 1200
         assert row["safety_stock_g"] == pytest.approx(700.0)
         assert row["rop_g"] == pytest.approx(1200.0)
@@ -599,6 +615,9 @@ class TestForecastLogistics:
         rsp = await async_client.get("/api/v1/inventory/forecast/logistics")
         row = next(r for r in rsp.json() if r["item_id"] == item_id)
         assert row["stock_break_before_arrival"] is False
+        # floor(2000/10) = 200 ≥ lead 5 → the client memo returns null: no day
+        assert row["stock_break_day"] is None
+        assert (row["stock_break_day"] is not None) == row["stock_break_before_arrival"]
         assert row["arrival_day"] == 5
         assert row["series"][5][1] == 1950  # 2000 − 10·5
         assert row["series"][6][1] == 4950  # + one 3000 g spool
@@ -613,6 +632,7 @@ class TestForecastLogistics:
         assert row["arrival_day"] is None
         assert row["rop_g"] is None and row["safety_stock_g"] is None
         assert row["stock_break_before_arrival"] is False
+        assert row["stock_break_day"] is None
 
 
 # ── GET /inventory/shopping-list/export.csv ──────────────────────────────────

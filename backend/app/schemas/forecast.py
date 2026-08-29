@@ -98,6 +98,12 @@ class ForecastLogisticsRow(BaseModel):
     depletion-bump-depletion timeline with the arrival date present TWICE
     (pre-bump, post-bump — the client's vertical-step trick, kept so the chart
     renders an instant jump).
+
+    ``stock_break_day`` is the banner's headline number — the client's
+    ``stockBreaksAt`` memo verbatim: ``floor(remaining / rate)`` when that
+    lands before the lead time, else None. Deliberately NOT the series' first
+    zero (rounding puts that a day later in general), and the flag is exactly
+    its non-nullness (the client's ``hasBreak = stockBreaksAt !== null``).
     """
 
     item_id: int
@@ -105,4 +111,5 @@ class ForecastLogisticsRow(BaseModel):
     arrival_day: int | None
     rop_g: float | None
     safety_stock_g: float | None
+    stock_break_day: int | None
     stock_break_before_arrival: bool
