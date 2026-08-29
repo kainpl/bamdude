@@ -4785,6 +4785,21 @@ export default {
       exported: 'Проєкти експортовано (лише метадані)',
       createdFromTemplate: 'Проєкт створено з шаблону',
       templateDeleted: 'Шаблон видалено'
+    },
+    // Таблиця обліку деталей (сторінка проєкту) — namespace partsLedger,
+    // а не parts, бо projects.parts вище — це вже слово "деталей",
+    // яке використовується по всій ProjectsPage.tsx.
+    partsLedger: {
+      title: 'Деталі',
+      name: 'Деталь',
+      target: 'Ціль',
+      printed: 'Надруковано',
+      inProgress: 'У друці',
+      defective: 'Брак',
+      usable: 'Придатні',
+      remaining: 'Лишилось',
+      empty: 'Деталей ще не знайдено — привʼяжіть нарізані файли або надрукуйте щось.',
+      setTarget: 'Задати ціль'
     }
   },
 
@@ -4885,6 +4900,10 @@ export default {
       costHint: '@ {{currency}}{{rate}}/кг',
       applyTotals: 'Застосувати до проекту',
       applyTotalsTitle: 'Застосувати до проекту: {{plates}} плит / {{parts}} деталей / бюджет {{budget}}',
+    },
+    plan: {
+      plate: 'Стіл {{n}}',
+      allPlates: 'Всі столи',
     },
     bom: {
       title: 'Специфікація матеріалів',
@@ -6390,6 +6409,9 @@ export default {
     itemsPrintedHelp: 'Кількість елементів, виготовлених у цьому друці',
     defectiveParts: 'Браковані деталі',
     defectivePartsHelp: 'Скільки з них вийшли непридатними. Рахується автоматично, коли під час друку пропускають об\'єкти — зокрема й з екрана самого принтера.',
+    partsDefectiveTitle: 'Браковані деталі',
+    partsDefectiveHelp: 'Брак по деталях — скіпнуті вже пораховані.',
+    partsDefectiveTotal: 'Всього браку',
     notes: 'Нотатки',
     notesPlaceholder: 'Додайте нотатки про цей друк...',
     externalLink: 'Зовнішнє посилання',

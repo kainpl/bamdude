@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -23,12 +23,14 @@ from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
+from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.library_project_links import library_file_projects, library_folder_projects
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.project import Project
 from backend.app.models.project_bom import ProjectBOMItem
+from backend.app.models.project_part import ProjectPart
 from backend.app.models.project_print_plan import ProjectPrintPlanItem
 from backend.app.models.user import User
 from backend.app.schemas.project import (
@@ -47,6 +49,9 @@ from backend.app.schemas.project import (
     ProjectDuplicate,
     ProjectImport,
     ProjectListResponse,
+    ProjectPartRow,
+    ProjectPartsResponse,
+    ProjectPartsUpdate,
     ProjectResponse,
     ProjectStats,
     ProjectUpdate,
@@ -519,34 +524,28 @@ async def create_project_from_template(
         target_count=template.target_count,
         target_parts_count=template.target_parts_count,
         notes=template.notes,
+        attachments=copy_module.deepcopy(template.attachments),
         tags=template.tags,
         priority=template.priority,
         budget=template.budget,
         is_template=False,
         template_source_id=template.id,
+        cover_image_filename=template.cover_image_filename,
     )
     db.add(project)
     await db.flush()
 
-    # Copy BOM items
-    bom_result = await db.execute(select(ProjectBOMItem).where(ProjectBOMItem.project_id == template_id))
-    bom_items = bom_result.scalars().all()
+    if (template.attachments or template.cover_image_filename) and not await _copy_attachment_files(
+        template.id, project.id
+    ):
+        # Better an honest empty gallery than rows pointing at files that are
+        # not there. The names would render as broken images with no clue why.
+        project.attachments = None
+        project.cover_image_filename = None
 
-    for item in bom_items:
-        new_item = ProjectBOMItem(
-            project_id=project.id,
-            name=item.name,
-            quantity_needed=item.quantity_needed,
-            quantity_acquired=0,
-            unit_price=item.unit_price,
-            sourcing_url=item.sourcing_url,
-            stl_filename=item.stl_filename,
-            remarks=item.remarks,
-            sort_order=item.sort_order,
-        )
-        db.add(new_item)
+    await _copy_project_setup(db, template.id, project.id)
 
-    await db.flush()
+    await db.commit()
     await db.refresh(project)
 
     stats = await compute_project_stats(db, project.id, project.target_count, project.target_parts_count)
@@ -1513,34 +1512,26 @@ async def create_template_from_project(
         target_count=source.target_count,
         target_parts_count=source.target_parts_count,
         notes=source.notes,
+        attachments=copy_module.deepcopy(source.attachments),
         tags=source.tags,
         priority=source.priority,
         budget=source.budget,
         is_template=True,
         template_source_id=source.id,
+        cover_image_filename=source.cover_image_filename,
     )
     db.add(template)
     await db.flush()
 
-    # Copy BOM items
-    bom_result = await db.execute(select(ProjectBOMItem).where(ProjectBOMItem.project_id == project_id))
-    bom_items = bom_result.scalars().all()
+    if (source.attachments or source.cover_image_filename) and not await _copy_attachment_files(source.id, template.id):
+        # Better an honest empty gallery than rows pointing at files that are
+        # not there. The names would render as broken images with no clue why.
+        template.attachments = None
+        template.cover_image_filename = None
 
-    for item in bom_items:
-        new_item = ProjectBOMItem(
-            project_id=template.id,
-            name=item.name,
-            quantity_needed=item.quantity_needed,
-            quantity_acquired=0,
-            unit_price=item.unit_price,
-            sourcing_url=item.sourcing_url,
-            stl_filename=item.stl_filename,
-            remarks=item.remarks,
-            sort_order=item.sort_order,
-        )
-        db.add(new_item)
+    await _copy_project_setup(db, source.id, template.id)
 
-    await db.flush()
+    await db.commit()
     await db.refresh(template)
 
     stats = await compute_project_stats(db, template.id, template.target_count, template.target_parts_count)
@@ -1564,6 +1555,7 @@ async def create_template_from_project(
         parent_id=template.parent_id,
         parent_name=None,
         children=[],
+        cover_image_filename=template.cover_image_filename,
         created_at=template.created_at,
         updated_at=template.updated_at,
         stats=stats,
@@ -1574,10 +1566,10 @@ async def create_template_from_project(
 #
 # The split users care about: **setup is copied, history is not.** Copied —
 # every descriptive column, the BOM, the attached library files and folders,
-# the print plan (per-file copies + order) and the uploaded attachments on
-# disk. Not copied — archives and queue items, i.e. everything that records
-# what this project has actually done, plus BOM ``quantity_acquired``, which
-# is procurement progress rather than a part list.
+# the print plan (per-file copies + order), the parts-ledger targets and the
+# uploaded attachments on disk. Not copied — archives and queue items, i.e.
+# everything that records what this project has actually done, plus BOM
+# ``quantity_acquired``, which is procurement progress rather than a part list.
 #
 # ⚠️ It is a COPY, never a move: the source keeps every link it had. The
 # library pivots are many-to-many precisely so a file can sit in both.
@@ -1616,6 +1608,81 @@ async def _copy_attachment_files(source_id: int, new_id: int) -> bool:
     except OSError as e:
         logger.warning("Project %s: attachments could not be copied from %s: %s", new_id, source_id, e)
         return False
+
+
+async def _copy_project_setup(db: AsyncSession, source_id: int, target_id: int) -> None:
+    """Copy a project's setup — BOM (procurement reset), print plan, library
+    file/folder links, parts-ledger targets — onto another project.
+
+    The one routine templates and duplication share; history (archives,
+    queue rows) never copies. Pivots are written as raw inserts so the
+    source's M2M collections are never loaded (see _duplicate_project_tree's
+    original comment).
+    """
+    bom_items = (await db.execute(select(ProjectBOMItem).where(ProjectBOMItem.project_id == source_id))).scalars().all()
+    for item in bom_items:
+        db.add(
+            ProjectBOMItem(
+                project_id=target_id,
+                name=item.name,
+                quantity_needed=item.quantity_needed,
+                quantity_acquired=0,  # progress, not part list
+                unit_price=item.unit_price,
+                sourcing_url=item.sourcing_url,
+                stl_filename=item.stl_filename,
+                remarks=item.remarks,
+                sort_order=item.sort_order,
+            )
+        )
+
+    plan_items = (
+        (await db.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.project_id == source_id)))
+        .scalars()
+        .all()
+    )
+    for item in plan_items:
+        db.add(
+            ProjectPrintPlanItem(
+                project_id=target_id,
+                library_file_id=item.library_file_id,
+                copies=item.copies,
+                order_index=item.order_index,
+                plate_index=item.plate_index,
+            )
+        )
+
+    file_ids = (
+        (
+            await db.execute(
+                select(library_file_projects.c.file_id).where(library_file_projects.c.project_id == source_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if file_ids:
+        await db.execute(
+            library_file_projects.insert(),
+            [{"file_id": fid, "project_id": target_id} for fid in file_ids],
+        )
+    folder_ids = (
+        (
+            await db.execute(
+                select(library_folder_projects.c.folder_id).where(library_folder_projects.c.project_id == source_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if folder_ids:
+        await db.execute(
+            library_folder_projects.insert(),
+            [{"folder_id": fid, "project_id": target_id} for fid in folder_ids],
+        )
+
+    parts = (await db.execute(select(ProjectPart).where(ProjectPart.project_id == source_id))).scalars().all()
+    for part in parts:
+        db.add(ProjectPart(project_id=target_id, name=part.name, name_key=part.name_key, target_qty=part.target_qty))
 
 
 async def _duplicate_project_tree(
@@ -1662,68 +1729,7 @@ async def _duplicate_project_tree(
         copy.attachments = None
         copy.cover_image_filename = None
 
-    bom_items = (await db.execute(select(ProjectBOMItem).where(ProjectBOMItem.project_id == source.id))).scalars().all()
-    for item in bom_items:
-        db.add(
-            ProjectBOMItem(
-                project_id=copy.id,
-                name=item.name,
-                quantity_needed=item.quantity_needed,
-                quantity_acquired=0,  # progress, not part list
-                unit_price=item.unit_price,
-                sourcing_url=item.sourcing_url,
-                stl_filename=item.stl_filename,
-                remarks=item.remarks,
-                sort_order=item.sort_order,
-            )
-        )
-
-    plan_items = (
-        (await db.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.project_id == source.id)))
-        .scalars()
-        .all()
-    )
-    for item in plan_items:
-        db.add(
-            ProjectPrintPlanItem(
-                project_id=copy.id,
-                library_file_id=item.library_file_id,
-                copies=item.copies,
-                order_index=item.order_index,
-            )
-        )
-
-    # Library links. Written as pivot inserts rather than through the M2M
-    # relationship so the source's collection is never loaded and therefore
-    # never at risk of being reassigned instead of read.
-    file_ids = (
-        (
-            await db.execute(
-                select(library_file_projects.c.file_id).where(library_file_projects.c.project_id == source.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if file_ids:
-        await db.execute(
-            library_file_projects.insert(),
-            [{"file_id": fid, "project_id": copy.id} for fid in file_ids],
-        )
-    folder_ids = (
-        (
-            await db.execute(
-                select(library_folder_projects.c.folder_id).where(library_folder_projects.c.project_id == source.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if folder_ids:
-        await db.execute(
-            library_folder_projects.insert(),
-            [{"folder_id": fid, "project_id": copy.id} for fid in folder_ids],
-        )
+    await _copy_project_setup(db, source.id, copy.id)
 
     if include_children:
         children = (
@@ -2474,14 +2480,39 @@ def _build_plan_item_response(
     default_cost_per_kg: float,
     printed_count: int,
 ) -> PrintPlanItemResponse:
-    """Derive per-row totals from the joined library file's metadata."""
+    """Derive per-row totals from the joined library file's metadata.
+
+    ``plate_index == 0`` (whole-file rows: single-plate files, raw gcode)
+    read the file's top-level metadata exactly as before. A ``plate_index
+    > 0`` row instead reads that plate's own entry in
+    ``file_metadata["plates"]`` — the per-plate dicts written by
+    ``services/archive.py``'s plate extractor, keyed by ``"index"`` and
+    carrying ``filament_used_grams`` / ``print_time_seconds`` /
+    ``object_count`` (the last already an instance count, not a dict to
+    ``len()``) — so each plate's row shows that plate's own numbers rather
+    than the whole file's.
+    """
     meta = file.file_metadata or {}
-    grams = meta.get("filament_used_grams")
-    grams = float(grams) if isinstance(grams, (int, float)) else None
-    secs = meta.get("print_time_seconds")
-    secs = int(secs) if isinstance(secs, (int, float)) else None
-    objs = meta.get("printable_objects")
-    obj_count = len(objs) if isinstance(objs, dict) else None
+
+    if row.plate_index > 0:
+        plate_meta = next(
+            (p for p in (meta.get("plates") or []) if isinstance(p, dict) and p.get("index") == row.plate_index),
+            {},
+        )
+        grams = plate_meta.get("filament_used_grams")
+        grams = float(grams) if isinstance(grams, (int, float)) else None
+        secs = plate_meta.get("print_time_seconds")
+        secs = int(secs) if isinstance(secs, (int, float)) else None
+        obj_count = plate_meta.get("object_count")
+        obj_count = int(obj_count) if isinstance(obj_count, (int, float)) else None
+    else:
+        grams = meta.get("filament_used_grams")
+        grams = float(grams) if isinstance(grams, (int, float)) else None
+        secs = meta.get("print_time_seconds")
+        secs = int(secs) if isinstance(secs, (int, float)) else None
+        objs = meta.get("printable_objects")
+        obj_count = len(objs) if isinstance(objs, dict) else None
+
     # None, not 0.00: with no farm rate set there is nothing to say about
     # what a copy costs, and a zero reads as "free".
     cost_per_copy = (
@@ -2498,6 +2529,7 @@ def _build_plan_item_response(
         library_file_id=row.library_file_id,
         copies=row.copies,
         order_index=row.order_index,
+        plate_index=row.plate_index,
         filename=file.filename,
         print_name=(meta.get("print_name") if isinstance(meta.get("print_name"), str) else None),
         file_type=file.file_type,
@@ -2532,34 +2564,45 @@ async def _load_print_plan(db: AsyncSession, project_id: int) -> PrintPlanRespon
             select(ProjectPrintPlanItem, LibraryFile)
             .join(LibraryFile, ProjectPrintPlanItem.library_file_id == LibraryFile.id)
             .where(ProjectPrintPlanItem.project_id == project_id)
-            .order_by(ProjectPrintPlanItem.order_index, ProjectPrintPlanItem.id)
+            .order_by(
+                ProjectPrintPlanItem.order_index,
+                ProjectPrintPlanItem.library_file_id,
+                ProjectPrintPlanItem.plate_index,
+                ProjectPrintPlanItem.id,
+            )
         )
     ).all()
 
     default_cost_per_kg = await _get_default_filament_cost(db)
 
-    # Per-(project, library_file) printed-count: completed archives only.
-    # One bulk query rather than per-row to keep the endpoint flat.
+    # Per-(library_file, plate) printed-count: completed archives only, one
+    # bulk query grouped by (library_file_id, plate_index) rather than
+    # per-row. A plate_index>0 plan row looks up its own exact group; a
+    # plate_index==0 (whole-file) row sums every group for that file —
+    # today's per-file semantics, unchanged, regardless of which plate
+    # each archive happened to record.
     file_ids = [row.library_file_id for row, _ in rows]
-    printed_counts: dict[int, int] = {}
+    printed_by_file_plate: dict[tuple[int, int | None], int] = {}
     if file_ids:
         printed_rows = (
             await db.execute(
-                select(PrintArchive.library_file_id, func.count(PrintArchive.id))
+                select(PrintArchive.library_file_id, PrintArchive.plate_index, func.count(PrintArchive.id))
                 .where(
                     PrintArchive.project_id == project_id,
                     PrintArchive.library_file_id.in_(file_ids),
                     PrintArchive.status == "completed",
                 )
-                .group_by(PrintArchive.library_file_id)
+                .group_by(PrintArchive.library_file_id, PrintArchive.plate_index)
             )
         ).all()
-        printed_counts = dict(printed_rows)
+        printed_by_file_plate = {(fid, plate): count for fid, plate, count in printed_rows}
 
-    items = [
-        _build_plan_item_response(row, file, default_cost_per_kg, printed_counts.get(row.library_file_id, 0))
-        for row, file in rows
-    ]
+    def _printed_count(row: ProjectPrintPlanItem) -> int:
+        if row.plate_index > 0:
+            return printed_by_file_plate.get((row.library_file_id, row.plate_index), 0)
+        return sum(count for (fid, _plate), count in printed_by_file_plate.items() if fid == row.library_file_id)
+
+    items = [_build_plan_item_response(row, file, default_cost_per_kg, _printed_count(row)) for row, file in rows]
 
     return PrintPlanResponse(
         items=items,
@@ -2584,30 +2627,36 @@ async def get_project_print_plan(
     return await _load_print_plan(db, project_id)
 
 
-@router.patch("/{project_id}/print-plan/{library_file_id}", response_model=PrintPlanItemResponse)
+@router.patch("/{project_id}/print-plan/items/{item_id}", response_model=PrintPlanItemResponse)
 async def update_project_print_plan_item(
     project_id: int,
-    library_file_id: int,
+    item_id: int,
     body: PrintPlanItemUpdate,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
-    """Update a plan row's ``copies``. Minimum 1 — 0 means unlink via file update."""
+    """Update a plan row's ``copies``, addressed by its own row id.
+
+    Since m158 part 3 a file with N>1 plates owns N plan rows (one per
+    plate), so "the row for this file" is no longer unambiguous — the
+    route is keyed on the plan item's own id instead. Minimum copies is 1;
+    0 means unlink via the file/folder project link, not this endpoint.
+    """
     if body.copies < 1:
         raise HTTPException(status_code=400, detail="copies must be >= 1")
 
     row = (
         await db.execute(
             select(ProjectPrintPlanItem).where(
+                ProjectPrintPlanItem.id == item_id,
                 ProjectPrintPlanItem.project_id == project_id,
-                ProjectPrintPlanItem.library_file_id == library_file_id,
             )
         )
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Print plan row not found")
 
-    file = (await db.execute(select(LibraryFile).where(LibraryFile.id == library_file_id))).scalar_one_or_none()
+    file = (await db.execute(select(LibraryFile).where(LibraryFile.id == row.library_file_id))).scalar_one_or_none()
     if file is None:
         raise HTTPException(status_code=404, detail="Library file not found")
 
@@ -2616,15 +2665,14 @@ async def update_project_print_plan_item(
     await db.refresh(row)
 
     default_cost_per_kg = await _get_default_filament_cost(db)
-    printed_count = (
-        await db.execute(
-            select(func.count(PrintArchive.id)).where(
-                PrintArchive.project_id == project_id,
-                PrintArchive.library_file_id == library_file_id,
-                PrintArchive.status == "completed",
-            )
-        )
-    ).scalar() or 0
+    printed_count_query = select(func.count(PrintArchive.id)).where(
+        PrintArchive.project_id == project_id,
+        PrintArchive.library_file_id == row.library_file_id,
+        PrintArchive.status == "completed",
+    )
+    if row.plate_index > 0:
+        printed_count_query = printed_count_query.where(PrintArchive.plate_index == row.plate_index)
+    printed_count = (await db.execute(printed_count_query)).scalar() or 0
     return _build_plan_item_response(row, file, default_cost_per_kg, printed_count)
 
 
@@ -2657,3 +2705,128 @@ async def reorder_project_print_plan(
 
     await db.commit()
     return await _load_print_plan(db, project_id)
+
+
+# ============ Parts Ledger Endpoints (m158) ============
+
+
+async def _read_project_parts(db: AsyncSession, project_id: int) -> ProjectPartsResponse:
+    """The parts ledger: targets merged with per-part print history.
+
+    History rows without a target are returned too (target_qty=None) —
+    what was printed is never hidden by not having set a goal for it.
+    """
+    targets = (await db.execute(select(ProjectPart).where(ProjectPart.project_id == project_id))).scalars().all()
+
+    agg_rows = (
+        await db.execute(
+            select(
+                PrintArchivePart.name_key,
+                func.max(PrintArchivePart.name).label("name"),
+                func.coalesce(
+                    func.sum(case((PrintArchive.status == "completed", PrintArchivePart.quantity), else_=0)), 0
+                ).label("printed"),
+                func.coalesce(
+                    func.sum(case((PrintArchive.status == "completed", PrintArchivePart.defective), else_=0)), 0
+                ).label("defective"),
+                func.coalesce(
+                    func.sum(case((PrintArchive.status == "printing", PrintArchivePart.quantity), else_=0)), 0
+                ).label("in_progress"),
+            )
+            .join(PrintArchive, PrintArchive.id == PrintArchivePart.archive_id)
+            .where(PrintArchive.project_id == project_id, PrintArchive.deleted_at.is_(None))
+            .group_by(PrintArchivePart.name_key)
+        )
+    ).all()
+    history = {row.name_key: row for row in agg_rows}
+
+    parts: list[ProjectPartRow] = []
+    for target in targets:
+        h = history.pop(target.name_key, None)
+        printed = int(h.printed) if h else 0
+        defective = int(h.defective) if h else 0
+        usable = max(0, printed - defective)
+        parts.append(
+            ProjectPartRow(
+                name=target.name,
+                name_key=target.name_key,
+                target_qty=target.target_qty,
+                printed=printed,
+                in_progress=int(h.in_progress) if h else 0,
+                defective=defective,
+                usable=usable,
+                remaining=max(0, target.target_qty - usable),
+            )
+        )
+    for key, h in history.items():  # history without a target
+        printed = int(h.printed)
+        defective = int(h.defective)
+        parts.append(
+            ProjectPartRow(
+                name=h.name,
+                name_key=key,
+                target_qty=None,
+                printed=printed,
+                in_progress=int(h.in_progress),
+                defective=defective,
+                usable=max(0, printed - defective),
+                remaining=None,
+            )
+        )
+    parts.sort(key=lambda p: p.name_key)
+    return ProjectPartsResponse(parts=parts)
+
+
+@router.get("/{project_id}/parts", response_model=ProjectPartsResponse)
+async def get_project_parts(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The parts ledger: targets merged with per-part print history."""
+    return await _read_project_parts(db, project_id)
+
+
+@router.patch("/{project_id}/parts", response_model=ProjectPartsResponse)
+async def update_project_parts(
+    project_id: int,
+    data: ProjectPartsUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Upsert target quantities by name_key."""
+    existing = {
+        r.name_key: r
+        for r in (await db.execute(select(ProjectPart).where(ProjectPart.project_id == project_id))).scalars().all()
+    }
+    for item in data.parts:
+        row = existing.get(item.name_key)
+        if row is not None:
+            row.target_qty = item.target_qty
+        else:
+            db.add(
+                ProjectPart(
+                    project_id=project_id,
+                    name=item.name or item.name_key,
+                    name_key=item.name_key,
+                    target_qty=item.target_qty,
+                )
+            )
+    await db.commit()
+    return await _read_project_parts(db, project_id)
+
+
+@router.delete("/{project_id}/parts")
+async def delete_project_part(
+    project_id: int,
+    name_key: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Remove a target row (query param dodges name_key URL-encoding traps).
+
+    History rows are untouched — the part simply goes back to 'untargeted'.
+    """
+    await db.execute(delete(ProjectPart).where(ProjectPart.project_id == project_id, ProjectPart.name_key == name_key))
+    await db.commit()
+    return {"status": "ok"}

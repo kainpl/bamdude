@@ -117,8 +117,14 @@ async def test_update_copies_multiplies_totals(async_client: AsyncClient, db_ses
     )
     await async_client.put(f"/api/v1/library/folders/{folder_id}", json={"project_ids": [project_id]})
 
+    plan = (await async_client.get(f"/api/v1/projects/{project_id}/print-plan")).json()
+    item_id = plan["items"][0]["id"]
+    assert plan["items"][0]["library_file_id"] == file_id
+
     # Bump copies to 3
-    patch_resp = await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/{file_id}", json={"copies": 3})
+    patch_resp = await async_client.patch(
+        f"/api/v1/projects/{project_id}/print-plan/items/{item_id}", json={"copies": 3}
+    )
     assert patch_resp.status_code == 200, patch_resp.text
     item = patch_resp.json()
     assert item["copies"] == 3
@@ -137,10 +143,16 @@ async def test_copies_minimum_is_one(async_client: AsyncClient, db_session):
     file_id = await _add_library_file(db_session, folder_id=folder_id)
     await async_client.put(f"/api/v1/library/folders/{folder_id}", json={"project_ids": [project_id]})
 
-    resp = await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/{file_id}", json={"copies": 0})
+    plan = (await async_client.get(f"/api/v1/projects/{project_id}/print-plan")).json()
+    item_id = plan["items"][0]["id"]
+    assert plan["items"][0]["library_file_id"] == file_id
+
+    resp = await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/items/{item_id}", json={"copies": 0})
     assert resp.status_code == 400
 
-    resp_neg = await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/{file_id}", json={"copies": -2})
+    resp_neg = await async_client.patch(
+        f"/api/v1/projects/{project_id}/print-plan/items/{item_id}", json={"copies": -2}
+    )
     assert resp_neg.status_code == 400
 
 
@@ -227,7 +239,11 @@ async def test_cost_uses_default_filament_cost_setting(async_client: AsyncClient
     file_id = await _add_library_file(db_session, folder_id=folder_id, filament_grams=200.0)
     await async_client.put(f"/api/v1/library/folders/{folder_id}", json={"project_ids": [project_id]})
 
-    await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/{file_id}", json={"copies": 2})
+    plan = (await async_client.get(f"/api/v1/projects/{project_id}/print-plan")).json()
+    item_id = plan["items"][0]["id"]
+    assert plan["items"][0]["library_file_id"] == file_id
+
+    await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/items/{item_id}", json={"copies": 2})
 
     plan = (await async_client.get(f"/api/v1/projects/{project_id}/print-plan")).json()
     assert plan["default_filament_cost_per_kg"] == pytest.approx(30.0)
@@ -259,7 +275,8 @@ async def test_file_linked_to_two_projects_has_independent_plan_rows(async_clien
     assert [i["library_file_id"] for i in plan2["items"]] == [file_id]
 
     # Bump copies on project A only — project B's plan row stays at 1.
-    await async_client.patch(f"/api/v1/projects/{p1}/print-plan/{file_id}", json={"copies": 4})
+    item1_id = plan1["items"][0]["id"]
+    await async_client.patch(f"/api/v1/projects/{p1}/print-plan/items/{item1_id}", json={"copies": 4})
     plan1 = (await async_client.get(f"/api/v1/projects/{p1}/print-plan")).json()
     plan2 = (await async_client.get(f"/api/v1/projects/{p2}/print-plan")).json()
     assert plan1["items"][0]["copies"] == 4
@@ -317,7 +334,10 @@ async def test_plan_progress_counts_completed_archives(async_client: AsyncClient
     folder_id = await _create_folder(db_session)
     file_id = await _add_library_file(db_session, folder_id=folder_id)
     await async_client.put(f"/api/v1/library/folders/{folder_id}", json={"project_ids": [project_id]})
-    await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/{file_id}", json={"copies": 5})
+    plan = (await async_client.get(f"/api/v1/projects/{project_id}/print-plan")).json()
+    item_id = plan["items"][0]["id"]
+    assert plan["items"][0]["library_file_id"] == file_id
+    await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/items/{item_id}", json={"copies": 5})
 
     # Seed 2× completed + 1× failed for this (project, file). Only the
     # completed ones should count towards printed.
@@ -363,7 +383,7 @@ async def test_plan_progress_counts_completed_archives(async_client: AsyncClient
         )
     )
     await db_session.commit()
-    await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/{file_id}", json={"copies": 1})
+    await async_client.patch(f"/api/v1/projects/{project_id}/print-plan/items/{item_id}", json={"copies": 1})
     plan = (await async_client.get(f"/api/v1/projects/{project_id}/print-plan")).json()
     item = plan["items"][0]
     assert item["printed_count"] == 3
@@ -637,3 +657,166 @@ async def test_inherit_folder_projects_idempotent_on_second_call(db_session):
         .all()
     )
     assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# m158 part 3: sync_plan_for_file reconciles at (project, file, plate)
+# granularity. A single-plate file (or one with no plate metadata, e.g. raw
+# gcode) owns one row at plate_index=0; an N>1-plate file owns one row per
+# plate index, and re-slicing reconciles the plate set while leaving
+# surviving plates' copies untouched.
+# ---------------------------------------------------------------------------
+
+
+async def _project_and_file(db_session, *, plates: list[int]):
+    """Create a project + a plan-eligible LibraryFile whose file_metadata
+    reports the given plate indices, for the plate-sync tests below."""
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.project import Project
+
+    project = Project(name="Plate Sync Test", description="")
+    db_session.add(project)
+    await db_session.flush()
+
+    file = LibraryFile(
+        filename="plate-test.gcode.3mf",
+        file_path="/tmp/plate-test.gcode.3mf",
+        file_type="gcode",
+        file_size=1,
+        file_hash=None,
+        file_metadata={"plates": [{"index": i} for i in plates]},
+    )
+    db_session.add(file)
+    await db_session.commit()
+    await db_session.refresh(project)
+    await db_session.refresh(file)
+    return project, file
+
+
+async def _plan_rows(db_session, project_id: int, file_id: int):
+    from sqlalchemy import select
+
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+
+    return (
+        (
+            await db_session.execute(
+                select(ProjectPrintPlanItem)
+                .where(
+                    ProjectPrintPlanItem.project_id == project_id,
+                    ProjectPrintPlanItem.library_file_id == file_id,
+                )
+                .order_by(ProjectPrintPlanItem.plate_index)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def test_a_multi_plate_file_plants_one_row_per_plate(db_session):
+    from backend.app.services.print_plan import sync_plan_for_file
+
+    project, file = await _project_and_file(db_session, plates=[1, 2, 3])
+
+    await sync_plan_for_file(db_session, library_file_id=file.id, project_ids=[project.id], file_type="gcode")
+    await db_session.commit()
+
+    rows = await _plan_rows(db_session, project.id, file.id)
+    assert [r.plate_index for r in rows] == [1, 2, 3]
+    assert all(r.copies == 1 for r in rows)
+
+
+async def test_reslicing_reconciles_plates_keeping_survivors_copies(db_session):
+    from backend.app.services.print_plan import sync_plan_for_file
+
+    project, file = await _project_and_file(db_session, plates=[1, 2])
+    await sync_plan_for_file(db_session, library_file_id=file.id, project_ids=[project.id], file_type="gcode")
+    await db_session.commit()
+    rows = await _plan_rows(db_session, project.id, file.id)
+    rows[0].copies = 7  # plate 1
+    await db_session.commit()
+
+    file.file_metadata = {"plates": [{"index": 1}, {"index": 3}]}  # plate 2 gone, 3 new
+    await db_session.commit()
+    await sync_plan_for_file(db_session, library_file_id=file.id, project_ids=[project.id], file_type="gcode")
+    await db_session.commit()
+
+    rows = await _plan_rows(db_session, project.id, file.id)
+    by_plate = {r.plate_index: r for r in rows}
+    assert set(by_plate) == {1, 3}
+    assert by_plate[1].copies == 7, "surviving plates keep their copies"
+    assert by_plate[3].copies == 1
+
+
+async def test_a_legacy_whole_file_row_expands_inheriting_copies(db_session):
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+    from backend.app.services.print_plan import sync_plan_for_file
+
+    project, file = await _project_and_file(db_session, plates=[1, 2])
+    db_session.add(
+        ProjectPrintPlanItem(project_id=project.id, library_file_id=file.id, copies=4, order_index=2, plate_index=0)
+    )
+    await db_session.commit()
+
+    await sync_plan_for_file(db_session, library_file_id=file.id, project_ids=[project.id], file_type="gcode")
+    await db_session.commit()
+
+    rows = await _plan_rows(db_session, project.id, file.id)
+    assert [r.plate_index for r in rows] == [1, 2]
+    assert all(r.copies == 4 and r.order_index == 2 for r in rows)
+
+
+async def test_a_single_plate_file_stays_one_plain_row(db_session):
+    from backend.app.services.print_plan import sync_plan_for_file
+
+    project, file = await _project_and_file(db_session, plates=[1])
+
+    await sync_plan_for_file(db_session, library_file_id=file.id, project_ids=[project.id], file_type="gcode")
+    await db_session.commit()
+
+    rows = await _plan_rows(db_session, project.id, file.id)
+    assert len(rows) == 1 and rows[0].plate_index == 0
+
+
+async def test_a_mixed_zero_and_plate_state_reconciles_without_constraint_violation(db_session):
+    """Regression: a (project, file) pair can hold BOTH a plate_index=0 row
+    AND non-zero plate rows already — other direct writers of
+    ``ProjectPrintPlanItem`` (the setup-copy helper, m158's seed) insert
+    rows without going through ``sync_plan_for_file``, so this shape is
+    reachable in practice, not just in theory.
+
+    Pre-fix, the legacy-expand branch assumed the 0-row was the file's
+    ONLY row: it deleted just the 0-row and then unconditionally inserted
+    every wanted plate — colliding with the surviving plate-2 row on the
+    unique (project, file, plate) constraint at flush. It also never
+    dropped a stray row for a plate absent from the file's metadata (here,
+    plate 5), silently orphaning it.
+
+    Fixed behaviour: the surviving plate-2 row's copies are left alone,
+    plates 1 and 3 are planted inheriting the 0-row's copies, and the
+    stray plate-5 row is dropped like any other vanished plate.
+    """
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+    from backend.app.services.print_plan import sync_plan_for_file
+
+    project, file = await _project_and_file(db_session, plates=[1, 2, 3])
+    db_session.add(
+        ProjectPrintPlanItem(project_id=project.id, library_file_id=file.id, copies=4, order_index=2, plate_index=0)
+    )
+    db_session.add(
+        ProjectPrintPlanItem(project_id=project.id, library_file_id=file.id, copies=9, order_index=2, plate_index=2)
+    )
+    db_session.add(
+        ProjectPrintPlanItem(project_id=project.id, library_file_id=file.id, copies=3, order_index=2, plate_index=5)
+    )
+    await db_session.commit()
+
+    await sync_plan_for_file(db_session, library_file_id=file.id, project_ids=[project.id], file_type="gcode")
+    await db_session.commit()  # flush must not raise a unique-constraint violation
+
+    rows = await _plan_rows(db_session, project.id, file.id)
+    by_plate = {r.plate_index: r for r in rows}
+    assert set(by_plate) == {1, 2, 3}, "the stray plate-5 row is dropped, same as any vanished plate"
+    assert by_plate[2].copies == 9, "the surviving plate-2 row keeps its own copies"
+    assert by_plate[1].copies == 4 and by_plate[3].copies == 4, "new plates inherit the legacy 0-row's copies"

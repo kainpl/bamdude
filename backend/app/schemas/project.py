@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 def _validate_project_url(value: str | None) -> str | None:
@@ -325,6 +325,9 @@ class PrintPlanItemResponse(BaseModel):
     library_file_id: int
     copies: int
     order_index: int
+    # 0 = the whole file (single-plate files, raw gcode); 1..N = that plate
+    # of a multi-plate 3MF. Mirrors ProjectPrintPlanItem.plate_index.
+    plate_index: int = 0
 
     # Joined library file fields for display (read-only)
     filename: str
@@ -398,3 +401,30 @@ class ProjectImport(BaseModel):
     budget: float | None = None
     bom_items: list[BOMItemExport] = []
     linked_folders: list[LinkedFolderExport] = []
+
+
+class ProjectPartRow(BaseModel):
+    """One canonical part in the project ledger, targets merged with history."""
+
+    name: str
+    name_key: str
+    target_qty: int | None = None  # None = seen in archives but no target set
+    printed: int = 0
+    in_progress: int = 0
+    defective: int = 0
+    usable: int = 0
+    remaining: int | None = None  # None when there is no target
+
+
+class ProjectPartsResponse(BaseModel):
+    parts: list[ProjectPartRow]
+
+
+class ProjectPartTargetUpdate(BaseModel):
+    name_key: str = Field(min_length=1, max_length=512)
+    name: str | None = Field(default=None, max_length=512)  # display name for a row created by hand
+    target_qty: int = Field(ge=0)
+
+
+class ProjectPartsUpdate(BaseModel):
+    parts: list[ProjectPartTargetUpdate]

@@ -1,9 +1,26 @@
 from datetime import datetime
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.timelapse import TimelapseStorage
+
+
+class ArchivePartRow(BaseModel):
+    """One canonical part on the printed plate (m158)."""
+
+    id: int
+    name: str
+    name_key: str
+    quantity: int
+    defective: int
+
+
+class ArchivePartDefective(BaseModel):
+    """Per-part defect write: row id + new absolute value (not a delta)."""
+
+    id: int
+    defective: int = Field(ge=0)
 
 
 class ArchiveBase(BaseModel):
@@ -27,6 +44,10 @@ class ArchiveUpdate(ArchiveBase):
     project_id: int | None = None
     # Allow changing status (e.g., clearing failed flag)
     status: str | None = None
+    # Per-part defect write (m158). Not a column on PrintArchive — the route
+    # applies it to PrintArchivePart rows and derives defective_count from
+    # them; it must never reach the generic setattr loop.
+    parts_defective: list[ArchivePartDefective] | None = None
 
 
 class ArchiveDuplicate(BaseModel):
@@ -118,6 +139,9 @@ class ArchiveResponse(BaseModel):
     # Scrap out of that plate. Shown beside ``object_count`` in the archive card
     # and list; never subtracted from any total (see models/archive.py).
     defective_count: int = 0
+    # Per-part rows (m158). DETAIL responses only — list_archives never loads
+    # them, to avoid an N+1 per page of archives.
+    parts: list[ArchivePartRow] = []
 
     # Energy tracking
     energy_kwh: float | None = None

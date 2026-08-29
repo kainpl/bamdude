@@ -922,6 +922,31 @@ export interface ArchiveDuplicate {
   match_type: 'exact' | 'similar';  // 'exact' = hash match, 'similar' = name match
 }
 
+export interface ArchivePart {
+  id: number;
+  name: string;
+  name_key: string;
+  quantity: number;
+  defective: number;
+}
+
+export interface ProjectPartRow {
+  name: string;
+  name_key: string;
+  target_qty: number | null;
+  printed: number;
+  in_progress: number;
+  defective: number;
+  usable: number;
+  remaining: number | null;
+}
+
+export interface ProjectPartTargetUpdate {
+  name_key: string;
+  name?: string;
+  target_qty: number;
+}
+
 export interface Archive {
   id: number;
   printer_id: number | null;
@@ -1003,6 +1028,8 @@ export interface Archive {
   // User tracking (Issue #206)
   created_by_id: number | null;
   created_by_username: string | null;
+  // Parts (parts ledger items associated with this archive)
+  parts?: ArchivePart[];
 }
 
 export interface ArchiveSlim {
@@ -1445,6 +1472,7 @@ export interface ProjectImport {
 export interface PrintPlanItem {
   id: number;
   library_file_id: number;
+  plate_index: number;
   copies: number;
   order_index: number;
   filename: string;
@@ -6591,6 +6619,7 @@ export const api = {
     quantity?: number;
     defective_count?: number;
     external_url?: string | null;
+    parts_defective?: { id: number; defective: number }[];
   }) =>
     request<Archive>(`/archives/${id}`, {
       method: 'PATCH',
@@ -8806,8 +8835,8 @@ export const api = {
   // Print Plan (per-project list of .3mf library files with copies + order)
   getProjectPrintPlan: (projectId: number) =>
     request<PrintPlanResponse>(`/projects/${projectId}/print-plan`),
-  updatePrintPlanItem: (projectId: number, libraryFileId: number, copies: number) =>
-    request<PrintPlanItem>(`/projects/${projectId}/print-plan/${libraryFileId}`, {
+  updatePrintPlanItem: (projectId: number, itemId: number, copies: number) =>
+    request<PrintPlanItem>(`/projects/${projectId}/print-plan/items/${itemId}`, {
       method: 'PATCH',
       body: JSON.stringify({ copies }),
     }),
@@ -8829,6 +8858,19 @@ export const api = {
   // Timeline
   getProjectTimeline: (projectId: number, limit = 50) =>
     request<TimelineEvent[]>(`/projects/${projectId}/timeline?limit=${limit}`),
+
+  // Parts Ledger
+  getProjectParts: (projectId: number) =>
+    request<{ parts: ProjectPartRow[] }>(`/projects/${projectId}/parts`),
+  updateProjectParts: (projectId: number, parts: ProjectPartTargetUpdate[]) =>
+    request<{ parts: ProjectPartRow[] }>(`/projects/${projectId}/parts`, {
+      method: 'PATCH',
+      body: JSON.stringify({ parts }),
+    }),
+  deleteProjectPart: (projectId: number, nameKey: string) =>
+    request(`/projects/${projectId}/parts?name_key=${encodeURIComponent(nameKey)}`, {
+      method: 'DELETE',
+    }),
 
   // Project Export/Import
   exportProjectJson: (projectId: number) =>

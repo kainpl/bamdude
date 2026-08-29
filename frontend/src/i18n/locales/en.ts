@@ -4746,6 +4746,21 @@ export default {
       exported: 'Projects exported (metadata only)',
       createdFromTemplate: 'Project created from template',
       templateDeleted: 'Template deleted'
+    },
+    // Parts ledger table (project detail page) — namespaced as
+    // partsLedger, not parts, because `projects.parts` above is already
+    // the plain word "parts" used throughout ProjectsPage.tsx.
+    partsLedger: {
+      title: 'Parts',
+      name: 'Part',
+      target: 'Target',
+      printed: 'Printed',
+      inProgress: 'In progress',
+      defective: 'Defective',
+      usable: 'Usable',
+      remaining: 'Remaining',
+      empty: 'No parts discovered yet — link sliced files or print something.',
+      setTarget: 'Set target'
     }
   },
 
@@ -4844,6 +4859,10 @@ export default {
       costHint: 'At {{currency}}{{rate}}/kg',
       applyTotals: 'Apply to project',
       applyTotalsTitle: 'Apply to project: {{plates}} plates / {{parts}} parts / budget {{budget}}',
+    },
+    plan: {
+      plate: 'Plate {{n}}',
+      allPlates: 'All plates',
     },
     bom: {
       title: 'Bill of Materials',
@@ -6360,6 +6379,9 @@ export default {
     itemsPrintedHelp: 'Number of items produced in this print job',
     defectiveParts: 'Defective Parts',
     defectivePartsHelp: 'How many came out unusable. Counted automatically when objects are skipped during the print — including from the printer itself.',
+    partsDefectiveTitle: 'Defective parts',
+    partsDefectiveHelp: 'Scrap per part — skips already counted are pre-filled.',
+    partsDefectiveTotal: 'Total scrap',
     notes: 'Notes',
     notesPlaceholder: 'Add notes about this print...',
     externalLink: 'External Link',

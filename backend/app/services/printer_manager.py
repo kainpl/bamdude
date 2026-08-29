@@ -592,8 +592,29 @@ async def _record_skipped_as_defective(printer_id: int, skipped: list) -> None:
                 logger.debug("No running archive for printer %s — skipped objects not recorded", printer_id)
                 return
 
-            new_count = max(archive.defective_count or 0, len(skipped))
-            if new_count == archive.defective_count:
+            from backend.app.models.archive_part import PrintArchivePart
+
+            rows = (
+                (await db.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id == archive.id)))
+                .scalars()
+                .all()
+            )
+            id_rows = [r for r in rows if r.identify_ids]
+            if id_rows:
+                # Per-part: intersect the (total, not delta) skipped list with
+                # each row's instance ids. max() keeps a hand-raised number.
+                skipped_set = set(skipped)
+                for row in id_rows:
+                    hit = len(skipped_set & set(row.identify_ids))
+                    if hit > (row.defective or 0):
+                        row.defective = hit
+                total = sum(r.defective or 0 for r in rows)
+                new_count = max(archive.defective_count or 0, total)
+            else:
+                # Legacy archives without part rows: count-only, as before.
+                new_count = max(archive.defective_count or 0, len(skipped))
+
+            if new_count == archive.defective_count and not id_rows:
                 return
 
             archive.defective_count = new_count

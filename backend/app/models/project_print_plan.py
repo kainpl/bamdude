@@ -9,12 +9,15 @@ from backend.app.core.database import Base
 
 
 class ProjectPrintPlanItem(Base):
-    """One row per (project, library_file) pair.
+    """One row per (project, library_file, plate_index) combination.
 
     Since m044 a library file can belong to multiple projects, so this
-    table now carries one row per (project, file) combination — a file
-    in N projects appears in N plans with independent ``copies`` /
-    ``order_index``. The unique constraint pivots accordingly.
+    table carries one row per (project, file) combination — a file in N
+    projects appears in N plans with independent ``copies`` /
+    ``order_index``. Since m158 part 3, a row is further scoped to one
+    plate of that file: ``plate_index`` 0 means the whole file
+    (single-plate files, raw gcode), 1..N means that plate of a
+    multi-plate 3MF. The unique constraint pivots accordingly.
 
     Totals (grams, time, objects, cost) are computed on-the-fly from the
     joined ``LibraryFile.file_metadata`` × ``copies`` rather than cached
@@ -22,7 +25,9 @@ class ProjectPrintPlanItem(Base):
     """
 
     __tablename__ = "project_print_plan_items"
-    __table_args__ = (UniqueConstraint("project_id", "library_file_id", name="uq_plan_project_file"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "library_file_id", "plate_index", name="uq_plan_project_file_plate"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
@@ -30,6 +35,10 @@ class ProjectPrintPlanItem(Base):
 
     copies: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     order_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # 0 = the whole file (single-plate files, raw gcode); 1..N = that plate
+    # of a multi-plate 3MF. NOT NULL 0 rather than NULL so the unique
+    # constraint bites on SQLite and PostgreSQL alike.
+    plate_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
