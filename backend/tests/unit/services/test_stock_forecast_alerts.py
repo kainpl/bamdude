@@ -6,10 +6,15 @@ trigger for "a future scheduled aggregator". The forecast deciding the alert ran
 in ``ForecastPanel.tsx``, so the warning existed only while somebody had the
 Inventory page open, which is exactly when it is least needed.
 
-The arithmetic here is a port of the panel's, so most of what these tests pin is
-*sameness*: the day-bucketed decayed rate, the baseline-aware fallback, the
-lead-time comparison. The rest pins the part the panel never needed — when a
-timer-driven alert is allowed to speak twice.
+Task 2 of the forecast-server-side plan (2026-08-29) moved the arithmetic into
+``forecast_engine`` — the ``TestTheRate`` class that used to open this file
+tested the module's own ``history_rate``/``delta_rate`` bodies, which the
+refactor DELETED; those behaviours are now pinned far harder by the frozen
+golden vectors in ``backend/tests/test_forecast_engine.py`` (measured from the
+pre-refactor implementation by execution). What stays here is what is genuinely
+about ALERTING: which rows become messages, when a standing state may repeat
+itself, the notified-at stamps — plus the deliberate behavior changes the spec
+ruled on (``TestTheDeliberateBehaviorChanges``).
 """
 
 from datetime import datetime, timedelta, timezone
@@ -21,12 +26,10 @@ from backend.app.models.filament_sku_settings import FilamentSkuSettings
 from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.services.forecast_engine import sku_key
 from backend.app.services.stock_forecast_alerts import (
     StockForecastAlerts,
-    delta_rate,
     find_stock_alerts,
-    history_rate,
-    sku_key,
 )
 
 
@@ -82,53 +85,12 @@ async def _usage(db_session, spool_id: int, days_ago: float, grams: float, ancho
     await db_session.commit()
 
 
-class TestTheRate:
-    def test_a_single_day_cannot_give_a_rate(self) -> None:
-        """No gap to measure across — the delta fallback handles this."""
-        assert history_rate([_record(1, 100), _record(1, 50)], NOW) is None
-
-    def test_a_steady_hundred_grams_a_day(self) -> None:
-        records = [_record(days_ago, 100) for days_ago in (5, 4, 3, 2, 1)]
-        estimate = history_rate(records, NOW)
-        assert estimate is not None
-        assert estimate.rate == pytest.approx(100, rel=0.01)
-        assert estimate.std_dev == pytest.approx(0, abs=0.01), "a perfectly steady rate has no spread"
-
-    def test_prints_on_the_same_day_are_summed_not_treated_as_an_interval(self) -> None:
-        """Two spools of one SKU printing minutes apart would otherwise produce a
-        near-zero gap and a wildly inflated rate."""
-        same_day = [_record(2, 50, spool_id=1), _record(2, 50, spool_id=2), _record(1, 100, spool_id=1)]
-        assert history_rate(same_day, NOW).rate == pytest.approx(100, rel=0.01)
-
-    def test_recent_prints_weigh_more_than_old_ones(self) -> None:
-        """30-day half-life: a burst last week must outrank a quiet spell in
-        spring, or the forecast lags reality by a season."""
-        old_and_slow = [_record(d, 10) for d in (90, 89, 88, 87)]
-        recent_and_fast = [_record(d, 200) for d in (3, 2, 1)]
-        estimate = history_rate(old_and_slow + recent_and_fast, NOW)
-        assert estimate is not None
-        assert estimate.rate > 100, f"recent 200 g/day should dominate old 10 g/day, got {estimate.rate:.1f}"
-
-    def test_the_delta_fallback_is_baseline_aware(self) -> None:
-        """'Reset usage to 0' means the rate describes post-reset consumption."""
-        spool = Spool(
-            material="PLA",
-            label_weight=1000,
-            weight_used=900.0,
-            weight_used_baseline=800.0,  # only 100 g counts
-            created_at=(NOW - timedelta(days=10)).replace(tzinfo=None),
-        )
-        assert delta_rate([spool], NOW) == pytest.approx(10.0, rel=0.01)
-
-    def test_a_spool_younger_than_a_day_gives_no_delta_rate(self) -> None:
-        spool = Spool(
-            material="PLA",
-            label_weight=1000,
-            weight_used=50.0,
-            weight_used_baseline=0.0,
-            created_at=(NOW - timedelta(hours=3)).replace(tzinfo=None),
-        )
-        assert delta_rate([spool], NOW) is None
+# ``TestTheRate`` used to live here, exercising this module's own
+# ``history_rate``/``delta_rate`` bodies. The Task 2 refactor deleted those
+# bodies (the math's one owner is ``forecast_engine``), and every behaviour the
+# class pinned — single-day refusal, steady rate, same-day summing, decay
+# dominance, baseline-aware fallback, the <1-day refusal — is pinned exactly by
+# the frozen golden vectors + edge tests in ``backend/tests/test_forecast_engine.py``.
 
 
 class TestFindingBreaks:
@@ -290,6 +252,108 @@ class TestTheReorderPoint:
         await db_session.commit()
 
         assert await find_stock_alerts(db_session, NOW) == []
+
+
+class TestTheDeliberateBehaviorChanges:
+    """The Task 2 refactor changed alert behavior ONLY in the direction of
+    panel parity (spec §2.1 / §3, 2026-08-29 forecast-server-side design).
+    Each test here pins a divergence from the pre-refactor service — the old
+    assertions inverted deliberately, not regressions."""
+
+    @pytest.mark.asyncio
+    async def test_an_archived_only_sku_still_alerts_within_ninety_days(self, db_session) -> None:
+        """Spec ruling (§2.1 archived-but-recent retention): an SKU whose last
+        spool was archived stays for 90 days from ``max(last usage,
+        archived_at)`` — the panel's rule. The OLD service selected live spools
+        only, so archiving the empty spool silenced the alert at the exact
+        moment the colour most needed reordering. Inverted deliberately: the
+        archived-only SKU now IS a stock break (zero stock, real rate)."""
+        db_session.add(Settings(key="forecast_global_lead_time_days", value="7"))
+        spool = await _spool(
+            db_session,
+            weight_used=1000.0,
+            archived_at=(NOW - timedelta(days=5)).replace(tzinfo=None),
+        )
+        for days_ago in (10, 9, 8, 7, 6):  # burned 100 g/day, then ran out and was archived
+            await _usage(db_session, spool.id, days_ago, 100)
+
+        breaks = await _breaks(db_session, NOW)
+        assert len(breaks) == 1, "the old immediate-drop would have found nothing here"
+        assert breaks[0].stock_g == pytest.approx(0.0), "archived grams are history, never stock"
+        assert breaks[0].days_left == 0
+
+    @pytest.mark.asyncio
+    async def test_an_archived_only_sku_goes_quiet_after_ninety_days(self, db_session) -> None:
+        """The retention is 90 days, not forever — a colour last touched three
+        half-lives ago must not ring as a permanent stock break (§2.1)."""
+        db_session.add(Settings(key="forecast_global_lead_time_days", value="7"))
+        spool = await _spool(
+            db_session,
+            weight_used=1000.0,
+            created_at=(NOW - timedelta(days=200)).replace(tzinfo=None),
+            archived_at=(NOW - timedelta(days=91)).replace(tzinfo=None),
+        )
+        await _usage(db_session, spool.id, 94.0, 100)
+        await _usage(db_session, spool.id, 93.0, 100)
+
+        assert await find_stock_alerts(db_session, NOW) == []
+
+    @pytest.mark.asyncio
+    async def test_a_margin_in_kg_is_a_thousand_grams_not_days(self, db_session) -> None:
+        """Spec ruling (§2.1 margin units are THREE): the API stores ``kg`` and
+        the panel prices it at value·1000 g; the OLD service's ``else`` branch
+        misread a stored ``kg`` as DAYS (rate·value). At 100 g/day with a 5 kg
+        margin the two disagree loudly: reorder point 5700 g (correct) vs
+        1200 g (old misread) — 3000 g in stock alerts under the first and stays
+        silent under the second."""
+        db_session.add(Settings(key="forecast_global_lead_time_days", value="7"))
+        spool = await _spool(db_session, label_weight=4000, weight_used=1000.0)  # 3000 g left
+        for days_ago in (5, 4, 3, 2, 1):
+            await _usage(db_session, spool.id, days_ago, 100)
+        db_session.add(
+            FilamentSkuSettings(
+                material="PLA",
+                subtype=None,
+                brand="Bambu",
+                color_name="Black",
+                safety_margin_value=5,
+                safety_margin_unit="kg",
+            )
+        )
+        await db_session.commit()
+
+        alerts = await find_stock_alerts(db_session, NOW)
+        assert [a.kind for a in alerts] == ["reorder"], "a kg margin read as days would have kept this silent"
+
+    @pytest.mark.asyncio
+    async def test_under_spoolman_the_tick_does_nothing(self, db_session, monkeypatch) -> None:
+        """The defensive gate the spec adds (§2.5/§3): under Spoolman the local
+        spool tables are not the inventory the operator manages — the whole
+        Inventory tab is a Spoolman iframe — so the task exits before touching
+        the forecast. The pre-refactor task only stayed quiet because the local
+        table happened to be empty."""
+        anchor = datetime.now(timezone.utc)  # tick() reads the wall clock
+        db_session.add(Settings(key="spoolman_enabled", value="true"))
+        db_session.add(Settings(key="forecast_global_lead_time_days", value="7"))
+        spool = await _spool(db_session, weight_used=650.0)  # 350 g left — a break, were it looked at
+        for days_ago in (5, 4, 3, 2, 1):
+            await _usage(db_session, spool.id, days_ago, 100, anchor)
+
+        breakage, reorder = AsyncMock(), AsyncMock()
+        monkeypatch.setattr("backend.app.services.stock_forecast_alerts.async_session", _ctx(db_session))
+        with (
+            patch("backend.app.services.notification_service.notification_service.on_stock_break_alert", breakage),
+            patch("backend.app.services.notification_service.notification_service.on_stock_reorder_alert", reorder),
+        ):
+            await StockForecastAlerts().tick()
+
+        assert breakage.await_count == 0
+        assert reorder.await_count == 0
+
+        from sqlalchemy import select
+
+        rows = (await db_session.execute(select(FilamentSkuSettings))).scalars().all()
+        assert rows == [], "the guarded tick must not have created or stamped any settings row"
 
 
 class TestTheTwoAlertsKeepSeparateBooks:

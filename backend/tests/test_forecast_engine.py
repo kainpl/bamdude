@@ -114,14 +114,62 @@ _DELTA_PARAMS = [pytest.param(v, id=v["name"]) for v in VECTORS["delta"]]
 
 
 class TestTheVectorsThemselves:
-    """Sanity of the frozen JSON against the SHIPPED implementation. These run
-    green before the engine exists and keep the vectors honest forever."""
+    """Sanity of the frozen JSON itself — these keep the vectors honest forever.
 
-    def test_the_frozen_vectors_match_the_shipped_implementation(self):
-        from backend.tests.forecast_vectors.generate_vectors import build_vectors
+    Task 2 repoint (sanctioned by the T1 review, Minor 2): the first test here
+    used to REGENERATE the vectors against the shipped
+    ``stock_forecast_alerts.history_rate/delta_rate`` — the exact bodies the
+    Task 2 refactor deleted when the math moved into ``forecast_engine``. The
+    frozen JSON is now the sole truth, so that test became a fixture-INTEGRITY
+    pin: structure, counts and the refusal/measured split. Chosen over (a)
+    retiring it — the sibling property tests below lean on the JSON's shape and
+    deserve a guard beside them — and over (b) regenerating against the engine,
+    which would be circular (the engine is validated BY these vectors; the
+    golden-replay tests already enforce reproduction) and would newly stake CI
+    on cross-platform libm float identity. The generator was repointed to the
+    engine instead and verified to reproduce every frozen vector exactly, so
+    provenance stays executable without this suite depending on it.
+    """
 
-        regenerated = json.loads(json.dumps(build_vectors()))
-        assert regenerated == VECTORS, "rate_vectors.json is stale — it no longer matches stock_forecast_alerts"
+    def test_the_frozen_fixture_is_intact(self):
+        assert VECTORS["now"] == "2026-08-29T00:00:00+00:00"
+
+        history, delta = VECTORS["history"], VECTORS["delta"]
+        assert [v["name"] for v in history] == [
+            "two_adjacent_days",
+            "two_days_with_a_five_day_gap",
+            "six_events_across_four_days_mixed_grams",
+            "decay_curve_0_15_30_60_90_days_old",
+            "single_day_refuses",
+            "single_record_refuses",
+            "interleaved_spools_one_sku",
+            "half_life_pair_weight_at_thirty_days",
+            "zero_gram_events_give_a_zero_rate",
+        ]
+        assert [v["name"] for v in delta] == [
+            "one_spool_ten_days",
+            "baseline_aware_reset",
+            "oldest_spool_anchors_the_window",
+            "zero_consumption_refuses",
+            "younger_than_a_day_refuses",
+            "over_reset_clamps_to_zero_and_refuses",
+            "over_reset_spool_does_not_poison_the_group",
+        ]
+
+        for vector in history:
+            assert set(vector) == {"name", "comment", "records", "expected"}
+            for record in vector["records"]:
+                assert set(record) == {"spool_id", "created_at", "weight_used"}
+                datetime.fromisoformat(record["created_at"])  # parseable, naive UTC
+            if vector["expected"] is not None:
+                assert set(vector["expected"]) == {"rate", "std_dev"}
+        assert sum(1 for v in history if v["expected"] is None) == 2  # the two refusals
+
+        for vector in delta:
+            assert set(vector) == {"name", "comment", "spools", "expected_rate"}
+            for spool in vector["spools"]:
+                assert set(spool) == {"weight_used", "weight_used_baseline", "created_at"}
+        assert sum(1 for v in delta if v["expected_rate"] is None) == 3  # the three refusals
 
     def test_the_half_life_vector_demonstrates_half_weight_at_thirty_days(self):
         """Property of the frozen truth, not of the engine: the pair holds one
@@ -653,6 +701,26 @@ class TestComputeForecastTotals:
         assert row.total_label_g == pytest.approx(1000.0)
         assert row.total_spools == 1
         assert row.spool_ids == [live.id], "the expanded row lazily fetches LIVE spools"
+
+    async def test_a_null_and_an_empty_string_sku_field_share_one_group(self, engine, db_session):
+        """Sanctioned Task 2 addition (T1 review, Minor 3 — the un-pinned gap):
+        the shipped ``sku_key`` and the client ``skuKey`` both collapse NULL→""
+        for GROUPING, so a NULL-brand spool and an ""-brand spool of the same
+        SKU land in ONE group — while the row contract preserves fields AS
+        STORED. The merged row reports the first spool's (by id) stored values,
+        the deterministic replacement for the shipped service's ``group[0]``
+        feed-order pick."""
+        first = await _spool(db_session, brand=None, weight_used=100.0)
+        await _spool(db_session, brand="", weight_used=50.0)
+        assert first.brand is None
+
+        rows = await engine.compute_forecast(db_session, now=NOW)
+        assert len(rows) == 1, "NULL and '' must merge into one group, exactly as the panel groups them"
+        row = rows[0]
+        assert row.brand is None, "the first spool by id holds NULL — the row reports it as stored"
+        assert row.total_spools == 2
+        assert row.total_used_g == pytest.approx(150.0)
+        assert row.total_remaining_g == pytest.approx(1850.0)
 
     @pytest.mark.parametrize(
         ("archived_days_ago", "usage_days_ago", "present"),
