@@ -57,6 +57,46 @@ class TestLibraryFoldersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_create_folder_archive_id_is_a_dead_field(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """The folder-to-archive link was cut from the API (archives are print
+        history, not a filing destination — folder-to-project is the surviving
+        link). A payload that still sends ``archive_id`` is neither rejected nor
+        honoured: pydantic's default ``extra="ignore"`` drops it silently, and
+        the create proceeds as a plain, unlinked folder."""
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+
+        data = {"name": "Still Unlinked", "archive_id": archive.id}
+        response = await async_client.post("/api/v1/library/folders", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["name"] == "Still Unlinked"
+        assert "archive_id" not in result
+        assert "archive_name" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_folder_archive_id_is_a_dead_field(
+        self, async_client: AsyncClient, folder_factory, archive_factory, printer_factory, db_session
+    ):
+        """Same dead field on the update path — re-pointing a folder at an
+        archive via the payload no longer links anything."""
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+        folder = await folder_factory(name="Old Name")
+
+        data = {"name": "New Name", "archive_id": archive.id}
+        response = await async_client.put(f"/api/v1/library/folders/{folder.id}", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["name"] == "New Name"
+        assert "archive_id" not in result
+        assert "archive_name" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_create_nested_folder(self, async_client: AsyncClient, folder_factory, db_session):
         """Verify nested folder can be created."""
         parent = await folder_factory(name="Parent")
