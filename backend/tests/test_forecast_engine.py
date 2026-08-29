@@ -517,6 +517,7 @@ class TestTheRowContract:
             "total_remaining_g",
             "total_label_g",
             "total_used_g",
+            "avg_spool_label_g",
             "rate_g_day",
             "rate_tier",
             "std_dev",
@@ -755,6 +756,65 @@ class TestComputeForecastTotals:
             assert _PLA_BLACK not in rows
 
 
+class TestAverageSpoolLabelWeight:
+    """``avg_spool_label_g`` — "how big is a spool of this SKU", over EVERY
+    spool ever owned (T4 review, Minor 5).
+
+    The shipped client answered it from ``group.allSpools``
+    (``02a85eee:ForecastPanel.tsx:1908-1910``)::
+
+        const avgSpoolG = f.group.allSpools.length > 0
+          ? f.group.allSpools.reduce((s, sp) => s + sp.label_weight, 0) / f.group.allSpools.length
+          : 1000;
+
+    Every other total on the row is live-gated on purpose (stock is live
+    stock), so the AddToCart duration→spools suggestion could not be rebuilt
+    from them: for an archived-only SKU — precisely the SKU the 90-day
+    retention window keeps alerting about — both ``total_spools`` and
+    ``total_label_g`` are 0, and the modal fell back to a fabricated 1000 g.
+    This field is the archived-inclusive average, and it is the ONLY
+    archived-inclusive weight aggregate on the row.
+    """
+
+    async def test_an_archived_only_sku_still_reports_its_real_spool_size(self, engine, db_session):
+        """The Minor 5 case: zero live spools, a real average anyway."""
+        await _spool(
+            db_session,
+            label_weight=750,
+            weight_used=750.0,
+            archived_at=_naive(NOW - timedelta(days=3)),
+        )
+        await _spool(
+            db_session,
+            label_weight=1250,
+            weight_used=1250.0,
+            archived_at=_naive(NOW - timedelta(days=2)),
+        )
+
+        row = (await _rows_by_key(engine, db_session))[_PLA_BLACK]
+        assert row.total_spools == 0, "the live-gated totals are unchanged — this row has no live stock"
+        assert row.total_label_g == pytest.approx(0.0)
+        assert row.avg_spool_label_g == pytest.approx(1000.0), "(750 + 1250) / 2 — archived spools ARE spools"
+
+    async def test_a_mixed_sku_averages_over_live_and_archived_together(self, engine, db_session):
+        await _spool(db_session, label_weight=1000)
+        await _spool(db_session, label_weight=500, archived_at=_naive(NOW - timedelta(days=1)))
+
+        row = (await _rows_by_key(engine, db_session))[_PLA_BLACK]
+        assert row.total_label_g == pytest.approx(1000.0), "the live-only total stays live-only"
+        assert row.avg_spool_label_g == pytest.approx(750.0), "(1000 + 500) / 2 — the client's allSpools mean"
+
+    async def test_a_sku_with_no_label_weights_serves_none_never_zero(self, engine, db_session):
+        """A fabricated size is the bug being killed: 0 g would make the
+        duration→spools suggestion divide by zero (or suggest Infinity spools).
+        None hands the decision back to the modal's documented 1000 g fallback."""
+        await _spool(db_session, label_weight=0)
+        await _spool(db_session, label_weight=0, archived_at=_naive(NOW - timedelta(days=1)))
+
+        row = (await _rows_by_key(engine, db_session))[_PLA_BLACK]
+        assert row.avg_spool_label_g is None
+
+
 class TestComputeForecastSettings:
     @pytest.mark.parametrize(
         ("global_days", "sku_days"),
@@ -895,6 +955,7 @@ class TestTheParityPin:
         assert row1.total_spools == 2
         assert row1.total_remaining_g == pytest.approx(remaining1)
         assert row1.total_label_g == pytest.approx(2000.0)
+        assert row1.avg_spool_label_g == pytest.approx(1000.0)
         assert row1.total_used_g == pytest.approx(105.0)
         assert row1.rate_tier == "history"
         assert row1.rate_g_day == pytest.approx(r1, rel=1e-9)
@@ -921,6 +982,7 @@ class TestTheParityPin:
         assert row2.total_spools == 1
         assert row2.total_remaining_g == pytest.approx(900.0)
         assert row2.total_label_g == pytest.approx(1000.0)
+        assert row2.avg_spool_label_g == pytest.approx(1000.0)
         assert row2.total_used_g == pytest.approx(100.0)
         assert row2.rate_tier == "delta"
         assert row2.rate_g_day == pytest.approx(r2, rel=1e-9)
@@ -947,6 +1009,7 @@ class TestTheParityPin:
         assert row3.total_spools == 0
         assert row3.total_remaining_g == pytest.approx(0.0)
         assert row3.total_label_g == pytest.approx(0.0)
+        assert row3.avg_spool_label_g == pytest.approx(1000.0), "the ONE archived-inclusive weight on the row"
         assert row3.total_used_g == pytest.approx(500.0)
         assert row3.rate_tier == "history", "archived spools ARE the history"
         assert row3.rate_g_day == pytest.approx(r3, rel=1e-9)

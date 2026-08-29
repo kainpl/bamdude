@@ -559,6 +559,90 @@ async def spool_facets(db: AsyncSession, *, filters: list) -> dict[str, list]:
     }
 
 
+# ── Stats bar — the five cards, aggregated (task 5, 2026-08-29) ─────────────
+
+
+async def inventory_stats(db: AsyncSession) -> dict[str, Any]:
+    """Everything the Inventory stats bar shows, as two aggregate scans.
+
+    The behavioral spec is the client memo this replaces (``const stats`` in
+    ``InventoryPage.tsx``, quoted in full in the module docstring of
+    ``backend/tests/test_inventory_stats.py``) — it ran over a full-table
+    ``all=true`` fetch, the page's last one.
+
+    Every arithmetic piece reuses the expressions the ``lowstock`` list filter
+    and the ``filament_low`` notification already share
+    (:func:`_net_weight_expr`, :func:`_remaining_pct_expr`,
+    ``usage_tracker._global_low_stock_threshold``): a stats card that
+    disagreed with the filter beside it would be worse than no card.
+
+    Scope per field is deliberately mixed — see ``InventoryStatsResponse``.
+    """
+    # Local import for the same reason ``build_spool_filters`` takes it
+    # locally: usage_tracker is a large module and only this one line needs it.
+    from backend.app.services.usage_tracker import _global_low_stock_threshold
+
+    global_threshold = await _global_low_stock_threshold(db)
+
+    is_live = Spool.archived_at.is_(None)
+    net = _net_weight_expr()  # max(0, label_weight - weight_used)
+    # ``Math.max(0, weight_used - (weight_used_baseline ?? 0))``, clamped PER
+    # SPOOL: an over-reset row (baseline above the counter — a reset, then an
+    # AMS correction downward) must not eat a healthy spool's grams.
+    consumed = Spool.weight_used - func.coalesce(Spool.weight_used_baseline, 0.0)
+    consumed_clamped = case((consumed < 0, 0.0), else_=consumed)
+    # ``s.low_stock_threshold_pct ?? lowStockThreshold`` — NULL means "use the
+    # global", not "zero"; the comparison is strict, so a spool sitting exactly
+    # on its threshold is not low.
+    threshold = func.coalesce(Spool.low_stock_threshold_pct, global_threshold)
+
+    totals = (
+        await db.execute(
+            select(
+                func.count(Spool.id).label("total_spools"),
+                func.sum(case((is_live, 1), else_=0)).label("active_spools"),
+                func.sum(case((is_live, net), else_=0.0)).label("total_weight_g"),
+                func.sum(consumed_clamped).label("total_consumed_g"),
+                func.sum(case((is_live & (_remaining_pct_expr() < threshold), 1), else_=0)).label("low_stock_count"),
+            )
+        )
+    ).one()
+
+    material_rows = (
+        await db.execute(
+            select(
+                Spool.material,
+                func.count(Spool.id).label("count"),
+                func.sum(net).label("remaining_g"),
+            )
+            .where(is_live)
+            .group_by(Spool.material)
+        )
+    ).all()
+
+    # ``s.material || 'Unknown'`` collapses a blank and a NULL into ONE bucket,
+    # so the merge happens here rather than in the GROUP BY (the DB keeps them
+    # apart) — the same NULL↔'' collapse the forecast engine does in Python.
+    by_material: dict[str, dict[str, Any]] = {}
+    for row in material_rows:
+        name = row.material or "Unknown"
+        bucket = by_material.setdefault(name, {"material": name, "count": 0, "remaining_g": 0.0})
+        bucket["count"] += int(row.count or 0)
+        bucket["remaining_g"] += float(row.remaining_g or 0.0)
+
+    return {
+        "total_spools": int(totals.total_spools or 0),
+        "active_spools": int(totals.active_spools or 0),
+        "total_weight_g": float(totals.total_weight_g or 0.0),
+        "total_consumed_g": float(totals.total_consumed_g or 0.0),
+        # Heaviest first — the client sorted at render (``topMaterials``);
+        # served pre-sorted so the rule keeps one owner. The material name
+        # breaks ties, which the client's stable sort left to insertion order.
+        "by_material": sorted(by_material.values(), key=lambda b: (-b["remaining_g"], b["material"])),
+        "low_stock_count": int(totals.low_stock_count or 0),
+    }
+
+
 # ── Grouped mode — "group similar spools" server-side (task 3, 2026-08-29) ──
 #
 # ``group_similar=true`` turns the paged list's rows into GROUPS. The group

@@ -1844,21 +1844,21 @@ function AddToCartModal({
   const [note, setNote] = useState('');
 
   // Trivial client arithmetic over the row's served numbers (spec §2.3's
-  // carve-out). Avg spool weight comes from the served LIVE totals — the old
-  // panel averaged over every spool ever owned, a feed that no longer exists.
+  // carve-out). `avg_spool_label_g` is the engine's archived-INCLUSIVE mean —
+  // "how big is a spool of this SKU" is answered by every spool you have ever
+  // had of it, which is what the shipped panel's `group.allSpools` mean did
+  // (02a85eee:ForecastPanel.tsx:1908-1910). The live totals beside it cannot
+  // answer it: a SKU held by the 90-day archived-only window — precisely the
+  // SKU you are being told to reorder — has total_spools == 0 AND
+  // total_label_g == 0 (task-4 review, Minor 5).
   //
-  // ⚠️ ACCEPTED LOSS, archived-only SKUs. A SKU held by the 90-day
-  // archived-only window has total_spools == 0 AND total_label_g == 0 —
-  // forecast_engine gates BOTH on is_live — so this falls back to 1000 g for
-  // precisely the SKU you are being told to reorder, under-suggesting for
-  // sub-kilo spools and over-suggesting for 3 kg ones. It CANNOT be fixed
-  // here: total_used_g is the only all-spools aggregate served and usage is
-  // not size. The fix is an engine-side avg_spool_label_g computed over
-  // archived spools too; revisit when that field exists.
+  // 1000 g survives ONLY for a null, which the server sends when no spool of
+  // the SKU carries a label weight at all. It is a documented guess, never a
+  // number derived from nothing.
   const spoolsForDuration = useMemo(() => {
     if (!f.rate_g_day || f.rate_g_day <= 0) return null;
     const neededG = f.rate_g_day * Number(durationDays);
-    const avgSpoolG = f.total_spools > 0 ? f.total_label_g / f.total_spools : 1000;
+    const avgSpoolG = f.avg_spool_label_g ?? 1000;
     return Math.ceil(neededG / avgSpoolG);
   }, [f, durationDays]);
 

@@ -81,6 +81,23 @@ let listRequests: URL[] = [];
 let idsRequests: URL[] = [];
 let facetsRequests: URL[] = [];
 let forecastRequests: URL[] = [];
+let statsRequests: URL[] = [];
+
+// GET /inventory/stats (task 5) — the stats bar's five cards, aggregated
+// server-side. It replaced the page's last full-table `all=true` fetch, so
+// every test in this file that renders the page needs it answered or the bar
+// never appears.
+const STATS = {
+  total_spools: SPOOLS.length,
+  active_spools: SPOOLS.length,
+  total_weight_g: 2000,
+  total_consumed_g: 0,
+  by_material: [
+    { material: 'PLA', count: 1, remaining_g: 1000 },
+    { material: 'PETG', count: 1, remaining_g: 1000 },
+  ],
+  low_stock_count: 0,
+};
 
 // The Forecast tab renders SERVER-computed rows since task 4 of the
 // 2026-08-29 forecast-server-side cycle — the panel's old all=true spool
@@ -116,7 +133,12 @@ function setupHandlers() {
   idsRequests = [];
   facetsRequests = [];
   forecastRequests = [];
+  statsRequests = [];
   server.use(
+    http.get('/api/v1/inventory/stats', ({ request }) => {
+      statsRequests.push(new URL(request.url));
+      return HttpResponse.json(STATS);
+    }),
     http.get('/api/v1/inventory/forecast', ({ request }) => {
       forecastRequests.push(new URL(request.url));
       return HttpResponse.json({
@@ -178,12 +200,12 @@ function setupHandlers() {
   );
 }
 
-/** The list request driving the visible page (the all=true one is the
- *  separate stats feed). */
+/** The list request driving the visible page. */
 const pageRequests = () => listRequests.filter((u) => u.searchParams.get('all') !== 'true');
-/** The full-set slim fetches. Since forecast-server-side task 4 the ONLY
- *  legitimate one is the page-level stats feed — ForecastPanel renders
- *  server-computed rows and owns no spool feed anymore. */
+/** The full-set slim fetches. Since forecast-server-side task 5 a plain visit
+ *  fires NONE: the stats bar reads GET /inventory/stats, ForecastPanel renders
+ *  server-computed rows, and the remaining full-set consumers (bulk edit,
+ *  "Reset all usage") fetch only while their own surface is open. */
 const fullSetRequests = () => listRequests.filter((u) => u.searchParams.get('all') === 'true');
 
 describe('InventoryPage — server-driven params (task 4)', () => {
@@ -204,16 +226,56 @@ describe('InventoryPage — server-driven params (task 4)', () => {
     expect(u.searchParams.has('include_archived')).toBe(false);
   });
 
-  it('keeps a slim all=true feed for the stats cards (no k_profiles fat, both tabs)', async () => {
+  it('the full-set feed survives ONLY behind bulk edit — slim, both tabs, never on the render path', async () => {
+    // Task 5 replaced the page-load stats feed with GET /inventory/stats. The
+    // full spool SET still has two consumers that need every spool OBJECT
+    // (bulk edit's cross-page selection + suggestion pool, and "Reset all
+    // usage"'s id list), so it did not disappear — it became modal-gated.
     render(<InventoryPageRouter />);
-    await waitFor(() =>
-      expect(listRequests.some((u) => u.searchParams.get('all') === 'true')).toBe(true)
+    await waitFor(() => expect(pageRequests().length).toBeGreaterThan(0));
+    expect(fullSetRequests()).toEqual([]);
+
+    fireEvent.click(screen.getByRole('button', { name: /Bulk edit/ }));
+
+    await waitFor(() => expect(fullSetRequests().length).toBe(1));
+    const fullSet = fullSetRequests()[0];
+    // Spans BOTH tabs (the selection and the suggestion pool are not
+    // tab-scoped) — deliberately no archived param, and never the
+    // k_profiles opt-in.
+    expect(fullSet.searchParams.has('archived')).toBe(false);
+    expect(fullSet.searchParams.has('include_k_profiles')).toBe(false);
+    // And the modal waits for it rather than mounting empty and filling.
+    await waitFor(() => expect(screen.getByText('Bulk edit spools')).toBeInTheDocument());
+  });
+
+  it('"Reset all counters" offers itself off the SERVED count and fetches its ids only once armed', async () => {
+    // The button used to be gated on a fetched id list — which is why the
+    // list had to be fetched on every visit. It now reads the served counts,
+    // and the ids arrive behind the confirmation.
+    let resetBody: { spool_ids: number[] } | null = null;
+    server.use(
+      http.get('/api/v1/inventory/stats', () =>
+        HttpResponse.json({ ...STATS, total_consumed_g: 1234, total_spools: 2 })
+      ),
+      http.post('/api/v1/inventory/spools/reset-consumed-counter-bulk', async ({ request }) => {
+        resetBody = (await request.json()) as { spool_ids: number[] };
+        return HttpResponse.json({ reset: resetBody.spool_ids.length });
+      })
     );
-    const statsFeed = listRequests.find((u) => u.searchParams.get('all') === 'true')!;
-    // Spans BOTH tabs (totalConsumed counts archived history) — deliberately
-    // no archived param here, and never the k_profiles opt-in.
-    expect(statsFeed.searchParams.has('archived')).toBe(false);
-    expect(statsFeed.searchParams.has('include_k_profiles')).toBe(false);
+    render(<InventoryPageRouter />);
+
+    const eraser = await screen.findByLabelText('Reset all counters');
+    expect(fullSetRequests()).toEqual([]); // offered without fetching anything
+
+    fireEvent.click(eraser);
+    // The confirmation's count is served, so it is right immediately.
+    await waitFor(() => expect(screen.getByText(/all 2 active spools/)).toBeInTheDocument());
+    await waitFor(() => expect(fullSetRequests().length).toBe(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset counter' }));
+    // Every id, archived included — the mutation is unchanged, only its
+    // source moved behind the arming click.
+    await waitFor(() => expect(resetBody).toEqual({ spool_ids: [1, 2] }));
   });
 
   it('the Archived tab re-states archived=archived on the list AND the facets', async () => {
@@ -335,20 +397,41 @@ describe('InventoryPage — the Forecast tab renders server-computed rows', () =
     );
   });
 
-  it('a plain inventory visit fires exactly ONE all=true fetch (the stats feed) — the forecast endpoints stay quiet', async () => {
+  it('a plain inventory visit fires ZERO all=true fetches — the cycle\'s whole point', async () => {
     render(<InventoryPageRouter />);
-    // Settle: rows on screen and the stats feed answered. A leaked panel
-    // query would show up as a GET /inventory/forecast — mount-time queries
-    // fire in the same tick as the page's own, so by the time the list has
-    // settled it would already be in the count.
+    // Settle: rows on screen and the stats bar rendered off the endpoint. A
+    // leaked panel query would show up as a GET /inventory/forecast —
+    // mount-time queries fire in the same tick as the page's own, so by the
+    // time the list has settled it would already be in the count.
     await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
-    // ⚠️ T5 flips this to 0 — the stats feed becomes GET /inventory/stats and
-    // all-slim is DELETED. Keeping this green at 1 by leaving all-slim alive
-    // is the exact outcome T5 exists to prevent: change the expectation, not
-    // the code under it.
-    await waitFor(() => expect(fullSetRequests().length).toBe(1));
-    expect(fullSetRequests().length).toBe(1);
+    await waitFor(() => expect(statsRequests.length).toBe(1));
+    // Task 5: the last full-table fetch is gone. The stats bar reads
+    // GET /inventory/stats and the remaining full-set consumers are gated on
+    // their own modal being open — nothing downloads the inventory to render
+    // a page of it.
+    expect(fullSetRequests()).toEqual([]);
     expect(forecastRequests.length).toBe(0);
+  });
+
+  it('the stats cards render the SERVED numbers, not a client aggregate', async () => {
+    server.use(
+      http.get('/api/v1/inventory/stats', () =>
+        HttpResponse.json({
+          ...STATS,
+          total_weight_g: 4321,
+          low_stock_count: 7,
+          active_spools: 9,
+          by_material: [{ material: 'ASA', count: 3, remaining_g: 4321 }],
+        })
+      )
+    );
+    render(<InventoryPageRouter />);
+
+    // Numbers no client aggregate over the two mocked spools could produce.
+    await waitFor(() => expect(screen.getByText('7')).toBeInTheDocument()); // low stock
+    expect(screen.getByText(/9 spools/)).toBeInTheDocument(); // active count
+    expect(screen.getByText('ASA')).toBeInTheDocument(); // by-material chip
+    expect(fullSetRequests()).toEqual([]);
   });
 
   it('opening the Forecast tab fires the server forecast query — never a full-set spool feed (task 4)', async () => {
@@ -400,17 +483,16 @@ describe('InventoryPage — the Forecast tab renders server-computed rows', () =
     expect(screen.queryByText('eSun PLA Blue')).toBeNull();
     // …and the panel's feed never fired: since task 4 that feed is
     // GET /inventory/forecast, and a mounted panel would have called it.
-    // The page-level flat list + all-slim stats feed each fire ONCE while
-    // the spoolman settings are still in flight (spoolmanMode reads false
-    // for that first tick — a pre-existing cold-load flicker, out of task-6
-    // scope). If a later cycle gates those page-level queries on
-    // spoolmanModeReady, these counts drop to 0 — lower is better here,
-    // only MORE is a regression.
+    // The page-level flat list still fires ONCE while the spoolman settings
+    // are in flight (spoolmanMode reads false for that first tick — a
+    // pre-existing cold-load flicker, out of scope here). If a later cycle
+    // gates those page-level queries on spoolmanModeReady, that count drops
+    // to 0 too — lower is better here, only MORE is a regression.
     expect(forecastRequests.length).toBe(0);
-    // ⚠️ T5 flips this to 0 — the stats feed becomes GET /inventory/stats and
-    // all-slim is DELETED. The ≤1 here is the cold-load flicker allowance
-    // described above, not a licence to keep one all=true fetch alive.
-    expect(fullSetRequests().length).toBeLessThanOrEqual(1);
+    // Task 5: zero, not "at most one". No full-table fetch survives a visit
+    // in EITHER mode — the flicker can no longer cost the whole inventory,
+    // because nothing on the render path asks for it any more.
+    expect(fullSetRequests()).toEqual([]);
     expect(listRequests.length).toBeLessThanOrEqual(2);
   });
 });

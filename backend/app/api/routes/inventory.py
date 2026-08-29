@@ -41,6 +41,7 @@ from backend.app.schemas.forecast import (
 )
 from backend.app.schemas.location import LocationCreate, LocationResponse, LocationUpdate
 from backend.app.schemas.spool import (
+    InventoryStatsResponse,
     SpoolAssignmentCreate,
     SpoolAssignmentResponse,
     SpoolBulkCreate,
@@ -1379,6 +1380,25 @@ async def spool_facets(
     filters = await inventory_service.build_spool_filters(db, archived=archived)
     facets = await inventory_service.spool_facets(db, filters=filters)
     return SpoolFacetsResponse(**facets)
+
+
+@router.get("/stats", response_model=InventoryStatsResponse)
+async def inventory_stats(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> InventoryStatsResponse:
+    """The Inventory stats bar, aggregated in SQL (task 5, 2026-08-29).
+
+    Retires the page's LAST full-table fetch: the five cards were computed by
+    a client memo over an ``all=true`` feed of every spool. ``total_spools``
+    rides along for the "Reset all usage" control, the second consumer of that
+    same feed.
+
+    Unfiltered on purpose — these are farm-wide figures, unaffected by the
+    table's filters (the shipped memo read the whole feed too, never
+    ``filteredSpools``).
+    """
+    return InventoryStatsResponse(**await inventory_service.inventory_stats(db))
 
 
 # ── CSV import / export (#1576) ──────────────────────────────────────────────

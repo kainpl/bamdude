@@ -27,6 +27,7 @@ class SkuForecastRowResponse(BaseModel):
     total_spools: int
     total_remaining_g: float
     total_label_g: float
+    avg_spool_label_g: float | None
     total_used_g: float
     rate_g_day: float | None
     rate_tier: str  # "history" | "delta" | "none"

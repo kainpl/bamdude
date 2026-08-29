@@ -255,6 +255,15 @@ class SkuForecastRow:
     total_spools: int
     total_remaining_g: float
     total_label_g: float
+    # Mean ``label_weight`` over EVERY spool of the SKU, archived included —
+    # "how big is a spool of this SKU", which is a property of the SKU and not
+    # of what is on the shelf right now. The one archived-inclusive weight on
+    # this row: every other total is live-gated because it describes STOCK, and
+    # an archived-only SKU (kept alerting by the 90-day retention window) would
+    # otherwise have no recoverable spool size at all. ``None``, never 0, when
+    # no spool of the SKU carries a label weight — the consumer's own fallback
+    # is a better guess than a fabricated size.
+    avg_spool_label_g: float | None
     total_used_g: float
     rate_g_day: float | None
     rate_tier: str  # "history" | "delta" | "none"
@@ -332,8 +341,10 @@ class _Group:
     __slots__ = (
         "fields",
         "live_spools",
+        "all_spools",
         "remaining_g",
         "label_g",
+        "all_label_g",
         "used_g",
         "oldest_created_at",
         "newest_archived_at",
@@ -347,8 +358,10 @@ class _Group:
     def __init__(self) -> None:
         self.fields: tuple[str | None, str | None, str | None, str | None] | None = None
         self.live_spools = 0
+        self.all_spools = 0
         self.remaining_g = 0.0
         self.label_g = 0.0
+        self.all_label_g = 0.0
         self.used_g = 0.0
         self.oldest_created_at: datetime | None = None
         self.newest_archived_at: datetime | None = None
@@ -385,8 +398,12 @@ async def compute_forecast(db: AsyncSession, *, now: datetime | None = None) -> 
                 Spool.brand,
                 Spool.color_name,
                 func.sum(case((is_live, 1), else_=0)).label("live_spools"),
+                func.count(Spool.id).label("all_spools"),
                 func.sum(case((is_live & (remaining_expr > 0), remaining_expr), else_=0.0)).label("remaining_g"),
                 func.sum(case((is_live, func.coalesce(Spool.label_weight, 0)), else_=0)).label("label_g"),
+                # UNGATED, unlike ``label_g`` — the mean spool size below is the
+                # SKU's property, not the shelf's (see ``avg_spool_label_g``).
+                func.sum(func.coalesce(Spool.label_weight, 0)).label("all_label_g"),
                 func.sum(case((used_expr > 0, used_expr), else_=0.0)).label("used_g"),
                 func.min(Spool.created_at).label("oldest_created_at"),
                 func.max(Spool.archived_at).label("newest_archived_at"),
@@ -445,8 +462,10 @@ async def compute_forecast(db: AsyncSession, *, now: datetime | None = None) -> 
     for row in totals_rows:
         g = _group(row.material, row.subtype, row.brand, row.color_name)
         g.live_spools += int(row.live_spools or 0)
+        g.all_spools += int(row.all_spools or 0)
         g.remaining_g += float(row.remaining_g or 0.0)
         g.label_g += float(row.label_g or 0.0)
+        g.all_label_g += float(row.all_label_g or 0.0)
         g.used_g += float(row.used_g or 0.0)
         if row.oldest_created_at is not None:
             g.oldest_created_at = (
@@ -530,6 +549,12 @@ async def compute_forecast(db: AsyncSession, *, now: datetime | None = None) -> 
             snoozed=snoozed,
         )
 
+        # The client's ``allSpools`` mean, with the zero refused: a SKU whose
+        # every spool carries label_weight 0 has no knowable spool size, and 0
+        # would divide-by-zero (or suggest an infinity of spools) downstream.
+        avg_label = (g.all_label_g / g.all_spools) if g.all_spools else 0.0
+        avg_spool_label_g = avg_label if avg_label > 0 else None
+
         material, subtype, brand, color_name = g.fields
         rows.append(
             SkuForecastRow(
@@ -541,6 +566,7 @@ async def compute_forecast(db: AsyncSession, *, now: datetime | None = None) -> 
                 total_spools=g.live_spools,
                 total_remaining_g=g.remaining_g,
                 total_label_g=g.label_g,
+                avg_spool_label_g=avg_spool_label_g,
                 total_used_g=g.used_g,
                 rate_g_day=rate,
                 rate_tier=tier,

@@ -41,6 +41,7 @@ function row(over: Partial<SkuForecastRow> = {}): SkuForecastRow {
     total_spools: 2,
     total_remaining_g: 1500,
     total_label_g: 2000,
+    avg_spool_label_g: 1000,
     total_used_g: 500,
     rate_g_day: 10,
     rate_tier: 'history',
@@ -524,5 +525,39 @@ describe('ForecastPanel — a renderer of server-computed rows', () => {
     expect(
       screen.queryByText('No usage data available - cannot project stock timeline.')
     ).toBeNull();
+  });
+
+  it('the duration→spools suggestion uses the SKU\'s real spool size, archived spools included', async () => {
+    // Task-4 review, Minor 5: an archived-only SKU — the one the 90-day
+    // retention window is telling you to reorder — serves total_spools 0 and
+    // total_label_g 0, because both are live-gated. The old code divided by
+    // those and fell back to a fabricated 1000 g. `avg_spool_label_g` is the
+    // engine's archived-inclusive mean and the only number here that can
+    // answer "how big is a spool of this".
+    //
+    // 100 g/day × 30 days = 3000 g. At the real 750 g size that is 4 spools;
+    // at the 1000 g fallback it would read 3 — so this fails loudly if the
+    // suggestion ever goes back to the live totals.
+    setupHandlers({
+      rows: [row({ total_spools: 0, total_label_g: 0, avg_spool_label_g: 750, rate_g_day: 100 })],
+    });
+    render(<ForecastPanel />);
+
+    fireEvent.click(await screen.findByTitle('Add to shopping list'));
+    fireEvent.click(await screen.findByText('By Duration'));
+
+    expect(await screen.findByText('4 spools')).toBeInTheDocument();
+  });
+
+  it('a SKU with no label weight anywhere keeps the documented 1000 g fallback', async () => {
+    // null, not 0 — the server refuses to fabricate a size, and the client's
+    // own guess is the honest last resort. 100 g/day × 30 days / 1000 = 3.
+    setupHandlers({ rows: [row({ avg_spool_label_g: null, rate_g_day: 100 })] });
+    render(<ForecastPanel />);
+
+    fireEvent.click(await screen.findByTitle('Add to shopping list'));
+    fireEvent.click(await screen.findByText('By Duration'));
+
+    expect(await screen.findByText('3 spools')).toBeInTheDocument();
   });
 });

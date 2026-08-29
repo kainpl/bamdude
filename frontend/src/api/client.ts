@@ -4251,6 +4251,27 @@ export interface SpoolFacets {
   colors: SpoolFacetColor[];
 }
 
+/** One chip of the stats bar's "By material" card. Served heaviest-first. */
+export interface InventoryMaterialStat {
+  material: string;
+  count: number;
+  remaining_g: number;
+}
+
+/** GET /inventory/stats (task 5) — the stats bar, aggregated server-side.
+ *  Scopes differ per field, exactly as the client memo it replaced had them:
+ *  `total_spools` counts every row (archived included — it is the "Reset all
+ *  usage" target count, not a card); `total_consumed_g` also spans archived
+ *  rows (past consumption is history); everything else is live spools only. */
+export interface InventoryStats {
+  total_spools: number;
+  active_spools: number;
+  total_weight_g: number;
+  total_consumed_g: number;
+  by_material: InventoryMaterialStat[];
+  low_stock_count: number;
+}
+
 /** Shared query-string builder for the paged spool surface. `page` is ALWAYS
  *  sent — it is the compat switch that flips GET /inventory/spools from the
  *  legacy flat array to the `{items, meta}` envelope (same convention as
@@ -4641,6 +4662,11 @@ export interface SkuForecastRow {
   total_spools: number;
   total_remaining_g: number;
   total_label_g: number;
+  /** Mean label_weight over EVERY spool of the SKU, archived included — the
+   *  one archived-inclusive weight on this row (every total above describes
+   *  live STOCK). null, never 0, when no spool of the SKU carries a label
+   *  weight, so a consumer's own fallback beats a fabricated size. */
+  avg_spool_label_g: number | null;
   total_used_g: number;
   rate_g_day: number | null;
   rate_tier: 'history' | 'delta' | 'none';
@@ -8269,6 +8295,9 @@ export const api = {
   /** Distinct dropdown values under one archived tab (task 2). */
   getSpoolFacets: (archived?: 'active' | 'archived') =>
     request<SpoolFacets>(`/inventory/spools/facets${archived ? `?archived=${archived}` : ''}`),
+  /** The stats bar, aggregated server-side (task 5). Farm-wide and
+   *  unfiltered — the memo it replaced read the whole feed, not the filter. */
+  getInventoryStats: () => request<InventoryStats>('/inventory/stats'),
   getSpool: (id: number) => request<InventorySpool>(`/inventory/spools/${id}`),
   // ── CSV import/export (#1576) ────────────────────────────────────────────
   // dry_run=true → preview (no write); omitted → real import. Both share one

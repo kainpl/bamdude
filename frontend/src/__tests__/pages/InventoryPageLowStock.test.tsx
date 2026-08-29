@@ -183,9 +183,26 @@ describe('InventoryPage - Low Stock Threshold', () => {
         const body = (await request.json()) as Partial<typeof mockSettings>;
         return HttpResponse.json({ ...mockSettings, ...body });
       }),
-      // Server-driven paged list (task 4): the page's list AND its all-slim
-      // stats feed both send `page` and get the envelope; the bare call
-      // (legacy consumers) keeps the flat shape.
+      // The stats bar is server-aggregated since task 5 (forecast-server-side)
+      // — the low-stock CARD reads this endpoint, while the "< N%" threshold
+      // beside it still comes from settings, which is what these tests pin.
+      http.get('/api/v1/inventory/stats', () =>
+        HttpResponse.json({
+          total_spools: mockSpools.length,
+          active_spools: mockSpools.length,
+          total_weight_g: 100 + 800 + 150,
+          total_consumed_g: 900 + 200 + 850,
+          by_material: [
+            { material: 'PETG', count: 1, remaining_g: 800 },
+            { material: 'ABS', count: 1, remaining_g: 150 },
+            { material: 'PLA', count: 1, remaining_g: 100 },
+          ],
+          low_stock_count: 2,
+        })
+      ),
+      // Server-driven paged list (task 4): the page's list sends `page` and
+      // gets the envelope; the bare call (legacy consumers) keeps the flat
+      // shape.
       http.get('/api/v1/inventory/spools/facets', () =>
         HttpResponse.json({ materials: [], brands: [], categories: [], catalog_ids: [], colors: [] })
       ),
