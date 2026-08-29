@@ -340,6 +340,13 @@ class TestTheDeliberateBehaviorChanges:
             await _usage(db_session, spool.id, days_ago, 100, anchor)
 
         breakage, reorder = AsyncMock(), AsyncMock()
+        # T2 review, Minor 2: the plan's contract is "returns WITHOUT QUERYING",
+        # and the notification/settings-row assertions alone would still pass if
+        # the guard slid below the (side-effect-free) forecast work. Patch the
+        # engine call at the name the module actually invokes — its own bound
+        # ``compute_forecast`` — and demand it is never awaited.
+        engine_call = AsyncMock(return_value=[])
+        monkeypatch.setattr("backend.app.services.stock_forecast_alerts.compute_forecast", engine_call)
         monkeypatch.setattr("backend.app.services.stock_forecast_alerts.async_session", _ctx(db_session))
         with (
             patch("backend.app.services.notification_service.notification_service.on_stock_break_alert", breakage),
@@ -347,6 +354,7 @@ class TestTheDeliberateBehaviorChanges:
         ):
             await StockForecastAlerts().tick()
 
+        assert engine_call.await_count == 0, "the guard must return BEFORE any forecast work — 'without querying'"
         assert breakage.await_count == 0
         assert reorder.await_count == 0
 

@@ -20,10 +20,15 @@ pre-refactor implementation's arithmetic.
 Nothing in here derives an expected value by hand. The inputs are designed, the
 outputs are measured.
 
-Regenerate (from the repo root — only legitimate when the engine's math is the
-thing that deliberately changed, which retires the old vectors' authority):
+Running the script VERIFIES by default (T2 review, Important 1 — the silent
+regeneration habit-path is closed): it recomputes every vector through the
+engine and diffs against the committed JSON, exiting non-zero on divergence.
+The frozen JSON is the truth and the engine is wrong — never the vector.
+Overwriting the file requires the explicit ``--write`` flag, whose help text
+says why that is almost never the right move:
 
-    python -m backend.tests.forecast_vectors.generate_vectors
+    python -m backend.tests.forecast_vectors.generate_vectors           # verify (exit 0/1)
+    python -m backend.tests.forecast_vectors.generate_vectors --write   # retire the old truth
 
 The JSON is committed together with this script so every expected number has an
 executable provenance.
@@ -31,7 +36,9 @@ executable provenance.
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -239,18 +246,65 @@ def build_vectors() -> dict:
     }
 
 
-def main() -> None:
-    vectors = build_vectors()
-    VECTORS_PATH.write_text(json.dumps(vectors, indent=2) + "\n", encoding="utf-8")
-    measured_h = sum(1 for v in vectors["history"] if v["expected"] is not None)
-    measured_d = sum(1 for v in vectors["delta"] if v["expected_rate"] is not None)
-    print(
-        f"Wrote {VECTORS_PATH.name}: {len(vectors['history'])} history vectors "
-        f"({measured_h} measured, {len(vectors['history']) - measured_h} refusals), "
-        f"{len(vectors['delta'])} delta vectors "
-        f"({measured_d} measured, {len(vectors['delta']) - measured_d} refusals)."
+def main(argv: list[str] | None = None) -> int:
+    """Verify by default; overwrite only under the explicit ``--write`` flag.
+
+    The default mode is the tripwire the T1 content-comparison test used to be:
+    a habitual run can no longer replace the frozen truth with engine output —
+    it can only report whether the engine still reproduces it.
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m backend.tests.forecast_vectors.generate_vectors",
+        description=(
+            "Verify (default) that the forecast engine reproduces the frozen golden vectors in "
+            "rate_vectors.json, or rewrite them with --write."
+        ),
     )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help=(
+            "OVERWRITE rate_vectors.json with the engine's output. The committed JSON's provenance is the "
+            "SHIPPED pre-refactor implementation (Task 1, frozen by execution); regenerating from the engine "
+            "replaces that truth with the thing under test. Legitimate ONLY when the engine's math has "
+            "deliberately changed and the old vectors' authority is being retired — never to make a red "
+            "verification green."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    vectors = build_vectors()
+
+    if args.write:
+        VECTORS_PATH.write_text(json.dumps(vectors, indent=2) + "\n", encoding="utf-8")
+        measured_h = sum(1 for v in vectors["history"] if v["expected"] is not None)
+        measured_d = sum(1 for v in vectors["delta"] if v["expected_rate"] is not None)
+        print(
+            f"Wrote {VECTORS_PATH.name}: {len(vectors['history'])} history vectors "
+            f"({measured_h} measured, {len(vectors['history']) - measured_h} refusals), "
+            f"{len(vectors['delta'])} delta vectors "
+            f"({measured_d} measured, {len(vectors['delta']) - measured_d} refusals)."
+        )
+        return 0
+
+    # ``_provenance`` stays outside the diff on purpose: the committed note
+    # records the Task 1 freeze; the in-memory one describes a hypothetical
+    # rewrite. The vectors themselves are the truth being verified.
+    frozen = json.loads(VECTORS_PATH.read_text(encoding="utf-8"))
+    regenerated = json.loads(json.dumps(vectors))
+    mismatched = [section for section in ("now", "history", "delta") if regenerated[section] != frozen[section]]
+    if mismatched:
+        print(
+            f"MISMATCH in {', '.join(mismatched)}: the engine no longer reproduces the frozen vectors.\n"
+            f"{VECTORS_PATH.name} is the truth (frozen from the SHIPPED pre-refactor implementation) and the\n"
+            "engine is wrong — fix the engine, never the vector. --write exists only for a deliberate math\n"
+            "change that retires the old vectors' authority.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"verified: the engine reproduces every frozen vector exactly (now/history/delta match {VECTORS_PATH.name}).")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
