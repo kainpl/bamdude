@@ -757,3 +757,46 @@ async def test_a_single_plate_file_stays_one_plain_row(db_session):
 
     rows = await _plan_rows(db_session, project.id, file.id)
     assert len(rows) == 1 and rows[0].plate_index == 0
+
+
+async def test_a_mixed_zero_and_plate_state_reconciles_without_constraint_violation(db_session):
+    """Regression: a (project, file) pair can hold BOTH a plate_index=0 row
+    AND non-zero plate rows already — other direct writers of
+    ``ProjectPrintPlanItem`` (the setup-copy helper, m158's seed) insert
+    rows without going through ``sync_plan_for_file``, so this shape is
+    reachable in practice, not just in theory.
+
+    Pre-fix, the legacy-expand branch assumed the 0-row was the file's
+    ONLY row: it deleted just the 0-row and then unconditionally inserted
+    every wanted plate — colliding with the surviving plate-2 row on the
+    unique (project, file, plate) constraint at flush. It also never
+    dropped a stray row for a plate absent from the file's metadata (here,
+    plate 5), silently orphaning it.
+
+    Fixed behaviour: the surviving plate-2 row's copies are left alone,
+    plates 1 and 3 are planted inheriting the 0-row's copies, and the
+    stray plate-5 row is dropped like any other vanished plate.
+    """
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+    from backend.app.services.print_plan import sync_plan_for_file
+
+    project, file = await _project_and_file(db_session, plates=[1, 2, 3])
+    db_session.add(
+        ProjectPrintPlanItem(project_id=project.id, library_file_id=file.id, copies=4, order_index=2, plate_index=0)
+    )
+    db_session.add(
+        ProjectPrintPlanItem(project_id=project.id, library_file_id=file.id, copies=9, order_index=2, plate_index=2)
+    )
+    db_session.add(
+        ProjectPrintPlanItem(project_id=project.id, library_file_id=file.id, copies=3, order_index=2, plate_index=5)
+    )
+    await db_session.commit()
+
+    await sync_plan_for_file(db_session, library_file_id=file.id, project_ids=[project.id], file_type="gcode")
+    await db_session.commit()  # flush must not raise a unique-constraint violation
+
+    rows = await _plan_rows(db_session, project.id, file.id)
+    by_plate = {r.plate_index: r for r in rows}
+    assert set(by_plate) == {1, 2, 3}, "the stray plate-5 row is dropped, same as any vanished plate"
+    assert by_plate[2].copies == 9, "the surviving plate-2 row keeps its own copies"
+    assert by_plate[1].copies == 4 and by_plate[3].copies == 4, "new plates inherit the legacy 0-row's copies"
