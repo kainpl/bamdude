@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { ProjectsPage, ProjectModal } from '../../pages/ProjectsPage';
@@ -192,141 +192,141 @@ describe('ProjectsPage', () => {
     });
   });
 
-  describe('archive/unarchive', () => {
-    it('active project: menu shows Archive, clicking it calls updateProject(id, {status: archived})', async () => {
-      const user = userEvent.setup();
-      let updateCalledWith: { id: number; status: string } | null = null;
+  describe('archive/unarchive (card actions menu)', () => {
+    /**
+     * The card's actions-menu button (`MoreVertical`) carries no accessible
+     * name or text — it's icon-only. Before the dropdown opens it is the
+     * ONLY button inside the card (`.group` root), so scoping with
+     * `within(card).getByRole('button')` finds it unambiguously without
+     * resorting to SVG-class sniffing (what the previous two attempts did).
+     * `getByRole` throws if the button is missing, so a removed/renamed
+     * trigger fails the test instead of silently skipping the assertions.
+     */
+    const openCardMenu = async (user: ReturnType<typeof userEvent.setup>, projectName: string) => {
+      const heading = await screen.findByText(projectName);
+      const card = heading.closest('.group');
+      if (!(card instanceof HTMLElement)) {
+        throw new Error(`could not find the .group card container for "${projectName}"`);
+      }
+      const moreButton = within(card).getByRole('button');
+      await user.click(moreButton);
+      return card;
+    };
 
+    /** Captures the body/id of the next PATCH so tests can assert exactly
+     *  what `api.updateProject` (called from `archiveMutation.mutationFn`)
+     *  sent over the wire. */
+    const capturePatch = () => {
+      const calls: { id: number; status: string }[] = [];
       server.use(
-        http.patch('/api/v1/projects/:id', async ({ request }) => {
-          const body = await request.json() as { status?: string };
-          const url = new URL(request.url);
-          const id = parseInt(url.pathname.split('/').pop() || '0', 10);
-          updateCalledWith = { id, status: body.status || '' };
+        http.patch('/api/v1/projects/:id', async ({ request, params }) => {
+          const body = (await request.json()) as { status?: string };
+          const id = Number(params.id);
+          calls.push({ id, status: body.status ?? '' });
           return HttpResponse.json({ id, status: body.status });
         })
       );
+      return calls;
+    };
+
+    // A fixture set with all three statuses represented, used by the tests
+    // that need a project OTHER than "active" to actually be on screen. The
+    // page defaults to the "active" status tab (`statusFilter` state), so an
+    // archived/completed project is invisible until the "All" tab is
+    // selected — the previous test attempts reused the always-visible
+    // active fixture for the "archived project" case instead of fixing
+    // this, which is why they never really exercised the Unarchive branch.
+    const mixedStatusProjects = [
+      { ...mockProjects[0] },
+      { ...mockProjects[0], id: 101, name: 'Legacy Prints', status: 'archived' },
+      { ...mockProjects[0], id: 102, name: 'Wrapped Up', status: 'completed' },
+    ];
+
+    const switchToAllTab = async (user: ReturnType<typeof userEvent.setup>) => {
+      // The "All" tab label is a lone <span>All</span> — distinct from the
+      // sibling count-badge <span>, so getByText matches it uniquely even
+      // though the parent button's concatenated text is "All3".
+      await user.click(screen.getByText('All'));
+    };
+
+    it('active project: opening the menu and clicking Archive calls updateProject(id, {status: archived})', async () => {
+      const user = userEvent.setup();
+      const calls = capturePatch();
 
       render(<ProjectsPage />);
 
+      await openCardMenu(user, 'Functional Parts');
+      await user.click(screen.getByText('Archive'));
+
       await waitFor(() => {
-        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+        expect(calls).toEqual([{ id: 1, status: 'archived' }]);
       });
-
-      // Find and click more-actions button on first card
-      const allButtons = screen.getAllByRole('button');
-      const moreButton = allButtons.find(btn => {
-        const parent = btn.closest('.group');
-        return parent && parent.textContent?.includes('Functional Parts') &&
-               btn.querySelector('svg[class*="w-4"]') &&
-               !btn.textContent?.trim();
-      });
-
-      if (moreButton) {
-        await user.click(moreButton);
-        const archiveOption = await screen.findByText('Archive');
-        expect(archiveOption).toBeInTheDocument();
-        await user.click(archiveOption);
-
-        await waitFor(() => {
-          expect(updateCalledWith).toEqual({ id: 1, status: 'archived' });
-        });
-      }
     });
 
-    it('archived project: shows Unarchive not Archive, clicking calls updateProject(id, {status: active})', async () => {
-      const user = userEvent.setup();
-      let updateCalledWith: { id: number; status: string } | null = null;
-
+    it('archived project: menu shows Unarchive, clicking it calls updateProject(id, {status: active})', async () => {
       server.use(
-        http.patch('/api/v1/projects/:id', async ({ request }) => {
-          const body = await request.json() as { status?: string };
-          const url = new URL(request.url);
-          const id = parseInt(url.pathname.split('/').pop() || '0', 10);
-          updateCalledWith = { id, status: body.status || '' };
-          return HttpResponse.json({ id, status: body.status });
-        })
+        http.get('/api/v1/projects/', () => HttpResponse.json(mixedStatusProjects))
       );
+      const user = userEvent.setup();
+      const calls = capturePatch();
 
-      // First archive project 1 via mutation
       render(<ProjectsPage />);
+      await switchToAllTab(user);
+
+      const card = await openCardMenu(user, 'Legacy Prints');
+      expect(within(card).queryByText('Archive')).not.toBeInTheDocument();
+      await user.click(within(card).getByText('Unarchive'));
 
       await waitFor(() => {
-        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+        expect(calls).toEqual([{ id: 101, status: 'active' }]);
       });
-
-      const allButtons = screen.getAllByRole('button');
-      const moreButton = allButtons.find(btn => {
-        const parent = btn.closest('.group');
-        return parent && parent.textContent?.includes('Functional Parts') &&
-               btn.querySelector('svg[class*="w-4"]') &&
-               !btn.textContent?.trim();
-      });
-
-      if (moreButton) {
-        await user.click(moreButton);
-        await user.click(screen.getByText('Archive'));
-
-        await waitFor(() => {
-          expect(updateCalledWith?.status).toBe('archived');
-        });
-
-        // After archiving, clicking menu again should show Unarchive
-        // Note: In real scenario component state would update, in test we verify mutation behavior
-        expect(updateCalledWith).toEqual({ id: 1, status: 'archived' });
-      }
     });
 
-    it('completed project: menu shows Archive not Unarchive (status check)', async () => {
+    it('completed project: menu shows Archive, not Unarchive', async () => {
+      server.use(
+        http.get('/api/v1/projects/', () => HttpResponse.json(mixedStatusProjects))
+      );
+      const user = userEvent.setup();
+
+      render(<ProjectsPage />);
+      await switchToAllTab(user);
+
+      const card = await openCardMenu(user, 'Wrapped Up');
+      expect(within(card).getByText('Archive')).toBeInTheDocument();
+      expect(within(card).queryByText('Unarchive')).not.toBeInTheDocument();
+    });
+
+    it('permission denied (no projects:update): the Archive menu item is disabled', async () => {
+      server.use(
+        http.get('/api/v1/auth/me', () =>
+          HttpResponse.json({
+            id: 2,
+            username: 'operator',
+            role: 'user',
+            is_active: true,
+            is_admin: false,
+            groups: [{ id: 2, name: 'Operators' }],
+            // No projects:update — mirrors how Layout.test.tsx builds a
+            // denied user. Real (non-admin) users go through this path;
+            // `hasPermission` short-circuits to true only for is_admin.
+            permissions: ['projects:read'],
+            created_at: '2024-01-01T00:00:00Z',
+          })
+        )
+      );
       const user = userEvent.setup();
 
       render(<ProjectsPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
-      });
+      const card = await openCardMenu(user, 'Functional Parts');
+      const archiveButton = within(card).getByText('Archive').closest('button');
+      expect(archiveButton).toBeDisabled();
 
-      const allButtons = screen.getAllByRole('button');
-      const moreButton = allButtons.find(btn => {
-        const parent = btn.closest('.group');
-        return parent && parent.textContent?.includes('Art Collection') &&
-               btn.querySelector('svg[class*="w-4"]') &&
-               !btn.textContent?.trim();
-      });
-
-      if (moreButton) {
-        await user.click(moreButton);
-        // For non-archived projects (active/completed), Archive label shows
-        const archiveOption = await screen.findByText('Archive');
-        expect(archiveOption).toBeInTheDocument();
-        expect(screen.queryByText('Unarchive')).not.toBeInTheDocument();
-      }
-    });
-
-    it('permission: Archive button mirrors Edit button gate (projects:update)', async () => {
-      // Archive button uses same permission gate as Edit: projects:update
-      // When permitted, button is interactive; when denied, it has cursor-not-allowed
-      render(<ProjectsPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
-      });
-
-      const allButtons = screen.getAllByRole('button');
-      const moreButton = allButtons.find(btn => {
-        const parent = btn.closest('.group');
-        return parent && parent.textContent?.includes('Functional Parts') &&
-               btn.querySelector('svg[class*="w-4"]') &&
-               !btn.textContent?.trim();
-      });
-
-      if (moreButton) {
-        const user = userEvent.setup();
-        await user.click(moreButton);
-        // Archive button should render and be enabled for users with projects:update
-        const archiveButton = screen.getByText('Archive');
-        expect(archiveButton).toBeInTheDocument();
-      }
+      // And clicking it must NOT reach the mutation — the onClick itself is
+      // gated on hasPermission(), not just the `disabled` attribute.
+      const calls = capturePatch();
+      await user.click(within(card).getByText('Archive'));
+      expect(calls).toEqual([]);
     });
   });
 });
