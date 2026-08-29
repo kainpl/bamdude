@@ -5983,19 +5983,33 @@ async def on_print_complete(printer_id: int, data: dict):
                             _plate_auto_cleared_by_swap = True
                             logger.info("[SWAP] change_table done — plate auto-cleared for printer %s", printer_id)
                         if not _sw_ok:
-                            logger.error("[SWAP] change_table macro failed: %s — will pause queue", _sw_msg)
-                            # Set waiting_reason on the next pending queue item so the
-                            # scheduler doesn't try to start it on an un-swapped table.
-                            _next = await db.execute(
-                                select(PrintQueueItem)
-                                .where(PrintQueueItem.queue_id == printer_id)
-                                .where(PrintQueueItem.status == "pending")
-                                .order_by(PrintQueueItem.position)
-                                .limit(1)
-                            )
-                            _next_item = _next.scalar_one_or_none()
-                            if _next_item:
-                                _next_item.waiting_reason = f"Swap macro failed: {_sw_msg}"
+                            logger.error("[SWAP] change_table macro failed: %s — pausing queue", _sw_msg)
+                            # ⚠️ A REAL pause, not just waiting_reason: the
+                            # scheduler recomputes waiting_reason every tick
+                            # and clears it the moment the printer looks idle,
+                            # so the reason alone never held anything — the
+                            # next item dispatched onto the un-swapped table
+                            # one tick later. set_queue_paused is what the
+                            # scheduler actually skips on.
+                            from backend.app.models.printer_queue import PrinterQueue as _SwapQueue
+                            from backend.app.services.queue_counters import set_queue_paused as _swap_pause
+
+                            # queue_id is NOT printer_id — resolve the row.
+                            _swap_qid = (
+                                await db.execute(select(_SwapQueue.id).where(_SwapQueue.printer_id == printer_id))
+                            ).scalar_one_or_none()
+                            if _swap_qid is not None:
+                                await _swap_pause(db, _swap_qid)
+                                _next = await db.execute(
+                                    select(PrintQueueItem)
+                                    .where(PrintQueueItem.queue_id == _swap_qid)
+                                    .where(PrintQueueItem.status == "pending")
+                                    .order_by(PrintQueueItem.position)
+                                    .limit(1)
+                                )
+                                _next_item = _next.scalar_one_or_none()
+                                if _next_item:
+                                    _next_item.waiting_reason = f"Swap macro failed: {_sw_msg}"
                                 await db.commit()
         except Exception as e:
             logger.error("[SWAP] change_table macro error: %s", e)

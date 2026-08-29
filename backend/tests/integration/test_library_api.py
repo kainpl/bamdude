@@ -394,6 +394,320 @@ class TestLibraryFilesAPI:
         ids = {f["id"] for f in response.json()}
         assert ids == {ext_a.id, ext_b.id}
 
+    # =================================================================
+    # Server-driven list (task 1, 2026-08-29): paging, filters, sort in SQL.
+    # ``include_root=false`` is used throughout below (existing convention,
+    # see test_list_files_internal_only) so a bare filter narrows across
+    # EVERY file regardless of folder placement, not just root-level ones.
+    # =================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_q_filters_by_filename(self, async_client: AsyncClient, file_factory, db_session):
+        """`q` matches a substring of the on-disk filename."""
+        match = await file_factory(filename="octopus_vase.3mf")
+        await file_factory(filename="other_thing.3mf")
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&q=octopus")
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {match.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_q_filters_by_print_name(self, async_client: AsyncClient, file_factory, db_session):
+        """`q` ALSO matches the parsed print_name inside ``file_metadata`` —
+        the same two fields the client's search bar checks (FileManagerPage.tsx)."""
+        match = await file_factory(filename="raw123.3mf", file_metadata={"print_name": "Dragon Egg"})
+        await file_factory(filename="raw456.3mf", file_metadata={"print_name": "Other Thing"})
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&q=dragon")
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {match.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_file_type_filter(self, async_client: AsyncClient, file_factory, db_session):
+        """`file_type` narrows to an exact match on `LibraryFile.file_type`."""
+        stl = await file_factory(filename="part.stl", file_type="stl")
+        await file_factory(filename="part.3mf", file_type="3mf")
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&file_type=stl")
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {stl.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_unprinted_only_filter(self, async_client: AsyncClient, file_factory, db_session):
+        """`unprinted_only` keeps files with zero successful completions —
+        `print_count == 0` — matching the client's `!f.print_count` predicate."""
+        unprinted = await file_factory(filename="fresh.3mf", print_count=0)
+        await file_factory(filename="used.3mf", print_count=3)
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&unprinted_only=true")
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {unprinted.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_unprinted_only_agrees_with_print_count_field(
+        self, async_client: AsyncClient, file_factory, db_session
+    ):
+        """The filter's semantics must agree EXACTLY with the print_count value
+        the same endpoint reports on each row — otherwise the file-manager
+        badge and this filter would disagree about what "unprinted" means."""
+        zero = await file_factory(filename="a.3mf", print_count=0)
+        printed = await file_factory(filename="b.3mf", print_count=2)
+
+        unfiltered = await async_client.get("/api/v1/library/files?include_root=false")
+        rows_by_id = {row["id"]: row for row in unfiltered.json()}
+        expected_unprinted_ids = {fid for fid, row in rows_by_id.items() if not row["print_count"]}
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&unprinted_only=true")
+        filtered_ids = {f["id"] for f in response.json()}
+
+        assert filtered_ids == expected_unprinted_ids
+        assert zero.id in filtered_ids
+        assert printed.id not in filtered_ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_username_filter(self, async_client: AsyncClient, file_factory, db_session):
+        """`username` matches a substring of the uploader's username — via
+        `LibraryFile.created_by_id`, the column `created_by_username` is
+        actually sourced from."""
+        from backend.app.models.user import User
+
+        alice = User(username="alice_smith")
+        bob = User(username="bob_jones")
+        db_session.add_all([alice, bob])
+        await db_session.commit()
+        await db_session.refresh(alice)
+        await db_session.refresh(bob)
+
+        alice_file = await file_factory(filename="a.3mf", created_by_id=alice.id)
+        await file_factory(filename="b.3mf", created_by_id=bob.id)
+        await file_factory(filename="ownerless.3mf")  # created_by_id NULL — never matches
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&username=alice")
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {alice_file.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_combined_filters_use_and_semantics(
+        self, async_client: AsyncClient, file_factory, db_session
+    ):
+        """Filters combine with AND — a file must satisfy every one of them,
+        not merely one."""
+        from backend.app.models.user import User
+
+        alice = User(username="alice_combo")
+        db_session.add(alice)
+        await db_session.commit()
+        await db_session.refresh(alice)
+
+        match = await file_factory(filename="combo_match.stl", file_type="stl", print_count=0, created_by_id=alice.id)
+        await file_factory(  # wrong file_type
+            filename="combo_wrong_type.3mf", file_type="3mf", print_count=0, created_by_id=alice.id
+        )
+        await file_factory(  # already printed
+            filename="combo_printed.stl", file_type="stl", print_count=1, created_by_id=alice.id
+        )
+        await file_factory(filename="combo_other_user.stl", file_type="stl", print_count=0)  # wrong uploader
+
+        response = await async_client.get(
+            "/api/v1/library/files?include_root=false&file_type=stl&unprinted_only=true&username=alice_combo"
+        )
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {match.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_sort_by_name_uses_print_name_when_present(
+        self, async_client: AsyncClient, file_factory, db_session
+    ):
+        """`name` orders by COALESCE(print_name, filename) — client parity:
+        `a.print_name || a.filename` (FileManagerPage.tsx)."""
+        # Filename alone would sort this LAST ("zzz…"), but its print_name
+        # sorts FIRST ("aaa…") — proving the column actually used is the
+        # coalesced one, not the bare filename.
+        with_print_name = await file_factory(filename="zzz_raw.3mf", file_metadata={"print_name": "aaa_object"})
+        plain = await file_factory(filename="mmm_plain.3mf")
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&sort_by=name_asc&page=1")
+        assert response.status_code == 200
+        body = response.json()
+        assert [f["id"] for f in body["items"]] == [with_print_name.id, plain.id]
+
+        response_desc = await async_client.get("/api/v1/library/files?include_root=false&sort_by=name_desc&page=1")
+        body_desc = response_desc.json()
+        assert [f["id"] for f in body_desc["items"]] == [plain.id, with_print_name.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_sort_by_size(self, async_client: AsyncClient, file_factory, db_session):
+        small = await file_factory(filename="s.3mf", file_size=100)
+        big = await file_factory(filename="b.3mf", file_size=999999)
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&sort_by=size_asc&page=1")
+        assert response.status_code == 200
+        assert [f["id"] for f in response.json()["items"]] == [small.id, big.id]
+
+        response_desc = await async_client.get("/api/v1/library/files?include_root=false&sort_by=size_desc&page=1")
+        assert [f["id"] for f in response_desc.json()["items"]] == [big.id, small.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_sort_by_type(self, async_client: AsyncClient, file_factory, db_session):
+        three_mf = await file_factory(filename="a.3mf", file_type="3mf")
+        gcode = await file_factory(filename="g.gcode", file_type="gcode")
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&sort_by=type_asc&page=1")
+        assert response.status_code == 200
+        assert [f["id"] for f in response.json()["items"]] == [three_mf.id, gcode.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_sort_by_date_uses_activity_not_created_at(
+        self, async_client: AsyncClient, file_factory, db_session
+    ):
+        """`date` orders by `COALESCE(fs_modified_at, updated_at)` (#2680,
+        `_FILE_ACTIVITY`) — NEVER bare `created_at`. Seeded so the two
+        disagree: the file created FIRST has the MOST RECENT activity."""
+        from datetime import datetime, timedelta
+
+        now = datetime.utcnow()
+        created_first_touched_last = await file_factory(
+            filename="recent_activity.3mf",
+            created_at=now - timedelta(days=5),
+            fs_modified_at=now,
+        )
+        created_last_touched_first = await file_factory(
+            filename="old_activity.3mf",
+            created_at=now,
+            fs_modified_at=now - timedelta(days=5),
+        )
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&sort_by=date_asc&page=1")
+        assert response.status_code == 200
+        # Ascending by activity: the row touched 5 days ago sorts first, even
+        # though it was CREATED after the other one.
+        assert [f["id"] for f in response.json()["items"]] == [
+            created_last_touched_first.id,
+            created_first_touched_last.id,
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_pagination_tiebreak_no_repeats_no_skips(
+        self, async_client: AsyncClient, file_factory, db_session
+    ):
+        """A low-cardinality sort (every file shares one file_type) still must
+        not repeat or skip a row across pages — the `LibraryFile.id.desc()`
+        tiebreak (same rule as `ArchiveService.list_archives`: "this list PAGES")."""
+        files = [await file_factory(filename=f"tie_{i}.3mf", file_type="3mf") for i in range(5)]
+
+        seen: list[int] = []
+        for page in (1, 2, 3):
+            response = await async_client.get(
+                f"/api/v1/library/files?include_root=false&file_type=3mf&sort_by=type_asc&page={page}&per_page=2"
+            )
+            assert response.status_code == 200
+            seen.extend(f["id"] for f in response.json()["items"])
+
+        assert len(seen) == len(set(seen)) == 5
+        assert set(seen) == {f.id for f in files}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_meta_total_is_filtered_count(self, async_client: AsyncClient, file_factory, db_session):
+        """`meta.total` reflects the FILTERED result set, not the whole table."""
+        for i in range(3):
+            await file_factory(filename=f"stl_{i}.stl", file_type="stl")
+        for i in range(4):
+            await file_factory(filename=f"mf_{i}.3mf", file_type="3mf")
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&file_type=stl&page=1&per_page=2")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["meta"]["total"] == 3
+        assert len(body["items"]) == 2
+        assert body["meta"]["current_page"] == 1
+        assert body["meta"]["per_page"] == 2
+        assert body["meta"]["last_page"] == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_all_true_skips_pagination(self, async_client: AsyncClient, file_factory, db_session):
+        """`page` present + `all=true` wins — every matching row comes back in
+        one page, same escape hatch as `ArchiveService.list_archives`."""
+        files = [await file_factory(filename=f"all_{i}.3mf") for i in range(5)]
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&page=1&per_page=2&all=true")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["items"]) == 5
+        assert {f["id"] for f in body["items"]} == {f.id for f in files}
+        assert body["meta"]["total"] == 5
+        assert body["meta"]["current_page"] == 1
+        assert body["meta"]["last_page"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_legacy_shape_unchanged(
+        self, async_client: AsyncClient, folder_factory, file_factory, db_session
+    ):
+        """Compat pin (task 1): a call with only `folder_id` — the shape every
+        existing caller has always used — must still return a flat JSON array
+        with the same field set, never the new paginated envelope."""
+        folder = await folder_factory()
+        lib_file = await file_factory(folder_id=folder.id, filename="legacy.3mf")
+
+        response = await async_client.get(f"/api/v1/library/files?folder_id={folder.id}")
+        assert response.status_code == 200
+        body = response.json()
+        assert isinstance(body, list)
+        assert len(body) == 1
+        row = body[0]
+        expected_fields = {
+            "id",
+            "folder_id",
+            "project_ids",
+            "is_external",
+            "filename",
+            "file_type",
+            "file_tags",
+            "file_size",
+            "thumbnail_path",
+            "duplicate_count",
+            "created_by_id",
+            "created_by_username",
+            "created_at",
+            "fs_modified_at",
+            "print_name",
+            "print_time_seconds",
+            "filament_used_grams",
+            "object_count",
+            "skip_objects_supported",
+            "sliced_for_model",
+            "swap_compatible",
+            "is_multi_plate",
+            "source_type",
+            "source_url",
+            "notes_count",
+            "print_count",
+            "tags",
+        }
+        assert set(row.keys()) == expected_fields
+        assert row["id"] == lib_file.id
+        assert row["filename"] == "legacy.3mf"
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_list_files_internal_and_external_mutually_exclusive(self, async_client: AsyncClient, db_session):

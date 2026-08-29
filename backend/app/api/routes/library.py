@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse, JSONResponse
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -34,6 +34,7 @@ from backend.app.models.library_project_links import library_file_projects, libr
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.project import Project
 from backend.app.models.user import User
+from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.library import (
     BatchThumbnailRequest,
     BatchThumbnailResponse,
@@ -53,6 +54,7 @@ from backend.app.schemas.library import (
     FolderResponse,
     FolderTreeItem,
     FolderUpdate,
+    LibraryFileListPage,
     ProjectRef,
     TagSummary,
     ZipExtractError,
@@ -142,6 +144,21 @@ def _project_refs(projects: list[Project]) -> list[ProjectRef]:
 # this rule is ``library_helpers.folder_activity_at``; both must COALESCE the
 # same way or the folder tree and the file list disagree about the same file.
 _FILE_ACTIVITY = func.coalesce(LibraryFile.fs_modified_at, LibraryFile.updated_at)
+
+# ``?sort_by=<key>_{asc,desc}`` column map for ``GET /library/files`` (task 1,
+# 2026-08-29 server-driven lists). ``name`` mirrors the frontend's
+# ``a.print_name || a.filename`` compare (FileManagerPage.tsx) — print_name
+# lives only inside the ``file_metadata`` JSON blob, never a column, so it's
+# extracted the same way ``LibraryFile.is_printable`` extracts
+# ``has_sliced_gcode``. ``date`` reuses ``_FILE_ACTIVITY`` above rather than
+# bare ``created_at`` — same #2680 rule this file already enforces for
+# folder/file activity sorting.
+_LIBRARY_FILE_SORT_COLUMNS = {
+    "name": func.coalesce(LibraryFile.file_metadata["print_name"].as_string(), LibraryFile.filename),
+    "date": _FILE_ACTIVITY,
+    "size": LibraryFile.file_size,
+    "type": LibraryFile.file_type,
+}
 
 
 def _mtime_to_utc(st_mtime: float) -> datetime:
@@ -1914,8 +1931,8 @@ async def get_scan_job(
     }
 
 
-@router.get("/files", response_model=list[FileListResponse])
-@router.get("/files/", response_model=list[FileListResponse])
+@router.get("/files", response_model=None)
+@router.get("/files/", response_model=None)
 async def list_files(
     response: Response,
     folder_id: int | None = None,
@@ -1928,6 +1945,29 @@ async def list_files(
     # carry EVERY selected tag. Non-empty tag_ids bypasses the
     # folder / project / include_root scope (tags are orthogonal).
     tag_ids: list[int] = Query(default_factory=list),
+    q: str | None = Query(None, description="Substring match over filename OR the parsed print name"),
+    file_type: str | None = Query(None, description="Exact match on file_type (3mf/gcode/stl/...)"),
+    unprinted_only: bool = Query(
+        False,
+        description=(
+            "Only files with zero successful print completions. A file attempted "
+            "and failed still counts as unprinted — same agreed meaning as the "
+            "print_count field on the response rows."
+        ),
+    ),
+    username: str | None = Query(None, description="Substring match on the uploader's username"),
+    sort_by: str = Query(
+        "name_asc",
+        description=(
+            "name/date/size/type, each with an _asc or _desc suffix. 'date' sorts "
+            "by the same fs_modified_at-or-updated_at activity timestamp the list "
+            "renders (#2680), never bare created_at. Unknown values fall back to "
+            "name_asc rather than erroring."
+        ),
+    ),
+    page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
+    per_page: int = Query(50, ge=1, le=200),
+    all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -1935,7 +1975,7 @@ async def list_files(
             Permission.LIBRARY_READ_OWN,
         )
     ),
-):
+) -> list[FileListResponse] | LibraryFileListPage:
     """List files, optionally filtered by folder or project.
 
     Args:
@@ -1954,6 +1994,15 @@ async def list_files(
                    that walks ``library_folders.parent_id``. Default off so
                    existing callers (folder browsing, etc.) keep their narrow
                    single-folder semantics.
+
+    Server-driven list (task 1, 2026-08-29 — mirrors ``ArchiveService.list_archives``):
+    every clause below is appended to ``filters``, a plain list of SQLAlchemy
+    conditions ANDed together, so the SAME list drives both the page SELECT and
+    the ``meta.total`` COUNT. ``page`` is the compat switch — omit it and every
+    filter above still narrows the same way, but the response stays today's flat
+    ``list[FileListResponse]`` (any caller that predates this change never sends
+    ``page``); pass it and the response becomes
+    ``{"items": [...], "meta": {total, current_page, per_page, last_page}}``.
     """
     if internal_only and external_only:
         raise HTTPException(
@@ -1962,31 +2011,31 @@ async def list_files(
         )
     # Trash bin (#1008): exclude soft-deleted rows from the main listing.
     # Users manage trashed files via /library/trash endpoints instead.
-    # m044: also eagerly load the M2M projects collection so each
-    # FileListResponse can carry project_ids without an N+1.
     user, can_read_all = auth_result
-    query = LibraryFile.active().options(
-        selectinload(LibraryFile.created_by),
-        selectinload(LibraryFile.projects),
-        selectinload(LibraryFile.tags),
-    )
+    filters: list = [LibraryFile.deleted_at.is_(None)]
+
     if user is not None and not can_read_all:
-        query = query.where(LibraryFile.created_by_id == user.id)
+        filters.append(LibraryFile.created_by_id == user.id)
 
     if tag_ids:
-        # #1268 — cross-cutting AND filter. JOIN the association table and
-        # require the file to match every requested tag via
-        # COUNT(DISTINCT tag_id). This branch intentionally IGNORES
-        # folder_id / project_id / include_root (tags are orthogonal to
-        # hierarchy). The ownership .where(created_by_id) above still
-        # applies so a *_OWN caller only ever sees their own files.
+        # #1268 — cross-cutting AND filter: the file must carry EVERY requested
+        # tag. Expressed as an id-membership subquery (COUNT(DISTINCT tag_id)
+        # per file, matched against the requested count) instead of a JOIN +
+        # GROUP BY on the outer query — same result set, but it composes into
+        # ``filters`` (and therefore into ``count_query`` below) instead of
+        # forcing its own group-by/having onto every row this endpoint
+        # returns. This branch intentionally IGNORES folder_id / project_id /
+        # include_root (tags are orthogonal to hierarchy); the ownership
+        # filter above still applies so a *_OWN caller only ever sees their
+        # own files.
         unique_tag_ids = list(dict.fromkeys(tag_ids))
-        query = (
-            query.join(LibraryFileTag, LibraryFileTag.file_id == LibraryFile.id)
+        tag_matches = (
+            select(LibraryFileTag.file_id)
             .where(LibraryFileTag.tag_id.in_(unique_tag_ids))
-            .group_by(LibraryFile.id)
+            .group_by(LibraryFileTag.file_id)
             .having(func.count(distinct(LibraryFileTag.tag_id)) == len(unique_tag_ids))
         )
+        filters.append(LibraryFile.id.in_(tag_matches))
     elif folder_id is not None and recursive:
         # Walk the subtree starting at folder_id and collect every descendant
         # id. Recursive CTE works on both SQLite (>=3.8.3, shipped 2014) and
@@ -1995,9 +2044,9 @@ async def list_files(
             select(LibraryFolder.id).where(LibraryFolder.id == folder_id).cte(name="folder_descendants", recursive=True)
         )
         descendants = roots.union_all(select(LibraryFolder.id).join(roots, LibraryFolder.parent_id == roots.c.id))
-        query = query.where(LibraryFile.folder_id.in_(select(descendants.c.id)))
+        filters.append(LibraryFile.folder_id.in_(select(descendants.c.id)))
     elif folder_id is not None:
-        query = query.where(LibraryFile.folder_id == folder_id)
+        filters.append(LibraryFile.folder_id == folder_id)
     elif project_id is not None:
         # m044: a file participates in a project either via the direct
         # file→project pivot OR via the folder→project pivot of its
@@ -2010,21 +2059,95 @@ async def list_files(
             .join(library_folder_projects, library_folder_projects.c.folder_id == LibraryFolder.id)
             .where(library_folder_projects.c.project_id == project_id)
         )
-        query = query.where(LibraryFile.id.in_(direct_files.union(inherited_files)))
+        filters.append(LibraryFile.id.in_(direct_files.union(inherited_files)))
     elif include_root:
-        query = query.where(LibraryFile.folder_id.is_(None))
+        filters.append(LibraryFile.folder_id.is_(None))
 
     if internal_only:
-        query = query.where(LibraryFile.is_external.is_(False))
+        filters.append(LibraryFile.is_external.is_(False))
     elif external_only:
-        query = query.where(LibraryFile.is_external.is_(True))
+        filters.append(LibraryFile.is_external.is_(True))
 
-    query = query.order_by(LibraryFile.filename)
+    # q — substring match over filename OR the parsed print name (client
+    # parity: FileManagerPage's search bar matches the same two fields).
+    # print_name lives only inside the ``file_metadata`` JSON blob, never a
+    # column, so it's extracted the same way ``LibraryFile.is_printable``
+    # extracts ``has_sliced_gcode`` — portable across SQLite and PostgreSQL.
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        filters.append(
+            or_(
+                LibraryFile.filename.ilike(term),
+                LibraryFile.file_metadata["print_name"].as_string().ilike(term),
+            )
+        )
+
+    if file_type:
+        filters.append(LibraryFile.file_type == file_type)
+
+    # unprinted_only — successful completions only. print_count increments
+    # ONLY on a successful queue completion (see the column docstring in
+    # models/library.py); a file attempted and failed is still 0, i.e.
+    # unprinted. Must agree exactly with the print_count value FileListResponse
+    # ships below — the frontend badge and this filter read the same number.
+    if unprinted_only:
+        filters.append(LibraryFile.print_count == 0)
+
+    # username — substring match against the uploader's username.
+    # created_by_id can be NULL (deleted user, or a pre-#206 row); those never
+    # match a non-empty filter, same as the client's
+    # ``f.created_by_username && …includes(query)`` guard.
+    if username and username.strip():
+        uterm = f"%{username.strip()}%"
+        filters.append(LibraryFile.created_by_id.in_(select(User.id).where(User.username.ilike(uterm))))
+
+    # Sorting — mirrors the frontend's four sort fields (FileManagerPage.tsx),
+    # each with an _asc/_desc suffix.
+    sort_key, _, sort_dir = sort_by.rpartition("_")
+    sort_column = _LIBRARY_FILE_SORT_COLUMNS.get(sort_key)
+    if sort_column is None or sort_dir not in ("asc", "desc"):
+        sort_column, sort_dir = _LIBRARY_FILE_SORT_COLUMNS["name"], "asc"
+    # ⚠️ Stable tiebreak — this list PAGES (same rule as
+    # ArchiveService.list_archives): rows sharing a sort key have no defined
+    # order between two queries, so paging a low-cardinality sort (e.g.
+    # type_asc across a library that's mostly one file type) could repeat or
+    # skip a row on page 2. ``id`` is unique and never NULL.
+    order_clauses = [sort_column.asc() if sort_dir == "asc" else sort_column.desc(), LibraryFile.id.desc()]
+
+    paginate = page is not None
+    if paginate and all:
+        offset, limit = 0, None
+    elif paginate:
+        offset, limit = (page - 1) * per_page, per_page
+    else:
+        offset, limit = 0, None
+
+    total = None
+    if paginate:
+        # Total count over the SAME filters list — never the whole table.
+        count_query = select(func.count()).select_from(LibraryFile).where(*filters)
+        total = (await db.execute(count_query)).scalar() or 0
+
+    # m044: also eagerly load the M2M projects collection so each
+    # FileListResponse can carry project_ids without an N+1.
+    query = (
+        select(LibraryFile)
+        .options(
+            selectinload(LibraryFile.created_by),
+            selectinload(LibraryFile.projects),
+            selectinload(LibraryFile.tags),
+        )
+        .where(*filters)
+        .order_by(*order_clauses)
+        .offset(offset)
+    )
+    if limit is not None:
+        query = query.limit(limit)
     result = await db.execute(query)
-    # The tag-filter branch JOINs the association table, which can yield
-    # duplicate LibraryFile rows before GROUP BY collapses them at the SQL
-    # level; ``.unique()`` guards the ORM identity map either way.
-    files = result.scalars().unique().all() if tag_ids else result.scalars().all()
+    # No branch here joins the outer query any more (tag_ids matches via an
+    # id subquery above), so plain LibraryFile rows never duplicate — no
+    # ``.unique()`` needed on the ORM identity map.
+    files = result.scalars().all()
 
     # Get duplicate counts
     hash_counts = {}
@@ -2142,6 +2265,20 @@ async def list_files(
                 # queries, the column serves rendering.
                 tags=[TagSummary(id=t.id, name=t.name) for t in f.tags if not t.is_system],
             )
+        )
+
+    if paginate:
+        import math
+
+        last_page = 1 if all else max(1, math.ceil(total / per_page))
+        return LibraryFileListPage(
+            items=file_list,
+            meta=PaginationMeta(
+                total=total,
+                current_page=1 if all else page,
+                per_page=(total or 1) if all else per_page,
+                last_page=last_page,
+            ),
         )
 
     return file_list

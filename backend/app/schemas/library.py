@@ -4,6 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.timelapse import TimelapseStorage
 
@@ -333,6 +334,22 @@ class FileListResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class LibraryFileListPage(BaseModel):
+    """Paginated envelope for ``GET /library/files`` (task 1, 2026-08-29
+    server-driven lists) — returned only when the request carries ``page``.
+
+    Mirrors ``PaginatedArchiveResponse``'s ``meta`` (same ``PaginationMeta``
+    field names: total / current_page / per_page / last_page) so both list
+    endpoints read the same way on the frontend; the item container is named
+    ``items`` here rather than archives' ``data`` per this endpoint's own
+    contract. Omitting ``page`` entirely still returns the legacy flat
+    ``list[FileListResponse]`` — this model never appears in that path.
+    """
+
+    items: list[FileListResponse]
+    meta: PaginationMeta
 
 
 class FileMoveRequest(BaseModel):
