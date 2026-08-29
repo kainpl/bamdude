@@ -136,9 +136,14 @@ function setupHandlers() {
   );
 }
 
-/** The list request driving the visible page (the all=true one is the
- *  separate stats/forecast feed). */
+/** The list request driving the visible page (the all=true ones are the
+ *  separate stats feed and — on the Forecast tab only — the panel's own
+ *  feed, task 5). */
 const pageRequests = () => listRequests.filter((u) => u.searchParams.get('all') !== 'true');
+/** The full-set slim fetches: the page-level stats feed plus, once the
+ *  Forecast tab opens, ForecastPanel's own feed. Same URL shape by design —
+ *  the tests below pin them apart by COUNT. */
+const fullSetRequests = () => listRequests.filter((u) => u.searchParams.get('all') === 'true');
 
 describe('InventoryPage — server-driven params (task 4)', () => {
   beforeEach(() => {
@@ -271,6 +276,51 @@ describe('InventoryPage — server-driven params (task 4)', () => {
     await waitFor(() =>
       expect(pageRequests().some((u) => u.searchParams.get('include_k_profiles') === 'true')).toBe(true)
     );
+  });
+});
+
+describe('InventoryPage — the Forecast tab feeds itself (task 5)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    setupHandlers();
+    // The panel's other feeds — separate endpoints, unchanged by task 5
+    // (spec §3.5); answered empty so opening the tab settles cleanly.
+    server.use(
+      http.get('/api/v1/inventory/usage', () => HttpResponse.json([])),
+      http.get('/api/v1/inventory/sku-settings', () => HttpResponse.json([])),
+      http.get('/api/v1/inventory/shopping-list', () => HttpResponse.json([])),
+    );
+  });
+
+  it('a plain inventory visit fires exactly ONE all=true fetch (the stats feed) — the forecast feed stays quiet', async () => {
+    render(<InventoryPageRouter />);
+    // Settle: rows on screen and the stats feed answered. A leaked forecast
+    // query would be a SECOND identical all=true request — mount-time
+    // queries fire in the same tick as the page's own, so by the time the
+    // list has settled it would already be in the count.
+    await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
+    await waitFor(() => expect(fullSetRequests().length).toBe(1));
+    expect(fullSetRequests().length).toBe(1);
+  });
+
+  it('opening the Forecast tab fires the panel\'s own full-set feed and renders the SKU table off it', async () => {
+    render(<InventoryPageRouter />);
+    await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
+    const before = fullSetRequests().length;
+
+    const forecastTab = screen.getByRole('button', { name: /^Forecast$/ });
+    await waitFor(() => expect(forecastTab).toBeEnabled());
+    fireEvent.click(forecastTab);
+
+    await waitFor(() => expect(fullSetRequests().length).toBe(before + 1));
+    // Same span as the old getSpools(true) prop: both tabs, slim rows.
+    const feed = fullSetRequests()[fullSetRequests().length - 1];
+    expect(feed.searchParams.has('archived')).toBe(false);
+    expect(feed.searchParams.has('include_k_profiles')).toBe(false);
+
+    // And the panel renders its SKU rows off that feed, not off a prop.
+    await waitFor(() => expect(screen.getByText('eSun PLA Blue')).toBeInTheDocument());
+    expect(screen.getByText('SUNLU PETG Blue')).toBeInTheDocument();
   });
 });
 

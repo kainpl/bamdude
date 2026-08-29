@@ -1011,14 +1011,14 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     if (selectedIds.size > 0) setSelectedIds(new Set());
   }
 
-  // The full-set feed the stats cards, "Reset all usage", the bulk-edit
-  // modal's suggestion pool AND the Forecast tab still need — one SLIM
-  // `all=true` fetch (SpoolListItem — no k_profiles fat), spanning both tabs
-  // (stats count archived consumption; the old prop was getSpools(true) —
-  // same span). Deliberately NO refetchInterval: the 30s poll is page-scoped
-  // now; this refreshes on window focus and on every spool mutation via the
-  // ['inventory-spools'] prefix invalidation. Task 5 note: ForecastPanel's
-  // prop is fed from here until it grows its own tab-gated query.
+  // The full-set feed the stats cards, "Reset all usage" and the bulk-edit
+  // modal's suggestion pool still need — one SLIM `all=true` fetch
+  // (SpoolListItem — no k_profiles fat), spanning both tabs (stats count
+  // archived consumption). Deliberately NO refetchInterval: the 30s poll is
+  // page-scoped now; this refreshes on window focus and on every spool
+  // mutation via the ['inventory-spools'] prefix invalidation. The Forecast
+  // tab no longer feeds from here — ForecastPanel owns its own tab-gated
+  // copy of this feed since task 5.
   const { data: allSpoolsSlim } = useQuery({
     queryKey: ['inventory-spools', 'all-slim'],
     queryFn: async () => (await api.getSpoolsPaged({ page: 1, all: true })).items,
@@ -2534,11 +2534,11 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       {listLoading ? (
         <LoadingBlock label={t('common.loading')} />
       ) : viewMode === 'forecast' ? (
-        /* Forecast view (upstream #1184). Fed from the page's slim all=true
-           query since task 4 — the panel's exp-decay math needs the FULL set
-           (a single page would silently produce wrong rates); task 5 moves
-           this feed into the panel itself, gated on the tab being open. */
-        <ForecastPanel spools={statsSourceSpools || []} />
+        /* Forecast view (upstream #1184). The panel owns its full-set feed
+           since task 5 — mounted, and therefore fetching, only while this
+           tab is open; its exp-decay math needs the FULL set, which the
+           server-paged list no longer holds. */
+        <ForecastPanel />
       ) : viewMode === 'cards' ? (
         /* Cards view */
         pagedItems.length > 0 ? (
