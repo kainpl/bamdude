@@ -524,34 +524,28 @@ async def create_project_from_template(
         target_count=template.target_count,
         target_parts_count=template.target_parts_count,
         notes=template.notes,
+        attachments=copy_module.deepcopy(template.attachments),
         tags=template.tags,
         priority=template.priority,
         budget=template.budget,
         is_template=False,
         template_source_id=template.id,
+        cover_image_filename=template.cover_image_filename,
     )
     db.add(project)
     await db.flush()
 
-    # Copy BOM items
-    bom_result = await db.execute(select(ProjectBOMItem).where(ProjectBOMItem.project_id == template_id))
-    bom_items = bom_result.scalars().all()
+    if (template.attachments or template.cover_image_filename) and not await _copy_attachment_files(
+        template.id, project.id
+    ):
+        # Better an honest empty gallery than rows pointing at files that are
+        # not there. The names would render as broken images with no clue why.
+        project.attachments = None
+        project.cover_image_filename = None
 
-    for item in bom_items:
-        new_item = ProjectBOMItem(
-            project_id=project.id,
-            name=item.name,
-            quantity_needed=item.quantity_needed,
-            quantity_acquired=0,
-            unit_price=item.unit_price,
-            sourcing_url=item.sourcing_url,
-            stl_filename=item.stl_filename,
-            remarks=item.remarks,
-            sort_order=item.sort_order,
-        )
-        db.add(new_item)
+    await _copy_project_setup(db, template.id, project.id)
 
-    await db.flush()
+    await db.commit()
     await db.refresh(project)
 
     stats = await compute_project_stats(db, project.id, project.target_count, project.target_parts_count)
@@ -1518,34 +1512,26 @@ async def create_template_from_project(
         target_count=source.target_count,
         target_parts_count=source.target_parts_count,
         notes=source.notes,
+        attachments=copy_module.deepcopy(source.attachments),
         tags=source.tags,
         priority=source.priority,
         budget=source.budget,
         is_template=True,
         template_source_id=source.id,
+        cover_image_filename=source.cover_image_filename,
     )
     db.add(template)
     await db.flush()
 
-    # Copy BOM items
-    bom_result = await db.execute(select(ProjectBOMItem).where(ProjectBOMItem.project_id == project_id))
-    bom_items = bom_result.scalars().all()
+    if (source.attachments or source.cover_image_filename) and not await _copy_attachment_files(source.id, template.id):
+        # Better an honest empty gallery than rows pointing at files that are
+        # not there. The names would render as broken images with no clue why.
+        template.attachments = None
+        template.cover_image_filename = None
 
-    for item in bom_items:
-        new_item = ProjectBOMItem(
-            project_id=template.id,
-            name=item.name,
-            quantity_needed=item.quantity_needed,
-            quantity_acquired=0,
-            unit_price=item.unit_price,
-            sourcing_url=item.sourcing_url,
-            stl_filename=item.stl_filename,
-            remarks=item.remarks,
-            sort_order=item.sort_order,
-        )
-        db.add(new_item)
+    await _copy_project_setup(db, source.id, template.id)
 
-    await db.flush()
+    await db.commit()
     await db.refresh(template)
 
     stats = await compute_project_stats(db, template.id, template.target_count, template.target_parts_count)
@@ -1569,6 +1555,7 @@ async def create_template_from_project(
         parent_id=template.parent_id,
         parent_name=None,
         children=[],
+        cover_image_filename=template.cover_image_filename,
         created_at=template.created_at,
         updated_at=template.updated_at,
         stats=stats,
@@ -1579,10 +1566,10 @@ async def create_template_from_project(
 #
 # The split users care about: **setup is copied, history is not.** Copied —
 # every descriptive column, the BOM, the attached library files and folders,
-# the print plan (per-file copies + order) and the uploaded attachments on
-# disk. Not copied — archives and queue items, i.e. everything that records
-# what this project has actually done, plus BOM ``quantity_acquired``, which
-# is procurement progress rather than a part list.
+# the print plan (per-file copies + order), the parts-ledger targets and the
+# uploaded attachments on disk. Not copied — archives and queue items, i.e.
+# everything that records what this project has actually done, plus BOM
+# ``quantity_acquired``, which is procurement progress rather than a part list.
 #
 # ⚠️ It is a COPY, never a move: the source keeps every link it had. The
 # library pivots are many-to-many precisely so a file can sit in both.
@@ -1621,6 +1608,80 @@ async def _copy_attachment_files(source_id: int, new_id: int) -> bool:
     except OSError as e:
         logger.warning("Project %s: attachments could not be copied from %s: %s", new_id, source_id, e)
         return False
+
+
+async def _copy_project_setup(db: AsyncSession, source_id: int, target_id: int) -> None:
+    """Copy a project's setup — BOM (procurement reset), print plan, library
+    file/folder links, parts-ledger targets — onto another project.
+
+    The one routine templates and duplication share; history (archives,
+    queue rows) never copies. Pivots are written as raw inserts so the
+    source's M2M collections are never loaded (see _duplicate_project_tree's
+    original comment).
+    """
+    bom_items = (await db.execute(select(ProjectBOMItem).where(ProjectBOMItem.project_id == source_id))).scalars().all()
+    for item in bom_items:
+        db.add(
+            ProjectBOMItem(
+                project_id=target_id,
+                name=item.name,
+                quantity_needed=item.quantity_needed,
+                quantity_acquired=0,  # progress, not part list
+                unit_price=item.unit_price,
+                sourcing_url=item.sourcing_url,
+                stl_filename=item.stl_filename,
+                remarks=item.remarks,
+                sort_order=item.sort_order,
+            )
+        )
+
+    plan_items = (
+        (await db.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.project_id == source_id)))
+        .scalars()
+        .all()
+    )
+    for item in plan_items:
+        db.add(
+            ProjectPrintPlanItem(
+                project_id=target_id,
+                library_file_id=item.library_file_id,
+                copies=item.copies,
+                order_index=item.order_index,
+            )
+        )
+
+    file_ids = (
+        (
+            await db.execute(
+                select(library_file_projects.c.file_id).where(library_file_projects.c.project_id == source_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if file_ids:
+        await db.execute(
+            library_file_projects.insert(),
+            [{"file_id": fid, "project_id": target_id} for fid in file_ids],
+        )
+    folder_ids = (
+        (
+            await db.execute(
+                select(library_folder_projects.c.folder_id).where(library_folder_projects.c.project_id == source_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if folder_ids:
+        await db.execute(
+            library_folder_projects.insert(),
+            [{"folder_id": fid, "project_id": target_id} for fid in folder_ids],
+        )
+
+    parts = (await db.execute(select(ProjectPart).where(ProjectPart.project_id == source_id))).scalars().all()
+    for part in parts:
+        db.add(ProjectPart(project_id=target_id, name=part.name, name_key=part.name_key, target_qty=part.target_qty))
 
 
 async def _duplicate_project_tree(
@@ -1667,68 +1728,7 @@ async def _duplicate_project_tree(
         copy.attachments = None
         copy.cover_image_filename = None
 
-    bom_items = (await db.execute(select(ProjectBOMItem).where(ProjectBOMItem.project_id == source.id))).scalars().all()
-    for item in bom_items:
-        db.add(
-            ProjectBOMItem(
-                project_id=copy.id,
-                name=item.name,
-                quantity_needed=item.quantity_needed,
-                quantity_acquired=0,  # progress, not part list
-                unit_price=item.unit_price,
-                sourcing_url=item.sourcing_url,
-                stl_filename=item.stl_filename,
-                remarks=item.remarks,
-                sort_order=item.sort_order,
-            )
-        )
-
-    plan_items = (
-        (await db.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.project_id == source.id)))
-        .scalars()
-        .all()
-    )
-    for item in plan_items:
-        db.add(
-            ProjectPrintPlanItem(
-                project_id=copy.id,
-                library_file_id=item.library_file_id,
-                copies=item.copies,
-                order_index=item.order_index,
-            )
-        )
-
-    # Library links. Written as pivot inserts rather than through the M2M
-    # relationship so the source's collection is never loaded and therefore
-    # never at risk of being reassigned instead of read.
-    file_ids = (
-        (
-            await db.execute(
-                select(library_file_projects.c.file_id).where(library_file_projects.c.project_id == source.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if file_ids:
-        await db.execute(
-            library_file_projects.insert(),
-            [{"file_id": fid, "project_id": copy.id} for fid in file_ids],
-        )
-    folder_ids = (
-        (
-            await db.execute(
-                select(library_folder_projects.c.folder_id).where(library_folder_projects.c.project_id == source.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if folder_ids:
-        await db.execute(
-            library_folder_projects.insert(),
-            [{"folder_id": fid, "project_id": copy.id} for fid in folder_ids],
-        )
+    await _copy_project_setup(db, source.id, copy.id)
 
     if include_children:
         children = (
