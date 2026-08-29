@@ -870,3 +870,31 @@ class TestFacetsEndpoint:
 
         body = (await async_client.get("/api/v1/inventory/spools/facets")).json()
         assert body["catalog_ids"] == [1, 3]
+
+
+class TestCategoryFacetFilterRoundTrip:
+    async def test_every_advertised_category_option_matches_at_least_one_spool(self, async_client, db_session):
+        """T2 review minor 1: the facet advertises TRIMMED category options
+        (' Production' and 'Production' are one dropdown entry), so the shared
+        category filter must trim too — a padded-category spool (the
+        CSV-import shape) used to contribute the option yet never match it,
+        making list/count/ids disagree with the facet that advertised it.
+        Round-trip contract: every option facets returns must, fed straight
+        back as the filter, match at least one spool."""
+        padded = await _spool(db_session, category=" Production")
+        plain = await _spool(db_session, category="Prototype")
+
+        facets = (await async_client.get("/api/v1/inventory/spools/facets")).json()
+        assert set(facets["categories"]) == {"Production", "Prototype"}
+
+        for option in facets["categories"]:
+            resp = await async_client.get("/api/v1/inventory/spools/ids", params={"category": option})
+            assert resp.status_code == 200
+            assert len(resp.json()["ids"]) >= 1, f"facet option {option!r} matched nothing"
+
+        # And specifically: the padded spool IS matched by the trimmed option
+        # it advertised, without bleeding into the other category.
+        prod = await async_client.get("/api/v1/inventory/spools/ids", params={"category": "Production"})
+        assert prod.json()["ids"] == [padded.id]
+        proto = await async_client.get("/api/v1/inventory/spools/ids", params={"category": "Prototype"})
+        assert proto.json()["ids"] == [plain.id]

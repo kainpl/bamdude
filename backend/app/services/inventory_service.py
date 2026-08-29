@@ -326,7 +326,15 @@ async def build_spool_filters(
     if category == "__none__":
         filters.append(or_(Spool.category.is_(None), Spool.category == ""))
     elif category:
-        filters.append(Spool.category == category)
+        # Trim BOTH sides: the facets endpoint advertises TRIMMED options
+        # (' Production' and 'Production' are one dropdown entry — mirroring
+        # the client's ``.map(c?.trim())``), so the filter must match what the
+        # facet advertised, or a padded-category spool (the CSV-import shape)
+        # contributes an option that matches nothing and list/count/ids
+        # disagree with facets. This deliberately DIVERGES from the deleted
+        # client's own wart (dropdown trimmed, filter exact-matched) — the API
+        # contract must be self-consistent (T2 review, minor 1).
+        filters.append(func.trim(Spool.category) == category.strip())
 
     if catalog_id is not None:
         filters.append(Spool.core_weight_catalog_id == catalog_id)
