@@ -77,7 +77,28 @@ describe('library print count', () => {
     navigateSpy.mockClear();
     server.use(
       http.get('/api/v1/library/folders', () => HttpResponse.json([])),
-      http.get('/api/v1/library/files', () => HttpResponse.json(mockFiles)),
+      // Server-driven (task 2, 2026-08-29): `unprinted_only` and `file_type`
+      // are now server params rather than a client-side filter, and the
+      // "combines with" / "cleared by clear-filters" tests below depend on
+      // both actually narrowing the mock's result — mirror the backend's
+      // `print_count == 0` / exact-type-match rules here so those assertions
+      // still exercise real filtering rather than a fake that always echoes
+      // everything back.
+      http.get('/api/v1/library/files', ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        let items = mockFiles;
+        if (params.get('unprinted_only') === 'true') {
+          items = items.filter((f) => !f.print_count);
+        }
+        const fileType = params.get('file_type');
+        if (fileType) {
+          items = items.filter((f) => f.file_type === fileType);
+        }
+        return HttpResponse.json({
+          items,
+          meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+        });
+      }),
       http.get('/api/v1/library/stats', () =>
         HttpResponse.json({
           total_files: 3,
@@ -141,11 +162,18 @@ describe('library print count', () => {
   it('combines with the type filter rather than replacing it', async () => {
     // "unprinted AND sliced" is the real question — what have I prepared and
     // never actually run.
+    //
+    // Type selected BEFORE the toggle: the dropdown's own options are now
+    // server-driven (task 2, 2026-08-29) — scoped to whatever the CURRENT
+    // filters already narrowed to — so "gcode" is only offered while
+    // unprintedOnly is still off (all three mock files, two of them gcode).
+    // The combined query the server sees is identical either way; only the
+    // order the two controls can be clicked in changed.
     render(<FileManagerPage />);
     await screen.findByText('Benchy');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Not printed' }));
     await userEvent.selectOptions(screen.getByDisplayValue('All types'), 'gcode');
+    await userEvent.click(screen.getByRole('button', { name: 'Not printed' }));
 
     // bracket.stl is unprinted but not gcode; Benchy and Cube are gcode but
     // printed. Nothing survives both — which proves they compose rather than
@@ -156,11 +184,15 @@ describe('library print count', () => {
   it('is cleared by the clear-filters button', async () => {
     // The button promises a reset; leaving one filter on leaves the library
     // looking empty with nothing on screen saying why.
+    //
+    // Type selected before the toggle — see the note in "combines with the
+    // type filter" above: the dropdown's options are server-driven now, and
+    // only offer "gcode" while unprintedOnly is still off.
     render(<FileManagerPage />);
     await screen.findByText('Benchy');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Not printed' }));
     await userEvent.selectOptions(screen.getByDisplayValue('All types'), 'gcode');
+    await userEvent.click(screen.getByRole('button', { name: 'Not printed' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Clear filters' }));
 
     expect(await screen.findByText('Benchy')).toBeInTheDocument();

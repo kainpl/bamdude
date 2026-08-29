@@ -72,6 +72,9 @@ export function LibraryPickerModal({
   // would mean the search could only ever see the folder already open.
   // Prefix-shares its key with every `['library-files']` invalidation, so an
   // upload made elsewhere refreshes this list too.
+  // Legacy flat call on purpose (task 2, 2026-08-29 server-driven-lists) —
+  // this is a small, scoped picker query, not the library-wide, paginated
+  // view; the paged surface (`getLibraryFilesPaged`) is FileManagerPage's.
   const { data: files, isLoading } = useQuery({
     queryKey: ['library-files', 'picker'],
     queryFn: () => api.getLibraryFiles(null, false),

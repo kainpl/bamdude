@@ -76,12 +76,26 @@ describe('clear filters', () => {
     tagIdsSeen = [];
     server.use(
       http.get('/api/v1/library/folders', () => HttpResponse.json([])),
+      // Server-driven (task 2, 2026-08-29): `username` is now a server param
+      // too (used to be a client-side filter over the whole loaded page), so
+      // the "clears the username filter" test below needs it to actually
+      // narrow the mock's result — mirror the backend's substring match.
       http.get('/api/v1/library/files', ({ request }) => {
-        const tagIds = new URL(request.url).searchParams.getAll('tag_ids');
+        const params = new URL(request.url).searchParams;
+        const tagIds = params.getAll('tag_ids');
         tagIdsSeen.push(tagIds);
         // The user-tag filter is server-side: matching nothing empties the
         // listing itself, not just the client-side view of it.
-        return HttpResponse.json(tagIds.length > 0 ? [] : mockFiles);
+        let items = tagIds.length > 0 ? [] : mockFiles;
+        const username = params.get('username');
+        if (username) {
+          const needle = username.toLowerCase();
+          items = items.filter((f) => f.created_by_username?.toLowerCase().includes(needle));
+        }
+        return HttpResponse.json({
+          items,
+          meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+        });
       }),
       http.get('/api/v1/library/stats', () =>
         HttpResponse.json({

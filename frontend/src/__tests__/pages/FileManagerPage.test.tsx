@@ -118,7 +118,12 @@ describe('FileManagerPage', () => {
         return HttpResponse.json(mockFolders);
       }),
       http.get('/api/v1/library/files', () => {
-        return HttpResponse.json(mockFiles);
+        // Server-driven (task 2, 2026-08-29): FileManagerPage always sends
+        // `page`, so the endpoint answers with the {items, meta} envelope.
+        return HttpResponse.json({
+          items: mockFiles,
+          meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+        });
       }),
       http.get('/api/v1/library/stats', () => {
         return HttpResponse.json(mockStats);
@@ -163,7 +168,10 @@ describe('FileManagerPage', () => {
       server.use(
         http.get('/api/v1/library/files', ({ request }) => {
           capturedIncludeRoot = new URL(request.url).searchParams.get('include_root');
-          return HttpResponse.json(mockFiles);
+          return HttpResponse.json({
+            items: mockFiles,
+            meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         }),
       );
 
@@ -187,9 +195,13 @@ describe('FileManagerPage', () => {
           capturedIncludeRoot = new URL(request.url).searchParams.get('include_root');
           // A library where the only file lives inside a subfolder — under
           // include_root=true this would render empty.
-          return HttpResponse.json([
+          const items = [
             { ...mockFiles[0], id: 99, filename: 'nested-only.3mf', folder_id: 2, print_name: null },
-          ]);
+          ];
+          return HttpResponse.json({
+            items,
+            meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         }),
       );
 
@@ -503,7 +515,7 @@ describe('FileManagerPage', () => {
     it('shows empty state when no files', async () => {
       server.use(
         http.get('/api/v1/library/files', () => {
-          return HttpResponse.json([]);
+          return HttpResponse.json({ items: [], meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 } });
         })
       );
 
@@ -806,7 +818,7 @@ describe('FileManagerPage', () => {
           });
         }),
         http.get('/api/v1/library/files', () => {
-          return HttpResponse.json([
+          const items = [
             {
               id: 1,
               filename: 'test.3mf',
@@ -821,7 +833,11 @@ describe('FileManagerPage', () => {
               created_at: '2024-01-01T00:00:00Z',
               created_by_username: 'testuser',
             },
-          ]);
+          ];
+          return HttpResponse.json({
+            items,
+            meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         })
       );
 
@@ -855,7 +871,7 @@ describe('FileManagerPage', () => {
           });
         }),
         http.get('/api/v1/library/files', () => {
-          return HttpResponse.json([
+          const items = [
             {
               id: 1,
               filename: 'test.3mf',
@@ -870,7 +886,11 @@ describe('FileManagerPage', () => {
               created_at: '2024-01-01T00:00:00Z',
               created_by_username: 'testuser',
             },
-          ]);
+          ];
+          return HttpResponse.json({
+            items,
+            meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         }),
         http.get('/api/v1/users/', () => {
           return HttpResponse.json([
@@ -956,7 +976,10 @@ describe('FileManagerPage', () => {
                 ? 'external'
                 : 'all',
           );
-          return HttpResponse.json(mockFiles);
+          return HttpResponse.json({
+            items: mockFiles,
+            meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         }),
       );
 
@@ -979,7 +1002,7 @@ describe('FileManagerPage', () => {
                 ? 'external'
                 : 'all',
           );
-          return HttpResponse.json([]);
+          return HttpResponse.json({ items: [], meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 } });
         }),
       );
 

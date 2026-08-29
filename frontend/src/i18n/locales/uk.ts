@@ -4591,6 +4591,12 @@ export default {
     ascending: 'За зростанням',
     descending: 'За спаданням',
     resultsCount: '{{showing}} з {{total}} файлів',
+    // Bare noun for PaginationBar's `items` prop (task 2, 2026-08-29
+    // server-driven-lists) — same role as archives.page.archiveCount.
+    fileCount_one: 'файл',
+    fileCount_few: 'файли',
+    fileCount_many: 'файлів',
+    fileCount_other: 'файлів',
     selectAll: 'Вибрати все',
     deselectAll: 'Зняти вибір',
     selected: '{{count}} вибрано',

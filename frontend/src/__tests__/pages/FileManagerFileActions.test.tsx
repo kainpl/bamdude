@@ -70,7 +70,14 @@ describe('per-file actions', () => {
       http.get('/api/v1/library/folders', () =>
         HttpResponse.json([{ id: 5, name: 'Parts', parent_id: null, file_count: 0, projects: [], children: [] }]),
       ),
-      http.get('/api/v1/library/files', () => HttpResponse.json(mockFiles)),
+      // Server-driven (task 2, 2026-08-29): FileManagerPage always sends
+      // `page`, so the endpoint answers with the {items, meta} envelope.
+      http.get('/api/v1/library/files', () =>
+        HttpResponse.json({
+          items: mockFiles,
+          meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+        }),
+      ),
       http.get('/api/v1/library/stats', () =>
         HttpResponse.json({
           total_files: 2,

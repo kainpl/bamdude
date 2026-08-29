@@ -52,6 +52,7 @@ import { api, ApiError } from '../api/client';
 import type {
   LibraryFolderTree,
   LibraryFileListItem,
+  LibraryFileListParams,
   LibraryFileUpdate,
   LibraryFolderCreate,
   LibraryFolderUpdate,
@@ -62,6 +63,7 @@ import type {
 } from '../api/client';
 import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
 import { Button } from '../components/Button';
+import { PaginationBar } from '../components/PaginationBar';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { LibraryPlateGalleryModal } from '../components/LibraryPlateGallery';
 import { PrintModal } from '../components/PrintModal';
@@ -77,7 +79,7 @@ import { MakerWorldIcon } from '../components/BrandIcons';
 import { useToast } from '../contexts/ToastContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useAuth } from '../contexts/AuthContext';
-import { formatDateTime, formatDuration, parseUTCDate, type TimeFormat, type DateFormat } from '../utils/date';
+import { formatDateTime, formatDuration, type TimeFormat, type DateFormat } from '../utils/date';
 import { fileActivityAt, formatFileSize } from '../utils/file';
 import { FileTagBadges } from '../components/FileTagBadges';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
@@ -1783,6 +1785,14 @@ export function FileManagerPage() {
 
   // Filter and sort state (persist sort preferences to localStorage)
   const [searchQuery, setSearchQuery] = useState('');
+  // Debounced the same way ArchivesPage debounces its search box (300ms) —
+  // the search value now goes to the server as `q` (task 1), so an
+  // undebounced value would fire one request per keystroke.
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(searchQuery);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearchQuery(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
   const [filterType, setFilterType] = useState<string>('all');
   // Deliberately NOT persisted, unlike the grid/list view mode: this is a
   // question, not a preference. Restored silently it would show a partial
@@ -1804,6 +1814,16 @@ export function FileManagerPage() {
     const saved = localStorage.getItem('library-sort-direction');
     return (saved as SortDirection) || 'asc';
   });
+  // Paging (task 2, 2026-08-29 server-driven-lists) — same PaginationBar the
+  // Archives list uses. `-1` means "all" (PaginationBar's own convention).
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(() => {
+    const saved = localStorage.getItem('library-per-page');
+    return saved ? Number(saved) : 50;
+  });
+  useEffect(() => {
+    localStorage.setItem('library-per-page', String(perPage));
+  }, [perPage]);
 
   // Mobile detection for touch-friendly UI
   const isMobile = useIsMobile();
@@ -1974,33 +1994,70 @@ export function FileManagerPage() {
   const allFilesRecursive = settings?.library_all_files_recursive ?? false;
   // #1268: when a folder is selected and the user has typed a search query,
   // ask the server to expand the result to every descendant folder so the
-  // client-side filter can match files in subfolders too. Without this the
-  // listing is just the immediate children and "robot.3mf" two levels deep
-  // is invisible from the parent. Only kicks in for folder-scoped views —
-  // root and the internal/external pseudo-nodes already return the union.
-  const searchExpandsSubfolders = selectedFolderId !== null && searchQuery.trim().length > 0;
-  const { data: files, isLoading: filesLoading } = useQuery({
-    queryKey: ['library-files', selectedFolderId, allFilesRecursive, topLevelView, tagFilterKey, searchExpandsSubfolders],
+  // search can match files in subfolders too. Without this the listing is
+  // just the immediate children and "robot.3mf" two levels deep is invisible
+  // from the parent. Only kicks in for folder-scoped views — root and the
+  // internal/external pseudo-nodes already return the union. Keyed off the
+  // DEBOUNCED query (not the raw keystroke value): both this flag and `q`
+  // below drive the same request, and letting one fire on every keystroke
+  // while the other waits out the debounce would refetch twice for one type.
+  const searchExpandsSubfolders = selectedFolderId !== null && debouncedSearchQuery.trim().length > 0;
+
+  // Server-driven (task 2, 2026-08-29 server-driven-lists) — every filter,
+  // the sort and the page all become request params; task 1's envelope
+  // ({items, meta}) replaces the flat array this used to fetch, so there is
+  // no client-side filter/sort pass left to run over the result.
+  const libraryFileParams: LibraryFileListParams = {
+    folder_id: selectedFolderId,
     // "All Files" (selectedFolderId === null): include_root=false lists every
-    // file across all subfolders recursively (#1499), include_root=true scopes
-    // to root-level files only. Gated on the library_all_files_recursive
+    // file across all subfolders recursively (#1499), include_root=true
+    // scopes to root-level files only. Gated on the library_all_files_recursive
     // setting (default off → root-only, the pre-#1499 behaviour). When a
     // specific folder is selected the backend ignores include_root.
+    include_root: selectedFolderId === null ? !allFilesRecursive : true,
     // At the top level, topLevelView scopes the result to internal managed
     // storage vs the union of every external folder (#1621); per-folder
     // selection passes no scope.
-    // #1268: a non-empty tagFilterKey makes the backend bypass folder/root
-    // scoping entirely (tags are cross-cutting).
-    queryFn: () =>
-      api.getLibraryFiles(
-        selectedFolderId,
-        selectedFolderId === null ? !allFilesRecursive : true,
-        undefined,
-        selectedFolderId === null ? topLevelView : undefined,
-        tagFilterKey,
-        searchExpandsSubfolders,
-      ),
+    scope: selectedFolderId === null ? topLevelView : undefined,
+    // #1268: a non-empty tag_ids makes the backend bypass folder/root scoping
+    // entirely (tags are cross-cutting).
+    tag_ids: tagFilterKey,
+    recursive: searchExpandsSubfolders,
+    q: debouncedSearchQuery.trim() || undefined,
+    file_type: filterType !== 'all' ? filterType : undefined,
+    unprinted_only: unprintedOnly,
+    username: filterUsername.trim() || undefined,
+    sort_by: `${sortField}_${sortDirection}`,
+    page,
+    per_page: perPage === -1 ? undefined : perPage,
+    all: perPage === -1 ? true : undefined,
+  };
+  const { data: filesPage, isLoading: filesLoading } = useQuery({
+    queryKey: ['library-files', libraryFileParams],
+    queryFn: () => api.getLibraryFilesPaged(libraryFileParams),
+    placeholderData: (prev) => prev,
   });
+  const files = filesPage?.items;
+  const meta = filesPage?.meta;
+
+  // Any filter/sort/scope change invalidates the current page — staying on
+  // page 4 of a narrower result is a page nobody asked for (matches
+  // ArchivesPage's per-control `setPage(1)`, folded into one effect here
+  // because folder navigation, tag toggling and the toolbar controls are
+  // scattered across many call sites).
+  useEffect(() => {
+    setPage(1);
+  }, [
+    selectedFolderId,
+    topLevelView,
+    tagFilterKey,
+    debouncedSearchQuery,
+    filterType,
+    unprintedOnly,
+    filterUsername,
+    sortField,
+    sortDirection,
+  ]);
 
   const { data: stats } = useQuery({
     queryKey: ['library-stats'],
@@ -2016,75 +2073,22 @@ export function FileManagerPage() {
     queryFn: api.getUsersSlim,
   });
 
-  // Get unique file types for filter dropdown
+  // Get unique file types for filter dropdown. ⚠️ Scoped to the CURRENT page
+  // of an already-filtered, already-paginated result (server-driven now, see
+  // task-2 report) — a type entirely filtered/paged out of view will not
+  // appear here. Task 1 added no filter-options endpoint the way Archives has
+  // one (`getArchiveFilterOptions`), so this is a known gap versus that
+  // pattern, not a silent regression to chase down inside this task.
   const fileTypes = useMemo(() => {
     if (!files) return [];
     const types = new Set(files.map((f) => f.file_type));
     return Array.from(types).sort();
   }, [files]);
 
-  // Filter and sort files
-  const filteredAndSortedFiles = useMemo(() => {
-    if (!files) return [];
-
-    let result = [...files];
-
-    // Apply search filter
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter(
-        (f) =>
-          f.filename.toLowerCase().includes(query) ||
-          (f.print_name && f.print_name.toLowerCase().includes(query))
-      );
-    }
-
-    // Apply type filter
-    if (filterType !== 'all') {
-      result = result.filter((f) => f.file_type === filterType);
-    }
-    // Successful completions only — a file attempted and failed still counts
-    // as unprinted here, which is the agreed meaning of the number.
-    if (unprintedOnly) {
-      result = result.filter((f) => !f.print_count);
-    }
-    // No tag predicate here any more: BOTH kinds of tag are filtered by the
-    // server through ``tag_ids``, so by the time this list arrives it has
-    // already been narrowed. Re-applying it client-side would be a second,
-    // weaker copy of the same rule.
-
-    // Apply username filter
-    if (filterUsername.trim()) {
-      const query = filterUsername.toLowerCase();
-      result = result.filter(
-        (f) => f.created_by_username && f.created_by_username.toLowerCase().includes(query)
-      );
-    }
-
-    // Apply sorting
-    result.sort((a, b) => {
-      let comparison = 0;
-      switch (sortField) {
-        case 'name':
-          comparison = (a.print_name || a.filename).localeCompare(b.print_name || b.filename);
-          break;
-        case 'date':
-          // Same source as the rendered date — see fileActivityAt (#2680).
-          comparison =
-            (parseUTCDate(fileActivityAt(a))?.getTime() ?? 0) - (parseUTCDate(fileActivityAt(b))?.getTime() ?? 0);
-          break;
-        case 'size':
-          comparison = a.file_size - b.file_size;
-          break;
-        case 'type':
-          comparison = a.file_type.localeCompare(b.file_type);
-          break;
-      }
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
-
-    return result;
-  }, [files, searchQuery, filterType, unprintedOnly, filterUsername, sortField, sortDirection]);
+  // Filtering, sorting and paging all happen server-side now (task 1 + this
+  // task's params above) — this is a pass-through so every render call site
+  // below keeps reading `filteredAndSortedFiles` unmodified.
+  const filteredAndSortedFiles = useMemo(() => files ?? [], [files]);
 
   // Check if disk space is low
   const isDiskSpaceLow = useMemo(() => {
@@ -3024,8 +3028,12 @@ export function FileManagerPage() {
               </button>
             </div>
           )}
-          {/* Combined toolbar: search/filters/sort (row 1) + selection actions (row 2) */}
-          {files && files.length > 0 && (
+          {/* Combined toolbar: search/filters/sort (row 1) + selection actions (row 2).
+              ⚠️ `files` is now the server-FILTERED page, not the raw
+              folder/tag-scoped fetch — a filter that matches zero rows would
+              otherwise hide this toolbar exactly when it's needed to clear or
+              adjust the filter, so `anyFilterActive` keeps it up regardless. */}
+          {files && (files.length > 0 || anyFilterActive) && (
             <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-0 z-10 lg:static">
             <div className="flex flex-wrap items-stretch gap-2">
               {/* Search */}
@@ -3097,10 +3105,12 @@ export function FileManagerPage() {
                 </div>
               )}
 
-              {/* Results count */}
+              {/* Results count — `total` is now the server's grand total across
+                  every page (`meta.total`), not the size of one client-side
+                  fetch; `showing` is this page's own item count. */}
               {anyFilterActive && (
                 <span className="h-9 flex items-center text-sm text-bambu-gray hidden sm:inline-flex">
-                  {t('fileManager.resultsCount', { showing: filteredAndSortedFiles.length, total: files.length })}
+                  {t('fileManager.resultsCount', { showing: filteredAndSortedFiles.length, total: meta?.total ?? 0 })}
                 </span>
               )}
 
@@ -3730,6 +3740,23 @@ export function FileManagerPage() {
                 ))}
               </div>
             </div>
+          )}
+          {/* Paging — same PaginationBar component as the Archives list,
+              under the rows rather than above them. */}
+          {meta && (
+            <PaginationBar
+              page={meta.current_page}
+              totalPages={meta.last_page}
+              perPage={perPage}
+              total={meta.total}
+              items={t('fileManager.fileCount', { count: meta.total })}
+              variant="bare"
+              onPageChange={setPage}
+              onPerPageChange={(size) => {
+                setPerPage(size);
+                setPage(1);
+              }}
+            />
           )}
         </div>
 

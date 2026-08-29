@@ -8844,6 +8844,41 @@ export const api = {
     if (recursive) params.set('recursive', 'true');
     return request<LibraryFileListItem[]>(`/library/files?${params}`);
   },
+  // Server-driven variant (task 2, 2026-08-29 server-driven-lists) — the ONLY
+  // caller allowed to set `page`, which is what flips GET /library/files from
+  // the legacy flat array to the `{items, meta}` envelope (task 1). Carries
+  // the full filter/sort/paging surface task 1 added; used exclusively by
+  // FileManagerPage. LibraryPickerModal and ProjectDetailPage stay on the
+  // legacy `getLibraryFiles` above — see the comment at each call site.
+  getLibraryFilesPaged: (params: LibraryFileListParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.folder_id !== undefined && params.folder_id !== null) {
+      qs.set('folder_id', String(params.folder_id));
+    }
+    if (params.project_id !== undefined) qs.set('project_id', String(params.project_id));
+    if (params.include_root !== undefined) qs.set('include_root', String(params.include_root));
+    if (params.scope === 'internal') qs.set('internal_only', 'true');
+    else if (params.scope === 'external') qs.set('external_only', 'true');
+    for (const tagId of params.tag_ids ?? []) qs.append('tag_ids', String(tagId));
+    if (params.recursive) qs.set('recursive', 'true');
+    if (params.q) qs.set('q', params.q);
+    if (params.file_type) qs.set('file_type', params.file_type);
+    if (params.unprinted_only) qs.set('unprinted_only', 'true');
+    if (params.username) qs.set('username', params.username);
+    if (params.sort_by) qs.set('sort_by', params.sort_by);
+    // `page` is ALWAYS sent (default 1) — that is the compat switch the
+    // backend reads to return the paginated envelope instead of the legacy
+    // flat array. `all` skips the LIMIT server-side but still needs `page`
+    // present for the same reason (see the route's `paginate = page is not
+    // None` branch).
+    qs.set('page', String(params.page ?? 1));
+    if (params.all) {
+      qs.set('all', 'true');
+    } else if (params.per_page) {
+      qs.set('per_page', String(params.per_page));
+    }
+    return request<LibraryFileListPage>(`/library/files?${qs}`);
+  },
   getLibraryFolderReadme: (folderId: number) =>
     request<FolderReadmeResponse>(`/library/folders/${folderId}/readme`),
 
@@ -9913,6 +9948,38 @@ export interface LibraryFileListItem {
   // which is the computed system-badge array. OPTIONAL because legacy msw
   // mocks build partial file shapes; read sites use ``file.tags ?? []``.
   tags?: LibraryTagSummary[];
+}
+
+// Full query surface of GET /library/files (task 1, 2026-08-29
+// server-driven-lists) — consumed only by ``getLibraryFilesPaged``.
+// ``folder_id`` / ``project_id`` / ``include_root`` / ``scope`` / ``tag_ids``
+// / ``recursive`` mirror ``getLibraryFiles``'s positional params exactly.
+export interface LibraryFileListParams {
+  folder_id?: number | null;
+  project_id?: number;
+  include_root?: boolean;
+  scope?: 'internal' | 'external';
+  tag_ids?: number[];
+  recursive?: boolean;
+  q?: string;
+  file_type?: string;
+  unprinted_only?: boolean;
+  username?: string;
+  // `<name|date|size|type>_<asc|desc>` — see FileManagerPage's SortField/
+  // SortDirection state, joined with an underscore (NOT ArchivesPage's
+  // hyphen — the two endpoints picked different separators).
+  sort_by?: string;
+  page?: number;
+  per_page?: number;
+  all?: boolean;
+}
+
+// Envelope returned by GET /library/files when `page` is present — mirrors
+// backend LibraryFileListPage / PaginationMeta (same field names as
+// PaginatedArchiveResponse's `meta`).
+export interface LibraryFileListPage {
+  items: LibraryFileListItem[];
+  meta: PaginationMeta;
 }
 
 // #1268 — user-authored library tags. Cross-cutting labels applied to

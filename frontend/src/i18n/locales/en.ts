@@ -4556,6 +4556,10 @@ export default {
     ascending: 'Ascending',
     descending: 'Descending',
     resultsCount: '{{showing}} of {{total}} files',
+    // Bare noun for PaginationBar's `items` prop (task 2, 2026-08-29
+    // server-driven-lists) — same role as archives.page.archiveCount.
+    fileCount_one: 'file',
+    fileCount_other: 'files',
     selectAll: 'Select All',
     deselectAll: 'Deselect All',
     selected: '{{count}} selected',
