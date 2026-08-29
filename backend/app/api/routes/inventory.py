@@ -1062,6 +1062,32 @@ def _spool_to_list_item(s: Spool) -> SpoolListItem:
     )
 
 
+class SpoolGroupItem(BaseModel):
+    """One row of the grouped list mode (``group_similar=true``, task 3): the
+    7-column group key + membership + the min(id) member as representative
+    (slim list projection — same ``SpoolListItem`` the flat paged mode
+    returns). The text key fields carry the COALESCED key value (``''`` where
+    the underlying column is NULL — the client key's ``|| ''`` fold); ``lot``
+    stays raw (``?? ''`` semantics: the all-NULL-lots group reports null,
+    lot=0 is its own group)."""
+
+    material: str
+    subtype: str
+    brand: str
+    color_name: str
+    rgba: str
+    label_weight: int
+    lot: int | None
+    group_count: int
+    ids: list[int]
+    representative: SpoolListItem
+
+
+class SpoolGroupPage(BaseModel):
+    items: list[SpoolGroupItem]
+    meta: PaginationMeta
+
+
 @router.get("/spools", response_model=None)
 async def list_spools(
     include_archived: bool = False,
@@ -1100,9 +1126,18 @@ async def list_spools(
     page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
     per_page: int = Query(50, ge=1, le=200),
     all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
+    group_similar: bool = Query(
+        False,
+        description=(
+            "Paged mode only: rows become GROUPS of similar spools "
+            "(material|subtype|brand|color_name|rgba|label_weight|lot) — "
+            "see SpoolGroupItem. Requires page; restricts sort_by to the "
+            "group-key subset (400 otherwise)."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
-) -> list[SpoolResponse] | SpoolListPage:
+) -> list[SpoolResponse] | SpoolListPage | SpoolGroupPage:
     """List spools.
 
     Server-driven list (task 1, 2026-08-29 — mirrors ``ArchiveService.
@@ -1127,10 +1162,35 @@ async def list_spools(
     ``archived=active`` or ``archived=archived`` explicitly; sending
     ``page=1&include_archived=false`` and expecting the archived rows to stay
     hidden is a silent no-op (review finding 6).
+
+    **Grouped mode (task 3):** ``group_similar=true`` (paged mode only —
+    without ``page`` it's a 400, never a silent flat-shaped answer) makes the
+    rows ``SpoolGroupItem`` GROUPS under the SAME filters: filters first,
+    then grouping, then pagination over GROUPS — ``meta.total`` counts
+    groups. The key and the merge-eligibility rule (used/assigned spools
+    never merge) port the deleted client's ``spoolGroupKey`` + consumers
+    exactly — see ``inventory_service._spool_group_key_exprs``. ``sort_by``
+    is restricted to the group-key subset (``display_name``, ``material``,
+    ``brand``, ``color_name`` — 400 otherwise, deliberately stricter than
+    the flat mode's permissive fallback).
     """
     if page is None:
+        if group_similar:
+            raise HTTPException(
+                status_code=400,
+                detail="group_similar requires the paged mode — send page (grouped rows only exist in the envelope)",
+            )
         spools = await inventory_service.list_spools(db, include_archived=include_archived)
         return [SpoolResponse.model_validate(s) for s in spools]
+
+    if group_similar:
+        # Fail fast, before any DB work — the service re-checks for direct
+        # callers (same defense-in-depth as build_spool_filters' ValueError
+        # contract on location_id).
+        try:
+            inventory_service.assert_group_sort_supported(sort_by)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     filters = await inventory_service.build_spool_filters(
         db,
@@ -1149,6 +1209,35 @@ async def list_spools(
     )
 
     offset, limit = (0, None) if all else ((page - 1) * per_page, per_page)
+
+    if group_similar:
+        total = await inventory_service.count_spool_groups(db, filters=filters)
+        groups = await inventory_service.list_spool_groups(
+            db, filters=filters, sort_by=sort_by, limit=limit, offset=offset
+        )
+        return SpoolGroupPage(
+            items=[
+                SpoolGroupItem(
+                    material=g["material"],
+                    subtype=g["subtype"],
+                    brand=g["brand"],
+                    color_name=g["color_name"],
+                    rgba=g["rgba"],
+                    label_weight=g["label_weight"],
+                    lot=g["lot"],
+                    group_count=g["group_count"],
+                    ids=g["ids"],
+                    representative=_spool_to_list_item(g["representative"]),
+                )
+                for g in groups
+            ],
+            meta=PaginationMeta(
+                total=total,
+                current_page=1 if all else page,
+                per_page=(total or 1) if all else per_page,
+                last_page=1 if all else max(1, math.ceil(total / per_page)),
+            ),
+        )
 
     total = await inventory_service.count_spools(db, filters=filters)
     spools = await inventory_service.list_spools(db, filters=filters, sort_by=sort_by, limit=limit, offset=offset)

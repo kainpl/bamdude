@@ -9,6 +9,7 @@ from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.db_dialect import is_postgres
 from backend.app.models.location import Location
 from backend.app.models.printer import Printer
 from backend.app.models.spool import Spool
@@ -556,6 +557,230 @@ async def spool_facets(db: AsyncSession, *, filters: list) -> dict[str, list]:
         "catalog_ids": catalog_ids,
         "colors": colors,
     }
+
+
+# ── Grouped mode — "group similar spools" server-side (task 3, 2026-08-29) ──
+#
+# ``group_similar=true`` turns the paged list's rows into GROUPS. The group
+# key is the EXACT port of the deleted client's ``spoolGroupKey``
+# (InventoryPage.tsx:83-87):
+#
+#     `${material}|${subtype || ''}|${brand || ''}|${color_name || ''}|
+#      ${rgba || ''}|${label_weight}|${lot ?? ''}`
+#
+# and the client's CONSUMERS (:1402-1439) are part of the behavioral spec
+# too: only unused (``weight_used === 0``) AND unassigned spools are eligible
+# to merge — a used or assigned spool always stays its own row, however many
+# twins its key has. No case folding and no trimming anywhere in the key —
+# the client key had none (and the stage-C collation ruling forbids adding
+# any).
+
+# The sort keys grouped mode accepts — the subset of the flat sort map that
+# maps onto group-key columns (plan Task 3 ruling). Everything else is
+# REFUSED (a 400 at the route, ValueError here) rather than silently
+# falling back like the flat list does: a caller asking to page groups under
+# an order the grouped query cannot express should hear "no", not receive
+# stable-looking pages in a different order.
+GROUP_SORT_KEYS = frozenset({"display_name", "material", "brand", "color_name"})
+
+
+def _spool_group_key_exprs() -> dict[str, Any]:
+    """The 7 group-key columns, keyed by their response-field names.
+
+    - ``material`` / ``label_weight`` — raw (both NOT NULL; the client key
+      interpolated them uncoalesced).
+    - ``subtype`` / ``brand`` / ``color_name`` / ``rgba`` —
+      ``coalesce(col, '')``: the client's ``|| ''`` folds NULL and ``''``
+      into ONE key value (pinned by the client's own grouping test), and a
+      bare GROUP BY would keep them apart.
+    - ``lot`` — RAW, deliberately NOT coalesced: the client used ``?? ''``
+      (nullish), not ``|| ''`` — so ``lot=0`` keys as ``'0'`` while NULL keys
+      as ``''``. GROUP BY on the bare integer column reproduces exactly that:
+      NULLs group together (SQL GROUP BY treats NULLs as equal on both
+      dialects), and 0 stays its own group. ``coalesce(lot, 0)`` (the SORT
+      map's spelling) would wrongly merge them.
+    """
+    return {
+        "material": Spool.material,
+        "subtype": func.coalesce(Spool.subtype, ""),
+        "brand": func.coalesce(Spool.brand, ""),
+        "color_name": func.coalesce(Spool.color_name, ""),
+        "rgba": func.coalesce(Spool.rgba, ""),
+        "label_weight": Spool.label_weight,
+        "lot": Spool.lot,
+    }
+
+
+def _spool_group_single_id_expr():
+    """The eligibility discriminator, joined into GROUP BY: NULL for a spool
+    the client would merge (unused AND unassigned), the spool's own id
+    otherwise. Eligible rows share the NULL and group by the key alone;
+    every ineligible row gets a unique value and therefore stays a singleton
+    group — including two ineligible twins, which the client also never
+    merged with each other (InventoryPage.tsx:1407-1424). The assignment
+    check is the same correlated EXISTS the ``assigned`` filter uses."""
+    assigned = select(SpoolAssignment.spool_id).where(SpoolAssignment.spool_id == Spool.id).exists()
+    return case((or_(Spool.weight_used > 0, assigned), Spool.id))
+
+
+def assert_group_sort_supported(sort_by: str | None) -> None:
+    """Raise ``ValueError`` unless ``sort_by`` is valid for grouped mode:
+    omitted/empty (→ the default ordering), or one of
+    :data:`GROUP_SORT_KEYS` with an ``_asc``/``_desc`` suffix. The route
+    calls this up front to turn the refusal into a 400 before any DB work;
+    :func:`list_spool_groups` enforces it again for direct callers."""
+    if not sort_by:
+        return
+    key, _, direction = sort_by.rpartition("_")
+    if direction not in ("asc", "desc") or key not in GROUP_SORT_KEYS:
+        raise ValueError(
+            f"sort_by {sort_by!r} is not available in grouped mode — "
+            f"use one of {sorted(GROUP_SORT_KEYS)} with _asc/_desc, or omit it"
+        )
+
+
+def _spool_groups_subquery(filters: list):
+    """One grouped SELECT shared by list and count: the labeled key columns +
+    ``group_count`` + ``rep_id`` (min member id — the representative, per the
+    plan's ruling) + the aggregated member ids.
+
+    The member-id aggregate is the one per-dialect branch (the plan's ⚠️):
+    PostgreSQL ``array_agg`` returns a real int array, SQLite
+    ``group_concat`` a comma-joined string — :func:`_parse_member_ids`
+    normalizes both (and sorts, since neither aggregate guarantees an order
+    without dialect-specific ordered-aggregate syntax). Branching via
+    ``db_dialect.is_postgres`` is the house pattern (archives FTS,
+    migrations helpers)."""
+    keys = _spool_group_key_exprs()
+    member_ids = func.array_agg(Spool.id) if is_postgres() else func.group_concat(Spool.id)
+    return (
+        select(
+            *(expr.label(name) for name, expr in keys.items()),
+            func.count().label("group_count"),
+            func.min(Spool.id).label("rep_id"),
+            member_ids.label("member_ids"),
+        )
+        .where(*filters)
+        .group_by(*keys.values(), _spool_group_single_id_expr())
+        .subquery()
+    )
+
+
+def _parse_member_ids(raw) -> list[int]:
+    """Normalize the per-dialect member-id aggregate to a sorted int list —
+    ascending, same determinism convention as ``list_spool_ids``."""
+    if isinstance(raw, str):  # SQLite group_concat: "3,1,2"
+        return sorted(int(part) for part in raw.split(","))
+    return sorted(int(member_id) for member_id in raw)  # PostgreSQL array_agg
+
+
+def _spool_group_order_by(sub, sort_by: str | None) -> list:
+    """ORDER BY over the grouped subquery's output columns (so PostgreSQL
+    never has to match grouping expressions), ALWAYS ending in the
+    ``rep_id DESC`` tiebreak — min member ids are unique across groups
+    (every spool belongs to exactly one), so grouped pages are stable the
+    same way the flat list's ``Spool.id`` tiebreak makes its pages stable.
+
+    Omitted ``sort_by`` mirrors the flat default (material, brand,
+    color_name) over the key columns — which are coalesced, so a NULL
+    brand/color orders as ``''`` deterministically (the review-finding-5
+    convention). ``color_name`` keeps the flat map's ``lower()`` — a
+    pre-existing client extractor fold, not a stage-C addition — applied
+    OUTSIDE the subquery where no GROUP BY constraint applies."""
+    assert_group_sort_supported(sort_by)
+    tiebreak = sub.c.rep_id.desc()
+
+    if not sort_by:
+        return [sub.c.material.asc(), sub.c.brand.asc(), sub.c.color_name.asc(), tiebreak]
+
+    key, _, direction = sort_by.rpartition("_")
+    if key == "display_name":
+        # Same composite the flat mode's display_name resolves to.
+        cols = (sub.c.material, sub.c.brand, sub.c.color_name)
+        clauses = [c.asc() for c in cols] if direction == "asc" else [c.desc() for c in cols]
+        return [*clauses, tiebreak]
+
+    expr = {
+        "material": sub.c.material,
+        "brand": sub.c.brand,
+        "color_name": func.lower(sub.c.color_name),
+    }[key]
+    return [expr.asc() if direction == "asc" else expr.desc(), tiebreak]
+
+
+async def list_spool_groups(
+    db: AsyncSession,
+    *,
+    filters: list,
+    sort_by: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict]:
+    """One page of GROUPS for the ``group_similar=true`` list mode.
+
+    ``filters`` (from :func:`build_spool_filters` — the same list every other
+    surface consumes) applies BEFORE grouping: a filtered-out spool is
+    neither counted nor listed among a group's members. Pagination applies
+    over GROUPS, after ordering (``limit``/``offset`` land on the grouped
+    query itself).
+
+    Each returned dict carries the key fields (text keys COALESCED — ``''``
+    where the column is NULL, because that IS the key value; ``lot`` raw,
+    None for the all-NULL-lots group), ``group_count``, the COMPLETE sorted
+    member ``ids``, and ``representative`` — the min(id) member as an ORM
+    ``Spool`` row with ``k_profiles`` eager-loaded, ready for
+    ``_spool_to_list_item``. The representative is fetched by joining
+    ``Spool`` back onto the grouped subquery in the SAME statement, so a
+    concurrently-deleted spool can never leave a group row without its
+    representative."""
+    sub = _spool_groups_subquery(filters)
+    order_clauses = _spool_group_order_by(sub, sort_by)
+    query = (
+        select(
+            Spool,
+            sub.c.material,
+            sub.c.subtype,
+            sub.c.brand,
+            sub.c.color_name,
+            sub.c.rgba,
+            sub.c.label_weight,
+            sub.c.lot,
+            sub.c.group_count,
+            sub.c.member_ids,
+        )
+        .join(sub, Spool.id == sub.c.rep_id)
+        .options(selectinload(Spool.k_profiles))
+        .order_by(*order_clauses)
+    )
+    if offset:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+
+    rows = (await db.execute(query)).all()
+    return [
+        {
+            "material": row.material,
+            "subtype": row.subtype,
+            "brand": row.brand,
+            "color_name": row.color_name,
+            "rgba": row.rgba,
+            "label_weight": int(row.label_weight),
+            "lot": row.lot,
+            "group_count": int(row.group_count),
+            "ids": _parse_member_ids(row.member_ids),
+            "representative": row.Spool,
+        }
+        for row in rows
+    ]
+
+
+async def count_spool_groups(db: AsyncSession, *, filters: list) -> int:
+    """How many groups :func:`list_spool_groups` would page over — grouped
+    mode's ``meta.total`` (a count of GROUPS, never of spools), from the same
+    grouped subquery the list rides."""
+    sub = _spool_groups_subquery(filters)
+    return int((await db.execute(select(func.count()).select_from(sub))).scalar_one())
 
 
 async def update_spool(db: AsyncSession, spool_id: int, spool_data: SpoolUpdate) -> Spool:

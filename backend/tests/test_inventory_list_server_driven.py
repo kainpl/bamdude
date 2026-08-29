@@ -898,3 +898,341 @@ class TestCategoryFacetFilterRoundTrip:
         assert prod.json()["ids"] == [padded.id]
         proto = await async_client.get("/api/v1/inventory/spools/ids", params={"category": "Prototype"})
         assert proto.json()["ids"] == [plain.id]
+
+
+# ── task 3: grouped mode ("group similar spools" server-side) ────────────────
+#
+# ``group_similar=true`` on ``GET /spools`` — rows become GROUPS: the 7-column
+# key (material | subtype | brand | color_name | rgba | label_weight | lot,
+# the exact port of the deleted client's ``spoolGroupKey``,
+# InventoryPage.tsx:83-87) + ``group_count`` + complete member ``ids`` + the
+# min(id) row as representative, paged over GROUPS under the same
+# ``build_spool_filters`` list. The CLIENT code is the behavioral spec,
+# including its consumers (:1402-1439): used (``weight_used > 0``) or
+# assigned spools are NEVER merged — each stays its own singleton group.
+
+
+async def _groups(db_session, sort_by=None, limit=None, offset=0, **filter_kwargs):
+    filters = await inventory_service.build_spool_filters(db_session, **filter_kwargs)
+    return await inventory_service.list_spool_groups(
+        db_session, filters=filters, sort_by=sort_by, limit=limit, offset=offset
+    )
+
+
+async def _group_total(db_session, **filter_kwargs) -> int:
+    filters = await inventory_service.build_spool_filters(db_session, **filter_kwargs)
+    return await inventory_service.count_spool_groups(db_session, filters=filters)
+
+
+class TestGroupedModeService:
+    async def test_identical_unused_unassigned_spools_form_one_group(self, db_session):
+        a = await _spool(db_session)
+        b = await _spool(db_session)
+        c = await _spool(db_session)
+
+        groups = await _groups(db_session)
+        assert len(groups) == 1
+        (group,) = groups
+        assert group["group_count"] == 3
+        assert group["ids"] == sorted([a.id, b.id, c.id])
+        # Representative is the min(id) row (plan ruling), carried as the ORM
+        # row itself so the route can serialize it as a SpoolListItem.
+        assert group["representative"].id == min(a.id, b.id, c.id)
+        assert await _group_total(db_session) == 1
+
+    async def test_null_and_empty_string_text_key_fields_group_together(self, db_session):
+        """The client key coalesces subtype/brand/color_name/rgba with
+        ``|| ''`` — NULL and '' are the SAME key value (pinned by the client's
+        own test 'treats null and empty string subtype the same')."""
+        await _spool(db_session, material="PLA", subtype=None)
+        await _spool(db_session, material="PLA", subtype="")
+        await _spool(db_session, material="PETG", brand=None)
+        await _spool(db_session, material="PETG", brand="")
+
+        groups = await _groups(db_session)
+        assert len(groups) == 2
+        assert all(g["group_count"] == 2 for g in groups)
+
+    async def test_spools_differing_only_in_lot_are_two_groups(self, db_session):
+        """The plan's named seed: lot is part of the key so sequential-lot
+        copies of a purchase bundle stay distinct."""
+        await _spool(db_session, lot=1)
+        await _spool(db_session, lot=2)
+
+        groups = await _groups(db_session)
+        assert len(groups) == 2
+        assert all(g["group_count"] == 1 for g in groups)
+
+    async def test_lot_zero_is_distinct_from_null_and_nulls_merge(self, db_session):
+        """The client uses ``lot ?? ''`` (nullish), NOT ``|| ''``: lot=0 keys
+        as '0' while NULL keys as '' — 0 and NULL are DIFFERENT groups, and
+        all-NULL lots are ONE group (SQL GROUP BY treats NULLs as equal on
+        both dialects, which is exactly the ``?? ''`` fold)."""
+        zero = await _spool(db_session, lot=0)
+        null_a = await _spool(db_session, lot=None)
+        null_b = await _spool(db_session, lot=None)
+
+        groups = await _groups(db_session)
+        assert len(groups) == 2
+        by_count = {g["group_count"]: g for g in groups}
+        assert by_count[1]["ids"] == [zero.id]
+        assert by_count[2]["ids"] == sorted([null_a.id, null_b.id])
+
+    async def test_used_spool_never_merges(self, db_session):
+        """Client consumers (InventoryPage.tsx:1407-1424): only unused spools
+        are eligible — a used spool with an identical key stays its own row."""
+        fresh_a = await _spool(db_session, weight_used=0)
+        fresh_b = await _spool(db_session, weight_used=0)
+        used = await _spool(db_session, weight_used=500)
+
+        groups = await _groups(db_session)
+        assert len(groups) == 2
+        by_count = {g["group_count"]: g for g in groups}
+        assert by_count[2]["ids"] == sorted([fresh_a.id, fresh_b.id])
+        assert by_count[1]["ids"] == [used.id]
+
+    async def test_assigned_spool_never_merges(self, db_session, printer_factory):
+        printer = await printer_factory()
+        fresh_a = await _spool(db_session)
+        fresh_b = await _spool(db_session)
+        assigned = await _spool(db_session)
+        db_session.add(SpoolAssignment(spool_id=assigned.id, printer_id=printer.id, ams_id=0, tray_id=0))
+        await db_session.commit()
+
+        groups = await _groups(db_session)
+        assert len(groups) == 2
+        by_count = {g["group_count"]: g for g in groups}
+        assert by_count[2]["ids"] == sorted([fresh_a.id, fresh_b.id])
+        assert by_count[1]["ids"] == [assigned.id]
+
+    async def test_two_identical_ineligible_spools_stay_two_singles(self, db_session):
+        """Two USED spools sharing the whole key must NOT merge with each
+        other either (the client renders every ineligible spool individually)
+        — the eligibility discriminator has to key them apart, not just apart
+        from the eligible group."""
+        used_a = await _spool(db_session, weight_used=100)
+        used_b = await _spool(db_session, weight_used=100)
+
+        groups = await _groups(db_session)
+        assert len(groups) == 2
+        assert sorted(g["ids"][0] for g in groups) == sorted([used_a.id, used_b.id])
+        assert await _group_total(db_session) == 2
+
+    async def test_filters_apply_before_grouping(self, db_session):
+        pla_a = await _spool(db_session, material="PLA")
+        pla_b = await _spool(db_session, material="PLA")
+        await _spool(db_session, material="PETG")
+        await _spool(db_session, material="PETG")
+
+        groups = await _groups(db_session, material="PLA")
+        assert len(groups) == 1
+        assert groups[0]["ids"] == sorted([pla_a.id, pla_b.id])
+        assert await _group_total(db_session, material="PLA") == 1
+
+    async def test_group_key_fields_carry_the_coalesced_key(self, db_session):
+        """The key fields on a group row are the KEY values — '' where the
+        client's ``|| ''`` folded a NULL — while ``lot`` stays its raw value
+        (None reported as null; the ``?? ''`` fold has no '' to collide with
+        on an integer column)."""
+        await _spool(db_session, subtype=None, brand=None, color_name=None, rgba=None, lot=None)
+
+        (group,) = await _groups(db_session)
+        assert group["material"] == "PLA"
+        assert group["subtype"] == ""
+        assert group["brand"] == ""
+        assert group["color_name"] == ""
+        assert group["rgba"] == ""
+        assert group["label_weight"] == 1000
+        assert group["lot"] is None
+
+    async def test_group_paging_pages_groups_not_spools(self, db_session):
+        # 5 groups of 2 members each (distinct by lot), one shared sort value.
+        for lot in range(1, 6):
+            await _spool(db_session, lot=lot)
+            await _spool(db_session, lot=lot)
+
+        assert await _group_total(db_session) == 5
+        page_one = await _groups(db_session, limit=2, offset=0)
+        page_three = await _groups(db_session, limit=2, offset=4)
+        assert len(page_one) == 2
+        assert len(page_three) == 1
+        assert all(g["group_count"] == 2 for g in page_one + page_three)
+
+
+class TestGroupedSort:
+    async def test_material_asc_and_desc(self, db_session):
+        await _spool(db_session, material="PLA")
+        await _spool(db_session, material="ABS")
+        await _spool(db_session, material="PETG")
+
+        asc = [g["material"] for g in await _groups(db_session, sort_by="material_asc")]
+        assert asc == ["ABS", "PETG", "PLA"]
+        desc = [g["material"] for g in await _groups(db_session, sort_by="material_desc")]
+        assert desc == ["PLA", "PETG", "ABS"]
+
+    async def test_brand_sorts_null_as_empty_first(self, db_session):
+        await _spool(db_session, brand="Zeta")
+        await _spool(db_session, brand=None)
+
+        asc = [g["brand"] for g in await _groups(db_session, sort_by="brand_asc")]
+        assert asc == ["", "Zeta"]
+
+    async def test_color_name_sort_folds_case(self, db_session):
+        """The flat sort map lowercases color_name (a pre-existing client
+        extractor behaviour, NOT a new fold — the stage-C guard is about
+        ADDING folds) — grouped mode must agree with flat mode here."""
+        await _spool(db_session, color_name="apple")
+        await _spool(db_session, color_name="Banana")
+
+        asc = [g["color_name"] for g in await _groups(db_session, sort_by="color_name_asc")]
+        assert asc == ["apple", "Banana"]
+
+    async def test_display_name_composite(self, db_session):
+        await _spool(db_session, material="PLA", brand="Beta")
+        await _spool(db_session, material="PLA", brand="Alpha")
+        await _spool(db_session, material="ABS", brand="Zeta")
+
+        asc = [(g["material"], g["brand"]) for g in await _groups(db_session, sort_by="display_name_asc")]
+        assert asc == [("ABS", "Zeta"), ("PLA", "Alpha"), ("PLA", "Beta")]
+
+    async def test_low_cardinality_sort_pages_without_dup_or_skip(self, db_session):
+        """Every grouped ordering ends with a stable tiebreak — walk an
+        identical-sort-value set page by page and the union must be complete
+        and duplicate-free (the flat list's TestPagingTiebreak, over groups)."""
+        for lot in range(1, 7):
+            await _spool(db_session, lot=lot)
+
+        seen: list[int] = []
+        for offset in (0, 2, 4):
+            page = await _groups(db_session, sort_by="material_asc", limit=2, offset=offset)
+            seen.extend(g["representative"].id for g in page)
+        assert len(seen) == 6
+        assert len(set(seen)) == 6
+
+    async def test_unsupported_sort_key_raises_value_error(self, db_session):
+        """Grouped mode deliberately REFUSES sort keys outside the group key
+        (plan ruling: 'others 400') instead of the flat list's permissive
+        fallback — a silent fallback would page groups under an order the
+        caller didn't ask for."""
+        await _spool(db_session)
+        with pytest.raises(ValueError):
+            await _groups(db_session, sort_by="last_used_time_asc")
+        with pytest.raises(ValueError):
+            await _groups(db_session, sort_by="material")  # malformed: no _asc/_desc
+        # And the route-facing validator agrees (same single source of truth).
+        with pytest.raises(ValueError):
+            inventory_service.assert_group_sort_supported("location_desc")
+        inventory_service.assert_group_sort_supported(None)
+        inventory_service.assert_group_sort_supported("display_name_desc")
+
+
+class TestGroupedModeRoute:
+    async def test_grouped_envelope_shape_and_meta_total_counts_groups(self, async_client, db_session):
+        for _ in range(3):
+            await _spool(db_session)
+        await _spool(db_session, material="PETG")
+
+        resp = await async_client.get("/api/v1/inventory/spools", params={"page": 1, "group_similar": "true"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body.keys()) == {"items", "meta"}
+        assert body["meta"]["total"] == 2
+
+        by_material = {item["material"]: item for item in body["items"]}
+        group = by_material["PLA"]
+        assert group["group_count"] == 3
+        assert len(group["ids"]) == 3
+        assert group["subtype"] == ""  # coalesced key value, seeded NULL
+        assert group["label_weight"] == 1000
+        assert group["lot"] is None
+        # Representative rides the slim list projection: k_profile_count,
+        # never the nested k_profiles.
+        assert group["representative"]["id"] == min(group["ids"])
+        assert "k_profile_count" in group["representative"]
+        assert "k_profiles" not in group["representative"]
+
+    async def test_grouped_mode_rides_the_same_filters(self, async_client, db_session):
+        pla = await _spool(db_session, material="PLA")
+        await _spool(db_session, material="PETG")
+
+        resp = await async_client.get(
+            "/api/v1/inventory/spools", params={"page": 1, "group_similar": "true", "material": "PLA"}
+        )
+        body = resp.json()
+        assert body["meta"]["total"] == 1
+        assert [i["ids"] for i in body["items"]] == [[pla.id]]
+
+    async def test_grouped_paging_slices_groups(self, async_client, db_session):
+        for lot in range(1, 4):  # 3 groups x 2 members
+            await _spool(db_session, lot=lot)
+            await _spool(db_session, lot=lot)
+
+        resp = await async_client.get(
+            "/api/v1/inventory/spools", params={"page": 2, "per_page": 2, "group_similar": "true"}
+        )
+        body = resp.json()
+        assert body["meta"]["total"] == 3
+        assert body["meta"]["last_page"] == 2
+        assert len(body["items"]) == 1
+        assert body["items"][0]["group_count"] == 2
+
+    async def test_grouped_all_true_returns_every_group(self, async_client, db_session):
+        for lot in range(1, 4):
+            await _spool(db_session, lot=lot)
+
+        resp = await async_client.get(
+            "/api/v1/inventory/spools", params={"page": 1, "all": "true", "group_similar": "true"}
+        )
+        body = resp.json()
+        assert len(body["items"]) == 3
+        assert body["meta"]["last_page"] == 1
+        # Group rows, not flat spools — the escape hatch stays in grouped mode.
+        assert all(item["group_count"] == 1 for item in body["items"])
+
+    async def test_unsupported_sort_is_400_supported_is_200(self, async_client, db_session):
+        await _spool(db_session)
+
+        bad = await async_client.get(
+            "/api/v1/inventory/spools",
+            params={"page": 1, "group_similar": "true", "sort_by": "last_used_time_desc"},
+        )
+        assert bad.status_code == 400
+
+        for good_sort in ("display_name_asc", "material_desc", "brand_asc", "color_name_desc"):
+            ok = await async_client.get(
+                "/api/v1/inventory/spools", params={"page": 1, "group_similar": "true", "sort_by": good_sort}
+            )
+            assert ok.status_code == 200, good_sort
+
+        omitted = await async_client.get("/api/v1/inventory/spools", params={"page": 1, "group_similar": "true"})
+        assert omitted.status_code == 200
+
+    async def test_group_similar_without_page_is_400(self, async_client, db_session):
+        """Grouped rows only exist in the paged envelope — silently answering
+        the legacy flat shape to a caller that asked for groups would be a
+        response-shape surprise, so it's refused loudly."""
+        await _spool(db_session)
+        resp = await async_client.get("/api/v1/inventory/spools", params={"group_similar": "true"})
+        assert resp.status_code == 400
+
+        # The bare legacy call itself stays untouched.
+        legacy = await async_client.get("/api/v1/inventory/spools")
+        assert legacy.status_code == 200
+        assert isinstance(legacy.json(), list)
+
+    async def test_grouped_location_id_pattern_still_applies(self, async_client, db_session):
+        """T1/T2 carry-over: every surface taking location_id shares
+        _LOCATION_ID_PATTERN — the grouped branch is the same endpoint, pin it
+        anyway so a future split can't silently drop the 422."""
+        await _spool(db_session)
+        bad = await async_client.get(
+            "/api/v1/inventory/spools", params={"page": 1, "group_similar": "true", "location_id": "abc"}
+        )
+        assert 400 <= bad.status_code < 500
+        ok = await async_client.get(
+            "/api/v1/inventory/spools", params={"page": 1, "group_similar": "true", "location_id": "__none__"}
+        )
+        assert ok.status_code == 200
+        # And the 200 really is the grouped shape (the seeded spool has no
+        # location, so it survives the __none__ filter as one group).
+        assert [item["group_count"] for item in ok.json()["items"]] == [1]
