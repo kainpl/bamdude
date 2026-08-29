@@ -12,6 +12,10 @@
 
 - **A Telegram chat can be scoped to specific printers — all, one, or several.** The printer filter moved from the bot (provider) level down to each chat, where every other Telegram setting already lives: the farm admin's chat keeps watching everything while a partner's chat on the same bot sees only the machines they run. The scope covers **both directions** — notifications arrive only from the chat's printers, and the bot itself shows and commands only them: printer lists, cameras, queue view, controls; a button from an old message aimed at an out-of-scope printer is refused. Events that name no printer (test messages, farm-wide news) still reach every chat. The old provider-level filter is migrated onto existing chats automatically, so nothing changes until you narrow a chat.
 
+- **Projects: per-part counting.** Every archive now records which named parts its plate carried (copy-suffixes like `part.stl_2` fold into one name). The project page gains a Parts table: set a target per part and watch printed / in progress / defective / usable / remaining converge on it — across however many files and plate layouts the part appears in.
+
+- **Per-part defect entry.** Skipping an object attributes the scrap to that part automatically; the archive editor lets you mark exactly which parts came out bad instead of a single number (archives without part data keep the plain counter). A one-shot script backfills part rows for existing archives from their 3MFs.
+
 ### Changed
 
 - **The library no longer links a folder to an archive.** Archives are your print history, and library folders now only link to projects — the folder-to-archive link was rarely used and its "which folder is this archive in" badge was quietly firing a background request for every single archive card on the page. Folder-to-project linking is unaffected.
