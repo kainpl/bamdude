@@ -183,8 +183,20 @@ describe('InventoryPage - Low Stock Threshold', () => {
         const body = (await request.json()) as Partial<typeof mockSettings>;
         return HttpResponse.json({ ...mockSettings, ...body });
       }),
-      http.get('/api/v1/inventory/spools', () => {
-        return HttpResponse.json(mockSpools);
+      // Server-driven paged list (task 4): the page's list AND its all-slim
+      // stats feed both send `page` and get the envelope; the bare call
+      // (legacy consumers) keeps the flat shape.
+      http.get('/api/v1/inventory/spools/facets', () =>
+        HttpResponse.json({ materials: [], brands: [], categories: [], catalog_ids: [], colors: [] })
+      ),
+      http.get('/api/v1/inventory/spools/ids', () => HttpResponse.json({ ids: [] })),
+      http.get('/api/v1/inventory/spools', ({ request }) => {
+        const url = new URL(request.url);
+        if (!url.searchParams.has('page')) return HttpResponse.json(mockSpools);
+        return HttpResponse.json({
+          items: mockSpools.map((s) => ({ ...s, k_profile_count: 0, k_profiles: null })),
+          meta: { total: mockSpools.length, current_page: 1, per_page: 24, last_page: 1 },
+        });
       }),
       http.get('/api/v1/inventory/assignments', () => {
         return HttpResponse.json([]);

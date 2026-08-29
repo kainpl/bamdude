@@ -239,12 +239,17 @@ class SpoolListItem(BaseModel):
     Step 1) — a scalar count is enough for that badge.
 
     ⚠️ It is NOT enough for every list-row consumer, though: the cards-view
-    ``SpoolCard`` component (``InventoryPage.tsx`` ~2657-2679) renders each
-    profile's name/nozzle/K-value/auto-linked flag as its own chip — that
-    needs the full per-profile array, which this projection deliberately does
-    not carry. That gap is Task 4's (frontend) to close, e.g. by having the
-    card view show the same "K" count badge the table's ``pa_k`` column
-    already does in paged/server-driven mode.
+    ``SpoolCard`` component (``InventoryPage.tsx``) renders each profile's
+    name/nozzle/K-value/auto-linked flag as its own chip — that needs the
+    full per-profile array. Task 4 (2026-08-29) closed that gap with the
+    ``include_k_profiles=true`` OPT-IN on the paged route: the ``k_profiles``
+    field below stays ``None`` — JSON ``null``, so the client can tell "not
+    requested" (``null``/absent) from "requested, empty" (``[]``) — unless
+    the request asks for it, which the page does only in cards view.
+    The rows are already eager-loaded by ``list_spools`` either way, so the
+    opt-in costs serialization only; the alternative (a per-spool detail
+    fetch per rendered card) is exactly the N+1 pattern the archives
+    folder-badge cut deleted.
 
     Always constructed via explicit kwargs (route-level helper), never
     ``model_validate(spool)`` — ``k_profile_count`` has no matching ORM
@@ -294,6 +299,10 @@ class SpoolListItem(BaseModel):
     created_at: datetime
     updated_at: datetime
     k_profile_count: int = 0
+    # None (JSON null) unless the request sent ``include_k_profiles=true`` —
+    # see the docstring's opt-in paragraph. Never default to ``[]``: the
+    # client distinguishes "not requested" (null) from "no profiles" ([]).
+    k_profiles: list[SpoolKProfileResponse] | None = None
 
     class Config:
         from_attributes = True

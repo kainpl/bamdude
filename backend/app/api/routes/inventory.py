@@ -1009,13 +1009,18 @@ _LOCATION_ID_PATTERN = r"^(__none__|\d+)$"
 _SPOOL_IDS_CAP = 50_000
 
 
-def _spool_to_list_item(s: Spool) -> SpoolListItem:
+def _spool_to_list_item(s: Spool, *, include_k_profiles: bool = False) -> SpoolListItem:
     """Slim list-row projection — every ``SpoolListItem`` field, built
     explicitly (never ``model_validate(s)``: ``k_profile_count`` has no
     matching ORM attribute). ``s.k_profiles`` must already be eager-loaded
     (``list_spools`` always ``selectinload``s it) — the async ORM has no
     implicit lazy load, so touching an unloaded relationship here would raise,
-    not silently N+1."""
+    not silently N+1.
+
+    ``include_k_profiles`` (task 4, 2026-08-29): serialize the full
+    ``k_profiles`` array too — the cards-view opt-in (see
+    ``SpoolListItem``'s docstring). The rows are eager-loaded regardless, so
+    this is a serialization-only switch, never an extra query."""
     return SpoolListItem(
         id=s.id,
         material=s.material,
@@ -1059,6 +1064,7 @@ def _spool_to_list_item(s: Spool) -> SpoolListItem:
         created_at=s.created_at,
         updated_at=s.updated_at,
         k_profile_count=len(s.k_profiles),
+        k_profiles=([SpoolKProfileResponse.model_validate(kp) for kp in s.k_profiles] if include_k_profiles else None),
     )
 
 
@@ -1133,6 +1139,15 @@ async def list_spools(
             "(material|subtype|brand|color_name|rgba|label_weight|lot) — "
             "see SpoolGroupItem. Requires page; restricts sort_by to the "
             "group-key subset (400 otherwise)."
+        ),
+    ),
+    include_k_profiles: bool = Query(
+        False,
+        description=(
+            "Paged mode only: serialize the full k_profiles array on each "
+            "row (and on grouped representatives) instead of null — the "
+            "cards-view opt-in (task 4). Serialization-only: the rows are "
+            "eager-loaded either way."
         ),
     ),
     db: AsyncSession = Depends(get_db),
@@ -1227,7 +1242,7 @@ async def list_spools(
                     lot=g["lot"],
                     group_count=g["group_count"],
                     ids=g["ids"],
-                    representative=_spool_to_list_item(g["representative"]),
+                    representative=_spool_to_list_item(g["representative"], include_k_profiles=include_k_profiles),
                 )
                 for g in groups
             ],
@@ -1244,7 +1259,7 @@ async def list_spools(
 
     last_page = 1 if all else max(1, math.ceil(total / per_page))
     return SpoolListPage(
-        items=[_spool_to_list_item(s) for s in spools],
+        items=[_spool_to_list_item(s, include_k_profiles=include_k_profiles) for s in spools],
         meta=PaginationMeta(
             total=total,
             current_page=1 if all else page,

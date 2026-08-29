@@ -573,7 +573,12 @@ class TestRouteEnvelope:
         assert body["meta"]["per_page"] == 2
         assert body["meta"]["last_page"] == 3
         assert len(body["items"]) == 2
-        assert "k_profiles" not in body["items"][0]
+        # Default paged rows: ``k_profiles`` is null (present-but-None), never
+        # the nested array — the ``include_k_profiles`` opt-in (task 4) is the
+        # only thing that fills it. Same spirit as the original "not in"
+        # assertion: the slim projection carries no per-profile payload unless
+        # explicitly asked.
+        assert body["items"][0]["k_profiles"] is None
         assert "k_profile_count" in body["items"][0]
 
     async def test_all_true_skips_pagination(self, async_client, db_session):
@@ -644,6 +649,70 @@ class TestRouteEnvelope:
         assert ok_sentinel.status_code == 200
         ok_numeric = await async_client.get("/api/v1/inventory/spools", params={"page": 1, "location_id": "1"})
         assert ok_numeric.status_code == 200
+
+
+class TestIncludeKProfilesOptIn:
+    """Task 4's cards-view opt-in: ``include_k_profiles=true`` serializes the
+    full per-profile array on paged rows (and on grouped representatives);
+    omitted, ``k_profiles`` stays null. Serialization-only — the relationship
+    is eager-loaded either way (see ``_spool_to_list_item``)."""
+
+    async def _seed_profiled_spool(self, db_session, printer_factory):
+        from backend.app.models.filament_calibration import FilamentCalibration
+        from backend.app.models.spool_k_profile import SpoolKProfile
+
+        printer = await printer_factory()
+        spool = await _spool(db_session, brand="HasProfile")
+        calibration = FilamentCalibration(
+            printer_id=printer.id,
+            filament_id="GFL99",
+            nozzle_diameter=0.4,
+            nozzle_volume_type="Standard",
+            cali_mode="pa",
+            source="manual",
+            name="Opt-in PA",
+        )
+        db_session.add(calibration)
+        await db_session.commit()
+        await db_session.refresh(calibration)
+        db_session.add(SpoolKProfile(spool_id=spool.id, printer_id=printer.id, filament_calibration_id=calibration.id))
+        await db_session.commit()
+        return spool
+
+    async def test_flat_opt_in_carries_the_full_array(self, async_client, db_session, printer_factory):
+        spool = await self._seed_profiled_spool(db_session, printer_factory)
+        resp = await async_client.get("/api/v1/inventory/spools", params={"page": 1, "include_k_profiles": "true"})
+        assert resp.status_code == 200
+        item = next(i for i in resp.json()["items"] if i["id"] == spool.id)
+        assert item["k_profile_count"] == 1
+        assert isinstance(item["k_profiles"], list)
+        assert len(item["k_profiles"]) == 1
+        assert item["k_profiles"][0]["name"] == "Opt-in PA"
+
+    async def test_flat_default_stays_null_even_with_profiles(self, async_client, db_session, printer_factory):
+        spool = await self._seed_profiled_spool(db_session, printer_factory)
+        resp = await async_client.get("/api/v1/inventory/spools", params={"page": 1})
+        item = next(i for i in resp.json()["items"] if i["id"] == spool.id)
+        assert item["k_profile_count"] == 1
+        assert item["k_profiles"] is None
+
+    async def test_grouped_representative_honors_the_opt_in(self, async_client, db_session, printer_factory):
+        spool = await self._seed_profiled_spool(db_session, printer_factory)
+        resp = await async_client.get(
+            "/api/v1/inventory/spools",
+            params={"page": 1, "group_similar": "true", "include_k_profiles": "true"},
+        )
+        assert resp.status_code == 200
+        rep = next(g["representative"] for g in resp.json()["items"] if spool.id in g["ids"])
+        assert isinstance(rep["k_profiles"], list)
+        assert len(rep["k_profiles"]) == 1
+
+    async def test_legacy_bare_call_ignores_the_param(self, async_client, db_session):
+        await _spool(db_session, brand="Legacy")
+        resp = await async_client.get("/api/v1/inventory/spools", params={"include_k_profiles": "true"})
+        body = resp.json()
+        assert isinstance(body, list)  # still the flat legacy shape
+        assert "k_profile_count" not in body[0]
 
 
 class TestLegacyPin:
@@ -1146,10 +1215,11 @@ class TestGroupedModeRoute:
         assert group["label_weight"] == 1000
         assert group["lot"] is None
         # Representative rides the slim list projection: k_profile_count,
-        # never the nested k_profiles.
+        # and k_profiles null unless the include_k_profiles opt-in (task 4)
+        # asks for the nested array.
         assert group["representative"]["id"] == min(group["ids"])
         assert "k_profile_count" in group["representative"]
-        assert "k_profiles" not in group["representative"]
+        assert group["representative"]["k_profiles"] is None
 
     async def test_grouped_mode_rides_the_same_filters(self, async_client, db_session):
         pla = await _spool(db_session, material="PLA")
