@@ -26,6 +26,7 @@ from backend.app.models.location import Location
 from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
+from backend.app.schemas.spool import SpoolResponse
 from backend.app.services import inventory_service
 from backend.app.services.location_service import location_name_key
 
@@ -717,10 +718,12 @@ class TestIncludeKProfilesOptIn:
 
 class TestLegacyPin:
     async def test_bare_call_stays_flat_full_shape_with_k_profiles_in_order(self, async_client, db_session):
-        """The bare call (no ``page``) must stay byte-for-byte the historical
-        response: a flat array of the FULL ``SpoolResponse`` shape
-        (``k_profiles`` present, never a ``k_profile_count``), ordered by
-        material/brand/color_name."""
+        """The bare call (no ``page``) must keep the historical response: a
+        flat array whose items carry the EXACT ``SpoolResponse`` key set — no
+        key gained, none lost (``k_profiles`` present, never a
+        ``k_profile_count``) — ordered by material/brand/color_name. Values
+        are pinned by the schema itself; this guards the serialization path,
+        which changed to ``response_model=None`` in the paged rework."""
         archived = await _spool(
             db_session, material="ABS", brand="A", color_name="Red", archived_at=datetime.now(timezone.utc)
         )
@@ -734,7 +737,9 @@ class TestLegacyPin:
         ids = [s["id"] for s in body]
         assert active.id in ids
         assert archived.id in ids
+        expected_keys = set(SpoolResponse.model_fields.keys())
         for s in body:
+            assert set(s.keys()) == expected_keys
             assert "k_profiles" in s
             assert "k_profile_count" not in s
 
