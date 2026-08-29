@@ -3,6 +3,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from backend.app.schemas.archive import PaginationMeta
+
 
 class SpoolBase(BaseModel):
     material: str = Field(..., min_length=1, max_length=50)
@@ -220,6 +222,98 @@ class SpoolResponse(SpoolBase):
 
     class Config:
         from_attributes = True
+
+
+class SpoolListItem(BaseModel):
+    """Slim list-row projection for ``GET /inventory/spools`` in paged mode
+    (server-driven list, task 1, 2026-08-29) — ``SpoolResponse`` minus
+    ``k_profiles``, plus ``k_profile_count``.
+
+    ``k_profiles`` is dropped rather than kept because it's the one field on
+    ``SpoolResponse`` that grows unboundedly with a spool's calibration
+    history and is loaded via its own eager-load — the same reasoning
+    ``FileListResponse`` (library's list-row projection) already applies to
+    library files. ``k_profile_count`` replaces it because
+    ``InventoryPage.tsx``'s ``pa_k`` column DOES read ``k_profiles`` off list
+    rows (a "K" badge when non-empty — checked directly, not assumed, per
+    Step 1) — a scalar count is enough for that badge.
+
+    ⚠️ It is NOT enough for every list-row consumer, though: the cards-view
+    ``SpoolCard`` component (``InventoryPage.tsx`` ~2657-2679) renders each
+    profile's name/nozzle/K-value/auto-linked flag as its own chip — that
+    needs the full per-profile array, which this projection deliberately does
+    not carry. That gap is Task 4's (frontend) to close, e.g. by having the
+    card view show the same "K" count badge the table's ``pa_k`` column
+    already does in paged/server-driven mode.
+
+    Always constructed via explicit kwargs (route-level helper), never
+    ``model_validate(spool)`` — ``k_profile_count`` has no matching ORM
+    attribute for ``from_attributes`` to pick up automatically (same
+    resolution ``FileListResponse``'s callers use).
+    """
+
+    id: int
+    material: str
+    subtype: str | None = None
+    color_name: str | None = None
+    rgba: str | None = None
+    brand: str | None = None
+    label_weight: int = 1000
+    core_weight: int = 250
+    core_weight_catalog_id: int | None = None
+    weight_used: float = 0
+    weight_used_baseline: float = 0
+    slicer_filament: str | None = None
+    slicer_filament_name: str | None = None
+    filament_family_id: str | None = None
+    nozzle_temp_min: int | None = None
+    nozzle_temp_max: int | None = None
+    note: str | None = None
+    added_full: bool | None = None
+    tag_uid: str | None = None
+    tray_uuid: str | None = None
+    data_origin: str | None = None
+    tag_type: str | None = None
+    cost_per_kg: float | None = None
+    purchase_date: datetime | None = None
+    last_used: datetime | None = None
+    encode_time: datetime | None = None
+    filament_diameter: str = "1.75"
+    lot: int | None = None
+    weight_locked: bool = False
+    last_scale_weight: int | None = None
+    last_weighed_at: datetime | None = None
+    extra_colors: str | None = None
+    effect_type: str | None = None
+    category: str | None = None
+    low_stock_threshold_pct: int | None = None
+    storage_location: str | None = None
+    location_id: int | None = None
+    purchase_location: str | None = None
+    archived_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    k_profile_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class SpoolListPage(BaseModel):
+    """Paginated envelope for ``GET /inventory/spools`` (task 1, 2026-08-29
+    server-driven lists) — returned only when the request carries ``page``.
+
+    Mirrors ``LibraryFileListPage`` / ``PaginatedArchiveResponse``'s ``meta``
+    (same ``PaginationMeta`` field names: total/current_page/per_page/
+    last_page) so every server-driven list reads the same way on the
+    frontend; the item container is named ``items`` here, same as library's.
+    Omitting ``page`` entirely still returns the legacy flat
+    ``list[SpoolResponse]`` (full shape, ``k_profiles`` included) — this model
+    never appears in that path.
+    """
+
+    items: list[SpoolListItem]
+    meta: PaginationMeta
 
 
 class SpoolAssignmentCreate(BaseModel):

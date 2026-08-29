@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 from typing import Literal
 
 import httpx
@@ -26,6 +27,7 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_catalog import SpoolCatalogEntry
 from backend.app.models.spool_k_profile import SpoolKProfile
 from backend.app.models.user import User
+from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.location import LocationCreate, LocationResponse, LocationUpdate
 from backend.app.schemas.spool import (
     SpoolAssignmentCreate,
@@ -36,6 +38,8 @@ from backend.app.schemas.spool import (
     SpoolCreate,
     SpoolKProfileBase,
     SpoolKProfileResponse,
+    SpoolListItem,
+    SpoolListPage,
     SpoolResponse,
     SpoolUpdate,
 )
@@ -993,14 +997,142 @@ async def sync_from_filamentcolors(
 # ── Spool CRUD ───────────────────────────────────────────────────────────────
 
 
-@router.get("/spools", response_model=list[SpoolResponse])
+def _spool_to_list_item(s: Spool) -> SpoolListItem:
+    """Slim list-row projection — every ``SpoolListItem`` field, built
+    explicitly (never ``model_validate(s)``: ``k_profile_count`` has no
+    matching ORM attribute). ``s.k_profiles`` must already be eager-loaded
+    (``list_spools`` always ``selectinload``s it) — the async ORM has no
+    implicit lazy load, so touching an unloaded relationship here would raise,
+    not silently N+1."""
+    return SpoolListItem(
+        id=s.id,
+        material=s.material,
+        subtype=s.subtype,
+        color_name=s.color_name,
+        rgba=s.rgba,
+        brand=s.brand,
+        label_weight=s.label_weight,
+        core_weight=s.core_weight,
+        core_weight_catalog_id=s.core_weight_catalog_id,
+        weight_used=s.weight_used,
+        weight_used_baseline=s.weight_used_baseline,
+        slicer_filament=s.slicer_filament,
+        slicer_filament_name=s.slicer_filament_name,
+        filament_family_id=s.filament_family_id,
+        nozzle_temp_min=s.nozzle_temp_min,
+        nozzle_temp_max=s.nozzle_temp_max,
+        note=s.note,
+        added_full=s.added_full,
+        tag_uid=s.tag_uid,
+        tray_uuid=s.tray_uuid,
+        data_origin=s.data_origin,
+        tag_type=s.tag_type,
+        cost_per_kg=s.cost_per_kg,
+        purchase_date=s.purchase_date,
+        last_used=s.last_used,
+        encode_time=s.encode_time,
+        filament_diameter=s.filament_diameter,
+        lot=s.lot,
+        weight_locked=s.weight_locked,
+        last_scale_weight=s.last_scale_weight,
+        last_weighed_at=s.last_weighed_at,
+        extra_colors=s.extra_colors,
+        effect_type=s.effect_type,
+        category=s.category,
+        low_stock_threshold_pct=s.low_stock_threshold_pct,
+        storage_location=s.storage_location,
+        location_id=s.location_id,
+        purchase_location=s.purchase_location,
+        archived_at=s.archived_at,
+        created_at=s.created_at,
+        updated_at=s.updated_at,
+        k_profile_count=len(s.k_profiles),
+    )
+
+
+@router.get("/spools", response_model=None)
 async def list_spools(
     include_archived: bool = False,
+    archived: str | None = Query(None, description="'active' or 'archived' — paged mode only"),
+    usage: str | None = Query(None, description="'used', 'new', or 'lowstock'"),
+    material: str | None = Query(None),
+    brand: str | None = Query(None),
+    colors: list[str] = Query(
+        default_factory=list,
+        description="Raw color_name values (resolved-name matching stays client-side — see facets, task 2)",
+    ),
+    color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
+    category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
+    catalog_id: int | None = Query(None),
+    location_id: str | None = Query(None, description="Location id, or '__none__' for no location"),
+    stock: str | None = Query(None, description="'stock' or 'configured'"),
+    assigned: str | None = Query(None, description="'assigned' or 'unassigned'"),
+    q: str | None = Query(
+        None, description="Tokenised match over brand/material/color_name/subtype/note/slicer_filament_name"
+    ),
+    sort_by: str | None = Query(
+        None,
+        description=(
+            "<column>_asc|_desc — see inventory_service._spool_sort_columns plus "
+            "the special-cased 'display_name' and 'location' keys. Omitted keeps "
+            "the legacy material/brand/color_name ordering."
+        ),
+    ),
+    page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
+    per_page: int = Query(50, ge=1, le=200),
+    all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
-):
-    """List all spools, excluding archived by default."""
-    return await inventory_service.list_spools(db, include_archived=include_archived)
+) -> list[SpoolResponse] | SpoolListPage:
+    """List spools.
+
+    Server-driven list (task 1, 2026-08-29 — mirrors ``ArchiveService.
+    list_archives`` / the library file list): every filter param feeds
+    ``inventory_service.build_spool_filters``, the SAME list driving both the
+    page query and ``meta.total``. ``page`` is the compat switch — omit it
+    (and every param below except ``include_archived``) and the response
+    stays today's flat ``list[SpoolResponse]`` (full shape, ``k_profiles``
+    included) — every existing caller (4 other frontend components, the
+    Cloud Link remote op) depends on exactly that shape and never sends
+    ``page``. Pass ``page`` and the response becomes
+    ``{"items": [...], "meta": {total, current_page, per_page, last_page}}``
+    of the slimmer ``SpoolListItem`` (see its docstring for what's dropped).
+    """
+    if page is None:
+        spools = await inventory_service.list_spools(db, include_archived=include_archived)
+        return [SpoolResponse.model_validate(s) for s in spools]
+
+    filters = await inventory_service.build_spool_filters(
+        db,
+        archived=archived,
+        usage=usage,
+        material=material,
+        brand=brand,
+        colors=colors or None,
+        color_rgbas=color_rgbas or None,
+        category=category,
+        catalog_id=catalog_id,
+        location_id=location_id,
+        stock=stock,
+        assigned=assigned,
+        q=q,
+    )
+
+    offset, limit = (0, None) if all else ((page - 1) * per_page, per_page)
+
+    total = await inventory_service.count_spools(db, filters=filters)
+    spools = await inventory_service.list_spools(db, filters=filters, sort_by=sort_by, limit=limit, offset=offset)
+
+    last_page = 1 if all else max(1, math.ceil(total / per_page))
+    return SpoolListPage(
+        items=[_spool_to_list_item(s) for s in spools],
+        meta=PaginationMeta(
+            total=total,
+            current_page=1 if all else page,
+            per_page=(total or 1) if all else per_page,
+            last_page=last_page,
+        ),
+    )
 
 
 # ── CSV import / export (#1576) ──────────────────────────────────────────────
