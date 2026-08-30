@@ -28,6 +28,8 @@
 
 ### Changed
 
+- **Mid-print spool swap asks one question in one place.** Assigning a spool to a printer whose print has a pause behind it now opens the same "replacement or correction?" dialog a paused printer gets (worded for that pause), instead of a default-off toggle in the picker that was easy to miss — and a missed toggle silently attributed the whole print to the new spool.
+
 - **The library no longer links a folder to an archive.** Archives are your print history, and library folders now only link to projects — the folder-to-archive link was rarely used and its "which folder is this archive in" badge was quietly firing a background request for every single archive card on the page. Folder-to-project linking is unaffected.
 
 - **Notification event subscriptions are one list now, not thirty-four database columns.** Every provider's per-event toggles moved into a single JSON field (the API and the settings UI are unchanged) — the table had grown a column per event, migration after migration, and a future event is now a registry entry instead of DDL. Existing selections are carried over exactly.

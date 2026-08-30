@@ -44,13 +44,12 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     spoolProfile?: string;
     trayProfile?: string;
   } | null>(null);
-  // Mid-pause the same gesture means two opposite things: a physical spool
-  // replacement (usage must split at the current layer) or a wrong-link
-  // correction (the new spool owns the whole print). While RUNNING the
-  // feeding spool cannot physically be swapped, so only a paused print asks.
+  // Mid-print the same gesture means two opposite things: a physical spool
+  // replacement (usage must split at a pause layer) or a wrong-link
+  // correction (the new spool owns the whole print). Both replacement
+  // windows — paused right now, or running with a pause behind the print —
+  // ask through the same modal; only the wording differs.
   const [replacementPrompt, setReplacementPrompt] = useState<{ spoolId?: number; spoolmanId?: number } | null>(null);
-  // The opt-in checkbox for the running-after-a-pause window.
-  const [replaceAtPause, setReplaceAtPause] = useState(false);
 
   // Reset selected spool(s) when filtering mode changes
   useEffect(() => {
@@ -63,7 +62,6 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     if (isOpen) {
       setDisableFiltering(false);
       setReplacementPrompt(null);
-      setReplaceAtPause(false);
     }
   }, [isOpen]);
 
@@ -131,9 +129,11 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     queryFn: () => api.getReplacementWindow(printerId),
     enabled: isOpen,
   });
-  // 'prompt': paused — a swap is likely, ask before assigning.
-  // 'optin': running after a pause — the swap, if any, happened back then;
-  // a default-off checkbox, so bulk wrong-link corrections stay friction-free.
+  // 'prompt': paused — a swap is likely happening right now.
+  // 'optin': running after a pause — the swap, if any, happened back then.
+  // Both ask through the same modal (one question in one place — the inline
+  // toggle this window used to get was routinely missed); 'none' assigns
+  // straight away, a physical swap being impossible.
   const windowMode = replacementWindow?.mode ?? 'none';
 
   const assignMutation = useMutation({
@@ -293,16 +293,16 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     return spoolDisplayNameMatches(haystack, searchFilter);
   });
 
-  // The single funnel every assignment goes through. With the printer paused
-  // mid-print and no answer yet, ask first; the answer re-enters with the
-  // flag decided.
+  // The single funnel every assignment goes through. Inside either
+  // replacement window with no answer yet, ask first; the answer re-enters
+  // with the flag decided.
   const fireAssign = (target: { spoolId?: number; spoolmanId?: number }, midPrintReplacement?: boolean) => {
-    if (midPrintReplacement === undefined && windowMode === 'prompt') {
+    if (midPrintReplacement === undefined && (windowMode === 'prompt' || windowMode === 'optin')) {
       setReplacementPrompt(target);
       return;
     }
     if (midPrintReplacement === undefined) {
-      midPrintReplacement = windowMode === 'optin' && replaceAtPause;
+      midPrintReplacement = false;
     }
     if (target.spoolmanId !== undefined) {
       assignSpoolmanMutation.mutate({ spoolmanSpoolId: target.spoolmanId, midPrintReplacement: !!midPrintReplacement });
@@ -559,42 +559,6 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
           </div>
         </div>
 
-        {/* Running after a pause: the swap, if any, happened back at that
-            pause — offer the boundary as a default-off toggle so bulk
-            wrong-link corrections stay friction-free. Styled as an amber
-            badge panel: a plain checkbox was too easy to miss, and missing
-            it silently mis-attributes the whole print. */}
-        {windowMode === 'optin' && (
-          <div className="px-4 py-3 border-t border-bambu-dark-tertiary">
-            <button
-              type="button"
-              role="switch"
-              aria-checked={replaceAtPause}
-              onClick={() => setReplaceAtPause((v) => !v)}
-              className={`flex items-center gap-3 w-full text-left rounded-lg border px-3 py-2.5 transition-colors ${
-                replaceAtPause
-                  ? 'border-bambu-green/60 bg-bambu-green/10'
-                  : 'border-amber-500/40 bg-amber-500/10 hover:border-amber-500/70'
-              }`}
-            >
-              <span className="text-sm text-white leading-snug flex-1">
-                {t('inventory.midPrintReplacement.optin', { layer: replacementWindow?.pause_layer ?? 0 })}
-              </span>
-              <span
-                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
-                  replaceAtPause ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
-                    replaceAtPause ? 'translate-x-[22px]' : 'translate-x-0.5'
-                  }`}
-                />
-              </span>
-            </button>
-          </div>
-        )}
-
         {/* Footer */}
         <div className="flex justify-between items-center p-4 border-t border-bambu-dark-tertiary">
           <label className="flex items-center gap-2 text-sm text-bambu-gray cursor-pointer select-none">
@@ -708,9 +672,15 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setReplacementPrompt(null)} />
           <div className="relative w-full max-w-md bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl p-5">
-            <h3 className="text-lg font-semibold text-white">{t('inventory.midPrintReplacement.title')}</h3>
+            <h3 className="text-lg font-semibold text-white">
+              {windowMode === 'optin'
+                ? t('inventory.midPrintReplacement.titleOptin')
+                : t('inventory.midPrintReplacement.title')}
+            </h3>
             <p className="mt-3 text-sm text-bambu-gray whitespace-pre-line">
-              {t('inventory.midPrintReplacement.body')}
+              {windowMode === 'optin'
+                ? t('inventory.midPrintReplacement.bodyOptin', { layer: replacementWindow?.pause_layer ?? 0 })
+                : t('inventory.midPrintReplacement.body')}
             </p>
             <div className="mt-5 flex flex-col gap-2">
               <Button

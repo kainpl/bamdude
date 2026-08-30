@@ -186,42 +186,47 @@ describe('AssignSpoolModal', () => {
     expect(screen.queryByText('The printer is paused mid-print')).not.toBeInTheDocument();
   });
 
-  it('running after a pause offers the split as a default-off checkbox', async () => {
+  it('running after a pause asks through the same modal', async () => {
     // Real workflow: pause -> swap -> resume at the printer, THEN the UI.
-    // No modal here — bulk wrong-link corrections must stay friction-free —
-    // but ticking the box declares the swap and splits at the pause layer.
+    // One question in one place: this window used to be a default-off toggle
+    // in the picker, which was routinely missed — now the same modal opens,
+    // worded for the pause that is already behind the print.
     const { fireEvent } = await import('@testing-library/react');
     (api.getReplacementWindow as ReturnType<typeof vi.fn>).mockResolvedValue({ mode: 'optin', pause_layer: 87 });
     (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1 });
 
     render(<AssignSpoolModal {...defaultProps} />);
     await waitFor(() => expect(screen.getByText(/Polymaker/)).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText(/paused at layer 87/)).toBeInTheDocument());
 
     fireEvent.click(screen.getByText(/Polymaker/));
-
-    // Unticked: a plain assignment — the correction path, no prompt.
     const buttons = screen.getAllByRole('button', { name: /Assign Spool/ });
     fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => expect(screen.getByText('This print had a pause behind it')).toBeInTheDocument());
+    expect(screen.getByText(/paused at layer 87/)).toBeInTheDocument();
+    expect(screen.queryByText('The printer is paused mid-print')).not.toBeInTheDocument();
+    expect(api.assignSpool).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /fixing a wrong link/ }));
     await waitFor(() =>
       expect(api.assignSpool).toHaveBeenCalledWith(expect.objectContaining({ mid_print_replacement: false }))
     );
-    expect(screen.queryByText('The printer is paused mid-print')).not.toBeInTheDocument();
   });
 
-  it('the ticked checkbox declares the replacement', async () => {
+  it('declaring the replacement in that modal splits at the pause layer', async () => {
     const { fireEvent } = await import('@testing-library/react');
     (api.getReplacementWindow as ReturnType<typeof vi.fn>).mockResolvedValue({ mode: 'optin', pause_layer: 87 });
     (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1 });
 
     render(<AssignSpoolModal {...defaultProps} />);
     await waitFor(() => expect(screen.getByText(/Polymaker/)).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText(/paused at layer 87/)).toBeInTheDocument());
 
     fireEvent.click(screen.getByText(/Polymaker/));
-    fireEvent.click(screen.getByText(/paused at layer 87/));
     const buttons = screen.getAllByRole('button', { name: /Assign Spool/ });
     fireEvent.click(buttons[buttons.length - 1]);
+    await waitFor(() => expect(screen.getByText('This print had a pause behind it')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /split the usage/ }));
     await waitFor(() =>
       expect(api.assignSpool).toHaveBeenCalledWith(expect.objectContaining({ mid_print_replacement: true }))
     );
