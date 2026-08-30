@@ -7840,7 +7840,7 @@ export default {
     received: 'Received',
     markPurchased: 'Mark as purchased',
     markReceived: 'Mark as received - adds spools to Stock inventory',
-    receiveFailed: 'Could not receive this order - nothing was changed. Try again.',
+    receiveFailed: 'Receiving failed. Retry to finish it - spools already added are not added again.',
     resetToPending: 'Reset to pending',
     remove: 'Remove',
     clearAll: 'Clear all',

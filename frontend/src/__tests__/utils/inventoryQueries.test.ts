@@ -55,8 +55,23 @@ describe('invalidateSpoolAndLocationQueries', () => {
 
   it('names all three forecast keys — the two suffixed ones are NOT prefixed by the first', async () => {
     // TanStack matches key arrays element-wise: 'inventory-forecast-chart' is
-    // a different first element, not a child of 'inventory-forecast'. Drop one
+    // a different first ELEMENT, not a child of 'inventory-forecast'. Drop one
     // from the list and the chart silently keeps the old series.
+    //
+    // ⚠️ The negative half IS the claim, so it is asserted directly rather
+    // than implied: invalidating only the base key must leave the other two
+    // valid. Without this the test passes identically under prefix matching —
+    // it would agree with a world where the helper could name one key — and
+    // the day somebody "simplifies" it down to `['inventory-forecast']`,
+    // nothing objects while the chart and logistics rows serve stale data.
+    const base = primed();
+    await base.invalidateQueries({ queryKey: ['inventory-forecast'] });
+    expect(invalidated(base, ['inventory-forecast'])).toBe(true);
+    expect(invalidated(base, ['inventory-forecast-chart'])).toBe(false);
+    expect(invalidated(base, ['inventory-forecast-logistics'])).toBe(false);
+
+    // …which is exactly why the helper names all three: it reaches what the
+    // base key alone provably cannot.
     const qc = primed();
     await invalidateForecastQueries(qc);
     for (const k of FORECAST_KEYS) {

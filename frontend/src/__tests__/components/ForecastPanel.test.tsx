@@ -604,12 +604,65 @@ describe('ForecastPanel — failures are loud and the served mean is the only sp
 
     // The failure is dismissable, not silent…
     expect(
-      await screen.findByText('Could not receive this order - nothing was changed. Try again.')
+      await screen.findByText('Receiving failed. Retry to finish it - spools already added are not added again.')
     ).toBeInTheDocument();
     // …and nothing was committed: the row is still Purchased, still actionable.
     expect(statusPatches).toBe(0);
     expect(deletes).toBe(0);
     expect(screen.getByText('Purchased')).toBeInTheDocument();
+  });
+
+  it('a retry after a MID-SEQUENCE failure resumes instead of creating the spools twice (N2)', async () => {
+    // Receiving is three writes. Creating first (F1) made the flow recoverable
+    // and the toast tells the operator to retry — so the retry must not repeat
+    // the write that already landed. The window: bulk-create succeeded, the
+    // status PATCH 503'd. Clicking again used to mint a SECOND batch of N
+    // spools, silently, on the advice of our own error message.
+    let bulkCreates = 0;
+    let patchAttempts = 0;
+    let deletes = 0;
+    let removed = false;
+    setupHandlers({ shoppingList: [purchasedItem] });
+    server.use(
+      http.get('/api/v1/inventory/shopping-list', () =>
+        HttpResponse.json(removed ? [] : [purchasedItem])
+      ),
+      http.post('/api/v1/inventory/spools/bulk', () => {
+        bulkCreates += 1;
+        return HttpResponse.json([]);
+      }),
+      http.patch('/api/v1/inventory/shopping-list/:id/status', () => {
+        patchAttempts += 1;
+        if (patchAttempts === 1) return new HttpResponse(null, { status: 503 });
+        return HttpResponse.json({});
+      }),
+      http.delete('/api/v1/inventory/shopping-list/:id', () => {
+        deletes += 1;
+        removed = true;
+        return HttpResponse.json({ status: 'ok' });
+      }),
+    );
+
+    render(<ForecastPanel />);
+    fireEvent.click(await screen.findByText('Shopping List'));
+    const title = 'Mark as received - adds spools to Stock inventory';
+    await waitFor(() => expect(screen.getByTitle(title)).toBeEnabled());
+    fireEvent.click(screen.getByTitle(title));
+
+    // First attempt: the spools landed, the status flip did not.
+    await waitFor(() => expect(patchAttempts).toBe(1));
+    expect(bulkCreates).toBe(1);
+    expect(deletes).toBe(0);
+
+    // The retry the toast advises RESUMES at the PATCH…
+    await waitFor(() => expect(screen.getByTitle(title)).toBeEnabled());
+    fireEvent.click(screen.getByTitle(title));
+    await waitFor(() => expect(deletes).toBe(1));
+
+    // …creating nothing a second time, and the order completes.
+    expect(bulkCreates).toBe(1);
+    expect(patchAttempts).toBe(2);
+    await waitFor(() => expect(screen.queryByTitle(title)).toBeNull());
   });
 
   it('Mark received writes the SERVED spool size as label_weight, not a live-only mean (F2)', async () => {

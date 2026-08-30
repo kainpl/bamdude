@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -1336,6 +1336,19 @@ function ShoppingListPanel({
   const queryClient = useQueryClient();
   const [view, setView] = useState<'list' | 'logistics'>('list');
 
+  /**
+   * Item ids whose spools have already been created on the server.
+   *
+   * ⚠️ Receiving is THREE writes, and the button stays enabled after a failure
+   * — that recoverability is the whole point of creating before patching. But
+   * "retry" must RESUME, not repeat: without this, a failure after the create
+   * (status PATCH 503s, connection drops) turned the retry the toast advises
+   * into a second batch of N spools. A ref, not state: it is read inside
+   * `mutationFn` at call time, so it must never be a stale closure, and
+   * nothing renders off it.
+   */
+  const spoolsCreatedFor = useRef<Set<number>>(new Set());
+
   const statusMutation = useMutation({
     mutationFn: async ({ id, status, item, avgSpoolG }: {
       id: number;
@@ -1349,6 +1362,13 @@ function ShoppingListPanel({
         // `received` server-side and then discovers the create failed — the
         // row comes back Received with its button permanently disabled, the
         // inventory silently short by N spools, and no in-UI way back.
+        if (spoolsCreatedFor.current.has(id)) {
+          // A resumed retry: the spools exist, only the tail failed.
+          await api.updateShoppingListStatus(id, status);
+          await api.removeFromShoppingList(id);
+          spoolsCreatedFor.current.delete(id);
+          return;
+        }
         const spoolWeight = avgSpoolG ?? 1000;
         const spoolBase: Parameters<typeof api.bulkCreateSpools>[0] = {
           material: item.material,
@@ -1372,8 +1392,11 @@ function ShoppingListPanel({
           purchase_date: null, filament_diameter: '1.75', lot: null,
         };
         await api.bulkCreateSpools(spoolBase, item.quantity_spools);
+        // Recorded BEFORE the next await, which is the one that can fail.
+        spoolsCreatedFor.current.add(id);
         await api.updateShoppingListStatus(id, status);
         await api.removeFromShoppingList(id);
+        spoolsCreatedFor.current.delete(id);
         return;
       }
       await api.updateShoppingListStatus(id, status);

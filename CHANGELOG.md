@@ -50,7 +50,7 @@
 
 - **Stock alerts keep watching a colour for 90 days after its last spool is archived.** Archiving the last spool of a colour used to silence its alerts immediately, while the Forecast tab went on showing that colour running out — the alerts and the tab now use the same 90-day window.
 
-- **The reorder suggestion uses a colour's real spool size.** For a colour whose spools are all archived, "should last N days" assumed a 1 kg spool and suggested the wrong quantity to buy; it now averages the spool sizes actually recorded for that colour.
+- **A colour's real spool size is now used everywhere it is asked for.** For a colour whose spools are all archived, BamDude assumed a 1 kg spool — and that guess reached further than the reorder dialog: "should last N days" suggested the wrong quantity to buy, the stock-break banner's "order N more spools" disagreed with it, the shopping list's arrival timeline and CSV export priced the order at 1 kg a spool, and — the one that persisted — **marking an order received created every spool with the wrong weight recorded on it**. All of them now use the average spool size actually recorded for that colour, archived spools included. The 1 kg guess survives only where nothing better exists: a colour with no spool weight recorded anywhere.
 
 - **The Inventory stats bar no longer downloads the whole inventory to show five numbers.** The totals, the per-material breakdown and the low-stock count are counted in the database, so on a large farm the bar stops costing a full inventory download on every visit. The low-stock count now also refreshes straight after you change the low-stock threshold, instead of showing the previous number until something else reloaded the page.
 
