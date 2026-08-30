@@ -3233,7 +3233,15 @@ async def get_inventory_forecast_logistics(
 
         rate = row.rate_g_day
         lead = row.eff_lead_time_days
-        avg_spool_g = row.total_label_g / row.total_spools if row.total_spools > 0 else 1000.0
+        # The row's own archived-INCLUSIVE spool size — one rule for every
+        # consumer of "how big is a spool of this SKU" (the client's cart
+        # dialog, its bridge-gap count, the CSV below). The live totals cannot
+        # answer it: a SKU held only by the archived window serves
+        # total_spools 0, and the arrival bump would then be sized at the
+        # fabricated 1000 g while the dialog that ordered it used the real
+        # mean. None (no spool of the SKU carries a label weight at all) is
+        # the ONLY case the guess survives.
+        avg_spool_g = row.avg_spool_label_g if row.avg_spool_label_g is not None else 1000.0
         arrival_g = item.quantity_spools * avg_spool_g
         stock_at_arrival = max(0.0, row.total_remaining_g - rate * lead)
         peak_g = stock_at_arrival + arrival_g
@@ -3298,7 +3306,10 @@ async def export_shopping_list_csv(
     writer.writerow(_SHOPPING_LIST_CSV_HEADERS)
     for item in items:
         row = by_key.get(forecast_engine.sku_key(item.material, item.subtype, item.brand, item.color_name))
-        avg_spool_g = row.total_label_g / row.total_spools if row is not None and row.total_spools > 0 else 1000.0
+        # Same served mean as the logistics bump above (and the client's cart
+        # dialog) — the Weight column must not price an archived-only SKU's
+        # order at a fabricated 1000 g/spool.
+        avg_spool_g = row.avg_spool_label_g if row is not None and row.avg_spool_label_g is not None else 1000.0
         lead = row.eff_lead_time_days if row is not None else global_lead
         restock = (today + timedelta(days=lead)).isoformat() if lead > 0 else ""
         writer.writerow(

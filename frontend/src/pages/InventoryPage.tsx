@@ -988,19 +988,44 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     ...(viewMode === 'cards' ? { include_k_profiles: true } : {}),
   }), [filterParams, serverSortBy, effectivePageIndex, pageSize, viewMode]);
 
+  // The Forecast tab renders <ForecastPanel/> INSTEAD of the list (:2630), so
+  // the list's own feed buys nothing there — and it does not merely idle: it
+  // 30 s-polls a page of spool rows nobody paints, and gates the panel's first
+  // paint behind its own resolution.
+  //
+  // ⚠️ Sharper than waste: `pageSize` is PERSISTED and accepts -1 → `all:true`
+  // (:811-820, :985). A user who once picked "All" in the spools pager was
+  // firing a full-table download every 30 seconds while sitting on the
+  // Forecast tab — the exact fetch this cycle exists to have deleted,
+  // resurrected through a stored preference, on the one tab that was rewritten
+  // to avoid it.
+  //
+  // The condition mirrors the render branch EXACTLY: a `canViewForecast` of
+  // false falls back to the table, which does need the feed.
+  const forecastViewActive = viewMode === 'forecast' && canViewForecast;
+  // ⚠️ And the verdict is NOT in on the first tick — `canViewForecast` reads
+  // false while auth and the Spoolman mode are still resolving. Fetching the
+  // list "just in case" during that window is not a saved millisecond, it is
+  // the whole full-table download happening anyway, once per visit; the
+  // persisted "All" case makes that the exact cost this cycle removed. So the
+  // feed WAITS for the answer whenever the stored view is the forecast, and
+  // starts only if the answer comes back "no panel".
+  const forecastVerdictPending = viewMode === 'forecast' && (authLoading || !spoolmanModeReady);
+  const listFeedSuppressed = forecastViewActive || forecastVerdictPending;
+
   // The paged list — flat or grouped, one enabled at a time. The 30s poll
   // the full-array query used to run now refetches the CURRENT PAGE only.
   const flatPageQuery = useQuery({
     queryKey: ['inventory-spools', 'page', listParams],
     queryFn: () => api.getSpoolsPaged(listParams),
-    enabled: serverMode && !groupSimilar,
+    enabled: serverMode && !listFeedSuppressed && !groupSimilar,
     refetchInterval: 30000,
     placeholderData: (prev) => prev,
   });
   const groupPageQuery = useQuery({
     queryKey: ['inventory-spools', 'grouped', listParams],
     queryFn: () => api.getSpoolGroupsPaged(listParams),
-    enabled: serverMode && groupSimilar,
+    enabled: serverMode && !listFeedSuppressed && groupSimilar,
     refetchInterval: 30000,
     placeholderData: (prev) => prev,
   });
@@ -1265,7 +1290,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     mutationFn: (id: number) =>
       spoolmanMode ? api.resetSpoolmanInventorySpoolConsumedCounter(id) : api.resetSpoolConsumedCounter(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      // Resetting usage flips whole spools out of the engine's history rate
+      // tier — the forecast must move with the list, not on the next refocus.
+      refreshSpoolQueries();
       showToast(t('inventory.consumedCounterReset'), 'success');
     },
     onError: () => {
@@ -1279,7 +1306,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         ? api.bulkResetSpoolmanInventorySpoolConsumedCounter(ids)
         : api.bulkResetSpoolConsumedCounter(ids),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      refreshSpoolQueries();
       showToast(t('inventory.allConsumedCountersReset', { count: data.reset }), 'success');
     },
     onError: () => {
@@ -1325,7 +1352,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     onMutate: () => setBulkPending(true),
     onSettled: () => setBulkPending(false),
     onSuccess: ({ ok, failed }, { kind }) => {
-      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      refreshSpoolQueries();
       const label = t(`inventory.bulk.action.${kind}`);
       if (ok > 0 && failed === 0) {
         showToast(t('inventory.bulk.done', { action: label, count: ok }), 'success');
@@ -1879,7 +1906,15 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // ⚠️ In grouped server mode `totalRows` counts GROUPS (meta.total counts
   // what the list pages over) — the flat spool total is deliberately not
   // fetched twice.
-  const totalRows = spoolmanMode ? clientTotalRows : (serverMeta?.total ?? 0);
+  // Under the Forecast tab there IS no list meta (the feed is disabled), so
+  // the count — and the header buttons that gate on "is there anything at
+  // all" — read the already-fetched stats instead of collapsing to 0 and
+  // disabling themselves over a full inventory.
+  const totalRows = spoolmanMode
+    ? clientTotalRows
+    : forecastViewActive
+      ? (serverStats?.active_spools ?? 0)
+      : (serverMeta?.total ?? 0);
   const totalPages = spoolmanMode ? clientTotalPages : (serverMeta?.last_page ?? 1);
   const currentPage = spoolmanMode
     ? clientSafePageIndex + 1
@@ -1955,11 +1990,21 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // Initial-load gate for the list area. `placeholderData` keeps it false
   // across page/filter transitions, so only the very first fetch blanks the
   // list — same feel the archives list has.
-  const listLoading = spoolmanMode
-    ? isLoading
-    : groupSimilar
-      ? groupPageQuery.isLoading
-      : flatPageQuery.isLoading;
+  // ⚠️ The forecast branch never waits on the list feed — that feed is
+  // DISABLED there (see forecastViewActive), and gating the panel's paint on
+  // a query that will never resolve is how a whole tab renders as a spinner.
+  const listLoading = forecastViewActive
+    ? false
+    : forecastVerdictPending
+      // The stored view is the forecast and we do not yet know whether the
+      // panel is allowed: neither surface can be painted honestly, and the
+      // table's empty state is a claim ("no spools") we have not earned.
+      ? true
+      : spoolmanMode
+        ? isLoading
+        : groupSimilar
+          ? groupPageQuery.isLoading
+          : flatPageQuery.isLoading;
 
   /**
    * "Select all N matching the filter" — the EXPLICIT cross-page action the
@@ -2939,7 +2984,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           onClose={() => setCsvImportOpen(false)}
           onImported={(created) => {
             setCsvImportOpen(false);
-            queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+            refreshSpoolQueries();
             showToast(t('inventory.csv.importSuccess', '{{count}} spools imported', { count: created }), 'success');
           }}
         />

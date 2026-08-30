@@ -8592,8 +8592,11 @@ export const api = {
     }),
   getSpoolUsageHistory: (spoolId: number, limit = 50) =>
     request<SpoolUsageRecord[]>(`/inventory/spools/${spoolId}/usage?limit=${limit}`),
-  getAllUsageHistory: (limit = 100, printerId?: number) =>
-    request<SpoolUsageRecord[]>(`/inventory/usage?limit=${limit}${printerId ? `&printer_id=${printerId}` : ''}`),
+  // ⚠️ No farm-wide usage-history helper lives here. Its only caller was the
+  // ForecastPanel's 5000-row feed, deleted by the forecast-server-side cycle
+  // (the engine now aggregates usage server-side), and two tests pin that
+  // GET /inventory/usage is never called from the client. The ENDPOINT stays
+  // — it is public API — but a ready-made helper for it is an invitation.
   clearSpoolUsageHistory: (spoolId: number) =>
     request<InventorySpool>(`/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
   deleteSpoolUsageRecord: (spoolId: number, usageId: number) =>

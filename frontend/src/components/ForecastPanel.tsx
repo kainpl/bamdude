@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   AlertTriangle, TrendingDown, ShoppingCart, Check, BellOff,
@@ -22,6 +22,7 @@ import type {
   ShoppingListItem,
   SpoolListItem,
 } from '../api/client';
+import { invalidateForecastQueries } from '../utils/inventoryQueries';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { LoadingBlock } from './LoadingBlock';
@@ -144,12 +145,6 @@ function formatDate(date: Date): string {
 
 function formatDateShort(date: Date): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-function invalidateForecastQueries(queryClient: QueryClient) {
-  queryClient.invalidateQueries({ queryKey: ['inventory-forecast'] });
-  queryClient.invalidateQueries({ queryKey: ['inventory-forecast-chart'] });
-  queryClient.invalidateQueries({ queryKey: ['inventory-forecast-logistics'] });
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -336,11 +331,16 @@ export function ForecastPanel() {
           <GlobalLeadTimeSetting
             value={globalLeadTime}
             onSave={(v) => {
-              api.updateSettings({ forecast_global_lead_time_days: v }).then(() => {
-                queryClient.invalidateQueries({ queryKey: ['settings'] });
-                invalidateForecastQueries(queryClient);
-                showToast(t('forecast.globalLeadTimeSaved'), 'success');
-              });
+              // The editor closes synchronously on click, so a rejected PUT
+              // would otherwise revert the number with no explanation (plus
+              // an unhandled rejection) — the dismissable-failure rule.
+              api.updateSettings({ forecast_global_lead_time_days: v })
+                .then(() => {
+                  queryClient.invalidateQueries({ queryKey: ['settings'] });
+                  invalidateForecastQueries(queryClient);
+                  showToast(t('forecast.globalLeadTimeSaved'), 'success');
+                })
+                .catch(() => showToast(t('forecast.failedSaveSettings'), 'error'));
             }}
           />
         )}
@@ -1116,6 +1116,21 @@ function ForecastRow({
                   <p className="text-xs text-bambu-gray mb-2">{t('forecast.individualSpools')}</p>
                   {detailQuery.isLoading ? (
                     <LoadingBlock label={t('common.loading')} />
+                  ) : detailQuery.isError ? (
+                    /* "Error is not empty": without this the nested table
+                       renders its headers over zero rows, which is exactly
+                       what a SKU with no spools looks like — a silently dead
+                       surface. Say so, and offer the way back. */
+                    <div className="flex items-center gap-3 px-3 py-3 rounded-lg border border-red-200 dark:border-red-500/20 bg-red-50 dark:bg-red-500/10">
+                      <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 flex-shrink-0" />
+                      <span className="text-xs text-red-700 dark:text-red-300">{t('forecast.individualSpoolsFailed')}</span>
+                      <button
+                        onClick={() => void detailQuery.refetch()}
+                        className="ml-auto px-2 py-1 rounded text-xs font-medium border border-red-300 dark:border-red-500/30 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
+                      >
+                        {t('forecast.retry')}
+                      </button>
+                    </div>
                   ) : (
                     <div className="bg-bambu-dark-secondary rounded-lg overflow-hidden border border-bambu-dark-tertiary">
                       <table className="w-full">
@@ -1328,9 +1343,12 @@ function ShoppingListPanel({
       item?: ShoppingListItem;
       avgSpoolG?: number;
     }) => {
-      await api.updateShoppingListStatus(id, status);
       if (status === 'received' && item) {
-        // Add received spools to stock category
+        // ⚠️ ORDER IS LOAD-BEARING: create the spools FIRST, flip the status
+        // only once they exist. The other way round (as shipped) commits
+        // `received` server-side and then discovers the create failed — the
+        // row comes back Received with its button permanently disabled, the
+        // inventory silently short by N spools, and no in-UI way back.
         const spoolWeight = avgSpoolG ?? 1000;
         const spoolBase: Parameters<typeof api.bulkCreateSpools>[0] = {
           material: item.material,
@@ -1354,16 +1372,24 @@ function ShoppingListPanel({
           purchase_date: null, filament_diameter: '1.75', lot: null,
         };
         await api.bulkCreateSpools(spoolBase, item.quantity_spools);
+        await api.updateShoppingListStatus(id, status);
         await api.removeFromShoppingList(id);
+        return;
       }
+      await api.updateShoppingListStatus(id, status);
     },
-    onSuccess: () => {
+    // onSettled, not onSuccess: a failure can land between the three calls
+    // (spools created, status not flipped), so the screen must be refreshed
+    // from the server either way rather than left asserting the pre-click
+    // state over a half-applied change.
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['shopping-list'] });
       queryClient.invalidateQueries({ queryKey: ['spools'] });
       queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
       // Receiving spools moves the stock the forecast is computed over.
       invalidateForecastQueries(queryClient);
     },
+    onError: () => showToast(t('forecast.receiveFailed'), 'error'),
   });
 
   // Served rows keyed by the engine's collapsed SKU key — the join the
@@ -1475,12 +1501,19 @@ function ShoppingListPanel({
                 const lbl = [item.brand, item.material, item.subtype, item.color_name].filter(Boolean).join(' ');
                 const hasBreak = breakAlerts.some((a) => a.id === item.id);
                 const f = rowFor(item);
-                // ⚠️ 1000 g is the documented fallback for a SKU with no live
-                // spools — but it is ALSO what an unanswered cart-rows feed
-                // produces, and Mark received writes this as a real
-                // label_weight. rowsPending disables that button below; here
-                // the number is display-only.
-                const avgSpoolG = f && f.total_spools > 0 ? f.total_label_g / f.total_spools : 1000;
+                // The engine's archived-INCLUSIVE spool size, the same number
+                // the Add-to-cart dialog divides by (:1861) — one rule, every
+                // consumer. The live totals cannot answer it: a SKU held by
+                // the 90-day archived-only window, precisely the one you are
+                // being told to reorder, serves total_spools 0.
+                //
+                // ⚠️ Mark received writes this as a real `label_weight`, so
+                // the 1000 g fallback is not cosmetic here. It survives for
+                // exactly two cases: the server sent null (no spool of the SKU
+                // carries a label weight at all), and an unanswered cart-rows
+                // feed (`f === null`) — rowsPending disables the button below
+                // for the second.
+                const avgSpoolG = f?.avg_spool_label_g ?? 1000;
                 const totalWeightG = Math.round(item.quantity_spools * avgSpoolG);
                 const lt = f?.eff_lead_time_days ?? globalLeadTime ?? 0;
                 const restockDate = lt > 0 ? addDays(new Date(), lt) : null;
@@ -1675,7 +1708,11 @@ function CartLogisticsRow({
           {' '}{t('forecast.stockRunsOutBefore', { lt: arrivalDay ?? row?.eff_lead_time_days ?? 0 })}
           {row !== null && row.rate_g_day !== null && (
             <span> {t('forecast.atRate', { rate: row.rate_g_day.toFixed(1) })}{' '}
-              <span className="font-semibold">{t('forecast.moreSpools', { count: Math.ceil((row.rate_g_day * row.eff_lead_time_days - row.total_remaining_g) / ((row.total_label_g / (row.total_spools || 1)) || 1000)) })}</span>
+              {/* Same spool size as the Add-to-cart dialog and the received
+                  write — the served archived-inclusive mean. Divide by the
+                  live totals here and the banner says "order 2 more" while
+                  the dialog for that very SKU says 3. */}
+              <span className="font-semibold">{t('forecast.moreSpools', { count: Math.ceil((row.rate_g_day * row.eff_lead_time_days - row.total_remaining_g) / (row.avg_spool_label_g ?? 1000)) })}</span>
               {' '}{t('forecast.bridgeGap')}
             </span>
           )}

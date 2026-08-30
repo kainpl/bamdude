@@ -561,3 +561,131 @@ describe('ForecastPanel — a renderer of server-computed rows', () => {
     expect(await screen.findByText('3 spools')).toBeInTheDocument();
   });
 });
+
+// ── Final review wave ─────────────────────────────────────────────────────────
+
+describe('ForecastPanel — failures are loud and the served mean is the only spool size', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  /** A purchased cart item for the panel's default PLA/eSun/Blue row. */
+  const purchasedItem = {
+    id: 1, material: 'PLA', subtype: null, brand: 'eSun', color_name: 'Blue',
+    quantity_spools: 2, note: null, status: 'purchased' as const,
+    purchased_at: '2026-08-02T00:00:00Z', added_at: '2026-08-01T00:00:00Z',
+  };
+
+  it('a failed spool create leaves the order UNTOUCHED — no status flip, and it says so (F1)', async () => {
+    // The shipped order was PATCH-then-create: a 422 on the create left the
+    // item `received` server-side with zero spools made, its button
+    // permanently disabled, and not a word on screen. Creating FIRST means a
+    // failure costs nothing but a retry.
+    setupHandlers({ shoppingList: [purchasedItem] });
+    let statusPatches = 0;
+    let deletes = 0;
+    server.use(
+      http.post('/api/v1/inventory/spools/bulk', () => new HttpResponse(null, { status: 422 })),
+      http.patch('/api/v1/inventory/shopping-list/:id/status', () => {
+        statusPatches += 1;
+        return HttpResponse.json({});
+      }),
+      http.delete('/api/v1/inventory/shopping-list/:id', () => {
+        deletes += 1;
+        return HttpResponse.json({ status: 'ok' });
+      }),
+    );
+
+    render(<ForecastPanel />);
+    fireEvent.click(await screen.findByText('Shopping List'));
+    const received = await screen.findByTitle('Mark as received - adds spools to Stock inventory');
+    await waitFor(() => expect(received).toBeEnabled());
+    fireEvent.click(received);
+
+    // The failure is dismissable, not silent…
+    expect(
+      await screen.findByText('Could not receive this order - nothing was changed. Try again.')
+    ).toBeInTheDocument();
+    // …and nothing was committed: the row is still Purchased, still actionable.
+    expect(statusPatches).toBe(0);
+    expect(deletes).toBe(0);
+    expect(screen.getByText('Purchased')).toBeInTheDocument();
+  });
+
+  it('Mark received writes the SERVED spool size as label_weight, not a live-only mean (F2)', async () => {
+    // The flagship flow: an archived-only SKU serves total_spools 0 and
+    // total_label_g 0 (both live-gated), so the old divisor collapsed to the
+    // fabricated 1000 g and PERSISTED it on every created spool. 750 is the
+    // engine's archived-inclusive mean — the same number the cart dialog and
+    // the bridge-gap count use.
+    setupHandlers({
+      rows: [row({ total_spools: 0, total_label_g: 0, avg_spool_label_g: 750 })],
+      shoppingList: [purchasedItem],
+    });
+    let created: { spool: { label_weight: number }; quantity: number } | null = null;
+    server.use(
+      http.post('/api/v1/inventory/spools/bulk', async ({ request }) => {
+        created = (await request.json()) as typeof created;
+        return HttpResponse.json([]);
+      }),
+      http.patch('/api/v1/inventory/shopping-list/:id/status', () => HttpResponse.json({})),
+      http.delete('/api/v1/inventory/shopping-list/:id', () => HttpResponse.json({ status: 'ok' })),
+    );
+
+    render(<ForecastPanel />);
+    fireEvent.click(await screen.findByText('Shopping List'));
+    const received = await screen.findByTitle('Mark as received - adds spools to Stock inventory');
+    await waitFor(() => expect(received).toBeEnabled());
+    fireEvent.click(received);
+
+    await waitFor(() => expect(created).not.toBeNull());
+    expect(created!.spool.label_weight).toBe(750);
+    expect(created!.quantity).toBe(2);
+  });
+
+  it('a rejected global lead-time save says so instead of reverting in silence (F6)', async () => {
+    // The editor closes synchronously on Save, so a failed PUT snapped the
+    // number back to the served value with no explanation — plus an
+    // unhandled rejection.
+    setupHandlers();
+    server.use(
+      http.put('/api/v1/settings/', () => new HttpResponse(null, { status: 500 })),
+    );
+    render(<ForecastPanel />);
+
+    // The toolbar paints before the feed answers, and the editor seeds its
+    // input from the value at CLICK time — so wait for the served rows first,
+    // or the 0 of the loading tick is what gets edited.
+    await screen.findByText('eSun PLA Blue');
+    const wrapper = screen.getByText('Global lead time:').parentElement!;
+    fireEvent.click(wrapper.querySelector('button')!);
+    const input = await screen.findByDisplayValue('3');
+    fireEvent.change(input, { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Failed to save settings')).toBeInTheDocument();
+  });
+
+  it('a failed expanded-row spool fetch says so and offers a retry (F8)', async () => {
+    // Without this the nested table renders its headers over zero rows —
+    // indistinguishable from a SKU that simply has no spools. "Error is not
+    // empty."
+    setupHandlers();
+    let attempts = 0;
+    server.use(
+      http.get('/api/v1/inventory/spools', ({ request }) => {
+        attempts += 1;
+        spoolListRequests.push(new URL(request.url));
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    render(<ForecastPanel />);
+    fireEvent.click(await screen.findByText('eSun PLA Blue'));
+
+    expect(await screen.findByText('Could not load the spools of this SKU')).toBeInTheDocument();
+    // …and the way back is a live button, not a page reload.
+    const before = attempts;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(attempts).toBeGreaterThan(before));
+  });
+});

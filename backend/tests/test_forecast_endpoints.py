@@ -622,6 +622,36 @@ class TestForecastLogistics:
         assert row["series"][5][1] == 1950  # 2000 − 10·5
         assert row["series"][6][1] == 4950  # + one 3000 g spool
 
+    async def test_the_arrival_bump_is_sized_by_the_SERVED_spool_mean(self, async_client, db_session):
+        """Final review F5. The live totals cannot size a spool of an
+        archived-only SKU — ``total_spools`` is 0 there by design — so the
+        bump used to be priced at the fabricated 1000 g while the Add-to-cart
+        dialog that placed the very same order divided by the row's real
+        ``avg_spool_label_g``. One rule, every consumer."""
+        spool = await _spool(
+            db_session,
+            material="PLA",
+            brand="AR",
+            color_name="Gold",
+            label_weight=500,
+            weight_used=500.0,
+            archived_at=_naive(NOW - timedelta(days=2)),
+        )
+        await _rate_events(db_session, spool.id, 50.0)
+        item_id = await _add_cart_item(async_client, material="PLA", brand="AR", color_name="Gold", quantity_spools=2)
+
+        rows_rsp = await async_client.get("/api/v1/inventory/forecast?brand=AR")
+        (r,) = rows_rsp.json()["items"]
+        assert r["total_spools"] == 0, "live-gated: this SKU has no live stock"
+        assert r["avg_spool_label_g"] == pytest.approx(500.0)
+
+        rsp = await async_client.get("/api/v1/inventory/forecast/logistics")
+        row = next(x for x in rsp.json() if x["item_id"] == item_id)
+        assert row["arrival_day"] == 0
+        # 2 spools × the REAL 500 g = 1000 — the fabricated mean would say 2000.
+        assert row["series"][0][1] == 0
+        assert row["series"][1][1] == 1000
+
     async def test_an_item_with_no_rate_gets_a_null_series_not_a_crash(self, async_client):
         """The client renders 'no usage data' for a cart item whose SKU has no
         forecast or no rate — the server signals that with series: null."""
@@ -686,8 +716,10 @@ class TestShoppingListCsv:
         assert row[8] == "pending"
 
     async def test_a_matched_sku_prices_the_weight_and_lead_time_from_its_row(self, async_client, db_session):
-        """avgSpoolG = total_label_g / total_spools of the LIVE stock; the lead
-        time is the SKU's effective one, not the global."""
+        """avgSpoolG = the row's served ``avg_spool_label_g``; the lead time is
+        the SKU's effective one, not the global. (Both spools here are live, so
+        the archived-inclusive mean and the live one coincide — the case where
+        they diverge is the next test.)"""
         await _spool(db_session, material="PETG", brand="CS", color_name="Teal")
         await _spool(db_session, material="PETG", brand="CS", color_name="Teal", label_weight=500)
         await _sku_settings(db_session, material="PETG", brand="CS", color_name="Teal", lead_time_days=7)
@@ -701,6 +733,27 @@ class TestShoppingListCsv:
         assert row[5] == "2250"  # 3 × (1500 / 2)
         assert row[6] == "7"
         assert row[7] in _acceptable_dates(7)
+
+    async def test_the_weight_column_uses_the_served_mean_for_an_archived_only_sku(self, async_client, db_session):
+        """Final review F5. An archived-only SKU serves ``total_spools`` 0, so
+        the live divisor collapsed to the 1000 g guess and the export priced
+        the order at double its real weight — while the dialog that placed it
+        used the row's archived-inclusive mean."""
+        await _spool(
+            db_session,
+            material="TPU",
+            brand="AR",
+            color_name="Gold",
+            label_weight=500,
+            weight_used=500.0,
+            archived_at=_naive(NOW - timedelta(days=2)),
+        )
+        await _add_cart_item(async_client, material="TPU", brand="AR", color_name="Gold", quantity_spools=3)
+
+        rsp = await async_client.get("/api/v1/inventory/shopping-list/export.csv")
+        (row,) = _csv_rows(rsp.text)[1:]
+        assert row[1] == "TPU"
+        assert row[5] == "1500", "3 × the real 500 g — the fabricated mean would say 3000"
 
     async def test_a_zero_lead_time_leaves_both_cells_empty(self, async_client, db_session):
         """The client writes `lt || ''` and skips the restock date at lt 0."""

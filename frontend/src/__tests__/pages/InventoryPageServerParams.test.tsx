@@ -23,8 +23,9 @@ import { screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { focusManager } from '@tanstack/react-query';
 import { render } from '../utils';
 import InventoryPageRouter from '../../pages/InventoryPage';
-import { http, HttpResponse } from 'msw';
+import { http, HttpResponse, delay } from 'msw';
 import { server } from '../mocks/server';
+import type { SkuForecastRow } from '../../api/client';
 
 const baseSpool = {
   subtype: null,
@@ -102,7 +103,20 @@ const STATS = {
 // The Forecast tab renders SERVER-computed rows since task 4 of the
 // 2026-08-29 forecast-server-side cycle — the panel's old all=true spool
 // feed is gone; opening the tab hits GET /inventory/forecast instead.
-const FORECAST_ROWS = SPOOLS.map((s) => ({
+// ⚠️ TYPED on purpose: an untyped fixture serves a shape the server cannot
+// send, and the next field added to SkuForecastRow goes missing here in
+// silence (`avg_spool_label_g` already had).
+//
+// ⚠️ …but the annotation is documentation, NOT an armed guard, today. `npm run
+// typecheck` is `tsc -b`; the root tsconfig references only app+node, and
+// tsconfig.app.json EXCLUDES src/__tests__. `tsconfig.test.json` covers this
+// tree but nothing references it — measured 2026-08-30: deleting a required
+// field here still passes the gate, and `tsc -p tsconfig.test.json` reports
+// 170 pre-existing errors (mostly missing `vite/client` types for asset
+// imports and `import.meta.env`). Wiring the test project into the build is
+// its own piece of work; this annotation starts failing red the day it lands,
+// which is why it is written now.
+const FORECAST_ROWS: SkuForecastRow[] = SPOOLS.map((s) => ({
   material: s.material,
   subtype: null,
   brand: s.brand,
@@ -111,6 +125,7 @@ const FORECAST_ROWS = SPOOLS.map((s) => ({
   total_spools: 1,
   total_remaining_g: 1000,
   total_label_g: 1000,
+  avg_spool_label_g: 1000,
   total_used_g: 0,
   rate_g_day: null,
   rate_tier: 'none',
@@ -170,8 +185,12 @@ function setupHandlers() {
     }),
     http.get('/api/v1/inventory/spools', ({ request }) => {
       const url = new URL(request.url);
-      if (!url.searchParams.has('page')) return HttpResponse.json(SPOOLS);
+      // ⚠️ Record BEFORE the page-less early return. The legacy flat-array
+      // shape (`?include_archived=…`, no paging params) is a full download
+      // too — recording only paged calls gave the "ZERO all=true" guard a
+      // blind spot exactly where the last full fetch hides.
       listRequests.push(url);
+      if (!url.searchParams.has('page')) return HttpResponse.json(SPOOLS);
       if (url.searchParams.get('group_similar') === 'true') {
         return HttpResponse.json({
           items: SPOOLS.map((s) => ({
@@ -201,7 +220,14 @@ function setupHandlers() {
 }
 
 /** The list request driving the visible page. */
-const pageRequests = () => listRequests.filter((u) => u.searchParams.get('all') !== 'true');
+const pageRequests = () =>
+  listRequests.filter((u) => u.searchParams.has('page') && u.searchParams.get('all') !== 'true');
+/** The LEGACY page-less shape — `GET /inventory/spools?include_archived=…`,
+ *  answered as a bare full array. It carries no `all=true`, so the full-set
+ *  filter below can never see it; it is a full download all the same, and the
+ *  rule it must obey is the same one: never on a plain visit, modal-gated
+ *  only. Its last caller is SpoolFormModal's category datalist. */
+const legacyArrayRequests = () => listRequests.filter((u) => !u.searchParams.has('page'));
 /** The full-set slim fetches. Since forecast-server-side task 5 a plain visit
  *  fires NONE: the stats bar reads GET /inventory/stats, ForecastPanel renders
  *  server-computed rows, and the remaining full-set consumers (bulk edit,
@@ -261,9 +287,9 @@ describe('InventoryPage — server-driven params (task 4)', () => {
       ),
       http.get('/api/v1/inventory/spools', ({ request }) => {
         const url = new URL(request.url);
+        listRequests.push(url);
         if (url.searchParams.get('all') === 'true') return new HttpResponse(null, { status: 500 });
         if (!url.searchParams.has('page')) return HttpResponse.json(SPOOLS);
-        listRequests.push(url);
         return HttpResponse.json({
           items: SPOOLS.map((s) => ({ ...s, k_profile_count: 0, k_profiles: null })),
           meta: { total: SPOOLS.length, current_page: 1, per_page: 24, last_page: 1 },
@@ -303,12 +329,12 @@ describe('InventoryPage — server-driven params (task 4)', () => {
     server.use(
       http.get('/api/v1/inventory/spools', ({ request }) => {
         const url = new URL(request.url);
+        listRequests.push(url);
         if (url.searchParams.get('all') === 'true') {
           fullSetAttempts += 1;
           return new HttpResponse(null, { status: 500 });
         }
         if (!url.searchParams.has('page')) return HttpResponse.json(SPOOLS);
-        listRequests.push(url);
         return HttpResponse.json({
           items: SPOOLS.map((s) => ({ ...s, k_profile_count: 0, k_profiles: null })),
           meta: { total: SPOOLS.length, current_page: 1, per_page: 24, last_page: 1 },
@@ -559,16 +585,22 @@ describe('InventoryPage — the Forecast tab renders server-computed rows', () =
 
     // The guard falls back to the (Spoolman-fed) table view…
     await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
-    // …the panel never rendered (its SKU rows join brand+material+colour into
-    // one label; the table keeps them in separate cells)…
-    expect(screen.queryByText('eSun PLA Blue')).toBeNull();
+    // …the panel never rendered. ⚠️ The marker is a PANEL-ONLY control, not
+    // the joined "brand material colour" label: the Spoolman table's own
+    // display_name column composes the very same string, so that assertion
+    // only ever passed on a timing accident (the content area happened to be
+    // showing "Loading…" at this instant). Gating the page-level list feed on
+    // the forecast verdict — final review F4 — removed the flicker that
+    // produced the accident, and the table now legitimately reaches its
+    // steady state here.
+    expect(screen.queryByText('Shopping List')).toBeNull();
+    expect(screen.queryByText('Global lead time:')).toBeNull();
     // …and the panel's feed never fired: since task 4 that feed is
     // GET /inventory/forecast, and a mounted panel would have called it.
-    // The page-level flat list still fires ONCE while the spoolman settings
-    // are in flight (spoolmanMode reads false for that first tick — a
-    // pre-existing cold-load flicker, out of scope here). If a later cycle
-    // gates those page-level queries on spoolmanModeReady, that count drops
-    // to 0 too — lower is better here, only MORE is a regression.
+    // The cold-load flicker this test used to tolerate (spoolmanMode reads
+    // false for the first tick, so the page-level flat list fired once) is
+    // GONE: final review F4 gates that feed on the forecast verdict, so a
+    // stored forecast viewMode fetches nothing at all until the verdict is in.
     expect(forecastRequests.length).toBe(0);
     // Task 5: zero, not "at most one". No full-table fetch survives a visit
     // in EITHER mode — the flicker can no longer cost the whole inventory,
@@ -601,8 +633,8 @@ describe('InventoryPage — page mutations drop the selection (review round 2, f
     server.use(
       http.get('/api/v1/inventory/spools', ({ request }) => {
         const url = new URL(request.url);
-        if (!url.searchParams.has('page')) return HttpResponse.json(SPOOLS);
         listRequests.push(url);
+        if (!url.searchParams.has('page')) return HttpResponse.json(SPOOLS);
         if (url.searchParams.get('all') === 'true') {
           return HttpResponse.json({
             items: SPOOLS.map((s) => ({ ...s, k_profile_count: 0, k_profiles: null })),
@@ -672,5 +704,106 @@ describe('InventoryPage — page mutations drop the selection (review round 2, f
       const reqs = pageRequests();
       expect(reqs[reqs.length - 1].searchParams.get('page')).toBe('1');
     });
+  });
+});
+
+// ── Final review wave ─────────────────────────────────────────────────────────
+
+describe('InventoryPage — the Forecast tab is not a second list (final review, F3/F4/F9)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    setupHandlers();
+    // The panel's remaining client-called side feeds.
+    server.use(
+      http.get('/api/v1/inventory/sku-settings', () => HttpResponse.json([])),
+      http.get('/api/v1/inventory/shopping-list', () => HttpResponse.json([])),
+    );
+  });
+
+  /** Land straight on the Forecast tab, the way a returning operator does. */
+  const onForecastTab = () =>
+    localStorage.setItem('bamdude-inventory-filters', JSON.stringify({ viewMode: 'forecast' }));
+
+  it('fetches NO page of spool rows under the Forecast tab — and a persisted "All" cannot resurrect a full-table fetch there (F4)', async () => {
+    // The sharp half of the finding: `pageSize` persists and accepts -1 →
+    // `{all: true}`. Before the viewMode gate, a user who had once picked
+    // "All" in the spools pager was firing a FULL-TABLE download every 30
+    // seconds while sitting on the Forecast tab — the precise fetch this
+    // cycle exists to have deleted, back through a stored preference. The
+    // older "zero all=true on a plain visit" pins missed it because they run
+    // at the default page size.
+    onForecastTab();
+    localStorage.setItem('bamdude-inventory-pageSize', '-1');
+    render(<InventoryPageRouter />);
+
+    // The panel paints its served rows…
+    await waitFor(() => expect(screen.getByText('eSun PLA Blue')).toBeInTheDocument());
+    // …and the list feed never ran, in either shape.
+    expect(fullSetRequests()).toEqual([]);
+    expect(pageRequests()).toEqual([]);
+  });
+
+  it('paints the panel without waiting on the spools list feed (F4)', async () => {
+    // The panel used to render BEHIND `listLoading` — a LoadingBlock stood in
+    // its place until a page of rows nobody displays had resolved. Here that
+    // feed would never resolve at all; the panel must not care.
+    onForecastTab();
+    server.use(
+      http.get('/api/v1/inventory/spools', async ({ request }) => {
+        listRequests.push(new URL(request.url));
+        await delay('infinite');
+      }),
+    );
+    render(<InventoryPageRouter />);
+
+    expect(await screen.findByText('eSun PLA Blue')).toBeInTheDocument();
+    expect(screen.getByText('SUNLU PETG Blue')).toBeInTheDocument();
+    // The caption still counts, off the served stats rather than list meta —
+    // a bare `serverMeta?.total ?? 0` would read 0 here and disable the header
+    // actions over a full inventory.
+    expect(screen.getAllByText(/2 spools/).length).toBeGreaterThan(0);
+  });
+
+  it('a spool mutation made WHILE the Forecast tab is open refreshes the forecast (F3)', async () => {
+    // The review's scenario, in the cheapest reachable form: the stats bar
+    // renders on the Forecast tab, so its "Reset all counters" action is a
+    // spool mutation fired with the panel mounted. Resetting usage flips whole
+    // spools out of the engine's history rate tier — before the fix the panel
+    // kept the pre-mutation rate, days-left and banners for the whole sitting.
+    onForecastTab();
+    server.use(
+      http.get('/api/v1/inventory/stats', () =>
+        HttpResponse.json({ ...STATS, total_consumed_g: 1234, total_spools: 2 })
+      ),
+      http.post('/api/v1/inventory/spools/reset-consumed-counter-bulk', () =>
+        HttpResponse.json({ reset: 2 })
+      ),
+    );
+    render(<InventoryPageRouter />);
+
+    await waitFor(() => expect(screen.getByText('eSun PLA Blue')).toBeInTheDocument());
+    const before = forecastRequests.length;
+    expect(before).toBeGreaterThan(0);
+
+    fireEvent.click(await screen.findByLabelText('Reset all counters'));
+    await waitFor(() => expect(fullSetRequests().length).toBe(1)); // ids arrive on arming
+    fireEvent.click(screen.getByRole('button', { name: 'Reset counter' }));
+
+    await waitFor(() => expect(forecastRequests.length).toBeGreaterThan(before));
+  });
+
+  it('a plain visit fires no PAGE-LESS full array either — that shape is modal-gated (F9)', async () => {
+    // `GET /inventory/spools?include_archived=false` answers a bare full
+    // array. It carries no `all=true`, so the full-set guard above is blind to
+    // it — which is exactly where the last full download could hide. Its only
+    // caller left is SpoolFormModal's category datalist, and a modal is not a
+    // visit.
+    render(<InventoryPageRouter />);
+    await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
+    expect(legacyArrayRequests()).toEqual([]);
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Spool/ }));
+    await waitFor(() => expect(legacyArrayRequests().length).toBe(1));
+    expect(legacyArrayRequests()[0].searchParams.has('page')).toBe(false);
   });
 });
