@@ -7783,6 +7783,9 @@ export default {
     noUsageData: 'Немає даних про використання - неможливо побудувати прогноз запасів.',
     // Заголовки таблиці
     sku: 'SKU',
+    // Іменник для панелі пагінації («Показано 1-50 з 80 SKU»)
+    skus: 'SKU',
+    exportFailed: 'Не вдалося експортувати',
     spools: 'Котушки',
     material: 'Матеріал',
     stock: 'Запас',
@@ -7838,6 +7841,8 @@ export default {
     safetyMarginHintG: 'Фіксований ваговий буфер поверх статистичного запасу безпеки.{{approx}}',
     safetyMarginHintGApprox: ' ≈ {{days}}д за поточного темпу.',
     individualSpools: 'Окремі котушки',
+    individualSpoolsFailed: 'Не вдалося завантажити котушки цього SKU',
+    retry: 'Повторити',
     labelWeight: 'Номінал',
     spoolCount_one: '{{count}} котушка',
     spoolCount_few: '{{count}} котушки',
@@ -7874,6 +7879,7 @@ export default {
     received: 'Отримано',
     markPurchased: 'Позначити як замовлене',
     markReceived: 'Позначити як отримане - додає котушки в інвентар Stock',
+    receiveFailed: 'Не вдалося оприбуткувати. Повтори, щоб завершити - уже додані котушки не додадуться вдруге.',
     resetToPending: 'Повернути в очікування',
     remove: 'Видалити',
     clearAll: 'Очистити все',

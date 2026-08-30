@@ -7750,6 +7750,9 @@ export default {
     noUsageData: 'No usage data available - cannot project stock timeline.',
     // Table headers
     sku: 'SKU',
+    // Pagination-bar noun (mid-sentence: "Showing 1-50 of 80 SKUs")
+    skus: 'SKUs',
+    exportFailed: 'Export failed',
     spools: 'Spools',
     material: 'Material',
     stock: 'Stock',
@@ -7803,6 +7806,8 @@ export default {
     safetyMarginHintG: 'Fixed weight buffer added on top of statistical safety stock.{{approx}}',
     safetyMarginHintGApprox: ' ≈ {{days}}d at current rate.',
     individualSpools: 'Individual spools',
+    individualSpoolsFailed: 'Could not load the spools of this SKU',
+    retry: 'Retry',
     labelWeight: 'Label',
     spoolCount_one: '{{count}} spool',
     spoolCount_other: '{{count}} spools',
@@ -7835,6 +7840,7 @@ export default {
     received: 'Received',
     markPurchased: 'Mark as purchased',
     markReceived: 'Mark as received - adds spools to Stock inventory',
+    receiveFailed: 'Receiving failed. Retry to finish it - spools already added are not added again.',
     resetToPending: 'Reset to pending',
     remove: 'Remove',
     clearAll: 'Clear all',

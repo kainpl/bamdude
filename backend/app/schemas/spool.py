@@ -325,6 +325,42 @@ class SpoolListPage(BaseModel):
     meta: PaginationMeta
 
 
+class InventoryMaterialStat(BaseModel):
+    """One chip of the stats bar's "By material" card — live spools only.
+
+    ``material`` is never blank: a falsy stored value becomes ``"Unknown"``,
+    the client memo's own ``s.material || 'Unknown'``.
+    """
+
+    material: str
+    count: int
+    remaining_g: float
+
+
+class InventoryStatsResponse(BaseModel):
+    """``GET /inventory/stats`` — the five stat cards, aggregated in SQL
+    (task 5, 2026-08-29 forecast-server-side).
+
+    Replaces the page's last full-table ``all=true`` fetch. The scopes differ
+    per field on purpose, exactly as the client memo had them:
+
+    * ``total_spools`` counts EVERY row, archived included. Not a card — it is
+      what the "Reset all usage" control needs (its visibility gate and the
+      count in its confirmation), the second consumer that fetch served.
+    * ``active_spools`` / ``total_weight_g`` / ``by_material`` /
+      ``low_stock_count`` are live spools only (archived stock is not stock).
+    * ``total_consumed_g`` spans every row: an archived spool's past
+      consumption is real history (#1390 follow-up).
+    """
+
+    total_spools: int
+    active_spools: int
+    total_weight_g: float
+    total_consumed_g: float
+    by_material: list[InventoryMaterialStat]
+    low_stock_count: int
+
+
 class SpoolAssignmentCreate(BaseModel):
     spool_id: int
     printer_id: int

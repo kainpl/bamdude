@@ -1,6 +1,9 @@
+import csv
+import io
 import json
 import logging
 import math
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
 import httpx
@@ -28,8 +31,17 @@ from backend.app.models.spool_catalog import SpoolCatalogEntry
 from backend.app.models.spool_k_profile import SpoolKProfile
 from backend.app.models.user import User
 from backend.app.schemas.archive import PaginationMeta
+from backend.app.schemas.forecast import (
+    ForecastChartResponse,
+    ForecastChartSeries,
+    ForecastChartSku,
+    ForecastListPage,
+    ForecastLogisticsRow,
+    SkuForecastRowResponse,
+)
 from backend.app.schemas.location import LocationCreate, LocationResponse, LocationUpdate
 from backend.app.schemas.spool import (
+    InventoryStatsResponse,
     SpoolAssignmentCreate,
     SpoolAssignmentResponse,
     SpoolBulkCreate,
@@ -44,7 +56,7 @@ from backend.app.schemas.spool import (
     SpoolUpdate,
 )
 from backend.app.schemas.spool_usage import SpoolUsageHistoryResponse
-from backend.app.services import inventory_service
+from backend.app.services import forecast_engine, inventory_service
 from backend.app.services.location_service import (
     DUPLICATE_LOCATION_NAME,
     assign_location_name,
@@ -1368,6 +1380,25 @@ async def spool_facets(
     filters = await inventory_service.build_spool_filters(db, archived=archived)
     facets = await inventory_service.spool_facets(db, filters=filters)
     return SpoolFacetsResponse(**facets)
+
+
+@router.get("/stats", response_model=InventoryStatsResponse)
+async def inventory_stats(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> InventoryStatsResponse:
+    """The Inventory stats bar, aggregated in SQL (task 5, 2026-08-29).
+
+    Retires the page's LAST full-table fetch: the five cards were computed by
+    a client memo over an ``all=true`` feed of every spool. ``total_spools``
+    rides along for the "Reset all usage" control, the second consumer of that
+    same feed.
+
+    Unfiltered on purpose — these are farm-wide figures, unaffected by the
+    table's filters (the shipped memo read the whole feed too, never
+    ``filteredSpools``).
+    """
+    return InventoryStatsResponse(**await inventory_service.inventory_stats(db))
 
 
 # ── CSV import / export (#1576) ──────────────────────────────────────────────
@@ -2968,6 +2999,338 @@ async def clear_shopping_list(
     deleted = len(result.fetchall())
     await db.commit()
     return {"deleted": deleted}
+
+
+# ── Server-computed forecast (task 3, 2026-08-29 forecast-server-side) ────────
+#
+# The four endpoints the Forecast tab renders from. Every number comes from
+# `forecast_engine.compute_forecast` (the ONE math owner); sorting, filtering,
+# paging and the CSV happen HERE over the finished rows — tens of them — so
+# exactly one page's worth leaves the server. The sort semantics port the
+# client comparator (ForecastPanel.tsx:361-399) verbatim, including its
+# direction-blind 999999 days_left sentinel, plus a stable 4-part-SKU-key
+# tiebreak the client never needed (it re-sorted a whole in-memory array; a
+# paged walk cannot afford ties resolved by chance).
+
+_FORECAST_SORT_KEYS = frozenset({"material", "spools", "used", "days_left", "stock", "empty_by", "reorder_by"})
+_FORECAST_DEFAULT_SORT = "material_asc"  # the client's loadSort fallback: key 'material', dir 'asc'
+_FORECAST_CHART_DAY_CHOICES = (7, 30, 180)  # the client's CHART_TIMEFRAMES
+
+# Today's client downloadCsv header strings, en locale (CSV files are data,
+# not UI — the same ruling the client CSV lived by; spec §3).
+_SHOPPING_LIST_CSV_HEADERS = [
+    "Qty",
+    "Material",
+    "Brand",
+    "Subtype",
+    "Color",
+    "Weight (g)",
+    "Lead Time (d)",
+    "Expected Restock",
+    "Status",
+    "Note",
+]
+
+
+def _js_round(value: float) -> int:
+    """JS Math.round — halves go UP (toward +∞) where Python's round() banks
+    to even. The chart/logistics gram values are ported client pixels; the tie
+    behavior stays identical."""
+    return math.floor(value + 0.5)
+
+
+def _forecast_has_alert(row: forecast_engine.SkuForecastRow) -> bool:
+    """The client's badge predicate: an un-snoozed stock-break or reorder."""
+    return (row.stock_break_alert or row.reorder_alert) and not row.alerts_snoozed
+
+
+def _forecast_sort_rows(
+    rows: list[forecast_engine.SkuForecastRow], sort_by: str | None
+) -> list[forecast_engine.SkuForecastRow]:
+    """The client comparator, server-side, over finished rows.
+
+    Dateless rows sink to the end whatever the direction (the client flips the
+    Infinity sentinel WITH the direction); ``days_left`` instead keeps the
+    client's direction-blind 999999 — so rate-less rows LEAD a descending
+    days_left sort, a quirk ported deliberately rather than "fixed".
+    """
+    sort_by = sort_by or _FORECAST_DEFAULT_SORT
+    key_name, sep, direction = sort_by.rpartition("_")
+    if not sep or direction not in ("asc", "desc") or key_name not in _FORECAST_SORT_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported sort_by — expected <key>_asc|_desc with key one of: "
+                + ", ".join(sorted(_FORECAST_SORT_KEYS))
+            ),
+        )
+    descending = direction == "desc"
+    dateless = -math.inf if descending else math.inf
+
+    def primary(row: forecast_engine.SkuForecastRow) -> float | str:
+        if key_name == "material":
+            # The client's composite: [material, subtype ?? '', brand ?? ''].join(' ').toLowerCase()
+            return " ".join((row.material or "", row.subtype or "", row.brand or "")).lower()
+        if key_name == "spools":
+            return row.total_spools
+        if key_name == "used":
+            return row.total_used_g
+        if key_name == "days_left":
+            return row.days_remaining if row.days_remaining is not None else 999999
+        if key_name == "stock":
+            return row.total_remaining_g
+        anchor = row.projected_empty_date if key_name == "empty_by" else row.reorder_trigger_date
+        return anchor.toordinal() if anchor is not None else dateless
+
+    # Two stable passes: collapsed SKU key first, the primary second. Python's
+    # sort keeps equal elements in place even with reverse=True, so equal
+    # primaries stay in ascending-SKU order in BOTH directions — which is what
+    # makes a page walk over ties repeat-free and skip-free.
+    ordered = sorted(rows, key=lambda r: forecast_engine.sku_key(r.material, r.subtype, r.brand, r.color_name))
+    ordered.sort(key=primary, reverse=descending)
+    return ordered
+
+
+@router.get("/forecast", response_model=ForecastListPage)
+async def get_inventory_forecast(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    all: bool = Query(False, description="Skip pagination and return every matching row"),
+    sort_by: str | None = Query(
+        None, description="<key>_asc|_desc over the client sort-key set; omitted means material_asc"
+    ),
+    material: str | None = Query(None, description="Exact match"),
+    brand: str | None = Query(None, description="Exact match"),
+    alerts_only: bool = Query(False, description="Only rows with an un-snoozed stock-break or reorder alert"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(Permission.INVENTORY_READ, Permission.INVENTORY_FORECAST_READ),
+) -> ForecastListPage:
+    """One server-sorted, server-filtered page of finished forecast rows.
+
+    ``alert_count`` counts un-snoozed alert rows across the WHOLE farm — the
+    client's badge read the unfiltered set, so the filters must not move it;
+    ``meta.total`` counts the filtered set.
+    """
+    rows = await forecast_engine.compute_forecast(db)
+    alert_count = sum(1 for r in rows if _forecast_has_alert(r))
+
+    if material is not None:
+        rows = [r for r in rows if r.material == material]
+    if brand is not None:
+        rows = [r for r in rows if r.brand == brand]
+    if alerts_only:
+        rows = [r for r in rows if _forecast_has_alert(r)]
+
+    ordered = _forecast_sort_rows(rows, sort_by)
+    total = len(ordered)
+    page_rows = ordered if all else ordered[(page - 1) * per_page : (page - 1) * per_page + per_page]
+
+    return ForecastListPage(
+        items=[SkuForecastRowResponse.model_validate(r) for r in page_rows],
+        meta=PaginationMeta(
+            total=total,
+            current_page=1 if all else page,
+            per_page=(total or 1) if all else per_page,
+            last_page=1 if all else max(1, math.ceil(total / per_page)),
+        ),
+        alert_count=alert_count,
+        global_lead_time_days=await forecast_engine._global_lead_time_days(db),
+    )
+
+
+@router.get("/forecast/chart", response_model=ForecastChartResponse)
+async def get_inventory_forecast_chart(
+    days: int = Query(30, description="7, 30 or 180 — the client's chart timeframes"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(Permission.INVENTORY_READ, Permission.INVENTORY_FORECAST_READ),
+) -> ForecastChartResponse:
+    """The top-5 SKUs by burned grams: day-bucketed usage + depletion projection.
+
+    The usage series is a NEW capability (spec §2.2 as corrected after the T2
+    review — the shipped client chart drew the projection only): the record of
+    what was burned, reset spools included. The projection ports
+    ``buildProjectionSeries`` — Math.round for display, clamp at zero, stop
+    after pushing the first zero.
+    """
+    if days not in _FORECAST_CHART_DAY_CHOICES:
+        raise HTTPException(status_code=400, detail="days must be one of 7, 30, 180")
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    rows = await forecast_engine.compute_forecast(db, now=now)
+
+    # The client drops rate-less rows BEFORE ranking (`dailyRateG !== null`),
+    # then takes the 5 biggest consumers. The stable sort keeps the collapsed-
+    # SKU order compute_forecast returns as the deterministic tie order.
+    candidates = [r for r in rows if r.rate_g_day is not None]
+    candidates.sort(key=lambda r: r.total_used_g, reverse=True)
+    top = candidates[:5]
+
+    sku_keys = [(r.material, r.subtype, r.brand, r.color_name) for r in top]
+    usage = await forecast_engine.usage_day_series(db, sku_keys=sku_keys, days=days, now=now) if sku_keys else {}
+
+    series: list[ForecastChartSeries] = []
+    for row in top:
+        rate = row.rate_g_day
+        projection: list[tuple[date, int]] = []
+        for offset in range(days + 1):
+            raw = max(0.0, row.total_remaining_g - rate * offset)
+            projection.append((today + timedelta(days=offset), _js_round(raw)))
+            if raw == 0:
+                break
+        series.append(
+            ForecastChartSeries(
+                sku=ForecastChartSku(
+                    material=row.material, subtype=row.subtype, brand=row.brand, color_name=row.color_name
+                ),
+                rgba=row.rgba,
+                rop_g=row.reorder_point_g,
+                usage=usage.get((row.material, row.subtype, row.brand, row.color_name), []),
+                projection=projection,
+            )
+        )
+    return ForecastChartResponse(series=series)
+
+
+@router.get("/forecast/logistics", response_model=list[ForecastLogisticsRow])
+async def get_inventory_forecast_logistics(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(Permission.INVENTORY_READ, Permission.INVENTORY_FORECAST_READ),
+) -> list[ForecastLogisticsRow]:
+    """``CartLogisticsRow``'s computation for every shopping-list item, in the
+    shopping-list GET's order (added_at desc — the set the panel renders).
+
+    The series keeps the client's vertical-step trick: the arrival date appears
+    twice (just-before, just-after the parcel lands). An item whose SKU has no
+    forecast row or no positive rate gets ``series: null`` — the client's
+    "no usage data" placeholder case, never an error.
+    """
+    from backend.app.models.shopping_list import ShoppingListItem
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    rows = await forecast_engine.compute_forecast(db, now=now)
+    by_key = {forecast_engine.sku_key(r.material, r.subtype, r.brand, r.color_name): r for r in rows}
+
+    items = (await db.execute(select(ShoppingListItem).order_by(ShoppingListItem.added_at.desc()))).scalars().all()
+
+    out: list[ForecastLogisticsRow] = []
+    for item in items:
+        row = by_key.get(forecast_engine.sku_key(item.material, item.subtype, item.brand, item.color_name))
+        if row is None or row.rate_g_day is None or row.rate_g_day <= 0:
+            out.append(
+                ForecastLogisticsRow(
+                    item_id=item.id,
+                    series=None,
+                    arrival_day=None,
+                    rop_g=None,
+                    safety_stock_g=None,
+                    stock_break_day=None,
+                    stock_break_before_arrival=False,
+                )
+            )
+            continue
+
+        rate = row.rate_g_day
+        lead = row.eff_lead_time_days
+        # The row's own archived-INCLUSIVE spool size — one rule for every
+        # consumer of "how big is a spool of this SKU" (the client's cart
+        # dialog, its bridge-gap count, the CSV below). The live totals cannot
+        # answer it: a SKU held only by the archived window serves
+        # total_spools 0, and the arrival bump would then be sized at the
+        # fabricated 1000 g while the dialog that ordered it used the real
+        # mean. None (no spool of the SKU carries a label weight at all) is
+        # the ONLY case the guess survives.
+        avg_spool_g = row.avg_spool_label_g if row.avg_spool_label_g is not None else 1000.0
+        arrival_g = item.quantity_spools * avg_spool_g
+        stock_at_arrival = max(0.0, row.total_remaining_g - rate * lead)
+        peak_g = stock_at_arrival + arrival_g
+        clamped_max = min(lead + math.ceil(peak_g / rate) + 5, 365)
+
+        series: list[tuple[date, int]] = []
+        for offset in range(clamped_max + 1):
+            day = today + timedelta(days=offset)
+            if offset == lead:
+                series.append((day, _js_round(stock_at_arrival)))
+                series.append((day, _js_round(peak_g)))
+            elif offset < lead:
+                series.append((day, _js_round(max(0.0, row.total_remaining_g - rate * offset))))
+            else:
+                series.append((day, _js_round(max(0.0, peak_g - rate * (offset - lead)))))
+
+        # The client's stockBreaksAt memo verbatim (ForecastPanel.tsx:1701-1706):
+        # floor(remaining/rate) when it lands before the lead time, else null —
+        # this is the banner's user-facing number, and the flag is exactly its
+        # non-nullness (hasBreak = stockBreaksAt !== null). NOT the series'
+        # first zero: rounding puts that a day later in general.
+        zero_day = math.floor(row.total_remaining_g / rate)
+        stock_break_day = zero_day if zero_day < lead else None
+
+        out.append(
+            ForecastLogisticsRow(
+                item_id=item.id,
+                series=series,
+                arrival_day=lead,
+                rop_g=row.reorder_point_g,
+                safety_stock_g=row.safety_stock_g,
+                stock_break_day=stock_break_day,
+                stock_break_before_arrival=stock_break_day is not None,
+            )
+        )
+    return out
+
+
+@router.get("/shopping-list/export.csv")
+async def export_shopping_list_csv(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(Permission.INVENTORY_READ, Permission.INVENTORY_FORECAST_READ),
+) -> Response:
+    """The shopping list as CSV — today's client ``downloadCsv``, server-made.
+
+    Columns and the everything-quoted style are the client's; the restock date
+    is ISO instead of the viewer-locale format (the server has no viewer
+    locale — a named deviation, the columns otherwise identical).
+    """
+    from backend.app.models.shopping_list import ShoppingListItem
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    rows = await forecast_engine.compute_forecast(db, now=now)
+    by_key = {forecast_engine.sku_key(r.material, r.subtype, r.brand, r.color_name): r for r in rows}
+    global_lead = await forecast_engine._global_lead_time_days(db)
+
+    items = (await db.execute(select(ShoppingListItem).order_by(ShoppingListItem.added_at.desc()))).scalars().all()
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, quoting=csv.QUOTE_ALL)
+    writer.writerow(_SHOPPING_LIST_CSV_HEADERS)
+    for item in items:
+        row = by_key.get(forecast_engine.sku_key(item.material, item.subtype, item.brand, item.color_name))
+        # Same served mean as the logistics bump above (and the client's cart
+        # dialog) — the Weight column must not price an archived-only SKU's
+        # order at a fabricated 1000 g/spool.
+        avg_spool_g = row.avg_spool_label_g if row is not None and row.avg_spool_label_g is not None else 1000.0
+        lead = row.eff_lead_time_days if row is not None else global_lead
+        restock = (today + timedelta(days=lead)).isoformat() if lead > 0 else ""
+        writer.writerow(
+            [
+                item.quantity_spools,
+                item.material,
+                item.brand or "",
+                item.subtype or "",
+                item.color_name or "",
+                _js_round(item.quantity_spools * avg_spool_g),
+                lead or "",
+                restock,
+                item.status or "pending",
+                item.note or "",
+            ]
+        )
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="shopping-list.csv"'},
+    )
 
 
 class CreateSpoolFromSlotRequest(BaseModel):

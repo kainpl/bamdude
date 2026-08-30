@@ -841,8 +841,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     : undefined;
 
   // Query key PREFIX per data source. In local mode every server-driven
-  // sub-query below (paged list, grouped list, facets, all-slim, group
-  // members, label set) is keyed UNDER ['inventory-spools'], so the existing
+  // sub-query below (paged list, grouped list, facets, stats, group
+  // members, label set, full set) is keyed UNDER ['inventory-spools'], so the existing
   // mutation invalidations — this helper, and SpoolFormModal's own
   // invalidation of `spoolsQueryKey` — refresh all of them by prefix without
   // touching a single mutation.
@@ -988,19 +988,44 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     ...(viewMode === 'cards' ? { include_k_profiles: true } : {}),
   }), [filterParams, serverSortBy, effectivePageIndex, pageSize, viewMode]);
 
+  // The Forecast tab renders <ForecastPanel/> INSTEAD of the list (:2630), so
+  // the list's own feed buys nothing there — and it does not merely idle: it
+  // 30 s-polls a page of spool rows nobody paints, and gates the panel's first
+  // paint behind its own resolution.
+  //
+  // ⚠️ Sharper than waste: `pageSize` is PERSISTED and accepts -1 → `all:true`
+  // (:811-820, :985). A user who once picked "All" in the spools pager was
+  // firing a full-table download every 30 seconds while sitting on the
+  // Forecast tab — the exact fetch this cycle exists to have deleted,
+  // resurrected through a stored preference, on the one tab that was rewritten
+  // to avoid it.
+  //
+  // The condition mirrors the render branch EXACTLY: a `canViewForecast` of
+  // false falls back to the table, which does need the feed.
+  const forecastViewActive = viewMode === 'forecast' && canViewForecast;
+  // ⚠️ And the verdict is NOT in on the first tick — `canViewForecast` reads
+  // false while auth and the Spoolman mode are still resolving. Fetching the
+  // list "just in case" during that window is not a saved millisecond, it is
+  // the whole full-table download happening anyway, once per visit; the
+  // persisted "All" case makes that the exact cost this cycle removed. So the
+  // feed WAITS for the answer whenever the stored view is the forecast, and
+  // starts only if the answer comes back "no panel".
+  const forecastVerdictPending = viewMode === 'forecast' && (authLoading || !spoolmanModeReady);
+  const listFeedSuppressed = forecastViewActive || forecastVerdictPending;
+
   // The paged list — flat or grouped, one enabled at a time. The 30s poll
   // the full-array query used to run now refetches the CURRENT PAGE only.
   const flatPageQuery = useQuery({
     queryKey: ['inventory-spools', 'page', listParams],
     queryFn: () => api.getSpoolsPaged(listParams),
-    enabled: serverMode && !groupSimilar,
+    enabled: serverMode && !listFeedSuppressed && !groupSimilar,
     refetchInterval: 30000,
     placeholderData: (prev) => prev,
   });
   const groupPageQuery = useQuery({
     queryKey: ['inventory-spools', 'grouped', listParams],
     queryFn: () => api.getSpoolGroupsPaged(listParams),
-    enabled: serverMode && groupSimilar,
+    enabled: serverMode && !listFeedSuppressed && groupSimilar,
     refetchInterval: 30000,
     placeholderData: (prev) => prev,
   });
@@ -1016,19 +1041,52 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     if (selectedIds.size > 0) setSelectedIds(new Set());
   }
 
-  // The full-set feed the stats cards, "Reset all usage" and the bulk-edit
-  // modal's suggestion pool still need — one SLIM `all=true` fetch
-  // (SpoolListItem — no k_profiles fat), spanning both tabs (stats count
-  // archived consumption). Deliberately NO refetchInterval: the 30s poll is
-  // page-scoped now; this refreshes on window focus and on every spool
-  // mutation via the ['inventory-spools'] prefix invalidation. The Forecast
-  // tab no longer feeds from here — ForecastPanel owns its own tab-gated
-  // copy of this feed since task 5.
-  const { data: allSpoolsSlim } = useQuery({
-    queryKey: ['inventory-spools', 'all-slim'],
-    queryFn: async () => (await api.getSpoolsPaged({ page: 1, all: true })).items,
+  // The stats cards, aggregated server-side (task 5, forecast-server-side).
+  // This replaced the page's LAST full-table `all=true` fetch: five cards used
+  // to be a client memo over every spool row. Keyed UNDER the
+  // ['inventory-spools'] prefix so every spool-mutation invalidation refreshes
+  // it exactly as it refreshed the feed it replaces. Deliberately NO
+  // refetchInterval — same as that feed: once per visit, then on window focus
+  // and on mutations. Spoolman mode never calls it (the endpoint aggregates
+  // OUR table; that mode computes from the array it already holds).
+  const { data: serverStats } = useQuery({
+    queryKey: ['inventory-spools', 'stats'],
+    queryFn: api.getInventoryStats,
     enabled: serverMode,
   });
+
+  // The full spool SET — every row, both tabs, slim (no k_profiles fat).
+  // Fetched ONLY while a surface that needs every spool OBJECT is open, never
+  // on a plain visit:
+  //
+  //   • bulk edit — its selection can span pages ("Select all N matching"), so
+  //     the visible page is not enough, and its autocomplete pool is
+  //     deliberately "the system at large", not the current filter;
+  //   • "Reset all usage" — the bulk mutation takes explicit ids, and the
+  //     action resets ARCHIVED spools too (#1390 follow-up).
+  //
+  // Both are modal-gated, the `labelSetQuery` idiom below. The COUNTS those
+  // surfaces show come from `serverStats`, so nothing is fetched merely to
+  // decide whether to offer the action.
+  const resetAllArmed = confirmAction?.type === 'reset-all-consumed-counters';
+  const fullSpoolSetQuery = useQuery({
+    queryKey: ['inventory-spools', 'full-set'],
+    queryFn: async () => (await api.getSpoolsPaged({ page: 1, all: true })).items,
+    enabled: serverMode && (showBulkEdit || resetAllArmed),
+  });
+
+  // Bulk edit renders nothing until the set arrives, so a FAILED fetch would
+  // leave the button silently dead — clicking it again re-sets `showBulkEdit`
+  // to the value it already holds, which re-renders nothing and refetches
+  // nothing. Say so and close: dropping `showBulkEdit` disables the query, so
+  // the next click re-enables it and TanStack starts a fresh attempt. ("Error
+  // is not loading" — the twin of the loading guards above.)
+  useEffect(() => {
+    if (showBulkEdit && fullSpoolSetQuery.isError) {
+      showToast(t('inventory.bulk.failedGeneric'), 'error');
+      setShowBulkEdit(false);
+    }
+  }, [showBulkEdit, fullSpoolSetQuery.isError, showToast, t]);
 
   // The label picker's candidate pool: the CURRENT FILTERED SET (every page
   // of it), fetched once when the picker opens — so "print labels for
@@ -1232,7 +1290,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     mutationFn: (id: number) =>
       spoolmanMode ? api.resetSpoolmanInventorySpoolConsumedCounter(id) : api.resetSpoolConsumedCounter(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      // Resetting usage flips whole spools out of the engine's history rate
+      // tier — the forecast must move with the list, not on the next refocus.
+      refreshSpoolQueries();
       showToast(t('inventory.consumedCounterReset'), 'success');
     },
     onError: () => {
@@ -1246,7 +1306,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         ? api.bulkResetSpoolmanInventorySpoolConsumedCounter(ids)
         : api.bulkResetSpoolConsumedCounter(ids),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      refreshSpoolQueries();
       showToast(t('inventory.allConsumedCountersReset', { count: data.reset }), 'success');
     },
     onError: () => {
@@ -1292,7 +1352,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     onMutate: () => setBulkPending(true),
     onSettled: () => setBulkPending(false),
     onSuccess: ({ ok, failed }, { kind }) => {
-      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      refreshSpoolQueries();
       const label = t(`inventory.bulk.action.${kind}`);
       if (ok > 0 && failed === 0) {
         showToast(t('inventory.bulk.done', { action: label, count: ok }), 'success');
@@ -1307,16 +1367,28 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     onError: (error: Error) => showToast(error.message || t('inventory.bulk.failedGeneric'), 'error'),
   });
 
-  // The full-set source for the stats cards, "Reset all usage" and the
-  // bulk-edit suggestion pool: Spoolman's legacy array, or the slim
-  // `all=true` feed in server-driven local mode (task 4).
-  const statsSourceSpools = spoolmanMode ? spools : allSpoolsSlim;
+  // The full-spool source for "Reset all usage" and the bulk-edit modal:
+  // Spoolman's legacy array, or the modal-gated full set in local mode
+  // (task 5). The stats cards no longer read from here at all.
+  const fullSpoolSet = spoolmanMode ? spools : fullSpoolSetQuery.data;
 
   // ``resetableSpoolIds`` is the target of the "Reset all usage" bulk
   // action. Includes archived spools so a one-click "clear the lifetime
   // counter" actually clears the lifetime counter — archived consumed
   // weight now counts in Total Consumed too (#1390 follow-up).
-  const resetableSpoolIds = useMemo(() => (statsSourceSpools ?? []).map((s) => s.id), [statsSourceSpools]);
+  const resetableSpoolIds = useMemo(() => (fullSpoolSet ?? []).map((s) => s.id), [fullSpoolSet]);
+  // The ids arrive only once the confirmation is armed — the dialog stays in
+  // its loading state until then, so a fast click cannot fire the mutation
+  // with an empty id list and report "0 reset".
+  //
+  // ⚠️ `isError` MUST stay in this condition. ConfirmModal treats `isLoading`
+  // as modal-WIDE: it disables Cancel as well as Confirm, swallows Escape and
+  // nulls the backdrop click. A failed fetch settles with `data === undefined`
+  // forever, so without the error edge the dialog becomes undismissable and
+  // the page needs a reload. The empty-list refusal in `onConfirm` below is
+  // what keeps the "never fire []" property once the buttons come back.
+  const resetAllIdsPending =
+    resetAllArmed && serverMode && fullSpoolSetQuery.data === undefined && !fullSpoolSetQuery.isError;
 
   // Low stock threshold from backend settings
   const lowStockThreshold = settings?.low_stock_threshold ?? 20;
@@ -1334,6 +1406,15 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     mutationFn: (threshold: number) => api.updateSettings({ low_stock_threshold: threshold }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
+      // The low-stock COUNT is served now (task 5), so the threshold is no
+      // longer a memo dependency that recomputes it for free — this is the one
+      // mutation on the page that changes what the server would answer without
+      // touching a spool, so it must invalidate the spool prefix like every
+      // other one. Without it the card reads "3" under a caption saying
+      // "< 60%", which is exactly when the number is being read. The prefix
+      // also carries the `usage=lowstock` LIST filter, whose query key has no
+      // threshold in it either.
+      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
       showToast(t('common.saved'), 'success');
       setShowThresholdInput(false);
     },
@@ -1342,16 +1423,21 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     },
   });
 
-  // Stats calculation (active spools only)
-  const stats = useMemo(() => {
-    const spools = statsSourceSpools;
-    if (!spools) return null;
+  // Stats calculation (active spools only) — SPOOLMAN MODE ONLY since task 5
+  // (2026-08-29 forecast-server-side). Local mode reads GET /inventory/stats,
+  // which is this loop ported to SQL (the port is quoted line-for-line in
+  // ``backend/tests/test_inventory_stats.py``); Spoolman proxies an external
+  // system whose spool array the page already holds, so aggregating it here
+  // costs nothing and our stats endpoint knows nothing about it.
+  const spoolmanStats = useMemo(() => {
+    const rows = spoolmanMode ? spools : null;
+    if (!rows) return null;
     let totalWeight = 0;
     let totalConsumed = 0;
     let lowStock = 0;
     let activeCount = 0;
     const byMaterial: Record<string, { count: number; weight: number }> = {};
-    for (const s of spools) {
+    for (const s of rows) {
       // "Total Consumed" is the resettable lifetime counter
       // (``weight_used - baseline``). Past consumption of an archived
       // spool is real history and must stay in the running total — so
@@ -1372,8 +1458,34 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       byMaterial[mat].count++;
       byMaterial[mat].weight += remaining;
     }
-    return { totalWeight, totalConsumed, lowStock, byMaterial, totalSpools: activeCount };
-  }, [statsSourceSpools, lowStockThreshold]);
+    return {
+      totalWeight,
+      totalConsumed,
+      lowStock,
+      byMaterial,
+      totalSpools: activeCount,
+      // Every row, archived included — what "Reset all usage" acts on.
+      allRows: rows.length,
+    };
+  }, [spoolmanMode, spools, lowStockThreshold]);
+
+  // One shape for both backends, so every card below stays backend-blind.
+  const stats = useMemo(() => {
+    if (spoolmanMode) return spoolmanStats;
+    if (!serverStats) return null;
+    const byMaterial: Record<string, { count: number; weight: number }> = {};
+    // Served heaviest-first; object key order preserves it through
+    // `topMaterials`' stable sort.
+    for (const b of serverStats.by_material) byMaterial[b.material] = { count: b.count, weight: b.remaining_g };
+    return {
+      totalWeight: serverStats.total_weight_g,
+      totalConsumed: serverStats.total_consumed_g,
+      lowStock: serverStats.low_stock_count,
+      byMaterial,
+      totalSpools: serverStats.active_spools,
+      allRows: serverStats.total_spools,
+    };
+  }, [spoolmanMode, spoolmanStats, serverStats]);
 
   const inPrinterCount =
     (assignments?.length ?? 0) + (spoolmanMode ? spoolmanSlotAssignments.length : 0);
@@ -1794,7 +1906,15 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // ⚠️ In grouped server mode `totalRows` counts GROUPS (meta.total counts
   // what the list pages over) — the flat spool total is deliberately not
   // fetched twice.
-  const totalRows = spoolmanMode ? clientTotalRows : (serverMeta?.total ?? 0);
+  // Under the Forecast tab there IS no list meta (the feed is disabled), so
+  // the count — and the header buttons that gate on "is there anything at
+  // all" — read the already-fetched stats instead of collapsing to 0 and
+  // disabling themselves over a full inventory.
+  const totalRows = spoolmanMode
+    ? clientTotalRows
+    : forecastViewActive
+      ? (serverStats?.active_spools ?? 0)
+      : (serverMeta?.total ?? 0);
   const totalPages = spoolmanMode ? clientTotalPages : (serverMeta?.last_page ?? 1);
   const currentPage = spoolmanMode
     ? clientSafePageIndex + 1
@@ -1824,12 +1944,12 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // render late, which is exactly the window the reset pattern closes.)
 
   // The FULL spool objects behind the current selection. Server mode
-  // materializes them from the all-slim feed — the selection can span pages
-  // ("Select all N matching"), and filtering only the visible page would
+  // materializes them from the modal-gated full set — the selection can span
+  // pages ("Select all N matching"), and filtering only the visible page would
   // silently shrink what the bulk-edit modal is handed.
   const selectedSpools = useMemo(
-    () => (spoolmanMode ? filteredSpools : (statsSourceSpools ?? [])).filter((sp) => selectedIds.has(sp.id)),
-    [spoolmanMode, filteredSpools, statsSourceSpools, selectedIds],
+    () => (spoolmanMode ? filteredSpools : (fullSpoolSet ?? [])).filter((sp) => selectedIds.has(sp.id)),
+    [spoolmanMode, filteredSpools, fullSpoolSet, selectedIds],
   );
 
   const toggleGroupSimilar = () => {
@@ -1870,11 +1990,21 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // Initial-load gate for the list area. `placeholderData` keeps it false
   // across page/filter transitions, so only the very first fetch blanks the
   // list — same feel the archives list has.
-  const listLoading = spoolmanMode
-    ? isLoading
-    : groupSimilar
-      ? groupPageQuery.isLoading
-      : flatPageQuery.isLoading;
+  // ⚠️ The forecast branch never waits on the list feed — that feed is
+  // DISABLED there (see forecastViewActive), and gating the panel's paint on
+  // a query that will never resolve is how a whole tab renders as a spinner.
+  const listLoading = forecastViewActive
+    ? false
+    : forecastVerdictPending
+      // The stored view is the forecast and we do not yet know whether the
+      // panel is allowed: neither surface can be painted honestly, and the
+      // table's empty state is a claim ("no spools") we have not earned.
+      ? true
+      : spoolmanMode
+        ? isLoading
+        : groupSimilar
+          ? groupPageQuery.isLoading
+          : flatPageQuery.isLoading;
 
   /**
    * "Select all N matching the filter" — the EXPLICIT cross-page action the
@@ -2051,7 +2181,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                 <TrendingDown className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.totalConsumed')}</span>
               </div>
-              {stats.totalConsumed > 0 && resetableSpoolIds.length > 0 && (
+              {/* The gate reads the served COUNT, not a fetched id list — the
+                  ids arrive only once the confirmation is armed (task 5). */}
+              {stats.totalConsumed > 0 && stats.allRows > 0 && (
                 <button
                   onClick={() => setConfirmAction({ type: 'reset-all-consumed-counters' })}
                   className="p-1 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 rounded transition-colors"
@@ -2539,15 +2671,15 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       {listLoading ? (
         <LoadingBlock label={t('common.loading')} />
       ) : viewMode === 'forecast' && canViewForecast ? (
-        /* Forecast view (upstream #1184). The panel owns its full-set feed
-           since task 5 — mounted, and therefore fetching, only while this
-           tab is open; its exp-decay math needs the FULL set, which the
-           server-paged list no longer holds. The canViewForecast guard keeps
-           a stale PERSISTED viewMode from mounting the panel where the tab
-           itself is unreachable — above all Spoolman mode, where the panel's
-           local-inventory feed would silently compute a forecast over the
-           OTHER backend's spools (task-5 review, Minor 1); it falls back to
-           the table below instead. */
+        /* Forecast view (upstream #1184). Since the forecast-server-side
+           rewrite (task 4) the panel renders SERVER-computed rows — it is
+           mounted, and therefore fetching /inventory/forecast, only while
+           this tab is open. The canViewForecast guard keeps a stale
+           PERSISTED viewMode from mounting the panel where the tab itself
+           is unreachable — above all Spoolman mode, where the forecast
+           endpoints would compute over the LOCAL inventory under a Spoolman
+           UI (task-5 review, Minor 1); it falls back to the table below
+           instead. */
         <ForecastPanel />
       ) : viewMode === 'cards' ? (
         /* Cards view */
@@ -2852,7 +2984,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           onClose={() => setCsvImportOpen(false)}
           onImported={(created) => {
             setCsvImportOpen(false);
-            queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+            refreshSpoolQueries();
             showToast(t('inventory.csv.importSuccess', '{{count}} spools imported', { count: created }), 'success');
           }}
         />
@@ -2887,7 +3019,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             confirmAction.type === 'delete' ? t('inventory.deleteConfirm') :
             confirmAction.type === 'archive' ? t('inventory.archiveConfirm') :
             confirmAction.type === 'reset-consumed-counter' ? t('inventory.resetConsumedCounterConfirm') :
-            t('inventory.resetAllConsumedCountersConfirm', { count: resetableSpoolIds.length })
+            // The COUNT is served (`stats.allRows`); only the id list waits on
+            // the fetch this dialog arms, and `isLoading` below holds the
+            // confirm button until it lands (task 5).
+            t('inventory.resetAllConsumedCountersConfirm', { count: stats?.allRows ?? resetableSpoolIds.length })
           }
           confirmText={
             confirmAction.type === 'delete' ? t('common.delete') :
@@ -2895,6 +3030,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             t('inventory.resetConsumedCounter')
           }
           variant={confirmAction.type === 'archive' ? 'warning' : 'danger'}
+          isLoading={resetAllIdsPending}
           onConfirm={() => {
             if (confirmAction.type === 'delete') {
               deleteMutation.mutate(confirmAction.spoolId);
@@ -2903,6 +3039,14 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             } else if (confirmAction.type === 'reset-consumed-counter') {
               resetConsumedCounterMutation.mutate(confirmAction.spoolId);
             } else {
+              // The id fetch can have failed (the buttons are live again in
+              // that state, deliberately — see `resetAllIdsPending`). Posting
+              // an empty list would report "0 counters reset" as a success.
+              if (resetableSpoolIds.length === 0) {
+                showToast(t('inventory.bulk.failedGeneric'), 'error');
+                setConfirmAction(null);
+                return;
+              }
               bulkResetConsumedCounterMutation.mutate(resetableSpoolIds);
             }
             setConfirmAction(null);
@@ -2939,11 +3083,15 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         spoolmanMode={spoolmanMode}
         spoolDisplayTemplate={spoolDisplayTemplate}
       />
-      {showBulkEdit && (
+      {/* Server mode waits for the full set before opening — the same rule the
+          label picker above follows. Without it the modal would mount with an
+          empty selection and an empty suggestion pool and then fill, and a
+          fast Save would write over nothing (task 5). */}
+      {showBulkEdit && (spoolmanMode || fullSpoolSetQuery.data !== undefined) && (
         <BulkEditSpoolsModal
           isOpen
           spools={selectedSpools}
-          allSpools={statsSourceSpools || []}
+          allSpools={fullSpoolSet || []}
           catalogEntries={catalogEntries || []}
           spoolDisplayTemplate={spoolDisplayTemplate}
           onClose={() => setShowBulkEdit(false)}

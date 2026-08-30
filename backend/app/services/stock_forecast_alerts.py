@@ -1,41 +1,40 @@
-"""Stock-break alerts — the scheduled aggregator m059 left a note about.
+"""Stock-break alerts — dispatch glue over the forecast engine.
 
 ``on_stock_break_alert`` shipped with a provider column, a per-chat Telegram
-toggle and en+uk templates, and nothing ever called it: the forecast that decides
-the alert runs in ``ForecastPanel.tsx``, in the operator's browser. An alert that
-only exists while someone has the Inventory page open is not an alert — the whole
-point is to be told *before* the filament runs out, which is precisely when
-nobody is looking at the page.
+toggle and en+uk templates, and nothing ever called it: the forecast that
+decides the alert ran in ``ForecastPanel.tsx``, in the operator's browser. An
+alert that only exists while someone has the Inventory page open is not an
+alert — the whole point is to be told *before* the filament runs out, which is
+precisely when nobody is looking at the page.
 
-So the forecast moves here, and the arithmetic is a **deliberate line-by-line
-port** of the panel's, not an improvement on it:
+This module used to carry its own line-by-line port of the panel's math. Task 2
+of the forecast-server-side plan (2026-08-29) moved that math into
+``backend.app.services.forecast_engine`` — the ONE owner, shared with the
+forecast endpoints — and left here only what is genuinely about *alerting*:
+which SKU rows become messages, when a standing state may repeat itself, and
+the per-state notified-at stamps.
 
-* SKUs are the panel's tuple — material, subtype, brand, colour — over
-  non-archived spools.
-* The daily rate is the panel's two-tier estimate. First choice is the
-  history rate: usage records bucketed by UTC calendar day, inter-day g/day
-  observations, each weighted by ``exp(-ln2/30 * age_days)`` so a print from a
-  month ago counts half. Fallback is the delta rate: consumption since the
-  ``weight_used_baseline`` reset, over the age of the oldest spool in the group.
-* Only spools with a zero baseline contribute history, because a reset leaves
-  its earlier records with no anchor and they would inflate the rate.
-* Lead time is ``max(global, per-SKU)``, and a SKU with no settings row falls
-  back to the colour-less row so pre-colour-grouping overrides still count.
-* A **stock break** is ``days_remaining <= lead_time`` with a lead time set at
-  all: the filament runs out before a replacement could arrive.
+Deliberate behavior changes vs the pre-refactor service, each a spec §2.1
+ruling (panel parity — where the panel and the old service disagreed, the
+panel was right and the service was the bug):
 
-Where the panel and this file disagree, the panel is right and this file is the
-bug — an alert that contradicts the screen it came from is worse than no alert.
-The one thing deliberately not ported is the statistical safety stock (Z·σ·√L):
-it feeds the *reorder* alert, which is a separate toggle with no service behind
-it, and the stock-break test never reads it.
+* an SKU whose last spool was archived keeps alerting for 90 days from
+  ``max(last usage event, archived_at)`` — the panel's retention rule; the old
+  service dropped archived-only SKUs at once, which silenced a colour at the
+  exact moment it most needed reordering;
+* a ``kg`` safety margin is ``value·1000`` grams — the old else-branch misread
+  a stored ``kg`` as *days*;
+* the delta-tier rate runs over ALL spools including archived, and the usage
+  window is 90 days of time rather than the newest 5000 rows globally;
+* under Spoolman the tick exits early — the whole Inventory tab (Forecast
+  included) is a Spoolman iframe then, and the local tables this forecast
+  reads are not the inventory the operator manages.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from datetime import datetime, timedelta, timezone
 from typing import Literal, NamedTuple
 
@@ -45,25 +44,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.database import async_session
 from backend.app.models.filament_sku_settings import FilamentSkuSettings
 from backend.app.models.settings import Settings
-from backend.app.models.spool import Spool
-from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.services.forecast_engine import (
+    DEFAULT_SAFETY_MARGIN_UNIT,
+    DEFAULT_SAFETY_MARGIN_VALUE,
+    compute_forecast,
+    sku_key,
+)
 
 logger = logging.getLogger(__name__)
-
-# 30-day half-life, as in ForecastPanel.
-_DECAY_LAMBDA = math.log(2) / 30
-
-# The panel asks for the 5000 most recent usage rows and forecasts from those.
-# Matching the cap keeps the two answers identical on any real farm rather than
-# "more correct here, different there".
-_USAGE_HISTORY_LIMIT = 5000
-
-_DEFAULT_SAFETY_MARGIN_VALUE = 14
-
-# 95% service level, and the spread the panel assumes when the rate came from the
-# delta tier and has none of its own. Both are the panel's numbers.
-_Z_95 = 1.65
-_ASSUMED_SPREAD = 0.2
 
 # Which column remembers which announcement.
 _STAMP = {"break": "stock_break_notified_at", "reorder": "stock_reorder_notified_at"}
@@ -77,89 +65,6 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
-def sku_key(
-    material: str | None, subtype: str | None, brand: str | None, color_name: str | None
-) -> tuple[str, str, str, str]:
-    """The panel's ``skuKey`` — NULLs collapse to empty strings so a spool with
-    no brand groups with the other spools that have no brand."""
-    return (material or "", subtype or "", brand or "", color_name or "")
-
-
-class RateEstimate(NamedTuple):
-    """A daily consumption rate and how much it wobbles.
-
-    ``std_dev`` only exists for the history tier — the delta rate is a single
-    average with nothing to take a spread of — and it feeds the reorder point's
-    statistical safety stock, never the stock-break test.
-    """
-
-    rate: float
-    std_dev: float
-
-
-def history_rate(records: list[SpoolUsageHistory], now: datetime) -> RateEstimate | None:
-    """Time-weighted g/day from usage history, or None with too little to measure.
-
-    Port of ``computeHistoryRate``. Day-bucketing matters: without it, two spools
-    of the same SKU printing minutes apart produce a near-zero interval and a
-    wildly inflated rate.
-    """
-    if len(records) < 2:
-        return None
-
-    by_day: dict[str, float] = {}
-    for record in records:
-        created = _as_utc(record.created_at)
-        if created is None:
-            continue
-        by_day[created.strftime("%Y-%m-%d")] = by_day.get(created.strftime("%Y-%m-%d"), 0.0) + (
-            record.weight_used or 0.0
-        )
-
-    if len(by_day) < 2:
-        return None
-
-    days = sorted(
-        (datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc), grams) for day, grams in by_day.items()
-    )
-
-    observations: list[tuple[float, float]] = []
-    for index in range(1, len(days)):
-        previous_day, _ = days[index - 1]
-        this_day, grams = days[index]
-        # Minimum one day, so a same-day reprint is not a zero-length interval.
-        elapsed_days = max((this_day - previous_day).total_seconds() / 86400.0, 1.0)
-        age_days = (now - this_day).total_seconds() / 86400.0
-        observations.append((grams / elapsed_days, math.exp(-_DECAY_LAMBDA * age_days)))
-
-    total_weight = sum(weight for _, weight in observations)
-    if total_weight == 0:
-        return None
-
-    mean = sum(rate * weight for rate, weight in observations) / total_weight
-    variance = sum(weight * (rate - mean) ** 2 for rate, weight in observations) / total_weight
-    return RateEstimate(rate=mean, std_dev=math.sqrt(variance))
-
-
-def delta_rate(spools: list[Spool], now: datetime) -> float | None:
-    """Fallback g/day: consumption since the usage reset over the group's age.
-
-    Port of ``computeDeltaRate``. Baseline-aware, so "Reset usage to 0" means the
-    rate describes post-reset consumption rather than the spool's whole life.
-    """
-    total_used = sum(max(0.0, (s.weight_used or 0.0) - (s.weight_used_baseline or 0.0)) for s in spools)
-    if total_used == 0:
-        return None
-
-    created = [c for c in (_as_utc(s.created_at) for s in spools) if c is not None]
-    if not created:
-        return None
-    days_since_oldest = (now - min(created)).total_seconds() / 86400.0
-    if days_since_oldest < 1:
-        return None
-    return total_used / days_since_oldest
-
-
 AlertKind = Literal["break", "reorder"]
 
 
@@ -170,9 +75,10 @@ class SkuAlert(NamedTuple):
     ``reorder`` — stock has fallen to the reorder point: still enough to cover
     the lead time, but no longer enough to cover it with the safety buffer.
 
-    The two are mutually exclusive, exactly as on the panel. Once a SKU is
-    genuinely going to run out in time, "you should reorder" is no longer the
-    message worth sending.
+    The two are mutually exclusive, exactly as on the panel (the engine's
+    flags already encode "break wins outright"). Once a SKU is genuinely going
+    to run out in time, "you should reorder" is no longer the message worth
+    sending.
     """
 
     kind: AlertKind
@@ -187,124 +93,48 @@ class SkuAlert(NamedTuple):
     lead_time_days: int
 
 
-async def _global_lead_time_days(db: AsyncSession) -> int:
-    raw = (
-        await db.execute(select(Settings.value).where(Settings.key == "forecast_global_lead_time_days"))
-    ).scalar_one_or_none()
-    if raw is None:
-        return 0
-    try:
-        return int(float(raw))
-    except (TypeError, ValueError):
-        return 0
+async def _spoolman_is_enabled(db: AsyncSession) -> bool:
+    raw = (await db.execute(select(Settings.value).where(Settings.key == "spoolman_enabled"))).scalar_one_or_none()
+    return (raw or "").lower() == "true"
 
 
 async def find_stock_alerts(db: AsyncSession, now: datetime | None = None) -> list[SkuAlert]:
     """Every SKU currently in stock break or at its reorder point.
 
-    Snoozed SKUs are excluded here rather than at the notification step: the
-    panel's snooze means "stop telling me about this one", and it would be a poor
-    joke to honour that on screen and not in the messages.
+    A thin filter over ``compute_forecast`` — the engine already computed the
+    flags; this only translates alerting rows into ``SkuAlert``s. Snoozed SKUs
+    are excluded here rather than at the notification step: the panel's snooze
+    means "stop telling me about this one", and it would be a poor joke to
+    honour that on screen and not in the messages.
     """
     now = now or datetime.now(timezone.utc)
 
-    global_lead_time = await _global_lead_time_days(db)
-
-    spools = list((await db.execute(select(Spool).where(Spool.archived_at.is_(None)))).scalars().all())
-    if not spools:
-        return []
-
-    settings_rows = list((await db.execute(select(FilamentSkuSettings))).scalars().all())
-    settings_by_key = {sku_key(row.material, row.subtype, row.brand, row.color_name): row for row in settings_rows}
-
-    history = list(
-        (
-            await db.execute(
-                select(SpoolUsageHistory).order_by(SpoolUsageHistory.created_at.desc()).limit(_USAGE_HISTORY_LIMIT)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    history_by_spool: dict[int, list[SpoolUsageHistory]] = {}
-    for record in history:
-        history_by_spool.setdefault(record.spool_id, []).append(record)
-
-    groups: dict[tuple[str, str, str, str], list[Spool]] = {}
-    for spool in spools:
-        groups.setdefault(sku_key(spool.material, spool.subtype, spool.brand, spool.color_name), []).append(spool)
-
     alerts: list[SkuAlert] = []
-    for key, group in groups.items():
-        material, subtype, brand, color_name = (
-            group[0].material,
-            group[0].subtype,
-            group[0].brand,
-            group[0].color_name,
-        )
-
-        row = settings_by_key.get(key)
-        if row is None and color_name:
-            # Pre-colour-grouping rows carry the operator's lead time; the panel
-            # falls back to them and so must this.
-            row = settings_by_key.get(sku_key(material, subtype, brand, None))
-        if row is not None and row.alerts_snoozed:
+    for row in await compute_forecast(db, now=now):
+        if row.alerts_snoozed:
             continue
-
-        lead_time_days = max(global_lead_time, row.lead_time_days if row else 0)
-        remaining_g = sum(max(0.0, (s.label_weight or 0) - (s.weight_used or 0.0)) for s in group)
-
-        group_history: list[SpoolUsageHistory] = []
-        for spool in group:
-            if (spool.weight_used_baseline or 0) == 0:
-                group_history.extend(history_by_spool.get(spool.id, []))
-
-        estimate = history_rate(group_history, now)
-        if estimate is not None:
-            rate, std_dev = estimate.rate, estimate.std_dev
-        else:
-            fallback = delta_rate(group, now)
-            if fallback is None:
-                continue
-            # The delta tier is a single average with no spread to measure, so
-            # the panel assumes 20% — carried over rather than invented here.
-            rate, std_dev = fallback, fallback * _ASSUMED_SPREAD
-        if rate <= 0:
-            continue
-
-        days_left = math.floor(remaining_g / rate)
-
-        # Stock break wins outright: a lead time must be configured for the
-        # phrase "before replenishment arrives" to mean anything at all.
-        if lead_time_days > 0 and days_left <= lead_time_days:
+        if row.stock_break_alert:
             kind: AlertKind = "break"
-        else:
-            # Reorder point = what the lead time will eat, plus a buffer for the
-            # rate being an estimate (Z·σ·√L) and the operator's own margin.
-            margin_value = row.safety_margin_value if row else _DEFAULT_SAFETY_MARGIN_VALUE
-            margin_unit = row.safety_margin_unit if row else "days"
-            safety_margin_g = margin_value if margin_unit == "g" else rate * margin_value
-            safety_stock_g = _Z_95 * std_dev * math.sqrt(lead_time_days) + safety_margin_g
-            reorder_point_g = rate * lead_time_days + safety_stock_g
-            if math.floor((remaining_g - reorder_point_g) / rate) > 0:
-                continue
+        elif row.reorder_alert:
             kind = "reorder"
-
+        else:
+            continue
+        # An alerting row always has a positive rate (the engine raises no flag
+        # without one), so the int/float fields below are never None.
         alerts.append(
             SkuAlert(
                 kind=kind,
-                key=key,
-                material=material,
-                subtype=subtype,
-                brand=brand,
-                color_name=color_name,
-                stock_g=remaining_g,
-                rate_g_day=rate,
-                days_left=days_left,
-                lead_time_days=lead_time_days,
+                key=sku_key(row.material, row.subtype, row.brand, row.color_name),
+                material=row.material,
+                subtype=row.subtype,
+                brand=row.brand,
+                color_name=row.color_name,
+                stock_g=row.total_remaining_g,
+                rate_g_day=row.rate_g_day,
+                days_left=row.days_remaining,
+                lead_time_days=row.eff_lead_time_days,
             )
         )
-
     return alerts
 
 
@@ -338,6 +168,13 @@ class StockForecastAlerts:
 
     async def tick(self) -> None:
         async with async_session() as db:
+            if await _spoolman_is_enabled(db):
+                # Under Spoolman the local spool tables are not the inventory —
+                # forecasting them would alert on a parallel universe (spec §2.5;
+                # the pre-refactor task only survived because the table stayed
+                # empty, which is a coincidence, not a guard).
+                return
+
             now = datetime.now(timezone.utc)
             alerts = await find_stock_alerts(db, now)
             active: dict[AlertKind, set[tuple[str, str, str, str]]] = {
@@ -372,8 +209,8 @@ class StockForecastAlerts:
                         brand=entry.brand,
                         color_name=entry.color_name,
                         lead_time_days=0,
-                        safety_margin_value=_DEFAULT_SAFETY_MARGIN_VALUE,
-                        safety_margin_unit="days",
+                        safety_margin_value=DEFAULT_SAFETY_MARGIN_VALUE,
+                        safety_margin_unit=DEFAULT_SAFETY_MARGIN_UNIT,
                         alerts_snoozed=False,
                     )
                     db.add(row)
