@@ -8,7 +8,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { groupSelection } from '../../utils/queueGrouping';
+import { groupSelection, groupDecidedUnits } from '../../utils/queueGrouping';
+import type { DecidedUnit } from '../../utils/queueGrouping';
 import type { LibraryGroupingMetadata } from '../../api/client';
 
 function file(
@@ -54,6 +55,7 @@ describe('what lands in one group', () => {
       fileId: 1,
       fileName: 'bracket.gcode.3mf',
       plateIndex: 1,
+      memberKey: 'library:1',
     });
   });
 });
@@ -144,5 +146,141 @@ describe('order', () => {
   it('keeps the operator’s order inside a group', () => {
     const groups = groupSelection([file(3), file(1), file(2)], [3, 1, 2]);
     expect(groups[0].units.map((u) => u.fileId)).toEqual([3, 1, 2]);
+  });
+});
+
+describe('units whose plate is already decided', () => {
+  // A copy run's units come from queue items, which already carry the plate the
+  // operator chose. Expanding them the way a selection is expanded would queue
+  // plates nobody asked for.
+  function decided(over: Partial<DecidedUnit> = {}): DecidedUnit {
+    return { itemId: 1, fileId: 1, fileName: 'f1.gcode.3mf', source: 'library', plateIndex: 1, ...over };
+  }
+
+  const fivePlate = file(1, {
+    plates: [1, 2, 3, 4, 5].map((index) => ({ index, filament_types: ['PETG'], bed_type: null })),
+  });
+
+  it('⚠️ never expands a file to its other plates', () => {
+    const groups = groupDecidedUnits([decided({ plateIndex: 3 })], [fivePlate]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].units).toEqual([
+      { fileId: 1, fileName: 'f1.gcode.3mf', plateIndex: 3, memberKey: 'item:1' },
+    ]);
+  });
+
+  it('keeps two copies of the same file and plate as two units', () => {
+    const groups = groupDecidedUnits(
+      [decided({ itemId: 7 }), decided({ itemId: 8 })],
+      [fivePlate]
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].units.map((u) => u.memberKey)).toEqual(['item:7', 'item:8']);
+  });
+
+  it('groups a decided unit by the filament types of ITS plate', () => {
+    const mixed = file(1, {
+      plates: [
+        { index: 1, filament_types: ['PETG'], bed_type: null },
+        { index: 2, filament_types: ['PETG', 'PLA'], bed_type: null },
+      ],
+    });
+
+    const groups = groupDecidedUnits(
+      [decided({ itemId: 1, plateIndex: 1 }), decided({ itemId: 2, plateIndex: 2 })],
+      [mixed]
+    );
+
+    expect(groups).toHaveLength(2);
+  });
+
+  it('two units on the same plate of one file share a group', () => {
+    const groups = groupDecidedUnits(
+      [decided({ itemId: 1, plateIndex: 2 }), decided({ itemId: 2, plateIndex: 2 })],
+      [fivePlate]
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].units).toHaveLength(2);
+  });
+
+  it('a plate the metadata does not know is its own group', () => {
+    const twoPlate = file(1, {
+      plates: [1, 2].map((index) => ({ index, filament_types: ['PETG'], bed_type: null })),
+    });
+
+    const groups = groupDecidedUnits(
+      [decided({ itemId: 1, plateIndex: 1 }), decided({ itemId: 2, plateIndex: 9 })],
+      [twoPlate]
+    );
+
+    expect(groups).toHaveLength(2);
+    const lone = groups.find((g) => g.units[0].memberKey === 'item:2')!;
+    expect(lone.units).toHaveLength(1);
+  });
+
+  it('a file the metadata does not carry at all is its own group', () => {
+    const groups = groupDecidedUnits([decided({ itemId: 4, fileId: 99 })], [fivePlate]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].units[0].memberKey).toBe('item:4');
+  });
+
+  it('⚠️ never looks up an archive-backed unit, even when the ids collide', () => {
+    // Archive ids and library file ids are different spaces. An archive unit
+    // must not borrow the answer of the library row that happens to share its
+    // number — it has no metadata here and is its own group.
+    const groups = groupDecidedUnits(
+      [decided({ itemId: 1, fileId: 1, source: 'library', plateIndex: 1 }),
+       decided({ itemId: 2, fileId: 1, source: 'archive', plateIndex: 1 })],
+      [fivePlate]
+    );
+
+    expect(groups).toHaveLength(2);
+  });
+
+  it('a queue item with no plate is plate 1, and groups with an explicit plate 1', () => {
+    // print_queue.plate_id's own comment: "None = plate 1". The caller
+    // normalises before building the unit, so both arrive here as 1.
+    const groups = groupDecidedUnits(
+      [decided({ itemId: 1, plateIndex: 1 }), decided({ itemId: 2, plateIndex: 1 })],
+      [fivePlate]
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].units).toHaveLength(2);
+  });
+
+  it('orders biggest group first, like a selection run', () => {
+    const mixed = file(1, {
+      plates: [
+        { index: 1, filament_types: ['PETG'], bed_type: null },
+        { index: 2, filament_types: ['ABS'], bed_type: null },
+      ],
+    });
+
+    const groups = groupDecidedUnits(
+      [decided({ itemId: 1, plateIndex: 2 }),
+       decided({ itemId: 2, plateIndex: 1 }),
+       decided({ itemId: 3, plateIndex: 1 })],
+      [mixed]
+    );
+
+    expect(groups[0].units).toHaveLength(2);
+    expect(groups[1].units).toHaveLength(1);
+  });
+});
+
+describe('memberKey on an expanded selection', () => {
+  it('names the file, so one file mounts once however many plates it contributes', () => {
+    const twoPlate = file(1, {
+      plates: [1, 2].map((index) => ({ index, filament_types: ['PETG'], bed_type: null })),
+    });
+
+    const groups = groupSelection([twoPlate], [1]);
+
+    expect(groups[0].units.map((u) => u.memberKey)).toEqual(['library:1', 'library:1']);
   });
 });
