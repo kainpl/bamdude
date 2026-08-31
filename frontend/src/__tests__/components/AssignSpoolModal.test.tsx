@@ -243,4 +243,15 @@ describe('AssignSpoolModal', () => {
     });
     expect(screen.queryByText(/Archived/)).not.toBeInTheDocument();
   });
+
+  it('asks about ITS OWN slot, not just the printer', async () => {
+    // A replacement charges everything printed so far to the spool that came
+    // OUT, so a slot holding nothing cannot be one. Asked about the printer
+    // alone, the modal raised "replacement or correction?" every time an empty
+    // slot was filled mid-print — a question with no answer. The server needs
+    // the slot to refuse it, so the slot has to travel with the question.
+    render(<AssignSpoolModal {...defaultProps} amsId={1} trayId={2} />);
+
+    await waitFor(() => expect(api.getReplacementWindow).toHaveBeenCalledWith(1, 1, 2));
+  });
 });

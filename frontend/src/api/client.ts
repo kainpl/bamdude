@@ -8534,9 +8534,15 @@ export const api = {
   // How the assign dialog should treat a mid-print assignment right now:
   // 'prompt' (paused — ask), 'optin' (running after a pause — checkbox),
   // 'none' (replacement physically impossible — plain assignment).
-  getReplacementWindow: (printerId: number) =>
+  /** ⚠️ Name the slot. A replacement charges what printed so far to the spool
+   *  that came out, so a slot holding nothing cannot be one — without this the
+   *  dialog asks an unanswerable question every time an empty slot is filled
+   *  mid-print. A slot whose reel ran out still counts as holding one: the
+   *  assignment is deliberately kept while the print runs. */
+  getReplacementWindow: (printerId: number, amsId?: number, trayId?: number) =>
     request<{ mode: 'prompt' | 'optin' | 'none'; pause_layer: number | null }>(
-      `/inventory/assignments/replacement-window/${printerId}`,
+      `/inventory/assignments/replacement-window/${printerId}` +
+        (amsId != null && trayId != null ? `?ams_id=${amsId}&tray_id=${trayId}` : ''),
     ),
   getAssignments: (printerId?: number) =>
     request<SpoolAssignment[]>(`/inventory/assignments${printerId ? `?printer_id=${printerId}` : ''}`),

@@ -244,8 +244,49 @@ async def record_runout(
     )
 
 
-async def manual_replacement_window(db: AsyncSession, printer_id: int) -> dict | None:
+async def _slot_holds_a_spool(db: AsyncSession, printer_id: int, ams_id: int, tray_id: int) -> bool:
+    """Is there a spool bound to this slot that an assignment would replace?
+
+    ⚠️ **The books, not the tray.** A reel that runs out mid-print leaves the
+    tray reporting empty while ``on_ams_change`` deliberately keeps the slot
+    linked — "the spool is still physically in the AMS, just consumed", and that
+    link is the only record of what fed the print. Reading emptiness off the AMS
+    would call a runout an empty slot, which is the one case the replacement
+    question exists for.
+    """
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+
+    for model in (SpoolAssignment, SpoolmanSlotAssignment):
+        bound = await db.execute(
+            select(model.id).where(
+                model.printer_id == printer_id,
+                model.ams_id == ams_id,
+                model.tray_id == tray_id,
+            )
+        )
+        if bound.scalar_one_or_none() is not None:
+            return True
+    return False
+
+
+async def manual_replacement_window(
+    db: AsyncSession,
+    printer_id: int,
+    *,
+    ams_id: int | None = None,
+    tray_id: int | None = None,
+) -> dict | None:
     """Is a declared mid-print replacement currently plausible, and how?
+
+    ⚠️ **A replacement is a property of the SLOT, not only of the print.**
+    Declaring one charges everything printed so far to the spool that came OUT,
+    and an empty slot has none — ``freeze_spool_ids`` freezes it to nothing
+    rather than guessing, so the branch would journal a boundary naming nobody.
+    Filling an empty slot mid-print is therefore never a replacement, and asking
+    about it puts an unanswerable question in front of the operator. When
+    ``ams_id``/``tray_id`` are given, an unbound slot answers ``None``; callers
+    that ask nothing about a slot keep the printer-wide answer.
 
     The feeding spool can only be swapped while the print is paused, so the
     window is defined by pauses, not by the assignment's moment:
@@ -266,6 +307,9 @@ async def manual_replacement_window(db: AsyncSession, printer_id: int) -> dict |
     archive_id = await active_archive_id(db, printer_id)
     if archive_id is None:
         return None
+    if ams_id is not None and tray_id is not None:
+        if not await _slot_holds_a_spool(db, printer_id, ams_id, tray_id):
+            return None
     try:
         from backend.app.services.printer_manager import printer_manager
 
@@ -312,7 +356,9 @@ async def note_manual_replacement_intent(
     """
     from backend.app.models.print_usage_event import KIND_MANUAL
 
-    window = await manual_replacement_window(db, printer_id)
+    # Defence in depth: an older client can still send the flag, and journaling
+    # a boundary that names nobody is worse than ignoring the claim.
+    window = await manual_replacement_window(db, printer_id, ams_id=ams_id, tray_id=tray_id)
     if window is None:
         return False
     archive_id = window["archive_id"]

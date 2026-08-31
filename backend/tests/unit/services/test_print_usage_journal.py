@@ -281,6 +281,9 @@ class TestManualReplacementIntent:
         from backend.app.services.print_usage_journal import note_manual_replacement_intent
 
         archive = await _make_archive(db_session, printer)
+        # The slot must hold a spool for the declaration to mean anything —
+        # a replacement charges what printed so far to the reel that came out.
+        db_session.add(SpoolAssignment(spool_id=31, printer_id=printer.id, ams_id=255, tray_id=0, fingerprint_color=""))
         await record_event(
             db_session,
             printer_id=printer.id,
@@ -611,3 +614,96 @@ class TestTraylessRunoutFolding:
             ("spool_loaded", 2),
             ("runout", None),
         ]
+
+
+class TestTheReplacementWindowAsksAboutTheSLOT:
+    """⚠️ "Is a replacement plausible" is not a property of the printer alone.
+
+    The window used to answer from the print's state only — paused, or paused
+    earlier — so filling an EMPTY slot mid-print raised "replacement or
+    correction?", a question with no answer: a replacement charges what printed
+    so far to the spool that came OUT, and an empty slot has none.
+    ``freeze_spool_ids`` says so itself ("an unassigned slot freezes to nothing
+    rather than guessing"), so the replacement branch would journal a boundary
+    naming nobody.
+
+    ⚠️ **The test is the ASSIGNMENT, never the tray's contents.** A spool that
+    runs out mid-print leaves the tray reading empty while ``on_ams_change``
+    deliberately keeps the slot linked ("the spool is still physically in the
+    AMS, just consumed"), because that link is the only record of what fed the
+    print. Reading emptiness off the AMS would silence the dialog in exactly
+    the case it exists for.
+    """
+
+    async def _paused_print(self, db_session, printer, monkeypatch):
+        from types import SimpleNamespace
+
+        from backend.app.services import print_usage_journal as journal
+
+        archive = await _make_archive(db_session, printer)
+        monkeypatch.setattr(
+            "backend.app.services.printer_manager.printer_manager.get_status",
+            lambda _pid: SimpleNamespace(state="PAUSE", layer_num=42),
+        )
+        return archive, journal
+
+    async def _assign(self, db_session, printer, ams_id, tray_id):
+        spool = Spool(material="PETG", label_weight=1000)
+        db_session.add(spool)
+        await db_session.commit()
+        await db_session.refresh(spool)
+        db_session.add(SpoolAssignment(printer_id=printer.id, ams_id=ams_id, tray_id=tray_id, spool_id=spool.id))
+        await db_session.commit()
+        return spool
+
+    async def test_a_slot_holding_a_spool_still_asks(self, db_session, printer, monkeypatch):
+        _archive, journal = await self._paused_print(db_session, printer, monkeypatch)
+        await self._assign(db_session, printer, 0, 1)
+
+        window = await journal.manual_replacement_window(db_session, printer.id, ams_id=0, tray_id=1)
+
+        assert window is not None and window["mode"] == "prompt"
+
+    async def test_an_empty_slot_does_not_ask(self, db_session, printer, monkeypatch):
+        _archive, journal = await self._paused_print(db_session, printer, monkeypatch)
+        # Nothing assigned to AMS0-T3: filling it is not replacing anything.
+        window = await journal.manual_replacement_window(db_session, printer.id, ams_id=0, tray_id=3)
+
+        assert window is None
+
+    async def test_a_slot_whose_spool_RAN_OUT_still_asks(self, db_session, printer, monkeypatch):
+        """⚠️ The case that makes "empty" the wrong test.
+
+        The reel is consumed and the tray reports empty, but the assignment is
+        deliberately kept while the print runs — so the slot is still "holding"
+        one as far as the books are concerned, and the question is exactly the
+        one worth asking.
+        """
+        _archive, journal_mod = await self._paused_print(db_session, printer, monkeypatch)
+        await self._assign(db_session, printer, 0, 2)
+
+        window = await journal_mod.manual_replacement_window(db_session, printer.id, ams_id=0, tray_id=2)
+
+        assert window is not None and window["mode"] == "prompt"
+
+    async def test_without_a_slot_it_answers_about_the_printer_as_before(self, db_session, printer, monkeypatch):
+        """Callers that ask nothing about a slot keep the old answer — the
+        endpoint's own back-compat, and the shape every other caller uses."""
+        _archive, journal_mod = await self._paused_print(db_session, printer, monkeypatch)
+
+        window = await journal_mod.manual_replacement_window(db_session, printer.id)
+
+        assert window is not None and window["mode"] == "prompt"
+
+    async def test_the_declaration_itself_refuses_an_empty_slot(self, db_session, printer, monkeypatch):
+        """Defence in depth: the flag can still arrive from an older client, and
+        journaling a boundary that names nobody is worse than ignoring it."""
+        _archive, journal_mod = await self._paused_print(db_session, printer, monkeypatch)
+
+        journaled = await journal_mod.note_manual_replacement_intent(
+            db_session, printer_id=printer.id, ams_id=0, tray_id=3
+        )
+
+        assert journaled is False
+        rows = (await db_session.execute(select(PrintUsageEvent))).scalars().all()
+        assert [r for r in rows if r.event == EVENT_RUNOUT] == []

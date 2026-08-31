@@ -2033,6 +2033,8 @@ async def _find_or_create_filament_calibration_for_link(db: AsyncSession, p: Spo
 @router.get("/assignments/replacement-window/{printer_id}")
 async def get_replacement_window(
     printer_id: int,
+    ams_id: int | None = None,
+    tray_id: int | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_VIEW_ASSIGNMENTS),
 ):
@@ -2043,10 +2045,15 @@ async def get_replacement_window(
     default-off checkbox (the swap, if any, happened at that pause).
     ``none`` — no active print or never paused: a physical replacement is
     impossible, plain assignment (wrong-link correction) with no friction.
+
+    Naming the slot narrows it further: an assignment into a slot that holds
+    nothing replaces nothing, so it answers ``none`` however the print is doing.
+    ⚠️ "Holds nothing" is read from the assignment, never from the AMS tray — a
+    reel that ran out leaves the tray empty and the link in place on purpose.
     """
     from backend.app.services.print_usage_journal import manual_replacement_window
 
-    window = await manual_replacement_window(db, printer_id)
+    window = await manual_replacement_window(db, printer_id, ams_id=ams_id, tray_id=tray_id)
     if window is None:
         return {"mode": "none", "pause_layer": None}
     return {"mode": window["mode"], "pause_layer": window["pause_layer"]}

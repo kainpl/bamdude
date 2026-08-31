@@ -125,8 +125,8 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   }, [allSpoolmanAssignments, printerId, amsId, trayId]);
 
   const { data: replacementWindow } = useQuery({
-    queryKey: ['replacement-window', printerId],
-    queryFn: () => api.getReplacementWindow(printerId),
+    queryKey: ['replacement-window', printerId, amsId, trayId],
+    queryFn: () => api.getReplacementWindow(printerId, amsId, trayId),
     enabled: isOpen,
   });
   // 'prompt': paused — a swap is likely happening right now.
@@ -134,6 +134,10 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // Both ask through the same modal (one question in one place — the inline
   // toggle this window used to get was routinely missed); 'none' assigns
   // straight away, a physical swap being impossible.
+  //
+  // ⚠️ Asked about THIS slot, not just this printer. Filling an empty slot
+  // mid-print replaces nothing, and the question has no answer there — a
+  // replacement charges what printed so far to the spool that came out.
   const windowMode = replacementWindow?.mode ?? 'none';
 
   const assignMutation = useMutation({
