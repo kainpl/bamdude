@@ -102,3 +102,65 @@ class TestRetroStampAutoItem:
 
         db.execute.assert_not_awaited()
         assert "a.3mf" not in vp._recent_auto_items
+
+
+class TestLateOptionsDuringQueueAdd:
+    """The window between the wait giving up and the row being registered.
+
+    ``on_print_command`` stashes and then hands off to the retro stamp — but
+    during a queue-add the registry it reads is not filled in yet (the row is
+    still being saved to the library, parsed, committed), so the stamp looks
+    into an empty registry and gives up silently. The per-printer path closed
+    this with an inline last-chance after committing; the auto path shipped
+    without it, so a command landing in that window was stashed and never
+    consumed and the router row kept its column defaults — the exact symptom
+    the 0.5.6 fix was supposed to have ended, through a narrower door.
+    """
+
+    @pytest.mark.asyncio
+    async def test_auto_mode_applies_a_command_that_landed_during_the_commit(self):
+        vp = _instance("auto_queue")
+        vp._restamp_recent_auto_item = AsyncMock()
+        vp._restamp_recent_queue_item = AsyncMock()
+        vp._slicer_print_options["a.3mf"] = {"timelapse": True, "nozzle_mapping": [1, 0]}
+
+        await vp._consume_late_slicer_options("a.3mf")
+
+        vp._restamp_recent_auto_item.assert_awaited_once_with("a.3mf", {"timelapse": True, "nozzle_mapping": [1, 0]})
+        vp._restamp_recent_queue_item.assert_not_awaited()
+        assert vp._slicer_print_options == {}, "the stash must not keep a consumed command"
+
+    @pytest.mark.asyncio
+    async def test_print_queue_mode_stamps_its_own_table(self):
+        vp = _instance("print_queue")
+        vp._restamp_recent_auto_item = AsyncMock()
+        vp._restamp_recent_queue_item = AsyncMock()
+        vp._slicer_print_options["a.3mf"] = {"timelapse": True}
+
+        await vp._consume_late_slicer_options("a.3mf")
+
+        vp._restamp_recent_queue_item.assert_awaited_once()
+        vp._restamp_recent_auto_item.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_late_command_is_a_no_op(self):
+        vp = _instance("auto_queue")
+        vp._restamp_recent_auto_item = AsyncMock()
+
+        await vp._consume_late_slicer_options("never-stashed.3mf")
+
+        vp._restamp_recent_auto_item.assert_not_awaited()
+
+    def test_both_queue_building_paths_take_the_last_chance(self):
+        # The defect was a MISSING CALL, so pin the call sites themselves:
+        # a helper only one path invokes is how the two drifted apart before.
+        import inspect
+
+        for method in (
+            VirtualPrinterInstance._add_to_print_queue,
+            VirtualPrinterInstance._add_to_auto_queue,
+        ):
+            source = inspect.getsource(method)
+            assert "_consume_late_slicer_options" in source, (
+                f"{method.__name__} must consume a slicer command that landed during its own awaits"
+            )

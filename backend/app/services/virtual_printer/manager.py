@@ -379,10 +379,11 @@ class VirtualPrinterInstance:
         plus the H2C rack-pick ``nozzle_mapping``) so the VP-queue path
         can inherit them when adding the item to the queue, rather than
         falling back to the model's column defaults (upstream Bambuddy
-        #1403, #1780). Only ``print_queue`` mode consumes the capture;
-        other modes ignore the print command, so we skip the stash there
-        to keep the dict from accumulating one entry per print over the
-        VP's uptime.
+        #1403, #1780). BOTH queue-building modes (``print_queue`` and
+        ``auto_queue``) consume the capture — see the branch below, which is
+        where the auto tier's hole was; ``file_manager`` and ``proxy`` ignore
+        the print command, so we skip the stash there to keep the dict from
+        accumulating one entry per print over the VP's uptime.
 
         Also schedules the #1658 follow-up that re-fires gcode_state=FINISH a
         moment after the synthetic project_file ack — for every non-proxy mode
@@ -440,6 +441,36 @@ class VirtualPrinterInstance:
             await self._restamp_recent_auto_item(stash_key, data)
         else:
             await self._restamp_recent_queue_item(stash_key, data)
+
+    async def _consume_late_slicer_options(self, filename: str) -> None:
+        """Apply a slicer command that landed during a queue-add's own awaits.
+
+        The MQTT for this filename can arrive during ANY await between the
+        initial pop and the row being registered for the retro stamp —
+        ``wait_for`` itself, ``_save_to_library``, ``db.flush``, ``db.commit``.
+        In those windows ``on_print_command`` stashed its data, but neither the
+        event-signal path nor the retroactive registry was in place yet to
+        consume it: the stamp reads an empty registry and gives up silently,
+        leaving the row on column defaults.
+
+        ⚠️ BOTH queue-building modes must close this the same way, and they
+        share this helper so they cannot drift apart again — an insurance only
+        one path carried is precisely how #1780 came back for the auto tier
+        (found 2026-08-31 reading the shipped fix back).
+        """
+        late_opts = self._slicer_print_options.pop(filename, None)
+        if late_opts is None:
+            return
+        logger.info(
+            "[VP %s] Late slicer MQTT detected for %s during queue-add — "
+            "applying inline (race vs commit/flush/save yield)",
+            self.name,
+            filename,
+        )
+        if self.mode == "auto_queue":
+            await self._restamp_recent_auto_item(filename, late_opts)
+        else:
+            await self._restamp_recent_queue_item(filename, late_opts)
 
     async def _restamp_recent_auto_item(self, stash_key: str, data: dict) -> None:
         """Auto-queue flavour of the late-MQTT retro stamp (see below).
@@ -1183,22 +1214,10 @@ class VirtualPrinterInstance:
                 cutoff = now - _RECENT_QUEUE_ITEM_TTL
                 self._recent_queue_items = {k: v for k, v in self._recent_queue_items.items() if v[1] > cutoff}
                 self._recent_queue_items[file_path.name] = (list(queue_item_ids), now)
-                # Last-chance check: MQTT for this filename could have arrived
-                # during ANY await between the initial pop and now — wait_for
-                # itself, _save_to_library, db.flush, db.commit. In all those
-                # cases ``on_print_command`` stashed its data but neither the
-                # event-signal path nor the retroactive ``_recent_queue_items``
-                # path was in place to consume it. Pop any late stash and apply
-                # inline so the late MQTT never leaks past the queue-add.
-                late_opts = self._slicer_print_options.pop(file_path.name, None)
-                if late_opts is not None:
-                    logger.info(
-                        "[VP %s] Late slicer MQTT detected for %s during queue-add — "
-                        "applying inline (race vs commit/flush/save yield)",
-                        self.name,
-                        file_path.name,
-                    )
-                    await self._restamp_recent_queue_item(file_path.name, late_opts)
+                # Last-chance check for a command that landed while we were
+                # saving/committing — shared with the auto-queue path so the
+                # two cannot drift (see ``_consume_late_slicer_options``).
+                await self._consume_late_slicer_options(file_path.name)
                 if len(queue_item_ids) == 1:
                     logger.info(
                         "[VP %s] Added to queue %s (printer %s): item %s, library_file=%s",
@@ -1419,7 +1438,17 @@ class VirtualPrinterInstance:
                 # Same late-MQTT insurance as the print_queue path: if the
                 # slicer's command lands after the wait window, the retro
                 # stamp patches this still-pending row (see #1780 round 3).
-                self._recent_auto_items[file_path.name] = ([item.id], time.monotonic())
+                # Prune on write, exactly as the print_queue registry does —
+                # nothing pops an entry whose MQTT arrived on time, so without
+                # this the dict grows one entry per print over the VP's uptime.
+                now = time.monotonic()
+                cutoff = now - _RECENT_QUEUE_ITEM_TTL
+                self._recent_auto_items = {k: v for k, v in self._recent_auto_items.items() if v[1] > cutoff}
+                self._recent_auto_items[file_path.name] = ([item.id], now)
+                # ...and the same last-chance: the registry above did not exist
+                # while the library save and commit were running, so a command
+                # that landed in that window is still sitting in the stash.
+                await self._consume_late_slicer_options(file_path.name)
                 logger.info(
                     "[VP %s] Added to auto-queue (item %s, library_file=%s, target_model=%s, "
                     "filaments=%s, force_color=%s)",
