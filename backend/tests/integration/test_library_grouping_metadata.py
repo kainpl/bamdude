@@ -7,13 +7,27 @@ it 60 times is the cost this endpoint removes.
 """
 
 import json
+import secrets
+from datetime import datetime, timezone
 
 import pytest
+from httpx import AsyncClient
+
+from backend.app.core.auth import create_access_token
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
+_PW = "Aa1!" + secrets.token_urlsafe(12)  # pragma: allowlist secret
 
-async def _file(db_session, filename: str, metadata: dict | None):
+
+async def _file(
+    db_session,
+    filename: str,
+    metadata: dict | None,
+    *,
+    created_by_id: int | None = None,
+    deleted_at: datetime | None = None,
+):
     from backend.app.models.library import LibraryFile
 
     row = LibraryFile(
@@ -22,11 +36,39 @@ async def _file(db_session, filename: str, metadata: dict | None):
         file_size=1024,
         file_type="gcode.3mf",
         file_metadata=metadata,
+        created_by_id=created_by_id,
+        deleted_at=deleted_at,
     )
     db_session.add(row)
     await db_session.commit()
     await db_session.refresh(row)
     return row
+
+
+async def _read_own_user(async_client: AsyncClient, username: str) -> tuple[dict, int]:
+    """A caller holding ``library:read_own`` and nothing wider.
+
+    BamDude ships Operators AND Viewers with ``library:read_all`` (shared farm —
+    see ``permissions.DEFAULT_GROUPS``), so the scoped path is only reachable
+    through a purpose-built group. Same shape as
+    ``test_ownership_read_scoping.py::_make_user``, which exists for this reason.
+
+    Returns ``(auth headers, user id)``.
+    """
+    admin = {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
+    grp = await async_client.post(
+        "/api/v1/groups/", headers=admin, json={"name": f"gm_{username}", "permissions": ["library:read_own"]}
+    )
+    assert grp.status_code == 201, grp.text
+    user = await async_client.post(
+        "/api/v1/users/",
+        headers=admin,
+        json={"username": username, "password": _PW, "role": "user", "group_ids": [grp.json()["id"]]},
+    )
+    assert user.status_code == 201, user.text
+    login = await async_client.post("/api/v1/auth/login", json={"username": username, "password": _PW})
+    assert login.status_code == 200, login.text
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}, user.json()["id"]
 
 
 SLICED = {
@@ -92,3 +134,50 @@ async def test_unknown_ids_are_skipped_rather_than_erroring(async_client, db_ses
 
     assert resp.status_code == 200
     assert [r["file_id"] for r in resp.json()] == [f.id]
+
+
+async def test_a_read_own_caller_gets_their_own_row_and_not_the_others(async_client, db_session):
+    """The batch is FILTERED, not refused.
+
+    ⚠️ This is the only test that enters ``_library_file_visible``'s False branch
+    on the batch path — every other case here runs as admin, i.e. with
+    ``can_read_all=True``, where the filter cannot say no to anything. Delete the
+    ``if _library_file_visible(...)`` clause from the route and this test is what
+    fails; without it the clause is the sole thing between a read_own caller and
+    another user's file metadata, untested.
+
+    Refusing the whole batch would be just as wrong as leaking: a selection can
+    span owners, and the caller must still get their own rows back.
+    """
+    headers, uid = await _read_own_user(async_client, "gm_owner")
+    _, other_uid = await _read_own_user(async_client, "gm_stranger")
+
+    mine = await _file(db_session, "mine.gcode.3mf", SLICED, created_by_id=uid)
+    theirs = await _file(db_session, "theirs.gcode.3mf", SLICED, created_by_id=other_uid)
+    # Ownerless rows require READ_ALL — fail-closed, same rule as the raising half.
+    ownerless = await _file(db_session, "nobody.gcode.3mf", SLICED)
+
+    ids = f"{mine.id},{theirs.id},{ownerless.id}"
+    resp = await async_client.get(f"/api/v1/library/grouping-metadata?ids={ids}", headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    assert [r["file_id"] for r in resp.json()] == [mine.id]
+
+
+async def test_a_soft_deleted_file_is_skipped(async_client, db_session):
+    """``deleted_at`` set means "in the bin", and the bin is not queueable.
+
+    Asked as admin on purpose: with ``can_read_all=True`` the ownership arm of
+    the predicate cannot be what excludes this row, so only the soft-delete
+    check can — the route selects with a bare ``select(LibraryFile)`` and leans
+    on the predicate for it.
+    """
+    live = await _file(db_session, "live.gcode.3mf", SLICED)
+    binned = await _file(
+        db_session, "binned.gcode.3mf", SLICED, deleted_at=datetime.now(tz=timezone.utc).replace(tzinfo=None)
+    )
+
+    resp = await async_client.get(f"/api/v1/library/grouping-metadata?ids={live.id},{binned.id}")
+
+    assert resp.status_code == 200, resp.text
+    assert [r["file_id"] for r in resp.json()] == [live.id]
