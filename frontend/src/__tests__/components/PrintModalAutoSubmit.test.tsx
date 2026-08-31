@@ -10,6 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { PrintModal } from '../../components/PrintModal';
 import { http, HttpResponse } from 'msw';
@@ -148,5 +149,71 @@ describe('PrintModal self-submit', () => {
 
     await waitFor(() => expect(screen.getByRole('heading')).toBeInTheDocument());
     expect(queuePosts).toBe(0);
+  });
+});
+
+describe('the group toggle', () => {
+  const onApplyToRestChange = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json(printers)),
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(statusWithPetg)),
+      http.get('/api/v1/archives/:id/plates', () =>
+        HttpResponse.json({ is_multi_plate: false, plates: [{ index: 1, name: 'Plate 1' }] })
+      ),
+      http.get('/api/v1/archives/:id/filament-requirements', () =>
+        HttpResponse.json({ filaments: [{ slot_id: 1, type: 'PETG', color: '#FF0000', used_grams: 10 }] })
+      )
+    );
+  });
+
+  const mountWithBadge = (units: number, applyToRest?: boolean) =>
+    render(
+      <PrintModal
+        mode="add-to-queue"
+        archiveId={1}
+        archiveName="Bracket"
+        initialSelectedPrinterIds={[1]}
+        groupBadge={{ current: 1, total: 2, units }}
+        applyToRest={applyToRest}
+        onApplyToRestChange={onApplyToRestChange}
+        onClose={vi.fn()}
+      />
+    );
+
+  it('offers the choice on a group that has a rest', async () => {
+    mountWithBadge(4);
+
+    expect(await screen.findByRole('checkbox', { name: /apply to the rest/i })).toBeChecked();
+  });
+
+  it('⚠️ does not offer it on a one-member group — there is no rest to apply to', async () => {
+    mountWithBadge(1);
+
+    await screen.findByText('Bracket');
+    expect(screen.queryByRole('checkbox', { name: /apply to the rest/i })).not.toBeInTheDocument();
+  });
+
+  it('is controlled: it renders what it is given and reports the change', async () => {
+    // The run owns this, because the answer belongs to the GROUP and has to
+    // reset when the next one opens. The modal must not keep its own copy.
+    mountWithBadge(4, false);
+
+    const box = await screen.findByRole('checkbox', { name: /apply to the rest/i });
+    expect(box).not.toBeChecked();
+
+    await userEvent.click(box);
+
+    expect(onApplyToRestChange).toHaveBeenCalledWith(true);
+    expect(box).not.toBeChecked();
+  });
+
+  it('counts the OTHERS in its hint, not the group', async () => {
+    mountWithBadge(4);
+
+    const label = await screen.findByTitle(/other 3 files/i);
+    expect(label).toBeInTheDocument();
   });
 });

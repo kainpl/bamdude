@@ -76,6 +76,8 @@ export function PrintModal({
   preselectedPlateIds,
   sequence,
   groupBadge,
+  applyToRest,
+  onApplyToRestChange,
   autoSubmitWhenUnambiguous,
   seededAnswer,
   onAnswered,
@@ -1652,6 +1654,24 @@ export function PrintModal({
                     count: groupBadge.units,
                   })}
                 </span>
+              )}
+              {/* The group's own answer to "must I see the rest of these?"
+                  ⚠️ Only where there IS a rest: a one-member group has nothing
+                  to apply to, and offering the choice there is noise.
+                  ⚠️ The hint counts the OTHERS (units - 1), not the group. */}
+              {groupBadge && groupBadge.units > 1 && onApplyToRestChange && (
+                <label
+                  className="flex items-center gap-1.5 text-xs text-bambu-gray cursor-pointer select-none"
+                  title={t('queue.applyToRestHint', { count: groupBadge.units - 1 })}
+                >
+                  <input
+                    type="checkbox"
+                    className="accent-bambu-green"
+                    checked={applyToRest !== false}
+                    onChange={(e) => onApplyToRestChange(e.target.checked)}
+                  />
+                  {t('queue.applyToRest')}
+                </label>
               )}
             </div>
             <Button variant="ghost" size="sm" onClick={onClose} disabled={isSubmitting}>

@@ -95,6 +95,18 @@ export interface PrintModalProps {
   /** Position of this dialog in a run over GROUPS, with the group's size.
    *  Rendered as a badge; display only, exactly like ``sequence``. */
   groupBadge?: { current: number; total: number; units: number };
+  /** Whether this group's remaining members go in on this answer.
+   *
+   *  Controlled: the modal renders what it is given and reports changes; the
+   *  run owns the state, because the answer is a property of the GROUP and must
+   *  reset when the next one opens.
+   *
+   *  ⚠️ Turning it off does NOT discard the answer. The rest of the group still
+   *  opens seeded with it — the operator did not change their mind about the
+   *  settings, they want to look at each file. That is why this is separate
+   *  from ``autoSubmitWhenUnambiguous`` and from ``seededAnswer``. */
+  applyToRest?: boolean;
+  onApplyToRestChange?: (next: boolean) => void;
   /** Submit without rendering once the dialog is ready and nothing is
    *  ambiguous. The modal still owns the payload — this only removes the
    *  click. Falls back to rendering normally whenever ``canQueueWithoutAsking``
