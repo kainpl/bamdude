@@ -594,8 +594,10 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
       // The card IS the printer, so the run is pinned to it — shown in the
       // dialog and not untickable, rather than hidden. A copy run pins the
       // printers it was aimed at instead; PrintModal queues to every one of
-      // them and maps filament per printer, so one dialog per item covers the
-      // whole copy.
+      // them and maps filament per printer, so one dialog covers a whole GROUP
+      // of items across every target printer. (Once per item until copies
+      // learned to group — the plate still rides on each item, so nothing is
+      // expanded.)
       initialSelectedPrinterIds={copyTargetIds ?? [queue.printer_id]}
       lockPrinterSelection
       lockDispatchMode
