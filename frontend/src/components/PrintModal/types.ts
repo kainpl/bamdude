@@ -107,6 +107,13 @@ export interface PrintModalProps {
    *  from ``autoSubmitWhenUnambiguous`` and from ``seededAnswer``. */
   applyToRest?: boolean;
   onApplyToRestChange?: (next: boolean) => void;
+  /** Every queue row this dialog's submit created.
+   *
+   *  A quantity becomes ROWS — there is no quantity column on ``print_queue`` —
+   *  and a multi-plate submit fans out over plates and printers besides, so one
+   *  answer can produce many. Reported so a copy run can re-form the blocks the
+   *  source queue had; nothing else needs it. */
+  onQueued?: (createdItemIds: number[]) => void;
   /** Submit without rendering once the dialog is ready and nothing is
    *  ambiguous. The modal still owns the payload — this only removes the
    *  click. Falls back to rendering normally whenever ``canQueueWithoutAsking``

@@ -63,10 +63,12 @@ const FIVE_PLATE: LibraryGroupingMetadata = {
 
 let posts: number;
 let postedPlates: (number | null | undefined)[];
+let batched: number[][];
 
 beforeEach(() => {
   posts = 0;
   postedPlates = [];
+  batched = [];
   server.use(
     http.get('/api/v1/library/grouping-metadata', () => HttpResponse.json([FIVE_PLATE])),
     http.get('/api/v1/printers/', () => HttpResponse.json(PRINTERS)),
@@ -103,10 +105,15 @@ beforeEach(() => {
       HttpResponse.json({ filaments: [{ slot_id: 1, type: 'PETG', color: '#FF0000', used_grams: 10 }] }),
     ),
     http.post('/api/v1/queue/', async ({ request }) => {
-      const body = (await request.json()) as { plate_id?: number | null };
-      posts += 1;
+      const body = (await request.json()) as { plate_id?: number | null; quantity?: number };
+      const made = Array.from({ length: body.quantity ?? 1 }, () => (posts += 1));
       postedPlates.push(body.plate_id);
-      return HttpResponse.json({ id: posts, status: 'pending', created_item_ids: [posts] });
+      return HttpResponse.json({ id: made[0], status: 'pending', created_item_ids: made });
+    }),
+    http.post('/api/v1/queue/batch', async ({ request }) => {
+      const body = (await request.json()) as { item_ids: number[] };
+      batched.push(body.item_ids);
+      return HttpResponse.json({ batch_id: 'new-batch', count: body.item_ids.length });
     }),
   );
 });
@@ -135,8 +142,8 @@ async function queueTheOpenDialog() {
 }
 
 /** What `copyableItems` produces for one queue item. */
-function copied(itemId: number, plateId: number | null): SequencedFile {
-  return { id: 1, name: 'badges', source: 'library', plateId, itemId };
+function copied(itemId: number, plateId: number | null, batchId?: string): SequencedFile {
+  return { id: 1, name: 'badges', source: 'library', plateId, itemId, batchId };
 }
 
 describe('copying a queue', () => {
@@ -211,6 +218,86 @@ describe('the per-group toggle', () => {
     expect(await screen.findByText(/Duo/)).toBeInTheDocument();
 
     await userEvent.click(second);
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(posts).toBe(2);
+  });
+});
+
+describe('the blocks the source queue had', () => {
+  it('a batch of two in the source comes out as one batch of two on the target', async () => {
+    // ⚠️ The source's ids mean nothing here — the target batch can only be
+    // formed after its rows exist, which is why this happens at run end.
+    const onDone = vi.fn();
+    render(
+      <CopyRun files={[copied(101, 3, 'src-a'), copied(102, 3, 'src-a')]} onDone={onDone} />,
+    );
+
+    await screen.findByText('badges');
+    await queueTheOpenDialog();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    await waitFor(() => expect(batched).toHaveLength(1));
+    expect(batched[0]).toHaveLength(2);
+  });
+
+  it('a source batch split across two groups still comes out as one', async () => {
+    // Its items need different filaments, so they are answered separately —
+    // the cohort is collected across the whole run, not per group.
+    server.use(
+      http.get('/api/v1/library/grouping-metadata', () =>
+        HttpResponse.json([
+          {
+            ...FIVE_PLATE,
+            plates: [
+              { index: 1, filament_types: ['PETG'], bed_type: 'textured_plate' },
+              { index: 2, filament_types: ['ABS'], bed_type: 'textured_plate' },
+            ],
+          },
+        ]),
+      ),
+    );
+    const onDone = vi.fn();
+    render(
+      <CopyRun files={[copied(101, 1, 'src-a'), copied(102, 2, 'src-a')]} onDone={onDone} />,
+    );
+
+    await screen.findByText('badges');
+    await queueTheOpenDialog();
+    await queueTheOpenDialog();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    await waitFor(() => expect(batched).toHaveLength(1));
+    expect(batched[0]).toHaveLength(2);
+  });
+
+  it('an item that belonged to no batch forms none', async () => {
+    const onDone = vi.fn();
+    render(<CopyRun files={[copied(101, 3), copied(102, 3)]} onDone={onDone} />);
+
+    await screen.findByText('badges');
+    await queueTheOpenDialog();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(batched).toEqual([]);
+  });
+
+  it('⚠️ a cohort the scheduler already took does not throw the run', async () => {
+    // /queue/batch refuses a non-pending item, and the run's first row can be
+    // dispatched before the run ends. The rows are queued either way; only the
+    // block boundary is lost.
+    server.use(
+      http.post('/api/v1/queue/batch', () =>
+        HttpResponse.json({ detail: 'Only pending items can be grouped into a batch' }, { status: 400 }),
+      ),
+    );
+    const onDone = vi.fn();
+    render(
+      <CopyRun files={[copied(101, 3, 'src-a'), copied(102, 3, 'src-a')]} onDone={onDone} />,
+    );
+
+    await screen.findByText('badges');
+    await queueTheOpenDialog();
+
     await waitFor(() => expect(onDone).toHaveBeenCalled());
     expect(posts).toBe(2);
   });

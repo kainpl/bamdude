@@ -254,6 +254,12 @@ export function QueueSequencer({
   const answeredGroupsRef = useRef(new Set<number>());
   const askedRef = useRef(0);
 
+  // Rows created on the TARGET, grouped by the batch their source item belonged
+  // to. A block the operator built in the source queue is re-formed from these
+  // when the run ends — the source's own ids mean nothing here, so the target
+  // batch can only be made after its rows exist.
+  const cohortsRef = useRef(new Map<string, number[]>());
+
   const ids = useMemo(() => files.map((file) => file.id), [files]);
 
   // Two kinds of run, and the difference is whether the plate has been decided.
@@ -328,7 +334,31 @@ export function QueueSequencer({
   const stillOwed = () =>
     files.filter((file) => (queuedByFileRef.current.get(file.id) ?? 0) < (owedByFile.get(file.id) ?? 1));
 
+  /** Re-form the source queue's blocks on the target.
+   *
+   *  ⚠️ `POST /queue/batch` requires every item to be **pending**, and the
+   *  scheduler can dispatch the run's first row before the run ends — so a
+   *  cohort that 400s is skipped rather than allowed to throw. Losing one block
+   *  boundary is a small loss; a run that fails at the finish line after fifty
+   *  queued rows is not.
+   *
+   *  ⚠️ It also OVERWRITES `batch_id`, which is why a member whose own quantity
+   *  already made a batch needs no special handling: its rows are simply
+   *  re-batched with the rest of the cohort. */
+  const reformBlocks = async () => {
+    for (const ids of cohortsRef.current.values()) {
+      if (ids.length < 2) continue;
+      try {
+        await api.groupItemsIntoBatch(ids);
+      } catch {
+        // Already dispatched, or gone. The rows are queued either way.
+      }
+    }
+    cohortsRef.current.clear();
+  };
+
   const finish = (remaining: SequencedFile[]) => {
+    void reformBlocks();
     // One report for the whole run, and only when the run actually queued
     // something the operator did not see a dialog for. A run whose every group
     // held a single unit asked about every plate, so it has nothing to explain.
@@ -394,6 +424,14 @@ export function QueueSequencer({
       }}
       onAutoSubmitRefused={() => {
         askedRef.current += 1;
+      }}
+      onQueued={(createdItemIds) => {
+        // Only a copy carries a source batch; a selection has none to reproduce.
+        const batchId = member.file.batchId;
+        if (!batchId) return;
+        const seen = cohortsRef.current.get(batchId);
+        if (seen) seen.push(...createdItemIds);
+        else cohortsRef.current.set(batchId, [...createdItemIds]);
       }}
       onSuccess={() => {
         queuedRef.current = true;

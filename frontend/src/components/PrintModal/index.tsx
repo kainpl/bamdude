@@ -78,6 +78,7 @@ export function PrintModal({
   groupBadge,
   applyToRest,
   onApplyToRestChange,
+  onQueued,
   autoSubmitWhenUnambiguous,
   seededAnswer,
   onAnswered,
@@ -1193,6 +1194,9 @@ export function PrintModal({
     // printers at two copies each is four requests and eight queue entries, and
     // the toast reported four. `success`/`failed` stay a pair of attempt counts
     // because the partial-failure message pairs them.
+    // Every row this submit creates, across plates and printers. A copy run
+    // re-forms the source queue's blocks from these.
+    const createdItemIds: number[] = [];
     const results: { success: number; failed: number; queued: number; errors: string[] } = {
       success: 0,
       failed: 0,
@@ -1301,7 +1305,10 @@ export function PrintModal({
             await updateQueueMutation.mutateAsync(updateData);
           } else {
             // Add-to-queue mode OR edit mode with additional entries
-            await addToQueueMutation.mutateAsync(getQueueData(printerId, plateId));
+            const added = await addToQueueMutation.mutateAsync(getQueueData(printerId, plateId));
+            // ⚠️ `created_item_ids`, not `id`: a quantity becomes rows, and the
+            // response's own `id` is only the first of them.
+            createdItemIds.push(...(added.created_item_ids ?? (added.id != null ? [added.id] : [])));
           }
           results.success++;
           // Edit mode replaces one row; everything else writes one per copy.
@@ -1326,6 +1333,7 @@ export function PrintModal({
       // not block the success UX.
       persistPreference();
       reportAnswer();
+      if (createdItemIds.length > 0) onQueued?.(createdItemIds);
       if (mode !== 'reprint' && announces) {
         if (mode === 'edit-queue-item') {
           showToast(t('printModal.queueItemUpdated'));
