@@ -1829,6 +1829,13 @@ class BambuMQTTClient:
         # wants ONE boundary per tray per print (kind may upgrade
         # pause → autoswitch once, when the backup takes over mid-purge).
         self._runout_fired: dict[int | None, str] = {}
+        # ⚠️ ``_runout_fired`` is per-process memory, and the HMS runout status
+        # stays active for the WHOLE print — so a client created mid-print would
+        # replay every still-active code as a fresh episode at the CURRENT
+        # layer. Armed by default (a print that starts under our watch has
+        # nothing to recover); the restart-recovery branch below disarms it
+        # until the journal has been read back in. See ``seed_runout_fired``.
+        self._runout_seeded: bool = True
         # Trays whose runout was fired, mapped to the tray_uuid seen at that
         # moment — a later valid, different uuid means a replacement spool was
         # loaded (one-shot ``spool_loaded`` event).
@@ -6292,6 +6299,9 @@ class BambuMQTTClient:
             # Runout detector memory is per-print: a spool that ran out last
             # print may legitimately run out again this one.
             self._runout_fired.clear()
+            # This print began under our watch, so its journal cannot already
+            # hold a runout — nothing to recover, and the detector is armed.
+            self._runout_seeded = True
             self._runout_watch.clear()
             # #1721: rearm the end-of-print finish-photo trigger for the new print
             self._finish_photo_captured = False
@@ -6339,6 +6349,14 @@ class BambuMQTTClient:
                 }
             )
         elif running_first_observed and self.on_print_running_observed:
+            # ⚠️ We joined a print already in flight, so this client's runout
+            # dedup is empty while the printer's HMS status is not — every
+            # still-active runout code would fire again, at the CURRENT layer.
+            # Hold the detector until main.py reads the journal back in
+            # (``seed_runout_fired``). Safe here: the detector needs
+            # ``_was_running``, set below, so it cannot have fired yet on this
+            # client, and the status repeats on every push.
+            self._runout_seeded = False
             # Restart-recovery hook (#1485 follow-up): BamDude started mid-
             # print, so the #1304 first-push guard suppressed on_print_start,
             # but we still need main.py to capture a fresh timelapse baseline
@@ -6891,6 +6909,20 @@ class BambuMQTTClient:
             return tn
         return None
 
+    def seed_runout_fired(self, already_fired: dict[int | None, str]) -> None:
+        """Arm the runout detector with what this print's journal already holds.
+
+        Called on restart-recovery, when a client is created for a print that
+        was already running. Each entry is a tray whose runout this print has
+        already recorded, so the still-active HMS status behind it is a replay,
+        not a second reel. Entries never overwrite what this client has seen
+        itself, and the normal re-arm still drops a tray the moment its code
+        clears — so a genuine second episode is unaffected.
+        """
+        for tray, kind in already_fired.items():
+            self._runout_fired.setdefault(tray, kind)
+        self._runout_seeded = True
+
     def _detect_runout_signals(self) -> None:
         """Scan active error codes for the runout family and fire events once.
 
@@ -6911,6 +6943,13 @@ class BambuMQTTClient:
         # print was actually at 548). The HMS repeats every push, so waiting
         # for a populated state only delays the fire, never loses it.
         if (self.state.layer_num or 0) == 0 and (self.state.total_layers or 0) == 0:
+            return
+        # Same reasoning, one step earlier: until the journal has been read back
+        # into this client, we cannot tell a NEW runout from the one this print
+        # already recorded — and this status repeats on every push, so holding
+        # fire only delays it. Firing unseeded put a phantom second episode into
+        # a running print once the operator had closed the first one.
+        if not self._runout_seeded:
             return
         from backend.app.services.hms_errors import classify_runout_ecode
 

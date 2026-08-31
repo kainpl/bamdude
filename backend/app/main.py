@@ -4884,6 +4884,57 @@ async def _capture_finish_photo_from_timelapse(
         await asyncio.sleep(poll_interval)
 
 
+async def _seed_runout_detector_from_journal(printer_id: int, logger) -> None:
+    """Re-arm a mid-print client's runout dedup from what the journal holds.
+
+    ⚠️ The HMS runout status stays active for the WHOLE print — an X2D whose
+    mapped slot is empty keeps reporting it to the end, and inserting a reel
+    elsewhere never clears it. A client created mid-print starts with an empty
+    dedup memory, so it replays that status as a brand-new runout at the
+    CURRENT layer. ``record_runout`` folds such a repeat into the open episode,
+    which is why this stayed invisible for months — but the moment the operator
+    CLOSES the episode (assigning a spool to the slot that emptied journals a
+    ``spool_loaded``), the next restart's replay is read as "a second short
+    reel" and splits the print's books at a layer nothing happened on.
+    Measured on printer 10, archive 838: five restarts, five replays, and the
+    one that landed after the operator's assignment cut 23 of 53 layers loose.
+
+    Seeding with no active archive still ARMS the detector — an unseeded client
+    holds its fire forever, and a printer with no print of ours has nothing to
+    replay anyway.
+    """
+    client = printer_manager.get_client(printer_id)
+    if client is None:
+        return
+
+    from backend.app.models.print_usage_event import EVENT_RUNOUT
+    from backend.app.services.print_usage_journal import active_archive_id, load_events
+
+    try:
+        async with async_session() as db:
+            archive_id = await active_archive_id(db, printer_id)
+            events = await load_events(db, printer_id, archive_id) if archive_id is not None else []
+    except Exception:
+        # Fall towards ARMED, never towards silence: an unseeded detector holds
+        # its fire for the whole print, which would lose a real runout — far
+        # worse than the replay this guards against.
+        logger.exception("[UsageJournal] Could not read the journal to re-arm printer %s; arming unseeded", printer_id)
+        client.seed_runout_fired({})
+        return
+
+    # Last kind per tray: the journal records a firmware escalation in place,
+    # and the detector's own upgrade path expects the newest one.
+    already_fired = {e.global_tray_id: e.kind for e in events if e.event == EVENT_RUNOUT and e.kind}
+    client.seed_runout_fired(already_fired)
+    if already_fired:
+        logger.info(
+            "[UsageJournal] Re-armed runout detector for printer %s from archive %s: %s",
+            printer_id,
+            archive_id,
+            already_fired,
+        )
+
+
 async def _restore_usage_tracking_session(printer_id: int, state, db, logger) -> None:
     """Put the filament-attribution context back after a restart mid-print.
 
@@ -4991,6 +5042,11 @@ async def on_print_running_observed(printer_id: int, data: dict):
     if _state is not None:
         async with async_session() as db:
             await _restore_usage_tracking_session(printer_id, _state, db, logger)
+
+    # ⚠️ Before the detector can fire: this client's runout dedup is empty and
+    # the printer's HMS status is not. Unseeded, it holds its fire — so this
+    # must run on every restart-recovery, not only when a session was restored.
+    await _seed_runout_detector_from_journal(printer_id, logger)
 
     # Avoid double-capture: on_print_start may have run earlier in this process.
     if printer_id in _timelapse_baselines:

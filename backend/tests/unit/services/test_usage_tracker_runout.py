@@ -863,13 +863,8 @@ class TestMultiEpisodeBoundaries:
             ev(2, "runout", "autoswitch", 3, 0, None),
             ev(3, "tray_change", None, 2, 0, 292),
             ev(4, "spool_loaded", None, 3, 28, 293),
-            ev(5, "runout", "autoswitch", 3, 30, 293),
         ]
-        assert journal_boundaries_for_tray(events, 3) == [
-            (0, None, None),
-            (0, 292, None),
-            (30, None, None),
-        ]
+        assert journal_boundaries_for_tray(events, 3) == [(0, None, None), (0, 292, None)]
 
     def test_without_a_backup_the_loaded_reel_still_names_the_feeder(self):
         # The other real autoswitch shape: nothing backed the tray up (no
@@ -896,6 +891,34 @@ class TestMultiEpisodeBoundaries:
             ev(2, "spool_loaded", None, 2, 45, 294),
         ]
         assert journal_boundaries_for_tray(events, 2) == [(0, 290, None), (40, 294, None)]
+
+    def test_a_refilled_tray_that_runs_out_again_is_still_a_boundary(self):
+        # The cover must be reset by a refill: once the human puts a reel into
+        # the tray and it feeds again, the tray is no longer being covered by
+        # anyone — so its NEXT runout is a real boundary, and an unnameable
+        # feeder there is still charged to nobody rather than quietly folded
+        # into the previous segment.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "runout", "autoswitch", 2, 40, 290),
+            ev(2, "spool_loaded", None, 2, 45, 294),
+            ev(3, "runout", "autoswitch", 2, 80, 294),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 290, None), (40, 294, None), (80, None, None)]
 
     def test_without_a_start_event_nothing_is_invented(self):
         from types import SimpleNamespace

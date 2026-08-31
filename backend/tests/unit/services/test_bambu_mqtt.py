@@ -5521,6 +5521,69 @@ class TestRunoutDetector:
     def _hms_push(attr: int, code: int) -> dict:
         return {"print": {"hms": [{"attr": attr, "code": code}]}}
 
+    def test_joining_a_print_in_flight_disarms_the_detector(self, client):
+        # The wiring itself. Joining a running print (no PRINT START of ours —
+        # BamDude was restarted) must disarm the detector, because THIS client
+        # has never seen the runout the journal already holds. Nothing else
+        # disarms it, so without this the gate above is unreachable and the
+        # restart replay is back.
+        client.on_print_running_observed = MagicMock()
+        client._was_running = False
+        client._previous_gcode_state = "RUNNING"
+
+        client._process_message({"print": {"gcode_state": "RUNNING", "gcode_file": "in-flight.3mf"}})
+
+        assert client.on_print_running_observed.called
+        assert client._runout_seeded is False
+
+    def test_an_unseeded_detector_holds_its_fire(self, client):
+        # ⚠️ A fresh client mid-print knows nothing: its dedup memory is a plain
+        # in-process dict, wiped by the restart that created it. Firing before
+        # the journal has been read is what put a phantom runout into a live
+        # print (printer 10, archive 838) — the still-active HMS code was
+        # replayed as a brand-new episode at the CURRENT layer.
+        #
+        # Waiting costs nothing: this code repeats on every push, so holding
+        # fire until the recovery has spoken only delays it, never loses it —
+        # the same reasoning the not-yet-populated-state guard already uses.
+        client._runout_seeded = False
+
+        client._process_message(self._hms_push(0x07002000, 0x00030002))
+
+        assert client.on_usage_event.call_count == 0
+
+        client.seed_runout_fired({})
+        client._process_message(self._hms_push(0x07002000, 0x00030002))
+
+        assert client.on_usage_event.call_args[0] == ("runout", "autoswitch", 0, 42)
+
+    def test_a_runout_the_journal_already_holds_is_not_fired_again(self, client):
+        # The restart replay itself. HMS keeps this status for the WHOLE print
+        # (measured on an X2D whose mapped slot stays empty — inserting a reel
+        # elsewhere never clears it), so every restart used to re-fire it. That
+        # was harmless only while the episode stayed open: record_runout folds a
+        # repeat into the open row. Once the operator closed the episode by
+        # assigning a spool to the still-empty slot, the next restart's replay
+        # became "a second short reel" and cut the print's books in half.
+        client._runout_seeded = False
+        client.seed_runout_fired({0: "autoswitch"})
+
+        client._process_message(self._hms_push(0x07002000, 0x00030002))
+
+        assert client.on_usage_event.call_count == 0
+
+    def test_a_seeded_tray_still_re_arms_once_its_code_clears(self, client):
+        # The seed must not outlive the episode: when the code goes away the
+        # existing re-arm drops the tray, and a genuinely NEW runout of it — two
+        # short reels in one print — fires normally.
+        client._runout_seeded = False
+        client.seed_runout_fired({0: "autoswitch"})
+
+        client._process_message({"print": {"hms": []}})
+        client._process_message(self._hms_push(0x07002000, 0x00030002))
+
+        assert client.on_usage_event.call_args[0] == ("runout", "autoswitch", 0, 42)
+
     def test_ams_runout_pause_fires_once_despite_repeated_hms(self, client):
         push = self._hms_push(0x07002000, 0x00020001)
         client._process_message(push)
