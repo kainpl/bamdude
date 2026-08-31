@@ -42,12 +42,15 @@ interface LibraryPickerModalProps {
  *
  * ⚠️ **It picks files and asks nothing else.** Plates, AMS mapping, quantity,
  * schedule and print options all belong to `PrintModal`, which
- * `QueueSequencer` then opens once per file. That division is the whole reason
- * this dialog is allowed to exist: a bulk *scheduling* dialog was written and
- * rejected in August 2026 because carrying one file's plate and filament
- * mapping onto the next is wrong rather than convenient — plate 3 of one file
- * need not exist in the next. A bulk *selection* dialog carries nothing across
- * files, so it cannot make that mistake.
+ * `QueueSequencer` opens once per GROUP — the files whose answers coincide.
+ * That division is the whole reason this dialog is allowed to exist: a bulk
+ * *scheduling* dialog was written and rejected in August 2026, and the half of
+ * that reason still standing after grouping is that `PrintModal` must remain
+ * the only code that builds a queue payload. Carrying one answer onto the next
+ * file is no longer the objection — that IS a group — but only the print
+ * options carry; plates and filament mapping stay per file, because plate 3 of
+ * one file need not exist in the next. A bulk *selection* dialog builds no
+ * payload at all, so it cannot make that mistake.
  *
  * Selection is a Map held here, so it survives changing folder and searching —
  * which is the point of picking from a browser rather than from one folder.

@@ -1617,7 +1617,7 @@ export function FileManagerPage() {
   const [printMultiFile, setPrintMultiFile] = useState<LibraryFileListItem | null>(null);
   // The files still to be scheduled, in the order they were selected. One entry
   // is an ordinary Schedule-print open; several is a run through the same
-  // dialog, one file at a time (QueueSequencer). `fromSelection` says whether
+  // dialog, one group at a time (QueueSequencer). `fromSelection` says whether
   // the run may write back to the selection when it ends — a run started from
   // one file's ⋮ menu must not touch what happens to be ticked.
   const [queueSequence, setQueueSequence] = useState<
@@ -3224,8 +3224,8 @@ export function FileManagerPage() {
                       </Button>
                     )}
                     {/* Gated on > 0, unlike Print above: the Schedule dialog
-                        takes one file, so several files are the same dialog
-                        several times over (QueueSequencer). Hidden rather than
+                        takes one group, so several files are the same dialog
+                        once per group (QueueSequencer). Hidden rather than
                         disabled when nothing selected is sliced — a button that
                         opens a window saying "nothing here can be queued"
                         spends two clicks on what its absence says for free. */}
