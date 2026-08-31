@@ -39,11 +39,33 @@ export interface PrintModalProps {
    *  ⚠️ Only for a caller that knows this file's plates. Copying a queue onto
    *  another printer of the same model does — it is the same file, so the plate
    *  the source item was queued with exists there too, and a "copy" that forgot
-   *  which plate was queued would not be one. A bulk selection of arbitrary
-   *  files must NOT set it: plate 3 of one file need not exist in the next.
+   *  which plate was queued would not be one. A caller that has not read this
+   *  file's plates must NOT set it: plate 3 of one file need not exist in the
+   *  next. A grouped run HAS read them (see ``preselectedPlateIds``), which is
+   *  why it may.
    *
    *  Ignored in `edit-queue-item` mode, where the item's own plate wins. */
   preselectedPlateId?: number | null;
+  /** Open with several plates of this file already chosen.
+   *
+   *  Used by a grouped run: the group knows which of THIS file's plates belong
+   *  to it, so the dialog must show all of them — showing one while the rest
+   *  queue silently would make the visible dialog lie about what it is about
+   *  to do.
+   *
+   *  Takes precedence over ``preselectedPlateId`` when both are given. */
+  preselectedPlateIds?: number[];
+  /** Position of this dialog in a run over GROUPS, with the group's size.
+   *  Rendered as a badge; display only, exactly like ``sequence``. */
+  groupBadge?: { current: number; total: number; units: number };
+  /** Submit without rendering once the dialog is ready and nothing is
+   *  ambiguous. The modal still owns the payload — this only removes the
+   *  click. Falls back to rendering normally whenever ``canQueueWithoutAsking``
+   *  says no, so a run can never queue a plate the operator would have been
+   *  asked about — and likewise whenever the submit itself ends in a question
+   *  (a low-spool warning) or a failure, so a silent member can never stall a
+   *  run with nothing on screen. */
+  autoSubmitWhenUnambiguous?: boolean;
   /** Position of this dialog in a run over several files ("2 / 5"), rendered as
    *  a badge beside the title. Display only — the modal does not know a run
    *  exists and cannot advance one; QueueSequencer owns that. Omitted for a

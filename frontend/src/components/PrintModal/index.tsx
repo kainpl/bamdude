@@ -22,6 +22,7 @@ import {
   useFilamentMapping,
 } from '../../hooks/useFilamentMapping';
 import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
+import { canQueueWithoutAsking } from '../../utils/bulkQueueEligibility';
 import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
 import { getBedTypeInfo } from '../../utils/bedType';
@@ -72,7 +73,10 @@ export function PrintModal({
   autoQueueBatchCount,
   initialSelectedPrinterIds,
   preselectedPlateId,
+  preselectedPlateIds,
   sequence,
+  groupBadge,
+  autoSubmitWhenUnambiguous,
   onClose,
   onSuccess,
   projectId,
@@ -114,9 +118,14 @@ export function PrintModal({
     if (mode === 'edit-queue-item' && queueItem?.plate_id != null) {
       return new Set([queueItem.plate_id]);
     }
-    // A caller that already knows which plate this is about — copying a queue
-    // onto another printer of the same model. The "fall back to plate 1" effect
-    // below only fires on an empty set, so this survives the plates arriving.
+    // A caller that already knows which plates this is about — copying a queue
+    // onto another printer of the same model (one plate), or a grouped run that
+    // has already read which of this file's plates belong to the group (several).
+    // The "fall back to plate 1" effect below only fires on an empty set, so
+    // this survives the plates arriving.
+    if (preselectedPlateIds && preselectedPlateIds.length > 0) {
+      return new Set(preselectedPlateIds);
+    }
     if (preselectedPlateId != null) {
       return new Set([preselectedPlateId]);
     }
@@ -583,7 +592,7 @@ export function PrintModal({
   });
 
   // Fetch filament requirements for library files (with plate support)
-  const { data: libraryFilamentReqs } = useQuery({
+  const { data: libraryFilamentReqs, isError: libraryFilamentReqsError } = useQuery({
     queryKey: ['library-file-filaments', libraryFileId, selectedPlate],
     queryFn: () => api.getLibraryFileFilamentRequirements(libraryFileId!, selectedPlate ?? undefined),
     enabled: isLibraryFile && !!libraryFileId && (selectedPlate !== null || !platesData?.is_multi_plate),
@@ -594,6 +603,10 @@ export function PrintModal({
 
   // Combine filament requirements from either source
   const effectiveFilamentReqs = isLibraryFile ? libraryFilamentReqs : archiveFilamentReqs;
+  // Whether that one query gave up. Only the self-submit below reads it: a
+  // silent run must be able to tell "this plate needs no filament" from "we do
+  // not know yet / we never will", which `effectiveFilamentReqs` alone cannot.
+  const effectiveFilamentReqsError = isLibraryFile ? libraryFilamentReqsError : archiveFilamentReqsError;
   // How many layers the storage question is about. ⚠️ Per PLATE — a container's
   // plates routinely differ by hundreds, so the file has no single answer. With
   // several plates picked, the largest is the honest worst case for "will it
@@ -615,7 +628,7 @@ export function PrintModal({
   }, [platesData, selectedPlate]);
 
   // Only fetch printer status when single printer selected (for filament mapping)
-  const { data: printerStatus } = useQuery({
+  const { data: printerStatus, isSuccess: printerStatusLoaded, isError: printerStatusFailed } = useQuery({
     queryKey: ['printer-status', effectivePrinterId],
     queryFn: () => api.getPrinterStatus(effectivePrinterId!),
     enabled: !!effectivePrinterId,
@@ -1266,6 +1279,118 @@ export function PrintModal({
     perPlateReqsFailed,
   ]);
 
+  // --- Self-submit for a grouped run ------------------------------------
+  // A group's silent members never render: the dialog decides for itself and
+  // submits, so the operator answers once per group instead of once per file.
+  //
+  // ⚠️ `canSubmit` is necessary but NOT sufficient, and the gap is silent.
+  // It waits for the plates and — for a multi-plate selection — for each plate's
+  // requirements, but it knows nothing about the printer's status or about the
+  // single-plate requirements query. Both read `undefined` while loading, and
+  // both feed the verdict in opposite directions: an empty `loadedFilaments`
+  // refuses EVERY plate that needs any filament, an empty requirement list
+  // accepts every plate whatever is loaded. Deciding early therefore either
+  // makes the feature do nothing or queues against the wrong reel, and neither
+  // looks broken. So we wait for the honest signals — a settled query, not a
+  // non-empty array: a printer with genuinely nothing loaded is a real state
+  // that must still be allowed to refuse.
+  const autoSubmittedRef = useRef(false);
+  const [autoSubmitRefused, setAutoSubmitRefused] = useState(false);
+
+  // `handleSubmit` is rebuilt every render, and wrapping it in `useCallback`
+  // would mean listing every piece of dialog state it reads — a dependency list
+  // that would go stale silently. The self-submit only ever needs the latest
+  // one, so it travels by ref instead of through the dep array below. Declared
+  // before that effect so the ref is refreshed first in every commit.
+  const submitRef = useRef(handleSubmit);
+  useEffect(() => {
+    submitRef.current = handleSubmit;
+  });
+
+  useEffect(() => {
+    if (!autoSubmitWhenUnambiguous || autoSubmittedRef.current || autoSubmitRefused) return;
+    if (!canSubmit) return;
+
+    // Only a run at exactly one specific printer consults filaments at all:
+    // `canQueueWithoutAsking` short-circuits on any other printer count. An
+    // auto-queue or fan-out member must therefore not wait for a status that
+    // is never fetched.
+    const consultsPrinter = !isAutoMode && selectedPrinters.length === 1;
+    if (consultsPrinter) {
+      // No status, no verdict — and a refusal is the safe half of the guess.
+      if (printerStatusFailed) {
+        setAutoSubmitRefused(true);
+        return;
+      }
+      if (!printerStatusLoaded) return;
+    }
+
+    // The requirement source is the one the submit path itself uses: per plate
+    // when several are ticked, the file-level query otherwise. `canSubmit`
+    // already covers the per-plate half via `perPlateReqsPending/Failed`.
+    if (!isMultiPlateSelection) {
+      if (effectiveFilamentReqsError) {
+        setAutoSubmitRefused(true);
+        return;
+      }
+      if (effectiveFilamentReqs === undefined) return;
+    }
+    const plateRequirements = isMultiPlateSelection
+      ? selectedPlateIds.map((plateId) => perPlateReqs.get(plateId)?.filaments ?? [])
+      : [effectiveFilamentReqs?.filaments ?? []];
+
+    const loaded = buildLoadedFilaments(printerStatus);
+    const refused = plateRequirements.some(
+      (requirements) =>
+        !canQueueWithoutAsking({
+          requirements,
+          loadedFilaments: loaded,
+          printerCount: isAutoMode ? 0 : selectedPrinters.length,
+          ftsActive: printerStatus?.fila_switch?.installed === true,
+          trayNow: printerStatus?.tray_now,
+        }).ok,
+    );
+    if (refused) {
+      // Show ourselves instead. The operator sees every plate of this file with
+      // its own mapping panel, so which plate is the problem is visible.
+      setAutoSubmitRefused(true);
+      return;
+    }
+    // The ref makes it fire once: `canSubmit` stays true after the submit starts.
+    autoSubmittedRef.current = true;
+    void submitRef.current();
+  }, [
+    autoSubmitWhenUnambiguous,
+    autoSubmitRefused,
+    canSubmit,
+    isAutoMode,
+    selectedPrinters.length,
+    printerStatus,
+    printerStatusLoaded,
+    printerStatusFailed,
+    isMultiPlateSelection,
+    selectedPlateIds,
+    perPlateReqs,
+    effectiveFilamentReqs,
+    effectiveFilamentReqsError,
+  ]);
+
+  // ⚠️ The submit path does not always end in `onClose`, and a silent member
+  // that neither closes nor renders stalls the whole run with nothing on
+  // screen — the sequencer advances on `onClose` and has no other signal. Two
+  // endings do exactly that: a low-spool warning, whose ConfirmModal lives in
+  // the JSX we are suppressing, and a failed or partial dispatch, which only
+  // shows a toast and leaves the dialog standing. Both are questions for the
+  // operator, so we stop being silent and let them finish it here.
+  useEffect(() => {
+    if (!autoSubmitWhenUnambiguous || autoSubmitRefused) return;
+    if (filamentWarningItems && filamentWarningItems.length > 0) {
+      setAutoSubmitRefused(true);
+      return;
+    }
+    if (autoSubmittedRef.current && !isPending) setAutoSubmitRefused(true);
+  }, [autoSubmitWhenUnambiguous, autoSubmitRefused, filamentWarningItems, isPending]);
+
   // Modal title and action button text based on mode
   const getModalConfig = () => {
     const printerCount = selectedPrinters.length;
@@ -1343,6 +1468,11 @@ export function PrintModal({
   const showPerPlateFilamentMapping =
     !!effectivePrinterId && isMultiPlateSelection && selectedPrinters.length === 1;
 
+  // A grouped run's silent members must not flash on screen. Once refused — by
+  // the eligibility gate or by an ending that needs an answer — we render
+  // normally and the operator finishes the job. ⚠️ Must stay below every hook.
+  if (autoSubmitWhenUnambiguous && !autoSubmitRefused) return null;
+
   return (
     <div
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
@@ -1371,6 +1501,13 @@ export function PrintModal({
                   aria-label={t('printModal.fileOfTotal', sequence)}
                 >
                   {sequence.current}/{sequence.total}
+                </span>
+              )}
+              {/* Same job for a run over GROUPS: which group this is, and how
+                  many plates go out when it is answered. */}
+              {groupBadge && (
+                <span className="px-2 py-0.5 rounded-full bg-bambu-dark text-xs text-bambu-gray tabular-nums">
+                  {t('queue.groupBadge', groupBadge)}
                 </span>
               )}
             </div>
