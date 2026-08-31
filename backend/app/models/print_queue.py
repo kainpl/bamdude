@@ -48,6 +48,19 @@ class PrintQueueItem(Base):
     # operator has dealt with it. Reached through ``unskip``.
     gate_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
+    # Who put this row here (m160). Since 0.5.4 EVERY print holds a queue row
+    # while it runs — a direct print claims one at dispatch, an external one
+    # gets one made at print start — so "there is a queue row" stopped meaning
+    # "somebody queued this", and the queue-completed notifications began
+    # firing after prints nobody scheduled.
+    #
+    # ⚠️ It is a property of the ROW, not of the run. ``answer_by_repeating``
+    # re-arms the same row rather than copying it, so a repeat keeps the origin
+    # it was born with — a repeated external print stays external and still
+    # raises no queue event, while a repeated queue item still counts. That is
+    # the intended reading of "repeat": do again exactly what was done.
+    origin: Mapped[str] = mapped_column(String(16), default="queue", server_default="queue", nullable=False)
+
     # AMS mapping: JSON array of global tray IDs per filament slot
     # Format: "[5, -1, 2, -1]" - position=slot_id-1, value=global tray ID, -1=unused
     ams_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)

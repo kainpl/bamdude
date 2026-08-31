@@ -68,7 +68,7 @@ def _idle_printer_manager():
 async def test_the_queue_waits_for_a_direct_print(db_session, printer_factory, scheduler):
     """The bug, end to end: file1 claimed, file2 must not overtake it."""
     printer, item = await _printer_with_pending_item(db_session, printer_factory)
-    await claim_printer_for_direct_print(db_session, printer_id=printer.id)
+    await claim_printer_for_direct_print(db_session, printer_id=printer.id, origin="direct")
 
     start = AsyncMock()
     with patch.object(PrintScheduler, "_start_print", start), _idle_printer_manager():
@@ -183,7 +183,7 @@ async def test_another_printers_direct_print_does_not_hold_this_queue(db_session
     other = await printer_factory(name="other")
     db_session.add(PrinterQueue(id=other.id, printer_id=other.id))
     await db_session.commit()
-    await claim_printer_for_direct_print(db_session, printer_id=other.id)
+    await claim_printer_for_direct_print(db_session, printer_id=other.id, origin="direct")
 
     start = AsyncMock()
     with patch.object(PrintScheduler, "_start_print", start), _idle_printer_manager():

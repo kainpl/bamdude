@@ -1044,6 +1044,7 @@ class BackgroundDispatchService:
                 claim_item = await claim_printer_for_direct_print(
                     claim_db,
                     printer_id=printer_id,
+                    origin="direct",
                     archive_id=source_id if kind == "reprint_archive" else None,
                     library_file_id=source_id if kind == "print_library_file" else None,
                     options=options,

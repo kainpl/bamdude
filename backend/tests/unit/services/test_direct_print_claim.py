@@ -27,7 +27,7 @@ async def test_the_claim_is_a_printing_row_the_scheduler_cannot_pick_up(db_sessi
     printer, queue = await _queue(db_session, printer_factory)
 
     item = await claim_printer_for_direct_print(
-        db_session, printer_id=printer.id, library_file_id=None, created_by_id=None
+        db_session, printer_id=printer.id, origin="direct", library_file_id=None, created_by_id=None
     )
 
     assert item is not None
@@ -41,7 +41,7 @@ async def test_the_claim_is_a_printing_row_the_scheduler_cannot_pick_up(db_sessi
 async def test_the_queue_is_claimed_and_points_at_the_item(db_session, printer_factory):
     printer, queue = await _queue(db_session, printer_factory)
 
-    item = await claim_printer_for_direct_print(db_session, printer_id=printer.id)
+    item = await claim_printer_for_direct_print(db_session, printer_id=printer.id, origin="direct")
 
     await db_session.refresh(queue)
     assert queue.status == "printing", "this is the seed check_queue reads"
@@ -54,7 +54,7 @@ async def test_it_does_not_disturb_the_pending_ordering(db_session, printer_fact
     """⚠️ position 0 and status printing: MAX(position) is taken over pending
     rows only, so the next queued item must still land at 1."""
     printer, queue = await _queue(db_session, printer_factory)
-    await claim_printer_for_direct_print(db_session, printer_id=printer.id)
+    await claim_printer_for_direct_print(db_session, printer_id=printer.id, origin="direct")
 
     from backend.app.services.queue_batch import enqueue_batch_copies
 
@@ -72,6 +72,7 @@ async def test_the_print_options_land_on_the_row(db_session, printer_factory):
     item = await claim_printer_for_direct_print(
         db_session,
         printer_id=printer.id,
+        origin="direct",
         library_file_id=None,
         options={"plate_id": 3, "ams_mapping": [1, -1], "timelapse": True, "layer_inspect": True},
     )
@@ -93,7 +94,9 @@ async def test_the_owner_is_carried(db_session, printer_factory):
     db_session.add(user)
     await db_session.commit()
 
-    item = await claim_printer_for_direct_print(db_session, printer_id=printer.id, created_by_id=user.id)
+    item = await claim_printer_for_direct_print(
+        db_session, printer_id=printer.id, origin="direct", created_by_id=user.id
+    )
 
     assert item.created_by_id == user.id
 
@@ -106,4 +109,4 @@ async def test_a_printer_with_no_queue_row_claims_nothing(db_session, printer_fa
     reason to refuse someone's print."""
     printer = await printer_factory()
 
-    assert await claim_printer_for_direct_print(db_session, printer_id=printer.id) is None
+    assert await claim_printer_for_direct_print(db_session, printer_id=printer.id, origin="direct") is None

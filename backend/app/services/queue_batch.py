@@ -7,6 +7,7 @@ and the single already-claimed row a direct print takes for itself.
 import json
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -73,6 +74,7 @@ async def claim_printer_for_direct_print(
     db: AsyncSession,
     *,
     printer_id: int,
+    origin: Literal["direct", "external"],
     archive_id: int | None = None,
     library_file_id: int | None = None,
     options: dict | None = None,
@@ -96,6 +98,14 @@ async def claim_printer_for_direct_print(
     and dispatches unclaimed, exactly as before this existed. A missing queue is
     a broken install, not a reason to refuse somebody's print.
 
+    ⚠️ ``origin`` is REQUIRED and has no default, because this one helper builds
+    the claim for two different things: ``"direct"`` for the Print dialog and
+    ``"external"`` for a print BamDude never sent (``mark_queue_printing_for_printer``
+    calls it when it finds no row). A default here would silently make
+    one of them lie, and what it feeds — the queue-completed notifications — is
+    exactly the question "did anybody queue this?". Never ``"queue"``: nothing
+    reaching this function was queued.
+
     The caller owns the release: see ``background_dispatch``.
     """
     result = await db.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer_id))
@@ -107,6 +117,7 @@ async def claim_printer_for_direct_print(
         queue_id=queue.id,
         position=0,
         status="printing",
+        origin=origin,
         started_at=datetime.now(timezone.utc),
         created_by_id=created_by_id,
         **_item_columns(

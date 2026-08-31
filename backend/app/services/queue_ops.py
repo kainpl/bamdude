@@ -211,6 +211,10 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
         archive_id=src.archive_id,
         library_file_id=src.library_file_id,
         project_id=src.project_id,
+        # Carried, not reset to "queue": a retry of an external print is still
+        # that same print being done again, and must stay as quiet about the
+        # queue as the original was.
+        origin=src.origin,
         position=new_position,
         scheduled_time=src.scheduled_time,
         manual_start=src.manual_start,

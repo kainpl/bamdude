@@ -103,6 +103,10 @@ class PrintQueueItemResponse(BaseModel):
     archive_id: int | None
     library_file_id: int | None
     position: int
+    # Who put the row here: "queue" (scheduled), "direct" (Print dialog),
+    # "external" (BamDude never sent it). Read-only — set at creation, carried
+    # by clone and repeat. See m160.
+    origin: str = "queue"
     scheduled_time: UTCDatetime
     auto_off_after: bool
     manual_start: bool

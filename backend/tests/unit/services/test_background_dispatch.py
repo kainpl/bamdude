@@ -90,6 +90,45 @@ async def test_dispatch_enqueues_job_and_broadcasts_state(dispatch_claim_db):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_the_claim_a_direct_print_takes_says_it_is_direct(dispatch_claim_db, db_session, printer_factory):
+    """⚠️ The claim is what "Print now" leaves behind in the queue, and it is
+    NOT queued work — nobody scheduled it. Stamping it here is what keeps the
+    queue-completed notifications off a print the operator started by hand
+    (m160); the other two stamps are the scheduler's default and the external
+    one made at print start.
+    """
+    from sqlalchemy import select
+
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+
+    printer = await printer_factory()
+    db_session.add(PrinterQueue(id=printer.id, printer_id=printer.id))
+    await db_session.commit()
+
+    service = BackgroundDispatchService()
+    with (
+        patch("backend.app.services.background_dispatch.printer_manager.get_status", return_value=None),
+        patch("backend.app.services.background_dispatch.ws_manager.broadcast", new_callable=AsyncMock),
+    ):
+        await service.dispatch_print_library_file(
+            file_id=22,
+            filename="cube.gcode.3mf",
+            printer_id=printer.id,
+            printer_name=printer.name,
+            options={},
+            requested_by_user_id=None,
+            requested_by_username=None,
+        )
+
+    rows = (
+        (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.queue_id == printer.id))).scalars().all()
+    )
+    assert [r.origin for r in rows] == ["direct"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_cancel_queued_job_removes_it_and_broadcasts(dispatch_claim_db):
     """Cancelling queued job removes it immediately."""
     service = BackgroundDispatchService()

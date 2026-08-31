@@ -1153,8 +1153,10 @@ async def mark_queue_printing_for_printer(
                     existing.archive_id = archive_id
                     await db.commit()
             else:
+                # Reached only when no row is printing on this queue — i.e.
+                # nothing BamDude sent. See the ``origin`` note on the model.
                 created = await claim_printer_for_direct_print(
-                    db, printer_id=printer_id, archive_id=archive_id, options=options
+                    db, printer_id=printer_id, origin="external", archive_id=archive_id, options=options
                 )
                 if created is not None:
                     item_id = created.id
@@ -6310,57 +6312,79 @@ async def on_print_complete(printer_id: int, data: dict):
                 )
 
                 # Queue may now be empty — fire the queue-completed
-                # notification. Must live in the ``if queue_item:`` branch:
-                # only a finished *queue* item can empty the queue (an
-                # external print never consumes a queue item, so the old
-                # placement in the ``else`` branch never fired here).
-                try:
-                    from sqlalchemy import func as sa_func
+                # notifications.
+                #
+                # ⚠️ **Only for a row somebody actually queued.** This block
+                # used to be justified by "only a finished *queue* item can
+                # empty the queue (an external print never consumes a queue
+                # item)". That was true when written and is not any more: since
+                # 0.5.4 every print holds a row while it runs — a direct print
+                # claims one at dispatch, an external one gets one made at
+                # print start — so reaching this branch stopped meaning
+                # anything about the queue, and both notifications began
+                # arriving after prints nobody scheduled. ``origin`` is what
+                # the old branch test was really asking.
+                #
+                # A repeat needs no special case: ``answer_by_repeating``
+                # re-arms the same row, so it keeps the origin it was born
+                # with — a repeated external print is still silent here, a
+                # repeated queue item still counts.
+                if queue_item.origin == "queue":
+                    try:
+                        from sqlalchemy import func as sa_func
 
-                    count_result = await db.execute(
-                        select(sa_func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "pending")
-                    )
-                    pending_count = count_result.scalar() or 0
+                        count_result = await db.execute(
+                            select(sa_func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "pending")
+                        )
+                        pending_count = count_result.scalar() or 0
 
-                    if pending_count == 0:
-                        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-                        completed_result = await db.execute(
+                        if pending_count == 0:
+                            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                            completed_result = await db.execute(
+                                select(sa_func.count(PrintQueueItem.id)).where(
+                                    # Same filter as the gate above, for the
+                                    # same reason: "All N queued jobs have
+                                    # finished" must not count claim rows, or
+                                    # the number in the message is a tally of
+                                    # prints nobody queued.
+                                    PrintQueueItem.origin == "queue",
+                                    PrintQueueItem.status.in_(["completed", "failed", "skipped"]),
+                                    PrintQueueItem.completed_at >= today_start,
+                                )
+                            )
+                            completed_count = completed_result.scalar() or 1
+
+                            await notification_service.on_queue_completed(
+                                completed_count=completed_count,
+                                db=db,
+                            )
+                    except Exception:
+                        pass  # Don't fail if notification fails
+
+                    # Per-printer: this printer's own queue just drained → fire
+                    # the printer-scoped notification. Unlike the global event
+                    # above, a paused / manual-start queue on another printer
+                    # can't suppress it (the global pending_count never hits 0).
+                    try:
+                        from sqlalchemy import func as sa_func
+
+                        printer_pending = await db.execute(
                             select(sa_func.count(PrintQueueItem.id)).where(
-                                PrintQueueItem.status.in_(["completed", "failed", "skipped"]),
-                                PrintQueueItem.completed_at >= today_start,
+                                # ``queue_id`` IS the printer id — enforced
+                                # invariant, see PrinterQueue creation.
+                                PrintQueueItem.queue_id == printer_id,
+                                PrintQueueItem.status == "pending",
                             )
                         )
-                        completed_count = completed_result.scalar() or 1
-
-                        await notification_service.on_queue_completed(
-                            completed_count=completed_count,
-                            db=db,
-                        )
-                except Exception:
-                    pass  # Don't fail if notification fails
-
-                # Per-printer: this printer's own queue just drained → fire
-                # the printer-scoped notification. Unlike the global event
-                # above, a paused / manual-start queue on another printer
-                # can't suppress it (the global pending_count never hits 0).
-                try:
-                    from sqlalchemy import func as sa_func
-
-                    printer_pending = await db.execute(
-                        select(sa_func.count(PrintQueueItem.id)).where(
-                            PrintQueueItem.queue_id == printer_id,
-                            PrintQueueItem.status == "pending",
-                        )
-                    )
-                    if (printer_pending.scalar() or 0) == 0:
-                        _pi = printer_manager.get_printer(printer_id)
-                        await notification_service.on_printer_queue_completed(
-                            printer_id=printer_id,
-                            printer_name=_pi.name if _pi else f"Printer #{printer_id}",
-                            db=db,
-                        )
-                except Exception:
-                    pass  # Don't fail if notification fails
+                        if (printer_pending.scalar() or 0) == 0:
+                            _pi = printer_manager.get_printer(printer_id)
+                            await notification_service.on_printer_queue_completed(
+                                printer_id=printer_id,
+                                printer_name=_pi.name if _pi else f"Printer #{printer_id}",
+                                db=db,
+                            )
+                    except Exception:
+                        pass  # Don't fail if notification fails
             else:
                 # No queue_item was printing. Still flip queue.status back to
                 # idle/error so the UI's current-print card goes away and

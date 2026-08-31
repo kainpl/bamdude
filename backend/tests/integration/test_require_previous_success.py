@@ -276,7 +276,7 @@ class TestTheGateSeesPrintsItUsedToMiss:
         printer, queue = await _printer_with_queue(db_session, printer_factory)
         assert await PrintScheduler().previous_print_succeeded(db_session, printer.id) is True
 
-        claimed = await claim_printer_for_direct_print(db_session, printer_id=printer.id)
+        claimed = await claim_printer_for_direct_print(db_session, printer_id=printer.id, origin="direct")
 
         @asynccontextmanager
         async def _session_ctx():

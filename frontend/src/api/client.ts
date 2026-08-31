@@ -3220,6 +3220,9 @@ export interface PrintQueueItem {
   archive_id: number | null;
   library_file_id: number | null;
   position: number;
+  /** Who put this row here. 'direct' and 'external' rows are claims a running
+   *  print holds, not work anybody scheduled — they raise no queue events. */
+  origin: 'queue' | 'direct' | 'external';
   scheduled_time: string | null;
   auto_off_after: boolean;
   manual_start: boolean;

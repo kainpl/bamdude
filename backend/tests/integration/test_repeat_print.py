@@ -77,6 +77,38 @@ async def test_the_previous_run_is_let_go(db_session, printer_factory):
     assert again.waiting_reason is None
 
 
+async def test_a_repeat_keeps_the_origin_it_was_born_with(db_session, printer_factory):
+    """⚠️ **The whole reason ``origin`` lives on the row and is not derived.**
+
+    A repeat re-arms the row, so the row that a moment ago was a claim held by
+    an externally-started print is now genuinely ``pending`` and will be
+    dispatched by the scheduler — it looks, at that instant, exactly like work
+    somebody queued. Deriving the answer at completion would therefore get it
+    wrong, and BamDude would announce "queue finished" for a print nobody ever
+    put in a queue: the very noise m160 removes.
+
+    Repeating means "do again exactly what was done", and what was done was an
+    external print.
+    """
+    printer, _, row = await _finished(db_session, printer_factory)
+    row.origin = "external"
+    await db_session.commit()
+
+    again = await answer_by_repeating(db_session, printer.id)
+
+    assert again.origin == "external"
+    assert again.status == "pending", "sanity: it really did become an ordinary pending row"
+
+
+async def test_a_repeat_of_queued_work_stays_queued_work(db_session, printer_factory):
+    """The other half of the rule — the gate must not silence a real queue."""
+    printer, _, _ = await _finished(db_session, printer_factory)
+
+    again = await answer_by_repeating(db_session, printer.id)
+
+    assert again.origin == "queue"
+
+
 async def test_the_retry_budget_is_reset(db_session, printer_factory):
     """⚠️ Without this a series of repeats exhausts the dispatch cap and the row
     fails "after N attempts" although every one of them succeeded."""
