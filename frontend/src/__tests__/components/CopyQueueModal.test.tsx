@@ -204,7 +204,18 @@ describe('the dialog', () => {
     await user.click(screen.getByRole('button', { name: /^Copy$/i }));
 
     expect(onConfirm).toHaveBeenCalledWith(
-      [{ id: 10, source: 'library', name: 'bracket.gcode.3mf', plateId: 2 }],
+      [
+        {
+          id: 10,
+          source: 'library',
+          name: 'bracket.gcode.3mf',
+          plateId: 2,
+          // The run groups copies now, and these are what keep two copies of one
+          // file apart and let the source queue's blocks be re-formed.
+          itemId: 1,
+          batchId: undefined,
+        },
+      ],
       [2],
     );
   });

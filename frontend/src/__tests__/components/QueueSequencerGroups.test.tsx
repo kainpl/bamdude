@@ -339,25 +339,32 @@ describe('QueueSequencer over groups', () => {
     expect(dialog().getAttribute('data-plates')).toBe('null');
   });
 
-  it('⚠️ never groups a run that already knows each file’s plate', async () => {
-    // A copy run carries `plateId` per item and can be backed by an archive,
-    // whose id is not a library file id at all. Grouping those would ask the
-    // library about the wrong rows.
+  it('⚠️ groups a run that already knows each plate, without ever expanding one', async () => {
+    // A copy run DOES group now — the earlier refusal rested on reading
+    // `plateId: null` as "this item had no plate", which the column's own
+    // comment contradicts ("None = plate 1"). What stays true is that the plate
+    // is already decided: it rides on the file and no metadata may add to it.
+    //
+    // An archive-backed item is still never looked up — an archive id is not a
+    // library file id — so it stands alone whatever the library says.
     serveGrouping([meta(1, 'PETG'), meta(2, 'PETG')]);
     const onDone = vi.fn();
     render(
       <Run
         files={[
-          { id: 1, name: 'A', source: 'archive', plateId: 2 },
-          { id: 2, name: 'B', source: 'library', plateId: 1 },
+          { id: 1, name: 'A', source: 'archive', plateId: 2, itemId: 101 },
+          { id: 2, name: 'B', source: 'library', plateId: 1, itemId: 102 },
         ]}
         onDone={onDone}
       />,
     );
 
     await waitFor(() => expect(dialog()).toBeInTheDocument());
-    expect(dialog().getAttribute('data-badge-units')).toBe('');
-    expect(dialog().getAttribute('data-sequence')).toBe('1/2');
+    // Two groups of one: the archive stands alone, the library row is its own
+    // key. Each holds a single unit, so nothing was expanded.
+    expect(dialog().getAttribute('data-badge-units')).toBe('1');
+    // The plate came from the item, not from a plate list.
+    expect(dialog().getAttribute('data-plates')).toBe('null');
     expect(dialog().getAttribute('data-plate')).toBe('2');
   });
 

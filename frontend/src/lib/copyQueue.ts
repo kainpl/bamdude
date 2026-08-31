@@ -40,6 +40,10 @@ export function copyableItems(items: readonly PrintQueueItem[]): CopyableItem[] 
           source: fromLibrary ? ('library' as const) : ('archive' as const),
           name: item.library_file_name || item.archive_name || `#${item.id}`,
           plateId: item.plate_id,
+          // What makes two copies of one file and plate two copies, and what
+          // tells the run the plate is already decided.
+          itemId: item.id,
+          batchId: item.batch_id,
         },
         printing: item.status === 'printing',
         printTimeSeconds: item.print_time_seconds ?? null,

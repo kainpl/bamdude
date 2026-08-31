@@ -5,7 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { LibraryGroupingMetadata } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
-import { groupSelection } from '../utils/queueGrouping';
+import { groupSelection, groupDecidedUnits } from '../utils/queueGrouping';
+import type { DecidedUnit } from '../utils/queueGrouping';
 import { PrintModal } from './PrintModal';
 import type { PrintModalAnswer, PrintModalMode } from './PrintModal';
 
@@ -23,6 +24,16 @@ export interface SequencedFile {
    *  does, because it is literally the same file. A general bulk selection must
    *  not: plate 3 of one file need not exist in the next. */
   plateId?: number | null;
+  /** The queue item this came from, when the run is a copy.
+   *
+   *  ⚠️ Its presence is what tells the run the plate was ALREADY decided, so
+   *  the file must not be expanded into its other plates. And it — not the file
+   *  id — is what distinguishes two copies of the same file and plate, which a
+   *  queue legitimately holds. */
+  itemId?: number;
+  /** The batch this item belonged to in the SOURCE queue, so the block the
+   *  operator built there can be re-formed on the target. */
+  batchId?: string | null;
 }
 
 interface QueueSequencerProps {
@@ -72,11 +83,59 @@ function perFileRun(files: SequencedFile[]): RunGroup[] {
  * grouping is a saving, and losing the saving must never cost the ability to
  * queue.
  */
+/**
+ * A copy run: the plates are already chosen, so group without expanding.
+ *
+ * ⚠️ One member per ITEM. `groupSelection`'s members are per file — right when
+ * a file contributes several plates to one dialog — and wrong here: a queue
+ * legitimately holds the same file twice, and two copies must stay two.
+ */
+function buildDecidedRun(
+  files: SequencedFile[],
+  metadata: LibraryGroupingMetadata[],
+): { grouped: boolean; groups: RunGroup[] } {
+  // ⚠️ Unit identity, not necessarily a queue item id. `copyableCurrentPrint`
+  // has no `itemId` at all — a print started from the printer's screen often
+  // has no queue row — so a synthetic negative stands in. Real ids are
+  // positive, so the two spaces cannot collide.
+  const identity = (file: SequencedFile, i: number) => file.itemId ?? -(i + 1);
+  const byItem = new Map(files.map((file, i) => [identity(file, i), file]));
+  const units: DecidedUnit[] = files.map((file, i) => ({
+    itemId: identity(file, i),
+    fileId: file.id,
+    fileName: file.name,
+    source: file.source ?? 'library',
+    // ⚠️ `print_queue.plate_id`'s own comment: "None = plate 1". A copy with no
+    // plate is an ordinary single-plate file, not an undecided one.
+    plateIndex: file.plateId ?? 1,
+  }));
+
+  const groups: RunGroup[] = groupDecidedUnits(units, metadata).map((group) => ({
+    units: group.units.length,
+    members: group.units.flatMap((unit) => {
+      const file = byItem.get(Number(unit.memberKey.slice('item:'.length)));
+      // `plateIds` stays null: the plate rides on the file's own `plateId`,
+      // which is what the dialog already reads for a copy.
+      return file ? [{ file, plateIds: null }] : [];
+    }),
+  }));
+
+  return { grouped: true, groups: groups.filter((group) => group.members.length > 0) };
+}
+
 function buildRun(
   files: SequencedFile[],
   metadata: LibraryGroupingMetadata[] | undefined,
 ): { grouped: boolean; groups: RunGroup[] } {
   if (!metadata) return { grouped: false, groups: perFileRun(files) };
+  // ⚠️ `source` is the discriminator, not `itemId`. Both copy shapes set it —
+  // `copyableItems` always, and `copyableCurrentPrint` for the running print,
+  // which carries a plate but no queue row and therefore no item id. Keying on
+  // `itemId` would send that one down the expanding path and queue every plate
+  // of its file.
+  if (files.length > 0 && files.every((file) => file.source !== undefined)) {
+    return buildDecidedRun(files, metadata);
+  }
 
   const byId = new Map(files.map((file) => [file.id, file]));
   const known = new Set(metadata.map((row) => row.file_id));
@@ -197,27 +256,31 @@ export function QueueSequencer({
 
   const ids = useMemo(() => files.map((file) => file.id), [files]);
 
-  // ⚠️ Only a selection of DISTINCT files that said nothing but their id and
-  // name can be grouped. A caller that named a `source` or a `plateId` has
-  // already answered per file, and a copy run names both:
-  //   · an archive id is not a library file id, so the library would answer
-  //     about a different row entirely;
-  //   · `plateId: null` there means "this item had no plate", not "nobody has
-  //     decided" — grouping it would tick every plate of a 3-plate file and
-  //     queue three items where the operator asked for one copy;
-  //   · and the same file can be in a queue twice, where a repeated id would
-  //     collapse two wanted copies into one plate set.
-  const groupable = useMemo(
-    () =>
-      ids.length > 0 &&
-      new Set(ids).size === ids.length &&
-      files.every((file) => file.source === undefined && file.plateId === undefined),
-    [files, ids],
+  // Two kinds of run, and the difference is whether the plate has been decided.
+  //
+  //   · A SELECTION says only id and name. Nobody has chosen a plate, so a file
+  //     expands into all of them and its units share one dialog.
+  //   · A COPY names an `itemId`, and its plate rides along — expanding it would
+  //     queue plates the operator never asked for.
+  //
+  // ⚠️ An earlier guard refused a copy run outright, on the reasoning that
+  // `plateId: null` meant "this item had no plate". It does not: the column's
+  // own comment is "None = plate 1". What was true is that a queue holds the
+  // same file twice and that an archive id is not a library file id — neither
+  // of which is a reason not to group, only a reason to build the units
+  // differently and to look nothing up for an archive.
+  const groupable = ids.length > 0;
+
+  // Only library rows have an answer to look up; an archive-backed copy item
+  // takes `groupDecidedUnits`'s own "no metadata" branch and stands alone.
+  const lookupIds = useMemo(
+    () => [...new Set(files.filter((f) => (f.source ?? 'library') === 'library').map((f) => f.id))],
+    [files],
   );
 
   const grouping = useQuery({
-    queryKey: ['queue-grouping', ids],
-    queryFn: () => api.getLibraryGroupingMetadata(ids),
+    queryKey: ['queue-grouping', lookupIds],
+    queryFn: () => api.getLibraryGroupingMetadata(lookupIds),
     enabled: groupable,
     // No retry: the fallback is a working run, and a retried failure would be
     // seconds of blank screen where the operator expects a dialog.
@@ -242,6 +305,11 @@ export function QueueSequencer({
   }, [groups]);
 
   const totalUnits = useMemo(() => groups.reduce((sum, group) => sum + group.units, 0), [groups]);
+
+  // ⚠️ The toggle belongs to the GROUP, not the run: each leader offers it,
+  // and the next group opens with it on again. Reset lives in the group
+  // advance below, beside the answer reset, for the same reason.
+  const [applyToRest, setApplyToRest] = useState(true);
 
   // `isLoading` and not `isPending`: a disabled query is pending forever, and
   // gating on that would render nothing at all for an ungroupable run.
@@ -304,7 +372,13 @@ export function QueueSequencer({
       // decide it has to ask (no filament match, a dead status query, a
       // low-spool warning, a failed dispatch) and render — which is why the
       // branch below treats a refusal exactly like today's abandon.
-      autoSubmitWhenUnambiguous={memberIndex > 0}
+      // ⚠️ `applyToRest` gates ONLY this. `seededAnswer` below is deliberately
+      // not gated by it: a declined group still opens pre-filled, because the
+      // operator did not change their mind about the settings — they want to
+      // look at each file.
+      autoSubmitWhenUnambiguous={memberIndex > 0 && applyToRest}
+      applyToRest={applyToRest}
+      onApplyToRestChange={setApplyToRest}
       // Only the members after the group's first one are answered in advance —
       // the first one IS the question. ⚠️ A separate prop and never
       // `initialSelectedPrinterIds`: that one hides the printer selector unless
@@ -354,6 +428,7 @@ export function QueueSequencer({
           // answers are expected to differ. Carrying the previous group's
           // answer into it would pre-fill a dialog nobody has been asked yet.
           answerRef.current = undefined;
+          setApplyToRest(true);
           setGroupIndex(nextGroup);
           setMemberIndex(0);
           return;
