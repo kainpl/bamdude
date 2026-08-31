@@ -187,6 +187,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "manual_start": item.manual_start,
         "require_previous_success": item.require_previous_success,
         "ams_mapping": ams_mapping_parsed,
+        "origin": item.origin,
         "plate_id": item.plate_id,
         "bed_levelling": derive_mode(item.bed_levelling_mode, item.bed_levelling),
         "flow_cali": derive_mode(item.flow_cali_mode, item.flow_cali),
@@ -236,7 +237,14 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
             response.bed_type = item.archive.bed_type
             if item.plate_id:
                 archive_path = settings.base_dir / item.archive.file_path
-                if archive_path.exists():
+                # ⚠️ ``is_file()``, never ``exists()``. An archive created at
+                # print start carries ``file_path=""`` until its 3MF is fetched,
+                # and an empty path resolves to ``base_dir`` — a directory,
+                # which ``exists()`` happily confirms. The three parsers below
+                # then each opened the data directory as a ZIP and logged
+                # "Failed to extract print time from /app/data: Is a directory"
+                # every time a browser polled the queue during that window.
+                if archive_path.is_file():
                     plate_time, plate_weight, plate_bed = _plate_metadata_cached(archive_path, item.plate_id)
                     if plate_time is not None:
                         response.print_time_seconds = plate_time
@@ -264,7 +272,9 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         if item.plate_id:
             lib_path = Path(item.library_file.file_path)
             library_file_path = lib_path if lib_path.is_absolute() else settings.base_dir / item.library_file.file_path
-            if library_file_path.exists():
+            # Same guard as the archive branch above — a blank ``file_path``
+            # resolves to a directory, not to nothing.
+            if library_file_path.is_file():
                 plate_time, plate_weight, plate_bed = _plate_metadata_cached(library_file_path, item.plate_id)
                 if plate_time is not None:
                     response.print_time_seconds = plate_time

@@ -576,6 +576,50 @@ class TestPrintQueueAPI:
         assert resp.archive_name == "Live Print"
         assert resp.archive_thumbnail == "archives/y/thumb.png"
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_enrich_response_skips_plate_parse_when_archive_has_no_file_yet(
+        self, db_session, printer_factory, archive_factory, queue_item_factory, monkeypatch
+    ):
+        """An archive created at print start has ``file_path=""`` until its 3MF
+        arrives, and an empty path resolves to ``base_dir`` — a DIRECTORY, which
+        ``exists()`` confirms. The three plate parsers then each opened the data
+        directory as a ZIP on every queue poll ("Failed to extract print time
+        from /app/data: Is a directory"). The row must be served with the
+        archive's own numbers and nothing parsed.
+        """
+        from sqlalchemy import select as _select
+        from sqlalchemy.orm import selectinload
+
+        from backend.app.api.routes import print_queue as pq
+        from backend.app.models.print_queue import PrintQueueItem
+
+        called: list[tuple] = []
+        monkeypatch.setattr(
+            pq, "_plate_metadata_cached", lambda path, plate: called.append((path, plate)) or (None, 0.0, None)
+        )
+
+        _printer, queue = await printer_factory()
+        archive = await archive_factory(file_path="", print_name="Started From The Slicer", print_time_seconds=957)
+        item = await queue_item_factory(queue_id=queue.id, archive_id=archive.id, status="printing", plate_id=10)
+
+        loaded = (
+            await db_session.execute(
+                _select(PrintQueueItem)
+                .options(
+                    selectinload(PrintQueueItem.archive),
+                    selectinload(PrintQueueItem.library_file),
+                    selectinload(PrintQueueItem.created_by),
+                )
+                .where(PrintQueueItem.id == item.id)
+            )
+        ).scalar_one()
+        resp = pq._enrich_response(loaded)
+
+        assert called == [], f"parsed a path that is not a file: {called}"
+        assert resp.archive_name == "Started From The Slicer"
+        assert resp.print_time_seconds == 957
+
 
 class TestQueueStartEndpoint:
     """Tests for the /queue/{item_id}/start endpoint."""
