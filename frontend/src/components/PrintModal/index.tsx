@@ -900,6 +900,24 @@ export function PrintModal({
   const handleSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean }) => {
     e?.preventDefault();
 
+    // ⚠️ A dialog that never showed itself does not announce itself either.
+    // A group of 57 plates submits 56 times without rendering, and each of
+    // those toasts would stack in the same corner with no cap and no
+    // de-duplication — 57 identical "Print queued" cards over a farm view.
+    // The one visible dialog of each group still confirms, and QueueSequencer
+    // reports the run once at the end. Errors are NOT suppressed: a silent
+    // member that fails stops being silent (see the self-submit effect below),
+    // so its message arrives with a dialog to explain it.
+    //
+    // ⚠️ ONE expression for every success toast in this function, because it
+    // is the exact negation of the render guard near the bottom of the
+    // component: a member announces itself if and only if it rendered. That
+    // equivalence is the whole safety argument, and a second, differently
+    // worded condition per branch would break it quietly — which is how the
+    // auto-queue tier kept toasting per silent member after the specific-printer
+    // tier stopped.
+    const announces = !autoSubmitWhenUnambiguous || autoSubmitRefused;
+
     // Edit of a pending auto-queue row (or its whole batch): one PUT, no
     // dispatch. Position is deliberately not sent — the reorder flow owns it.
     if (mode === 'edit-auto-item' && autoQueueItem) {
@@ -987,7 +1005,9 @@ export function PrintModal({
         const queuedCount = platesToQueue.length > 0
           ? platesToQueue.reduce((sum, index) => sum + quantityForPlate(index), 0)
           : quantity;
-        showToast(queuedCount > 1 ? t('queue.itemsQueued', { count: queuedCount }) : t('queue.printQueued'));
+        if (announces) {
+          showToast(queuedCount > 1 ? t('queue.itemsQueued', { count: queuedCount }) : t('queue.printQueued'));
+        }
         queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
         queryClient.invalidateQueries({ queryKey: ['queue'] });
         onSuccess?.();
@@ -1226,15 +1246,6 @@ export function PrintModal({
       // null there). Fire-and-forget — failure to save the preference must
       // not block the success UX.
       persistPreference();
-      // ⚠️ A dialog that never showed itself does not announce itself either.
-      // A group of 57 plates submits 56 times without rendering, and each of
-      // those toasts would stack in the same corner with no cap and no
-      // de-duplication — 57 identical "Print queued" cards over a farm view.
-      // The one visible dialog of each group still confirms, and QueueSequencer
-      // reports the run once at the end. Errors are NOT suppressed: a silent
-      // member that fails stops being silent (see the effect above), so its
-      // message arrives with a dialog to explain it.
-      const announces = !autoSubmitWhenUnambiguous || autoSubmitRefused;
       if (mode !== 'reprint' && announces) {
         if (mode === 'edit-queue-item') {
           showToast(t('printModal.queueItemUpdated'));
@@ -1490,7 +1501,9 @@ export function PrintModal({
 
   // A grouped run's silent members must not flash on screen. Once refused — by
   // the eligibility gate or by an ending that needs an answer — we render
-  // normally and the operator finishes the job. ⚠️ Must stay below every hook.
+  // normally and the operator finishes the job. ⚠️ Must stay below every hook,
+  // and `announces` in `handleSubmit` is exactly this condition negated — keep
+  // the two in step.
   if (autoSubmitWhenUnambiguous && !autoSubmitRefused) return null;
 
   return (

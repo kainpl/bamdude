@@ -118,11 +118,16 @@ function buildRun(
  * whose dialog would be answered identically are answered once, and the rest of
  * the group queues itself without rendering.
  *
- * There is no bulk dialog because there is nothing a bulk dialog could ask that
- * this one doesn't: printer or auto-queue, plates, AMS mapping, print options,
- * schedule, quantity. The group is exactly the set for which those answers
- * coincide — which is why one dialog can stand for it, and why a selection that
- * disagrees still gets asked file by file.
+ * There is still no bulk dialog, but the reason has narrowed to one: PrintModal
+ * is the only code that builds a queue payload, and a second builder is the bug
+ * the removed bulk endpoint already was. The old reason — that printer or
+ * auto-queue, plates, AMS mapping, print options, schedule and quantity are
+ * answered differently for every file — turned out to be false on a real farm:
+ * of 60 plate-units in the reporting farm's library, 57 shared one answer and
+ * the whole selection came down to 3 dialogs. So the unit is the GROUP, not the
+ * file: the group is exactly the set for which those answers coincide, which is
+ * why one dialog can stand for it, and a selection that genuinely disagrees is
+ * still asked about a group at a time — of one file each, in the worst case.
  *
  * Each member gets a FRESH modal (keyed on its position in the run as well as
  * its id). Plate selection, filament mapping and per-printer config belong to
@@ -133,9 +138,12 @@ function buildRun(
  * ⚠️ **This component never builds a queue payload.** It composes modals;
  * PrintModal owns the payload, and the removed bulk endpoint is why.
  *
- * Used by the library's bulk Schedule and by dropping files onto a printer or a
- * printer's queue. The drop targets pass a pinned printer; the library passes
- * none and lets the dialog ask.
+ * Used by the library's Schedule (one file or a selection — both go through
+ * here, which is why a lone multi-plate file now opens with all its plates
+ * ticked), by dropping files onto a printer or a printer's queue, by dropping
+ * them onto the auto-queue panel, and by copying a queue. The drop targets pass
+ * a pinned printer or a pinned auto-queue; the library passes none and lets the
+ * dialog ask.
  */
 export function QueueSequencer({
   files,

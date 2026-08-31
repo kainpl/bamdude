@@ -28,6 +28,8 @@
 
 ### Changed
 
+- **Scheduling a selection now asks once per group, not once per file.** Files whose dialog would be answered the same way — same printer model and nozzle, same filament types, same build plate — are grouped: you answer one dialog, and the rest of the group is queued for you, each file with its own plates and its own filament mapping. On the farm this was built for, a selection of 60 plates went from 60 dialogs down to 3, with 57 of those plates answered by a single one. Two things changed about what counts as "the same": a different filament **colour** no longer splits a group, so the same print in red and in black is now one question; a filament **type** that nothing on the chosen printer can supply still stops the run and shows you the dialog for the file that needs it, exactly as before. **One consequence worth knowing before you use it:** every plate of a multi-plate file is now a unit in its own right, so a single 3-plate file opens with all three of its plates ticked and queues three items where it used to queue one. The ticks are on screen and you can untick the plates you do not want, but the dialog no longer starts on the first plate alone.
+
 - **Mid-print spool swap asks one question in one place.** Assigning a spool to a printer whose print has a pause behind it now opens the same "replacement or correction?" dialog a paused printer gets (worded for that pause), instead of a default-off toggle in the picker that was easy to miss — and a missed toggle silently attributed the whole print to the new spool.
 
 - **The library no longer links a folder to an archive.** Archives are your print history, and library folders now only link to projects — the folder-to-archive link was rarely used and its "which folder is this archive in" badge was quietly firing a background request for every single archive card on the page. Folder-to-project linking is unaffected.
@@ -35,6 +37,8 @@
 - **Notification event subscriptions are one list now, not thirty-four database columns.** Every provider's per-event toggles moved into a single JSON field (the API and the settings UI are unchanged) — the table had grown a column per event, migration after migration, and a future event is now a registry entry instead of DDL. Existing selections are carried over exactly.
 
 ### Fixed
+
+- **The auto-distributing virtual printer keeps the slicer's choices even when the command arrives late.** The per-printer VP queue already applied a print command that landed while the upload was still being saved and committed; the auto-distributing path did not, so in that window the router row kept column defaults — the same lost bed levelling, flow calibration, timelapse and nozzle pick that 0.5.6 set out to fix, through a narrower door. Both paths now share one last-chance step instead of each carrying its own.
 
 - **A cancelled print now divides its filament between the reels correctly.** When a print was stopped partway after a reel change, the grams were split using each reel's share of the WHOLE plate while the total had already been cut down to the part that actually printed — so the shortfall silently piled onto the last reel. The total charged was right, but the division was not: on a real 3000 g reel change (printer 5, cancelled after a jam) 49 g sat on the wrong spool, and the second spool showed two deductions for one continuous stretch. Segments are now measured against what was printed, and a filament runout that does not actually change the spool no longer starts a new one. Completed prints are unaffected.
 

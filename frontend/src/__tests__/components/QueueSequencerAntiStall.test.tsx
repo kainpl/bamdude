@@ -72,13 +72,28 @@ beforeEach(() => {
   );
 });
 
-/** Callers drop the sequencer when the run ends; so does this. */
-function Run({ files, onDone }: { files: SequencedFile[]; onDone: (remaining: SequencedFile[]) => void }) {
+/** Callers drop the sequencer when the run ends; so does this.
+ *
+ *  `auto` reproduces AutoQueuePanel's own mount — there is no printer to pick,
+ *  every item is routed by its own model — because that tier reaches a
+ *  different submit branch than the specific-printer one. */
+function Run({
+  files,
+  onDone,
+  auto,
+}: {
+  files: SequencedFile[];
+  onDone: (remaining: SequencedFile[]) => void;
+  auto?: boolean;
+}) {
   const [live, setLive] = useState(true);
   if (!live) return null;
   return (
     <QueueSequencer
       files={files}
+      initialDispatchMode={auto ? 'auto' : undefined}
+      lockDispatchMode={auto}
+      lockAutoTarget={auto}
       onDone={(remaining) => {
         setLive(false);
         onDone(remaining);
@@ -182,6 +197,34 @@ describe('QueueSequencer anti-stall', () => {
 
     await waitFor(() => expect(onDone).toHaveBeenCalledWith([]));
     expect(posts).toBe(2);
+
+    // Two plates queued, ONE confirmation — plus the run's own summary.
+    expect(screen.getAllByText('Print queued')).toHaveLength(1);
+    expect(screen.getByText('Queued 2 in 1 group')).toBeInTheDocument();
+  });
+
+  it('⚠️ the auto-queue tier announces once for the group as well', async () => {
+    // The same gate on the other submit branch. AutoQueuePanel mounts the
+    // sequencer with `initialDispatchMode="auto"` over plain {id, name} files,
+    // which are groupable — and that branch has no printer, so it never
+    // consults filaments and every member after the first submits itself.
+    // Ungated it stacked one card per silent member: exactly the noise the
+    // specific-printer branch had already stopped making.
+    server.use(
+      http.post('/api/v1/auto-queue/', () => {
+        posts += 1;
+        return HttpResponse.json({ id: posts, status: 'pending' });
+      }),
+    );
+    const onDone = vi.fn();
+    render(<Run auto files={[{ id: 1, name: 'First' }, { id: 2, name: 'Second' }]} onDone={onDone} />);
+
+    await screen.findByText('First');
+    await queueTheOpenDialog();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith([]));
+    expect(posts).toBe(2);
+    expect(screen.queryByText('Second')).not.toBeInTheDocument();
 
     // Two plates queued, ONE confirmation — plus the run's own summary.
     expect(screen.getAllByText('Print queued')).toHaveLength(1);
