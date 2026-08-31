@@ -581,5 +581,88 @@ class TestMultiEpisodeBoundaries:
         ]
         assert journal_boundaries_for_tray(replaced, 254) == [(0, 273, None), (12, 278, None)]
 
+    def test_a_runout_onto_the_same_spool_is_not_a_boundary(self):
+        # Printer 5, archive 822 (2026-08-31): reel swapped at layer 227, then a
+        # JAM at 405 that the firmware escalated from `ambiguous` to a definite
+        # `external` runout — so the ambiguous guard above no longer applied and
+        # the "resumed without a replacement" branch opened a segment feeding
+        # the SAME spool 267. One continuous stretch became two history rows,
+        # which reads as a double charge. A boundary that does not change the
+        # spool is not a boundary.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "runout", "manual", 254, 227, 279),
+            ev(2, "spool_loaded", None, 254, 227, 267),
+            ev(3, "runout", "external", 254, 405, 267),  # the jam; nothing reloaded
+        ]
+        assert journal_boundaries_for_tray(events, 254) == [(0, 279, None), (227, 267, None)]
+
+    def test_two_reels_of_the_same_spool_id_still_need_different_spools_to_split(self):
+        # Guard the merge against over-reach: consecutive segments whose spools
+        # DIFFER must survive untouched (this is the back-to-back reel shape).
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "runout", "external", 254, 80, 7),
+            ev(2, "spool_loaded", None, 254, 80, 9),
+            ev(3, "runout", "external", 254, 250, 9),
+            ev(4, "spool_loaded", None, 254, 250, 11),
+        ]
+        assert journal_boundaries_for_tray(events, 254) == [(0, 7, None), (80, 9, None), (250, 11, None)]
+
+    def test_a_lone_same_spool_runout_keeps_its_pair(self):
+        # ⚠️ The merge must never collapse below two segments. With no swap at
+        # all, this pair is the ONLY thing naming the spool — a single-segment
+        # result reads as "no split" and the print is charged to nobody (the
+        # shape TestRunoutZeroPoint::test_an_open_episode_never_closes_the_books
+        # pins end to end). On a cancelled print the tail comes out at 0 g and
+        # the caller skips the row anyway.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        assert journal_boundaries_for_tray([ev(1, "runout", "external", 254, 405, 267)], 254) == [
+            (0, 267, None),
+            (405, 267, None),
+        ]
+
         untangled = [ev(1, "runout", "ambiguous", 254, 12, 273)]
         assert journal_boundaries_for_tray(untangled, 254) == []

@@ -774,7 +774,26 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
             # closes it at label_weight after the print rows.
             segments.append((runout.layer_num, runout.spool_id, runout.spoolman_spool_id))
 
-    return segments if len(segments) > 1 else []
+    # A boundary that does not change the spool is not a boundary. Printer 5,
+    # archive 822 (2026-08-31): a jam at layer 405 that the firmware escalated
+    # from `ambiguous` to a definite `external` runout skipped the guard above
+    # and opened a segment feeding the SAME spool, so one continuous stretch was
+    # written as two history rows and read as a double charge. Merging keeps the
+    # layers with the spool that laid them; only the redundant row disappears.
+    # ⚠️ Never below two segments: when the journal is the ONLY thing naming
+    # the spool (no live assignment), a single-segment result reads as "no
+    # split" and the print is charged to nobody — a lone same-spool runout must
+    # keep its pair. On a cancelled print the tail is then 0 g and the caller
+    # skips it anyway.
+    merged: list[tuple[int, int | None, int | None]] = []
+    for seg in segments:
+        if merged and seg[1] is not None and merged[-1][1] == seg[1] and merged[-1][2] == seg[2]:
+            continue
+        merged.append(seg)
+    if len(merged) < 2:
+        merged = segments
+
+    return merged if len(merged) > 1 else []
 
 
 def _add_autoswitch_purge(

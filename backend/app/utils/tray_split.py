@@ -106,6 +106,21 @@ def compute_layer_segment_grams(
     grams: list[float] = []
     sum_previous = 0.0
 
+    # How much of the slot's own gcode timeline was actually laid down. The
+    # fractions below are fractions of the WHOLE plate ("exact at completion",
+    # slot_progress_fraction's docstring), but a failed print's caller has
+    # ALREADY shortened total_weight to estimate x progress — multiplying the
+    # two applies the shortening twice to every segment but the last, which
+    # then swallows the difference as if it were rounding drift. Dividing each
+    # segment by the printed fraction restores the division; at completion the
+    # fraction is 1.0 and this is a no-op. None (no gcode, or the last layer was
+    # never captured) leaves the historical behaviour untouched.
+    printed_fraction = None
+    if layer_usage and last_layer_num > 0:
+        printed_fraction = threemf_tools.slot_progress_fraction(layer_usage, filament_id, last_layer_num)
+        if not printed_fraction or printed_fraction <= 0:
+            printed_fraction = None
+
     for seg_idx, seg_start_layer in enumerate(boundary_layers):
         is_last = seg_idx + 1 >= n_segments
 
@@ -120,7 +135,10 @@ def compute_layer_segment_grams(
             f_start = threemf_tools.slot_progress_fraction(layer_usage, filament_id, seg_start_layer)
             f_end = threemf_tools.slot_progress_fraction(layer_usage, filament_id, seg_end_layer)
             if f_start is not None and f_end is not None:
-                segment_grams = total_weight * max(0.0, f_end - f_start)
+                span = max(0.0, f_end - f_start)
+                if printed_fraction is not None:
+                    span = min(span / printed_fraction, 1.0)
+                segment_grams = total_weight * span
             elif denom > 0:
                 segment_grams = total_weight * (seg_end_layer - seg_start_layer) / denom
             else:
