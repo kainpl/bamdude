@@ -188,6 +188,19 @@ function buildRun(
  * why one dialog can stand for it, and a selection that genuinely disagrees is
  * still asked about a group at a time — of one file each, in the worst case.
  *
+ * **A group can decline to speak for the rest** (`applyToRest`). It is the
+ * group's own answer, on by default and reset for the next one, and it gates
+ * ONLY the silence: the members still open seeded, because the operator did not
+ * change their mind about the settings — they want to look at each file.
+ *
+ * **A copy run groups too, on units whose plate is already decided.** The
+ * discriminator is `source`, which both copy shapes set; `itemId` is not, since
+ * the running print often has no queue row at all. Those units are never
+ * expanded — the plate rides on the item — and each is its own member, because
+ * a queue legitimately holds the same file twice. Their source `batchId` is
+ * collected across the run and re-formed on the target, so a block survives the
+ * copy.
+ *
  * **The answer is carried explicitly** (`onAnswered` → `seededAnswer`): printer
  * selection, dispatch mode and auto target, schedule, copies, print options,
  * swap macros and macro selection. Filament mapping and per-plate counts are
