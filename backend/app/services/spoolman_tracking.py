@@ -539,7 +539,11 @@ async def _report_journal_splits(
         used_g = usage.get("used_g", 0)
         global_tray_id = _resolve_global_tray_id(slot_id, slot_to_tray, ams_trays)
         boundaries = journal_boundaries_for_tray(journal_events, global_tray_id) if journal_events else []
-        if used_g <= 0 or len(boundaries) <= 1:
+        # A single boundary is an answer, not "no split" — the whole print on the
+        # spool that fed it while the mapped slot was empty from the start. Both
+        # inventory backends must read the helper the same way or attribution
+        # diverges between them, which is the whole reason the helper is shared.
+        if used_g <= 0 or not boundaries:
             leftovers.append((slot_id, used_g))
             continue
 

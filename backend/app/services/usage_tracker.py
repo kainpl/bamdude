@@ -721,6 +721,7 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
     from backend.app.models.print_usage_event import (
         EVENT_RUNOUT,
         EVENT_SPOOL_LOADED,
+        EVENT_START,
         EVENT_TRAY_CHANGE,
         KIND_AMBIGUOUS,
         KIND_AUTOSWITCH,
@@ -730,6 +731,33 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
     runouts = [e for e in (events or []) if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray_id]
     if not runouts:
         return []
+
+    # ── The backup that took over BEFORE the first layer ──────────────────
+    # When the AMS backs up away from an empty mapped slot at print start,
+    # ``tray_now`` is ALREADY the backup by the time the journal's ``start``
+    # lands, so no ``tray_change`` ever fires and the autoswitch branch below
+    # has nothing to name the feeder with. Measured live (printer 1,
+    # 2026-08-30/31): six prints in a row charged nobody — 939 g — while the
+    # journal's own start event said "this print began feeding from tray 3,
+    # spool 291" the whole time. A mapped tray that never held a spool owns no
+    # share of the print, so the feeder owns all of it.
+    # Deliberately narrow: a tray with its own spool really did feed part of
+    # the print, and a ``tray_change`` to another tray is stronger evidence
+    # than the start — both keep the per-episode loop below.
+    if all(r.spool_id is None for r in runouts) and any(r.kind == KIND_AUTOSWITCH for r in runouts):
+        moved_elsewhere = any(
+            e.event == EVENT_TRAY_CHANGE and e.global_tray_id is not None and e.global_tray_id != global_tray_id
+            for e in events
+        )
+        start = next((e for e in events if e.event == EVENT_START), None)
+        if (
+            not moved_elsewhere
+            and start is not None
+            and start.spool_id is not None
+            and start.global_tray_id is not None
+            and start.global_tray_id != global_tray_id
+        ):
+            return [(0, start.spool_id, start.spoolman_spool_id)]
 
     loads = [e for e in events if e.event == EVENT_SPOOL_LOADED and e.global_tray_id == global_tray_id]
 
@@ -2073,7 +2101,11 @@ async def _track_from_3mf(
             if journal_events and len(tray_changes) <= 1
             else []
         )
-        if len(journal_segs) > 1:
+        # One segment is a real answer, not "no split": it is the whole print on
+        # the spool that fed it when the mapped slot was empty from the start
+        # (see ``journal_boundaries_for_tray``). ``compute_layer_segment_grams``
+        # gives that single boundary the whole weight as its remainder.
+        if journal_segs:
             if layer_grams and slot_id in layer_grams:
                 total_weight = layer_grams[slot_id]
             else:

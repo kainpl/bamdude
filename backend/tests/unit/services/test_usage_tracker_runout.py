@@ -637,6 +637,159 @@ class TestMultiEpisodeBoundaries:
         ]
         assert journal_boundaries_for_tray(events, 254) == [(0, 7, None), (80, 9, None), (250, 11, None)]
 
+    def test_the_backup_that_took_over_before_the_first_layer_is_named_by_the_start(self):
+        # Printer 1, archives 810-837 (2026-08-30/31): the plates are sliced for
+        # AMS slot 2, that slot is empty, and the AMS backs up from slot 3
+        # BEFORE layer 1 — so ``tray_now`` is already 3 when the print starts and
+        # no ``tray_change`` is ever emitted. The autoswitch branch could only
+        # name a backup through that event, so six prints in a row charged
+        # nobody (939 g). The journal already holds the answer in its own start
+        # event: the print began feeding from tray 3, spool 291.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "start", None, 3, 0, 291),
+            ev(2, "runout", "autoswitch", 2, 1, None),
+        ]
+        # One segment, the whole print on the spool that actually fed it.
+        assert journal_boundaries_for_tray(events, 2) == [(0, 291, None)]
+
+    def test_a_printer_that_unloads_between_prints_keeps_using_its_tray_change(self):
+        # Printer 10 (X2D), archives 813-838: the SAME empty-mapped-slot backup
+        # as printer 1, but this machine unloads after a print — so ``tray_now``
+        # is nothing at start (the journal's start carries no tray at all) and
+        # the AMS picking slot 2 genuinely CHANGES it, emitting the tray_change
+        # that names the backup. That evidence is stronger than the start event
+        # and must keep winning; these prints were charging correctly all along
+        # (156.4 g to spool 292 each) and must not move.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "start", None, None, 0, None),
+            ev(2, "runout", "autoswitch", 3, 0, None),
+            ev(3, "tray_change", None, 2, 0, 292),
+        ]
+        assert journal_boundaries_for_tray(events, 3) == [(0, None, None), (0, 292, None)]
+
+    def test_a_start_on_the_very_tray_that_ran_out_teaches_nothing(self):
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        # Same tray: the start says nothing the runout didn't. Unchanged —
+        # charged to nothing rather than guessed.
+        events = [
+            ev(1, "start", None, 2, 0, 290),
+            ev(2, "runout", "autoswitch", 2, 40, 290),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 290, None), (40, None, None)]
+
+    def test_a_tray_that_had_its_own_spool_is_not_overridden_by_the_start(self):
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        # The ran-out tray DID hold a spool — it really fed part of the print,
+        # so the start event must not swallow its share.
+        events = [
+            ev(1, "start", None, 3, 0, 291),
+            ev(2, "runout", "autoswitch", 2, 40, 290),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 290, None), (40, None, None)]
+
+    def test_a_mid_print_backup_still_prefers_its_tray_change(self):
+        # Archive 804 (2026-08-29): slot 2 ran out at layer 33 and the AMS
+        # switched — the tray_change names the backup, and that evidence must
+        # keep winning over the start event.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "start", None, 2, 0, 290),
+            ev(2, "runout", "autoswitch", 2, 33, 290),
+            ev(3, "tray_change", None, 3, 33, 291),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 290, None), (33, 291, None)]
+
+    def test_without_a_start_event_nothing_is_invented(self):
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [ev(1, "runout", "autoswitch", 2, 1, None)]
+        assert journal_boundaries_for_tray(events, 2) == [(0, None, None), (1, None, None)]
+
     def test_a_lone_same_spool_runout_keeps_its_pair(self):
         # ⚠️ The merge must never collapse below two segments. With no swap at
         # all, this pair is the ONLY thing naming the spool — a single-segment
