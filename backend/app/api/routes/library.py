@@ -55,6 +55,8 @@ from backend.app.schemas.library import (
     FolderTreeItem,
     FolderUpdate,
     LibraryFileListPage,
+    LibraryGroupingMetadata,
+    LibraryGroupingPlate,
     ProjectRef,
     TagSummary,
     ZipExtractError,
@@ -109,6 +111,28 @@ _PROJECT_SETTINGS_PATH = "Metadata/project_settings.config"
 router = APIRouter(prefix="/library", tags=["library"])
 
 
+def _library_file_visible(
+    library_file: LibraryFile | None,
+    user: User | None,
+    can_read_all: bool,
+) -> bool:
+    """Is this row visible to the caller?
+
+    The non-raising half of ``_ensure_library_file_visible`` — extracted so a
+    BATCH read can SKIP a row where a single-row read must 404. Both must stay
+    one decision: the raising half below is this predicate plus the raise, and
+    nothing else, so the two cannot drift.
+    """
+    if library_file is None or getattr(library_file, "deleted_at", None) is not None:
+        return False
+    if can_read_all:
+        return True
+    if user is None:
+        return False
+    # Ownerless files (``created_by_id is None``) require ALL — fail-closed.
+    return library_file.created_by_id is not None and library_file.created_by_id == user.id
+
+
 def _ensure_library_file_visible(
     library_file: LibraryFile | None,
     user: User | None,
@@ -124,13 +148,9 @@ def _ensure_library_file_visible(
       - ``can_read_all`` false and ``created_by_id != user.id`` → 404.
       - Ownerless files (``created_by_id is None``) require ALL — fail-closed.
     """
-    if library_file is None or getattr(library_file, "deleted_at", None) is not None:
-        raise HTTPException(404, "File not found")
-    if can_read_all:
-        return library_file
-    if user is None:
-        raise HTTPException(404, "File not found")
-    if library_file.created_by_id is None or library_file.created_by_id != user.id:
+    # ``library_file is None`` is restated only to narrow the return type — the
+    # predicate already answers False for it.
+    if library_file is None or not _library_file_visible(library_file, user, can_read_all):
         raise HTTPException(404, "File not found")
     return library_file
 
@@ -4121,6 +4141,69 @@ async def batch_generate_stl_thumbnails(
 
 # ============ Queue Operations ============
 # NOTE: These routes must be defined BEFORE /files/{file_id} to avoid path parameter conflicts
+
+
+@router.get("/grouping-metadata", response_model=list[LibraryGroupingMetadata])
+async def get_library_grouping_metadata(
+    ids: str = Query(..., description="Comma-separated library file ids"),
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
+):
+    """Grouping metadata for a whole selection, in one query.
+
+    ``/files/{id}/plates`` answers the same question per file by opening the
+    3MF; a 60-file selection would be 60 disk reads before a single dialog
+    opened. Everything here already sits in ``file_metadata``.
+
+    Unknown ids are skipped rather than 404ing the batch — a selection can
+    outlive a deletion, and failing the whole pre-flight over one stale id
+    would strand the operator with no way to queue the rest.
+    """
+    user, can_read_all = auth_result
+
+    try:
+        wanted = [int(part) for part in ids.split(",") if part.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ids must be comma-separated integers") from None
+    if not wanted:
+        return []
+
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id.in_(wanted)))
+    rows = [r for r in result.scalars().all() if _library_file_visible(r, user, can_read_all)]
+
+    answer: list[LibraryGroupingMetadata] = []
+    for row in rows:
+        meta = row.file_metadata or {}
+        plates: list[LibraryGroupingPlate] = []
+        for plate in meta.get("plates") or []:
+            if not isinstance(plate, dict) or plate.get("index") is None:
+                continue
+            types = sorted(
+                str(f.get("type")) for f in (plate.get("filaments") or []) if isinstance(f, dict) and f.get("type")
+            )
+            plates.append(
+                LibraryGroupingPlate(
+                    index=int(plate["index"]),
+                    filament_types=types,
+                    bed_type=plate.get("bed_type"),
+                )
+            )
+        answer.append(
+            LibraryGroupingMetadata(
+                file_id=row.id,
+                filename=row.filename,
+                sliced_for_model=meta.get("sliced_for_model"),
+                nozzle_diameter=meta.get("nozzle_diameter"),
+                bed_type=meta.get("bed_type"),
+                plates=plates,
+            )
+        )
+    return answer
 
 
 @router.get("/files/{file_id}/plates")

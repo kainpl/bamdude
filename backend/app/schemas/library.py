@@ -496,3 +496,34 @@ class BatchThumbnailResponse(BaseModel):
     succeeded: int
     failed: int
     results: list[BatchThumbnailResult]
+
+
+# ============ Queue Sequencer Grouping ============
+
+
+class LibraryGroupingPlate(BaseModel):
+    """One plate, reduced to what decides which group it belongs to."""
+
+    index: int
+    # Sorted so two plates that need the same filaments compare equal without
+    # the caller having to normalise. ⚠️ TYPES only — colour is never part of a
+    # grouping key, and a colour field here would invite one.
+    filament_types: list[str]
+    bed_type: str | None = None
+
+
+class LibraryGroupingMetadata(BaseModel):
+    """Everything the queue sequencer needs to group a file's plates.
+
+    Read from ``LibraryFile.file_metadata`` alone — no disk access — which is
+    what lets a 60-file selection be grouped in one query.
+    """
+
+    file_id: int
+    filename: str
+    sliced_for_model: str | None = None
+    nozzle_diameter: float | None = None
+    bed_type: str | None = None
+    # Empty for a file that was never parsed (raw STL, unsliced 3MF). The caller
+    # must treat that as "cannot be grouped", never as "matches anything".
+    plates: list[LibraryGroupingPlate] = []
