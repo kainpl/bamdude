@@ -66,6 +66,16 @@ export interface PrintModalProps {
    *  (a low-spool warning) or a failure, so a silent member can never stall a
    *  run with nothing on screen. */
   autoSubmitWhenUnambiguous?: boolean;
+  /** Fired once when a member asked to submit itself gives up and renders
+   *  instead — no filament match, a dead status query, a low-spool warning, a
+   *  failed dispatch.
+   *
+   *  ⚠️ The run cannot see this any other way: a refused member and a silent
+   *  one both end in `onSuccess` + `onClose`, so without this callback the
+   *  difference between "answered one dialog per group" and "answered one per
+   *  group and then some" is invisible, and the run's summary could not say
+   *  it. Display-only for the caller — it never changes what the modal does. */
+  onAutoSubmitRefused?: () => void;
   /** Position of this dialog in a run over several files ("2 / 5"), rendered as
    *  a badge beside the title. Display only — the modal does not know a run
    *  exists and cannot advance one; QueueSequencer owns that. Omitted for a

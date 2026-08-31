@@ -77,6 +77,7 @@ export function PrintModal({
   sequence,
   groupBadge,
   autoSubmitWhenUnambiguous,
+  onAutoSubmitRefused,
   onClose,
   onSuccess,
   projectId,
@@ -1225,7 +1226,16 @@ export function PrintModal({
       // null there). Fire-and-forget — failure to save the preference must
       // not block the success UX.
       persistPreference();
-      if (mode !== 'reprint') {
+      // ⚠️ A dialog that never showed itself does not announce itself either.
+      // A group of 57 plates submits 56 times without rendering, and each of
+      // those toasts would stack in the same corner with no cap and no
+      // de-duplication — 57 identical "Print queued" cards over a farm view.
+      // The one visible dialog of each group still confirms, and QueueSequencer
+      // reports the run once at the end. Errors are NOT suppressed: a silent
+      // member that fails stops being silent (see the effect above), so its
+      // message arrives with a dialog to explain it.
+      const announces = !autoSubmitWhenUnambiguous || autoSubmitRefused;
+      if (mode !== 'reprint' && announces) {
         if (mode === 'edit-queue-item') {
           showToast(t('printModal.queueItemUpdated'));
         } else if (results.queued === 1) {
@@ -1391,6 +1401,16 @@ export function PrintModal({
     if (autoSubmittedRef.current && !isPending) setAutoSubmitRefused(true);
   }, [autoSubmitWhenUnambiguous, autoSubmitRefused, filamentWarningItems, isPending]);
 
+  // Tell the run it had to ask after all. Once only, and by ref rather than by
+  // dep array: the caller's handler is an inline arrow whose identity changes
+  // every render.
+  const refusalReportedRef = useRef(false);
+  useEffect(() => {
+    if (!autoSubmitRefused || refusalReportedRef.current) return;
+    refusalReportedRef.current = true;
+    onAutoSubmitRefused?.();
+  }, [autoSubmitRefused, onAutoSubmitRefused]);
+
   // Modal title and action button text based on mode
   const getModalConfig = () => {
     const printerCount = selectedPrinters.length;
@@ -1507,7 +1527,14 @@ export function PrintModal({
                   many plates go out when it is answered. */}
               {groupBadge && (
                 <span className="px-2 py-0.5 rounded-full bg-bambu-dark text-xs text-bambu-gray tabular-nums">
-                  {t('queue.groupBadge', groupBadge)}
+                  {/* ⚠️ `units` travels as `count`: i18next resolves the
+                      plural from that name and no other, and a one-unit group
+                      is reachable whenever there is more than one group. */}
+                  {t('queue.groupBadge', {
+                    current: groupBadge.current,
+                    total: groupBadge.total,
+                    count: groupBadge.units,
+                  })}
                 </span>
               )}
             </div>

@@ -1223,9 +1223,18 @@ export default {
     deselectAll: 'Deselect All',
     printQueued: 'Print queued',
     itemsQueued: '{{count}} items queued',
-    groupBadge: 'group {{current}} of {{total}} · {{units}} items',
-    groupedQueued: 'Queued {{queued}} in {{groups}} groups',
-    groupedQueuedWithAsks: 'Queued {{queued}} in {{groups}} groups; {{asked}} needed an answer',
+    // ⚠️ Pluralised on the number that inflects, which is why `{{count}}`
+    // carries the units here and the GROUPS below: i18next resolves a plural
+    // from `count` and from nothing else, and a one-unit group is reachable —
+    // the badge shows whenever there is more than one group, whatever a single
+    // group's size. The numbers left as plain placeholders are phrased so they
+    // read for any value in both locales.
+    groupBadge_one: 'group {{current}} of {{total}} · {{count}} item',
+    groupBadge_other: 'group {{current}} of {{total}} · {{count}} items',
+    groupedQueued_one: 'Queued {{queued}} in {{count}} group',
+    groupedQueued_other: 'Queued {{queued}} in {{count}} groups',
+    groupedQueuedWithAsks_one: 'Queued {{queued}} in {{count}} group · {{asked}} needed answering',
+    groupedQueuedWithAsks_other: 'Queued {{queued}} in {{count}} groups · {{asked}} needed answering',
     sending: 'Sending...',
     sendingProgress: 'Sending {{current}}/{{total}}...',
     adding: 'Adding...',
