@@ -11,6 +11,43 @@ import type { AutoCalibrationCaps } from '../../utils/printerCapabilities';
 export type PrintModalMode = 'reprint' | 'add-to-queue' | 'edit-queue-item' | 'edit-auto-item';
 
 /**
+ * Everything a submitted dialog was answered WITH — the operator's decisions,
+ * and nothing derived from the file.
+ *
+ * ⚠️ This exists so a grouped run can carry one answer onto the files that
+ * would have been answered identically. Before it, `QueueSequencer` mounted
+ * each silent member with the component's own defaults and hoped: a member
+ * started at no printer and `dispatchMode: 'specific'`, so `canSubmit` was
+ * false for ever on any farm with more than one printer, and a leader who
+ * chose "Queue Only" produced members that dispatched immediately. The spec's
+ * carry table described this type; nothing implemented it.
+ *
+ * ⚠️ **Filament mapping is deliberately absent, and so is anything keyed by
+ * plate index.** A global tray id names a different spool on a different
+ * machine and plate 3 of one file is not plate 3 of the next, so both are
+ * recomputed per file by the same code the visible dialog uses. The rule for
+ * adding a field here: it carries if and only if the answer means the same
+ * thing about a different file.
+ */
+export interface PrintModalAnswer {
+  /** Which printers the operator ticked. Empty in auto mode. */
+  selectedPrinterIds: number[];
+  dispatchMode: 'specific' | 'auto';
+  /** The auto-queue's own answers. A group is one `sliced_for_model` by
+   *  construction, so `target_model` means the same thing for every member —
+   *  and `target_location_id` / `force_color_match` are answers no file
+   *  implies. */
+  autoModeOptions: AutoModeOptionsState;
+  scheduleOptions: ScheduleOptions;
+  /** The shared Quantity. Per-plate overrides are NOT carried: they are keyed
+   *  by this file's plate indexes. */
+  quantity: number;
+  printOptions: PrintOptions;
+  swapMacros: SwapMacrosOptions;
+  selectedMacroIds: number[];
+}
+
+/**
  * Props for the unified PrintModal component.
  *
  * Either archiveId or libraryFileId must be provided.
@@ -66,6 +103,27 @@ export interface PrintModalProps {
    *  (a low-spool warning) or a failure, so a silent member can never stall a
    *  run with nothing on screen. */
   autoSubmitWhenUnambiguous?: boolean;
+  /** Open already answered the way the group's visible dialog was answered.
+   *
+   *  ⚠️ Read ONLY by the state initialisers, so the operator can still change
+   *  every one of these if the member ends up rendering after all. That is why
+   *  it is a separate prop and not a reuse of ``initialSelectedPrinterIds``:
+   *  that one HIDES the printer selector when it is set without
+   *  ``lockPrinterSelection``, which would leave a refused member — precisely
+   *  the dialog that most needs the question — with no way to change printer.
+   *
+   *  ⚠️ It also outranks the stored per-model preference. The preference is
+   *  what the operator answered LAST TIME; this is what they answered a moment
+   *  ago, about this very run. (And the preference write from the leader is
+   *  fire-and-forget, so a member mounting in the same commit reads a cache hit
+   *  of the pre-leader values — carrying the answer is the only ordering that
+   *  is right in both races.) */
+  seededAnswer?: PrintModalAnswer;
+  /** Fired on a successful submit with what the operator actually answered, so
+   *  a grouped run can seed the rest of the group. Fires from every mode's
+   *  success path, alongside the preference write. Display-agnostic: the modal
+   *  does not read it back and does not care whether anyone listens. */
+  onAnswered?: (answer: PrintModalAnswer) => void;
   /** Fired once when a member asked to submit itself gives up and renders
    *  instead — no filament match, a dead status query, a low-spool warning, a
    *  failed dispatch.

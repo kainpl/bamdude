@@ -1615,9 +1615,12 @@ export function FileManagerPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'file' | 'folder' | 'bulk'; id: number; count?: number } | null>(null);
   const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
   const [printMultiFile, setPrintMultiFile] = useState<LibraryFileListItem | null>(null);
-  // The files still to be scheduled, in the order they were selected. One entry
-  // is an ordinary Schedule-print open; several is a run through the same
-  // dialog, one group at a time (QueueSequencer). `fromSelection` says whether
+  // The files still to be scheduled, in the order they were selected. Every
+  // Schedule-print goes through QueueSequencer — one group at a time, and the
+  // group's answer carried onto the files it stands for. ⚠️ Even ONE entry: a
+  // single multi-plate file is a group of plates, so its dialog opens with all
+  // of them ticked and wearing a group badge, and answering it queues one item
+  // per plate. `fromSelection` says whether
   // the run may write back to the selection when it ends — a run started from
   // one file's ⋮ menu must not touch what happens to be ticked.
   const [queueSequence, setQueueSequence] = useState<
@@ -2340,9 +2343,10 @@ export function FileManagerPage() {
     return files.filter((f) => selectedFiles.includes(f.id) && isPrintable(f));
   }, [files, selectedFiles]);
 
-  // Schedule one file from its own ⋮ menu — a run of length 1, which renders
-  // exactly as the dialog always did (the counter only appears for several
-  // files) and leaves the selection alone, like Move and Tags do from there.
+  // Schedule one file from its own ⋮ menu — a run over one file, which leaves
+  // the selection alone like Move and Tags do from there. Single-plate it looks
+  // exactly as the dialog always did; multi-plate it opens with every plate
+  // ticked and queues one item per plate (see `queueSequence` above).
   const scheduleOne = useCallback(
     (file: LibraryFileListItem) => setQueueSequence({ files: [file], fromSelection: false }),
     [],

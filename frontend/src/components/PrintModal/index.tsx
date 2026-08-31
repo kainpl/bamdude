@@ -77,6 +77,8 @@ export function PrintModal({
   sequence,
   groupBadge,
   autoSubmitWhenUnambiguous,
+  seededAnswer,
+  onAnswered,
   onAutoSubmitRefused,
   onClose,
   onSuccess,
@@ -110,6 +112,12 @@ export function PrintModal({
     }
     if (initialSelectedPrinterIds?.length) {
       return initialSelectedPrinterIds;
+    }
+    // The group's visible dialog already answered "which printer". Below the
+    // caller's pin, because a pinned run cannot have been answered differently
+    // — the selector is locked — and the pin is the caller's constraint.
+    if (seededAnswer?.selectedPrinterIds.length) {
+      return seededAnswer.selectedPrinterIds;
     }
     return [];
   });
@@ -170,6 +178,7 @@ export function PrintModal({
         mesh_mode_fast_check: autoQueueItem.mesh_mode_fast_check,
       };
     }
+    if (seededAnswer) return seededAnswer.printOptions;
     return DEFAULT_PRINT_OPTIONS;
   });
 
@@ -183,6 +192,7 @@ export function PrintModal({
         events: storedEvents ?? (execute ? [...SWAP_MACRO_EVENTS] : []),
       };
     }
+    if (seededAnswer) return seededAnswer.swapMacros;
     return DEFAULT_SWAP_MACROS_OPTIONS;
   });
 
@@ -191,6 +201,7 @@ export function PrintModal({
   const [selectedMacroIds, setSelectedMacroIds] = useState<number[]>(() => {
     if (mode === 'edit-queue-item' && queueItem) return queueItem.selected_macro_ids ?? [];
     if (mode === 'edit-auto-item' && autoQueueItem) return autoQueueItem.selected_macro_ids ?? [];
+    if (seededAnswer) return seededAnswer.selectedMacroIds;
     return [];
   });
 
@@ -237,6 +248,10 @@ export function PrintModal({
         requirePreviousSuccess: queueItem.require_previous_success ?? false,
       };
     }
+    // ⚠️ The one carry whose absence was silently DANGEROUS rather than merely
+    // annoying: a leader answering "Queue Only" used to produce members that
+    // dispatched the moment the printer went idle.
+    if (seededAnswer) return seededAnswer.scheduleOptions;
     return DEFAULT_SCHEDULE_OPTIONS;
   });
 
@@ -266,7 +281,7 @@ export function PrintModal({
   const [submitProgress, setSubmitProgress] = useState({ current: 0, total: 0 });
 
   // Quantity (batch). Only exposed for reprint + add-to-queue modes.
-  const [quantity, setQuantity] = useState<number>(1);
+  const [quantity, setQuantity] = useState<number>(seededAnswer?.quantity ?? 1);
   // Per-plate overrides of ``quantity``, keyed by plate index. A plate absent
   // here takes the shared value — which is what every plate took before this
   // existed, so the common single-plate flow is untouched. Changing the shared
@@ -279,7 +294,11 @@ export function PrintModal({
   // Dispatch mode: 'specific' = pick exact printer(s); 'auto' = route via auto-queue.
   // Only meaningful for add-to-queue mode (reprint is always specific, edit-queue-item
   // is already bound to a per-printer queue row).
-  const [dispatchMode, setDispatchMode] = useState<'specific' | 'auto'>(initialDispatchMode ?? 'specific');
+  // Caller's pin first (a locked toggle cannot have been answered otherwise),
+  // then the group's answer, then the default.
+  const [dispatchMode, setDispatchMode] = useState<'specific' | 'auto'>(
+    initialDispatchMode ?? seededAnswer?.dispatchMode ?? 'specific',
+  );
   const [autoModeOptions, setAutoModeOptions] = useState<AutoModeOptionsState>(() => {
     if (mode === 'edit-auto-item' && autoQueueItem) {
       return {
@@ -289,6 +308,7 @@ export function PrintModal({
         force_color_match: autoQueueItem.force_color_match,
       };
     }
+    if (seededAnswer) return seededAnswer.autoModeOptions;
     return DEFAULT_AUTO_MODE_OPTIONS;
   });
   // edit-auto-item is auto mode by definition: the row belongs to the router.
@@ -314,10 +334,19 @@ export function PrintModal({
   const currencySymbol = getCurrencySymbol(settings?.currency || 'USD');
   const defaultCostPerKg = settings?.default_filament_cost ?? 0;
 
-  const { data: printers, isLoading: loadingPrinters } = useQuery({
+  const { data: printers, isLoading: loadingPrinters, isFetched: printersFetched } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
   });
+
+  // The ONLY thing that fills an empty printer selection by itself. Named here
+  // rather than buried in the effect below because the self-submit has to tell
+  // "the pick is still coming" from "nobody is ever going to make it" — and on
+  // a farm with two printers nobody is.
+  const soleActivePrinterId = useMemo(() => {
+    const active = (printers ?? []).filter((p) => p.is_active);
+    return active.length === 1 ? active[0].id : null;
+  }, [printers]);
 
   // Per-printer queues — needed to drop printers with a paused queue from
   // the add-to-queue picker (a paused queue refuses new items; the backend
@@ -473,6 +502,12 @@ export function PrintModal({
   // new profile (measured live 2026-08-25: vibration fast-check).
   const touchedOptionsRef = useRef(false);
   useEffect(() => {
+    // ⚠️ A seeded member is already answered, and by something newer than any
+    // stored profile. Letting the profile land here would not merely be
+    // redundant — the leader's own preference write is fire-and-forget and this
+    // query is a 60-second cache hit, so what arrives is the values from BEFORE
+    // the leader changed anything, and it would overwrite the carry.
+    if (seededAnswer) return;
     if (!effectivePrinterModel || !preferenceData) return;
     if (appliedPreferenceModelsRef.current.has(effectivePrinterModel)) return;
     appliedPreferenceModelsRef.current.add(effectivePrinterModel);
@@ -486,7 +521,7 @@ export function PrintModal({
         (e): e is SwapMacroEvent => (SWAP_MACRO_EVENTS as readonly string[]).includes(e),
       ),
     });
-  }, [effectivePrinterModel, preferenceData]);
+  }, [effectivePrinterModel, preferenceData, seededAnswer]);
 
   // Tick everything the operator has not explicitly turned off for this model.
   // Storing the exceptions rather than the selection is what makes a macro
@@ -494,13 +529,16 @@ export function PrintModal({
   // excluded: there the item's own stored list is the authority.
   const appliedMacroModelsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
+    // Same reason as the preference effect above: `selectedMacroIds` is seeded
+    // from what the group's dialog was answered with, which is the authority.
+    if (seededAnswer) return;
     if (mode === 'edit-queue-item' || mode === 'edit-auto-item') return;
     if (!effectivePrinterModel || applicableMacros.length === 0) return;
     if (appliedMacroModelsRef.current.has(effectivePrinterModel)) return;
     const deselected = new Set(preferenceData?.options.event_macros?.deselected_ids ?? []);
     setSelectedMacroIds(applicableMacros.filter((m) => !deselected.has(m.id)).map((m) => m.id));
     appliedMacroModelsRef.current.add(effectivePrinterModel);
-  }, [mode, effectivePrinterModel, applicableMacros, preferenceData]);
+  }, [mode, effectivePrinterModel, applicableMacros, preferenceData, seededAnswer]);
 
   // Best-effort persist on submit. Failure is silently swallowed — the
   // print itself already succeeded; a failed preference write would only
@@ -527,6 +565,40 @@ export function PrintModal({
         // silent — preference is best-effort
       });
   }, [effectivePrinterModel, mode, printOptions, swapMacros, applicableMacros, selectedMacroIds, queryClient]);
+
+  /**
+   * Hand the caller what this dialog was answered with, on a successful submit.
+   *
+   * ⚠️ Fired beside `persistPreference` and for the same reason — this is the
+   * moment the answer is known to be an answer — but it is the opposite kind of
+   * carry, and both are needed. The preference is per (user, printer MODEL) and
+   * survives the dialog; this is per RUN and dies with it. Only the run-scoped
+   * half can carry a printer, a schedule or a quantity, none of which belong to
+   * a model, and only it is immune to the preference write being
+   * fire-and-forget behind a 60-second cache.
+   */
+  const reportAnswer = useCallback(() => {
+    onAnswered?.({
+      selectedPrinterIds: [...selectedPrinters],
+      dispatchMode,
+      autoModeOptions,
+      scheduleOptions,
+      quantity,
+      printOptions,
+      swapMacros,
+      selectedMacroIds: [...selectedMacroIds],
+    });
+  }, [
+    onAnswered,
+    selectedPrinters,
+    dispatchMode,
+    autoModeOptions,
+    scheduleOptions,
+    quantity,
+    printOptions,
+    swapMacros,
+    selectedMacroIds,
+  ]);
 
   const { data: spoolAssignments } = useQuery({
     queryKey: ['spool-assignments'],
@@ -597,6 +669,11 @@ export function PrintModal({
     queryKey: ['library-file-filaments', libraryFileId, selectedPlate],
     queryFn: () => api.getLibraryFileFilamentRequirements(libraryFileId!, selectedPlate ?? undefined),
     enabled: isLibraryFile && !!libraryFileId && (selectedPlate !== null || !platesData?.is_multi_plate),
+    // Same policy as its archive twin above and as the per-plate queries below.
+    // The self-submit consumes this query's ERROR as a refusal, so a retrying
+    // observer keeps a grouped member blank through three backoffs before it
+    // shows itself — once per member, so the wait multiplies by the group.
+    retry: false,
   });
 
   // Track if archive data couldn't be loaded (archive deleted or file missing)
@@ -755,11 +832,10 @@ export function PrintModal({
   useEffect(() => {
     // Skip auto-select for edit mode (already initialized from queueItem)
     if (mode === 'edit-queue-item') return;
-    const activePrinters = printers?.filter(p => p.is_active) || [];
-    if (activePrinters.length === 1 && selectedPrinters.length === 0) {
-      setSelectedPrinters([activePrinters[0].id]);
+    if (soleActivePrinterId !== null && selectedPrinters.length === 0) {
+      setSelectedPrinters([soleActivePrinterId]);
     }
-  }, [mode, printers, selectedPrinters.length]);
+  }, [mode, soleActivePrinterId, selectedPrinters.length]);
 
   // Clear manual mappings and per-printer configs when printer or plate changes
   useEffect(() => {
@@ -1002,6 +1078,7 @@ export function PrintModal({
         };
         await api.addToAutoQueue(payload);
         persistPreference();
+        reportAnswer();
         const queuedCount = platesToQueue.length > 0
           ? platesToQueue.reduce((sum, index) => sum + quantityForPlate(index), 0)
           : quantity;
@@ -1246,6 +1323,7 @@ export function PrintModal({
       // null there). Fire-and-forget — failure to save the preference must
       // not block the success UX.
       persistPreference();
+      reportAnswer();
       if (mode !== 'reprint' && announces) {
         if (mode === 'edit-queue-item') {
           showToast(t('printModal.queueItemUpdated'));
@@ -1330,7 +1408,29 @@ export function PrintModal({
 
   useEffect(() => {
     if (!autoSubmitWhenUnambiguous || autoSubmittedRef.current || autoSubmitRefused) return;
-    if (!canSubmit) return;
+
+    // ⚠️ `canSubmit` is a two-valued answer to a three-valued question. Most of
+    // its false cases are "not yet" — plates loading, per-plate requirements in
+    // flight — and waiting is right. Two are "never", and waiting for those is
+    // the whole-run hang this guard exists to stop: the member neither submits
+    // nor renders, and the sequencer only ever advances on `onClose`.
+    if (!canSubmit) {
+      // A per-plate requirements query that ERRORED. `retry: false`, so nothing
+      // is coming, and multi-plate members are the normal case for a grouped run.
+      const reqsWillNeverAnswer = perPlateReqsFailed;
+      // No printer, and nothing left that could choose one. The single-printer
+      // auto-select is the only filler, and it fires from the effect above in
+      // this same commit — so ask whether it EXISTS (`soleActivePrinterId`)
+      // rather than whether it has run, or a one-printer farm would refuse
+      // every member in the commit the printer list arrives.
+      const printerWillNeverArrive =
+        !isAutoMode && printersFetched && selectedPrinters.length === 0 && soleActivePrinterId === null;
+      if (reqsWillNeverAnswer || printerWillNeverArrive) {
+        // Show ourselves: a dialog the operator can finish beats a blank page.
+        setAutoSubmitRefused(true);
+      }
+      return;
+    }
 
     // Only a run at exactly one specific printer consults filaments at all:
     // `canQueueWithoutAsking` short-circuits on any other printer count. An
@@ -1410,6 +1510,9 @@ export function PrintModal({
     perPlateReqs,
     effectiveFilamentReqs,
     effectiveFilamentReqsError,
+    perPlateReqsFailed,
+    printersFetched,
+    soleActivePrinterId,
   ]);
 
   // Tell the run it had to ask after all. Once only, and by ref rather than by
@@ -1914,4 +2017,4 @@ export function PrintModal({
 }
 
 // Re-export types for convenience
-export type { PrintModalMode, PrintModalProps } from './types';
+export type { PrintModalAnswer, PrintModalMode, PrintModalProps } from './types';

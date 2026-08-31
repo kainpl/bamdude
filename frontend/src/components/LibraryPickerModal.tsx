@@ -47,9 +47,13 @@ interface LibraryPickerModalProps {
  * *scheduling* dialog was written and rejected in August 2026, and the half of
  * that reason still standing after grouping is that `PrintModal` must remain
  * the only code that builds a queue payload. Carrying one answer onto the next
- * file is no longer the objection — that IS a group — but only the print
- * options carry; plates and filament mapping stay per file, because plate 3 of
- * one file need not exist in the next. A bulk *selection* dialog builds no
+ * file is no longer the objection — that IS a group, and the answer is carried
+ * in full: printer, dispatch mode and auto target, schedule, copies, print
+ * options, swap macros, macro selection. What stays per file is what means
+ * something different about a different file — filament mapping (a global tray
+ * id names another spool on another machine) and anything keyed by plate index
+ * (plate 3 of one file need not exist in the next); both are recomputed by the
+ * same code the visible dialog uses. A bulk *selection* dialog builds no
  * payload at all, so it cannot make that mistake.
  *
  * Selection is a Map held here, so it survives changing folder and searching —

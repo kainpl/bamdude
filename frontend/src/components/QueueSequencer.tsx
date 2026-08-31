@@ -7,7 +7,7 @@ import type { LibraryGroupingMetadata } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { groupSelection } from '../utils/queueGrouping';
 import { PrintModal } from './PrintModal';
-import type { PrintModalMode } from './PrintModal';
+import type { PrintModalAnswer, PrintModalMode } from './PrintModal';
 
 /** The least a file must say about itself to be scheduled. */
 export interface SequencedFile {
@@ -129,6 +129,13 @@ function buildRun(
  * why one dialog can stand for it, and a selection that genuinely disagrees is
  * still asked about a group at a time — of one file each, in the worst case.
  *
+ * **The answer is carried explicitly** (`onAnswered` → `seededAnswer`): printer
+ * selection, dispatch mode and auto target, schedule, copies, print options,
+ * swap macros and macro selection. Filament mapping and per-plate counts are
+ * NOT — a global tray id names a different spool on a different machine, and
+ * plate 3 of one file is not plate 3 of the next, so both are recomputed per
+ * file by the same code the visible dialog uses.
+ *
  * Each member gets a FRESH modal (keyed on its position in the run as well as
  * its id). Plate selection, filament mapping and per-printer config belong to
  * one file, and PrintModal's self-submit uses once-only refs that would leak
@@ -167,6 +174,19 @@ export function QueueSequencer({
   // it was. This cannot be state: both fire in one tick, and the second
   // setState would win.
   const queuedRef = useRef(false);
+
+  // ⚠️ **What makes a group a group.** The dialog is shown once and answered
+  // once; every other member of that group is queued with THAT answer. Without
+  // this the silent members mounted on the component's own defaults — no
+  // printer and an ASAP schedule — so a two-printer farm queued the leader and
+  // then hung for ever on a member that could neither submit nor show itself,
+  // and a leader who chose "Queue Only" produced 56 members that dispatched
+  // immediately. Seven per-task reviews missed it because the spec asserted
+  // this carry existed.
+  //
+  // A ref, like the tally below: it is written from inside PrintModal's submit
+  // and read while rendering the very next member, in the same tick.
+  const answerRef = useRef<PrintModalAnswer | undefined>(undefined);
 
   // The run's tally, all by ref for the same reason: it is written from inside
   // onClose and read in the same tick when the run ends.
@@ -285,6 +305,19 @@ export function QueueSequencer({
       // low-spool warning, a failed dispatch) and render — which is why the
       // branch below treats a refusal exactly like today's abandon.
       autoSubmitWhenUnambiguous={memberIndex > 0}
+      // Only the members after the group's first one are answered in advance —
+      // the first one IS the question. ⚠️ A separate prop and never
+      // `initialSelectedPrinterIds`: that one hides the printer selector unless
+      // the run is pinned, so a member that ends up asking would render with no
+      // way to change printer — the one dialog that most needs the question.
+      seededAnswer={memberIndex > 0 ? answerRef.current : undefined}
+      onAnswered={(answer) => {
+        // Every submit, not only the leader's: a member that had to ask is a
+        // dialog the operator answered afresh, and the rest of the group should
+        // follow that answer rather than the one it just overrode. A silent
+        // member simply re-reports its own seed, which is a no-op.
+        answerRef.current = answer;
+      }}
       onAutoSubmitRefused={() => {
         askedRef.current += 1;
       }}
@@ -317,6 +350,10 @@ export function QueueSequencer({
         }
         const nextGroup = groupIndex + 1;
         if (nextGroup < groups.length) {
+          // A new group is a new question — it exists precisely because its
+          // answers are expected to differ. Carrying the previous group's
+          // answer into it would pre-fill a dialog nobody has been asked yet.
+          answerRef.current = undefined;
           setGroupIndex(nextGroup);
           setMemberIndex(0);
           return;
