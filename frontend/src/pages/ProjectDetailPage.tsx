@@ -235,6 +235,14 @@ export function ProjectDetailPage() {
 
   const projectId = parseInt(id || '0', 10);
 
+  /** Everything on this page that a print or a queue action moves. */
+  const invalidateProjectViews = () => {
+    queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+    queryClient.invalidateQueries({ queryKey: ['project-archives', projectId] });
+    queryClient.invalidateQueries({ queryKey: ['project-timeline', projectId] });
+    queryClient.invalidateQueries({ queryKey: ['project-print-plan', projectId] });
+  };
+
   const { data: project, isLoading: projectLoading, error: projectError } = useQuery({
     queryKey: ['project', projectId],
     queryFn: () => api.getProject(projectId),
@@ -2279,6 +2287,13 @@ export function ProjectDetailPage() {
             setPrintFile(null);
             setPrintPlate(null);
             queryClient.invalidateQueries({ queryKey: ['archives'] });
+            // The dispatch is asynchronous — no archive exists yet, so the
+            // Prints grid below still fills from the ``archive_created``
+            // websocket event minutes later. What DOES change right now is
+            // this project's own accounting (queued count, timeline), and
+            // leaving it stale is what made "printed from the project,
+            // nothing happened" the reported symptom.
+            invalidateProjectViews();
           }}
         />
       )}
@@ -2299,6 +2314,7 @@ export function ProjectDetailPage() {
             setScheduleFile(null);
             setPrintPlate(null);
             queryClient.invalidateQueries({ queryKey: ['queue'] });
+            invalidateProjectViews();
           }}
         />
       )}

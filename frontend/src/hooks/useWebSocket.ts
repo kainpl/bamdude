@@ -326,6 +326,28 @@ export function useWebSocket() {
     }, 3000);
   }, [queryClient]);
 
+  /**
+   * Everything a project page reads that a print moves.
+   *
+   * ⚠️ A print is the one thing that changes a project's data without anybody
+   * touching the project. The archive events carry no ``project_id``, so the
+   * whole prefix is invalidated — that costs nothing off a project page,
+   * because TanStack only refetches *active* queries and these five are
+   * mounted nowhere else.
+   *
+   * Kept as one list rather than repeated per case: the three archive events
+   * below all answer the same question, and three copies drift. Reported as
+   * "I start prints from a project and its Prints section stays empty" — it
+   * was, until the page was left and re-entered.
+   */
+  const invalidateProjectViews = useCallback(() => {
+    debouncedInvalidate('project');           // stats: total / in-progress / progress
+    debouncedInvalidate('project-archives');  // the Prints grid
+    debouncedInvalidate('project-timeline');  // a print is a timeline event
+    debouncedInvalidate('project-print-plan');// per-item printed_count
+    debouncedInvalidate('projects');          // roll-up on the project cards
+  }, [debouncedInvalidate]);
+
   const handleMessage = useCallback((message: WebSocketMessage) => {
     // Filament Calibration wizard events (m062 / Plan 2). Routed to a
     // CustomEvent so the useFilamentCalibration hook can advance its
@@ -430,6 +452,7 @@ export function useWebSocket() {
         // The printer_status websocket messages will naturally update the status
         debouncedInvalidate('archives');
         debouncedInvalidate('archiveStats');
+        invalidateProjectViews();
         // Update queue data (counters, status, pending items)
         debouncedInvalidate('queues');
         if (message.printer_id !== undefined) {
@@ -488,10 +511,12 @@ export function useWebSocket() {
       case 'archive_created':
         debouncedInvalidate('archives');
         debouncedInvalidate('archiveStats');
+        invalidateProjectViews();
         break;
 
       case 'archive_updated':
         debouncedInvalidate('archives');
+        invalidateProjectViews();
         break;
 
       case 'library_file_added':
@@ -694,7 +719,7 @@ export function useWebSocket() {
         break;
 
     }
-  }, [queryClient, debouncedInvalidate, throttledPrinterStatusUpdate, showToast, t]);
+  }, [queryClient, debouncedInvalidate, invalidateProjectViews, throttledPrinterStatusUpdate, showToast, t]);
 
   // Keep the ref updated with latest handleMessage
   useEffect(() => {

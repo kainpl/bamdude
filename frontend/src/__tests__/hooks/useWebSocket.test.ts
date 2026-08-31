@@ -386,6 +386,52 @@ describe('useWebSocket hook', () => {
       vi.unstubAllGlobals();
     });
 
+    // A print is the one thing that changes a project without anybody touching
+    // the project, and the archive events carry no project_id — so the whole
+    // project prefix has to go. Reported as "I start prints from a project and
+    // its Prints section stays empty": it was, until the page was re-entered.
+    it('refreshes the project views on archive_created', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'archive_created',
+          data: { id: 1, filename: 'test.3mf' },
+        });
+      });
+
+      // 3000ms debounce + 500ms stagger per key; seven keys here.
+      await act(async () => {
+        vi.advanceTimersByTime(10000);
+      });
+
+      for (const key of [
+        'project',
+        'project-archives',
+        'project-timeline',
+        'project-print-plan',
+        'projects',
+      ]) {
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: [key] });
+      }
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
     it('invalidates archives on archive_updated message', async () => {
       vi.useFakeTimers();
       const { useWebSocket } = await import('../../hooks/useWebSocket');
