@@ -831,6 +831,72 @@ class TestMultiEpisodeBoundaries:
         ]
         assert journal_boundaries_for_tray(events, 2) == [(0, 291, None)]
 
+    def test_the_backup_at_the_runout_layer_outranks_a_reel_loaded_later(self):
+        # Printer 10, archive 838, caught live (2026-09-01). The mapped slot 3
+        # was empty at layer 0, the AMS backed up to slot 2 (spool 292) in the
+        # same breath, and 28 layers later the operator put a fresh reel into
+        # slot 3 — which closes slot 3's open episode with a spool_loaded row.
+        # That row used to win over the backup unconditionally, so the segment
+        # starting at layer 0 was charged to a reel that had not existed in the
+        # machine for the first 28 layers, while the five sibling prints of the
+        # same plate had each charged 156.4 g to spool 292.
+        #
+        # A tray_change is bounded to the runout's own layer; a spool_loaded can
+        # be anywhere later. The tighter evidence names the feeder.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "start", None, None, 0, None),
+            ev(2, "runout", "autoswitch", 3, 0, None),
+            ev(3, "tray_change", None, 2, 0, 292),
+            ev(4, "spool_loaded", None, 3, 28, 293),
+            ev(5, "runout", "autoswitch", 3, 30, 293),
+        ]
+        assert journal_boundaries_for_tray(events, 3) == [
+            (0, None, None),
+            (0, 292, None),
+            (30, None, None),
+        ]
+
+    def test_without_a_backup_the_loaded_reel_still_names_the_feeder(self):
+        # The other real autoswitch shape: nothing backed the tray up (no
+        # tray_change at all), the human refilled the very tray that ran out and
+        # resumed. There is no tighter evidence to prefer, so the loaded reel
+        # must keep winning — the fallback this reordering must not eat.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "runout", "autoswitch", 2, 40, 290),
+            ev(2, "spool_loaded", None, 2, 45, 294),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 290, None), (40, 294, None)]
+
     def test_without_a_start_event_nothing_is_invented(self):
         from types import SimpleNamespace
 

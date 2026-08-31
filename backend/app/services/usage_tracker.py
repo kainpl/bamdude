@@ -785,10 +785,17 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
             if loaded is not None:
                 segments.append((runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id))
             continue
-        if loaded is not None:
-            segments.append((runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id))
-        elif runout.kind == KIND_AUTOSWITCH:
-            backup = next(
+        # ⚠️ The backup is asked FIRST, and only an autoswitch has one. A
+        # tray_change is bounded to the runout's own layer — it says who fed the
+        # print from that layer; a spool_loaded can be any distance later and
+        # says only that a reel now sits in the slot that emptied. Preferring
+        # the looser evidence charged the segment starting at the runout layer
+        # to a reel that had not been in the machine yet: printer 10, archive
+        # 838, slot 3 empty at layer 0, backed up to slot 2 at layer 0, refilled
+        # by hand at layer 28 — and the whole stretch booked to the layer-28
+        # reel while its five sibling prints had each charged the backup.
+        backup = (
+            next(
                 (
                     e
                     for e in events
@@ -800,12 +807,19 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
                 ),
                 None,
             )
-            if backup is not None:
-                segments.append((runout.layer_num, backup.spool_id, backup.spoolman_spool_id))
-            else:
-                # The backup feeder can't be named — better an under-count on
-                # the backup spool than grams on a guess; the origin zeroes out.
-                segments.append((runout.layer_num, None, None))
+            if runout.kind == KIND_AUTOSWITCH
+            else None
+        )
+        if backup is not None:
+            segments.append((runout.layer_num, backup.spool_id, backup.spoolman_spool_id))
+        elif loaded is not None:
+            # Nothing backed the tray up — the refilled reel is the only feeder
+            # there is (the human topped up the very tray that ran out).
+            segments.append((runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id))
+        elif runout.kind == KIND_AUTOSWITCH:
+            # The backup feeder can't be named — better an under-count on
+            # the backup spool than grams on a guess; the origin zeroes out.
+            segments.append((runout.layer_num, None, None))
         else:
             # Resumed without a detectable replacement — the same spool (or a
             # splice) kept feeding; the zero correction self-consistently
