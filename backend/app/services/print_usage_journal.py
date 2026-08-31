@@ -392,6 +392,47 @@ async def note_manual_replacement_intent(
     return True
 
 
+def stale_runouts_to_seed(already_fired: dict[int | None, str], state) -> dict[int | None, str]:
+    """Of this print's journaled runouts, which are stale codes to stay quiet about.
+
+    HMS holds a runout status for the WHOLE print, so a client created mid-print
+    must be told what the journal already has or it replays every active code as
+    a new episode. But seeding a tray unconditionally also silences a runout
+    that happened FOR REAL while BamDude was down — and there the slot is what
+    settles it: **a slot that physically holds filament cannot be running out**,
+    so a code still standing over it is stale. An EMPTY slot is left unseeded on
+    purpose: the code over it may be a runout nobody has recorded yet.
+
+    ⚠️ Presence is ``AMSTray.exists``, decoded from the printer's own
+    ``tray_exist_bits`` — the AMS's per-slot sensor. NEVER ``tray_type``: we
+    write that ourselves via ``ams_filament_setting`` whenever a spool is
+    assigned, so reading it back would be believing our own bookkeeping.
+    Measured 2026-09-01 on an X2D printing from its backup: slot 3 reported
+    ``exists=True`` with ``0700230000030002`` still active — the firmware never
+    withdrew the error, while a P1S in the same state had cleared it hours
+    earlier. Trusting the sensor is what makes those two the same case.
+
+    No reading (an external holder has no presence bit; a state that has not
+    arrived yet has nothing) falls back to seeding — the safer and far more
+    frequent side.
+    """
+    present: dict[int, bool] = {}
+    for unit in getattr(state, "ams", None) or []:
+        ams_id = getattr(unit, "id", None)
+        if not isinstance(ams_id, int):
+            continue
+        for tray in getattr(unit, "tray", None) or []:
+            exists = getattr(tray, "exists", None)
+            if exists is None:
+                continue
+            tray_id = getattr(tray, "id", 0) or 0
+            # A single-spool AMS-HT IS its own global tray (128..135); the
+            # ordinary units flatten as unit*4 + slot.
+            present[ams_id if getattr(unit, "is_ams_ht", False) else ams_id * 4 + tray_id] = bool(exists)
+
+    return {tray: kind for tray, kind in already_fired.items() if present.get(tray, True)}
+
+
 async def note_assignment_change(
     db: AsyncSession,
     *,

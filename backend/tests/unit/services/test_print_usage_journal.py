@@ -707,3 +707,76 @@ class TestTheReplacementWindowAsksAboutTheSLOT:
         assert journaled is False
         rows = (await db_session.execute(select(PrintUsageEvent))).scalars().all()
         assert [r for r in rows if r.event == EVENT_RUNOUT] == []
+
+
+class TestTheSeedBelievesTheSLOTSENSOR:
+    """Which journaled runouts are stale replays, and which are still real.
+
+    HMS keeps a runout status for the whole print, so a client created
+    mid-print must be told what this print already recorded. But seeding a tray
+    unconditionally also silences a runout that happened FOR REAL while BamDude
+    was down. The printer itself settles which is which: a slot that physically
+    holds filament cannot be running out, so an active code over it is stale.
+
+    ⚠️ Presence comes from ``exists`` — decoded from the printer's own
+    ``tray_exist_bits`` — and NEVER from ``tray_type``, which BamDude writes
+    itself (``ams_filament_setting``) whenever a spool is assigned. Believing
+    ``tray_type`` would be believing our own bookkeeping back.
+    """
+
+    @staticmethod
+    def _state(trays):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            ams=[
+                SimpleNamespace(
+                    id=0,
+                    is_ams_ht=False,
+                    tray=[SimpleNamespace(id=i, exists=e, tray_type=t) for i, e, t in trays],
+                )
+            ]
+        )
+
+    def test_a_slot_that_holds_filament_seeds_and_stays_quiet(self):
+        from backend.app.services.print_usage_journal import stale_runouts_to_seed
+
+        state = self._state([(3, True, "PETG")])
+        assert stale_runouts_to_seed({3: "autoswitch"}, state) == {3: "autoswitch"}
+
+    def test_an_empty_slot_is_not_seeded_so_a_real_runout_survives(self):
+        # The blind spot this closes: a reel that genuinely ran out while
+        # BamDude was down leaves the slot EMPTY, and its runout must still be
+        # recorded when we come back.
+        from backend.app.services.print_usage_journal import stale_runouts_to_seed
+
+        state = self._state([(3, False, None)])
+        assert stale_runouts_to_seed({3: "autoswitch"}, state) == {}
+
+    def test_presence_beats_the_type_we_wrote_ourselves(self):
+        # The X2D shape inverted: were the decision made on tray_type, our own
+        # ams_filament_setting write would answer the question for us.
+        from backend.app.services.print_usage_journal import stale_runouts_to_seed
+
+        state = self._state([(3, False, "PETG")])
+        assert stale_runouts_to_seed({3: "autoswitch"}, state) == {}
+
+    def test_without_a_presence_reading_it_seeds(self):
+        # External holders carry no presence bit, and a state that has not
+        # arrived yet carries nothing at all. Fall back to the safer, far more
+        # frequent case: suppress the replay.
+        from backend.app.services.print_usage_journal import stale_runouts_to_seed
+
+        assert stale_runouts_to_seed({254: "external"}, self._state([(3, True, "PETG")])) == {254: "external"}
+        assert stale_runouts_to_seed({3: "autoswitch"}, None) == {3: "autoswitch"}
+
+    def test_an_ams_ht_slot_is_keyed_by_its_unit_id(self):
+        from types import SimpleNamespace
+
+        from backend.app.services.print_usage_journal import stale_runouts_to_seed
+
+        # A single-spool AMS-HT is its own global tray (128..135), not unit*4.
+        state = SimpleNamespace(
+            ams=[SimpleNamespace(id=128, is_ams_ht=True, tray=[SimpleNamespace(id=0, exists=False, tray_type=None)])]
+        )
+        assert stale_runouts_to_seed({128: "autoswitch"}, state) == {}

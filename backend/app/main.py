@@ -4908,7 +4908,7 @@ async def _seed_runout_detector_from_journal(printer_id: int, logger) -> None:
         return
 
     from backend.app.models.print_usage_event import EVENT_RUNOUT
-    from backend.app.services.print_usage_journal import active_archive_id, load_events
+    from backend.app.services.print_usage_journal import active_archive_id, load_events, stale_runouts_to_seed
 
     try:
         async with async_session() as db:
@@ -4925,12 +4925,19 @@ async def _seed_runout_detector_from_journal(printer_id: int, logger) -> None:
     # Last kind per tray: the journal records a firmware escalation in place,
     # and the detector's own upgrade path expects the newest one.
     already_fired = {e.global_tray_id: e.kind for e in events if e.event == EVENT_RUNOUT and e.kind}
-    client.seed_runout_fired(already_fired)
+    # ⚠️ ...but only for slots that physically hold filament. A slot the AMS
+    # reports EMPTY may be running out RIGHT NOW — unrecorded, because we were
+    # down when it happened — and seeding it would silence that for the rest of
+    # the print. See ``stale_runouts_to_seed``: the presence bit is the arbiter,
+    # never the filament type, which is our own write.
+    seeded = stale_runouts_to_seed(already_fired, printer_manager.get_status(printer_id))
+    client.seed_runout_fired(seeded)
     if already_fired:
         logger.info(
-            "[UsageJournal] Re-armed runout detector for printer %s from archive %s: %s",
+            "[UsageJournal] Re-armed runout detector for printer %s from archive %s: %s (journal held %s)",
             printer_id,
             archive_id,
+            seeded or "nothing — every ran-out slot reads empty",
             already_fired,
         )
 
