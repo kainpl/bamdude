@@ -156,4 +156,64 @@ describe('QueueSequencer anti-stall', () => {
     expect(posts).toBe(2);
     expect(screen.queryByText('Second')).not.toBeInTheDocument();
   });
+  it('⚠️ announces the run once for the group, not once per silent member', async () => {
+    // The gate on the success toast, and the whole justification for it: a
+    // member that never rendered must not announce itself, or a 57-plate group
+    // would stack 57 identical cards in a corner that has no cap and no
+    // de-duplication. Only the visible leader confirms, and the run's own
+    // summary closes it off.
+    //
+    // ⚠️ Asserted on the RENDERED toast rather than through a mocked
+    // ToastContext: the gate's safety rests on it being the exact negation of
+    // the render guard, so the test has to see both — that the member did not
+    // render AND that it did not toast. A module-scoped mock would replace the
+    // provider for the whole file and could only see the second half.
+    server.use(
+      http.post('/api/v1/queue/', () => {
+        posts += 1;
+        return HttpResponse.json({ id: posts, status: 'pending' });
+      }),
+    );
+    const onDone = vi.fn();
+    render(<Run files={[{ id: 1, name: 'First' }, { id: 2, name: 'Second' }]} onDone={onDone} />);
+
+    await screen.findByText('First');
+    await queueTheOpenDialog();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith([]));
+    expect(posts).toBe(2);
+
+    // Two plates queued, ONE confirmation — plus the run's own summary.
+    expect(screen.getAllByText('Print queued')).toHaveLength(1);
+    expect(screen.getByText('Queued 2 in 1 group')).toBeInTheDocument();
+  });
+
+  it('⚠️ a member that had to ask still announces its own submit', async () => {
+    // The other direction, so a later "just suppress every toast in a grouped
+    // run" simplification fails here: once a member has shown itself, it is a
+    // dialog the operator answered like any other and it confirms like one.
+    server.use(
+      http.post('/api/v1/queue/', () => {
+        posts += 1;
+        // 1 = the leader, 2 = the silent member (fails, so it shows itself),
+        // 3 = the operator submitting that dialog by hand.
+        return posts === 2
+          ? HttpResponse.json({ detail: 'printer went away' }, { status: 500 })
+          : HttpResponse.json({ id: posts, status: 'pending' });
+      }),
+    );
+    const onDone = vi.fn();
+    render(<Run files={[{ id: 1, name: 'First' }, { id: 2, name: 'Second' }]} onDone={onDone} />);
+
+    await screen.findByText('First');
+    await queueTheOpenDialog();
+
+    await screen.findByText('Second');
+    expect(screen.getAllByText('Print queued')).toHaveLength(1);
+
+    await queueTheOpenDialog();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith([]));
+    expect(screen.getAllByText('Print queued')).toHaveLength(2);
+  });
 });

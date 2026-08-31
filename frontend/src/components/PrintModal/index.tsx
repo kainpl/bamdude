@@ -1368,7 +1368,23 @@ export function PrintModal({
     }
     // The ref makes it fire once: `canSubmit` stays true after the submit starts.
     autoSubmittedRef.current = true;
-    void submitRef.current();
+    // ⚠️ The submit path does not always end in `onClose`, and a silent member
+    // that neither closes nor renders stalls the whole run with nothing on
+    // screen — the sequencer advances on `onClose` and has no other signal.
+    // Two endings do exactly that: a low-spool warning, whose ConfirmModal
+    // lives in the JSX we are suppressing, and a failed or partial dispatch,
+    // which only shows a toast and leaves the dialog standing. Both are
+    // questions for the operator, so when the submit RETURNS without having
+    // closed us, we stop being silent and let them finish it.
+    //
+    // ⚠️ This hangs off the promise and NOT off watching `isPending` fall back
+    // to false. That inference needs React to commit a render while the submit
+    // is in flight, and it does not always get one: when the round-trip
+    // resolves before the scheduled render flushes, `setIsSubmitting(true)` and
+    // `(false)` coalesce, the dep never changes, the effect never re-runs and
+    // the member renders `null` for ever. Measured 6 stalls in 8 runs of
+    // `QueueSequencerAntiStall` before this became a `.finally`.
+    void submitRef.current().finally(() => setAutoSubmitRefused(true));
   }, [
     autoSubmitWhenUnambiguous,
     autoSubmitRefused,
@@ -1384,22 +1400,6 @@ export function PrintModal({
     effectiveFilamentReqs,
     effectiveFilamentReqsError,
   ]);
-
-  // ⚠️ The submit path does not always end in `onClose`, and a silent member
-  // that neither closes nor renders stalls the whole run with nothing on
-  // screen — the sequencer advances on `onClose` and has no other signal. Two
-  // endings do exactly that: a low-spool warning, whose ConfirmModal lives in
-  // the JSX we are suppressing, and a failed or partial dispatch, which only
-  // shows a toast and leaves the dialog standing. Both are questions for the
-  // operator, so we stop being silent and let them finish it here.
-  useEffect(() => {
-    if (!autoSubmitWhenUnambiguous || autoSubmitRefused) return;
-    if (filamentWarningItems && filamentWarningItems.length > 0) {
-      setAutoSubmitRefused(true);
-      return;
-    }
-    if (autoSubmittedRef.current && !isPending) setAutoSubmitRefused(true);
-  }, [autoSubmitWhenUnambiguous, autoSubmitRefused, filamentWarningItems, isPending]);
 
   // Tell the run it had to ask after all. Once only, and by ref rather than by
   // dep array: the caller's handler is an inline arrow whose identity changes
