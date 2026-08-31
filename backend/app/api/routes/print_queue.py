@@ -372,6 +372,9 @@ async def add_to_queue(
     # ``services/queue_add`` so the file manager's bulk add cannot become a
     # second definition of what a queue item is.
     items, queue = await add_items_to_printer_queue(db, data, current_user)
+    # Captured before the re-query below, which fetches one row by id: the
+    # service's own list is the only place every created row is named.
+    created_item_ids = [i.id for i in items]
     item = items[0]
 
     # Re-query with full eager loading (queue→printer chain)
@@ -425,7 +428,9 @@ async def add_to_queue(
     except Exception:
         pass  # Don't fail queue add if notification fails
 
-    return _enrich_response(item)
+    response = _enrich_response(item)
+    response.created_item_ids = created_item_ids
+    return response
 
 
 @router.patch("/bulk", response_model=PrintQueueBulkUpdateResponse)

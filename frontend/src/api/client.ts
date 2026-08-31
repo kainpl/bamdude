@@ -3223,6 +3223,10 @@ export interface PrintQueueItem {
   /** Who put this row here. 'direct' and 'external' rows are claims a running
    *  print holds, not work anybody scheduled — they raise no queue events. */
   origin: 'queue' | 'direct' | 'external';
+  /** Every row the add call created, in creation order — a quantity becomes
+   *  rows, not a column. Only the add response carries it; a listing leaves it
+   *  null, because there the question does not arise. */
+  created_item_ids?: number[] | null;
   scheduled_time: string | null;
   auto_off_after: boolean;
   manual_start: boolean;

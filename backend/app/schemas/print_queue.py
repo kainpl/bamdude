@@ -107,6 +107,15 @@ class PrintQueueItemResponse(BaseModel):
     # "external" (BamDude never sent it). Read-only — set at creation, carried
     # by clone and repeat. See m160.
     origin: str = "queue"
+    # Every row THIS call created, in creation order — a quantity becomes rows,
+    # not a column, so an add of three copies made three of them and used to
+    # report only the first. Copying a queue and re-forming its batches on the
+    # target needs all of them.
+    #
+    # ⚠️ ``None``, not ``[]``, everywhere the question does not arise: this
+    # schema also serialises listings, and an empty list there would read as
+    # "this call created nothing" rather than "nothing was created by a call".
+    created_item_ids: list[int] | None = None
     scheduled_time: UTCDatetime
     auto_off_after: bool
     manual_start: bool

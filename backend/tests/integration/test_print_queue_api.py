@@ -197,6 +197,47 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_the_add_response_names_every_row_it_created(
+        self, async_client: AsyncClient, printer_factory, archive_factory
+    ):
+        """⚠️ It used to name only the first.
+
+        A quantity becomes ROWS at insert time — there is no ``quantity`` column
+        on ``print_queue`` — but the handler serialised ``items[0]`` alone, so a
+        caller that asked for three copies could not find the other two. Copying
+        a queue and re-forming its batches on the target needs every id.
+        """
+        _printer, queue = await printer_factory()
+        archive = await archive_factory()
+
+        response = await async_client.post(
+            "/api/v1/queue/", json={"queue_id": queue.id, "archive_id": archive.id, "quantity": 3}
+        )
+
+        assert response.status_code == 200, response.text
+        result = response.json()
+        created = result["created_item_ids"]
+        assert len(created) == 3, "one id per row the call made"
+        assert len(set(created)) == 3, "distinct rows"
+        assert created[0] == result["id"], "the response's own item is the first of them"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_single_copy_add_lists_just_itself(
+        self, async_client: AsyncClient, printer_factory, archive_factory
+    ):
+        """The field is not "the batch" — it is what this call created, which for
+        an ordinary add is one row. A caller must not have to special-case it."""
+        _printer, queue = await printer_factory()
+        archive = await archive_factory()
+
+        response = await async_client.post("/api/v1/queue/", json={"queue_id": queue.id, "archive_id": archive.id})
+
+        result = response.json()
+        assert result["created_item_ids"] == [result["id"]]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_add_to_queue_with_macro_selection(self, async_client: AsyncClient, printer_factory, archive_factory):
         """The ticked macros ride on the item as JSON text and come back a list."""
         _printer, queue = await printer_factory()
