@@ -9515,6 +9515,8 @@ export const api = {
     }),
   getLibraryFilePlates: (fileId: number) =>
     request<LibraryFilePlatesResponse>(`/library/files/${fileId}/plates`),
+  getLibraryGroupingMetadata: (ids: number[]) =>
+    request<LibraryGroupingMetadata[]>(`/library/grouping-metadata?ids=${ids.join(',')}`),
 
   // Read-only plate object preview. One call for both sources: they differ only
   // in how the file is found. The archive route takes no plate — it answers for
@@ -10316,6 +10318,26 @@ export interface LibraryFileListItem {
   // which is the computed system-badge array. OPTIONAL because legacy msw
   // mocks build partial file shapes; read sites use ``file.tags ?? []``.
   tags?: LibraryTagSummary[];
+}
+
+/** One plate, reduced to what decides its group. Colour is deliberately absent. */
+export interface LibraryGroupingPlate {
+  index: number;
+  /** Sorted filament TYPES this plate needs. Never colours. */
+  filament_types: string[];
+  bed_type: string | null;
+}
+
+/** Everything the queue sequencer needs to group a file, straight from the DB. */
+export interface LibraryGroupingMetadata {
+  file_id: number;
+  filename: string;
+  sliced_for_model: string | null;
+  nozzle_diameter: number | null;
+  bed_type: string | null;
+  /** Empty for a file that was never parsed — cannot be grouped, never
+   *  "matches anything". */
+  plates: LibraryGroupingPlate[];
 }
 
 // Full query surface of GET /library/files (task 1, 2026-08-29
