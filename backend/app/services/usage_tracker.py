@@ -745,8 +745,18 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
     # the print, and a ``tray_change`` to another tray is stronger evidence
     # than the start — both keep the per-episode loop below.
     if all(r.spool_id is None for r in runouts) and any(r.kind == KIND_AUTOSWITCH for r in runouts):
+        # ⚠️ Scoped to the runout's own window — the SAME window the per-episode
+        # backup lookup below searches (after the runout, at its layer or the
+        # next). Asked of the whole print instead, an ordinary tray change 60
+        # layers later disarmed this rescue while offering no backup in its
+        # place, and the print was charged to nobody — or, once the operator
+        # filled the empty slot, to a reel that had never fed a gram. The guard
+        # must not be wider than the evidence it defers to.
         moved_elsewhere = any(
-            e.event == EVENT_TRAY_CHANGE and e.global_tray_id is not None and e.global_tray_id != global_tray_id
+            e.event == EVENT_TRAY_CHANGE
+            and e.global_tray_id is not None
+            and e.global_tray_id != global_tray_id
+            and any(e.id > r.id and e.layer_num <= r.layer_num + 1 for r in runouts)
             for e in events
         )
         start = next((e for e in events if e.event == EVENT_START), None)

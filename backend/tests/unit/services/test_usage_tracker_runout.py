@@ -771,6 +771,66 @@ class TestMultiEpisodeBoundaries:
         ]
         assert journal_boundaries_for_tray(events, 2) == [(0, 290, None), (33, 291, None)]
 
+    def test_a_late_tray_change_does_not_disarm_the_start_rescue(self):
+        # The guard that turns the start-rescue off must ask the same question
+        # the backup lookup asks: "did this tray's share move elsewhere AT the
+        # runout?" It used to scan the whole print for any tray change at all —
+        # so an ordinary switch 60 layers later disarmed the rescue and put
+        # nothing in its place (the backup lookup only reaches layer+1), and the
+        # print was charged to nobody. The start still names the feeder.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "start", None, 3, 0, 291),
+            ev(2, "runout", "autoswitch", 2, 1, None),
+            ev(3, "tray_change", None, 1, 60, 257),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 291, None)]
+
+    def test_a_reel_loaded_into_the_empty_slot_never_takes_the_backups_share(self):
+        # Printer 1, archive 837 (2026-09-01): the mapped slot 2 was empty, the
+        # AMS backed up from slot 3 before layer 1, and mid-print the operator
+        # put a fresh reel into slot 2 — which closes slot 2's open episode and
+        # journals spool_loaded, correctly (if the AMS ever switches back, that
+        # row names the reel). It must not thereby inherit what slot 3 fed:
+        # with the guard too broad, a late tray change handed the whole share
+        # to a reel that had never printed a gram.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "start", None, 3, 0, 291),
+            ev(2, "runout", "autoswitch", 2, 1, None),
+            ev(3, "spool_loaded", None, 2, 25, 294),
+            ev(4, "tray_change", None, 1, 60, 257),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 291, None)]
+
     def test_without_a_start_event_nothing_is_invented(self):
         from types import SimpleNamespace
 
