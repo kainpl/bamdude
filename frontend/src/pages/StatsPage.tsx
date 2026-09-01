@@ -1249,7 +1249,7 @@ export function StatsPage() {
   ];
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 md:p-4 space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3"><BarChart3 className="w-6 h-6 text-bambu-green" />{t('stats.title')}</h1>

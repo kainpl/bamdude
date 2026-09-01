@@ -222,6 +222,15 @@ A2L_LITE_GLOBAL_BASE = A2L_LITE_NORMALIZED_AMS_ID * 4  # 24
 #: written off for a printer. Two, because one is indistinguishable from the
 #: network dropping at the wrong moment — and the verdict lasts until restart.
 _REQUEST_TOPIC_STRIKES = 2
+# ⚠️ ...and they must be two OCCASIONS, not two seconds. Every printer
+# reconnects at once when BamDude starts, and each of those attempts can die
+# young — which used to spend both strikes inside one storm and switch the
+# topic off across the whole fleet on every single restart (measured on a live
+# farm 2026-09-01: 70 disables against 14 accepts in a day, five per startup).
+# A broker that really refuses the subscription does it on every connect,
+# minutes apart, so requiring a gap costs a genuine refusal one more reconnect
+# and costs a storm nothing.
+_REQUEST_TOPIC_STRIKE_GAP = 120.0
 
 
 def is_successful_project_file(print_data: object) -> bool:
@@ -1734,6 +1743,8 @@ class BambuMQTTClient:
     # Cleared by an accepted subscription; see _on_disconnect for why one is
     # not enough to convict.
     _request_topic_strikes: dict[str, int] = {}
+    # When each serial last earned a strike — see ``_REQUEST_TOPIC_STRIKE_GAP``.
+    _request_topic_strike_at: dict[str, float] = {}
     # Counter for generating unique MQTT client IDs across instances.
     _client_instance_counter: int = 0
 
@@ -2388,6 +2399,7 @@ class BambuMQTTClient:
                     # design — otherwise a printer that drops once a month
                     # eventually convicts itself.
                     BambuMQTTClient._request_topic_strikes.pop(self.serial_number, None)
+                    BambuMQTTClient._request_topic_strike_at.pop(self.serial_number, None)
             self._request_topic_sub_mid = None
             self._request_topic_sub_time = 0.0
 
@@ -2442,8 +2454,29 @@ class BambuMQTTClient:
             # still latches — one reconnect later. A storm does not, because
             # the counter is cleared the moment a subscription is confirmed or
             # a connection lives long enough to prove itself.
+            now = time.time()
+            since = now - BambuMQTTClient._request_topic_strike_at.get(self.serial_number, 0.0)
+            if BambuMQTTClient._request_topic_strikes.get(self.serial_number) and since < _REQUEST_TOPIC_STRIKE_GAP:
+                # Same storm: this connect died for whatever killed the last
+                # one, seconds ago. It is not a second opinion about this
+                # printer, so it does not buy a strike — but the clock restarts,
+                # because a fleet-wide outage should not accumulate credit
+                # towards conviction while it is still going on.
+                BambuMQTTClient._request_topic_strike_at[self.serial_number] = now
+                logger.info(
+                    "[%s] Disconnected after the request topic again %.0fs later — same episode, not a second strike.",
+                    self.serial_number,
+                    since,
+                )
+                self._request_topic_sub_mid = None
+                self._request_topic_sub_time = 0.0
+                self.state.connected = False
+                if self.on_state_change:
+                    self.on_state_change(self.state)
+                return
             strikes = BambuMQTTClient._request_topic_strikes.get(self.serial_number, 0) + 1
             BambuMQTTClient._request_topic_strikes[self.serial_number] = strikes
+            BambuMQTTClient._request_topic_strike_at[self.serial_number] = now
             if strikes >= _REQUEST_TOPIC_STRIKES:
                 logger.warning(
                     "[%s] Disconnected shortly after request topic subscription %s times. "

@@ -638,7 +638,7 @@ function ProjectCard({ project, onClick, onEdit, onDuplicate, onArchiveToggle, o
         </div>
       )}
 
-      <div className="p-5 pl-6">
+      <div className="p-4 pl-5">
         {/* Header */}
         <div className="flex items-start justify-between mb-4">
           <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -1287,7 +1287,7 @@ export function ProjectsPage() {
   }, {} as Record<string, number>) || {};
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 md:p-4 space-y-4">
       {/* Hidden file input for import */}
       <input
         ref={fileInputRef}

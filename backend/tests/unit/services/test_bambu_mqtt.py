@@ -1560,14 +1560,16 @@ class TestRequestTopicFailSafe:
     def clear_request_topic_cache(self):
         """Clear class-level state before each test to avoid cross-test pollution.
 
-        ⚠️ Both dicts. The strike counter is as class-level as the cache, so a
-        test that leaves one strike behind silently halves the next test's
-        threshold.
+        ⚠️ All three. The strike counter and its clock are as class-level as
+        the cache, so a test that leaves one strike behind silently halves the
+        next test's threshold — or leaves a timestamp that makes the next
+        strike look like the same episode.
         """
         from backend.app.services.bambu_mqtt import BambuMQTTClient
 
         BambuMQTTClient._request_topic_cache.clear()
         BambuMQTTClient._request_topic_strikes.clear()
+        BambuMQTTClient._request_topic_strike_at.clear()
 
     @pytest.fixture
     def mqtt_client(self):
@@ -1629,14 +1631,24 @@ class TestRequestTopicFailSafe:
         an event that had nothing to do with them. A printer that genuinely
         refuses does so every time, so it still latches, one reconnect later.
         Full reasoning in ``test_mqtt_client_is_not_abandoned.py``.
+
+        ⚠️ The two strikes are two OCCASIONS, which is why the clock is rewound
+        between them. Back-to-back they are one storm and count once — the
+        startup burst that was disabling the topic fleet-wide every restart
+        (see ``test_request_topic_strikes.py``). Rewinding here keeps this test
+        about what it was always about: it happened again, on its own, later.
         """
         import time
+
+        from backend.app.services.bambu_mqtt import _REQUEST_TOPIC_STRIKE_GAP, BambuMQTTClient
 
         for _ in range(2):
             mqtt_client._request_topic_sub_time = time.time()
             mqtt_client._request_topic_confirmed = False
             mqtt_client._last_message_time = 0.0
             mqtt_client._on_disconnect(None, None)
+            if mqtt_client.serial_number in BambuMQTTClient._request_topic_strike_at:
+                BambuMQTTClient._request_topic_strike_at[mqtt_client.serial_number] -= _REQUEST_TOPIC_STRIKE_GAP + 1
 
         assert mqtt_client._request_topic_supported is False
         assert mqtt_client._request_topic_sub_time == 0.0
@@ -1707,13 +1719,18 @@ class TestRequestTopicFailSafe:
         )
         assert client1._request_topic_supported is True
 
-        # Simulate disconnect-after-subscribe disabling the topic. Twice: one
-        # is no longer enough to convict — see the fail-safe tests above.
+        # Simulate disconnect-after-subscribe disabling the topic. Twice, and on
+        # two separate occasions: one strike is not enough to convict, and two
+        # in the same storm are one occasion — see the fail-safe tests above.
+        from backend.app.services.bambu_mqtt import _REQUEST_TOPIC_STRIKE_GAP
+
         for _ in range(2):
             client1._request_topic_sub_time = __import__("time").time()
             client1._request_topic_confirmed = False
             client1._last_message_time = 0.0
             client1._on_disconnect(None, None)
+            if "TEST_CACHE" in BambuMQTTClient._request_topic_strike_at:
+                BambuMQTTClient._request_topic_strike_at["TEST_CACHE"] -= _REQUEST_TOPIC_STRIKE_GAP + 1
         assert client1._request_topic_supported is False
 
         # New instance for same serial should inherit the cached state

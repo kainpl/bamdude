@@ -2094,7 +2094,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   };
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 md:p-4 space-y-4">
       {/* Header. ⚠️ Stacks below sm and the actions wrap: the buttons side by
           side are ~600px and nothing in that row can shrink, so on a phone the
           header pushed past the viewport and took the WHOLE PAGE with it —
