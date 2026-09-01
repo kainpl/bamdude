@@ -46,6 +46,8 @@
 
 ### Fixed
 
+- **The printer / auto-queue switch in the Schedule dialog is the same green button as everywhere else.** Its selected half was drawing dark text on the accent colour while every other primary control in BamDude draws white — a small thing, but the one place it did not match.
+
 - **Inventory search matches the spool name you actually see again — and now finds a spool by its id or lot.** The spool list shows a name built from your own template, and the search box used to match against that name, letter for letter. When the list moved to the server it lost the template and fell back to matching a fixed set of columns, so anything else your template put on screen — the id, the lot number, the diameter, the words you typed into the template itself — was visible and unfindable at the same time. The server now builds the same name and searches it, so what is on screen is what the box matches, punctuation included: with a template of `{brand}/{material}`, typing `LU/PET` finds it. The id and the lot are searchable regardless of what your template says, because they are the numbers written on the reel; narrowing the template never costs you search reach. The same applies to the new History view, which renders the same names.
 
 - **The auto-distributing virtual printer keeps the slicer's choices even when the command arrives late.** The per-printer VP queue already applied a print command that landed while the upload was still being saved and committed; the auto-distributing path did not, so in that window the router row kept column defaults — the same lost bed levelling, flow calibration, timelapse and nozzle pick that 0.5.6 set out to fix, through a narrower door. Both paths now share one last-chance step instead of each carrying its own.

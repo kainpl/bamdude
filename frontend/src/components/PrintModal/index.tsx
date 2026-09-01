@@ -1704,7 +1704,7 @@ export function PrintModal({
                   onClick={() => setDispatchMode('specific')}
                   className={`flex-1 text-sm py-1.5 rounded transition-colors ${
                     dispatchMode === 'specific'
-                      ? 'bg-bambu-green text-bambu-dark font-medium'
+                      ? 'bg-bambu-green text-white font-medium'
                       : 'text-bambu-gray hover:text-white'
                   }`}
                 >
@@ -1717,7 +1717,7 @@ export function PrintModal({
                   onClick={() => setDispatchMode('auto')}
                   className={`flex-1 text-sm py-1.5 rounded transition-colors ${
                     dispatchMode === 'auto'
-                      ? 'bg-bambu-green text-bambu-dark font-medium'
+                      ? 'bg-bambu-green text-white font-medium'
                       : 'text-bambu-gray hover:text-white'
                   }`}
                 >
