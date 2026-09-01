@@ -279,7 +279,7 @@ export function LDAPSettings() {
                     onClick={() => setForm({ ...form, ldap_security: sec })}
                     className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                       form.ldap_security === sec
-                        ? 'bg-bambu-green text-black'
+                        ? 'bg-bambu-green text-white'
                         : 'bg-bambu-dark-secondary text-bambu-gray hover:text-white border border-bambu-dark-tertiary'
                     }`}
                   >

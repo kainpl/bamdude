@@ -421,7 +421,7 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
           <button
             onClick={() => bulkMutation.mutate()}
             disabled={!anyEnabled || selected.length === 0 || bulkMutation.isPending}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-bambu-green text-black hover:bg-bambu-green/90 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-bambu-green text-white hover:bg-bambu-green/90 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
           >
             {bulkMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
             {t('inventory.bulkEdit.apply', { count: selected.length })}

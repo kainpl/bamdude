@@ -1355,7 +1355,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                           });
                         }}
                         disabled={createPipelineMutation.isPending || !pipelineDraftName.trim()}
-                        className="flex-shrink-0 px-3 py-1.5 text-sm rounded-md bg-bambu-green hover:bg-bambu-green/90 text-bambu-dark font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                        className="flex-shrink-0 px-3 py-1.5 text-sm rounded-md bg-bambu-green hover:bg-bambu-green/90 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                       >
                         {createPipelineMutation.isPending && (
                           <Loader2 className="w-4 h-4 animate-spin" />
@@ -1687,7 +1687,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
               enqueueMutation.mutate();
             }}
             disabled={!isReady || isEnqueuing}
-            className="px-3 py-1.5 text-sm rounded-md bg-bambu-green hover:bg-bambu-green/90 text-bambu-dark font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            className="px-3 py-1.5 text-sm rounded-md bg-bambu-green hover:bg-bambu-green/90 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
             {isEnqueuing ? (
               <>

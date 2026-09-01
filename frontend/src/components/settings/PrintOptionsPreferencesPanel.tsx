@@ -168,7 +168,7 @@ export function PrintOptionsPreferencesPanel() {
         <button
           type="button"
           onClick={() => setDialog({ kind: 'add' })}
-          className="px-3 py-1.5 bg-bambu-green hover:bg-bambu-green-dark text-black text-sm font-medium rounded-lg flex items-center gap-1.5 flex-shrink-0"
+          className="px-3 py-1.5 bg-bambu-green hover:bg-bambu-green-dark text-white text-sm font-medium rounded-lg flex items-center gap-1.5 flex-shrink-0"
         >
           <Plus className="w-4 h-4" />
           {t('printOptionsPrefs.add')}
@@ -572,7 +572,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
                 onClick={() => setPreheatOverride(opt)}
                 className={`flex-1 px-2 py-1.5 text-xs rounded transition-colors ${
                   data.print_options.preheat_override === opt
-                    ? 'bg-bambu-green text-black'
+                    ? 'bg-bambu-green text-white'
                     : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white'
                 }`}
               >
@@ -672,7 +672,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
             type="button"
             disabled={!canSave}
             onClick={() => upsertMutation.mutate()}
-            className="px-4 py-1.5 bg-bambu-green hover:bg-bambu-green-dark text-black text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-1.5 bg-bambu-green hover:bg-bambu-green-dark text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {t('common.save')}
           </button>
@@ -792,7 +792,7 @@ function CopyDialog({ src, users, availableModels, onClose }: CopyDialogProps) {
             type="button"
             disabled={!canCopy}
             onClick={() => copyMutation.mutate()}
-            className="px-4 py-1.5 bg-bambu-green hover:bg-bambu-green-dark text-black text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-1.5 bg-bambu-green hover:bg-bambu-green-dark text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {t('printOptionsPrefs.copyAction')}
           </button>

@@ -4739,7 +4739,7 @@ function PrinterCard({
                                       <span
                                         aria-label={t('printers.activeJobSlot.ariaLabel', { n: activePrintSlotIdx + 1 })}
                                         title={t('printers.activeJobSlot.title', { n: activePrintSlotIdx + 1 })}
-                                        className="absolute top-0.5 right-0.5 px-1 py-px text-[length:var(--pc-t8,8px)] font-bold text-bambu-dark bg-bambu-green rounded pointer-events-none leading-none"
+                                        className="absolute top-0.5 right-0.5 px-1 py-px text-[length:var(--pc-t8,8px)] font-bold text-white bg-bambu-green rounded pointer-events-none leading-none"
                                       >
                                         {activePrintSlotLabel}
                                       </span>
@@ -5097,7 +5097,7 @@ function PrinterCard({
                               <span
                                 aria-label={t('printers.activeJobSlot.ariaLabel', { n: activePrintSlotIdx + 1 })}
                                 title={t('printers.activeJobSlot.title', { n: activePrintSlotIdx + 1 })}
-                                className="absolute top-0.5 right-0.5 px-1 py-px text-[length:var(--pc-t8,8px)] font-bold text-bambu-dark bg-bambu-green rounded pointer-events-none leading-none"
+                                className="absolute top-0.5 right-0.5 px-1 py-px text-[length:var(--pc-t8,8px)] font-bold text-white bg-bambu-green rounded pointer-events-none leading-none"
                               >
                                 {activePrintSlotLabel}
                               </span>

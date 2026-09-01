@@ -257,7 +257,7 @@ export function CameraWall({
                       onClick={() => onChangeStatusMode(m)}
                       className={`flex-1 px-2 py-1 text-xs ${
                         statusMode === m
-                          ? 'bg-bambu-green text-black font-semibold'
+                          ? 'bg-bambu-green text-white font-semibold'
                           : 'bg-bambu-dark text-white hover:bg-bambu-dark-tertiary'
                       }`}
                     >

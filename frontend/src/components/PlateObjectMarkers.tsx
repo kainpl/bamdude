@@ -59,7 +59,7 @@ export function PlateMarkers({
               onSkip({ id: obj.id, name: obj.name });
             }}
             className={`absolute flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold shadow-lg transition-transform ${
-              obj.skipped ? 'bg-red-500 text-white line-through' : 'bg-bambu-green text-black'
+              obj.skipped ? 'bg-red-500 text-white line-through' : 'bg-bambu-green text-white'
             } ${
               skippable
                 ? 'pointer-events-auto cursor-pointer hover:scale-125 focus:outline-none focus:ring-2 focus:ring-white/80'

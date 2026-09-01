@@ -537,7 +537,7 @@ export function LabelTemplatePickerModal({
                 onClick={() => setMaterialFilter('')}
                 className={`px-2 py-0.5 text-xs rounded-full border transition ${
                   materialFilter === ''
-                    ? 'bg-bambu-green text-bambu-dark border-bambu-green'
+                    ? 'bg-bambu-green text-white border-bambu-green'
                     : 'bg-bambu-dark text-bambu-gray border-bambu-dark-tertiary hover:border-bambu-gray'
                 }`}
               >
@@ -550,7 +550,7 @@ export function LabelTemplatePickerModal({
                   onClick={() => setMaterialFilter(m)}
                   className={`px-2 py-0.5 text-xs rounded-full border transition ${
                     materialFilter === m
-                      ? 'bg-bambu-green text-bambu-dark border-bambu-green'
+                      ? 'bg-bambu-green text-white border-bambu-green'
                       : 'bg-bambu-dark text-bambu-gray border-bambu-dark-tertiary hover:border-bambu-gray'
                   }`}
                 >
@@ -573,7 +573,7 @@ export function LabelTemplatePickerModal({
               onClick={() => setSortMode('id')}
               className={`px-2 py-0.5 text-xs rounded-full border transition ${
                 sortMode === 'id'
-                  ? 'bg-bambu-green text-bambu-dark border-bambu-green'
+                  ? 'bg-bambu-green text-white border-bambu-green'
                   : 'bg-bambu-dark text-bambu-gray border-bambu-dark-tertiary hover:border-bambu-gray'
               }`}
             >
@@ -584,7 +584,7 @@ export function LabelTemplatePickerModal({
               onClick={() => setSortMode('color')}
               className={`px-2 py-0.5 text-xs rounded-full border transition ${
                 sortMode === 'color'
-                  ? 'bg-bambu-green text-bambu-dark border-bambu-green'
+                  ? 'bg-bambu-green text-white border-bambu-green'
                   : 'bg-bambu-dark text-bambu-gray border-bambu-dark-tertiary hover:border-bambu-gray'
               }`}
             >

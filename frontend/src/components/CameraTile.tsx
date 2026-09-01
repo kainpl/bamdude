@@ -54,7 +54,7 @@ function classifyState(state: string | null | undefined, hmsErrorCount: number):
 }
 
 const BUCKET_CHIP_CLASS: Record<StatusBucket, string> = {
-  printing: 'bg-bambu-green/85 text-black',
+  printing: 'bg-bambu-green/85 text-white',
   paused: 'bg-amber-500/85 text-black',
   finished: 'bg-sky-500/80 text-white',
   error: 'bg-red-500/85 text-white',
