@@ -2513,7 +2513,7 @@ export function FileManagerPage() {
   );
 
   return (
-    <div className="p-4 md:p-6 min-h-[calc(100vh)] lg:h-[calc(100vh)] flex flex-col">
+    <div className="p-4 min-h-[calc(100vh)] lg:h-[calc(100vh)] flex flex-col">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
         <div className="flex items-center gap-3">
@@ -2527,7 +2527,7 @@ export function FileManagerPage() {
           <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
             <button
               onClick={() => handleViewModeChange('grid')}
-              className={`px-2 py-1.5 transition-colors rounded-l-lg ${
+              className={`px-2 py-2 transition-colors rounded-l-lg ${
                 viewMode === 'grid'
                   ? 'bg-bambu-green text-white'
                   : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
@@ -2538,7 +2538,7 @@ export function FileManagerPage() {
             </button>
             <button
               onClick={() => handleViewModeChange('list')}
-              className={`px-2 py-1.5 transition-colors rounded-r-lg ${
+              className={`px-2 py-2 transition-colors rounded-r-lg ${
                 viewMode === 'list'
                   ? 'bg-bambu-green text-white'
                   : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
@@ -2601,6 +2601,8 @@ export function FileManagerPage() {
             {t('fileManager.tags.manage')}
           </Button>
           <Button
+            variant="primary"
+            size="sm"
             onClick={() => setShowUploadModal(true)}
             disabled={!hasPermission('library:upload')}
             title={!hasPermission('library:upload') ? t('fileManager.noPermissionUpload') : undefined}
@@ -2637,7 +2639,7 @@ export function FileManagerPage() {
 
       {/* Stats bar */}
       {stats && (
-        <div className="flex flex-wrap items-center gap-3 sm:gap-6 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-4 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
           <div className="flex items-center gap-2 text-sm">
             <File className="w-4 h-4 text-bambu-green" />
             <span className="text-bambu-gray">{t('fileManager.files')}:</span>

@@ -38,7 +38,7 @@ export function QRCodeModal({ archiveId, archiveName, onClose }: QRCodeModalProp
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
+        <div className="flex items-center justify-between px-4 py-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">QR Code</h2>
           <button
             onClick={onClose}

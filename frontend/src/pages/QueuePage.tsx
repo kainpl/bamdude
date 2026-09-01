@@ -209,9 +209,9 @@ export function QueuePage() {
   );
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4">
       {/* Header: title + inline toolbar (search / filters / view modes) */}
-      <div className="space-y-3 mb-6">
+      <div className="space-y-3 mb-4">
         <h1 className="text-2xl font-bold text-white flex items-center gap-3">
           <Calendar className="w-6 h-6 text-bambu-green" />
           {t('queue.title')}
@@ -278,7 +278,7 @@ export function QueuePage() {
       {!isLoading && queues && queues.length > 0 && viewMode !== 'all' && viewMode !== 'timeline' && sortedQueues.length > 0 && (
         groupedQueues ? (
           // Grouped by location
-          <div className="space-y-6">
+          <div className="space-y-4">
             {groupedQueues.map((group) => (
               <div key={group.locationId ?? 'ungrouped'}>
                 <h2 className="text-lg font-semibold text-white mb-3 flex items-center gap-2 flex-wrap">

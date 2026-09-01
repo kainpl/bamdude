@@ -71,7 +71,7 @@ export function PhotoGalleryModal({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-black/50">
+        <div className="flex items-center justify-between px-4 py-4 bg-black/50">
           <div>
             <h2 className="text-lg font-semibold text-white">{archiveName}</h2>
             <p className="text-sm text-bambu-gray">

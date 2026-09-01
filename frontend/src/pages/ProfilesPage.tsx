@@ -2947,7 +2947,7 @@ export function ProfilesPage() {
 
   if (statusLoading) {
     return (
-      <div className="p-4 md:p-6 space-y-4">
+      <div className="p-4 space-y-4">
         {pageChrome}
         <LoadingBlock label={t('common.loading')} className="min-h-[400px] text-bambu-gray" />
       </div>
@@ -2955,7 +2955,7 @@ export function ProfilesPage() {
   }
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 space-y-4">
       {pageChrome}
 
       {/* Cloud Profiles Tab */}

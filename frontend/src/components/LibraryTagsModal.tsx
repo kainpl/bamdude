@@ -199,7 +199,7 @@ export function LibraryTagsModal({ open, onClose }: LibraryTagsModalProps) {
         aria-modal="true"
         aria-labelledby={modalTitleId}
       >
-        <div className="flex items-center justify-between gap-4 px-6 py-4 border-b border-bambu-dark-tertiary">
+        <div className="flex items-center justify-between gap-4 px-4 py-4 border-b border-bambu-dark-tertiary">
           <div className="min-w-0 flex-1">
             <h2 id={modalTitleId} className="text-lg font-semibold text-white flex items-center gap-2">
               <Tag className="w-5 h-5 text-bambu-green" />
@@ -239,7 +239,7 @@ export function LibraryTagsModal({ open, onClose }: LibraryTagsModalProps) {
           </div>
         </div>
 
-        <div className="overflow-y-auto px-6 py-4">
+        <div className="overflow-y-auto px-4 py-4">
           {isLoading ? (
             <div className="flex items-center justify-center py-16 text-bambu-gray">
               <Loader2 className="w-6 h-6 animate-spin mr-2" />
@@ -248,7 +248,7 @@ export function LibraryTagsModal({ open, onClose }: LibraryTagsModalProps) {
           ) : (
             <>
               {systemTags.length > 0 && (
-                <section className="mb-6">
+                <section className="mb-4">
                   <h3 className="text-xs font-medium uppercase tracking-wide text-bambu-gray">
                     {t('fileManager.tags.systemSection')}
                   </h3>
@@ -366,7 +366,7 @@ export function LibraryTagsModal({ open, onClose }: LibraryTagsModalProps) {
         </div>
 
         {selected.size > 0 && (
-          <div className="flex items-center gap-3 px-6 py-3 border-t border-bambu-dark-tertiary">
+          <div className="flex items-center gap-3 px-4 py-3 border-t border-bambu-dark-tertiary">
             {confirmingBulk ? (
               <>
                 <span className="text-sm text-white flex-1">

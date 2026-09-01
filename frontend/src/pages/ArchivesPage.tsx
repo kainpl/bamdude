@@ -3349,7 +3349,7 @@ export function ArchivesPage() {
   }, [handleKeyDown]);
 
   return (
-    <div className="p-4 md:p-6 relative">
+    <div className="p-4">
       {/* Install-step-4 nudge (#1687): no-3MF fallback detected — slicer-side
           "Store sent files on external storage" is likely off. */}
       {no3MFWarning?.has_fallback && !no3MFWarningDismissed && (
@@ -3890,7 +3890,7 @@ export function ArchivesPage() {
         </Card>
       ) : viewMode === 'grid' ? (
         <>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {archives?.map((archive) => (
             <ArchiveCard
               key={archive.id}

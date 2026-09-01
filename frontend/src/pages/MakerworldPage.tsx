@@ -510,7 +510,7 @@ export function MakerworldPage() {
   const downloadCount = pickNumber(design, 'downloadCount');
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 space-y-4">
       <div>
         <h1 className="text-2xl font-bold text-white flex items-center gap-3"><MakerWorldIcon className="w-6 h-6 text-bambu-green" />{t('makerworld.title')}</h1>
       </div>
@@ -542,7 +542,7 @@ export function MakerworldPage() {
       </div>
 
       {activeTab === 'import' && (
-        <div className="space-y-6 min-w-0">
+        <div className="space-y-4 min-w-0">
       {!hasToken && (
         <Card className="border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20">
           <CardContent>

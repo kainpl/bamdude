@@ -88,7 +88,7 @@ export function DeviceReportingModal({ ieee, deviceName, onClose }: Props) {
         className="bg-bambu-dark-secondary rounded-xl w-full max-w-2xl max-h-[90vh] overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
+        <div className="flex items-center justify-between px-4 py-4 border-b border-bambu-dark-tertiary">
           <div>
             <h2 className="text-lg font-semibold text-white">{t('settings.zigbee.reporting.title')}</h2>
             <p className="text-sm text-bambu-gray">{settings?.name || deviceName}</p>
@@ -147,7 +147,7 @@ export function DeviceReportingModal({ ieee, deviceName, onClose }: Props) {
         </div>
 
         {settings && !error && (
-          <div className="flex items-center justify-between gap-2 px-6 py-4 border-t border-bambu-dark-tertiary">
+          <div className="flex items-center justify-between gap-2 px-4 py-4 border-t border-bambu-dark-tertiary">
             <Button variant="secondary" onClick={() => reset.mutate()} disabled={reset.isPending}>
               {t('settings.zigbee.reporting.reset')}
             </Button>

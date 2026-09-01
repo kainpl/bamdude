@@ -470,7 +470,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
+        <div className="flex items-center justify-between px-4 py-4 border-b border-bambu-dark-tertiary">
           <div className="flex items-center gap-3 min-w-0 flex-1 mr-4">
             <h2 className="text-lg font-semibold text-white truncate">{title}</h2>
             {headerBadge && (
@@ -534,7 +534,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
             {capabilities.has_model && (
               <button
                 onClick={() => setActiveTab('3d')}
-                className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
                   activeTab === '3d'
                     ? 'text-bambu-green border-b-2 border-bambu-green'
                     : 'text-bambu-gray hover:text-white'
@@ -547,7 +547,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
             {capabilities.has_gcode && (
               <button
                 onClick={() => setActiveTab('gcode')}
-                className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
                   activeTab === 'gcode'
                     ? 'text-bambu-green border-b-2 border-bambu-green'
                     : 'text-bambu-gray hover:text-white'

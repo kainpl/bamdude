@@ -101,7 +101,7 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
         className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-4xl h-[80vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
+        <div className="flex items-center justify-between px-4 py-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white truncate flex-1 mr-4">{filename}</h2>
           <Button variant="ghost" size="sm" onClick={onClose}>
             <X className="w-5 h-5" />
@@ -112,7 +112,7 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
           <button
             onClick={() => hasModel && setActiveTab('3d')}
             disabled={!hasModel}
-            className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
               activeTab === '3d'
                 ? 'text-bambu-green border-b-2 border-bambu-green'
                 : hasModel
@@ -127,7 +127,7 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
           <button
             onClick={() => hasGcode && setActiveTab('gcode')}
             disabled={!hasGcode}
-            className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
               activeTab === 'gcode'
                 ? 'text-bambu-green border-b-2 border-bambu-green'
                 : hasGcode

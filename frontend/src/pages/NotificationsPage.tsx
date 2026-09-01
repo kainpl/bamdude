@@ -96,7 +96,7 @@ export function NotificationsPage() {
 
   if (isLoading || isAdvancedAuthLoading || isSettingsLoading) {
     return (
-      <div className="p-4 md:p-6 space-y-4">
+      <div className="p-4 space-y-4">
         {pageHeader}
         <LoadingBlock label={t('common.loading')} className="h-64 text-bambu-gray" />
       </div>
@@ -104,7 +104,7 @@ export function NotificationsPage() {
   }
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 space-y-4">
       {pageHeader}
 
       {/* Info card */}

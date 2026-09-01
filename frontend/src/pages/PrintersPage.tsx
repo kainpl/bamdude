@@ -9407,9 +9407,9 @@ export function PrintersPage() {
   );
 
   return (
-    <div className="p-4 md:p-6">
+    <div className="p-4">
       {/* Header section: title with PrinterIcon + StatusSummaryBar (upstream PR #1203). */}
-      <div className="space-y-3 mb-6">
+      <div className="space-y-3 mb-4">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
             <PrinterIcon className="w-6 h-6 text-bambu-green" />
@@ -9550,7 +9550,7 @@ export function PrintersPage() {
         />
       ) : groupedPrinters ? (
         /* Grouped by location view */
-        <div className="space-y-6">
+        <div className="space-y-4">
           {groupedPrinters.map((group) => (
             <div key={group.locationId ?? 'ungrouped'}>
               <h2 className="text-lg font-semibold text-white mb-3 flex items-center gap-2 flex-wrap">

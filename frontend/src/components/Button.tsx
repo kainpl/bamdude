@@ -17,9 +17,9 @@ export function Button({
     'inline-flex items-center justify-center font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-bambu-dark disabled:opacity-50 disabled:cursor-not-allowed';
 
   const variants = {
-    primary: 'bg-bambu-green hover:bg-bambu-green-light text-white focus:ring-bambu-green',
+    primary: 'border border-bambu-dark-tertiary bg-bambu-green hover:bg-bambu-green-light text-white focus:ring-bambu-green',
     secondary:
-      'bg-bambu-dark-tertiary hover:bg-bambu-gray-dark text-white focus:ring-bambu-gray',
+      'border border-bambu-dark-tertiary bg-bambu-dark-tertiary hover:bg-bambu-gray-dark text-white focus:ring-bambu-gray',
     // Header / toolbar secondary action - muted fill, visible border, gray
     // text that brightens on hover. Used for row-level actions that share a
     // toolbar with a primary CTA (e.g. "New folder" next to "Upload").

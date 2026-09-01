@@ -1051,7 +1051,7 @@ function ForecastRow({
       {/* ── Expanded detail row ── */}
       {expanded && (
         <tr className="bg-bambu-dark-tertiary/10">
-          <td colSpan={9} className="px-6 py-4">
+          <td colSpan={9} className="px-4 py-4">
             <div className="space-y-3">
 
               {/* Single compact row: read-only stats + editable settings */}

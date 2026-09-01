@@ -61,7 +61,7 @@ export function PlugPowerHistoryModal({ isOpen, onClose, plugId, plugName }: Pro
         style={{ backgroundColor: modalBg }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b" style={{ borderColor }}>
+        <div className="flex items-center justify-between px-4 py-4 border-b" style={{ borderColor }}>
           <div>
             <h2 className="text-lg font-semibold flex items-center gap-2" style={{ color: textPrimary }}>
               <Zap className="w-4 h-4" />

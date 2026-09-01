@@ -314,7 +314,7 @@ export function GroupEditPage() {
       <div className="h-16" />
 
       {/* Fixed bottom bar */}
-      <div className="fixed bottom-0 left-0 right-0 z-20 px-6 py-3 bg-bambu-dark-secondary border-t border-bambu-dark-tertiary flex items-center justify-center gap-3">
+      <div className="fixed bottom-0 left-0 right-0 z-20 px-4 py-3 bg-bambu-dark-secondary border-t border-bambu-dark-tertiary flex items-center justify-center gap-3">
         <Button variant="secondary" onClick={() => navigate('/settings?tab=users')}>
           {t('common.cancel')}
         </Button>

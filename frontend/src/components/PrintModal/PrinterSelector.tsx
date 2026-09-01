@@ -380,7 +380,7 @@ export function PrinterSelector({
   };
 
   return (
-    <div className="space-y-2 mb-6">
+    <div className="space-y-2 mb-4">
       {/* Multi-select header */}
       {allowMultiple && displayPrinters.length > 1 && (
         <div className="flex items-center justify-between text-xs text-bambu-gray mb-2">

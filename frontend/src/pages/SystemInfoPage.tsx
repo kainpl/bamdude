@@ -92,7 +92,7 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <Card className="p-6">
+    <Card className="p-4">
       <div className="flex items-center gap-2 mb-4">
         <Icon className="w-5 h-5 text-bambu-green" />
         <h2 className="text-lg font-semibold text-white">{title}</h2>
@@ -222,12 +222,12 @@ export function SystemInfoPage() {
 
   if (isLoading || !systemInfo) {
     return (
-      <div className="p-4 md:p-6 space-y-4">
+      <div className="p-4 space-y-4">
         {pageHeader}
         {isLoading ? (
           <LoadingBlock label={t('common.loading')} className="h-64 text-bambu-gray" />
         ) : (
-          <div className="p-6 text-center text-bambu-gray">
+          <div className="p-4 text-center text-bambu-gray">
             {t('system.failedToLoad', 'Failed to load system information')}
           </div>
         )}
@@ -250,7 +250,7 @@ export function SystemInfoPage() {
       : 'bg-bambu-green';
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 space-y-4">
       {pageHeader}
 
       {/* Application Info */}
@@ -537,7 +537,7 @@ export function SystemInfoPage() {
         {systemHealth ? (
           <SystemHealthPanel result={systemHealth} />
         ) : (
-          <LoadingBlock label={t('common.loading')} className="py-6 text-bambu-gray" />
+          <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
         )}
       </Section>
 
@@ -744,7 +744,7 @@ export function SystemInfoPage() {
       </Section>
 
       {/* System Resources */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Memory */}
         <Section title={t('system.memory', 'Memory')} icon={MemoryStick}>
           <div className="space-y-4">

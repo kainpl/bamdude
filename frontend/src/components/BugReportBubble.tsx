@@ -576,7 +576,7 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
                   <div className="flex justify-center">
                     <button
                       onClick={handleStopLogging}
-                      className="px-6 py-2.5 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
+                      className="px-4 py-2.5 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
                     >
                       {t('bugReport.stopAndSubmit')}
                     </button>

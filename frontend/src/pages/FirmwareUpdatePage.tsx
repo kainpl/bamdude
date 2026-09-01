@@ -162,19 +162,20 @@ export function FirmwareUpdatePage() {
   };
 
   return (
-    <div className="p-4 md:p-6">
-      <div className="flex items-center justify-between gap-3 mb-6">
+    <div className="p-4">
+      <div className="flex items-center justify-between gap-3 mb-4">
         <h1 className="text-2xl font-bold text-white flex items-center gap-3">
           <Cpu className="w-6 h-6 text-bambu-green" />
           {t('firmware.bulkTitle')}
         </h1>
         {view === 'update' && (
           <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={updateAllAvailable}>
+            <Button variant="secondary" size="sm" onClick={updateAllAvailable}>
               {t('firmware.updateAll')}
             </Button>
             <Button
               variant="primary"
+              size="sm"
               onClick={() => launch.mutate()}
               disabled={launchableCount === 0 || launch.isPending || runId != null}
             >

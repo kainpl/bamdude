@@ -160,7 +160,7 @@ export function ArchiveTrashPage() {
   };
 
   return (
-    <div className="p-6 max-w-screen-2xl mx-auto">
+    <div className="p-4 max-w-screen-2xl mx-auto">
       <div className="flex items-center gap-3 mb-4">
         <Link
           to="/archives"
@@ -170,7 +170,7 @@ export function ArchiveTrashPage() {
         </Link>
       </div>
 
-      <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
+      <div className="flex items-start justify-between mb-4 gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-white">{t('archiveTrash.title')}</h1>
           <p className="text-sm text-bambu-gray mt-1">

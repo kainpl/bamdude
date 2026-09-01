@@ -330,7 +330,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
+        <div className="flex items-center justify-between px-4 py-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">
             {isEditing ? t('notifications.editTitle') : t('notifications.addTitle')}
           </h2>

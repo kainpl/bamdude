@@ -278,7 +278,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
+        <div className="flex items-center justify-between px-4 py-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">{t('editArchive.title')}</h2>
           <button
             onClick={onClose}

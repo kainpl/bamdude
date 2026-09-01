@@ -454,7 +454,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary flex-shrink-0">
+        <div className="flex items-center justify-between px-4 py-4 border-b border-bambu-dark-tertiary flex-shrink-0">
           <h2 className="text-lg font-semibold text-white">
             {isEditing ? t('smartPlugs.editTitle') : t('smartPlugs.addTitle')}
           </h2>

@@ -200,7 +200,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
+        <div className="flex items-center justify-between px-4 py-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">
             {isEditing ? t('telegram.editChat') : t('telegram.addChat')}
           </h2>
@@ -210,7 +210,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="px-6 py-4 space-y-4">
+        <form onSubmit={handleSubmit} className="px-4 py-4 space-y-4">
           {error && (
             <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-red-700 dark:text-red-400 text-sm">
               {error}

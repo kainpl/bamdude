@@ -132,7 +132,7 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
         aria-modal="true"
         aria-labelledby={modalTitleId}
       >
-        <div className="flex items-center justify-between gap-4 px-6 py-4 border-b border-bambu-dark-tertiary">
+        <div className="flex items-center justify-between gap-4 px-4 py-4 border-b border-bambu-dark-tertiary">
           <div>
             <h2 id={modalTitleId} className="text-lg font-semibold text-white flex items-center gap-2">
               <MapPin className="w-5 h-5 text-bambu-green" />
