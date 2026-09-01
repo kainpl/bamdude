@@ -35,6 +35,26 @@ def _global_tray_to_ams_slot(global_tray_id: int) -> tuple[int, int]:
     return global_tray_id // 4, global_tray_id % 4
 
 
+def _slot_occupied_now(printer_id: int, global_tray_id: int | None) -> bool | None:
+    """Does the AMS say this slot holds filament right now — or ``None``.
+
+    ⚠️ Best-effort by design: the journal row is what matters, the extra fact
+    rides along. A printer we cannot reach, an event with no tray (pause,
+    resume), an external holder (no presence bit) and a push that arrived
+    without the bitfield all answer ``None`` — "we had no reading", which is
+    NOT the same as "the slot was empty" and must never be read as such.
+    """
+    if global_tray_id is None:
+        return None
+    try:
+        from backend.app.services.printer_manager import printer_manager
+
+        state = printer_manager.get_status(printer_id)
+        return slot_presence_by_tray(getattr(state, "raw_data", None)).get(global_tray_id)
+    except Exception:  # noqa: BLE001 - never fail a journal write over a nicety
+        return None
+
+
 async def record_event(
     db: AsyncSession,
     *,
@@ -47,7 +67,13 @@ async def record_event(
     spool_id: int | None = None,
     spoolman_spool_id: int | None = None,
 ) -> None:
-    """Append one journal row and commit."""
+    """Append one journal row and commit.
+
+    The row also freezes whether the event's own slot physically held filament
+    at this moment (m161) — the only fact that later tells a real refill from a
+    books-only assignment, and an empty mapped slot from one whose spool id was
+    frozen for an unrelated reason. NULL means "no reading", never "empty".
+    """
     db.add(
         PrintUsageEvent(
             printer_id=printer_id,
@@ -58,6 +84,7 @@ async def record_event(
             global_tray_id=global_tray_id,
             spool_id=spool_id,
             spoolman_spool_id=spoolman_spool_id,
+            slot_occupied=_slot_occupied_now(printer_id, global_tray_id),
         )
     )
     await db.commit()
@@ -392,45 +419,104 @@ async def note_manual_replacement_intent(
     return True
 
 
-def stale_runouts_to_seed(already_fired: dict[int | None, str], state) -> dict[int | None, str]:
+def slot_presence_by_tray(raw_data) -> dict[int, bool]:
+    """Global tray id -> does the AMS's OWN sensor say that slot holds filament.
+
+    ⚠️ The answer comes from ``tray_exist_bits``, the printer's per-slot presence
+    bitfield, which ``bambu_mqtt`` decodes onto each tray as ``exists``. It is
+    the ONLY independent evidence a reel is physically there.
+
+    ⚠️ **Never substitute ``tray_type``.** BamDude writes that itself
+    (``ams_filament_setting``) the moment a spool is assigned, so reading it
+    back is reading our own bookkeeping; and a slot holding an unlabelled reel
+    the printer cannot name carries an empty type while being very much
+    occupied. An empty slot does clear its type, so the implication runs one
+    way only — which is exactly the trap.
+
+    Trays whose presence is unknown are ABSENT from the result rather than
+    guessed at, so callers can pick their own fallback.
+
+    ⚠️ **AMS slots only — never the external holder (254/255).** Its presence
+    flag is not actually read on any Bambu model: an EMPTY external spool holder
+    still reports filament, and BambuStudio shows it as loaded too. So this
+    walks ``ams`` and deliberately ignores ``vt_tray``, leaving externals with
+    no answer rather than a wrong one. Do not "complete" this by reading the
+    external's flag — that is the trap it exists to avoid.
+    """
+    ams = (raw_data or {}).get("ams") if isinstance(raw_data, dict) else None
+    if isinstance(ams, dict):  # some pushes nest it as {"ams": {"ams": [...]}}
+        ams = ams.get("ams")
+    presence: dict[int, bool] = {}
+    for unit in ams or []:
+        if not isinstance(unit, dict):
+            continue
+        try:
+            ams_id = int(unit.get("id"))
+        except (TypeError, ValueError):
+            continue
+        for tray in unit.get("tray") or []:
+            # A missing or None reading is "unknown", never "empty".
+            if not isinstance(tray, dict) or tray.get("exists") is None:
+                continue
+            try:
+                tray_id = int(tray.get("id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            # A single-spool AMS-HT IS its own global tray (128..135); ordinary
+            # units flatten as unit*4 + slot.
+            presence[ams_id if ams_id >= 128 else ams_id * 4 + tray_id] = bool(tray.get("exists"))
+    return presence
+
+
+def stale_runouts_to_seed(events: list, state) -> dict[int | None, str]:
     """Of this print's journaled runouts, which are stale codes to stay quiet about.
 
     HMS holds a runout status for the WHOLE print, so a client created mid-print
     must be told what the journal already has or it replays every active code as
     a new episode. But seeding a tray unconditionally also silences a runout
-    that happened FOR REAL while BamDude was down — and there the slot is what
-    settles it: **a slot that physically holds filament cannot be running out**,
-    so a code still standing over it is stale. An EMPTY slot is left unseeded on
+    that happened FOR REAL while BamDude was down — and there the slot settles
+    it: **a slot that physically holds filament cannot be running out**, so a
+    code still standing over it is stale. An EMPTY slot is left unseeded on
     purpose: the code over it may be a runout nobody has recorded yet.
 
-    ⚠️ Presence is ``AMSTray.exists``, decoded from the printer's own
-    ``tray_exist_bits`` — the AMS's per-slot sensor. NEVER ``tray_type``: we
-    write that ourselves via ``ams_filament_setting`` whenever a spool is
-    assigned, so reading it back would be believing our own bookkeeping.
+    ⚠️ **Unless the episode was closed on paper only.** Assigning a spool to the
+    empty slot in the UI journals a ``spool_loaded`` whether or not a reel went
+    in, so the slot can read empty while the code standing over it is still the
+    ORIGINAL one. The closing row's own ``slot_occupied`` (m161) is what tells
+    bookkeeping from a refill: recorded ``False`` means no reel was ever there,
+    the code cannot be new, and the tray is seeded regardless of what the slot
+    reads now. NULL keeps the plain presence answer — rows written before m161
+    behave exactly as they did.
+
+    Presence comes from :func:`slot_presence_by_tray` — the AMS's own sensor.
     Measured 2026-09-01 on an X2D printing from its backup: slot 3 reported
-    ``exists=True`` with ``0700230000030002`` still active — the firmware never
-    withdrew the error, while a P1S in the same state had cleared it hours
-    earlier. Trusting the sensor is what makes those two the same case.
+    ``exists=True`` with ``0700230000030002`` still active, the firmware never
+    withdrawing it, while a P1S in the same state had cleared hours earlier.
+    Trusting the sensor is what makes those two the same case.
 
     No reading (an external holder has no presence bit; a state that has not
     arrived yet has nothing) falls back to seeding — the safer and far more
     frequent side.
     """
-    present: dict[int, bool] = {}
-    for unit in getattr(state, "ams", None) or []:
-        ams_id = getattr(unit, "id", None)
-        if not isinstance(ams_id, int):
-            continue
-        for tray in getattr(unit, "tray", None) or []:
-            exists = getattr(tray, "exists", None)
-            if exists is None:
-                continue
-            tray_id = getattr(tray, "id", 0) or 0
-            # A single-spool AMS-HT IS its own global tray (128..135); the
-            # ordinary units flatten as unit*4 + slot.
-            present[ams_id if getattr(unit, "is_ams_ht", False) else ams_id * 4 + tray_id] = bool(exists)
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_SPOOL_LOADED
 
-    return {tray: kind for tray, kind in already_fired.items() if present.get(tray, True)}
+    runouts = [e for e in events or [] if e.event == EVENT_RUNOUT and e.kind]
+    # Last kind per tray: the journal upgrades a firmware escalation in place,
+    # and the detector's own upgrade path expects the newest one.
+    already_fired = {e.global_tray_id: e.kind for e in runouts}
+    last_runout_id = {}
+    for e in runouts:
+        last_runout_id[e.global_tray_id] = e.id
+    closed_on_paper: set = set()
+    for e in events or []:
+        if e.event != EVENT_SPOOL_LOADED:
+            continue
+        after = last_runout_id.get(e.global_tray_id)
+        if after is not None and e.id > after and getattr(e, "slot_occupied", None) is False:
+            closed_on_paper.add(e.global_tray_id)
+
+    presence = slot_presence_by_tray(getattr(state, "raw_data", None))
+    return {tray: kind for tray, kind in already_fired.items() if tray in closed_on_paper or presence.get(tray, True)}
 
 
 async def note_assignment_change(

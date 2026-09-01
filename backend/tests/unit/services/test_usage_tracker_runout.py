@@ -968,3 +968,57 @@ class TestMultiEpisodeBoundaries:
 
         untangled = [ev(1, "runout", "ambiguous", 254, 12, 273)]
         assert journal_boundaries_for_tray(untangled, 254) == []
+
+
+class TestTheSlicerSlotOrderCountsOCCUPIEDTrays:
+    """Which trays the slicer's slot N counts, when nothing else named the tray.
+
+    BambuStudio compacts the slot list — slot N is the Nth tray the machine
+    offers, not the Nth physical position (#1607). What counts as "offered" is
+    the question: BS filters on ``is_exists`` (``DevMapping.cpp`` rejects a
+    mapping into a slot that is not there; ``AmsMappingPopupUpdate.cpp`` builds
+    the pick list the same way), i.e. on the PRESENCE SENSOR.
+
+    We filtered on ``tray_type`` instead, which is a different question: a slot
+    holding an unlabelled reel — no RFID, never configured — reports no type
+    while being fully occupied. BS counts it, we skipped it, and every slot
+    after it shifted down one, charging the print to the wrong spool. This is
+    the last-resort branch of the mapping (priorities 1-4 all failed), which is
+    exactly where a silent shift is never noticed.
+    """
+
+    def test_an_unlabelled_but_occupied_slot_still_takes_its_place(self):
+        from backend.app.services.usage_tracker import loaded_trays_in_slicer_order
+
+        lookup = {
+            0: {"tray_type": "PETG"},
+            1: {"tray_type": "PETG"},
+            2: {"tray_type": ""},  # a reel is in there; the printer cannot name it
+            254: {"tray_type": "PETG"},
+        }
+        presence = {0: True, 1: True, 2: True, 3: False}
+        # Slot 3 (1-based) is the unlabelled AMS tray, NOT the external spool.
+        assert loaded_trays_in_slicer_order(lookup, presence) == [0, 1, 2, 254]
+
+    def test_an_empty_slot_is_still_skipped(self):
+        # The #1607 case itself must not regress: 3 loaded + 1 empty + external,
+        # and the slicer's 4th filament is the external.
+        from backend.app.services.usage_tracker import loaded_trays_in_slicer_order
+
+        lookup = {
+            0: {"tray_type": "PETG"},
+            1: {"tray_type": "PETG"},
+            2: {"tray_type": "PETG"},
+            3: {"tray_type": ""},
+            254: {"tray_type": "PETG"},
+        }
+        presence = {0: True, 1: True, 2: True, 3: False}
+        assert loaded_trays_in_slicer_order(lookup, presence) == [0, 1, 2, 254]
+
+    def test_without_a_presence_reading_it_falls_back_to_the_type(self):
+        # External holders carry no presence bit, and an old push may carry none
+        # at all — then the previous behaviour is the best answer available.
+        from backend.app.services.usage_tracker import loaded_trays_in_slicer_order
+
+        lookup = {0: {"tray_type": "PETG"}, 1: {"tray_type": ""}, 254: {"tray_type": "PETG"}}
+        assert loaded_trays_in_slicer_order(lookup, {}) == [0, 254]

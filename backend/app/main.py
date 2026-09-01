@@ -2112,7 +2112,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
         async with async_session() as db:
             from sqlalchemy.orm import selectinload
 
-            from backend.app.api.routes.inventory import _find_tray_in_ams_data
+            from backend.app.api.routes.inventory import _find_tray_in_ams_data, tray_holds_filament
             from backend.app.models.spool import Spool as _Spool
             from backend.app.models.spool_assignment import SpoolAssignment as SA
 
@@ -2227,7 +2227,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                     # ``state ∉ {9, 10}`` guard keeps the firmware's explicit
                     # "empty" signals authoritative over any stale tray_type
                     # that might survive the relay's auto-clearing.
-                    loaded = cur_state == 11 or (cur_state not in (9, 10) and cur_type.strip())
+                    loaded = tray_holds_filament(current_tray)
                     if not fp_type.strip() and loaded and assignment.spool:
                         try:
                             from backend.app.api.routes.inventory import (
@@ -4922,23 +4922,22 @@ async def _seed_runout_detector_from_journal(printer_id: int, logger) -> None:
         client.seed_runout_fired({})
         return
 
-    # Last kind per tray: the journal records a firmware escalation in place,
-    # and the detector's own upgrade path expects the newest one.
-    already_fired = {e.global_tray_id: e.kind for e in events if e.event == EVENT_RUNOUT and e.kind}
-    # ⚠️ ...but only for slots that physically hold filament. A slot the AMS
-    # reports EMPTY may be running out RIGHT NOW — unrecorded, because we were
-    # down when it happened — and seeding it would silence that for the rest of
-    # the print. See ``stale_runouts_to_seed``: the presence bit is the arbiter,
-    # never the filament type, which is our own write.
-    seeded = stale_runouts_to_seed(already_fired, printer_manager.get_status(printer_id))
+    # ⚠️ Only for slots that physically hold filament. A slot the AMS reports
+    # EMPTY may be running out RIGHT NOW — unrecorded, because we were down when
+    # it happened — and seeding it would silence that for the rest of the print.
+    # See ``stale_runouts_to_seed``: the presence bit is the arbiter, never the
+    # filament type (our own write), and an episode closed on paper only is
+    # seeded anyway.
+    seeded = stale_runouts_to_seed(events, printer_manager.get_status(printer_id))
     client.seed_runout_fired(seeded)
-    if already_fired:
+    held = {e.global_tray_id: e.kind for e in events if e.event == EVENT_RUNOUT and e.kind}
+    if held:
         logger.info(
             "[UsageJournal] Re-armed runout detector for printer %s from archive %s: %s (journal held %s)",
             printer_id,
             archive_id,
             seeded or "nothing — every ran-out slot reads empty",
-            already_fired,
+            held,
         )
 
 

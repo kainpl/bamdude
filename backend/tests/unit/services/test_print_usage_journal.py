@@ -6,7 +6,9 @@ import pytest
 from sqlalchemy import select, text
 
 from backend.app.models.print_usage_event import (
+    EVENT_PAUSE,
     EVENT_RUNOUT,
+    EVENT_SPOOL_LOADED,
     EVENT_TRAY_CHANGE,
     KIND_PAUSE,
     PrintUsageEvent,
@@ -715,8 +717,8 @@ class TestTheSeedBelievesTheSLOTSENSOR:
     HMS keeps a runout status for the whole print, so a client created
     mid-print must be told what this print already recorded. But seeding a tray
     unconditionally also silences a runout that happened FOR REAL while BamDude
-    was down. The printer itself settles which is which: a slot that physically
-    holds filament cannot be running out, so an active code over it is stale.
+    was down. The printer itself settles it: a slot that physically holds
+    filament cannot be running out, so a code still standing over it is stale.
 
     ⚠️ Presence comes from ``exists`` — decoded from the printer's own
     ``tray_exist_bits`` — and NEVER from ``tray_type``, which BamDude writes
@@ -728,21 +730,19 @@ class TestTheSeedBelievesTheSLOTSENSOR:
     def _state(trays):
         from types import SimpleNamespace
 
-        return SimpleNamespace(
-            ams=[
-                SimpleNamespace(
-                    id=0,
-                    is_ams_ht=False,
-                    tray=[SimpleNamespace(id=i, exists=e, tray_type=t) for i, e, t in trays],
-                )
-            ]
-        )
+        return SimpleNamespace(raw_data={"ams": [{"id": 0, "tray": [{"id": i, "exists": e} for i, e in trays]}]})
+
+    @staticmethod
+    def _ev(event, tray, kind=None, occupied=None, eid=1):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id=eid, event=event, kind=kind, global_tray_id=tray, slot_occupied=occupied)
 
     def test_a_slot_that_holds_filament_seeds_and_stays_quiet(self):
         from backend.app.services.print_usage_journal import stale_runouts_to_seed
 
-        state = self._state([(3, True, "PETG")])
-        assert stale_runouts_to_seed({3: "autoswitch"}, state) == {3: "autoswitch"}
+        events = [self._ev(EVENT_RUNOUT, 3, "autoswitch")]
+        assert stale_runouts_to_seed(events, self._state([(3, True)])) == {3: "autoswitch"}
 
     def test_an_empty_slot_is_not_seeded_so_a_real_runout_survives(self):
         # The blind spot this closes: a reel that genuinely ran out while
@@ -750,16 +750,44 @@ class TestTheSeedBelievesTheSLOTSENSOR:
         # recorded when we come back.
         from backend.app.services.print_usage_journal import stale_runouts_to_seed
 
-        state = self._state([(3, False, None)])
-        assert stale_runouts_to_seed({3: "autoswitch"}, state) == {}
+        events = [self._ev(EVENT_RUNOUT, 3, "autoswitch")]
+        assert stale_runouts_to_seed(events, self._state([(3, False)])) == {}
 
-    def test_presence_beats_the_type_we_wrote_ourselves(self):
-        # The X2D shape inverted: were the decision made on tray_type, our own
-        # ams_filament_setting write would answer the question for us.
+    def test_a_books_only_assignment_does_not_open_the_door(self):
+        # ⚠️ The residual m161 closes. Assigning a spool to the empty slot in
+        # the UI closes the tray's episode WITHOUT a reel going in, so the slot
+        # still reads empty and the rule above would let the stale code fire
+        # again. The spool_loaded row now says a reel was never there, and that
+        # is the difference between bookkeeping and a refill.
         from backend.app.services.print_usage_journal import stale_runouts_to_seed
 
-        state = self._state([(3, False, "PETG")])
-        assert stale_runouts_to_seed({3: "autoswitch"}, state) == {}
+        events = [
+            self._ev(EVENT_RUNOUT, 3, "autoswitch", eid=1),
+            self._ev(EVENT_SPOOL_LOADED, 3, occupied=False, eid=2),
+        ]
+        assert stale_runouts_to_seed(events, self._state([(3, False)])) == {3: "autoswitch"}
+
+    def test_a_real_refill_that_later_empties_is_a_new_runout(self):
+        # The mirror: a reel WAS put in (spool_loaded over an occupied slot) and
+        # the slot is empty now — it ran out for real while we were down.
+        from backend.app.services.print_usage_journal import stale_runouts_to_seed
+
+        events = [
+            self._ev(EVENT_RUNOUT, 3, "autoswitch", eid=1),
+            self._ev(EVENT_SPOOL_LOADED, 3, occupied=True, eid=2),
+        ]
+        assert stale_runouts_to_seed(events, self._state([(3, False)])) == {}
+
+    def test_an_unrecorded_closure_keeps_the_old_answer(self):
+        # NULL is "no reading", never "empty": rows written before m161 must
+        # behave exactly as they did.
+        from backend.app.services.print_usage_journal import stale_runouts_to_seed
+
+        events = [
+            self._ev(EVENT_RUNOUT, 3, "autoswitch", eid=1),
+            self._ev(EVENT_SPOOL_LOADED, 3, occupied=None, eid=2),
+        ]
+        assert stale_runouts_to_seed(events, self._state([(3, False)])) == {}
 
     def test_without_a_presence_reading_it_seeds(self):
         # External holders carry no presence bit, and a state that has not
@@ -767,16 +795,119 @@ class TestTheSeedBelievesTheSLOTSENSOR:
         # frequent case: suppress the replay.
         from backend.app.services.print_usage_journal import stale_runouts_to_seed
 
-        assert stale_runouts_to_seed({254: "external"}, self._state([(3, True, "PETG")])) == {254: "external"}
-        assert stale_runouts_to_seed({3: "autoswitch"}, None) == {3: "autoswitch"}
+        assert stale_runouts_to_seed([self._ev(EVENT_RUNOUT, 254, "external")], self._state([(3, True)])) == {
+            254: "external"
+        }
+        assert stale_runouts_to_seed([self._ev(EVENT_RUNOUT, 3, "autoswitch")], None) == {3: "autoswitch"}
 
-    def test_an_ams_ht_slot_is_keyed_by_its_unit_id(self):
-        from types import SimpleNamespace
-
+    def test_only_runouts_are_seeded_and_the_newest_kind_wins(self):
         from backend.app.services.print_usage_journal import stale_runouts_to_seed
 
-        # A single-spool AMS-HT is its own global tray (128..135), not unit*4.
-        state = SimpleNamespace(
-            ams=[SimpleNamespace(id=128, is_ams_ht=True, tray=[SimpleNamespace(id=0, exists=False, tray_type=None)])]
+        events = [
+            self._ev(EVENT_TRAY_CHANGE, 3, eid=1),
+            self._ev(EVENT_RUNOUT, 3, "ambiguous", eid=2),
+            self._ev(EVENT_RUNOUT, 3, "autoswitch", eid=3),
+        ]
+        assert stale_runouts_to_seed(events, self._state([(3, True)])) == {3: "autoswitch"}
+
+
+class TestTheJournalRecordsWhetherTheSlotHeldFilament:
+    """m161. The journal reconstructs what fed a print AFTER the fact, and two
+    of its questions had no recorded answer, only an inference:
+
+    * "the mapped slot never held a spool" — deduced from an ABSENCE (no spool
+      id was frozen), which collapses as soon as an operator assigns a spool to
+      the empty slot mid-print and a spool id appears for another reason;
+    * "this ``spool_loaded`` was a real refill" — versus bookkeeping. Assigning
+      in the UI closes the episode whether or not a reel went in.
+
+    The AMS's own presence sensor answers both, so each row now carries it.
+    NULL stays "no reading", never "empty".
+    """
+
+    @staticmethod
+    def _presence(monkeypatch, trays):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            "backend.app.services.printer_manager.printer_manager.get_status",
+            lambda _pid: SimpleNamespace(
+                raw_data={"ams": [{"id": 0, "tray": [{"id": i, "exists": e} for i, e in trays]}]}
+            ),
         )
-        assert stale_runouts_to_seed({128: "autoswitch"}, state) == {}
+
+    @pytest.mark.asyncio
+    async def test_an_empty_slot_is_recorded_as_empty(self, db_session, printer, monkeypatch):
+        archive = await _make_archive(db_session, printer)
+        self._presence(monkeypatch, [(2, False)])
+
+        await record_event(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=1,
+            event=EVENT_RUNOUT,
+            global_tray_id=2,
+        )
+
+        events = await load_events(db_session, printer.id, archive.id)
+        assert events[-1].slot_occupied is False
+
+    @pytest.mark.asyncio
+    async def test_a_filled_slot_is_recorded_as_filled(self, db_session, printer, monkeypatch):
+        archive = await _make_archive(db_session, printer)
+        self._presence(monkeypatch, [(2, True)])
+
+        await record_event(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=30,
+            event=EVENT_TRAY_CHANGE,
+            global_tray_id=2,
+        )
+
+        events = await load_events(db_session, printer.id, archive.id)
+        assert events[-1].slot_occupied is True
+
+    @pytest.mark.asyncio
+    async def test_no_reading_stays_unknown(self, db_session, printer, monkeypatch):
+        # ⚠️ NULL, not False. An event with no tray (pause/resume), an external
+        # holder that has no presence bit, a push that arrived without the
+        # bitfield — none of them is evidence the slot was empty.
+        archive = await _make_archive(db_session, printer)
+        self._presence(monkeypatch, [(2, True)])
+
+        await record_event(db_session, printer_id=printer.id, archive_id=archive.id, layer_num=5, event=EVENT_PAUSE)
+        await record_event(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=6,
+            event=EVENT_RUNOUT,
+            global_tray_id=254,
+        )
+
+        events = await load_events(db_session, printer.id, archive.id)
+        assert [e.slot_occupied for e in events[-2:]] == [None, None]
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_printer_does_not_break_the_write(self, db_session, printer, monkeypatch):
+        # The journal row matters more than the extra fact on it.
+        def _boom(_pid):
+            raise RuntimeError("no client")
+
+        monkeypatch.setattr("backend.app.services.printer_manager.printer_manager.get_status", _boom)
+        archive = await _make_archive(db_session, printer)
+
+        await record_event(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=1,
+            event=EVENT_RUNOUT,
+            global_tray_id=2,
+        )
+
+        events = await load_events(db_session, printer.id, archive.id)
+        assert events[-1].slot_occupied is None

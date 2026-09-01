@@ -10,7 +10,7 @@ the FK CASCADE below fires on PostgreSQL only (SQLite never sets
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -44,4 +44,9 @@ class PrintUsageEvent(Base):
     global_tray_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     spool_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     spoolman_spool_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Did the AMS's own presence sensor report filament in this event's slot at
+    # the moment it was written (``tray_exist_bits`` → ``exists``). NULL is
+    # "no reading", never "empty" — see m161. Readers must keep their previous
+    # behaviour on NULL.
+    slot_occupied: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

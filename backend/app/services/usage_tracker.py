@@ -705,6 +705,26 @@ def journal_touched_trays(events: list) -> set[int]:
     return {e.global_tray_id for e in (events or []) if e.global_tray_id is not None}
 
 
+def loaded_trays_in_slicer_order(lookup: dict, presence: dict[int, bool]) -> list[int]:
+    """Global tray ids in the order the slicer numbers its filament slots.
+
+    BambuStudio compacts the list — its slot N is the Nth tray the machine
+    OFFERS, not the Nth physical position, so an empty AMS slot must not take a
+    number (#1607: a "3 loaded + 1 empty + external" layout sent the slicer's
+    4th filament into the empty slot and the external's usage went unrecorded).
+
+    ⚠️ **"Offered" means the presence sensor, not a known filament type.** BS
+    filters on ``is_exists`` — ``DevMapping.cpp`` refuses a mapping into a slot
+    that is not there, and the mapping pick list is built the same way — so a
+    slot holding an unlabelled reel (no RFID, never configured) IS counted by
+    the slicer while carrying no ``tray_type``. Filtering on the type instead
+    dropped it and shifted every later slot down one, charging the print to the
+    wrong spool. A slot with no presence reading (external holders have no bit;
+    an old push may carry none) falls back to the type, which is all there is.
+    """
+    return sorted(gid for gid, info in lookup.items() if presence.get(gid, bool(info.get("tray_type"))))
+
+
 def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple[int, int | None, int | None]]:
     """Spool-change boundaries for ONE tray: ``[(start_layer, spool_id, spoolman_id)]``.
 
@@ -2071,19 +2091,20 @@ async def _track_from_3mf(
                 _state = printer_manager.get_status(printer_id)
                 _raw = getattr(_state, "raw_data", None) if _state else None
                 if _raw:
+                    from backend.app.services.print_usage_journal import slot_presence_by_tray
                     from backend.app.services.spoolman_tracking import build_ams_tray_lookup
 
-                    # Filter out AMS slots with no spool loaded (empty tray_type):
-                    # BambuStudio/OrcaSlicer compact the slot list when assigning
-                    # filaments and don't expose empty AMS slots, so the slicer's
-                    # 3MF slot N maps to the Nth *loaded* tray, not the Nth physical
-                    # position. Without this, a "3 AMS loaded + 1 empty + external"
-                    # layout routed the slicer's 4th filament to the empty AMS slot
-                    # instead of the external, and the external's usage was never
-                    # recorded (#1607). vt_tray entries are already filtered this
-                    # way inside build_ams_tray_lookup — mirror it for AMS here.
+                    # Skip AMS slots the machine does not offer: BambuStudio and
+                    # OrcaSlicer compact the slot list, so the 3MF's slot N is the
+                    # Nth OCCUPIED tray, not the Nth physical position. Without
+                    # this, a "3 AMS loaded + 1 empty + external" layout routed the
+                    # slicer's 4th filament into the empty AMS slot and the
+                    # external's usage was never recorded (#1607). vt_tray entries
+                    # are already filtered inside build_ams_tray_lookup.
+                    # ⚠️ Occupancy is the presence sensor, never the filament type
+                    # — see ``loaded_trays_in_slicer_order``.
                     _lookup = build_ams_tray_lookup(_raw)
-                    available_trays = sorted(gid for gid, info in _lookup.items() if info.get("tray_type"))
+                    available_trays = loaded_trays_in_slicer_order(_lookup, slot_presence_by_tray(_raw))
                     if slot_id <= len(available_trays):
                         global_tray_id = available_trays[slot_id - 1]
             # Final fallback: slot_id - 1 (legacy, works for pure AMS without external spools)

@@ -2759,6 +2759,39 @@ async def sync_weights_from_ams(
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
+def tray_holds_filament(tray: dict) -> bool:
+    """Is there filament physically in this AMS slot?
+
+    ⚠️ ``exists`` (decoded from the printer's ``tray_exist_bits``) is the slot's
+    own presence sensor and answers this directly and identically on every
+    model, so it wins whenever it is present. The fallback below is the older
+    reading of the same question and stays for pushes that carry no bit:
+
+    * ``state == 11`` is Bambu's "filament fed to extruder";
+    * some firmwares never set it — A1 Mini BMCU 01.07.02.00 and P1S Standard
+      AMS 00.00.06.75 both always report ``state=3`` — so a non-empty
+      ``tray_type`` outside the explicit empty states 9/10 counts too (upstream
+      Bambuddy #1322 / f45aaea9);
+    * ``state ∈ {9, 10}`` stays authoritative over a stale type.
+
+    ⚠️ The fallback cannot see an UNLABELLED reel: no RFID and never configured
+    means no ``tray_type``, and on a ``state=3`` firmware the slot then reads
+    as empty while holding filament. The presence bit is exactly what closes
+    that gap — which is why it is asked first, not last.
+
+    ⚠️ **The external spool holder has no honest presence flag on any model** —
+    an empty holder still reports filament, and BambuStudio shows it loaded as
+    well. A ``vt_tray`` entry therefore carries no ``exists`` key here (only AMS
+    trays are annotated), so it lands on the fallback, which is all anyone has
+    for it. Never annotate the external's flag to "fix" that.
+    """
+    exists = tray.get("exists")
+    if exists is not None:
+        return bool(exists)
+    state = tray.get("state")
+    return state == 11 or (state not in (9, 10) and bool((tray.get("tray_type") or "").strip()))
+
+
 def _find_tray_in_ams_data(ams_data: list, ams_id: int, tray_id: int) -> dict | None:
     """Find a specific tray in the AMS data structure."""
     if not ams_data:
