@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Archive, ArrowDown, ArrowUp, Clock, Loader2, Package, X } from 'lucide-react';
+import { Archive, ArrowDown, ArrowUp, ArrowUpDown, Clock, Loader2, Package, X } from 'lucide-react';
 import { api } from '../api/client';
 import type { SpoolUsageListItem } from '../api/client';
 import { PaginationBar } from './PaginationBar';
@@ -311,16 +311,28 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
   // component type recreated on every render remounts its whole subtree, which
   // here means the sort button loses focus the moment anything above it changes.
   const sortHeader = (column: SortKey, label: string, align: 'left' | 'right' = 'left') => (
-    <th key={column} className={`px-3 py-2 font-medium ${align === 'right' ? 'text-right' : 'text-left'}`}>
+    // Geometry, weight and colour states copied from the spool table's header
+    // (InventoryPage) so the two tables read as one family: py-3 px-4, xs
+    // uppercase, green when it is the active sort, and a dimmed idle arrow on
+    // every sortable column rather than none. The <button> stays — unlike the
+    // spool table's clickable <th>, it is reachable from the keyboard.
+    <th
+      key={column}
+      className={`py-3 px-4 text-xs font-medium uppercase tracking-wide select-none ${
+        align === 'right' ? 'text-right' : 'text-left'
+      } ${sortKey === column ? 'text-bambu-green' : 'text-bambu-gray'}`}
+    >
       <button
         type="button"
         onClick={() => toggleSort(column)}
-        className={`inline-flex items-center gap-1 hover:text-white transition-colors ${
-          sortKey === column ? 'text-bambu-green' : ''
-        }`}
+        className="inline-flex items-center gap-1 hover:text-bambu-green transition-colors"
       >
         {label}
-        {sortKey === column && (sortDir === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
+        {sortKey === column ? (
+          sortDir === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
+        ) : (
+          <ArrowUpDown className="w-3 h-3 opacity-30" />
+        )}
       </button>
     </th>
   );
@@ -490,8 +502,8 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
         <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="text-xs text-bambu-gray uppercase tracking-wide border-b border-bambu-dark-tertiary">
-                <tr>
+              <thead>
+                <tr className="border-b border-bambu-dark-tertiary bg-bambu-dark-tertiary/30">
                   {sortHeader('created_at', t('inventory.usageView.colDate'))}
                   {sortHeader('spool', t('inventory.usageView.colSpool'))}
                   {sortHeader('print_name', t('inventory.usageView.colPrint'))}
@@ -500,16 +512,16 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
                   {sortHeader('percent_used', '%', 'right')}
                   {sortHeader('cost', t('inventory.usageView.colCost'), 'right')}
                   {sortHeader('status', t('inventory.usageView.colStatus'))}
-                  <th className="px-3 py-2" />
+                  <th className="py-3 px-4" />
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => (
                   <tr key={row.id} className="group border-b border-bambu-dark-tertiary/50 last:border-0 hover:bg-bambu-dark-tertiary/30">
-                    <td className="px-3 py-2 text-bambu-gray whitespace-nowrap">
+                    <td className="py-3 px-4 text-bambu-gray whitespace-nowrap">
                       {formatDateTime(row.created_at, timeFormat, dateFormat)}
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="py-3 px-4">
                       <div className="flex items-center gap-2 min-w-0">
                         <span
                           className="w-3 h-3 rounded-full border border-black/20 flex-shrink-0"
@@ -533,20 +545,20 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
                         )}
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-white max-w-[18rem]">
+                    <td className="py-3 px-4 text-white max-w-[18rem]">
                       <span className="block truncate" title={row.print_name ?? undefined}>{row.print_name || '—'}</span>
                     </td>
-                    <td className="px-3 py-2 text-bambu-gray whitespace-nowrap">
+                    <td className="py-3 px-4 text-bambu-gray whitespace-nowrap">
                       {row.printer_id !== null
                         ? labelForPrinter(row.printer_id, row.printer_name, row.printer_archived)
                         : '—'}
                     </td>
-                    <td className="px-3 py-2 text-right text-white font-medium whitespace-nowrap">{row.weight_used.toFixed(1)}g</td>
-                    <td className="px-3 py-2 text-right text-bambu-gray whitespace-nowrap">{row.percent_used}%</td>
-                    <td className="px-3 py-2 text-right text-bambu-gray whitespace-nowrap">
+                    <td className="py-3 px-4 text-right text-white font-medium whitespace-nowrap">{row.weight_used.toFixed(1)}g</td>
+                    <td className="py-3 px-4 text-right text-bambu-gray whitespace-nowrap">{row.percent_used}%</td>
+                    <td className="py-3 px-4 text-right text-bambu-gray whitespace-nowrap">
                       {row.cost !== null ? `${currency}${row.cost.toFixed(2)}` : '—'}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
+                    <td className="py-3 px-4 whitespace-nowrap">
                       <span
                         className={STATUS_COLORS[row.status] || 'text-bambu-gray'}
                         title={STATUS_HINT_KEYS[row.status] ? t(STATUS_HINT_KEYS[row.status]) : undefined}
@@ -554,7 +566,7 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
                         {statusLabel(row.status)}
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="py-3 px-4 text-right">
                       <button
                         type="button"
                         onClick={() => deleteMutation.mutate({ spoolId: row.spool_id, usageId: row.id })}
