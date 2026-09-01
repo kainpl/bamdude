@@ -6,6 +6,14 @@
    across three components doing nothing at all until this import. */
 @import "tw-animate-css";
 
+/*[class*="p-6"] { outline: 1px dashed magenta !important; }*/
+/*[class*="mb-6"] { outline: 1px dashed magenta !important; }*/
+/*[class*="px-6"] { outline: 1px dashed magenta !important; }*/
+/*[class*="py-6"] { outline: 1px dashed magenta !important; }*/
+/*[class*="gap-6"] { outline: 1px dashed magenta !important; }*/
+/*[class*="space-y-6"] { outline: 1px dashed magenta !important; }*/
+/*[class*="space-x-6"] { outline: 1px dashed magenta !important; }*/
+
 /* Inter, self-hosted (#1460).  BamDude is a local-first, offline-capable PWA;
    pulling the font from fonts.googleapis.com at runtime broke the install on
    Android (CSP-blocked cross-origin fetch) and meant the UI couldn't render

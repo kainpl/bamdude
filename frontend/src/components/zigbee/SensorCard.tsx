@@ -4,6 +4,7 @@ import { Battery, BellRing, LineChart, Pencil, Plug, SlidersHorizontal, Trash2, 
 import type { SensorMeasurement, ZigbeeSensor } from '../../api/client';
 import { formatRelativeTime } from '../../utils/date';
 import { formatReading, roomReadings } from '../../utils/sensorReadings';
+import {CardContent} from '../Card.tsx';
 
 interface Props {
   sensor: ZigbeeSensor;
@@ -49,7 +50,7 @@ export function SensorCard({
   const voltage = sensor.measurements.battery_voltage;
 
   return (
-    <div className="bg-bambu-dark-secondary rounded-xl p-4">
+    <CardContent>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-white truncate">{sensor.name}</p>
@@ -161,7 +162,7 @@ export function SensorCard({
           </ul>
         </>
       )}
-    </div>
+    </CardContent>
   );
 }
 

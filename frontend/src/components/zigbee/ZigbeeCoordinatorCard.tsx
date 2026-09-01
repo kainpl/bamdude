@@ -184,7 +184,7 @@ export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
   };
 
   return (
-    <Card className="mb-6">
+    <Card className="mb-4">
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-base font-semibold text-white flex items-center gap-2">

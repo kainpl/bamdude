@@ -36,7 +36,7 @@ export function RetentionCard({ values, onSave, saving }: Props) {
   }, [values]);
 
   return (
-    <div className="bg-bambu-dark-secondary rounded-xl p-4">
+    <div className="bg-bambu-dark-secondary rounded-xl">
       <h3 className="text-white mb-1">{t('settings.retention.title')}</h3>
       <p className="text-xs text-bambu-gray mb-3">{t('settings.retention.help')}</p>
 

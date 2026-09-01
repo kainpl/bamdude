@@ -59,7 +59,7 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
   const radioUp = status?.state === 'up';
 
   return (
-    <Card className="mb-6">
+    <Card className="mb-4">
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-base font-semibold text-white flex items-center gap-2">
@@ -74,7 +74,7 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
         </div>
       </CardHeader>
 
-      <CardContent>
+      <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {/* One banner for the whole section: the cause is one for all of them,
             and repeating it on five cards is noise. The cards still render --
             their names and places do not come from the radio. */}
@@ -88,25 +88,29 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
             <p className="text-xs">{t('settings.zigbee.sensors.emptyHint')}</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {sensors.map((sensor) => (
-              <SensorCard
-                key={sensor.id}
-                sensor={sensor}
-                onEdit={setEditing}
-                onUnbind={setUnbinding}
-                onConfigure={setConfiguring}
-                onChart={setCharting}
-                onThresholds={setThresholding}
-                canEdit={hasPermission('smart_sensors:update')}
-                canDelete={hasPermission('smart_sensors:delete')}
-                // The permission the settings endpoint actually checks -- both
-                // classes ride the plug one. Gating on smart_sensors:update
-                // would offer an action that returns 403.
-                canConfigure={hasPermission('smart_plugs:update')}
-              />
-            ))}
-          </div>
+          <Card className="relative">
+            {/* The grid is what makes each sensor one tile — SensorCard's
+                own wrapper div is the grid item. The surface moved up here
+                to the shared Card, so that wrapper carries no classes of its
+                own any more; it still has to exist. */}
+              {sensors.map((sensor) => (
+                <SensorCard
+                  key={sensor.id}
+                  sensor={sensor}
+                  onEdit={setEditing}
+                  onUnbind={setUnbinding}
+                  onConfigure={setConfiguring}
+                  onChart={setCharting}
+                  onThresholds={setThresholding}
+                  canEdit={hasPermission('smart_sensors:update')}
+                  canDelete={hasPermission('smart_sensors:delete')}
+                  // The permission the settings endpoint actually checks -- both
+                  // classes ride the plug one. Gating on smart_sensors:update
+                  // would offer an action that returns 403.
+                  canConfigure={hasPermission('smart_plugs:update')}
+                />
+              ))}
+          </Card>
         )}
         {(adopting || adoptDevice) && (
           <SensorFormModal

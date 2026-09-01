@@ -945,7 +945,7 @@ export function SpoolFormModal({
         {/* Content */}
         <div className="p-4 overflow-y-auto flex-1" style={{ scrollbarGutter: 'stable' }}>
           {activeTab === 'filament' ? (
-            <div className="space-y-6">
+            <div className="space-y-4">
               {/* Spoolman Filament Catalog Picker — only when creating a spool in Spoolman mode */}
               {spoolmanMode && !isEditing && (
                 <div>

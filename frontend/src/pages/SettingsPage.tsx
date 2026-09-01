@@ -4332,7 +4332,7 @@ export function SettingsPage() {
       {/* ══════ SMART PLUGS TAB ══════ */}
       {activeTab === 'plugs' && (
         <div>
-          <div className="flex items-start justify-between mb-6">
+          <div className="flex items-start justify-between mb-4">
             <div>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                 <Plug className="w-5 h-5 text-bambu-green" />
@@ -4397,7 +4397,7 @@ export function SettingsPage() {
 
           {/* Energy Summary Card */}
           {smartPlugs && smartPlugs.length > 0 && (
-            <Card className="mb-6">
+            <Card className="mb-4">
               <CardHeader>
                 <h3 className="text-base font-semibold text-white flex items-center gap-2">
                   <Zap className="w-4 h-4 text-yellow-600 dark:text-yellow-400" />
@@ -4488,18 +4488,20 @@ export function SettingsPage() {
           {plugsLoading ? (
             <LoadingBlock label={t('common.loading')} className="py-12 text-bambu-gray" />
           ) : smartPlugs && smartPlugs.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {smartPlugs.map((plug) => (
-                <SmartPlugCard
-                  key={plug.id}
-                  plug={plug}
-                  onEdit={(p) => {
-                    setEditingPlug(p);
-                    setShowPlugModal(true);
-                  }}
-                />
-              ))}
-            </div>
+              <Card className="mb-4">
+                <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {smartPlugs.map((plug) => (
+                      <SmartPlugCard
+                        key={plug.id}
+                        plug={plug}
+                        onEdit={(p) => {
+                          setEditingPlug(p);
+                          setShowPlugModal(true);
+                        }}
+                      />
+                    ))}
+                </CardContent>
+              </Card>
           ) : (
             <Card>
               <CardContent className="py-12">

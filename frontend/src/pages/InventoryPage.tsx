@@ -2112,7 +2112,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               and which fields to change. */}
           {!spoolmanMode && hasPermission('inventory:update') && (
             <Button
-              variant="secondary"
+              variant="outline"
+              size="sm"
               disabled={totalRows === 0}
               onClick={() => setShowBulkEdit(true)}
               title={t('inventory.bulkEdit.title')}
@@ -2122,7 +2123,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             </Button>
           )}
           <Button
-            variant="secondary"
+            variant="outline"
+            size="sm"
             disabled={spoolmanMode ? filteredSpools.length === 0 : totalRows === 0}
             // Pre-select every MATCHING spool so the user lands in "all
             // checked", then refines downward in the modal. Per-card icon
@@ -2149,19 +2151,19 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               In Spoolman mode the buttons stay visible (feature parity) but are
               disabled with a hint pointing at Spoolman's own CSV export, since
               Spoolman owns the data store in that mode. */}
-          <Button variant="secondary" disabled={spoolmanMode} onClick={() => setCsvImportOpen(true)} title={spoolmanCsvHint}>
+          <Button variant="outline" size="sm" disabled={spoolmanMode} onClick={() => setCsvImportOpen(true)} title={spoolmanCsvHint}>
             <Upload className="w-4 h-4" />
             {t('inventory.csv.importButton', 'Import CSV')}
           </Button>
-          <Button variant="secondary" disabled={spoolmanMode} onClick={() => setCsvExportOpen(true)} title={spoolmanCsvHint}>
+          <Button variant="outline" size="sm" disabled={spoolmanMode} onClick={() => setCsvExportOpen(true)} title={spoolmanCsvHint}>
             <Download className="w-4 h-4" />
             {t('inventory.csv.exportButton', 'Export CSV')}
           </Button>
-          <Button variant="secondary" onClick={() => setLocationsModalOpen(true)}>
+          <Button variant="outline" size="sm" onClick={() => setLocationsModalOpen(true)}>
             <MapPin className="w-4 h-4" />
             {t('locations.manage')}
           </Button>
-          <Button onClick={() => setFormModal({ spool: null, mode: 'create' })}>
+          <Button variant="primary" size="sm" onClick={() => setFormModal({ spool: null, mode: 'create' })}>
             <Plus className="w-4 h-4" />
             {t('inventory.addSpool')}
           </Button>

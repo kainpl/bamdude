@@ -130,7 +130,7 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
   return (
     <>
       <Card className="relative">
-        <CardContent className="p-4">
+        <CardContent>
           {/* Header Row */}
           <div className="flex items-start justify-between gap-2 mb-3">
             <div className="flex items-center gap-3 min-w-0 flex-1">
