@@ -24,6 +24,7 @@ from backend.app.core.websocket import ws_manager
 from backend.app.models.ams_label import AmsLabel
 from backend.app.models.color_catalog import ColorCatalogEntry
 from backend.app.models.location import Location
+from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
@@ -1029,7 +1030,9 @@ _LOCATION_ID_PATTERN = r"^(__none__|\d+)$"
 _SPOOL_IDS_CAP = 50_000
 
 
-def _spool_to_list_item(s: Spool, *, include_k_profiles: bool = False) -> SpoolListItem:
+def _spool_to_list_item(
+    s: Spool, *, include_k_profiles: bool = False, archived_printer_ids: set[int] | None = None
+) -> SpoolListItem:
     """Slim list-row projection — every ``SpoolListItem`` field, built
     explicitly (never ``model_validate(s)``: ``k_profile_count`` has no
     matching ORM attribute). ``s.k_profiles`` must already be eager-loaded
@@ -1041,6 +1044,22 @@ def _spool_to_list_item(s: Spool, *, include_k_profiles: bool = False) -> SpoolL
     ``k_profiles`` array too — the cards-view opt-in (see
     ``SpoolListItem``'s docstring). The rows are eager-loaded regardless, so
     this is a serialization-only switch, never an extra query."""
+    # ⚠️ A K-profile on an ARCHIVED printer is history, not an option. Archiving
+    # retires a machine and hides it everywhere while keeping its history, so a
+    # spool calibrated on it still carries the link — and showing it here reads
+    # as a profile you could use. The PA tab already counts only live printers
+    # ("doesn't inflate the badge past the printers actually offered for
+    # assignment"); the card and this badge were serialised straight off the
+    # relationship and counted everything. One farm's spool read 11 on the card
+    # against 7 in the dialog, its other 4 printers having been archived.
+    #
+    # ``None`` means the caller did not ask the question (single-spool reads,
+    # where the full set is the point) and everything is kept.
+    visible_k_profiles = (
+        s.k_profiles
+        if archived_printer_ids is None
+        else [kp for kp in s.k_profiles if kp.printer_id not in archived_printer_ids]
+    )
     return SpoolListItem(
         id=s.id,
         material=s.material,
@@ -1083,8 +1102,10 @@ def _spool_to_list_item(s: Spool, *, include_k_profiles: bool = False) -> SpoolL
         archived_at=s.archived_at,
         created_at=s.created_at,
         updated_at=s.updated_at,
-        k_profile_count=len(s.k_profiles),
-        k_profiles=([SpoolKProfileResponse.model_validate(kp) for kp in s.k_profiles] if include_k_profiles else None),
+        k_profile_count=len(visible_k_profiles),
+        k_profiles=(
+            [SpoolKProfileResponse.model_validate(kp) for kp in visible_k_profiles] if include_k_profiles else None
+        ),
     )
 
 
@@ -1245,6 +1266,11 @@ async def list_spools(
 
     offset, limit = (0, None) if all else ((page - 1) * per_page, per_page)
 
+    # Which printers are retired — so a K-profile left behind on one is not
+    # offered as if it were still a choice (see ``_spool_to_list_item``). One
+    # scalar query for the whole page, not one per spool.
+    archived_printer_ids = set((await db.execute(select(Printer.id).where(Printer.archived.is_(True)))).scalars().all())
+
     if group_similar:
         total = await inventory_service.count_spool_groups(db, filters=filters)
         groups = await inventory_service.list_spool_groups(
@@ -1262,7 +1288,11 @@ async def list_spools(
                     lot=g["lot"],
                     group_count=g["group_count"],
                     ids=g["ids"],
-                    representative=_spool_to_list_item(g["representative"], include_k_profiles=include_k_profiles),
+                    representative=_spool_to_list_item(
+                        g["representative"],
+                        include_k_profiles=include_k_profiles,
+                        archived_printer_ids=archived_printer_ids,
+                    ),
                 )
                 for g in groups
             ],
@@ -1279,7 +1309,10 @@ async def list_spools(
 
     last_page = 1 if all else max(1, math.ceil(total / per_page))
     return SpoolListPage(
-        items=[_spool_to_list_item(s, include_k_profiles=include_k_profiles) for s in spools],
+        items=[
+            _spool_to_list_item(s, include_k_profiles=include_k_profiles, archived_printer_ids=archived_printer_ids)
+            for s in spools
+        ],
         meta=PaginationMeta(
             total=total,
             current_page=1 if all else page,
