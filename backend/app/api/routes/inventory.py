@@ -1947,6 +1947,31 @@ async def list_k_profiles(
     return list(result.scalars().all())
 
 
+def k_profile_links_to_keep(
+    *,
+    existing: list,
+    payload_printer_ids: set[int],
+    archived_printer_ids: set[int],
+    connected_printer_ids: set[int],
+) -> list:
+    """Of a spool's existing K-profile links, the ones this save must NOT touch.
+
+    ⚠️ **Silence is only a decision about printers the client could see.** The
+    PA tab builds its payload from the printers it can offer — connected and
+    not archived — so a full replace destroyed every other link: a profile on a
+    printer that has since been archived, or one that merely happened to be
+    offline while the dialog was open. Neither was ever presented, neither was
+    ever unticked, and both were gone on the first save of that spool. On the
+    reporting farm 896 of 2443 links sat in that position.
+
+    A printer NAMED in the payload is spoken for regardless — the client
+    clearly had an opinion about it, even if it dropped off the network between
+    opening the dialog and the save landing.
+    """
+    spoken_for = payload_printer_ids | (connected_printer_ids - archived_printer_ids)
+    return [link for link in existing if link.printer_id not in spoken_for]
+
+
 @router.put("/spools/{spool_id}/k-profiles", response_model=list[SpoolKProfileResponse])
 async def replace_k_profiles(
     spool_id: int,
@@ -1963,9 +1988,29 @@ async def replace_k_profiles(
     if not (await db.execute(select(Spool).where(Spool.id == spool_id))).scalar_one_or_none():
         raise HTTPException(404, "Spool not found")
 
-    existing = await db.execute(select(SpoolKProfile).where(SpoolKProfile.spool_id == spool_id))
-    for old in existing.scalars().all():
-        await db.delete(old)
+    from backend.app.services.printer_manager import printer_manager
+
+    existing = (await db.execute(select(SpoolKProfile).where(SpoolKProfile.spool_id == spool_id))).scalars().all()
+    archived_printer_ids = set((await db.execute(select(Printer.id).where(Printer.archived.is_(True)))).scalars().all())
+    connected_printer_ids = {
+        pid
+        for (pid,) in (await db.execute(select(Printer.id))).all()
+        if (client := printer_manager.get_client(pid)) is not None and client.state.connected
+    }
+    # ⚠️ Replace only what the client could speak for — see
+    # ``k_profile_links_to_keep``. A blanket delete took out every link the PA
+    # tab was never able to offer (archived printer, or simply one that was
+    # offline just then), so any save of any spool quietly dropped them.
+    survivors = k_profile_links_to_keep(
+        existing=existing,
+        payload_printer_ids={p.printer_id for p in profiles},
+        archived_printer_ids=archived_printer_ids,
+        connected_printer_ids=connected_printer_ids,
+    )
+    survivor_ids = {link.id for link in survivors}
+    for old in existing:
+        if old.id not in survivor_ids:
+            await db.delete(old)
 
     new_links: list[SpoolKProfile] = []
     for p in profiles:
@@ -1984,7 +2029,10 @@ async def replace_k_profiles(
     await db.commit()
     for link in new_links:
         await db.refresh(link)
-    return new_links
+    # The response is what the spool now holds, survivors included — the client
+    # replaces its state from it, and omitting them would make the links look
+    # deleted until the next full read.
+    return survivors + new_links
 
 
 async def _find_or_create_filament_calibration_for_link(db: AsyncSession, p: SpoolKProfileBase):

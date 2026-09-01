@@ -46,6 +46,8 @@
 
 ### Fixed
 
+- **Saving a spool no longer forgets the K-profiles it could not see.** The PA tab offers profiles from printers that are connected and not archived, and saving replaced the spool's whole set with what it offered — so a profile calibrated on a printer you have since archived, or one that simply happened to be offline at that moment, was deleted by a save that had never asked about it. On one farm that was 896 of 2443 links, waiting to go on the first save of any spool. A save now replaces only the printers it could actually speak for; unticking a profile on a live printer still removes it, exactly as before.
+
 - **The K-profile count on a spool card no longer counts retired printers.** A spool calibrated on a printer you later archived keeps the link — correctly, it is history — but the inventory card listed those profiles and the badge counted them, so one spool read 11 on the card against 7 in its own dialog. The dialog was right: archiving retires a printer everywhere, and a profile you cannot use is not an option. Card and badge now agree with it. Nothing is deleted; the links are still there if the printer is ever restored.
 
 - **Green buttons all read the same way now.** Seventeen controls across the app — the printer / auto-queue switch in the Schedule dialog, the Slice and bulk-edit buttons, the camera-wall and label-picker chips, the print-options preference panel, the LDAP security picker, the AMS slot badge on a printer card and the skip-object markers — were drawing dark text on the accent colour while every other primary control draws white. That mattered more than it looks: the accent is a theme you can change, and "dark reads fine on this particular green" stops being true the moment you pick teal, blue or orange.
