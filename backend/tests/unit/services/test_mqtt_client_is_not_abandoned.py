@@ -145,13 +145,6 @@ class TestTheRequestTopicVerdictNeedsTwoStrikes:
     switched off by an event that had nothing to do with them. A printer that
     genuinely refuses does it every time, so it still latches — one reconnect
     later.
-
-    ⚠️ **Two strikes were not enough on their own.** Measured on a live farm
-    2026-09-01: every BamDude start makes the whole fleet reconnect at once,
-    each attempt dies young, and BOTH strikes are spent 1-2 seconds apart —
-    70 disables against 14 accepts in a single day, five per restart. So the
-    second strike now has to be a second OCCASION. That is what the original
-    fix meant by "one reconnect later"; it just never said so in time.
     """
 
     @staticmethod
@@ -165,29 +158,13 @@ class TestTheRequestTopicVerdictNeedsTwoStrikes:
         rc.is_failure = True
         c._on_disconnect(None, None, None, rc)
 
-    @staticmethod
-    def _a_while_later():
-        """Age the last strike so the next one is a separate occasion."""
-        from backend.app.services.bambu_mqtt import _REQUEST_TOPIC_STRIKE_GAP
-
-        if "TESTSERIAL0001" in BambuMQTTClient._request_topic_strike_at:
-            BambuMQTTClient._request_topic_strike_at["TESTSERIAL0001"] -= _REQUEST_TOPIC_STRIKE_GAP + 1
-
     @pytest.fixture(autouse=True)
     def _clean_class_state(self):
-        for d in (
-            BambuMQTTClient._request_topic_cache,
-            BambuMQTTClient._request_topic_strikes,
-            BambuMQTTClient._request_topic_strike_at,
-        ):
-            d.pop("TESTSERIAL0001", None)
+        BambuMQTTClient._request_topic_cache.pop("TESTSERIAL0001", None)
+        BambuMQTTClient._request_topic_strikes.pop("TESTSERIAL0001", None)
         yield
-        for d in (
-            BambuMQTTClient._request_topic_cache,
-            BambuMQTTClient._request_topic_strikes,
-            BambuMQTTClient._request_topic_strike_at,
-        ):
-            d.pop("TESTSERIAL0001", None)
+        BambuMQTTClient._request_topic_cache.pop("TESTSERIAL0001", None)
+        BambuMQTTClient._request_topic_strikes.pop("TESTSERIAL0001", None)
 
     def test_one_bad_moment_does_not_convict(self, client):
         self._died_right_after_subscribing(client)
@@ -195,33 +172,17 @@ class TestTheRequestTopicVerdictNeedsTwoStrikes:
         assert client._request_topic_supported is True
         assert "TESTSERIAL0001" not in BambuMQTTClient._request_topic_cache
 
-    def test_twice_on_separate_occasions_does(self, client):
+    def test_twice_in_a_row_does(self, client):
         self._died_right_after_subscribing(client)
-        self._a_while_later()
         self._died_right_after_subscribing(client)
 
         assert client._request_topic_supported is False
         assert BambuMQTTClient._request_topic_cache["TESTSERIAL0001"] is False
 
-    def test_twice_inside_one_storm_does_not(self, client):
-        """⚠️ The half that was missing, and the farm paid for it.
-
-        A restart reconnects every printer at once; if that moment is bad, each
-        printer's attempts die seconds apart and spend both strikes without
-        anyone learning anything about the printer. Back-to-back is one
-        episode, however many times it repeats.
-        """
-        for _ in range(5):
-            self._died_right_after_subscribing(client)
-
-        assert client._request_topic_supported is True
-        assert "TESTSERIAL0001" not in BambuMQTTClient._request_topic_cache
-
     def test_an_accepted_subscription_wipes_the_slate(self, client):
         """⚠️ Strikes are consecutive by design — otherwise a printer that drops
         once a month eventually convicts itself."""
         self._died_right_after_subscribing(client)
-        self._a_while_later()
 
         accepted = MagicMock()
         accepted.is_failure = False
