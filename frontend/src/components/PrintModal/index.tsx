@@ -1630,11 +1630,11 @@ export function PrintModal({
         className="w-full max-w-2xl max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
-        <CardContent className={mode === 'reprint' ? '' : 'p-0'}>
+        <CardContent>
           {/* Header */}
           <div
             className={`flex items-center justify-between ${
-              mode === 'reprint' ? 'mb-4' : 'p-4 border-b border-bambu-dark-tertiary'
+              mode === 'reprint' ? 'mb-4' : 'border-b border-bambu-dark-tertiary'
             }`}
           >
             <div className="flex items-center gap-2">
@@ -1689,7 +1689,7 @@ export function PrintModal({
             </Button>
           </div>
 
-          <form onSubmit={handleSubmit} className={mode === 'reprint' ? '' : 'p-4 space-y-4'}>
+          <form onSubmit={handleSubmit} className={mode === 'reprint' ? '' : 'space-y-4'}>
             {/* Dispatch mode toggle — only for add-to-queue.
                 Reprint is always specific; edit is bound to an existing per-printer row.
                 Hidden via lockDispatchMode when the modal was opened from a drop

@@ -3349,7 +3349,7 @@ export function ArchivesPage() {
   }, [handleKeyDown]);
 
   return (
-    <div className="p-4 md:p-6 relative">
+    <div className="p-4 md:p-4 relative">
       {/* Install-step-4 nudge (#1687): no-3MF fallback detected — slicer-side
           "Store sent files on external storage" is likely off. */}
       {no3MFWarning?.has_fallback && !no3MFWarningDismissed && (

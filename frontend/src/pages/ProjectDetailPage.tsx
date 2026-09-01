@@ -646,7 +646,7 @@ export function ProjectDetailPage() {
     // trapping somebody on a blank page: the back button does not need the
     // project to work.
     return (
-      <div className="p-4 md:p-6 space-y-4">
+      <div className="p-4 md:p-4 space-y-4">
         <button
           onClick={() => navigate('/projects')}
           className="p-2 rounded-lg bg-bambu-card hover:bg-bambu-dark-tertiary transition-colors"
@@ -714,7 +714,7 @@ export function ProjectDetailPage() {
   };
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 md:p-4 space-y-4">
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 text-sm text-bambu-gray">
         <Link to="/projects" className="hover:text-white transition-colors">
