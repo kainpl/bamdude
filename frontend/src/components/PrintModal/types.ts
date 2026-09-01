@@ -369,6 +369,9 @@ export interface PrinterSelectorProps {
   slicedForModel?: string | null;
   /** File is swap mode compatible - filter to swap-enabled printers only */
   swapCompatible?: boolean;
+  /** Printers whose queue the operator has paused. They stay selectable — the
+   *  item is accepted and waits — and only carry a badge saying so. */
+  pausedQueuePrinterIds?: number[];
 }
 
 /**

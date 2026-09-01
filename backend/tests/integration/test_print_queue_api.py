@@ -238,6 +238,35 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_a_paused_queue_still_accepts_a_hand_placed_item(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Pause stops dispatch, not planning (2026-09-01).
+
+        The m067 pause feature refused new items with a 409, which left the two
+        dialogs disagreeing: "Print now" dispatches through the background
+        dispatcher and never asked about the pause, so the very same file could
+        be pushed at a parked printer while merely QUEUEING it was refused. The
+        item now lands and waits; the pause is enforced where it belongs — the
+        scheduler skips it and the auto-queue won't route here.
+        """
+        _printer, queue = await printer_factory()
+        archive = await archive_factory()
+
+        queue.is_paused = True
+        await db_session.commit()
+
+        response = await async_client.post("/api/v1/queue/", json={"queue_id": queue.id, "archive_id": archive.id})
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "pending"
+
+        # Adding must not resume anything — the operator's pause survives.
+        await db_session.refresh(queue)
+        assert queue.is_paused is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_add_to_queue_with_macro_selection(self, async_client: AsyncClient, printer_factory, archive_factory):
         """The ticked macros ride on the item as JSON text and come back a list."""
         _printer, queue = await printer_factory()

@@ -351,22 +351,24 @@ export function PrintModal({
     return active.length === 1 ? active[0].id : null;
   }, [printers]);
 
-  // Per-printer queues — needed to drop printers with a paused queue from
-  // the add-to-queue picker (a paused queue refuses new items; the backend
-  // would 409 anyway). Only fetched / used in add-to-queue mode.
+  // Per-printer queues — needed to BADGE printers whose queue is paused in the
+  // add-to-queue picker. Only fetched / used in add-to-queue mode.
   const { data: queues } = useQuery({
     queryKey: ['queues'],
     queryFn: api.getQueues,
     enabled: mode === 'add-to-queue',
   });
 
-  const availablePrinters = useMemo(() => {
-    if (mode !== 'add-to-queue' || !printers) return printers;
-    const pausedPrinterIds = new Set(
-      (queues ?? []).filter((q) => q.is_paused).map((q) => q.printer_id),
-    );
-    return printers.filter((p) => !pausedPrinterIds.has(p.id));
-  }, [mode, printers, queues]);
+  // ⚠️ These printers are shown and selectable — a paused queue accepts items,
+  // it just doesn't dispatch them (backend `queue_add.py` says why). The badge
+  // exists so the operator plans the wait rather than discovers it: the print
+  // lands in the queue and sits there until the queue is resumed. Dropping them
+  // from the picker, as this did until 2026-09-01, made the "Schedule" dialog
+  // refuse a printer that "Print now" would happily take.
+  const pausedQueuePrinterIds = useMemo(
+    () => (mode === 'add-to-queue' ? (queues ?? []).filter((q) => q.is_paused).map((q) => q.printer_id) : []),
+    [mode, queues],
+  );
 
   // Per-(user, printer-model) saved PrintModal toggles. Preference is keyed
   // by the model string; selecting any printer of the same model loads the
@@ -1819,9 +1821,10 @@ export function PrintModal({
               <PrinterSelector
                 printers={
                   lockPrinterSelection
-                    ? (availablePrinters || []).filter((p) => selectedPrinters.includes(p.id))
-                    : availablePrinters || []
+                    ? (printers || []).filter((p) => selectedPrinters.includes(p.id))
+                    : printers || []
                 }
+                pausedQueuePrinterIds={pausedQueuePrinterIds}
                 locked={lockPrinterSelection}
                 selectedPrinterIds={selectedPrinters}
                 onMultiSelect={setSelectedPrinters}

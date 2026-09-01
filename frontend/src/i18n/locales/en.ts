@@ -6128,6 +6128,8 @@ export default {
     printerStateIdle: 'Idle',
     printerStateFinished: 'Finished',
     printerStateFailed: 'Failed',
+    queuePaused: 'Queue paused',
+    queuePausedHint: 'The print will be added to this printer’s queue and wait there until the queue is resumed.',
     selectPrinters: 'Select printers',
     printersSelected: '{{count}} printer(s) selected',
     unknownModel: 'Unknown model',

@@ -220,6 +220,7 @@ export function PrinterSelector({
   onUpdatePrinterConfig,
   slicedForModel,
   swapCompatible,
+  pausedQueuePrinterIds,
 }: PrinterSelectorWithMappingProps) {
   const { t } = useTranslation();
   // State for showing all printers vs only matching model
@@ -227,6 +228,12 @@ export function PrinterSelector({
 
   // Filter printers based on showInactive flag
   const activePrinters = showInactive ? printers : printers.filter((p) => p.is_active);
+
+  // A paused queue is a wait, not a refusal: the item is accepted and sits in
+  // that printer's queue until somebody resumes it. So this only ever badges —
+  // it must not disable the row, or the dialog would be back to hiding a
+  // printer the "Print now" path takes without a word.
+  const pausedQueueIds = useMemo(() => new Set(pausedQueuePrinterIds ?? []), [pausedQueuePrinterIds]);
 
   // Fetch printer statuses to determine busy/idle state
   const statusQueries = useQueries({
@@ -449,6 +456,14 @@ export function PrinterSelector({
                   {printer.model || t('printModal.unknownModel')} • {printer.ip_address}
                 </p>
               </div>
+              {pausedQueueIds.has(printer.id) && (
+                <span
+                  className="text-xs px-2 py-0.5 rounded-full whitespace-nowrap bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400"
+                  title={t('printModal.queuePausedHint')}
+                >
+                  {t('printModal.queuePaused')}
+                </span>
+              )}
               {stateLabel && (
                 <span className={`text-xs px-2 py-0.5 rounded-full ${
                   busy

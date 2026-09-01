@@ -1,9 +1,9 @@
 """Creating a print-queue item — one definition.
 
-Every gate lives here: the queue must exist and be unpaused, the caller must own
-what they are queueing, the filename must survive FAT32, the file must actually
-be sliced, and a G-code 3MF sliced for one printer model must not be queued to a
-printer that cannot run it (#2578).
+Every gate lives here: the queue must exist, the caller must own what they are
+queueing, the filename must survive FAT32, the file must actually be sliced, and
+a G-code 3MF sliced for one printer model must not be queued to a printer that
+cannot run it (#2578). A paused queue is NOT a gate — see the comment below.
 
 Extracted when a second, bulk route needed the same gates. That route is gone —
 the file manager now opens the scheduling dialog once per file, so the only
@@ -61,9 +61,18 @@ async def add_items_to_printer_queue(
     if not queue:
         raise HTTPException(400, "Queue not found")
 
-    # A paused queue refuses new items — pause means "queue closed".
-    if queue.is_paused:
-        raise HTTPException(409, "Queue is paused — resume it before adding items")
+    # ⚠️ A paused queue still ACCEPTS new items — deliberately, since 2026-09-01.
+    # Pause stops dispatch, not planning: the item lands visibly at the end of
+    # that printer's queue and waits there until somebody resumes it, which is
+    # what an operator filling the plan for a printer they parked actually
+    # wants. The gate used to live here (409, from the m067 pause feature) and
+    # was the only asymmetry between the two dialogs — "Print now" dispatches
+    # through ``background_dispatch``, which never asked, so the same file could
+    # be pushed at a paused printer while merely QUEUEING it was refused.
+    # What pause still means is untouched: ``print_scheduler.check_queue`` skips
+    # items in a paused queue and ``auto_queue_eligibility.find_eligible_printer``
+    # won't route work here — the AUTOMATIC paths stay closed, only the human's
+    # own hand is let in.
 
     # Validate archive exists (if provided) and get it for filament extraction
     archive = None

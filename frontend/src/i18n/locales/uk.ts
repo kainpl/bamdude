@@ -6169,6 +6169,8 @@ export default {
     printerStateIdle: 'Очікує',
     printerStateFinished: 'Завершено',
     printerStateFailed: 'Помилка',
+    queuePaused: 'Черга на паузі',
+    queuePausedHint: 'Друк стане в чергу цього принтера і чекатиме там, доки чергу не відновлять.',
     selectPrinters: 'Виберіть принтери',
     printersSelected: '{{count}} принтер(ів) вибрано',
     unknownModel: 'Невідома модель',
