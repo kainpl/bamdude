@@ -9407,7 +9407,7 @@ export function PrintersPage() {
   );
 
   return (
-    <div className="p-4 md:p-4">
+    <div className="p-4 md:p-6">
       {/* Header section: title with PrinterIcon + StatusSummaryBar (upstream PR #1203). */}
       <div className="space-y-3 mb-6">
         <div>
