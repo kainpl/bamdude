@@ -132,6 +132,17 @@ PLACEHOLDERS: tuple[Placeholder, ...] = (
 _TOKEN = re.compile(r"\{([a-z_0-9]+)\}")
 _KNOWN = frozenset(p.key for p in PLACEHOLDERS)
 
+#: The keys that only mean something on a LABEL. A spool's *name* has no use for
+#: a URL, a barcode payload, or its own resolved self — the registry already
+#: separates them with a comment, and this makes that line readable by code.
+#: ``inventory_service`` composes the naming template in SQL so the inventory
+#: search can match what the list SHOWS, and it needs to know where the naming
+#: vocabulary stops.
+LABEL_ONLY_PLACEHOLDERS = frozenset({"display_name", "deeplink", "ean"})
+
+#: The naming half of :data:`PLACEHOLDERS` — what a spool-name template may use.
+NAMING_PLACEHOLDERS: tuple[Placeholder, ...] = tuple(p for p in PLACEHOLDERS if p.key not in LABEL_ONLY_PLACEHOLDERS)
+
 #: Characters that are punctuation between two values rather than a value.
 #: ⚠️ Only a word made ENTIRELY of these counts — "PLA-CF" and "1,000" are
 #: values that happen to contain one.

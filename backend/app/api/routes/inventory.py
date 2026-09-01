@@ -55,8 +55,16 @@ from backend.app.schemas.spool import (
     SpoolResponse,
     SpoolUpdate,
 )
-from backend.app.schemas.spool_usage import SpoolUsageHistoryResponse
-from backend.app.services import forecast_engine, inventory_service
+from backend.app.schemas.spool_usage import (
+    SpoolUsageFacetPrinter,
+    SpoolUsageFacets,
+    SpoolUsageHistoryResponse,
+    SpoolUsageListItem,
+    SpoolUsagePage,
+    SpoolUsageSpoolRef,
+    SpoolUsageTotals,
+)
+from backend.app.services import forecast_engine, inventory_service, spool_usage_service
 from backend.app.services.location_service import (
     DUPLICATE_LOCATION_NAME,
     assign_location_name,
@@ -2511,25 +2519,169 @@ async def get_spool_usage_history(
     return list(result.scalars().all())
 
 
-@router.get("/usage", response_model=list[SpoolUsageHistoryResponse])
-async def get_all_usage_history(
-    limit: int = 100,
-    printer_id: int | None = None,
+_USAGE_PRINTER_ID_PATTERN = r"^(__none__|\d+)$"
+
+
+@router.get("/usage/facets", response_model=SpoolUsageFacets)
+async def get_usage_history_facets(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
-    """Get global usage history, optionally filtered by printer."""
-    from backend.app.models.spool_usage_history import SpoolUsageHistory
+    """The dropdown options for the History view's filters.
 
-    query = (
-        select(SpoolUsageHistory)
-        .order_by(SpoolUsageHistory.created_at.desc(), SpoolUsageHistory.id.desc())
-        .limit(limit)
+    Computed over EVERY usage row, not over the current selection — see
+    ``spool_usage_service.usage_facets``. Declared before the plain ``/usage``
+    route so the literal path segment matches here.
+    """
+    facets = await spool_usage_service.usage_facets(db, filters=[])
+    return SpoolUsageFacets(
+        statuses=facets["statuses"],
+        printers=[SpoolUsageFacetPrinter(**row) for row in facets["printers"]],
+        materials=facets["materials"],
+        brands=facets["brands"],
     )
-    if printer_id is not None:
-        query = query.where(SpoolUsageHistory.printer_id == printer_id)
-    result = await db.execute(query)
-    return list(result.scalars().all())
+
+
+@router.get("/usage", response_model=None)
+async def get_all_usage_history(
+    limit: int = 100,
+    printer_id: str | None = Query(
+        None,
+        # A sentinel rides in this param (``__none__`` = charged to no printer),
+        # so it is a validated string rather than an int — the same shape
+        # ``location_id`` uses on the spool list. A legacy caller sending a bare
+        # id still matches the pattern and still means what it always did.
+        pattern=_USAGE_PRINTER_ID_PATTERN,
+        description="Printer id, or '__none__' for rows recorded against no printer",
+    ),
+    spool_id: int | None = Query(None, description="Paged mode only"),
+    status: list[str] = Query(default_factory=list, description="Paged mode only; repeatable — any of them matches"),
+    material: str | None = Query(None, description="Paged mode only"),
+    brand: str | None = Query(None, description="Paged mode only"),
+    archived: str | None = Query(
+        None,
+        pattern="^(active|archived)$",
+        description="Paged mode only; the SPOOL's state. Omitted means BOTH — the default here, unlike /spools",
+    ),
+    assigned: str | None = Query(
+        None,
+        pattern="^(assigned|unassigned)$",
+        description="Paged mode only; whether the SPOOL sits in a printer. Omitted means both",
+    ),
+    date_from: datetime | None = Query(None, description="Paged mode only; inclusive, an absolute instant (UTC)"),
+    date_to: datetime | None = Query(None, description="Paged mode only; EXCLUSIVE, an absolute instant (UTC)"),
+    q: str | None = Query(None, description="Paged mode only; tokenised match over print name, spool and printer"),
+    sort_by: str | None = Query(
+        None,
+        description=(
+            "<column>_asc|_desc — see spool_usage_service._usage_sort_columns "
+            "plus the composite 'spool' key. Omitted keeps newest-first."
+        ),
+    ),
+    page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
+    per_page: int = Query(50, ge=1, le=200),
+    all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> list[SpoolUsageHistoryResponse] | SpoolUsagePage:
+    """Global filament-usage history.
+
+    Server-driven list (2026-09-01 — the Inventory page's History view), on the
+    same contract as ``GET /spools``: every filter param feeds
+    ``spool_usage_service.build_usage_filters``, the SAME condition list driving
+    the page query, ``meta.total`` and ``totals``.
+
+    ``page`` is the compat switch. Omit it and the response stays today's flat
+    ``list[SpoolUsageHistoryResponse]`` honouring only ``limit`` and
+    ``printer_id`` — this endpoint is public API and predates the view. Pass it
+    and the response becomes ``{"items": [...], "meta": {...}, "totals": {...}}``
+    of ``SpoolUsageListItem``, which carries the spool's identity and the
+    printer's NAME resolved in the same query.
+
+    ⚠️ ``totals`` covers the whole filter, not the page — that is the number the
+    view exists to show, and one computed over the fifty visible rows would
+    answer a question nobody asked.
+    """
+    if page is None:
+        from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+        query = (
+            select(SpoolUsageHistory)
+            .order_by(SpoolUsageHistory.created_at.desc(), SpoolUsageHistory.id.desc())
+            .limit(limit)
+        )
+        if printer_id == "__none__":
+            query = query.where(SpoolUsageHistory.printer_id.is_(None))
+        elif printer_id is not None:
+            query = query.where(SpoolUsageHistory.printer_id == int(printer_id))
+        result = await db.execute(query)
+        return [SpoolUsageHistoryResponse.model_validate(row) for row in result.scalars().all()]
+
+    filters = spool_usage_service.build_usage_filters(
+        display_name_template=await inventory_service.spool_display_template(db),
+        statuses=status or None,
+        printer_id=printer_id,
+        spool_id=spool_id,
+        material=material,
+        brand=brand,
+        archived=archived,
+        assigned=assigned,
+        date_from=date_from,
+        date_to=date_to,
+        q=q,
+    )
+
+    offset, page_limit = (0, None) if all else ((page - 1) * per_page, per_page)
+
+    total = await spool_usage_service.count_usage(db, filters=filters)
+    rows = await spool_usage_service.list_usage(db, filters=filters, sort_by=sort_by, limit=page_limit, offset=offset)
+    totals = await spool_usage_service.usage_totals(db, filters=filters)
+
+    return SpoolUsagePage(
+        items=[
+            SpoolUsageListItem(
+                id=row.id,
+                spool_id=row.spool_id,
+                created_at=row.created_at,
+                weight_used=row.weight_used,
+                percent_used=row.percent_used,
+                status=row.status,
+                cost=row.cost,
+                print_name=row.print_name,
+                archive_id=row.archive_id,
+                printer_id=row.printer_id,
+                printer_name=printer.name if printer else None,
+                printer_archived=bool(printer and printer.archived),
+                spool=None
+                if spool is None
+                else SpoolUsageSpoolRef(
+                    id=spool.id,
+                    material=spool.material,
+                    subtype=spool.subtype,
+                    brand=spool.brand,
+                    color_name=spool.color_name,
+                    rgba=spool.rgba,
+                    slicer_filament_name=spool.slicer_filament_name,
+                    note=spool.note,
+                    label_weight=spool.label_weight,
+                    weight_used=spool.weight_used,
+                    cost_per_kg=spool.cost_per_kg,
+                    purchase_date=spool.purchase_date,
+                    filament_diameter=spool.filament_diameter,
+                    lot=spool.lot,
+                    archived=spool.archived_at is not None,
+                ),
+            )
+            for row, spool, printer in rows
+        ],
+        meta=PaginationMeta(
+            total=total,
+            current_page=1 if all else page,
+            per_page=(total or 1) if all else per_page,
+            last_page=1 if all else max(1, math.ceil(total / per_page)),
+        ),
+        totals=SpoolUsageTotals(weight_used=totals["weight_used"], cost=totals["cost"]),
+    )
 
 
 async def _return_usage_weight(db: AsyncSession, spool: "Spool | None", rows: list) -> None:

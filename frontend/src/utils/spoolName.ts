@@ -1,5 +1,3 @@
-import type { InventorySpool } from '../api/client';
-
 /**
  * Synthesised spool display name, composed client-side from a user-configurable
  * template (Settings → Inventory → Spool display name template). The template
@@ -11,12 +9,38 @@ import type { InventorySpool } from '../api/client';
  * in a template are left verbatim so typos surface in the live preview instead
  * of silently collapsing to empty.
  */
+/**
+ * Exactly the fields the placeholders below read — nothing else.
+ *
+ * A full `InventorySpool` satisfies it structurally, so every existing caller
+ * is unchanged. It exists for callers that legitimately hold LESS than a whole
+ * spool: the usage ledger's rows carry the spool's identity denormalised onto
+ * them (a history outlives the list it would otherwise look the spool up in),
+ * and they must still produce the same name the table and the cards show.
+ */
+export interface SpoolNameFields {
+  id?: number;
+  brand?: string | null;
+  material?: string | null;
+  subtype?: string | null;
+  color_name?: string | null;
+  slicer_filament_name?: string | null;
+  note?: string | null;
+  label_weight?: number | null;
+  weight_used?: number | null;
+  rgba?: string | null;
+  cost_per_kg?: number | null;
+  purchase_date?: string | null;
+  filament_diameter?: string | null;
+  lot?: number | null;
+}
+
 export interface SpoolPlaceholder {
   key: string;
   label: string;
   description: string;
   example: string;
-  format: (s: InventorySpool) => string;
+  format: (s: SpoolNameFields) => string;
 }
 
 const formatKg = (grams: number): string => {
@@ -25,7 +49,7 @@ const formatKg = (grams: number): string => {
   return Number.isInteger(kg) ? String(kg) : kg.toFixed(2).replace(/\.?0+$/, '');
 };
 
-const remainingGrams = (s: InventorySpool): number =>
+const remainingGrams = (s: SpoolNameFields): number =>
   Math.max(0, (s.label_weight ?? 0) - (s.weight_used ?? 0));
 
 export const SPOOL_PLACEHOLDERS: SpoolPlaceholder[] = [
@@ -200,7 +224,7 @@ function dropOrphanSeparators(words: string[]): string[] {
  * - A separator holding nothing goes with the value it was separating.
  */
 export function formatSpoolDisplayName(
-  spool: InventorySpool,
+  spool: SpoolNameFields,
   template: string | undefined | null,
 ): string {
   const effective = template && template.trim() ? template : DEFAULT_SPOOL_DISPLAY_TEMPLATE;

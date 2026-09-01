@@ -3,9 +3,10 @@ so it can be called directly — not only through HTTP — by the cloud portal's
 registry (see docs/superpowers/sdd/2026-08-28-cloud-portal-phase2-remote-inventory-agent).
 """
 
+import re
 from typing import Any
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import Integer, Numeric, String, and_, case, cast, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -35,10 +36,17 @@ class SpoolNotFoundError(Exception):
 # Task 2/3 (ids/facets/groups endpoints) share this same builder — it is
 # deliberately the ONLY place these predicates are expressed.
 
-# The six raw columns the client's search fallback matched against
-# (InventoryPage.tsx:1270-1276) — the template-name match itself doesn't
-# survive server-side (no access to the user's display-name template), so
-# ``q`` degrades to a tokenised ilike over these columns (spec §3.1, accepted).
+# The raw columns ``q`` always matches against, whatever the naming template
+# says. The first six are the client's old search fallback
+# (InventoryPage.tsx:1270-1276); ``id`` and ``lot`` were added 2026-09-01
+# because an operator looks a spool up by the number written on it and neither
+# was reachable from the box — the same haystack ``AssignSpoolModal`` has always
+# searched (``${spool.id} ${displayName}``). Substring, like every other column:
+# "5" finds 5, 15 and 50, and that is what a search box does.
+#
+# ⚠️ These are a FLOOR, not the whole search — the display name itself is
+# composed in SQL and matched too, see :func:`_display_name_expr`. Narrowing the
+# naming template must never cost you search reach you had.
 _SEARCH_COLUMNS = (
     Spool.brand,
     Spool.material,
@@ -46,7 +54,126 @@ _SEARCH_COLUMNS = (
     Spool.subtype,
     Spool.note,
     Spool.slicer_filament_name,
+    cast(Spool.id, String),
+    cast(Spool.lot, String),
 )
+
+
+# ── The naming template, composed in SQL (2026-09-01) ───────────────────────
+#
+# The spool list shows a name built from a user-configurable template
+# (Settings → Inventory), and the search box used to match against that name,
+# character for character, in the browser. The server-driven rewrite could not
+# — so ``q`` degraded to the raw columns above, and a template mentioning
+# anything else (an id, a lot, a diameter) became unsearchable while staying
+# perfectly visible. The template is a SETTING, though, which the server can
+# read; so it is interpolated into a concatenation here and matched like any
+# other column.
+#
+# ⚠️ **This is the THIRD renderer of one vocabulary** — ``spoolName.ts`` draws
+# the name, ``label_context.spool_context`` prints it, and this one searches it.
+# The keys are pinned against ``label_template.NAMING_PLACEHOLDERS`` by a test,
+# so a placeholder added there without an expression here FAILS rather than
+# quietly going unsearchable. ``spool_usage_service`` reuses the same expression
+# over its joined ``Spool`` — the History view shows the same name.
+#
+# ⚠️ It is deliberately a SUPERSET of the rendered name, not an equal: orphan
+# separators are not dropped and whitespace is not collapsed. That direction is
+# safe — every token the eye can see is still in the string — and the tokenised
+# search makes the whitespace difference unobservable, because a token never
+# contains a space to be collapsed. The one honest gap is a token straddling a
+# formatted number and a template literal ("1kg" where SQL renders "1.0" + "kg"):
+# the numbers are formatted by the database here and by Python over there.
+
+_TEMPLATE_TOKEN = re.compile(r"\{([a-z_0-9]+)\}")
+
+#: The template used when the setting is empty — the same default
+#: ``AppSettings.spool_display_template`` and the frontend both carry.
+DEFAULT_SPOOL_DISPLAY_TEMPLATE = "{brand} {material} {color_name}"
+
+
+def _as_text(expr):
+    """Cast to TEXT and make NULL an empty string.
+
+    ⚠️ Both halves are load-bearing. ``NULL || 'x'`` is NULL on SQLite AND on
+    PostgreSQL, so a single NULL piece would turn the whole composed name into
+    NULL and the ``ilike`` would never match — one spool with no lot would make
+    every spool unfindable.
+    """
+    return func.coalesce(cast(expr, String), "")
+
+
+def _display_name_columns() -> dict[str, Any]:
+    """Every naming placeholder as a TEXT expression.
+
+    Mirrors ``label_context.spool_context``'s formatting closely enough for
+    substring matching; where the two differ it is in trailing zeros a database
+    keeps and Python strips ("1.0" vs "1"), which a search for the number itself
+    still finds.
+    """
+    net = _net_weight_expr()
+    return {
+        "id": _as_text(Spool.id),
+        "brand": _as_text(Spool.brand),
+        "material": _as_text(Spool.material),
+        "subtype": _as_text(Spool.subtype),
+        "color_name": _as_text(Spool.color_name),
+        "slicer_filament_name": _as_text(Spool.slicer_filament_name),
+        "note": _as_text(Spool.note),
+        "label_weight_g": _as_text(cast(func.round(Spool.label_weight), Integer)),
+        "label_weight_kg": _as_text(func.round(cast(Spool.label_weight, Numeric) / 1000, 2)),
+        "remaining_g": _as_text(cast(func.round(net), Integer)),
+        "remaining_kg": _as_text(func.round(cast(net, Numeric) / 1000, 2)),
+        "remaining_pct": _as_text(cast(func.round(_remaining_pct_expr()), Integer)) + literal("%"),
+        "color_hex": func.coalesce(literal("#") + func.upper(func.substr(Spool.rgba, 1, 6)), ""),
+        "color_hex_all": _as_text(Spool.rgba) + func.coalesce(literal(",") + Spool.extra_colors, ""),
+        "cost_per_kg": _as_text(func.round(cast(Spool.cost_per_kg, Numeric), 2)),
+        # ⚠️ Not strftime/to_char — those are dialect-specific. A plain cast
+        # renders "2026-04-15 00:00:00" on both backends, which CONTAINS the
+        # "YYYY-MM-DD" the label prints, and containment is all a search needs.
+        "purchase_date": _as_text(Spool.purchase_date),
+        "filament_diameter": _as_text(Spool.filament_diameter),
+        "lot": _as_text(Spool.lot),
+    }
+
+
+def display_name_expr(template: str | None):
+    """The naming template as one concatenated TEXT expression, or ``None`` when
+    there is nothing to compose.
+
+    An unknown placeholder survives verbatim — the same choice
+    ``label_template.resolve`` and the frontend both make, so a typo shows up as
+    ``{colour_name}`` in the name AND is findable by searching for it, rather
+    than being a silent gap in two places that disagree.
+    """
+    text = (template or "").strip() or DEFAULT_SPOOL_DISPLAY_TEMPLATE
+    columns = _display_name_columns()
+
+    parts: list[Any] = []
+    # One capturing group, so split() alternates literal, key, literal, key…
+    for index, chunk in enumerate(_TEMPLATE_TOKEN.split(text)):
+        if index % 2 == 1:
+            parts.append(columns.get(chunk) if chunk in columns else literal("{" + chunk + "}"))
+        elif chunk:
+            parts.append(literal(chunk))
+
+    if not parts:
+        return None
+
+    composed = parts[0]
+    for part in parts[1:]:
+        composed = composed + part
+    return composed
+
+
+async def spool_display_template(db: AsyncSession) -> str:
+    """The operator's naming template, or the default when unset."""
+    # Deferred: the settings accessor lives in the routes package, and a
+    # module-level import here would point a service at a router.
+    from backend.app.api.routes.settings import get_setting
+
+    return (await get_setting(db, "spool_display_template") or "").strip() or DEFAULT_SPOOL_DISPLAY_TEMPLATE
+
 
 # The legacy default ordering list_spools has always used — kept as its own
 # constant so the legacy branch (filters=None) and the new-path fallback
@@ -390,13 +517,19 @@ async def build_spool_filters(
         filters.append(~select(SpoolAssignment.spool_id).where(SpoolAssignment.spool_id == Spool.id).exists())
 
     if q and q.strip():
-        # Tokenised ilike: each token must match AT LEAST ONE of the six
-        # columns (OR), and every token must match SOMETHING (AND across
-        # tokens) — so "SUN Bl" finds a SUNLU-brand Black spool the same way
-        # the deleted client-side template search did (spec §3.1).
+        # Tokenised ilike: each token must match AT LEAST ONE column (OR), and
+        # every token must match SOMETHING (AND across tokens) — so "SUN Bl"
+        # finds a SUNLU-brand Black spool.
+        #
+        # The composed DISPLAY NAME is one of those columns (2026-09-01), which
+        # is what makes a token spanning two fields — "LU PET" across brand and
+        # material — match again, the way it did when the search ran in the
+        # browser over the rendered name.
+        display_name = display_name_expr(await spool_display_template(db))
+        columns = (*_SEARCH_COLUMNS, display_name) if display_name is not None else _SEARCH_COLUMNS
         for token in q.strip().split():
             term = f"%{token}%"
-            filters.append(or_(*(col.ilike(term) for col in _SEARCH_COLUMNS)))
+            filters.append(or_(*(col.ilike(term) for col in columns)))
 
     return filters
 

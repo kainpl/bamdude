@@ -1311,3 +1311,101 @@ class TestGroupedModeRoute:
         # And the 200 really is the grouped shape (the seeded spool has no
         # location, so it survives the __none__ filter as one group).
         assert [item["group_count"] for item in ok.json()["items"]] == [1]
+
+
+# ── The naming template is part of the search (2026-09-01) ──────────────────
+#
+# The list shows a name built from a user template, and the browser used to
+# search that rendered name character for character. The server-driven rewrite
+# degraded ``q`` to the raw columns, so a template mentioning anything else went
+# unsearchable while staying perfectly visible. The template is a setting, so
+# the server composes it in SQL and matches it like any other column.
+
+
+async def _set_template(db_session, template: str) -> None:
+    db_session.add(Settings(key="spool_display_template", value=template))
+    await db_session.commit()
+
+
+async def test_every_naming_placeholder_has_a_sql_expression():
+    """Drift guard. ``spoolName.ts`` draws the name, ``label_context`` prints it
+    and ``inventory_service`` searches it — three renderers of one vocabulary. A
+    placeholder added to the registry without an expression here would go
+    silently unsearchable, which is exactly the failure this whole change fixes.
+    """
+    from backend.app.services.label_template import NAMING_PLACEHOLDERS
+
+    assert {p.key for p in NAMING_PLACEHOLDERS} == set(inventory_service._display_name_columns())
+
+
+async def test_the_id_and_the_lot_are_searchable_whatever_the_template_says(db_session):
+    """Asked for directly: an operator looks a spool up by the number written on
+    it. These are a FLOOR — narrowing the naming template must not cost search
+    reach — so the default template, which mentions neither, still finds them."""
+    target = await _spool(db_session, brand="SUNLU", lot=7714)
+    await _spool(db_session, brand="Polymaker", lot=3)
+
+    assert await _filtered_ids(db_session, q="7714") == [target.id]
+    assert await _filtered_ids(db_session, q=str(target.id)) == [target.id]
+
+
+async def test_a_template_only_field_becomes_searchable(db_session):
+    """The bug, in one test: with ``{lot}`` on screen, searching for it found
+    nothing, because the server matched columns rather than the name."""
+    await _set_template(db_session, "{brand} {material} #{lot}")
+    target = await _spool(db_session, brand="SUNLU", material="PETG", lot=42, filament_diameter="2.85")
+    await _spool(db_session, brand="SUNLU", material="PETG", lot=None)
+
+    assert await _filtered_ids(db_session, q="#42") == [target.id]
+
+
+async def test_a_token_may_straddle_the_boundary_between_two_fields(db_session):
+    """What the browser search could do and the column search could not.
+
+    ⚠️ Only across a boundary the query itself can contain: the search splits on
+    whitespace, so a token never spans a SPACE — it is the template's own
+    punctuation that used to be unmatchable. "LU/PET" exists in no column; it
+    exists only in the name.
+    """
+    await _set_template(db_session, "{brand}/{material}")
+    target = await _spool(db_session, brand="SUNLU", material="PETG")
+    await _spool(db_session, brand="Polymaker", material="PETG")
+
+    assert await _filtered_ids(db_session, q="LU/PET") == [target.id]
+
+
+async def test_the_literal_text_of_the_template_is_searchable_too(db_session):
+    """A template's own words are part of the name the operator reads."""
+    await _set_template(db_session, "Shelf {brand} {material}")
+    target = await _spool(db_session, brand="SUNLU", material="PETG")
+
+    assert await _filtered_ids(db_session, q="Shelf") == [target.id]
+
+
+async def test_a_spool_with_empty_fields_is_still_findable(db_session):
+    """⚠️ ``NULL || 'x'`` is NULL on both backends — one un-coalesced piece would
+    make the whole composed name NULL and the ilike would match NOTHING. A spool
+    with no lot must not make every spool unfindable."""
+    await _set_template(db_session, "{brand} {material} {lot} {cost_per_kg} {purchase_date}")
+    target = await _spool(db_session, brand="SUNLU", material="PETG", lot=None, cost_per_kg=None)
+
+    assert await _filtered_ids(db_session, q="SUNLU") == [target.id]
+
+
+async def test_an_unknown_placeholder_survives_verbatim_and_is_findable(db_session):
+    """The same choice ``label_template.resolve`` and the frontend make: a typo
+    shows up as ``{colour_name}`` in the name rather than as a silent gap — so
+    searching for it has to find the rows that display it."""
+    await _set_template(db_session, "{brand} {colour_name}")
+    target = await _spool(db_session, brand="SUNLU")
+
+    assert await _filtered_ids(db_session, q="{colour_name}") == [target.id]
+
+
+async def test_the_search_still_reaches_the_note_a_template_never_shows(db_session):
+    """The raw columns are a floor under the name, not an alternative to it."""
+    await _set_template(db_session, "{brand}")
+    target = await _spool(db_session, brand="SUNLU", note="kitchen shelf")
+    await _spool(db_session, brand="SUNLU", note=None)
+
+    assert await _filtered_ids(db_session, q="kitchen") == [target.id]

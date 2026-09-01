@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Save, Beaker, Palette, Zap, Tag, Unlink } from 'lucide-react';
+import { X, Loader2, Save, Beaker, Palette, Zap, Tag, Unlink, History } from 'lucide-react';
 import { type FilamentFamily, api, ApiError } from '../api/client';
 import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, SpoolmanBulkCreateResult, SpoolKProfileInput, SpoolmanFilamentEntry } from '../api/client';
 import { Button } from './Button';
@@ -23,7 +23,7 @@ import {
   invalidateSpoolAndLocationQueries,
 } from '../utils/inventoryQueries';
 
-type TabId = 'filament' | 'pa-profile';
+type TabId = 'filament' | 'pa-profile' | 'usage';
 
 const CLEAR_TAG_PAYLOAD = { tag_uid: null, tray_uuid: null, tag_type: null, data_origin: null };
 
@@ -72,6 +72,13 @@ export function SpoolFormModal({
   const resolvedMode: SpoolFormMode = mode ?? (spool ? 'edit' : 'create');
   const isEditing = resolvedMode === 'edit';
   const isCopying = resolvedMode === 'copy';
+  // Usage history is a TAB, not a trailer under the filament form. It is a
+  // list that grows without bound, and pinned to the bottom of an already
+  // long form it stretched the dialog past its own scroll box. It exists
+  // only where there is a ledger of ours to show — an existing spool of the
+  // internal inventory; in Spoolman mode Spoolman keeps that record and we
+  // never wrote one, which is why the block used to be gated the same way.
+  const showUsageTab = isEditing && !!spool && !spoolmanMode;
 
   // Form state
   const [formData, setFormData] = useState<SpoolFormData>(defaultFormData);
@@ -745,6 +752,13 @@ export function SpoolFormModal({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
+  // The tab can disappear under the operator (the same modal is reused for
+  // the next spool, or for a Spoolman one), and a dead `activeTab` would
+  // leave the body blank with no tab lit.
+  useEffect(() => {
+    if (!showUsageTab && activeTab === 'usage') setActiveTab('filament');
+  }, [showUsageTab, activeTab]);
+
   if (!isOpen) return null;
 
   const handleSubmit = () => {
@@ -913,6 +927,19 @@ export function SpoolFormModal({
               )}
             </button>
           )}
+          {showUsageTab && (
+            <button
+              onClick={() => setActiveTab('usage')}
+              className={`flex-1 px-4 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+                activeTab === 'usage'
+                  ? 'text-bambu-green border-b-2 border-bambu-green'
+                  : 'text-bambu-gray hover:text-white'
+              }`}
+            >
+              <History className="w-4 h-4" />
+              {t('inventory.usageHistoryTab')}
+            </button>
+          )}
         </div>
 
         {/* Content */}
@@ -1043,14 +1070,9 @@ export function SpoolFormModal({
                   spoolmanMode={spoolmanMode}
                 />
               </div>
-
-              {/* Usage History (only when editing internal inventory; Spoolman tracks its own) */}
-              {isEditing && spool && !spoolmanMode && (
-                <div>
-                  <SpoolUsageHistory spoolId={spool.id} />
-                </div>
-              )}
             </div>
+          ) : activeTab === 'usage' ? (
+            spool && <SpoolUsageHistory spoolId={spool.id} />
           ) : (
             <PAProfileSection
               formData={formData}

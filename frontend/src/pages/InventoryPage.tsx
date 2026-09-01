@@ -9,9 +9,10 @@ import {
   Search,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, Disc3, Copy, Eraser,
-  TrendingUp, Lock, Sparkles, Upload, Download, MapPin,
+  TrendingUp, Lock, Sparkles, Upload, Download, MapPin, History,
 } from 'lucide-react';
 import { ForecastPanel } from '../components/ForecastPanel';
+import { SpoolUsageHistoryPanel } from '../components/SpoolUsageHistoryPanel';
 import { api, ApiError } from '../api/client';
 import type {
   InventorySpool,
@@ -1011,7 +1012,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // feed WAITS for the answer whenever the stored view is the forecast, and
   // starts only if the answer comes back "no panel".
   const forecastVerdictPending = viewMode === 'forecast' && (authLoading || !spoolmanModeReady);
-  const listFeedSuppressed = forecastViewActive || forecastVerdictPending;
+  // The History view (2026-09-01) is the same shape of thing as the forecast:
+  // its own server-driven feed rendered INSTEAD of the list, so the list must
+  // not keep polling behind it — a persisted "All" page size would otherwise
+  // make that a full-table download every 30 s under a tab that never reads it.
+  // Gated on Spoolman mode for the same reason the forecast is: those rows are
+  // OUR ledger, and there is none to show when Spoolman owns the inventory.
+  const historyViewActive = viewMode === 'history' && !spoolmanMode;
+  const historyVerdictPending = viewMode === 'history' && !spoolmanModeReady;
+  const listFeedSuppressed =
+    forecastViewActive || forecastVerdictPending || historyViewActive || historyVerdictPending;
 
   // The paged list — flat or grouped, one enabled at a time. The 30s poll
   // the full-array query used to run now refetches the CURRENT PAGE only.
@@ -1192,6 +1202,21 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       }
     },
     [spoolmanMode, showToast, t],
+  );
+
+  /** A history row names a spool by id only — the ledger outlives the list,
+   *  so the row cannot borrow an object from a page that may not be showing
+   *  that spool at all (archived, filtered out, on another page). */
+  const openSpoolById = useCallback(
+    async (spoolId: number) => {
+      try {
+        const full = await api.getSpool(spoolId);
+        setFormModal({ spool: full, mode: 'edit' });
+      } catch {
+        showToast(t('inventory.deepLinkFetchFailed'), 'error');
+      }
+    },
+    [showToast, t],
   );
 
   const { data: assignments } = useQuery({
@@ -1912,7 +1937,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // disabling themselves over a full inventory.
   const totalRows = spoolmanMode
     ? clientTotalRows
-    : forecastViewActive
+    : forecastViewActive || historyViewActive
       ? (serverStats?.active_spools ?? 0)
       : (serverMeta?.total ?? 0);
   const totalPages = spoolmanMode ? clientTotalPages : (serverMeta?.last_page ?? 1);
@@ -1993,9 +2018,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // ⚠️ The forecast branch never waits on the list feed — that feed is
   // DISABLED there (see forecastViewActive), and gating the panel's paint on
   // a query that will never resolve is how a whole tab renders as a spinner.
-  const listLoading = forecastViewActive
+  const listLoading = forecastViewActive || historyViewActive
     ? false
-    : forecastVerdictPending
+    : forecastVerdictPending || historyVerdictPending
       // The stored view is the forecast and we do not yet know whether the
       // panel is allowed: neither surface can be painted honestly, and the
       // table's empty state is a claim ("no spools") we have not earned.
@@ -2274,13 +2299,18 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
       {/* Toolbar: Search + View toggle */}
       <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
+        {/* ONE search box, in one place, whichever view is open — the History
+            view is fed from this same input (it debounces the text and asks the
+            server), rather than growing a second box a row lower that appears
+            when you switch tabs. Only the placeholder changes, because what it
+            searches does. */}
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
           <input
             type="text"
             value={search}
             onChange={(e) => { setSearch(e.target.value); resetPage(); }}
-            placeholder={t('inventory.search')}
+            placeholder={historyViewActive ? t('inventory.usageView.searchPlaceholder') : t('inventory.search')}
             className="w-full pl-10 pr-8 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
           />
           {search && (
@@ -2305,7 +2335,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               <span className="hidden sm:inline">{t('inventory.columnsLabel')}</span>
             </button>
           )}
-          {/* Group similar toggle */}
+          {/* Group similar toggle. Hidden under History for the same reason the
+              chips row is: it groups SPOOLS, and there is no spool list under
+              it to group. */}
+          {!historyViewActive && (
           <button
             onClick={toggleGroupSimilar}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border rounded-lg transition-colors ${
@@ -2318,6 +2351,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             <Group className="w-4 h-4" />
             <span className="hidden sm:inline">{t('inventory.groupSimilar')}</span>
           </button>
+          )}
           {/* Table / Cards toggle */}
           <div className="flex bg-bambu-dark-primary border border-bambu-dark-tertiary rounded-lg overflow-hidden">
             <button
@@ -2342,6 +2376,23 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               <LayoutGrid className="w-4 h-4" />
               <span className="hidden sm:inline">{t('inventory.cards')}</span>
             </button>
+            {/* History — the farm's whole filament ledger (2026-09-01). Hidden
+                in Spoolman mode: those rows are OUR table, and showing an
+                empty one under a Spoolman UI would read as "nothing was ever
+                printed" rather than "this is kept elsewhere". */}
+            {!spoolmanMode && (
+              <button
+                onClick={() => setViewMode('history')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors ${
+                  viewMode === 'history'
+                    ? 'bg-bambu-green text-white'
+                    : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
+                }`}
+              >
+                <History className="w-4 h-4" />
+                <span className="hidden sm:inline">{t('inventory.usageHistoryTab')}</span>
+              </button>
+            )}
             {/* Forecast tab — gated on perm + non-Spoolman mode (upstream #1184) */}
             {!spoolmanMode && (
               <button
@@ -2362,7 +2413,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         </div>
       </div>
 
-      {/* Filter chips row */}
+      {/* Filter chips row. Hidden under the History view: every chip here
+          filters SPOOLS (archived, unused, low stock, assigned) and the count
+          beside them counts spools — over a list of consumption events they
+          would be controls that visibly do nothing. Left un-indented on
+          purpose: re-indenting three hundred lines to add one guard buries the
+          change nobody could then find. */}
+      {!historyViewActive && (
       <div className="flex flex-wrap items-center gap-2">
         {/* Active / Archived chips */}
         <div className="flex items-center rounded-lg border border-bambu-dark-tertiary overflow-hidden">
@@ -2666,6 +2723,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           )}
         </span>
       </div>
+      )}
 
       {/* Content */}
       {listLoading ? (
@@ -2681,6 +2739,14 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
            UI (task-5 review, Minor 1); it falls back to the table below
            instead. */
         <ForecastPanel />
+      ) : historyViewActive ? (
+        /* The farm-wide usage ledger. Server-driven end to end — page, order,
+           filters, search and totals all decided by GET /inventory/usage. */
+        <SpoolUsageHistoryPanel
+          search={search}
+          onClearSearch={() => { setSearch(''); resetPage(); }}
+          onOpenSpool={openSpoolById}
+        />
       ) : viewMode === 'cards' ? (
         /* Cards view */
         pagedItems.length > 0 ? (

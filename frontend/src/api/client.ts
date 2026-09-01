@@ -4573,6 +4573,96 @@ export interface SpoolUsageRecord {
   created_at: string;
 }
 
+// ── Farm-wide usage history — the Inventory page's History view (2026-09-01) ─
+// The paged shape of GET /inventory/usage. Each row arrives with the spool's
+// identity and the printer's NAME already on it: this list shows rows for
+// spools the inventory list is not showing (archived, filtered out, deleted),
+// so a client-side lookup against the spool list would render rows with no
+// identity at all.
+
+/** The spool a usage row charged, as it is NOW. Carries every field a display
+ *  -name template can read (`SpoolNameFields`), because the name is composed in
+ *  the browser and a row must read exactly like the same spool does in the
+ *  table and on the cards. */
+export interface SpoolUsageSpoolRef {
+  id: number;
+  material: string | null;
+  subtype: string | null;
+  brand: string | null;
+  color_name: string | null;
+  rgba: string | null;
+  slicer_filament_name: string | null;
+  note: string | null;
+  label_weight: number | null;
+  weight_used: number | null;
+  cost_per_kg: number | null;
+  purchase_date: string | null;
+  filament_diameter: string | null;
+  lot: number | null;
+  /** The spool has since been retired. The row stays — a history is never
+   *  filtered by that — and the view marks it so nobody hunts a shelf. */
+  archived: boolean;
+}
+
+export interface SpoolUsageListItem {
+  id: number;
+  spool_id: number;
+  created_at: string;
+  weight_used: number;
+  percent_used: number;
+  status: string;
+  cost: number | null;
+  print_name: string | null;
+  archive_id: number | null;
+  printer_id: number | null;
+  printer_name: string | null;
+  /** A retired printer is labelled generically, never by a name that may have
+   *  been reused since — `printerLabel()` is the one place that decides. */
+  printer_archived: boolean;
+  /** Null only when the row outlived its spool — `spool_id` still names it. */
+  spool: SpoolUsageSpoolRef | null;
+}
+
+export interface SpoolUsagePage {
+  items: SpoolUsageListItem[];
+  meta: PaginationMeta;
+  /** Across the whole filter, not the page on screen. `cost` is null when no
+   *  matching row carries one — 0.00 would read as "free", not "unpriced". */
+  totals: { weight_used: number; cost: number | null };
+}
+
+export interface SpoolUsageFacets {
+  statuses: string[];
+  printers: { id: number; name: string | null; archived: boolean }[];
+  materials: string[];
+  brands: string[];
+}
+
+export interface UsageHistoryParams {
+  q?: string;
+  /** Repeatable — any of them matches. */
+  status?: string[];
+  /** Printer id as digits, or '__none__' for rows charged to no printer. */
+  printer_id?: string;
+  spool_id?: number;
+  material?: string;
+  brand?: string;
+  /** The SPOOL's state. ⚠️ Omitted means BOTH, and that is this view's default —
+   *  unlike the spool list, where a tab is always one or the other. */
+  archived?: 'active' | 'archived';
+  /** Whether the SPOOL sits in a printer. Omitted means both. */
+  assigned?: 'assigned' | 'unassigned';
+  /** Absolute instants, NOT calendar days: the picker's local days are turned
+   *  into UTC boundaries here, because only the client knows the timezone.
+   *  `date_to` is EXCLUSIVE — send the start of the day after. */
+  date_from?: string;
+  date_to?: string;
+  sort_by?: string;
+  page?: number;
+  per_page?: number;
+  all?: boolean;
+}
+
 export interface SpoolKProfile {
   id: number;
   spool_id: number;
@@ -8605,11 +8695,38 @@ export const api = {
     }),
   getSpoolUsageHistory: (spoolId: number, limit = 50) =>
     request<SpoolUsageRecord[]>(`/inventory/spools/${spoolId}/usage?limit=${limit}`),
-  // ⚠️ No farm-wide usage-history helper lives here. Its only caller was the
-  // ForecastPanel's 5000-row feed, deleted by the forecast-server-side cycle
-  // (the engine now aggregates usage server-side), and two tests pin that
-  // GET /inventory/usage is never called from the client. The ENDPOINT stays
-  // — it is public API — but a ready-made helper for it is an invitation.
+  /** Farm-wide usage history, PAGED — the History view's one feed (2026-09-01).
+   *
+   *  ⚠️ `page` is mandatory here and is set below whatever the caller passes.
+   *  The unpaged form of this endpoint answers a flat array honouring only
+   *  `limit`, and its last client caller was the ForecastPanel's 5000-row
+   *  download that the forecast-server-side cycle deleted; two tests still pin
+   *  that nothing fetches it that way. Reaching this table from the browser is
+   *  fine — reaching all of it at once is what was wrong. */
+  getUsageHistory: (params: UsageHistoryParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set('q', params.q);
+    for (const status of params.status ?? []) qs.append('status', status);
+    if (params.printer_id) qs.set('printer_id', params.printer_id);
+    if (params.spool_id !== undefined) qs.set('spool_id', String(params.spool_id));
+    if (params.material) qs.set('material', params.material);
+    if (params.brand) qs.set('brand', params.brand);
+    if (params.archived) qs.set('archived', params.archived);
+    if (params.assigned) qs.set('assigned', params.assigned);
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    if (params.sort_by) qs.set('sort_by', params.sort_by);
+    qs.set('page', String(params.page ?? 1));
+    if (params.all) {
+      qs.set('all', 'true');
+    } else if (params.per_page) {
+      qs.set('per_page', String(params.per_page));
+    }
+    return request<SpoolUsagePage>(`/inventory/usage?${qs}`);
+  },
+  /** The History view's dropdown options — computed over every usage row, not
+   *  over the current selection, so narrowing one filter never empties another. */
+  getUsageHistoryFacets: () => request<SpoolUsageFacets>('/inventory/usage/facets'),
   clearSpoolUsageHistory: (spoolId: number) =>
     request<InventorySpool>(`/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
   deleteSpoolUsageRecord: (spoolId: number, usageId: number) =>

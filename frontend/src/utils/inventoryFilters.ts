@@ -31,7 +31,10 @@ export type StockFilter = 'all' | 'stock' | 'configured';
  * Answering it by picking printers one at a time is what this replaces.
  */
 export type AssignedFilter = 'all' | 'assigned' | 'unassigned';
-export type ViewMode = 'table' | 'cards' | 'forecast';
+/** `history` is the farm-wide usage ledger (2026-09-01) — a list of
+ *  consumption EVENTS, not of spools, which is why it brings its own
+ *  filters and the page hides its spool ones while it is open. */
+export type ViewMode = 'table' | 'cards' | 'history' | 'forecast';
 
 export const FILTERS_KEY = 'bamdude-inventory-filters';
 
@@ -67,7 +70,7 @@ const ARCHIVE_FILTERS: ArchiveFilter[] = ['active', 'archived'];
 const USAGE_FILTERS: UsageFilter[] = ['all', 'used', 'new', 'lowstock'];
 const STOCK_FILTERS: StockFilter[] = ['all', 'stock', 'configured'];
 const ASSIGNED_FILTERS: AssignedFilter[] = ['all', 'assigned', 'unassigned'];
-const VIEW_MODES: ViewMode[] = ['table', 'cards', 'forecast'];
+const VIEW_MODES: ViewMode[] = ['table', 'cards', 'history', 'forecast'];
 
 /**
  * ⚠️ **Enum values are validated; free-text ones cannot be.** Anything outside

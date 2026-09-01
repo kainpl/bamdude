@@ -102,7 +102,10 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
           {t('inventory.clearHistory')}
         </Button>
       </div>
-      <div className="max-h-48 overflow-y-auto space-y-1">
+      {/* No height cap and no scroller of its own — this fills its own tab in
+          the spool dialog, whose body already scrolls. A second scroll box
+          inside it would strand the list in 48 units of the space it has. */}
+      <div className="space-y-1">
         {history.map((record: SpoolUsageRecord) => (
           <div
             key={record.id}
