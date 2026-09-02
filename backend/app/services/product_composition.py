@@ -100,16 +100,20 @@ class PlateRecipe:
     filament_used_grams: float | None = None
 
 
-def _plate_number(meta: dict | None, plate_index: int, key: str):
+def _plate_number(meta: dict | None, plate_index: int, key: str) -> int | float | None:
     plates = _plates(meta, plate_index)
     if plate_index > 0:
         return plates[0].get(key) if plates else None
     if len(plates) == 1:
         return plates[0].get(key)
-    # whole multi-plate file: sum when every plate knows the number
-    vals = [p.get(key) for p in plates]
-    if plates and all(isinstance(v, (int, float)) for v in vals):
-        return sum(vals)
+    # Whole multi-plate file: sum the plates that HAVE the figure, the same
+    # convention the library card totals use (routes/library.py, is_multi_plate
+    # branch). ⚠️ The top-level key is only ONE plate's snapshot, so it is the
+    # fallback of last resort — reading it for a half-sliced file would report
+    # plate 1's time as the whole file's.
+    numeric = [v for v in (p.get(key) for p in plates) if isinstance(v, (int, float))]
+    if numeric:
+        return sum(numeric)
     return (meta or {}).get(key)
 
 
@@ -131,9 +135,18 @@ def recipe_for(
     recipe.filament_used_grams = float(grams) if isinstance(grams, (int, float)) else None
     recipe.materials = plate_materials(meta, plate.plate_index)
     recipe.colors = plate_colors(meta, plate.plate_index)
-    # A plate is printable when its own gcode exists (per-plate timing) or the
-    # file as a whole is a sliced container (file_type 'gcode').
-    recipe.sliced = recipe.print_time_seconds is not None or (file_type or "").lower() == "gcode"
+    # Mirrors ``LibraryFile.is_printable()``: ``file_type`` alone is NOT the
+    # answer — ``detect_file_type`` collapses ``.gcode.3mf`` to "gcode" by
+    # FILENAME, and the content flag ``file_metadata["has_sliced_gcode"]``
+    # (m137) is what settles it, where a MISSING flag counts as printable
+    # (rows written before the check exists have no answer). A single plate of
+    # a multi-plate file is decided by its own timing alone — the file-level
+    # flag says nothing about which plates carry gcode.
+    recipe.sliced = recipe.print_time_seconds is not None or (
+        plate.plate_index == 0
+        and (file_type or "").lower() == "gcode"
+        and (meta or {}).get("has_sliced_gcode") is not False
+    )
     return recipe
 
 

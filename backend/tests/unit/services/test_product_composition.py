@@ -95,3 +95,32 @@ def test_part_index_covers_own_key_and_aliases_and_purchased_prefix():
     s = _part(2, purchased_name_key("M3 Screw"), kind="purchased")
     idx = part_index([a, s])
     assert idx["bracket.stl"] is a and idx["purchased:m3 screw"] is s
+
+
+def test_whole_file_totals_sum_only_the_plates_that_carry_a_figure():
+    # Top-level keys are ONE plate's snapshot — a half-sliced file must not
+    # report plate 1's 3600s as the whole file's time.
+    meta = {
+        "print_time_seconds": 3600,
+        "filament_used_grams": 40.0,
+        "plates": [
+            {"index": 1, "printable_objects": {"1": "a.stl"}, "print_time_seconds": 3600, "filament_used_grams": 40.0},
+            {"index": 2, "printable_objects": {"1": "b.stl"}},
+            {"index": 3, "printable_objects": {"1": "c.stl"}, "print_time_seconds": 1800, "filament_used_grams": 10.0},
+        ],
+    }
+    recipe = recipe_for(ProductPlate(product_id=1, library_file_id=5, plate_index=0), meta, "3mf", [])
+    assert recipe.print_time_seconds == 5400
+    assert recipe.filament_used_grams == 50.0
+
+
+def test_sliced_asks_the_content_flag_not_the_filename():
+    meta = {"plates": [{"index": 1, "printable_objects": {"1": "a.stl"}}]}
+    whole = ProductPlate(product_id=1, library_file_id=5, plate_index=0)
+    # detect_file_type says "gcode" by filename; a missing flag counts as sliced.
+    assert recipe_for(whole, meta, "gcode", []).sliced is True
+    assert recipe_for(whole, {**meta, "has_sliced_gcode": False}, "gcode", []).sliced is False
+    assert recipe_for(whole, meta, "3mf", []).sliced is False
+    # One plate of a multi-plate file is decided by its own timing alone.
+    one = ProductPlate(product_id=1, library_file_id=5, plate_index=1)
+    assert recipe_for(one, meta, "gcode", []).sliced is False
