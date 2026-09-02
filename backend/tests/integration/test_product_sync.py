@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.models.product import Product, ProductPart, ProductPlate
+from backend.app.models.product import Product, ProductPart, ProductPlate, product_files
 from backend.app.services.product_sync import (
     apply_folder_products,
     inherit_folder_products,
@@ -53,6 +53,16 @@ async def _file(db, name, meta, folder_id=None, file_type="gcode"):
 async def _plates(db, product_id):
     rows = (await db.execute(select(ProductPlate).where(ProductPlate.product_id == product_id))).scalars().all()
     return sorted((r.library_file_id, r.plate_index) for r in rows)
+
+
+async def _links(db, library_file_id):
+    """The ``product_files`` pivot for one file — the link itself, not its plates."""
+    rows = (
+        (await db.execute(select(product_files.c.product_id).where(product_files.c.library_file_id == library_file_id)))
+        .scalars()
+        .all()
+    )
+    return sorted(rows)
 
 
 async def _parts(db, product_id):
@@ -119,10 +129,15 @@ async def test_unlinking_drops_plates_but_keeps_parts(db_session):
     product = await _product(db_session)
     file = await _file(db_session, "m.gcode.3mf", MULTI)
     await sync_product_for_file(db_session, library_file_id=file.id, product_ids=[product.id])
+    assert await _links(db_session, file.id) == [product.id]
+
     await sync_product_for_file(db_session, library_file_id=file.id, product_ids=[])
     await db_session.commit()
     assert await _plates(db_session, product.id) == []
     assert len(await _parts(db_session, product.id)) == 3
+    # ⚠️ The pivot goes too. A stale link left behind would make the next
+    # ``resync_file_products`` re-plant the plates the user just unlinked.
+    assert await _links(db_session, file.id) == []
 
 
 @pytest.mark.asyncio
@@ -132,6 +147,9 @@ async def test_geometry_files_own_no_plates(db_session):
     await sync_product_for_file(db_session, library_file_id=stl.id, product_ids=[product.id])
     await db_session.commit()
     assert await _plates(db_session, product.id) == []
+    # A link is not a plate: the geometry belongs to the product, it just has
+    # nothing to print until somebody slices it.
+    assert await _links(db_session, stl.id) == [product.id]
 
 
 @pytest.mark.asyncio
@@ -165,6 +183,10 @@ async def test_applying_products_to_a_folder_mirrors_onto_every_child_file(db_se
 
     await apply_folder_products(db_session, folder_id=folder.id, product_ids=[first.id, second.id])
     await db_session.commit()
+    # The folder's OWN link too — it is what the next file dropped in here
+    # inherits from.
+    await db_session.refresh(folder, ["products"])
+    assert sorted(p.id for p in folder.products) == sorted([first.id, second.id])
     for child in (one, two):
         await db_session.refresh(child, ["products"])
         assert sorted(p.id for p in child.products) == sorted([first.id, second.id])
@@ -173,6 +195,8 @@ async def test_applying_products_to_a_folder_mirrors_onto_every_child_file(db_se
 
     await apply_folder_products(db_session, folder_id=folder.id, product_ids=[])
     await db_session.commit()
+    await db_session.refresh(folder, ["products"])
+    assert folder.products == []
     for child in (one, two):
         await db_session.refresh(child, ["products"])
         assert child.products == []

@@ -359,8 +359,15 @@ async def write_batch(
         # returns before the parser for a known file), so today this catches a
         # link that changed, not a plate list that did. The day the refresh
         # branch starts rewriting metadata, this hook is already in place.
+        #
+        # ⚠️ Best-effort, per file, like ``seed_archive_parts``: a scan must not
+        # die because one product's composition could not be reconciled. The
+        # batch's own writes are already made and still commit below.
         for library_file_id in refreshed:
-            await resync_file_products(db, library_file_id)
+            try:
+                await resync_file_products(db, library_file_id)
+            except Exception:
+                logger.warning("product resync failed for library file %s", library_file_id, exc_info=True)
 
         await db.commit()
 

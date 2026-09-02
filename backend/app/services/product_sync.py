@@ -18,11 +18,24 @@ Products NOT in ``product_ids`` lose their plates for this file. Parts are
 never deleted here: targets belong to the product, not the file.
 
 ⚠️ The pivot is reconciled as a DELTA against what is stored, never rewritten
-blind, so a caller that already assigned ``file.products`` (the ORM side of the
-same table) and then calls in here does not race its own pending INSERTs — the
-read at the top autoflushes those first and the delta comes out empty. It is
-also what lets :func:`resync_file_products` ask the pivot who is linked: a
-file synced through this module is IN the pivot, not merely on some plates.
+blind. It is what lets :func:`resync_file_products` ask the pivot who is
+linked: a file synced through this module is IN the pivot, not merely on some
+plates.
+
+⚠️ **The delta is order-dependent, and there are exactly two legal orders.**
+Callers either
+
+1. let the sync write the pivot — pass ``product_ids`` and, if the ORM
+   collection is needed afterwards, ``await db.refresh(file, ["products"])``
+   (this is the form the routes use); or
+2. assign the collection FIRST and then sync — the read at the top autoflushes
+   the pending INSERTs, so the delta comes out empty and nothing is written
+   twice.
+
+**Never sync and then assign.** The ORM would compute its delta against a
+collection loaded before the sync ran and re-INSERT the pivot row the sync has
+already written — ``product_files`` is a composite primary key, so that is an
+``IntegrityError``, raised at flush time far from the line that caused it.
 """
 
 from __future__ import annotations
@@ -165,11 +178,33 @@ async def apply_folder_products(db: AsyncSession, *, folder_id: int, product_ids
     file, then plates reconciled. This is what the old folder-PATCH route in
     ``routes/library.py`` did inline for projects.
 
-    ⚠️ The folder's OWN pivot row is the caller's business: the route already
-    holds the ``Product`` rows for its response and assigns ``folder.products``
-    itself. Raises ``ValueError`` naming the ids that do not exist — the route
-    turns that into a 404, and the raise happens before anything is mutated.
+    Owns BOTH sides: the folder's own ``product_folders`` link and the
+    ``product_files`` link of every child. The folder's own row is not
+    decoration — :func:`inherit_folder_products` reads ``folder.products`` to
+    decide what the NEXT file dropped in here joins.
+
+    Raises ``ValueError`` naming the ids that do not exist — the route turns
+    that into a 404, and the raise happens before anything is mutated.
     """
+    product_rows: list[Product] = []
+    if product_ids:
+        product_rows = list((await db.execute(select(Product).where(Product.id.in_(product_ids)))).scalars().all())
+        found = {p.id for p in product_rows}
+        missing = [pid for pid in product_ids if pid not in found]
+        if missing:
+            raise ValueError(f"Product(s) not found: {missing}")
+
+    # ⚠️ ``selectinload`` on both sides: assigning a collection that is not
+    # loaded lazy-loads the old one first, and a lazy load inside an async
+    # session is a ``MissingGreenlet``.
+    folder = (
+        await db.execute(
+            select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.products))
+        )
+    ).scalar_one_or_none()
+    if folder is not None:
+        folder.products = list(product_rows)
+
     children = (
         (
             await db.execute(
@@ -181,14 +216,6 @@ async def apply_folder_products(db: AsyncSession, *, folder_id: int, product_ids
         .scalars()
         .all()
     )
-    product_rows: list[Product] = []
-    if product_ids:
-        product_rows = list((await db.execute(select(Product).where(Product.id.in_(product_ids)))).scalars().all())
-        found = {p.id for p in product_rows}
-        missing = [pid for pid in product_ids if pid not in found]
-        if missing:
-            raise ValueError(f"Product(s) not found: {missing}")
-
     for child in children:
         child.products = list(product_rows)
     await sync_products_for_folder(db, folder_id=folder_id, product_ids=[p.id for p in product_rows])
