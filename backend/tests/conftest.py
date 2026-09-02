@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -289,9 +290,15 @@ async def _cancel_leaked_asyncio_tasks():
         await asyncio.gather(*pending, return_exceptions=True)
 
 
-@pytest.fixture
-async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, None]:
-    """Create an async test client."""
+@asynccontextmanager
+async def _build_client(test_engine, *, commit: bool) -> AsyncGenerator[AsyncClient, None]:
+    """Shared body of ``async_client`` and ``committing_client``.
+
+    The two differ only in whether the ``get_db`` override commits; everything
+    else — the patched module-level session makers, the seeded groups and admin,
+    the authenticated client, the engine disposal — is identical. Read the two
+    fixtures below for which one a test wants.
+    """
     from backend.app.core.database import async_session, get_db
     from backend.app.main import app
 
@@ -300,7 +307,18 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
 
     async def override_get_db():
         async with test_async_session() as session:
-            yield session
+            if not commit:
+                yield session
+                return
+            # Mirror production ``core/database.py::get_db``: commit once the
+            # handler has returned, roll back on anything that escapes it
+            # (BaseException, so a cancelled request rolls back too).
+            try:
+                yield session
+                await session.commit()
+            except BaseException:
+                await session.rollback()
+                raise
 
     app.dependency_overrides[get_db] = override_get_db
 
@@ -377,6 +395,41 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
         await real_engine.dispose()
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, None]:
+    """Create an async test client. Its ``get_db`` override does NOT commit.
+
+    Fine for the handlers written against it: every route module predating the
+    2026-09-02 orders redesign calls ``db.commit()`` itself, so the write is
+    durable before the request ends. A handler that only flushes needs
+    ``committing_client`` instead. Hundreds of tests use this fixture; do not
+    change its semantics without running the whole suite.
+    """
+    async with _build_client(test_engine, commit=False) as client:
+        yield client
+
+
+@pytest.fixture
+async def committing_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, None]:
+    """``async_client`` with a ``get_db`` override that commits, as production does.
+
+    The two coexist because the codebase holds two conventions at once. Legacy
+    route modules commit inside the handler, and ``async_client``'s override —
+    which only yields a session and closes it — is enough for them. Route
+    modules written for the orders redesign (customers, and projects from Task
+    10 on) deliberately never commit: production's ``core/database.py::get_db``
+    commits after the response, which is the single place a request's work is
+    made durable or rolled back. Under ``async_client`` such a handler's flush
+    is discarded when the session closes, so a POST followed by a GET returns
+    404 and the test lies about a route that works in production. Use this
+    fixture for those; use ``async_client`` for everything else. Making
+    ``async_client`` itself commit is the better end state but is a whole-suite
+    change, deferred to Task 11.
+    """
+    async with _build_client(test_engine, commit=True) as client:
+        yield client
 
 
 # ============================================================================
