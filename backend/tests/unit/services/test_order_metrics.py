@@ -107,17 +107,20 @@ def test_material_is_a_hard_filter_and_unmatched_prints_go_to_other():
 def test_explicit_line_wins_and_first_unmet_line_takes_the_rest():
     parts = [_part(1, 10, "a", 1)]
     lines = [_line(100, 10, 1, sort=0), _line(101, 10, 1, sort=1)]
+    # The explicit filing is the NEWEST archive on purpose: applying it before any
+    # loose print is what separates the explicit-first pass from a single
+    # interleaved pass in created_at order, which would give 100:[1] 101:[2, 3].
     archives = [
-        _archive(1, file_id=5, plate=0, line_id=101),
+        _archive(1, file_id=5, plate=0),
         _archive(2, file_id=5, plate=0),
-        _archive(3, file_id=5, plate=0),
+        _archive(3, file_id=5, plate=0, line_id=101),
     ]
     ap = {i: [_ap(i, "a", 1)] for i in (1, 2, 3)}
     figs, other = attribute(_ctx(lines, parts, archives, ap, {(5, 0): 10}))
-    assert figs[101].archive_ids == [1]  # the explicit filing, and only that
-    # 2 fills the first unmet line; 3 is surplus once both are met, and overflow
+    assert figs[101].archive_ids == [3]  # the explicit filing, and only that
+    # 1 fills the first unmet line; 2 is surplus once both are met, and overflow
     # goes to the first matching line (spec §Line resolution for an archive).
-    assert figs[100].archive_ids == [2, 3]
+    assert figs[100].archive_ids == [1, 2]
     assert figs[100].units_printed == 2 and figs[101].units_printed == 1
     assert other == []
 
@@ -128,15 +131,20 @@ def test_in_progress_and_project_totals():
     archives = [
         _archive(1, file_id=5, plate=0, cost=2.5, secs=60, grams=5.0),
         _archive(2, file_id=5, plate=0, status="printing", cost=None, secs=None, grams=None),
+        _archive(3, file_id=5, plate=0, cost=0.5, secs=40, grams=2.0),
     ]
-    ap = {1: [_ap(1, "a", 2)], 2: [_ap(2, "a", 2)]}
+    ap = {1: [_ap(1, "a", 2)], 2: [_ap(2, "a", 2)], 3: [_ap(3, "a", 2)]}
     ctx = _ctx(lines, parts, archives, ap, {(5, 0): 10}, procurement={2: 6})
     figs, other = attribute(ctx)
     a = figs[100].parts[0]
-    assert a.usable == 2 and a.in_progress == 2 and a.need == 6 and a.remaining == 4
+    assert a.usable == 4 and a.in_progress == 2 and a.need == 6 and a.remaining == 2
     proc = procurement_figures(ctx, figs)
     assert proc[0].need == 12 and proc[0].acquired == 6 and proc[0].remaining == 6
     pf = project_figures(ctx, figs, other)
-    assert pf.ordered == 3 and pf.printed == 1 and pf.remaining == 2
-    assert pf.complete == 1  # min(1 printed, 6 // 4 = 1 kit of screws)
-    assert pf.total_cost == 2.5 and pf.margin == 97.5 and pf.total_time_seconds == 60 and pf.all_printed is False
+    assert pf.ordered == 3 and pf.printed == 2 and pf.remaining == 1
+    # Procurement is the BINDING side of the min here: two units are printed but
+    # only 6 of the 8 screws they need are in, so the kit count is what the
+    # screws allow, not what the printer produced. Dropping the purchased-part
+    # loop from _units_complete yields 2 and fails this line.
+    assert pf.complete == 1  # min(2 printed, 6 // 4 = 1 kit of screws)
+    assert pf.total_cost == 3.0 and pf.margin == 97.0 and pf.total_time_seconds == 100 and pf.all_printed is False

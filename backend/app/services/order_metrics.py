@@ -220,11 +220,8 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         _apply(figs, archive, ctx.archive_parts_by_archive.get(archive.id, []), indexes.get(figs.product_id, {}))
     for archive in implicit:
         product_id = ctx.plate_product.get((archive.library_file_id, archive.plate_index or 0))
-        candidates = [
-            ln
-            for ln in lines_by_product.get(product_id, [])
-            if _line_accepts(ln, archive_material_set(archive.filament_type))
-        ]
+        materials = archive_material_set(archive.filament_type)
+        candidates = [ln for ln in lines_by_product.get(product_id, []) if _line_accepts(ln, materials)]
         if product_id is None or not candidates:
             other.append(archive)
             continue
