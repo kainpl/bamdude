@@ -53,7 +53,6 @@ from backend.app.schemas.calibration_mode import derive_mode, mode_to_bool
 from backend.app.services.auto_queue_eligibility import find_eligible_printer
 from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
 from backend.app.services.filament_requirements import overrides_for_plate
-from backend.app.services.library_helpers import project_for_library_file
 from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
@@ -214,13 +213,7 @@ async def add_to_auto_queue(
     library_file = None
     if data.library_file_id:
         # Trash bin (#1008): refuse to dispatch a soft-deleted source.
-        # m044: eager-load M2M projects so the inherit-fallback below
-        # doesn't lazy-fetch.
-        result = await db.execute(
-            LibraryFile.active()
-            .options(selectinload(LibraryFile.projects))
-            .where(LibraryFile.id == data.library_file_id)
-        )
+        result = await db.execute(LibraryFile.active().where(LibraryFile.id == data.library_file_id))
         library_file = result.scalar_one_or_none()
         if not library_file:
             raise HTTPException(400, "Library file not found")
@@ -230,8 +223,9 @@ async def add_to_auto_queue(
         if not result.scalar_one_or_none():
             raise HTTPException(404, "Project not found")
 
-    # One rule, shared with the queue and direct-print routes.
-    effective_project_id = project_for_library_file(data.project_id, library_file)
+    # A file does not belong to an order, so there is nothing to fall back on:
+    # the caller names the order, or the row carries none.
+    effective_project_id = data.project_id
 
     # Resolve plate IDs to fan out (one row per plate)
     plate_ids: list[int | None]

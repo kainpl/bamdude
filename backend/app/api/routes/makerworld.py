@@ -52,6 +52,7 @@ from backend.app.services.makerworld import (
     MakerWorldUrlError,
 )
 from backend.app.services.makerworld_meta import build_meta_dict, download_covers
+from backend.app.services.product_sync import resync_file_products
 
 logger = logging.getLogger(__name__)
 
@@ -306,12 +307,12 @@ async def import_instance(
     download happens.
     """
     if body.folder_id is not None:
-        # Eager-load .projects so save_3mf_bytes_to_library's
-        # inherit_folder_projects() doesn't trip async lazy-load.
+        # Eager-load .products so save_3mf_bytes_to_library's
+        # inherit_folder_products() doesn't trip async lazy-load.
         folder_q = await db.execute(
             select(LibraryFolder)
             .where(LibraryFolder.id == body.folder_id)
-            .options(selectinload(LibraryFolder.projects))
+            .options(selectinload(LibraryFolder.products))
         )
         target_folder = folder_q.scalar_one_or_none()
         if target_folder is None:
@@ -657,6 +658,14 @@ async def redownload_import(
             lib.file_metadata = _clean_3mf_metadata(raw_metadata)
         except Exception:  # noqa: BLE001
             logger.debug("redownload: 3MF re-parse failed (non-critical)")
+
+        # The plate set is derived from ``file_metadata``, which we have just
+        # rewritten: re-run the sync against the file's CURRENT product links so
+        # a re-download that added or dropped a plate is reflected in every
+        # product this file belongs to. Flushed first — the sync reads the row
+        # back, and it must read the new metadata, not the old.
+        await db.flush()
+        await resync_file_products(db, lib.id)
 
         # Refresh meta row + covers. We reuse the open ``service`` for
         # the /instances call + cover downloads.

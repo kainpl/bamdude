@@ -30,8 +30,8 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder
-from backend.app.models.library_project_links import library_file_projects, library_folder_projects
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.product import Product, product_files, product_folders
 from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.archive import PaginationMeta
@@ -57,7 +57,7 @@ from backend.app.schemas.library import (
     LibraryFileListPage,
     LibraryGroupingMetadata,
     LibraryGroupingPlate,
-    ProjectRef,
+    ProductRef,
     TagSummary,
     ZipExtractError,
     ZipExtractResponse,
@@ -74,7 +74,6 @@ from backend.app.services.library_helpers import (
     SLICED_GCODE_META_KEY,
     detect_file_type,
     folder_activity_at,
-    project_for_library_file,
     skip_objects_supported_from_metadata,
     sliced_gcode_in_3mf,
     sync_system_tags,
@@ -82,8 +81,13 @@ from backend.app.services.library_helpers import (
 from backend.app.services.library_ingest import IngestResult, find_reusable_row
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
-from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
 from backend.app.services.process_overrides import apply_process_overrides
+from backend.app.services.product_sync import (
+    apply_folder_products,
+    inherit_folder_products,
+    purge_folder_product_links,
+    sync_product_for_file,
+)
 from backend.app.services.slice_output_check import missing_start_gcode_message, start_gcode_is_missing
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
@@ -155,9 +159,9 @@ def _ensure_library_file_visible(
     return library_file
 
 
-def _project_refs(projects: list[Project]) -> list[ProjectRef]:
-    """Map a list of Project ORM rows to lightweight ProjectRef DTOs."""
-    return [ProjectRef(id=p.id, name=p.name, color=p.color) for p in projects]
+def _product_refs(products: list[Product]) -> list[ProductRef]:
+    """Map a list of Product ORM rows to lightweight ProductRef DTOs."""
+    return [ProductRef(id=p.id, name=p.name, is_active=p.is_active) for p in products]
 
 
 # A file's effective activity timestamp, in SQL (#2680). The Python-side twin of
@@ -192,19 +196,19 @@ def _mtime_to_utc(st_mtime: float) -> datetime:
     return datetime.fromtimestamp(st_mtime, tz=timezone.utc).replace(tzinfo=None)
 
 
-async def _resolve_projects_for_assign(db: AsyncSession, project_ids: list[int]) -> list[Project]:
-    """Validate every id in ``project_ids`` exists, return the ORM rows.
+async def _resolve_products_for_assign(db: AsyncSession, product_ids: list[int]) -> list[Product]:
+    """Validate every id in ``product_ids`` exists, return the ORM rows.
 
     Raises 404 with the offending id list if any are missing.
     """
-    if not project_ids:
+    if not product_ids:
         return []
-    rows = (await db.execute(select(Project).where(Project.id.in_(project_ids)))).scalars().all()
+    rows = (await db.execute(select(Product).where(Product.id.in_(product_ids)))).scalars().all()
     found_ids = {p.id for p in rows}
-    missing = [pid for pid in project_ids if pid not in found_ids]
+    missing = [pid for pid in product_ids if pid not in found_ids]
     if missing:
-        raise HTTPException(status_code=404, detail=f"Project(s) not found: {missing}")
-    return rows
+        raise HTTPException(status_code=404, detail=f"Product(s) not found: {missing}")
+    return list(rows)
 
 
 def _clean_3mf_metadata(obj):
@@ -546,7 +550,7 @@ async def save_3mf_bytes_to_library(
             file_path.unlink(missing_ok=True)
             return IngestResult(file=existing, outcome="deduped", superseded_name=filename)
         # The row is missing only its BYTES, and we are holding them. Re-pointing
-        # keeps its name, folder, notes, tags, projects and print history; the
+        # keeps its name, folder, notes, tags, products and print history; the
         # hash matched, so the content is identical — a restore, not a swap.
         existing.file_path = _stored_file_path(file_path, False)
         existing.file_size = len(content)
@@ -639,10 +643,10 @@ async def save_3mf_bytes_to_library(
     # After the flush, never in the constructor: the system-tag associations key
     # off ``library_file.id``. Writes the ``file_tags`` cache too — one writer.
     await sync_system_tags(db, library_file)
-    # Inherit folder projects + plant matching plan rows. Caller is
-    # responsible for ``selectinload(LibraryFolder.projects)`` on the
+    # Inherit the folder's products + plant matching plate rows. Caller is
+    # responsible for ``selectinload(LibraryFolder.products)`` on the
     # passed folder so this doesn't trip async lazy-load.
-    await inherit_folder_projects(db, library_file, folder)
+    await inherit_folder_products(db, library_file, folder)
     if commit:
         await db.commit()
         await db.refresh(library_file)
@@ -887,10 +891,10 @@ async def list_folders(
     # Prevent browser caching of folder list
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
 
-    # m044: load projects via M2M selectinload (one extra IN-list query
+    # Load products via M2M selectinload (one extra IN-list query
     # rather than per-folder lazy fetch).
     result = await db.execute(
-        select(LibraryFolder).options(selectinload(LibraryFolder.projects)).order_by(LibraryFolder.name)
+        select(LibraryFolder).options(selectinload(LibraryFolder.products)).order_by(LibraryFolder.name)
     )
     folders_orm = result.scalars().all()
 
@@ -932,7 +936,7 @@ async def list_folders(
             id=folder.id,
             name=folder.name,
             parent_id=folder.parent_id,
-            projects=_project_refs(folder.projects),
+            products=_product_refs(folder.products),
             is_external=folder.is_external,
             external_path=folder.external_path,
             external_readonly=folder.external_readonly,
@@ -975,9 +979,9 @@ async def list_folders(
     return root_folders
 
 
-@router.get("/folders/by-project/{project_id}", response_model=list[FolderResponse])
-async def get_folders_by_project(
-    project_id: int,
+@router.get("/folders/by-product/{product_id}", response_model=list[FolderResponse])
+async def get_folders_by_product(
+    product_id: int,
     db: AsyncSession = Depends(get_db),
     _: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -986,12 +990,12 @@ async def get_folders_by_project(
         )
     ),
 ):
-    """Get all folders linked to a specific project (via the M2M pivot)."""
+    """Get all folders linked to a specific product (via the M2M pivot)."""
     result = await db.execute(
         select(LibraryFolder)
-        .join(library_folder_projects, library_folder_projects.c.folder_id == LibraryFolder.id)
-        .where(library_folder_projects.c.project_id == project_id)
-        .options(selectinload(LibraryFolder.projects))
+        .join(product_folders, product_folders.c.library_folder_id == LibraryFolder.id)
+        .where(product_folders.c.product_id == product_id)
+        .options(selectinload(LibraryFolder.products))
         .order_by(LibraryFolder.name)
     )
     folders_orm = result.scalars().unique().all()
@@ -1017,7 +1021,7 @@ async def get_folders_by_project(
                 id=folder.id,
                 name=folder.name,
                 parent_id=folder.parent_id,
-                projects=_project_refs(folder.projects),
+                products=_product_refs(folder.products),
                 is_external=folder.is_external,
                 external_path=folder.external_path,
                 external_readonly=folder.external_readonly,
@@ -1088,14 +1092,14 @@ async def create_folder(
                 external_readonly=False,
                 external_show_hidden=parent.external_show_hidden,
             )
-            folder.projects = await _resolve_projects_for_assign(db, data.project_ids)
+            folder.products = await _resolve_products_for_assign(db, data.product_ids)
             db.add(folder)
             await db.commit()
             return FolderResponse(
                 id=folder.id,
                 name=folder.name,
                 parent_id=folder.parent_id,
-                projects=_project_refs(folder.projects),
+                products=_product_refs(folder.products),
                 is_external=True,
                 external_path=folder.external_path,
                 external_readonly=folder.external_readonly,
@@ -1106,19 +1110,21 @@ async def create_folder(
                 updated_at=folder.updated_at,
             )
 
-    # m044: validate every requested project exists in one IN-list query.
-    project_rows = await _resolve_projects_for_assign(db, data.project_ids)
+    # Validate every requested product exists in one IN-list query.
+    product_rows = await _resolve_products_for_assign(db, data.product_ids)
 
     folder = LibraryFolder(
         name=data.name,
         parent_id=data.parent_id,
     )
-    folder.projects = project_rows
+    # A brand-new folder has no files yet, so there is nothing for the sync to
+    # mirror: only ``product_folders`` is written, and the ORM owns that side.
+    folder.products = product_rows
     db.add(folder)
     await db.commit()
     # Avoid db.refresh on the M2M relationship — async refresh of a
     # relationship attribute trips MissingGreenlet under FastAPI's
-    # request loop. We've set ``folder.projects`` explicitly above and
+    # request loop. We've set ``folder.products`` explicitly above and
     # the session is configured with ``expire_on_commit=False``, so the
     # in-session list is the authoritative final state.
 
@@ -1126,7 +1132,7 @@ async def create_folder(
         id=folder.id,
         name=folder.name,
         parent_id=folder.parent_id,
-        projects=_project_refs(folder.projects),
+        products=_product_refs(folder.products),
         is_external=folder.is_external,
         external_path=folder.external_path,
         external_readonly=folder.external_readonly,
@@ -1153,7 +1159,7 @@ async def get_folder(
 ):
     """Get a folder by ID."""
     result = await db.execute(
-        select(LibraryFolder).options(selectinload(LibraryFolder.projects)).where(LibraryFolder.id == folder_id)
+        select(LibraryFolder).options(selectinload(LibraryFolder.products)).where(LibraryFolder.id == folder_id)
     )
     folder = result.scalar_one_or_none()
 
@@ -1178,7 +1184,7 @@ async def get_folder(
         id=folder.id,
         name=folder.name,
         parent_id=folder.parent_id,
-        projects=_project_refs(folder.projects),
+        products=_product_refs(folder.products),
         is_external=folder.is_external,
         external_path=folder.external_path,
         external_readonly=folder.external_readonly,
@@ -1268,10 +1274,10 @@ async def update_folder(
     Note: Folders require library:update_all permission since they don't have
     ownership tracking.
     """
-    # m044: eager-load projects up front so the response build at the end
+    # Eager-load products up front so the response build at the end
     # doesn't trigger a lazy fetch outside the async context.
     result = await db.execute(
-        select(LibraryFolder).options(selectinload(LibraryFolder.projects)).where(LibraryFolder.id == folder_id)
+        select(LibraryFolder).options(selectinload(LibraryFolder.products)).where(LibraryFolder.id == folder_id)
     )
     folder = result.scalar_one_or_none()
 
@@ -1299,34 +1305,16 @@ async def update_folder(
         else:
             folder.parent_id = None
 
-    # m044: replace the folder's project list AND cascade the new list
-    # to every child file so that linking a folder to a project backfills
-    # the file→project pivot for each contained file (matches the legacy
-    # "folder project inherits down to files" behaviour, generalised to
-    # multi-project).
-    if data.project_ids is not None:
-        new_project_rows = await _resolve_projects_for_assign(db, data.project_ids)
-        folder.projects = new_project_rows
-        new_project_ids = [p.id for p in new_project_rows]
-
-        # Mirror onto every child file's project list (replace semantics).
-        child_files = (
-            (
-                await db.execute(
-                    select(LibraryFile)
-                    .where(LibraryFile.folder_id == folder_id)
-                    .options(selectinload(LibraryFile.projects))
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for child in child_files:
-            child.projects = list(new_project_rows)
-
-        # Reconcile print-plan rows for this folder's files with the new
-        # project list (one plan row per (project, file) pair).
-        await sync_plan_for_folder(db, folder_id=folder_id, project_ids=new_project_ids)
+    # Replace the folder's product list AND cascade it to every child file, so
+    # that linking a folder to a product backfills the file→product pivot for
+    # each file it contains. ``apply_folder_products`` owns all three sides —
+    # the folder's own link, the children's, and the plates — precisely so this
+    # route cannot write half of them (see its docstring on ordering).
+    if data.product_ids is not None:
+        try:
+            await apply_folder_products(db, folder_id=folder_id, product_ids=data.product_ids)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from None
 
     await db.commit()
 
@@ -1335,11 +1323,11 @@ async def update_folder(
     # like ``updated_at`` after a SQLAlchemy-tracked UPDATE expires
     # those attributes via ``populate_existing``, which then tries to
     # lazy-load outside the greenlet under FastAPI's request loop —
-    # MissingGreenlet. A fresh select with eager projects avoids the
+    # MissingGreenlet. A fresh select with eager products avoids the
     # stale-attribute trap entirely.
     refreshed = (
         await db.execute(
-            select(LibraryFolder).options(selectinload(LibraryFolder.projects)).where(LibraryFolder.id == folder_id)
+            select(LibraryFolder).options(selectinload(LibraryFolder.products)).where(LibraryFolder.id == folder_id)
         )
     ).scalar_one()
 
@@ -1361,7 +1349,7 @@ async def update_folder(
         id=refreshed.id,
         name=refreshed.name,
         parent_id=refreshed.parent_id,
-        projects=_project_refs(refreshed.projects),
+        products=_product_refs(refreshed.products),
         is_external=refreshed.is_external,
         external_path=refreshed.external_path,
         external_readonly=refreshed.external_readonly,
@@ -1391,16 +1379,14 @@ async def _restricted_folder_delete_blocker(db: AsyncSession, folder: LibraryFol
     """
     if folder.is_external:
         return "External folders can only be deleted by users with library:delete_all"
-    # ⚡ Ours diverges from upstream here: m044 replaced the folder's single
-    # ``project_id`` column with the ``library_folder_projects`` pivot, so the
-    # question is "is it linked to ANY project", asked of the pivot.
+    # ⚡ Ours diverges from upstream here: a folder's filing link is the
+    # ``product_folders`` pivot, not a column, so the question is "is it linked
+    # to ANY product", asked of the pivot.
     linked = await db.execute(
-        select(func.count())
-        .select_from(library_folder_projects)
-        .where(library_folder_projects.c.folder_id == folder.id)
+        select(func.count()).select_from(product_folders).where(product_folders.c.library_folder_id == folder.id)
     )
     if (linked.scalar() or 0) > 0:
-        return "Folders linked to a project can only be deleted by users with library:delete_all"
+        return "Folders linked to a product can only be deleted by users with library:delete_all"
 
     children = await db.execute(select(func.count(LibraryFolder.id)).where(LibraryFolder.parent_id == folder.id))
     if (children.scalar() or 0) > 0:
@@ -1448,6 +1434,7 @@ async def delete_folder(
 
     # The folder row itself goes; folders have no trash of their own. Its files
     # were detached above, so the CASCADE has nothing left to take.
+    await purge_folder_product_links(db, [folder.id])
     await db.delete(folder)
     await db.commit()
 
@@ -1479,57 +1466,43 @@ async def _trash_folder_contents(db: AsyncSession, folder_id: int) -> int:
     return trashed
 
 
-# ============ M2M project unlink (m044) ============
+# ============ M2M product unlink ============
 
-# These endpoints exist purely to drop a single (folder/file, project)
-# pivot row without read-modify-write on the whole project list. Used by
-# the project detail page's "remove from this project" affordance.
+# These endpoints exist purely to drop a single (folder/file, product)
+# pivot row without read-modify-write on the whole product list. Used by
+# the product detail page's "remove from this product" affordance.
 
 
-@router.delete("/folders/{folder_id}/projects/{project_id}", status_code=204)
-async def unlink_folder_from_project(
+@router.delete("/folders/{folder_id}/products/{product_id}", status_code=204)
+async def unlink_folder_from_product(
     folder_id: int,
-    project_id: int,
+    product_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
 ):
-    """Remove the (folder, project) pivot row. Idempotent: 404 only when
+    """Remove the (folder, product) pivot row. Idempotent: 404 only when
     the folder doesn't exist; missing pivot is treated as already-gone."""
     result = await db.execute(
-        select(LibraryFolder).options(selectinload(LibraryFolder.projects)).where(LibraryFolder.id == folder_id)
+        select(LibraryFolder).options(selectinload(LibraryFolder.products)).where(LibraryFolder.id == folder_id)
     )
     folder = result.scalar_one_or_none()
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
 
-    new_projects = [p for p in folder.projects if p.id != project_id]
-    if len(new_projects) == len(folder.projects):
+    remaining = [p.id for p in folder.products if p.id != product_id]
+    if len(remaining) == len(folder.products):
         return  # Idempotent: already not linked.
 
-    folder.projects = new_projects
-    new_project_ids = [p.id for p in new_projects]
-    # Cascade onto child files (same replace semantics the folder PUT uses).
-    child_files = (
-        (
-            await db.execute(
-                select(LibraryFile)
-                .where(LibraryFile.folder_id == folder_id)
-                .options(selectinload(LibraryFile.projects))
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for child in child_files:
-        child.projects = list(new_projects)
-    await sync_plan_for_folder(db, folder_id=folder_id, project_ids=new_project_ids)
+    # Same door as the folder PUT: the folder's own link, every child file's
+    # link and the plates all move together.
+    await apply_folder_products(db, folder_id=folder_id, product_ids=remaining)
     await db.commit()
 
 
-@router.delete("/files/{file_id}/projects/{project_id}", status_code=204)
-async def unlink_file_from_project(
+@router.delete("/files/{file_id}/products/{product_id}", status_code=204)
+async def unlink_file_from_product(
     file_id: int,
-    project_id: int,
+    product_id: int,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -1538,12 +1511,12 @@ async def unlink_file_from_project(
         )
     ),
 ):
-    """Remove the (file, project) pivot row. Idempotent: missing pivot
+    """Remove the (file, product) pivot row. Idempotent: missing pivot
     treated as already-gone."""
     user, can_modify_all = auth_result
 
     result = await db.execute(
-        select(LibraryFile).options(selectinload(LibraryFile.projects)).where(LibraryFile.id == file_id)
+        select(LibraryFile).options(selectinload(LibraryFile.products)).where(LibraryFile.id == file_id)
     )
     file = result.scalar_one_or_none()
     if not file:
@@ -1552,17 +1525,13 @@ async def unlink_file_from_project(
     if not can_modify_all and file.created_by_id != user.id:
         raise HTTPException(status_code=403, detail="You can only update your own files")
 
-    new_projects = [p for p in file.projects if p.id != project_id]
-    if len(new_projects) == len(file.projects):
+    remaining = [p.id for p in file.products if p.id != product_id]
+    if len(remaining) == len(file.products):
         return  # Idempotent.
 
-    file.projects = new_projects
-    await sync_plan_for_file(
-        db,
-        library_file_id=file.id,
-        project_ids=[p.id for p in new_projects],
-        file_type=file.file_type,
-    )
+    # The sync owns ``product_files`` — never assign the collection here, or
+    # the ORM re-INSERTs the row the sync already wrote (product_sync docstring).
+    await sync_product_for_file(db, library_file_id=file.id, product_ids=remaining)
     await db.commit()
 
 
@@ -1670,7 +1639,7 @@ async def create_external_folder(
         id=folder.id,
         name=folder.name,
         parent_id=folder.parent_id,
-        projects=[],
+        products=[],
         is_external=True,
         external_path=folder.external_path,
         external_readonly=folder.external_readonly,
@@ -1823,7 +1792,7 @@ async def get_scan_job(
 async def list_files(
     response: Response,
     folder_id: int | None = None,
-    project_id: int | None = None,
+    product_id: int | None = None,
     include_root: bool = True,
     internal_only: bool = False,
     external_only: bool = False,
@@ -1865,11 +1834,11 @@ async def list_files(
         )
     ),
 ) -> list[FileListResponse] | LibraryFileListPage:
-    """List files, optionally filtered by folder or project.
+    """List files, optionally filtered by folder or product.
 
     Args:
         folder_id: Filter by folder ID. If None and include_root=True, returns root files.
-        project_id: Return all files across folders linked to this project (bulk fetch, avoids N+1).
+        product_id: Return all files across folders linked to this product (bulk fetch, avoids N+1).
         include_root: If True and folder_id is None, returns files at root level.
                      If False and folder_id is None, returns all files.
         internal_only: Restrict the result to files in managed storage (`is_external=False`).
@@ -1916,7 +1885,7 @@ async def list_files(
         # GROUP BY on the outer query — same result set, but it composes into
         # ``filters`` (and therefore into ``count_query`` below) instead of
         # forcing its own group-by/having onto every row this endpoint
-        # returns. This branch intentionally IGNORES folder_id / project_id /
+        # returns. This branch intentionally IGNORES folder_id / product_id /
         # include_root (tags are orthogonal to hierarchy); the ownership
         # filter above still applies so a *_OWN caller only ever sees their
         # own files.
@@ -1939,17 +1908,16 @@ async def list_files(
         filters.append(LibraryFile.folder_id.in_(select(descendants.c.id)))
     elif folder_id is not None:
         filters.append(LibraryFile.folder_id == folder_id)
-    elif project_id is not None:
-        # m044: a file participates in a project either via the direct
-        # file→project pivot OR via the folder→project pivot of its
-        # containing folder. Union the two so the project detail page
-        # surfaces both groups in one query.
-        direct_files = select(library_file_projects.c.file_id).where(library_file_projects.c.project_id == project_id)
+    elif product_id is not None:
+        # A file participates in a product either via the direct file→product
+        # pivot OR via the folder→product pivot of its containing folder. Union
+        # the two so the product detail page surfaces both groups in one query.
+        direct_files = select(product_files.c.library_file_id).where(product_files.c.product_id == product_id)
         inherited_files = (
             select(LibraryFile.id)
             .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
-            .join(library_folder_projects, library_folder_projects.c.folder_id == LibraryFolder.id)
-            .where(library_folder_projects.c.project_id == project_id)
+            .join(product_folders, product_folders.c.library_folder_id == LibraryFolder.id)
+            .where(product_folders.c.product_id == product_id)
         )
         filters.append(LibraryFile.id.in_(direct_files.union(inherited_files)))
     elif include_root:
@@ -2035,13 +2003,13 @@ async def list_files(
         count_query = select(func.count()).select_from(LibraryFile).where(*filters)
         total = (await db.execute(count_query)).scalar() or 0
 
-    # m044: also eagerly load the M2M projects collection so each
-    # FileListResponse can carry project_ids without an N+1.
+    # Also eagerly load the M2M products collection so each
+    # FileListResponse can carry product_ids without an N+1.
     query = (
         select(LibraryFile)
         .options(
             selectinload(LibraryFile.created_by),
-            selectinload(LibraryFile.projects),
+            selectinload(LibraryFile.products),
             selectinload(LibraryFile.tags),
         )
         .where(*filters)
@@ -2139,7 +2107,7 @@ async def list_files(
             FileListResponse(
                 id=f.id,
                 folder_id=f.folder_id,
-                project_ids=[p.id for p in f.projects],
+                product_ids=[p.id for p in f.products],
                 is_external=f.is_external,
                 filename=f.filename,
                 file_type=f.file_type,
@@ -3077,18 +3045,18 @@ async def slice_and_persist(
     db.add(new_file)
     await db.flush()
     await sync_system_tags(db, new_file)
-    # Inherit target folder's projects + plant matching plan rows so a
-    # sliced ``.gcode.3mf`` lands in the project's plan automatically.
+    # Inherit the target folder's products + plant matching plate rows so a
+    # sliced ``.gcode.3mf`` lands in the product's recipe automatically.
     # ``slice_and_persist`` doesn't load the folder itself — fetch with
     # selectinload so the inherit helper doesn't trip async lazy-load.
     if folder_id is not None:
         target_folder_for_inherit = (
             await db.execute(
-                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.products))
             )
         ).scalar_one_or_none()
         if target_folder_for_inherit is not None:
-            await inherit_folder_projects(db, new_file, target_folder_for_inherit)
+            await inherit_folder_products(db, new_file, target_folder_for_inherit)
     await db.commit()
     # No refresh: expire_on_commit=False keeps id/filename accessible, and
     # refreshing here flakes under pytest-xdist when teardown of a sibling
@@ -3463,7 +3431,7 @@ async def store_library_upload(
             file_path.unlink(missing_ok=True)
             return IngestResult(file=existing, outcome="deduped", superseded_name=filename)
         # The row is missing only its BYTES, and we are holding them. Re-pointing
-        # keeps its name, folder, notes, tags, projects and print history; the
+        # keeps its name, folder, notes, tags, products and print history; the
         # hash matched, so the content is identical — a restore, not a swap.
         existing.file_path = _stored_file_path(file_path, False)
         existing.file_size = len(content)
@@ -3582,10 +3550,10 @@ async def store_library_upload(
     db.add(library_file)
     await db.flush()
     await sync_system_tags(db, library_file)
-    # Inherit the target folder's projects + plant matching print-plan
-    # rows so a 3MF dropped into a project-tagged folder shows up in
-    # the project's plan automatically.
-    await inherit_folder_projects(db, library_file, target_folder)
+    # Inherit the target folder's products + plant matching plate rows so a
+    # 3MF dropped into a product-tagged folder shows up in the product's
+    # recipe automatically.
+    await inherit_folder_products(db, library_file, target_folder)
     await db.commit()
     await db.refresh(library_file)
 
@@ -3630,14 +3598,14 @@ async def upload_file(
             validate_print_filename(filename)
         except InvalidFilenameError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        # Verify folder exists if specified. Eager-load .projects so a
-        # subsequent ``inherit_folder_projects`` call doesn't trip the
-        # async lazy-load — the file inherits the folder's projects so the
-        # print plan auto-fills (#m048 + post-m044 fix).
+        # Verify folder exists if specified. Eager-load .products so a
+        # subsequent ``inherit_folder_products`` call doesn't trip the
+        # async lazy-load — the file inherits the folder's products so the
+        # plate recipe auto-fills.
         target_folder: LibraryFolder | None = None
         if folder_id is not None:
             folder_result = await db.execute(
-                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.products))
             )
             target_folder = folder_result.scalar_one_or_none()
             if not target_folder:
@@ -3706,11 +3674,11 @@ async def extract_zip_file(
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only ZIP files are supported")
 
-    # Verify target folder exists if specified. Eager-load .projects so the
+    # Verify target folder exists if specified. Eager-load .products so the
     # inherit-on-create path below doesn't trip the async lazy-load.
     if folder_id is not None:
         folder_result = await db.execute(
-            select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+            select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.products))
         )
         target_folder = folder_result.scalar_one_or_none()
         if not target_folder:
@@ -3942,26 +3910,26 @@ async def extract_zip_file(
                     db.add(library_file)
                     await db.flush()
                     await sync_system_tags(db, library_file)
-                    # Inherit target folder's projects → matching plan rows
-                    # so a 3MF unzipped into a project-tagged folder lands
-                    # in the project's plan automatically. Re-fetch the
-                    # folder with .projects eager-loaded for *this*
+                    # Inherit target folder's products → matching plate
+                    # rows so a 3MF unzipped into a product-tagged folder
+                    # lands in the product's recipe automatically. Re-fetch
+                    # the folder with .products eager-loaded for *this*
                     # iteration's target_folder_id (may differ from the
                     # outer one when ``preserve_structure`` created a
                     # subfolder; subfolders inherit their parent's
-                    # projects only when explicitly assigned, so this is
-                    # a no-op for sub-folders that have no projects of
+                    # products only when explicitly assigned, so this is
+                    # a no-op for sub-folders that have no products of
                     # their own).
                     if target_folder_id is not None:
                         per_file_folder = (
                             await db.execute(
                                 select(LibraryFolder)
                                 .where(LibraryFolder.id == target_folder_id)
-                                .options(selectinload(LibraryFolder.projects))
+                                .options(selectinload(LibraryFolder.products))
                             )
                         ).scalar_one_or_none()
                         if per_file_folder is not None:
-                            await inherit_folder_projects(db, library_file, per_file_folder)
+                            await inherit_folder_products(db, library_file, per_file_folder)
                     await db.refresh(library_file)
 
                     extracted_files.append(
@@ -4744,11 +4712,7 @@ async def print_library_file(
     if body is None:
         body = FilePrintRequest()
 
-    # Get the library file. m044: eager-load the M2M projects so the project
-    # fallback below does not lazy-fetch inside the request.
-    result = await db.execute(
-        select(LibraryFile).options(selectinload(LibraryFile.projects)).where(LibraryFile.id == file_id)
-    )
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
     lib_file = result.scalar_one_or_none()
 
     if not lib_file:
@@ -4838,7 +4802,7 @@ async def print_library_file(
             swap_macro_events=body.swap_macro_events,
             selected_macro_ids=body.selected_macro_ids,
             created_by_id=current_user.id if current_user else None,
-            project_id=project_for_library_file(body.project_id, lib_file),
+            project_id=body.project_id,
         )
         return {
             "status": "queued",
@@ -4858,10 +4822,7 @@ async def print_library_file(
             printer_id=printer_id,
             printer_name=printer.name,
             options=body.model_dump(exclude_none=True, exclude={"cleanup_library_after_dispatch"}),
-            # The same rule the queue and auto-queue routes apply: a file that
-            # already sits in a project prints into that project, whichever
-            # page the print was started from.
-            project_id=project_for_library_file(body.project_id, lib_file),
+            project_id=body.project_id,
             requested_by_user_id=current_user.id if current_user else None,
             requested_by_username=current_user.username if current_user else None,
             cleanup_library_after_dispatch=body.cleanup_library_after_dispatch,
@@ -4901,7 +4862,7 @@ async def get_file(
         select(LibraryFile)
         .options(
             selectinload(LibraryFile.created_by),
-            selectinload(LibraryFile.projects),
+            selectinload(LibraryFile.products),
         )
         .where(LibraryFile.id == file_id)
     )
@@ -4959,7 +4920,7 @@ async def get_file(
         id=file.id,
         folder_id=file.folder_id,
         folder_name=folder_name,
-        projects=_project_refs(file.projects),
+        products=_product_refs(file.products),
         filename=file.filename,
         file_path=file.file_path,
         file_type=file.file_type,
@@ -5004,7 +4965,7 @@ async def update_file(
     user, can_modify_all = auth_result
 
     result = await db.execute(
-        select(LibraryFile).options(selectinload(LibraryFile.projects)).where(LibraryFile.id == file_id)
+        select(LibraryFile).options(selectinload(LibraryFile.products)).where(LibraryFile.id == file_id)
     )
     file = result.scalar_one_or_none()
 
@@ -5029,53 +4990,50 @@ async def update_file(
         # No print_name to keep in sync — library files display by filename,
         # and _without_print_name strips the embedded 3MF Title on import (#1489).
 
-    # m044: track whether the project list changed in this PUT so the
-    # plan-sync at the end fires exactly once.
-    projects_touched = False
+    # Track whether the product list changed in this PUT so the sync at the
+    # end fires exactly once, on the final list.
+    products_touched = False
+    desired_product_ids: list[int] = []
 
     if data.folder_id is not None:
         if data.folder_id == 0:
             file.folder_id = None
-            # Moving to root clears project links — root has no folder,
-            # no project ownership.
-            file.projects = []
-            projects_touched = True
+            # Moving to root clears product links — root has no folder,
+            # so nothing to inherit from.
+            desired_product_ids = []
+            products_touched = True
         else:
-            # Verify folder exists; inherit its project list so moving a
-            # file into a project-linked folder backfills the file→project
-            # pivot, and moving it into an unlinked folder clears it
-            # (replace semantics, matching the legacy single-project rule
-            # generalised to lists — see plan §D.1).
+            # Verify folder exists; inherit its product list so moving a file
+            # into a product-linked folder backfills the file→product pivot,
+            # and moving it into an unlinked folder clears it (replace
+            # semantics).
             folder_result = await db.execute(
                 select(LibraryFolder)
-                .options(selectinload(LibraryFolder.projects))
+                .options(selectinload(LibraryFolder.products))
                 .where(LibraryFolder.id == data.folder_id)
             )
             target_folder = folder_result.scalar_one_or_none()
             if not target_folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
             file.folder_id = data.folder_id
-            file.projects = list(target_folder.projects)
-            projects_touched = True
+            desired_product_ids = [p.id for p in target_folder.products]
+            products_touched = True
 
-    # Explicit project_ids override wins over folder-inherited list.
-    if data.project_ids is not None:
-        new_project_rows = await _resolve_projects_for_assign(db, data.project_ids)
-        file.projects = new_project_rows
-        projects_touched = True
+    # Explicit product_ids override wins over the folder-inherited list.
+    if data.product_ids is not None:
+        desired_product_ids = [p.id for p in await _resolve_products_for_assign(db, data.product_ids)]
+        products_touched = True
 
     if data.notes is not None:
         file.notes = data.notes if data.notes else None
 
-    # Keep print-plan rows aligned with this file's final project list
-    # (m044: one plan row per (project, file) pair).
-    if projects_touched:
-        await sync_plan_for_file(
-            db,
-            library_file_id=file.id,
-            project_ids=[p.id for p in file.projects],
-            file_type=file.file_type,
-        )
+    # One call, on the final list: the sync owns ``product_files`` and the
+    # plates both, so the collection is never assigned here. The refresh puts
+    # the in-session collection back in step with what the sync just wrote —
+    # without it the re-fetch below reads the identity map's stale copy.
+    if products_touched:
+        await sync_product_for_file(db, library_file_id=file.id, product_ids=desired_product_ids)
+        await db.refresh(file, ["products"])
 
     await db.commit()
 
@@ -5364,15 +5322,15 @@ async def move_files(
     """
     user, can_modify_all = auth_result
 
-    # m044: capture the destination folder's M2M project list so moved
-    # files inherit it (replace semantics — see plan §D.1). Empty list
-    # when moving to root or to a folder that isn't linked to any project.
+    # Capture the destination folder's M2M product list so moved files inherit
+    # it (replace semantics). Empty list when moving to root or to a folder
+    # that isn't linked to any product.
     target_folder: LibraryFolder | None = None
-    target_project_rows: list[Project] = []
+    target_product_rows: list[Product] = []
     if data.folder_id is not None:
         folder_result = await db.execute(
             select(LibraryFolder)
-            .options(selectinload(LibraryFolder.projects))
+            .options(selectinload(LibraryFolder.products))
             .where(LibraryFolder.id == data.folder_id)
         )
         target_folder = folder_result.scalar_one_or_none()
@@ -5380,9 +5338,9 @@ async def move_files(
             raise HTTPException(status_code=404, detail="Folder not found")
         if target_folder.is_external and target_folder.external_readonly:
             raise HTTPException(status_code=403, detail="Cannot move files to a read-only external folder")
-        target_project_rows = list(target_folder.projects)
+        target_product_rows = list(target_folder.products)
 
-    target_project_ids = [p.id for p in target_project_rows]
+    target_product_ids = [p.id for p in target_product_rows]
     target_is_external = target_folder is not None and target_folder.is_external
 
     moved = 0
@@ -5391,12 +5349,7 @@ async def move_files(
 
     for file_id in data.file_ids:
         result = await db.execute(
-            select(LibraryFile)
-            .options(
-                selectinload(LibraryFile.folder),
-                selectinload(LibraryFile.projects),
-            )
-            .where(LibraryFile.id == file_id)
+            select(LibraryFile).options(selectinload(LibraryFile.folder)).where(LibraryFile.id == file_id)
         )
         file = result.scalar_one_or_none()
         if not file:
@@ -5411,13 +5364,7 @@ async def move_files(
         # No bytes need to move when both ends are managed (same-boundary).
         if not file.is_external and not target_is_external:
             file.folder_id = data.folder_id
-            file.projects = list(target_project_rows)
-            await sync_plan_for_file(
-                db,
-                library_file_id=file.id,
-                project_ids=target_project_ids,
-                file_type=file.file_type,
-            )
+            await sync_product_for_file(db, library_file_id=file.id, product_ids=target_product_ids)
             moved += 1
             continue
 
@@ -5444,7 +5391,6 @@ async def move_files(
 
         file.is_external = target_is_external
         file.folder_id = data.folder_id
-        file.projects = list(target_project_rows)
         file.file_path = new_file_path
         # External rows historically carry ``file_hash=None`` (scan skips
         # hashing). When pulling an external file into managed storage,
@@ -5457,12 +5403,7 @@ async def move_files(
                     file.file_hash = calculate_file_hash(abs_path)
             except OSError:
                 pass  # leave hash null; dedup just won't match this row
-        await sync_plan_for_file(
-            db,
-            library_file_id=file.id,
-            project_ids=target_project_ids,
-            file_type=file.file_type,
-        )
+        await sync_product_for_file(db, library_file_id=file.id, product_ids=target_product_ids)
         moved += 1
 
     await db.commit()
@@ -5535,6 +5476,7 @@ async def bulk_delete(
             # Same door, same answer as DELETE /folders/{id}: the files inside
             # go to the trash, detached so the CASCADE cannot take them.
             deleted_files += await _trash_folder_contents(db, folder_id)
+            await purge_folder_product_links(db, [folder.id])
             await db.delete(folder)
             deleted_folders += 1
 

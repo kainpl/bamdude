@@ -718,7 +718,7 @@ class TestLibraryFilesAPI:
         expected_fields = {
             "id",
             "folder_id",
-            "project_ids",
+            "product_ids",
             "is_external",
             "filename",
             "file_type",
@@ -1882,3 +1882,283 @@ class TestLibraryPermissions:
         )
         # Viewers don't have delete_own or delete_all permissions
         assert response.status_code == 403
+
+
+class TestLibraryProductLinksAPI:
+    """Files and folders file under PRODUCTS, and one door writes every side.
+
+    The link used to be file→project, and the routes wrote the pivot themselves.
+    Now ``services/product_sync`` owns ``product_files`` and the ``ProductPlate``
+    rows together, so what these tests really pin is that each endpoint goes
+    through that door: a link a route wrote by hand would leave the plates
+    behind, and a product's recipe would name a file it has no plate for.
+    """
+
+    @pytest.fixture
+    async def folder_factory(self, db_session):
+        _counter = [0]
+
+        async def _create(**kwargs):
+            from backend.app.models.library import LibraryFolder
+
+            _counter[0] += 1
+            defaults = {"name": f"Folder {_counter[0]}"}
+            defaults.update(kwargs)
+            folder = LibraryFolder(**defaults)
+            db_session.add(folder)
+            await db_session.commit()
+            await db_session.refresh(folder)
+            return folder
+
+        return _create
+
+    @pytest.fixture
+    async def product_factory(self, db_session):
+        _counter = [0]
+
+        async def _create(**kwargs):
+            from backend.app.models.product import Product
+
+            _counter[0] += 1
+            defaults = {"name": f"Product {_counter[0]}"}
+            defaults.update(kwargs)
+            product = Product(**defaults)
+            db_session.add(product)
+            await db_session.commit()
+            await db_session.refresh(product)
+            return product
+
+        return _create
+
+    @pytest.fixture
+    async def sliced_file_factory(self, db_session):
+        """A printable single-plate file — the sync only plants plates for a
+        container it could actually print."""
+        _counter = [0]
+
+        async def _create(**kwargs):
+            from backend.app.models.library import LibraryFile
+
+            _counter[0] += 1
+            defaults = {
+                "filename": f"part_{_counter[0]}.gcode.3mf",
+                "file_path": f"/test/path/part_{_counter[0]}.gcode.3mf",
+                "file_size": 1024,
+                "file_type": "gcode",
+            }
+            defaults.update(kwargs)
+            lib_file = LibraryFile(**defaults)
+            db_session.add(lib_file)
+            await db_session.commit()
+            await db_session.refresh(lib_file)
+            return lib_file
+
+        return _create
+
+    @staticmethod
+    async def _plates(db_session, *, product_id: int, library_file_id: int) -> list[int]:
+        from sqlalchemy import select
+
+        from backend.app.models.product import ProductPlate
+
+        rows = (
+            await db_session.execute(
+                select(ProductPlate.plate_index).where(
+                    ProductPlate.product_id == product_id,
+                    ProductPlate.library_file_id == library_file_id,
+                )
+            )
+        ).scalars()
+        return sorted(rows)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_folder_with_products(self, async_client: AsyncClient, product_factory):
+        product = await product_factory(name="Lamp")
+        response = await async_client.post(
+            "/api/v1/library/folders", json={"name": "Lamp parts", "product_ids": [product.id]}
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert [p["id"] for p in body["products"]] == [product.id]
+        assert body["products"][0]["name"] == "Lamp"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_folder_with_an_unknown_product_is_404(self, async_client: AsyncClient):
+        response = await async_client.post("/api/v1/library/folders", json={"name": "Nowhere", "product_ids": [4242]})
+        assert response.status_code == 404
+        assert "4242" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_updating_a_folder_with_an_unknown_product_is_404(self, async_client: AsyncClient, folder_factory):
+        folder = await folder_factory()
+        response = await async_client.put(f"/api/v1/library/folders/{folder.id}", json={"product_ids": [4242]})
+        assert response.status_code == 404
+        assert "4242" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_linking_a_folder_mirrors_onto_its_files_and_plants_plates(
+        self, async_client: AsyncClient, db_session, folder_factory, sliced_file_factory, product_factory
+    ):
+        """The whole reason a folder link exists: the files inside join too, and
+        each one gets the plate row that makes it printable for that product."""
+        folder = await folder_factory(name="Lamp parts")
+        lib_file = await sliced_file_factory(folder_id=folder.id)
+        product = await product_factory()
+
+        response = await async_client.put(f"/api/v1/library/folders/{folder.id}", json={"product_ids": [product.id]})
+        assert response.status_code == 200, response.text
+        assert [p["id"] for p in response.json()["products"]] == [product.id]
+
+        file_response = await async_client.get(f"/api/v1/library/files/{lib_file.id}")
+        assert [p["id"] for p in file_response.json()["products"]] == [product.id]
+        assert await self._plates(db_session, product_id=product.id, library_file_id=lib_file.id) == [0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unlinking_the_folder_takes_the_plates_with_it(
+        self, async_client: AsyncClient, db_session, folder_factory, sliced_file_factory, product_factory
+    ):
+        folder = await folder_factory()
+        lib_file = await sliced_file_factory(folder_id=folder.id)
+        product = await product_factory()
+        await async_client.put(f"/api/v1/library/folders/{folder.id}", json={"product_ids": [product.id]})
+
+        response = await async_client.delete(f"/api/v1/library/folders/{folder.id}/products/{product.id}")
+        assert response.status_code == 204
+
+        file_response = await async_client.get(f"/api/v1/library/files/{lib_file.id}")
+        assert file_response.json()["products"] == []
+        assert await self._plates(db_session, product_id=product.id, library_file_id=lib_file.id) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unlinking_a_folder_that_is_not_linked_is_a_no_op(
+        self, async_client: AsyncClient, folder_factory, product_factory
+    ):
+        folder = await folder_factory()
+        product = await product_factory()
+        response = await async_client.delete(f"/api/v1/library/folders/{folder.id}/products/{product.id}")
+        assert response.status_code == 204
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_file_links_directly_and_keeps_its_plate(
+        self, async_client: AsyncClient, db_session, sliced_file_factory, product_factory
+    ):
+        lib_file = await sliced_file_factory()
+        product = await product_factory()
+
+        response = await async_client.put(f"/api/v1/library/files/{lib_file.id}", json={"product_ids": [product.id]})
+        assert response.status_code == 200, response.text
+        assert [p["id"] for p in response.json()["products"]] == [product.id]
+        assert await self._plates(db_session, product_id=product.id, library_file_id=lib_file.id) == [0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_file_unlinks_with_an_empty_list(
+        self, async_client: AsyncClient, db_session, sliced_file_factory, product_factory
+    ):
+        """``[]`` means unlink everything — the documented difference from
+        ``None``, which leaves the links alone."""
+        lib_file = await sliced_file_factory()
+        product = await product_factory()
+        await async_client.put(f"/api/v1/library/files/{lib_file.id}", json={"product_ids": [product.id]})
+
+        response = await async_client.put(f"/api/v1/library/files/{lib_file.id}", json={"product_ids": []})
+        assert response.status_code == 200, response.text
+        assert response.json()["products"] == []
+        assert await self._plates(db_session, product_id=product.id, library_file_id=lib_file.id) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_renaming_a_file_leaves_its_products_alone(
+        self, async_client: AsyncClient, sliced_file_factory, product_factory
+    ):
+        """``product_ids`` omitted is not ``product_ids: []`` — a PUT that only
+        renames must not quietly unfile the row."""
+        lib_file = await sliced_file_factory()
+        product = await product_factory()
+        await async_client.put(f"/api/v1/library/files/{lib_file.id}", json={"product_ids": [product.id]})
+
+        response = await async_client.put(
+            f"/api/v1/library/files/{lib_file.id}", json={"filename": "renamed.gcode.3mf"}
+        )
+        assert response.status_code == 200, response.text
+        assert [p["id"] for p in response.json()["products"]] == [product.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unlink_endpoint_drops_one_product_and_keeps_the_rest(
+        self, async_client: AsyncClient, db_session, sliced_file_factory, product_factory
+    ):
+        lib_file = await sliced_file_factory()
+        keep = await product_factory(name="Keep")
+        drop = await product_factory(name="Drop")
+        await async_client.put(f"/api/v1/library/files/{lib_file.id}", json={"product_ids": [keep.id, drop.id]})
+
+        response = await async_client.delete(f"/api/v1/library/files/{lib_file.id}/products/{drop.id}")
+        assert response.status_code == 204
+
+        file_response = await async_client.get(f"/api/v1/library/files/{lib_file.id}")
+        assert [p["id"] for p in file_response.json()["products"]] == [keep.id]
+        assert await self._plates(db_session, product_id=keep.id, library_file_id=lib_file.id) == [0]
+        assert await self._plates(db_session, product_id=drop.id, library_file_id=lib_file.id) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_folders_by_product(self, async_client: AsyncClient, folder_factory, product_factory):
+        linked = await folder_factory(name="Linked")
+        await folder_factory(name="Unlinked")
+        product = await product_factory()
+        await async_client.put(f"/api/v1/library/folders/{linked.id}", json={"product_ids": [product.id]})
+
+        response = await async_client.get(f"/api/v1/library/folders/by-product/{product.id}")
+        assert response.status_code == 200, response.text
+        assert [f["id"] for f in response.json()] == [linked.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_files_filtered_by_product_unions_direct_and_inherited(
+        self, async_client: AsyncClient, folder_factory, sliced_file_factory, product_factory
+    ):
+        """A file belongs to a product directly OR through its folder, and the
+        product page has to show both groups in one listing."""
+        product = await product_factory()
+        folder = await folder_factory()
+        inherited = await sliced_file_factory(folder_id=folder.id, filename="inherited.gcode.3mf")
+        direct = await sliced_file_factory(filename="direct.gcode.3mf")
+        stranger = await sliced_file_factory(filename="stranger.gcode.3mf")
+
+        await async_client.put(f"/api/v1/library/folders/{folder.id}", json={"product_ids": [product.id]})
+        await async_client.put(f"/api/v1/library/files/{direct.id}", json={"product_ids": [product.id]})
+
+        response = await async_client.get(f"/api/v1/library/files?product_id={product.id}")
+        assert response.status_code == 200, response.text
+        ids = {row["id"] for row in response.json()}
+        assert ids == {inherited.id, direct.id}
+        assert stranger.id not in ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_product_linked_folder_is_not_deletable_without_delete_all(
+        self, db_session, folder_factory, product_factory
+    ):
+        """A folder filed under a product holds somebody's work, so clearing it
+        is an admin action even when it looks empty. Asked of the guard itself —
+        the route just relays its answer."""
+        from backend.app.api.routes.library import _restricted_folder_delete_blocker
+        from backend.app.services.product_sync import apply_folder_products
+
+        folder = await folder_factory()
+        product = await product_factory()
+        assert await _restricted_folder_delete_blocker(db_session, folder) is None
+
+        await apply_folder_products(db_session, folder_id=folder.id, product_ids=[product.id])
+        await db_session.commit()
+
+        blocker = await _restricted_folder_delete_blocker(db_session, folder)
+        assert blocker is not None and "product" in blocker

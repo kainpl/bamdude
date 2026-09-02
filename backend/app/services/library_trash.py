@@ -31,6 +31,7 @@ from backend.app.core.database import async_session
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.settings import Settings
+from backend.app.services.product_sync import purge_file_product_links
 
 logger = logging.getLogger(__name__)
 
@@ -554,6 +555,11 @@ class LibraryTrashService:
         await db.execute(
             update(PrintQueueItem).where(PrintQueueItem.library_file_id.in_(row_ids)).values(library_file_id=None)
         )
+        # ⚠️ And the product pivot + plates, for the third time the same reason:
+        # both are ``ON DELETE CASCADE`` and SQLite ignores that, so a purged
+        # file would leave a plate row a product still renders and nothing can
+        # open.
+        await purge_file_product_links(db, row_ids)
         await db.execute(delete(LibraryFile).where(LibraryFile.id.in_(row_ids)))
         await db.commit()
         logger.info("Library trash sweeper: hard-deleted %d row(s) past %d-day retention", deleted, retention)
@@ -623,6 +629,7 @@ class LibraryTrashService:
             )
             for item in queue_items:
                 await db.delete(item)
+            await purge_file_product_links(db, [file.id])
             await db.delete(file)
             return False
 
@@ -656,6 +663,7 @@ class LibraryTrashService:
         await db.execute(
             update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None)
         )
+        await purge_file_product_links(db, [file.id])
         await db.delete(file)
         await db.commit()
 

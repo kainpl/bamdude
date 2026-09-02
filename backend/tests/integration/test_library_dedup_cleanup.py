@@ -163,3 +163,99 @@ async def test_three_copies_leave_exactly_one(db_session):
 
     rows = (await db_session.execute(select(LibraryFile).where(LibraryFile.file_hash == "dup-e"))).scalars().all()
     assert sum(1 for r in rows if r.deleted_at is None) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_row_referenced_only_by_a_product_survives(db_session):
+    """A file's only reference can be its product link, and that has to count.
+
+    m141 is frozen and runs at two different moments — before m162 on an
+    upgrade (legacy pivot present, product tables absent) and after
+    ``create_all`` on a fresh install (the reverse) — so the counter asks the
+    database which filing tables exist instead of importing either era's model.
+    A reference it cannot see is a survivor it will not protect: the file a
+    product is built from would lose the tie-break and be swept away, taking
+    the product's plate with it.
+    """
+    from sqlalchemy import insert
+
+    from backend.app.models.product import Product, product_files
+
+    keep = await _row(db_session, file_hash="dup-product", filename="keep.3mf")
+    drop = await _row(db_session, file_hash="dup-product", filename="drop.3mf")
+    product = Product(name="Lamp")
+    db_session.add(product)
+    await db_session.flush()
+    await db_session.execute(insert(product_files).values(product_id=product.id, library_file_id=keep.id))
+    await db_session.commit()
+
+    groups, trashed = await trash_duplicate_rows(db_session)
+    await db_session.commit()
+
+    assert (groups, trashed) == (1, 1)
+    await db_session.refresh(keep)
+    await db_session.refresh(drop)
+    assert keep.deleted_at is None, "the row a product is built from must survive"
+    assert drop.deleted_at is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_row_referenced_only_by_a_product_plate_survives(db_session):
+    """Same rule for the plate rows: a product's recipe points at a file, and
+    that is a reference even when the pivot row was never written."""
+    from backend.app.models.product import Product, ProductPlate
+
+    keep = await _row(db_session, file_hash="dup-plate", filename="keep.3mf")
+    drop = await _row(db_session, file_hash="dup-plate", filename="drop.3mf")
+    product = Product(name="Bracket")
+    db_session.add(product)
+    await db_session.flush()
+    db_session.add(ProductPlate(product_id=product.id, library_file_id=keep.id, plate_index=0))
+    await db_session.commit()
+
+    await trash_duplicate_rows(db_session)
+    await db_session.commit()
+
+    await db_session.refresh(keep)
+    await db_session.refresh(drop)
+    assert keep.deleted_at is None
+    assert drop.deleted_at is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_legacy_pivot_still_counts_when_it_is_there(db_session):
+    """The upgrade half of the same rule, and the only place it can be tested.
+
+    On an existing install m141 runs BEFORE m162: ``library_file_projects``
+    exists, ``product_files`` does not, and the legacy table has no model left
+    to select from — so it is counted in raw SQL, guarded by a table check. A
+    fresh test database never has that table, which means a typo in that SQL
+    would surface for the first time on somebody's upgrade. Here the table is
+    made by hand so the branch actually runs.
+    """
+    from sqlalchemy import text
+
+    keep = await _row(db_session, file_hash="dup-legacy", filename="keep.3mf")
+    drop = await _row(db_session, file_hash="dup-legacy", filename="drop.3mf")
+    await db_session.execute(
+        text("CREATE TABLE library_file_projects (file_id INTEGER NOT NULL, project_id INTEGER NOT NULL)")
+    )
+    await db_session.execute(
+        text("INSERT INTO library_file_projects (file_id, project_id) VALUES (:fid, 1)"), {"fid": keep.id}
+    )
+    await db_session.commit()
+
+    try:
+        await trash_duplicate_rows(db_session)
+        await db_session.commit()
+
+        await db_session.refresh(keep)
+        await db_session.refresh(drop)
+        assert keep.deleted_at is None, "the legacy pivot is a reference too"
+        assert drop.deleted_at is not None
+    finally:
+        await db_session.execute(text("DROP TABLE library_file_projects"))
+        await db_session.commit()

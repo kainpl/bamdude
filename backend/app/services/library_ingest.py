@@ -123,9 +123,9 @@ async def trash_duplicate_rows(db: AsyncSession) -> tuple[int, int]:
 
     ⚠️ **Soft-delete only. Nothing is re-pointed, and that is the whole design.**
     A merge would have to reconcile four uniqueness constraints —
-    ``library_file_makerworld_meta`` is 1:1 per file, tags and projects are
-    unique pairs, and a plan item is unique per (project, file) *and carries a
-    copy count and an order*, so merging means summing or choosing. Setting
+    ``library_file_makerworld_meta`` is 1:1 per file, tags and product links are
+    unique pairs, and a plate row is unique per (product, file, plate), so
+    merging means choosing which file a product's plate points at. Setting
     ``deleted_at`` leaves every foreign key intact: ``print_archives`` keeps its
     link, queue rows keep theirs, and the dedup lookup already ignores trashed
     rows, so the duplicate simply stops competing. It is also reversible, which
@@ -145,16 +145,27 @@ async def trash_duplicate_rows(db: AsyncSession) -> tuple[int, int]:
     chain the moment a later migration adds a column, and a per-row COUNT would
     be seven queries per row: fine for a button, tens of thousands of queries at
     startup on a library that actually has duplicates.
-    """
-    from sqlalchemy import func, select, update
 
+    ⚠️ **The filing tables it counts differ by era, so it asks the database
+    which ones are there.** m141 is frozen and runs at two different moments:
+    on an existing install it runs BEFORE m162, when the legacy
+    ``library_file_projects`` / ``project_print_plan_items`` still exist and
+    ``product_files`` does not; on a fresh install ``create_all`` has already
+    made the product tables and the legacy pair never existed at all. Importing
+    either era's model would break the other half — the legacy models are gone
+    from the tree, and the product ones are absent from the schema mid-upgrade.
+    A reference the counter cannot see is a survivor it will not protect, so
+    every table that is present is counted and every one that is not is skipped.
+    """
+    from sqlalchemy import bindparam, func, select, text, update
+
+    from backend.app.migrations.helpers import table_exists
     from backend.app.models.archive import PrintArchive
     from backend.app.models.auto_queue import AutoQueueItem
     from backend.app.models.library_file_makerworld_meta import LibraryFileMakerworldMeta
     from backend.app.models.library_file_note import LibraryFileNote
-    from backend.app.models.library_project_links import library_file_projects
     from backend.app.models.print_queue import PrintQueueItem
-    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+    from backend.app.models.product import ProductPlate, product_files
 
     duplicated_hashes = (
         (
@@ -180,18 +191,36 @@ async def trash_duplicate_rows(db: AsyncSession) -> tuple[int, int]:
     ).all()
     candidate_ids = [row_id for row_id, _ in rows]
 
-    references: dict[int, int] = dict.fromkeys(candidate_ids, 0)
-    for source, column in (
+    conn = await db.connection()
+    sources = [
         (PrintArchive, PrintArchive.library_file_id),
         (PrintQueueItem, PrintQueueItem.library_file_id),
         (AutoQueueItem, AutoQueueItem.library_file_id),
         (LibraryFileNote, LibraryFileNote.library_file_id),
-        (library_file_projects, library_file_projects.c.file_id),
-        (ProjectPrintPlanItem, ProjectPrintPlanItem.library_file_id),
         (LibraryFileMakerworldMeta, LibraryFileMakerworldMeta.library_file_id),
-    ):
+    ]
+    if await table_exists(conn, "product_files"):
+        sources.append((product_files, product_files.c.library_file_id))
+    if await table_exists(conn, "product_plates"):
+        sources.append((ProductPlate, ProductPlate.library_file_id))
+
+    references: dict[int, int] = dict.fromkeys(candidate_ids, 0)
+    for source, column in sources:
         counted = await db.execute(
             select(column, func.count()).select_from(source).where(column.in_(candidate_ids)).group_by(column)
+        )
+        for file_id, count in counted.all():
+            references[file_id] = references.get(file_id, 0) + count
+
+    # The legacy pair has no model left to select from, so it is asked in raw
+    # SQL — and only when the table is actually there.
+    for table, column in (("library_file_projects", "file_id"), ("project_print_plan_items", "library_file_id")):
+        if not await table_exists(conn, table):
+            continue
+        counted = await db.execute(
+            text(f"SELECT {column}, COUNT(*) FROM {table} WHERE {column} IN :ids GROUP BY {column}").bindparams(
+                bindparam("ids", value=candidate_ids, expanding=True)
+            )
         )
         for file_id, count in counted.all():
             references[file_id] = references.get(file_id, 0) + count

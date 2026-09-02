@@ -2304,11 +2304,11 @@ async def import_printer_files_to_library(
 
     folder: LibraryFolder | None = None
     if folder_id is not None:
-        # Eager-load .projects so save_3mf_bytes_to_library's
-        # inherit_folder_projects() doesn't trip async lazy-load.
+        # Eager-load .products so save_3mf_bytes_to_library's
+        # inherit_folder_products() doesn't trip async lazy-load.
         folder = (
             await db.execute(
-                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.products))
             )
         ).scalar_one_or_none()
         if not folder:

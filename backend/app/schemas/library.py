@@ -9,17 +9,13 @@ from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.timelapse import TimelapseStorage
 
 
-class ProjectRef(BaseModel):
-    """Tiny project reference embedded in file/folder responses (m044).
-
-    Carries just enough for the frontend to render the project chip
-    (name + color) without a follow-up fetch. The full Project schema
-    lives in ``backend.app.schemas.project``.
-    """
+class ProductRef(BaseModel):
+    """Tiny product reference embedded in file/folder responses — enough for a
+    chip; the full shape lives in ``backend.app.schemas.product``."""
 
     id: int
     name: str
-    color: str | None = None
+    is_active: bool = True
 
     class Config:
         from_attributes = True
@@ -33,9 +29,8 @@ class FolderCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=255)
     parent_id: int | None = None
-    # m044: list of project IDs to associate the folder with. Empty list
-    # = no project links.
-    project_ids: list[int] = Field(default_factory=list)
+    # Products this folder belongs to. Empty list = no product links.
+    product_ids: list[int] = Field(default_factory=list)
 
 
 class ExternalFolderCreate(BaseModel):
@@ -51,13 +46,13 @@ class ExternalFolderCreate(BaseModel):
 class FolderUpdate(BaseModel):
     """Schema for updating a folder.
 
-    ``project_ids``: ``None`` = leave links untouched, ``[]`` = unlink
-    from every project, otherwise replace the whole list.
+    ``product_ids``: ``None`` = leave links untouched, ``[]`` = unlink
+    from every product, otherwise replace the whole list.
     """
 
     name: str | None = Field(None, min_length=1, max_length=255)
     parent_id: int | None = None
-    project_ids: list[int] | None = None
+    product_ids: list[int] | None = None
 
 
 class FolderResponse(BaseModel):
@@ -66,8 +61,8 @@ class FolderResponse(BaseModel):
     id: int
     name: str
     parent_id: int | None
-    # m044: M2M project links. Empty list = unattached.
-    projects: list[ProjectRef] = Field(default_factory=list)
+    # M2M product links. Empty list = unattached.
+    products: list[ProductRef] = Field(default_factory=list)
     is_external: bool = False
     external_path: str | None = None
     external_readonly: bool = False
@@ -105,7 +100,7 @@ class FolderTreeItem(BaseModel):
     id: int
     name: str
     parent_id: int | None
-    projects: list[ProjectRef] = Field(default_factory=list)
+    products: list[ProductRef] = Field(default_factory=list)
     is_external: bool = False
     external_path: str | None = None
     external_readonly: bool = False
@@ -124,13 +119,13 @@ class FolderTreeItem(BaseModel):
 class FileUpdate(BaseModel):
     """Schema for updating a file.
 
-    ``project_ids``: ``None`` = leave links untouched, ``[]`` = unlink
-    from every project, otherwise replace the whole list.
+    ``product_ids``: ``None`` = leave links untouched, ``[]`` = unlink
+    from every product, otherwise replace the whole list.
     """
 
     filename: str | None = Field(None, min_length=1, max_length=255)
     folder_id: int | None = None
-    project_ids: list[int] | None = None
+    product_ids: list[int] | None = None
     notes: str | None = None
 
 
@@ -150,8 +145,8 @@ class FileResponse(BaseModel):
     id: int
     folder_id: int | None
     folder_name: str | None = None
-    # m044: M2M project links — empty list = unattached.
-    projects: list[ProjectRef] = Field(default_factory=list)
+    # M2M product links — empty list = unattached.
+    products: list[ProductRef] = Field(default_factory=list)
     is_external: bool = False
 
     filename: str
@@ -277,9 +272,9 @@ class FileListResponse(BaseModel):
 
     id: int
     folder_id: int | None
-    # m044: M2M project IDs only (names omitted to keep list payload small —
-    # frontend resolves names from a global ``projects`` query).
-    project_ids: list[int] = Field(default_factory=list)
+    # M2M product IDs only (names omitted to keep list payload small —
+    # frontend resolves names from a global ``products`` query).
+    product_ids: list[int] = Field(default_factory=list)
     is_external: bool = False
     filename: str
     file_type: str

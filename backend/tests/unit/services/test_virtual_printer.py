@@ -13,20 +13,20 @@ import pytest
 # Eagerly import every model that participates in a SQLAlchemy relationship the
 # tests below trigger at runtime — without this, calling ``AutoQueueItem(...)``
 # from inside ``_add_to_auto_queue`` runs SQLAlchemy's deferred mapper
-# initialisation, which walks Project.library_file_projects (the m044 pivot)
-# and fails with "name 'library_file_projects' is not defined" because the
-# pivot module was never imported in the test process. Same applies to a few
+# initialisation, which walks the M2M pivots (``product_files`` and friends)
+# and fails with "name 'product_files' is not defined" because the module
+# defining them was never imported in the test process. Same applies to a few
 # other relationship targets (auto_queue, library, etc.); listing them here
 # keeps the symptoms from drifting if a future PR adds another relationship.
 from backend.app.models import (  # noqa: F401
     archive,
     auto_queue,
     library,
-    library_project_links,
     print_queue,
     printer_queue,
+    product,
     project,
-    project_print_plan,
+    project_line,
     user,
 )
 

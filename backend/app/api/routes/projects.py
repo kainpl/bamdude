@@ -26,12 +26,9 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.models.library_project_links import library_file_projects, library_folder_projects
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.product import ProductPart, ProductPlate, product_files, product_folders
 from backend.app.models.project import Project
-from backend.app.models.project_bom import ProjectBOMItem
-from backend.app.models.project_part import ProjectPart
-from backend.app.models.project_print_plan import ProjectPrintPlanItem
 from backend.app.models.user import User
 from backend.app.schemas.project import (
     ArchivePreview,
@@ -61,6 +58,18 @@ from backend.app.services.library_helpers import detect_file_type, sync_system_t
 from backend.app.services.library_ingest import find_reusable_row
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import safe_join_under
+
+# ⚠️ TEMPORARY, and only enough to keep this module importable. The legacy
+# project models (``library_project_links``, ``project_bom``, ``project_part``,
+# ``project_print_plan``) are gone; the route bodies below still speak their
+# vocabulary and are NOT expected to work — pass 1 task 10 rewrites this file
+# against products and order lines, and deletes these aliases with it. Nothing
+# new should be written against them.
+library_file_projects = product_files
+library_folder_projects = product_folders
+ProjectBOMItem = ProductPart
+ProjectPart = ProductPart
+ProjectPrintPlanItem = ProductPlate
 
 logger = logging.getLogger(__name__)
 
@@ -2067,7 +2076,6 @@ async def export_project(
     ]
 
     # m044: linked folders are now in the M2M pivot.
-    from backend.app.models.library_project_links import library_folder_projects
 
     folders_result = await db.execute(
         select(LibraryFolder)

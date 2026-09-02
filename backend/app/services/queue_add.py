@@ -33,7 +33,6 @@ from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import mode_to_bool
 from backend.app.schemas.print_queue import PrintQueueItemCreate
-from backend.app.services.library_helpers import project_for_library_file
 from backend.app.utils.filename import InvalidFilenameError, is_sliced_file, validate_print_filename
 from backend.app.utils.printer_models import is_gcode_compatible
 
@@ -93,14 +92,9 @@ async def add_items_to_printer_queue(
             raise HTTPException(404, "Archive not found")
 
     # Validate library file exists (if provided) and get it for filament extraction.
-    # m044: eager-load M2M projects so the fallback below doesn't lazy-fetch.
     library_file = None
     if data.library_file_id:
-        result = await db.execute(
-            select(LibraryFile)
-            .options(selectinload(LibraryFile.projects))
-            .where(LibraryFile.id == data.library_file_id)
-        )
+        result = await db.execute(select(LibraryFile).where(LibraryFile.id == data.library_file_id))
         library_file = result.scalar_one_or_none()
         if not library_file:
             raise HTTPException(400, "Library file not found")
@@ -178,9 +172,9 @@ async def add_items_to_printer_queue(
         if not project_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Project not found")
 
-    # One rule, shared with the auto-queue and direct-print routes — it used to
-    # be written out here and there, and the third place never got a copy.
-    effective_project_id = project_for_library_file(data.project_id, library_file)
+    # A file does not belong to an order, so there is nothing to fall back on:
+    # the caller names the order, or the row carries none.
+    effective_project_id = data.project_id
 
     # For quantity > 1, group copies under a shared batch_id
     batch_id = str(uuid.uuid4()) if data.quantity > 1 else None

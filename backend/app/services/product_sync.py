@@ -40,14 +40,14 @@ already written — ``product_files`` is a composite primary key, so that is an
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from sqlalchemy import delete, insert, inspect as sqla_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.models.product import Product, ProductPart, ProductPlate, product_files
+from backend.app.models.product import Product, ProductPart, ProductPlate, product_files, product_folders
 from backend.app.services.product_composition import part_index, plate_key_counts
 
 
@@ -241,6 +241,33 @@ async def inherit_folder_products(db: AsyncSession, library_file: LibraryFile, f
     await sync_product_for_file(db, library_file_id=library_file.id, product_ids=[p.id for p in folder_products])
 
 
+async def purge_file_product_links(db: AsyncSession, library_file_ids: Sequence[int]) -> None:
+    """Drop a file's product links and plates BEFORE its row is hard-deleted.
+
+    ``product_files.library_file_id`` and ``product_plates.library_file_id``
+    are both declared ``ON DELETE CASCADE``, which PostgreSQL honours and
+    SQLite does not — this codebase never sets ``PRAGMA foreign_keys = ON``.
+    Without this the pivot keeps a row pointing at a library file that is gone,
+    and the product's plate list renders an entry nothing can open.
+
+    Soft delete (the trash) must NOT call this: a trashed file is restorable,
+    and its product links are part of what comes back.
+    """
+    ids = list(library_file_ids)
+    if not ids:
+        return
+    await db.execute(delete(ProductPlate).where(ProductPlate.library_file_id.in_(ids)))
+    await db.execute(delete(product_files).where(product_files.c.library_file_id.in_(ids)))
+
+
+async def purge_folder_product_links(db: AsyncSession, folder_ids: Sequence[int]) -> None:
+    """The folder twin of :func:`purge_file_product_links` — same FK reason."""
+    ids = list(folder_ids)
+    if not ids:
+        return
+    await db.execute(delete(product_folders).where(product_folders.c.library_folder_id.in_(ids)))
+
+
 async def resync_file_products(db: AsyncSession, library_file_id: int) -> None:
     """Re-run the sync against the file's CURRENT links — for callers that
     rewrote ``file_metadata`` (re-scan) and changed nothing about the links."""
@@ -258,6 +285,8 @@ __all__ = [
     "apply_folder_products",
     "inherit_folder_products",
     "is_plan_eligible",
+    "purge_file_product_links",
+    "purge_folder_product_links",
     "resync_file_products",
     "seed_parts_for_product",
     "sync_product_for_file",
