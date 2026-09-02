@@ -114,7 +114,7 @@ export function VirtualPrinterDiagnosticModal({
           </button>
         </div>
 
-        <div className="p-6 space-y-4 overflow-y-auto">
+        <div className="p-4 space-y-4 overflow-y-auto">
           {diagnose.isPending && (
             <div className="flex items-center gap-2 text-bambu-gray">
               <Loader2 className="w-4 h-4 animate-spin" />

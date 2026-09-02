@@ -3650,7 +3650,7 @@ function PrinterCard({
                       type="checkbox"
                       checked={deleteArchives}
                       onChange={(e) => setDeleteArchives(e.target.checked)}
-                      className="mt-0.5 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] rounded border-bambu-gray bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green focus:ring-offset-0"
+                      className="accent-bambu-green mt-0.5 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] rounded border-bambu-gray bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green focus:ring-offset-0"
                     />
                     <div>
                       <span className="text-sm text-white">{t('printers.deleteArchives')}</span>
@@ -7535,7 +7535,7 @@ export function AddPrinterModal({
                       id="cleanup_after_print"
                       checked={form.cleanup_after_print}
                       onChange={(e) => setForm({ ...form, cleanup_after_print: e.target.checked })}
-                      className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                      className="accent-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     />
                     <label htmlFor="cleanup_after_print" className="text-sm text-bambu-gray">
                       {t('printers.modal.cleanupAfterPrintLabel')}
@@ -7596,7 +7596,7 @@ export function AddPrinterModal({
                                 ...(enabled ? { require_plate_clear: false } : {}),
                               });
                             }}
-                            className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                            className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                           />
                           <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
                         </label>
@@ -7633,7 +7633,7 @@ export function AddPrinterModal({
                       type="checkbox"
                       checked={form.require_plate_clear ?? true}
                       onChange={(e) => setForm({ ...form, require_plate_clear: e.target.checked })}
-                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                      className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     />
                     <span className="text-sm text-white">{t('printers.modal.requirePlateClear')}</span>
                   </label>
@@ -8205,7 +8205,7 @@ function EditPrinterModal({
                     id="edit_cleanup_after_print"
                     checked={form.cleanup_after_print}
                     onChange={(e) => setForm({ ...form, cleanup_after_print: e.target.checked })}
-                    className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    className="accent-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                   />
                   <label htmlFor="edit_cleanup_after_print" className="text-sm text-bambu-gray">
                     {t('printers.modal.cleanupAfterPrintLabel')}
@@ -8282,7 +8282,7 @@ function EditPrinterModal({
                                 ...(enabled ? { require_plate_clear: false } : {}),
                               });
                             }}
-                            className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                            className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                           />
                           <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
                         </label>
@@ -8319,7 +8319,7 @@ function EditPrinterModal({
                       type="checkbox"
                       checked={form.require_plate_clear ?? true}
                       onChange={(e) => setForm({ ...form, require_plate_clear: e.target.checked })}
-                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                      className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     />
                     <span className="text-sm text-white">{t('printers.modal.requirePlateClear')}</span>
                   </label>

@@ -266,7 +266,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
                       type="checkbox"
                       checked={preserveZipStructure}
                       onChange={(e) => setPreserveZipStructure(e.target.checked)}
-                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                      className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     />
                     <span className="text-sm text-white">{t('fileManager.preserveZipStructure')}</span>
                   </label>
@@ -275,7 +275,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
                       type="checkbox"
                       checked={createFolderFromZip}
                       onChange={(e) => setCreateFolderFromZip(e.target.checked)}
-                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                      className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     />
                     <span className="text-sm text-white">{t('fileManager.createFolderFromZip')}</span>
                   </label>
@@ -316,7 +316,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
                       type="checkbox"
                       checked={generateStlThumbnails}
                       onChange={(e) => setGenerateStlThumbnails(e.target.checked)}
-                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                      className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     />
                     <span className="text-sm text-white">{t('fileManager.generateThumbnailsForStl')}</span>
                   </label>

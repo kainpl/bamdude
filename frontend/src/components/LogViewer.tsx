@@ -210,7 +210,7 @@ export function LogViewer() {
                   type="checkbox"
                   checked={autoScroll}
                   onChange={(e) => setAutoScroll(e.target.checked)}
-                  className="rounded border-bambu-dark-tertiary bg-bambu-dark-tertiary"
+                  className="accent-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark-tertiary"
                 />
                 {t('logViewer.autoScroll')}
               </label>

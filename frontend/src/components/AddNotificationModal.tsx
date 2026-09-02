@@ -517,7 +517,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                             : [...printerIds, p.id]
                         )
                       }
-                      className="w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                      className="accent-bambu-green w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     />
                     {p.name}
                   </label>

@@ -383,7 +383,7 @@ export function SystemInfoPage() {
                 <label key={printer.id} className="flex items-start gap-2 text-sm text-white cursor-pointer">
                   <input
                     type="checkbox"
-                    className="mt-0.5"
+                    className="accent-bambu-green mt-0.5"
                     checked={selectedMqttPrinters.includes(printer.id)}
                     onChange={(e) =>
                       setSelectedMqttPrinters((prev) =>

@@ -570,7 +570,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
               type="checkbox"
               checked={disableFiltering}
               onChange={(e) => setDisableFiltering(e.target.checked)}
-              className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+              className="accent-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
             />
             {t('inventory.showAllSpools')}
           </label>

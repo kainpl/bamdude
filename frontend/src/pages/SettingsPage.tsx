@@ -1944,7 +1944,7 @@ export function SettingsPage() {
                     type="checkbox"
                     checked={localSettings.use_slicer_api ?? false}
                     onChange={(e) => updateSetting('use_slicer_api', e.target.checked)}
-                    className="mt-0.5 w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    className="accent-bambu-green mt-0.5 w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                   />
                   <span className="flex-1">
                     <span className="block text-sm text-white">
@@ -2457,7 +2457,7 @@ export function SettingsPage() {
                             type="checkbox"
                             checked={trashSettings.auto_purge_include_never_printed}
                             onChange={(e) => saveTrashSettings({ auto_purge_include_never_printed: e.target.checked })}
-                            className="rounded border-bambu-dark-tertiary"
+                            className="accent-bambu-green rounded border-bambu-dark-tertiary"
                           />
                           {t('libraryAutoPurge.includeNeverPrinted')}
                         </label>
@@ -4134,7 +4134,7 @@ export function SettingsPage() {
                         max="65535"
                         value={localSettings.mqtt_port ?? 1883}
                         onChange={(e) => updateSetting('mqtt_port', Math.min(65535, Math.max(1, parseInt(e.target.value) || 1883)))}
-                        className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                        className="accent-bambu-green w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                       />
                     </div>
                     <div className="flex items-center gap-3 pb-2">
@@ -4933,7 +4933,7 @@ export function SettingsPage() {
                       value={newAPIKeyName}
                       onChange={(e) => setNewAPIKeyName(e.target.value)}
                       placeholder={t('settings.keyNamePlaceholder')}
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      className="accent-bambu-green w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     />
                   </div>
                   <div>
@@ -4944,7 +4944,7 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={newAPIKeyPermissions.can_read_status}
                           onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_read_status: e.target.checked }))}
-                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                          className="accent-bambu-green w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
                         />
                         <div>
                           <span className="text-white">{t('settings.readStatus')}</span>
@@ -4956,7 +4956,7 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={newAPIKeyPermissions.can_queue}
                           onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_queue: e.target.checked }))}
-                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                          className="accent-bambu-green w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
                         />
                         <div>
                           <span className="text-white">{t('settings.manageQueue')}</span>
@@ -4968,7 +4968,7 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={newAPIKeyPermissions.can_control_printer}
                           onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_control_printer: e.target.checked }))}
-                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                          className="accent-bambu-green w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
                         />
                         <div>
                           <span className="text-white">{t('settings.controlPrinter')}</span>
@@ -4980,7 +4980,7 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={newAPIKeyPermissions.can_access_cloud}
                           onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_access_cloud: e.target.checked }))}
-                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                          className="accent-bambu-green w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
                         />
                         <div>
                           <span className="text-white">{t('settings.allowCloudAccess')}</span>
@@ -4992,7 +4992,7 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={newAPIKeyPermissions.can_manage_library}
                           onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_manage_library: e.target.checked }))}
-                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                          className="accent-bambu-green w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
                         />
                         <div>
                           <span className="text-white">{t('settings.manageLibrary')}</span>
@@ -5004,7 +5004,7 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={newAPIKeyPermissions.can_manage_inventory}
                           onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_manage_inventory: e.target.checked }))}
-                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                          className="accent-bambu-green w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
                         />
                         <div>
                           <span className="text-white">{t('settings.manageInventory')}</span>
@@ -5016,7 +5016,7 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={newAPIKeyPermissions.can_manage_maintenance}
                           onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_manage_maintenance: e.target.checked }))}
-                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                          className="accent-bambu-green w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
                         />
                         <div>
                           <span className="text-white">{t('settings.manageMaintenance')}</span>
@@ -5028,7 +5028,7 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={newAPIKeyPermissions.can_manage_archives}
                           onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_manage_archives: e.target.checked }))}
-                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                          className="accent-bambu-green w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
                         />
                         <div>
                           <span className="text-white">{t('settings.manageArchives')}</span>
@@ -5040,7 +5040,7 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={newAPIKeyPermissions.can_manage_projects}
                           onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_manage_projects: e.target.checked }))}
-                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                          className="accent-bambu-green w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
                         />
                         <div>
                           <span className="text-white">{t('settings.manageProjects')}</span>
@@ -5052,7 +5052,7 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={newAPIKeyPermissions.can_print_labels}
                           onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_print_labels: e.target.checked }))}
-                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                          className="accent-bambu-green w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
                         />
                         <div>
                           <span className="text-white">{t('settings.printLabels')}</span>
@@ -6503,7 +6503,7 @@ export function SettingsPage() {
                       type="checkbox"
                       checked={localSettings.local_login_enabled === false}
                       onChange={(e) => updateSetting('local_login_enabled', !e.target.checked)}
-                      className="mt-1 h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green/50 cursor-pointer"
+                      className="accent-bambu-green mt-1 h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green/50 cursor-pointer"
                     />
                     <div>
                       <p className="text-sm font-medium text-white">{t('settings.localLogin.disable')}</p>
@@ -6654,7 +6654,7 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={userFormData.group_ids.includes(group.id)}
                           onChange={() => toggleUserGroup(group.id)}
-                          className="w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark"
+                          className="accent-bambu-green w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark"
                         />
                         <span className="text-sm text-white">{getGroupName(group.name, t)}</span>
                         {group.is_system && (
@@ -6865,7 +6865,7 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={userFormData.group_ids.includes(group.id)}
                           onChange={() => toggleUserGroup(group.id)}
-                          className="w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark"
+                          className="accent-bambu-green w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark"
                         />
                         <span className="text-sm text-white">{getGroupName(group.name, t)}</span>
                         {group.is_system && (

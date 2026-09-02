@@ -341,7 +341,7 @@ export function LibraryTrashPage() {
                       }}
                       onChange={toggleAll}
                       aria-label={t('libraryTrash.selectAll')}
-                      className="rounded border-bambu-dark-tertiary cursor-pointer"
+                      className="accent-bambu-green rounded border-bambu-dark-tertiary cursor-pointer"
                     />
                   </th>
                   <th className="px-3 py-2 w-14" aria-label={t('libraryTrash.col.preview', { defaultValue: 'Preview' })} />
@@ -363,7 +363,7 @@ export function LibraryTrashPage() {
                         checked={selected.has(item.id)}
                         onChange={() => toggleOne(item.id)}
                         aria-label={t('libraryTrash.selectOne', { filename: item.filename })}
-                        className="rounded border-bambu-dark-tertiary cursor-pointer"
+                        className="accent-bambu-green rounded border-bambu-dark-tertiary cursor-pointer"
                       />
                     </td>
                     <td className="px-3 py-2">

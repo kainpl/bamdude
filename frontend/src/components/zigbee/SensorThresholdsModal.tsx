@@ -106,7 +106,7 @@ export function SensorThresholdsModal({ isOpen, onClose, sensor }: Props) {
           </button>
         </div>
 
-        <div className="p-6 space-y-4 overflow-y-auto max-h-[calc(90vh-140px)]">
+        <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(90vh-140px)]">
           <p className="text-sm text-bambu-gray">{t('settings.zigbee.thresholds.hint')}</p>
 
           {rows.map((row) => {

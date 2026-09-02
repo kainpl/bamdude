@@ -467,7 +467,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto">
+        <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto">
           {error && (
             <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-400 dark:border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
               {error}

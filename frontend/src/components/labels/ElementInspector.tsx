@@ -179,7 +179,7 @@ export function ElementInspector({
               />
               {t('labelEditor.bold')}
             </label>
-            <label className="flex items-center gap-1.5 text-xs text-bambu-gray">
+            <label className="accent-bambu-green flex items-center gap-1.5 text-xs text-bambu-gray">
               <input
                 type="checkbox"
                 checked={element.italic}
@@ -192,7 +192,7 @@ export function ElementInspector({
       )}
 
       {element.type === 'barcode' && (
-        <label className="block">
+        <label className="accent-bambu-green block">
           <span className="text-xs text-bambu-gray">{t('labelEditor.symbology')}</span>
           <select
             value={element.symbology}

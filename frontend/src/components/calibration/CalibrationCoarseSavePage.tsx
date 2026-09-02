@@ -49,7 +49,7 @@ export function CalibrationCoarseSavePage({ onSubmit, isSubmitting }: Props) {
           type="checkbox"
           checked={skipFine}
           onChange={(e) => setSkipFine(e.target.checked)}
-          className="rounded"
+          className="accent-bambu-green rounded"
         />
         <span className="text-bambu-gray">{t('filamentCali.coarseSave.skipFine')}</span>
       </label>

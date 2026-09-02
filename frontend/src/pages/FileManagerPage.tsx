@@ -251,7 +251,7 @@ function ExternalFolderModal({ onClose, onSave, isLoading, t }: ExternalFolderMo
               type="text"
               value={path}
               onChange={(e) => setPath(e.target.value)}
-              className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green font-mono text-sm"
+              className="accent-bambu-green w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green font-mono text-sm"
               placeholder="/mnt/nas/3d-prints"
               required
             />
@@ -263,7 +263,7 @@ function ExternalFolderModal({ onClose, onSave, isLoading, t }: ExternalFolderMo
                 type="checkbox"
                 checked={readonly}
                 onChange={(e) => setReadonly(e.target.checked)}
-                className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                className="accent-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
               />
               <span className="text-sm text-white">{t('fileManager.readOnly')}</span>
               <span className="text-xs text-bambu-gray">({t('fileManager.readOnlyHelp')})</span>
@@ -273,7 +273,7 @@ function ExternalFolderModal({ onClose, onSave, isLoading, t }: ExternalFolderMo
                 type="checkbox"
                 checked={showHidden}
                 onChange={(e) => setShowHidden(e.target.checked)}
-                className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                className="accent-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
               />
               <span className="text-sm text-white">{t('fileManager.showHiddenFiles')}</span>
             </label>

@@ -177,7 +177,7 @@ export function ConnectionDiagnosticModal(props: ConnectionDiagnosticModalProps)
           </button>
         </div>
 
-        <div className="p-6 space-y-4 overflow-y-auto">
+        <div className="p-4 space-y-4 overflow-y-auto">
           {diagnose.isPending && (
             <div className="space-y-1.5">
               <div className="flex items-center gap-2 text-bambu-gray">

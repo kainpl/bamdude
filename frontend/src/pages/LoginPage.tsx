@@ -706,7 +706,7 @@ export function LoginPage() {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="block w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
+                className="accent-bambu-green block w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
                 placeholder={t('login.passwordPlaceholder')}
                 autoComplete="current-password"
               />
@@ -719,7 +719,7 @@ export function LoginPage() {
                 type="checkbox"
                 checked={rememberMe}
                 onChange={(e) => setRememberMe(e.target.checked)}
-                className="h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green/50 focus:ring-2 focus:ring-offset-0 cursor-pointer"
+                className="accent-bambu-green h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green/50 focus:ring-2 focus:ring-offset-0 cursor-pointer"
               />
               <label htmlFor="rememberMe" className="text-sm text-bambu-gray cursor-pointer select-none">
                 {t('login.rememberMe')}

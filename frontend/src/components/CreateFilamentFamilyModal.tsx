@@ -237,7 +237,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
               <input
                 value={serial}
                 onChange={(e) => setSerial(e.target.value)}
-                className="w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
+                className="accent-bambu-green w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
                 placeholder="Basic"
               />
             </div>
@@ -256,7 +256,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
                 <input type="radio" checked={sourceMode === 'type'} onChange={() => setSourceMode('type')} />
                 {t('authoring.sourceModeType')}
               </label>
-              <label className="flex items-center gap-1.5">
+              <label className="accent-bambu-green flex items-center gap-1.5">
                 <input type="radio" checked={sourceMode === 'preset'} onChange={() => setSourceMode('preset')} />
                 {t('authoring.sourceModePreset')}
               </label>
@@ -265,7 +265,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
               <select
                 value={sourceKey}
                 onChange={(e) => setSourceKey(e.target.value)}
-                className="mt-2 w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
+                className="accent-bambu-green mt-2 w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
               >
                 <option value="">{t('authoring.pickPreset')}</option>
                 {presetChoices.map((c) => (
@@ -283,7 +283,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
               value={printerQuery}
               onChange={(e) => setPrinterQuery(e.target.value)}
               placeholder={t('authoring.printerSearch')}
-              className="w-full mb-1.5 px-2.5 py-1.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
+              className="accent-bambu-green w-full mb-1.5 px-2.5 py-1.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
             />
             <div className="space-y-1 max-h-40 overflow-y-auto rounded-lg border border-bambu-dark-tertiary p-2">
               {visiblePrinterNames.map((name) => (
@@ -297,7 +297,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
                 </label>
               ))}
               {visiblePrinterNames.length === 0 && (
-                <p className="text-xs text-bambu-gray">{t('authoring.noPrinters')}</p>
+                <p className="accent-bambu-green text-xs text-bambu-gray">{t('authoring.noPrinters')}</p>
               )}
             </div>
             {(checkedNames ?? []).length > 0 && (
@@ -319,7 +319,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
           )}
           {variant === 'local' && orcaConnected && (
             <label
-              className={`flex items-center gap-2 text-sm ${orcaWritable ? 'text-white' : 'text-bambu-gray'}`}
+              className={`accent-bambu-green flex items-center gap-2 text-sm ${orcaWritable ? 'text-white' : 'text-bambu-gray'}`}
               title={orcaWritable ? undefined : t('authoring.orcaNeedsWrite')}
             >
               <input
@@ -332,7 +332,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
             </label>
           )}
           {(variant === 'bambu' || variant === 'orca') && (
-            <label className="flex items-center gap-2 text-sm text-white">
+            <label className="accent-bambu-green flex items-center gap-2 text-sm text-white">
               <input
                 type="checkbox"
                 checked={secondaryChecked}
@@ -342,7 +342,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
             </label>
           )}
           {variant === 'bambu' && !cloudConnected && (
-            <p className="text-xs text-red-600 dark:text-red-400">{t('authoring.cloudRequired')}</p>
+            <p className="accent-bambu-green text-xs text-red-600 dark:text-red-400">{t('authoring.cloudRequired')}</p>
           )}
           {variant === 'orca' && !orcaConnected && (
             <p className="text-xs text-red-600 dark:text-red-400">{t('authoring.orcaRequired')}</p>

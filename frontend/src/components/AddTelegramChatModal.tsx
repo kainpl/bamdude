@@ -317,7 +317,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
                             : [...printerIds, p.id]
                         )
                       }
-                      className="w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                      className="accent-bambu-green w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     />
                     {p.name}
                   </label>
@@ -400,7 +400,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
                           type="checkbox"
                           checked={activeEvents.includes(event.event_type)}
                           onChange={() => toggleEvent(event.event_type)}
-                          className="w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                          className="accent-bambu-green w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                         />
                         <span>
                           {EVENT_LABEL_KEYS[event.event_type] ? t(EVENT_LABEL_KEYS[event.event_type]) : event.label}

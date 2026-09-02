@@ -134,7 +134,7 @@ export function CreateUserAdvancedAuthModal({
                       type="checkbox"
                       checked={formData.group_ids.includes(group.id)}
                       onChange={() => toggleGroup(group.id)}
-                      className="w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark"
+                      className="accent-bambu-green w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark"
                     />
                     <span className="text-sm text-white">{group.name}</span>
                     {group.is_system && (

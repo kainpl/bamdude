@@ -219,7 +219,7 @@ export function AuthoredFamiliesSection() {
                 <input type="checkbox" checked={alsoCloud} onChange={(e) => setAlsoCloud(e.target.checked)} />
                 {t('authoring.families.alsoCloud')}
               </label>
-              <div className="flex justify-end gap-2">
+              <div className="accent-bambu-green flex justify-end gap-2">
                 <Button variant="secondary" onClick={() => setDeleting(null)}>
                   {t('common.cancel')}
                 </Button>

@@ -386,7 +386,7 @@ export default function SlicerSettingsPanel({
                     checked={sourceSelected?.has(o.key) ?? false}
                     disabled={disabled || !onToggleSource}
                     onChange={(e) => onToggleSource?.(o.key, e.target.checked)}
-                    className="shrink-0 cursor-pointer disabled:opacity-40"
+                    className="accent-bambu-green shrink-0 cursor-pointer disabled:opacity-40"
                   />
                   <span className="min-w-0 flex-1 truncate">
                     <span className="font-mono text-bambu-gray">{o.key}</span>
@@ -507,7 +507,7 @@ function OptionRow({
               title={t('slicerSettings.useFromFile', "Use the source file's value for {{option}}", {
                 option: option.label || optionKey,
               })}
-              className="w-3 h-3 cursor-pointer disabled:opacity-40"
+              className="accent-bambu-green w-3 h-3 cursor-pointer disabled:opacity-40"
             />
           )}
         </span>
@@ -606,7 +606,7 @@ function OptionControl({ id, option, current, onChange, disabled, filamentChoice
         checked={current === '1' || current === 'true'}
         onChange={(e) => onChange(e.target.checked)}
         disabled={disabled}
-        className="w-3.5 h-3.5 cursor-pointer disabled:opacity-40"
+        className="accent-bambu-green w-3.5 h-3.5 cursor-pointer disabled:opacity-40"
       />
     );
   }

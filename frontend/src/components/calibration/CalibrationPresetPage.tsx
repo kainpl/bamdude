@@ -932,7 +932,7 @@ export function CalibrationPresetPage({
                     step="0.001"
                     value={paLineStep}
                     onChange={(e) => setPaLineStep(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                    className="accent-bambu-green w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
               </div>

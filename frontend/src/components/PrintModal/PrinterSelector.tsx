@@ -501,7 +501,7 @@ export function PrinterSelector({
                       type="checkbox"
                       checked={hasOverride}
                       onChange={(e) => handleOverrideToggle(printer.id, e.target.checked, e as unknown as React.MouseEvent)}
-                      className="w-3.5 h-3.5 rounded border-bambu-gray/30 bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green focus:ring-offset-0"
+                      className="accent-bambu-green w-3.5 h-3.5 rounded border-bambu-gray/30 bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green focus:ring-offset-0"
                     />
                     <span className="text-xs text-bambu-gray">{t('printModal.customMapping')}</span>
                   </label>

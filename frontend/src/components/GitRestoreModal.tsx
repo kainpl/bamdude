@@ -423,7 +423,7 @@ export function GitRestoreModal({ onClose }: GitRestoreModalProps) {
                               onChange={() =>
                                 setSelected((prev) => ({ ...prev, [category.id]: !prev[category.id] }))
                               }
-                              className="w-4 h-4 rounded border-bambu-gray bg-bambu-dark text-bambu-green focus:ring-bambu-green focus:ring-offset-0"
+                              className="accent-bambu-green w-4 h-4 rounded border-bambu-gray bg-bambu-dark text-bambu-green focus:ring-bambu-green focus:ring-offset-0"
                             />
                             <div className={isChecked ? 'text-bambu-green' : 'text-bambu-gray'}>{category.icon}</div>
                             <div className="flex-1">

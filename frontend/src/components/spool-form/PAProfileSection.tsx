@@ -155,7 +155,7 @@ export function PAProfileSection({
           type="checkbox"
           checked={isSelected}
           onChange={() => toggleProfileSelected(String(printer.id), cal.cali_idx, cal.extruder_id)}
-          className="w-4 h-4 rounded border-bambu-dark-tertiary text-bambu-green focus:ring-bambu-green"
+          className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary text-bambu-green focus:ring-bambu-green"
         />
         <div className="flex-1 min-w-0">
           <span className={`text-sm font-medium ${isSelected ? 'text-bambu-green' : 'text-white'}`}>

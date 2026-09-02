@@ -528,7 +528,7 @@ export function GitBackupSettings() {
                         value="github"
                         checked={provider === 'github'}
                         onChange={() => { setProvider('github'); setTestResult(null); setSaveError(null); }}
-                        className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
+                        className="accent-bambu-green w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitHubIcon className="w-4 h-4 text-white" />
                       <span className="text-sm text-white">{t('backup.providerGitHub')}</span>
@@ -540,7 +540,7 @@ export function GitBackupSettings() {
                         value="gitlab"
                         checked={provider === 'gitlab'}
                         onChange={() => { setProvider('gitlab'); setTestResult(null); setSaveError(null); }}
-                        className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
+                        className="accent-bambu-green w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitLabIcon className="w-4 h-4 text-white" />
                       <span className="text-sm text-white">{t('backup.providerGitLab')}</span>
@@ -552,7 +552,7 @@ export function GitBackupSettings() {
                         value="gitea"
                         checked={provider === 'gitea'}
                         onChange={() => { setProvider('gitea'); setTestResult(null); setSaveError(null); }}
-                        className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
+                        className="accent-bambu-green w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitHubIcon className="w-4 h-4 text-white" />
                       <span className="text-sm text-white">{t('backup.providerGitea')}</span>
@@ -564,7 +564,7 @@ export function GitBackupSettings() {
                         value="forgejo"
                         checked={provider === 'forgejo'}
                         onChange={() => { setProvider('forgejo'); setTestResult(null); setSaveError(null); }}
-                        className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
+                        className="accent-bambu-green w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitHubIcon className="w-4 h-4 text-white" />
                       <span className="text-sm text-white">{t('backup.providerForgejo')}</span>
@@ -679,7 +679,7 @@ export function GitBackupSettings() {
                     type="checkbox"
                     checked={backupKProfiles}
                     onChange={(e) => setBackupKProfiles(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    className="accent-bambu-green w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     disabled={noPrintersConnected}
                   />
                   <div className="flex-1">
@@ -706,7 +706,7 @@ export function GitBackupSettings() {
                     type="checkbox"
                     checked={backupCloudProfiles}
                     onChange={(e) => setBackupCloudProfiles(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    className="accent-bambu-green w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     disabled={!cloudStatus?.is_authenticated}
                   />
                   <div>
@@ -727,7 +727,7 @@ export function GitBackupSettings() {
                     type="checkbox"
                     checked={backupSettings}
                     onChange={(e) => setBackupSettings(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    className="accent-bambu-green w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                   />
                   <div>
                     <span className="text-white text-sm">{t('backup.appSettings')}</span>
@@ -739,7 +739,7 @@ export function GitBackupSettings() {
                     type="checkbox"
                     checked={backupSpools}
                     onChange={(e) => setBackupSpools(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    className="accent-bambu-green w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                   />
                   <div>
                     <span className="text-white text-sm">{t('backup.backupSpools')}</span>
@@ -751,7 +751,7 @@ export function GitBackupSettings() {
                     type="checkbox"
                     checked={backupArchives}
                     onChange={(e) => setBackupArchives(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    className="accent-bambu-green w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                   />
                   <div>
                     <span className="text-white text-sm">{t('backup.backupArchives')}</span>

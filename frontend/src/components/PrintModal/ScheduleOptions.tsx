@@ -207,7 +207,7 @@ export function ScheduleOptionsPanel({
           <input
             ref={hiddenInputRef}
             type="datetime-local"
-            className="absolute opacity-0 pointer-events-none"
+            className="accent-bambu-green absolute opacity-0 pointer-events-none"
             style={{ top: 0, left: 0, width: 0, height: 0 }}
             value={options.scheduledTime}
             onChange={handleCalendarChange}
@@ -229,7 +229,7 @@ export function ScheduleOptionsPanel({
           checked={options.autoOffAfter}
           onChange={(e) => onChange({ ...options, autoOffAfter: e.target.checked })}
           disabled={!canControlPrinter}
-          className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green disabled:opacity-50"
+          className="accent-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green disabled:opacity-50"
         />
         <label htmlFor="autoOffAfter" className={`text-sm flex items-center gap-1 ${canControlPrinter ? 'text-bambu-gray' : 'text-bambu-gray/50'}`}>
           <Power className="w-3.5 h-3.5" />
@@ -245,7 +245,7 @@ export function ScheduleOptionsPanel({
           checked={options.requirePreviousSuccess}
           onChange={(e) => onChange({ ...options, requirePreviousSuccess: e.target.checked })}
           disabled={!canControlPrinter}
-          className="mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green disabled:opacity-50"
+          className="accent-bambu-green mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green disabled:opacity-50"
         />
         <div className="min-w-0">
           <label htmlFor="requirePreviousSuccess" className={`text-sm flex items-center gap-1 ${canControlPrinter ? 'text-bambu-gray' : 'text-bambu-gray/50'}`}>

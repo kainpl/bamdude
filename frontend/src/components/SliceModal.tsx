@@ -1419,7 +1419,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                   checked={autoArrange}
                   onChange={(e) => setAutoArrange(e.target.checked)}
                   disabled={isEnqueuing}
-                  className="mt-0.5 cursor-pointer"
+                  className="accent-bambu-green mt-0.5 cursor-pointer"
                 />
                 <span>
                   {t('slice.autoArrange')}
@@ -1432,7 +1432,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                   checked={autoOrient}
                   onChange={(e) => setAutoOrient(e.target.checked)}
                   disabled={isEnqueuing}
-                  className="mt-0.5 cursor-pointer"
+                  className="accent-bambu-green mt-0.5 cursor-pointer"
                 />
                 <span>
                   {t('slice.autoOrient')}
@@ -1446,7 +1446,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     checked={useEmbedded}
                     onChange={(e) => setUseEmbedded(e.target.checked)}
                     disabled={isEnqueuing}
-                    className="mt-0.5 cursor-pointer"
+                    className="accent-bambu-green mt-0.5 cursor-pointer"
                   />
                   <span>
                     {t('slice.useEmbedded')}
@@ -1498,7 +1498,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                                 return next;
                               });
                             }}
-                            className="mt-0.5 shrink-0 cursor-pointer"
+                            className="accent-bambu-green mt-0.5 shrink-0 cursor-pointer"
                           />
                           <span className="min-w-0 flex-1">
                             <span className="font-mono text-bambu-gray">{o.key}</span>

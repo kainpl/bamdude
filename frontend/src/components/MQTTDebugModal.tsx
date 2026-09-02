@@ -214,7 +214,7 @@ export function MQTTDebugModal({ printerId, printerName, onClose }: MQTTDebugMod
                 type="checkbox"
                 checked={autoScroll}
                 onChange={(e) => setAutoScroll(e.target.checked)}
-                className="rounded border-bambu-dark-tertiary"
+                className="accent-bambu-green rounded border-bambu-dark-tertiary"
               />
               Auto-scroll
             </label>

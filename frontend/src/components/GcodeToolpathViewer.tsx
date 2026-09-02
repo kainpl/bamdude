@@ -473,7 +473,7 @@ export function GcodeToolpathViewer({
                 type="checkbox"
                 checked={showTravel}
                 onChange={(e) => setShowTravel(e.target.checked)}
-                className="cursor-pointer"
+                className="accent-bambu-green cursor-pointer"
               />
               {t('gcodeViewer.showTravel', 'Travel moves')}
             </label>

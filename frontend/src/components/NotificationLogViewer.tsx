@@ -136,7 +136,7 @@ export function NotificationLogViewer({ onClose }: NotificationLogViewerProps) {
               type="checkbox"
               checked={showFailedOnly}
               onChange={(e) => setShowFailedOnly(e.target.checked)}
-              className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+              className="accent-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
             />
             {t('notifications.showFailedOnly')}
           </label>

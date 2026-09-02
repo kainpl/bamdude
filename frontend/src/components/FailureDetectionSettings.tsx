@@ -265,7 +265,7 @@ export function FailureDetectionSettings() {
                 onChange={(e) => setEnabledPrinters(e.target.checked ? null : printers?.map((p) => p.id) ?? [])}
                 disabled={!enabled}
               />
-              <span className="text-white">{t('failureDetection.monitorAll')}</span>
+              <span className="accent-bambu-green text-white">{t('failureDetection.monitorAll')}</span>
             </label>
             {enabledPrinters !== null && printers && (
               <div className="pl-5 space-y-1 border-l border-gray-700">
@@ -277,7 +277,7 @@ export function FailureDetectionSettings() {
                       onChange={(e) => togglePrinter(p.id, e.target.checked)}
                       disabled={!enabled}
                     />
-                    <span className="text-white">{p.name}</span>
+                    <span className="accent-bambu-green text-white">{p.name}</span>
                   </label>
                 ))}
               </div>

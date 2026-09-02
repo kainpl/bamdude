@@ -94,7 +94,7 @@ export function PurgeOldFilesModal({ onClose }: PurgeOldFilesModalProps) {
                 max={3650}
                 value={days}
                 onChange={(e) => setDays(Math.max(1, Math.min(3650, parseInt(e.target.value || '0', 10) || 0)))}
-                className="w-24 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white focus:border-bambu-green focus:outline-none"
+                className="accent-bambu-green w-24 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white focus:border-bambu-green focus:outline-none"
               />
               <span className="text-sm text-bambu-gray">{t('libraryPurge.days')}</span>
             </div>
@@ -105,7 +105,7 @@ export function PurgeOldFilesModal({ onClose }: PurgeOldFilesModalProps) {
               type="checkbox"
               checked={includeNeverPrinted}
               onChange={(e) => setIncludeNeverPrinted(e.target.checked)}
-              className="rounded border-bambu-dark-tertiary"
+              className="accent-bambu-green rounded border-bambu-dark-tertiary"
             />
             {t('libraryPurge.includeNeverPrinted')}
           </label>

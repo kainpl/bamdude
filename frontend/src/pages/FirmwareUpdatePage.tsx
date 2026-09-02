@@ -343,7 +343,7 @@ export function FirmwareUpdatePage() {
                         onChange={() => toggle(id)}
                       />
                     </td>
-                    <td className="py-2 text-white">{nameOf(id)}</td>
+                    <td className="accent-bambu-green py-2 text-white">{nameOf(id)}</td>
                     <td className="py-2 text-bambu-gray">
                       {currentVersionOf(id) ?? '—'} {'→'} {versionByModel[activeGroup.model] ?? '—'}
                     </td>

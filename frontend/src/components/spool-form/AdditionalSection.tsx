@@ -345,7 +345,7 @@ export function AdditionalSection({
             const n = parseInt(raw, 10);
             updateField('lot', Number.isFinite(n) && n > 0 ? String(n) : '');
           }}
-          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+          className="accent-bambu-green w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
         />
         {quickAdd && (
           <label className="flex items-center gap-2 cursor-pointer mt-2">
@@ -353,7 +353,7 @@ export function AdditionalSection({
               type="checkbox"
               checked={formData.auto_increment_lot}
               onChange={(e) => updateField('auto_increment_lot', e.target.checked)}
-              className="w-4 h-4 rounded border-bambu-dark-tertiary text-bambu-green focus:ring-bambu-green"
+              className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary text-bambu-green focus:ring-bambu-green"
             />
             <span className="text-sm text-white">{t('inventory.autoIncrementLots')}</span>
           </label>
