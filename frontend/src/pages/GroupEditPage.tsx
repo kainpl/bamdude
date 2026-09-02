@@ -271,7 +271,7 @@ export function GroupEditPage() {
                           : 'border-bambu-gray hover:border-white'
                       }`}
                     >
-                      {fullySelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+                      {fullySelected && <Check className="w-3 h-3 text-black" strokeWidth={3} />}
                       {partiallySelected && !fullySelected && <Minus className="w-3 h-3 text-white" />}
                     </button>
                     <Shield className="w-4 h-4 text-bambu-gray shrink-0" />
