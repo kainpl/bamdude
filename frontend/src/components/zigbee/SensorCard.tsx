@@ -4,7 +4,7 @@ import { Battery, BellRing, LineChart, Pencil, Plug, SlidersHorizontal, Trash2, 
 import type { SensorMeasurement, ZigbeeSensor } from '../../api/client';
 import { formatRelativeTime } from '../../utils/date';
 import { formatReading, roomReadings } from '../../utils/sensorReadings';
-import {CardContent} from '../Card.tsx';
+import {Card, CardContent} from '../Card.tsx';
 
 interface Props {
   sensor: ZigbeeSensor;
@@ -50,119 +50,125 @@ export function SensorCard({
   const voltage = sensor.measurements.battery_voltage;
 
   return (
-    <CardContent>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-white truncate">{sensor.name}</p>
-          <p className="text-xs text-bambu-gray truncate">
-            {/* Whichever binding it has — they are exclusive, so at most one
-                of the two is ever a string. */}
-            {[sensor.printer_name ?? sensor.location?.name, sensor.model || sensor.ieee]
-              .filter(Boolean)
-              .join(' · ')}
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          {sensor.power === 'mains' ? (
-            <span
-              className="text-xs text-bambu-gray flex items-center gap-1"
-              title={t('settings.zigbee.sensors.mainsPowered')}
-            >
-              <Plug className="w-3.5 h-3.5" />
-              {t('settings.zigbee.sensors.mainsPowered')}
-            </span>
-          ) : battery?.value != null ? (
-            <span
-              className={`text-xs flex items-center gap-1 ${battery.stale ? 'text-bambu-gray/50' : 'text-bambu-gray'}`}
-              // Voltage only in the tooltip: it is interesting once you already
-              // suspect the cell. A stale battery is muted with no "N ago" --
-              // at a three-hour interval "2 hours ago" is normal, not a signal.
-              title={
-                voltage?.value != null
-                  ? t('settings.zigbee.sensors.batteryVoltage', { volts: formatReading(voltage.value) })
-                  : undefined
-              }
-            >
-              <Battery className="w-3.5 h-3.5" />
-              {t('settings.zigbee.sensors.battery', { percent: Math.round(battery.value) })}
-            </span>
-          ) : null}
-
-          <button
-            type="button"
-            onClick={() => onChart(sensor)}
-            aria-label={t('sensorHistory.title')}
-            className="p-1 text-bambu-gray hover:text-white"
-          >
-            <LineChart className="w-4 h-4" />
-          </button>
-          {canEdit && (
-            <button
-              type="button"
-              onClick={() => onThresholds(sensor)}
-              aria-label={t('settings.zigbee.thresholds.title')}
-              className="p-1 text-bambu-gray hover:text-white"
-            >
-              <BellRing className="w-4 h-4" />
-            </button>
-          )}
-          {canConfigure && (
-            <button
-              type="button"
-              onClick={() => onConfigure(sensor)}
-              aria-label={t('settings.zigbee.reporting.title')}
-              className="p-1 text-bambu-gray hover:text-white"
-            >
-              <SlidersHorizontal className="w-4 h-4" />
-            </button>
-          )}
-          {canEdit && (
-            <button
-              type="button"
-              onClick={() => onEdit(sensor)}
-              aria-label={t('common.edit')}
-              className="p-1 text-bambu-gray hover:text-white"
-            >
-              <Pencil className="w-4 h-4" />
-            </button>
-          )}
-          {canDelete && (
-            <button
-              type="button"
-              onClick={() => onUnbind(sensor)}
-              aria-label={t('common.delete')}
-              className="p-1 text-bambu-gray hover:text-status-error"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {!sensor.present ? (
-        <div className="mt-3 text-sm text-amber-600 dark:text-amber-400 flex items-start gap-2">
-          <WifiOff className="w-4 h-4 mt-0.5 shrink-0" />
-          <span>
-            {t('settings.zigbee.sensors.notOnNetwork')}
-            <span className="block text-xs text-bambu-gray">{t('settings.zigbee.sensors.notOnNetworkHint')}</span>
-          </span>
-        </div>
-      ) : (
-        <>
-          {sensor.unreachable && (
-            <p className="mt-3 text-sm text-amber-600 dark:text-amber-400">
-              {t('settings.zigbee.sensors.notAnswering')}
+    <Card className="relative">
+      {/* The grid is what makes each sensor one tile — SensorCard's
+          own wrapper div is the grid item. The surface moved up here
+          to the shared Card, so that wrapper carries no classes of its
+          own any more; it still has to exist. */}
+      <CardContent>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-white truncate">{sensor.name}</p>
+            <p className="text-xs text-bambu-gray truncate">
+              {/* Whichever binding it has — they are exclusive, so at most one
+                  of the two is ever a string. */}
+              {[sensor.printer_name ?? sensor.location?.name, sensor.model || sensor.ieee]
+                .filter(Boolean)
+                .join(' · ')}
             </p>
-          )}
-          <ul className="mt-3 space-y-1">
-            {readings.map(([key, reading]) => (
-              <Reading key={key} name={key} reading={reading} muted={sensor.unreachable} />
-            ))}
-          </ul>
-        </>
-      )}
-    </CardContent>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {sensor.power === 'mains' ? (
+              <span
+                className="text-xs text-bambu-gray flex items-center gap-1"
+                title={t('settings.zigbee.sensors.mainsPowered')}
+              >
+                <Plug className="w-3.5 h-3.5" />
+                {t('settings.zigbee.sensors.mainsPowered')}
+              </span>
+            ) : battery?.value != null ? (
+              <span
+                className={`text-xs flex items-center gap-1 ${battery.stale ? 'text-bambu-gray/50' : 'text-bambu-gray'}`}
+                // Voltage only in the tooltip: it is interesting once you already
+                // suspect the cell. A stale battery is muted with no "N ago" --
+                // at a three-hour interval "2 hours ago" is normal, not a signal.
+                title={
+                  voltage?.value != null
+                    ? t('settings.zigbee.sensors.batteryVoltage', { volts: formatReading(voltage.value) })
+                    : undefined
+                }
+              >
+                <Battery className="w-3.5 h-3.5" />
+                {t('settings.zigbee.sensors.battery', { percent: Math.round(battery.value) })}
+              </span>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={() => onChart(sensor)}
+              aria-label={t('sensorHistory.title')}
+              className="p-1 text-bambu-gray hover:text-white"
+            >
+              <LineChart className="w-4 h-4" />
+            </button>
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() => onThresholds(sensor)}
+                aria-label={t('settings.zigbee.thresholds.title')}
+                className="p-1 text-bambu-gray hover:text-white"
+              >
+                <BellRing className="w-4 h-4" />
+              </button>
+            )}
+            {canConfigure && (
+              <button
+                type="button"
+                onClick={() => onConfigure(sensor)}
+                aria-label={t('settings.zigbee.reporting.title')}
+                className="p-1 text-bambu-gray hover:text-white"
+              >
+                <SlidersHorizontal className="w-4 h-4" />
+              </button>
+            )}
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() => onEdit(sensor)}
+                aria-label={t('common.edit')}
+                className="p-1 text-bambu-gray hover:text-white"
+              >
+                <Pencil className="w-4 h-4" />
+              </button>
+            )}
+            {canDelete && (
+              <button
+                type="button"
+                onClick={() => onUnbind(sensor)}
+                aria-label={t('common.delete')}
+                className="p-1 text-bambu-gray hover:text-status-error"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {!sensor.present ? (
+          <div className="mt-3 text-sm text-amber-600 dark:text-amber-400 flex items-start gap-2">
+            <WifiOff className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              {t('settings.zigbee.sensors.notOnNetwork')}
+              <span className="block text-xs text-bambu-gray">{t('settings.zigbee.sensors.notOnNetworkHint')}</span>
+            </span>
+          </div>
+        ) : (
+          <>
+            {sensor.unreachable && (
+              <p className="mt-3 text-sm text-amber-600 dark:text-amber-400">
+                {t('settings.zigbee.sensors.notAnswering')}
+              </p>
+            )}
+            <ul className="mt-3 space-y-1">
+              {readings.map(([key, reading]) => (
+                <Reading key={key} name={key} reading={reading} muted={sensor.unreachable} />
+              ))}
+            </ul>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

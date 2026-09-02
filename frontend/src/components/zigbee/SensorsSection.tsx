@@ -88,29 +88,23 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
             <p className="text-xs">{t('settings.zigbee.sensors.emptyHint')}</p>
           </div>
         ) : (
-          <Card className="relative">
-            {/* The grid is what makes each sensor one tile — SensorCard's
-                own wrapper div is the grid item. The surface moved up here
-                to the shared Card, so that wrapper carries no classes of its
-                own any more; it still has to exist. */}
-              {sensors.map((sensor) => (
-                <SensorCard
-                  key={sensor.id}
-                  sensor={sensor}
-                  onEdit={setEditing}
-                  onUnbind={setUnbinding}
-                  onConfigure={setConfiguring}
-                  onChart={setCharting}
-                  onThresholds={setThresholding}
-                  canEdit={hasPermission('smart_sensors:update')}
-                  canDelete={hasPermission('smart_sensors:delete')}
-                  // The permission the settings endpoint actually checks -- both
-                  // classes ride the plug one. Gating on smart_sensors:update
-                  // would offer an action that returns 403.
-                  canConfigure={hasPermission('smart_plugs:update')}
-                />
-              ))}
-          </Card>
+          sensors.map((sensor) => (
+            <SensorCard
+              key={sensor.id}
+              sensor={sensor}
+              onEdit={setEditing}
+              onUnbind={setUnbinding}
+              onConfigure={setConfiguring}
+              onChart={setCharting}
+              onThresholds={setThresholding}
+              canEdit={hasPermission('smart_sensors:update')}
+              canDelete={hasPermission('smart_sensors:delete')}
+              // The permission the settings endpoint actually checks -- both
+              // classes ride the plug one. Gating on smart_sensors:update
+              // would offer an action that returns 403.
+              canConfigure={hasPermission('smart_plugs:update')}
+            />
+          ))
         )}
         {(adopting || adoptDevice) && (
           <SensorFormModal
