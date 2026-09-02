@@ -19,6 +19,7 @@ import {
   Package,
   File,
   MoveRight,
+  Check,
   CheckSquare,
   Square,
   LayoutGrid,
@@ -1560,7 +1561,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
             : `border-white/30 bg-black/30 ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`
         }`}
       >
-        {isSelected && <div className="w-2 h-2 bg-white rounded-sm" />}
+        {isSelected && <Check className="w-3 h-3 text-white" />}
       </button>
       {/* Sibling of the card body, NOT of the hover-revealed action cluster:
           that wrapper is `opacity-0 group-hover:opacity-100`, so a modal nested
@@ -3443,7 +3444,7 @@ export function FileManagerPage() {
                           : 'border-bambu-gray/50'
                       }`}
                     >
-                      {selectedFiles.includes(file.id) && <div className="w-2 h-2 bg-white rounded-sm" />}
+                      {selectedFiles.includes(file.id) && <Check className="w-3 h-3 text-white" />}
                     </button>
                     {/* Name with thumbnail */}
                     <div className="flex items-center gap-3 min-w-0">
