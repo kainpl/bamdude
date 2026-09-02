@@ -40,8 +40,8 @@ class LibraryFolder(Base):
     # DORMANT (2026-08-29) — the folder-to-archive link was removed; no route
     # reads or writes this column any more (archives are print history, not a
     # filing destination). Left in place because migrations are frozen —
-    # dropping the column + its unique index is a future migration. Project
-    # links live in the ``library_folder_projects`` pivot — see ``projects``
+    # dropping the column + its unique index is a future migration. Product
+    # links live in the ``product_folders`` pivot — see ``products``
     # below — and are unaffected.
     #
     # ⚠️ **One archive belonged to at most one folder** — the unique index in
@@ -82,10 +82,10 @@ class LibraryFolder(Base):
         back_populates="folder",
         cascade="all, delete-orphan",
     )
-    # m044: many-to-many. A folder can belong to any number of projects.
-    projects: Mapped[list["Project"]] = relationship(
-        "Project",
-        secondary="library_folder_projects",
+    # Products this folder belongs to (spec 2026-09-02: files link to products, not projects).
+    products: Mapped[list["Product"]] = relationship(
+        "Product",
+        secondary="product_folders",
         back_populates="library_folders",
     )
     archive: Mapped["PrintArchive | None"] = relationship()
@@ -98,9 +98,9 @@ class LibraryFile(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     folder_id: Mapped[int | None] = mapped_column(ForeignKey("library_folders.id", ondelete="CASCADE"), nullable=True)
-    # m044: project links live in ``library_file_projects`` pivot — see
-    # ``projects`` relationship below. The legacy ``project_id`` column
-    # is gone after the migration runs.
+    # Product links live in the ``product_files`` pivot — see the
+    # ``products`` relationship below. A file is attached to a product,
+    # never to an order (spec 2026-09-02).
 
     # External file flag
     is_external: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -218,10 +218,10 @@ class LibraryFile(Base):
 
     # Relationships
     folder: Mapped["LibraryFolder | None"] = relationship(back_populates="files")
-    # m044: many-to-many. A file can belong to any number of projects.
-    projects: Mapped[list["Project"]] = relationship(
-        "Project",
-        secondary="library_file_projects",
+    # Products this file belongs to (spec 2026-09-02: files link to products, not projects).
+    products: Mapped[list["Product"]] = relationship(
+        "Product",
+        secondary="product_files",
         back_populates="library_files",
     )
     created_by: Mapped["User | None"] = relationship()
@@ -306,5 +306,5 @@ class LibraryFileTag(Base):
 from backend.app.models.archive import PrintArchive  # noqa: E402, F811
 from backend.app.models.library_file_makerworld_meta import LibraryFileMakerworldMeta  # noqa: E402, F401
 from backend.app.models.library_file_note import LibraryFileNote  # noqa: E402, F401
-from backend.app.models.project import Project  # noqa: E402, F811
+from backend.app.models.product import Product  # noqa: E402, F401
 from backend.app.models.user import User  # noqa: E402, F811

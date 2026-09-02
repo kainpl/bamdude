@@ -44,6 +44,9 @@ class AutoQueueItem(Base):
         ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True
     )
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    project_line_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_lines.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Routing target (upstream-style)
     # target_model: normalized printer model code, e.g. "X1C", "P1S", "K1C", "A1MINI"

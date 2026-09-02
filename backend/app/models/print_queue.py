@@ -30,6 +30,9 @@ class PrintQueueItem(Base):
         ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True
     )
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    project_line_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_lines.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Scheduling
     position: Mapped[int] = mapped_column(Integer, default=0)
