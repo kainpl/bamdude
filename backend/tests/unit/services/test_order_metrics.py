@@ -114,9 +114,11 @@ def test_explicit_line_wins_and_first_unmet_line_takes_the_rest():
     ]
     ap = {i: [_ap(i, "a", 1)] for i in (1, 2, 3)}
     figs, other = attribute(_ctx(lines, parts, archives, ap, {(5, 0): 10}))
-    assert figs[101].archive_ids == [1, 3]  # explicit, then the overflow once 100 is met
-    assert figs[100].archive_ids == [2]
-    assert figs[100].units_printed == 1 and figs[101].units_printed == 2
+    assert figs[101].archive_ids == [1]  # the explicit filing, and only that
+    # 2 fills the first unmet line; 3 is surplus once both are met, and overflow
+    # goes to the first matching line (spec §Line resolution for an archive).
+    assert figs[100].archive_ids == [2, 3]
+    assert figs[100].units_printed == 2 and figs[101].units_printed == 1
     assert other == []
 
 

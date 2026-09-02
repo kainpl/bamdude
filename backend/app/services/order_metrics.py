@@ -228,14 +228,14 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         if product_id is None or not candidates:
             other.append(archive)
             continue
-        # Sequential greedy: the first line in sort order that still owes units.
-        # Explicit filings are applied FIRST and count towards that — a line an
-        # operator already filled by hand must not keep absorbing loose prints
-        # while its sibling sits empty. Once every candidate is met the print is
-        # surplus and lands on the LAST matching line, so that a line filled
-        # explicitly is where its own overflow ends up rather than line one.
+        # Sequential greedy (spec §Line resolution for an archive, step 2): the
+        # first line in sort order whose need is not yet met, else the first
+        # matching line. Explicit filings are applied FIRST and count towards
+        # that — a line an operator already filled by hand must not keep
+        # absorbing loose prints while its sibling sits empty; and once every
+        # candidate is met the surplus falls back to the first matching line.
         unmet = [ln for ln in candidates if _units_printed(figures[ln.id]) < ln.quantity]
-        chosen = unmet[0] if unmet else candidates[-1]
+        chosen = (unmet or candidates)[0]
         _apply(
             figures[chosen.id], archive, ctx.archive_parts_by_archive.get(archive.id, []), indexes.get(product_id, {})
         )
