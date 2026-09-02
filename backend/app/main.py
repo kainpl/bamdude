@@ -27,6 +27,7 @@ from backend.app.api.routes import (
     camwall,
     cloud,
     cloud_link,
+    customers,
     discovery,
     external_links,
     filament_calibration as filament_calibration_routes,
@@ -9451,6 +9452,7 @@ app.include_router(camera.router, prefix=app_settings.api_prefix)
 app.include_router(camwall.router, prefix=app_settings.api_prefix)
 app.include_router(external_links.router, prefix=app_settings.api_prefix)
 app.include_router(projects.router, prefix=app_settings.api_prefix)
+app.include_router(customers.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_notes.router, prefix=app_settings.api_prefix)
 app.include_router(library_tags.router, prefix=app_settings.api_prefix)
