@@ -2162,3 +2162,52 @@ class TestLibraryProductLinksAPI:
 
         blocker = await _restricted_folder_delete_blocker(db_session, folder)
         assert blocker is not None and "product" in blocker
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_hard_deleting_a_file_takes_its_product_links_and_plates(
+        self, async_client: AsyncClient, db_session, sliced_file_factory, product_factory, tmp_path
+    ):
+        """Nothing may outlive the row it points at.
+
+        ``product_files.library_file_id`` and ``product_plates.library_file_id``
+        are both ``ON DELETE CASCADE``, which PostgreSQL honours and SQLite —
+        where ``PRAGMA foreign_keys`` is never turned on — ignores completely.
+        The ORM clears the pivot for a ``db.delete(file)`` and does nothing at
+        all for the plates, so both are removed explicitly at every hard-delete
+        site. Left behind, a product's recipe names a plate of a file that no
+        longer exists, and the product page renders an entry nothing can open.
+
+        An EXTERNAL file is the hard-delete door that needs no waiting: the
+        bytes live outside BamDude, so there is nothing to restore and
+        ``trash_or_purge`` deletes the row outright instead of trashing it.
+        """
+        from sqlalchemy import func, select
+
+        from backend.app.models.product import ProductPlate, product_files
+
+        on_disk = tmp_path / "external.gcode.3mf"
+        on_disk.write_bytes(b"sliced")
+        lib_file = await sliced_file_factory(filename="external.gcode.3mf", file_path=str(on_disk), is_external=True)
+        product = await product_factory()
+        await async_client.put(f"/api/v1/library/files/{lib_file.id}", json={"product_ids": [product.id]})
+        # Held as a plain int: the row is about to be gone, and touching an
+        # expired ORM attribute afterwards is a lazy load (MissingGreenlet).
+        file_id = lib_file.id
+
+        async def _counts() -> tuple[int, int]:
+            pivot = await db_session.scalar(
+                select(func.count()).select_from(product_files).where(product_files.c.library_file_id == file_id)
+            )
+            plates = await db_session.scalar(
+                select(func.count()).select_from(ProductPlate).where(ProductPlate.library_file_id == file_id)
+            )
+            return pivot or 0, plates or 0
+
+        assert await _counts() == (1, 1), "the link and its plate must exist before the delete proves anything"
+
+        response = await async_client.delete(f"/api/v1/library/files/{file_id}")
+        assert response.status_code == 200, response.text
+        assert response.json()["trashed"] is False, "an external file is purged, not trashed"
+
+        assert await _counts() == (0, 0)

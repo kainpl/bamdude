@@ -442,6 +442,18 @@ async def delete_user(
         await db.execute(
             update(PrintQueueItem).where(PrintQueueItem.library_file_id.in_(_doomed_files)).values(library_file_id=None)
         )
+        # ⚠️ And the product links + plates. This is a Core DELETE, so it never
+        # goes near the ORM: not even the ``product_files`` secondary rows the
+        # ORM would have cleared for a ``db.delete(file)`` are removed, and
+        # ``product_plates`` has no ORM cascade from a library file at all.
+        # Both FKs say ON DELETE CASCADE, which PostgreSQL honours and SQLite
+        # ignores — so the ids are collected first and cleaned explicitly.
+        from backend.app.services.product_sync import purge_file_product_links
+
+        _doomed_file_ids = (
+            (await db.execute(select(LibraryFile.id).where(LibraryFile.created_by_id == user_id))).scalars().all()
+        )
+        await purge_file_product_links(db, list(_doomed_file_ids))
         await db.execute(delete(LibraryFile).where(LibraryFile.created_by_id == user_id))
     else:
         # Explicitly set created_by_id to NULL for all items (ensures consistent behavior

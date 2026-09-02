@@ -182,8 +182,13 @@ async def test_a_row_referenced_only_by_a_product_survives(db_session):
 
     from backend.app.models.product import Product, product_files
 
-    keep = await _row(db_session, file_hash="dup-product", filename="keep.3mf")
+    # ⚠️ ``keep`` is created SECOND, so it holds the HIGHER id. The tie-break
+    # is ``(references, -id)`` descending: with both counts at zero the lower
+    # id wins, so only the product reference can save this row. Written the
+    # other way round the test passes with the reference counting deleted.
     drop = await _row(db_session, file_hash="dup-product", filename="drop.3mf")
+    keep = await _row(db_session, file_hash="dup-product", filename="keep.3mf")
+    assert keep.id > drop.id
     product = Product(name="Lamp")
     db_session.add(product)
     await db_session.flush()
@@ -204,11 +209,15 @@ async def test_a_row_referenced_only_by_a_product_survives(db_session):
 @pytest.mark.integration
 async def test_a_row_referenced_only_by_a_product_plate_survives(db_session):
     """Same rule for the plate rows: a product's recipe points at a file, and
-    that is a reference even when the pivot row was never written."""
+    that is a reference even when the pivot row was never written.
+
+    Same ordering trap as above — the referenced row is created second, so it
+    can only survive on the strength of its plate."""
     from backend.app.models.product import Product, ProductPlate
 
-    keep = await _row(db_session, file_hash="dup-plate", filename="keep.3mf")
     drop = await _row(db_session, file_hash="dup-plate", filename="drop.3mf")
+    keep = await _row(db_session, file_hash="dup-plate", filename="keep.3mf")
+    assert keep.id > drop.id
     product = Product(name="Bracket")
     db_session.add(product)
     await db_session.flush()
@@ -238,8 +247,9 @@ async def test_the_legacy_pivot_still_counts_when_it_is_there(db_session):
     """
     from sqlalchemy import text
 
-    keep = await _row(db_session, file_hash="dup-legacy", filename="keep.3mf")
     drop = await _row(db_session, file_hash="dup-legacy", filename="drop.3mf")
+    keep = await _row(db_session, file_hash="dup-legacy", filename="keep.3mf")
+    assert keep.id > drop.id, "the referenced row must be the one the tie-break would drop"
     await db_session.execute(
         text("CREATE TABLE library_file_projects (file_id INTEGER NOT NULL, project_id INTEGER NOT NULL)")
     )

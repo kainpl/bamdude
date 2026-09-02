@@ -42,7 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.library_scan import LibraryScanJob
-from backend.app.services.product_sync import resync_file_products
+from backend.app.services.product_sync import purge_file_product_links, resync_file_products
 
 logger = logging.getLogger(__name__)
 
@@ -472,6 +472,10 @@ async def remove_vanished(
             rows = (
                 (await db.execute(select(LibraryFile).where(LibraryFile.id.in_([i for i, _ in chunk])))).scalars().all()
             )
+            # Before the deletes, once for the chunk: the ORM clears the
+            # ``product_files`` pivot but not ``product_plates``, whose cascade
+            # only fires on PostgreSQL.
+            await purge_file_product_links(db, [row.id for row in rows])
             for row in rows:
                 if row.thumbnail_path:
                     with contextlib.suppress(OSError):

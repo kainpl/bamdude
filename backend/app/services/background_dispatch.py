@@ -40,6 +40,7 @@ from backend.app.services.bambu_ftp import (
 from backend.app.services.gcode_patcher import GcodeInjectionSpec
 from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.product_sync import purge_file_product_links
 from backend.app.utils.filename import derive_remote_filename
 
 logger = logging.getLogger(__name__)
@@ -2549,6 +2550,10 @@ class BackgroundDispatchService:
                         if not thumb_path.is_absolute():
                             thumb_path = Path(settings.base_dir) / lib_file.thumbnail_path
                         cleanup_disk_paths.append(thumb_path)
+                    # The ORM clears ``product_files`` for us, but nothing
+                    # clears ``product_plates`` — it has no cascade from the
+                    # library file on SQLite, where FK actions never fire.
+                    await purge_file_product_links(db, [lib_file.id])
                     await db.delete(lib_file)
 
                 await db.commit()
