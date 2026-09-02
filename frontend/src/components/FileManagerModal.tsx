@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
+  Check,
   X,
   Folder,
   File,
@@ -19,11 +20,11 @@ import {
   Search,
   ArrowUpDown,
   CheckSquare,
-  Square,
   MinusSquare,
   Box,
   Eraser,
 } from 'lucide-react';
+import { SelectionBox } from './SelectionBox';
 import { api, type PrinterFileType, type PrinterStorage } from '../api/client';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
@@ -171,7 +172,7 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
                         </p>
                       </div>
                       {selectedPlateId == null && (
-                        <CheckSquare className="w-4 h-4 text-bambu-green flex-shrink-0" />
+                        <Check className="w-4 h-4 text-bambu-green flex-shrink-0" />
                       )}
                     </button>
                     {plates.map((plate) => (
@@ -207,7 +208,7 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
                           </p>
                         </div>
                         {selectedPlateId === plate.index && (
-                          <CheckSquare className="w-4 h-4 text-bambu-green flex-shrink-0" />
+                          <Check className="w-4 h-4 text-bambu-green flex-shrink-0" />
                         )}
                       </button>
                     ))}
@@ -835,9 +836,9 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                             className="flex-shrink-0 text-bambu-gray hover:text-white"
                           >
                             {isSelected ? (
-                              <CheckSquare className="w-5 h-5 text-bambu-green" />
+                              <SelectionBox checked={true} className="w-5 h-5" />
                             ) : (
-                              <Square className="w-5 h-5" />
+                              <SelectionBox checked={false} className="w-5 h-5" />
                             )}
                           </button>
                         ) : null}

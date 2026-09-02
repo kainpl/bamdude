@@ -60,6 +60,7 @@ import {
   Cog,
   Archive as ArchiveIcon,
 } from 'lucide-react';
+import { SelectionBox } from '../components/SelectionBox';
 import { MakerWorldIcon } from '../components/BrandIcons';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { api } from '../api/client';
@@ -751,9 +752,9 @@ function ArchiveCard({
           onClick={(e) => { e.stopPropagation(); onSelect(archive.id); }}
         >
           {isSelected ? (
-            <CheckSquare className="w-5 h-5 text-bambu-green" />
+            <SelectionBox checked={true} className="w-5 h-5" />
           ) : (
-            <Square className="w-5 h-5 text-white" />
+            <SelectionBox checked={false} className="w-5 h-5" />
           )}
         </button>
       )}
@@ -2182,9 +2183,9 @@ function ArchiveListRow({
           {selectionMode && (
             <button onClick={() => onSelect(archive.id)}>
               {isSelected ? (
-                <CheckSquare className="w-4 h-4 text-bambu-green" />
+                <SelectionBox checked={true} className="w-4 h-4" />
               ) : (
-                <Square className="w-4 h-4 text-bambu-gray" />
+                <SelectionBox checked={false} className="w-4 h-4" />
               )}
             </button>
           )}

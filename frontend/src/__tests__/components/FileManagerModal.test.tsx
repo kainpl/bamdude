@@ -207,7 +207,7 @@ describe('FileManagerModal', () => {
 
       // Find and click a checkbox (files have checkboxes, directories don't)
       const checkboxes = screen.getAllByRole('button').filter(btn =>
-        btn.querySelector('svg')?.classList.contains('lucide-square')
+        btn.querySelector('[data-testid="selection-box"]') !== null
       );
 
       if (checkboxes.length > 0) {
@@ -523,7 +523,7 @@ describe('FileManagerModal', () => {
       // Same idiom as the selection tests above: only files carry a checkbox.
       const checkbox = screen
         .getAllByRole('button')
-        .find((btn) => btn.querySelector('svg')?.classList.contains('lucide-square'));
+        .find((btn) => btn.querySelector('[data-testid="selection-box"]') !== null);
       expect(checkbox).toBeDefined();
       fireEvent.click(checkbox!);
       await waitFor(() => expect(screen.getByText(/1 selected/i)).toBeInTheDocument());

@@ -46,6 +46,8 @@
 
 ### Fixed
 
+- **Selection boxes look like checkboxes everywhere.** Archives, printer cards, the queue, the plate picker, the label templates, the K-profiles list and the printer's own file browser drew their selection mark as an outlined square with a tick in the same colour — a tinted glyph rather than a ticked box, visibly a different control from the checkboxes beside it. All of them now fill with your accent colour and carry a dark tick, exactly as a checkbox does. Where a list lets you pick only one thing, the mark is a plain tick, which is what picking one thing looks like.
+
 - **Selection ticks are drawn heavier.** The checkmark inside a selected box was a hairline at that size, noticeably thinner than the one a browser draws in an ordinary checkbox; it now has the weight to match. They are also dark now rather than white, which is what a browser puts on an accent this bright — on the green, the teal and the blue accent alike, a dark mark is more than twice as legible as a white one.
 
 - **Selecting a file shows a tick, not a dot.** The selection box on a file card and on a file row drew a small white square inside it, which at that size reads as a radio button — the control for picking one of several, where files are picked many at a time. It now shows the same white checkmark every other multi-select in the app uses, including the printer picker.

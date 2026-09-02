@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Layers, Check, AlertTriangle, Square, CheckSquare, Clock, Weight, Box } from 'lucide-react';
+import { Layers, Check, AlertTriangle, Clock, Weight, Box } from 'lucide-react';
+import { SelectionBox } from '../SelectionBox';
 import { useTranslation } from 'react-i18next';
 import type { PlateSelectorProps } from './types';
 import { formatDuration } from '../../utils/date';
@@ -148,9 +149,9 @@ export function PlateSelector({
                   </p>
                   {multiSelect ? (
                     selectedPlates.has(active.index) ? (
-                      <CheckSquare className="w-4 h-4 text-bambu-green flex-shrink-0" />
+                      <SelectionBox checked={true} className="w-4 h-4 flex-shrink-0" />
                     ) : (
-                      <Square className="w-4 h-4 text-bambu-gray flex-shrink-0" />
+                      <SelectionBox checked={false} className="w-4 h-4 flex-shrink-0" />
                     )
                   ) : selectedPlates.has(active.index) ? (
                     <Check className="w-4 h-4 text-bambu-green flex-shrink-0" />

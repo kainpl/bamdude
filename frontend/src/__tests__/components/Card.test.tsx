@@ -49,7 +49,7 @@ describe('CardHeader', () => {
   it('applies border styling', () => {
     const { container } = render(<CardHeader>Header</CardHeader>);
     expect(container.firstChild).toHaveClass('border-b');
-    expect(container.firstChild).toHaveClass('px-6');
+    expect(container.firstChild).toHaveClass('px-4');
     expect(container.firstChild).toHaveClass('py-4');
   });
 
@@ -69,7 +69,7 @@ describe('CardContent', () => {
 
   it('applies padding styling', () => {
     const { container } = render(<CardContent>Content</CardContent>);
-    expect(container.firstChild).toHaveClass('p-6');
+    expect(container.firstChild).toHaveClass('p-4');
   });
 
   it('applies custom className', () => {

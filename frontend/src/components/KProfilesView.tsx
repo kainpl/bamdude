@@ -17,9 +17,9 @@ import {
   Download,
   Upload,
   CheckSquare,
-  Square,
   StickyNote,
 } from 'lucide-react';
+import { SelectionBox } from './SelectionBox';
 import { api } from '../api/client';
 import type { KProfile, KProfileCreate, KProfileDelete, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
@@ -120,9 +120,9 @@ function KProfileCard({ profile, onEdit, onCopy, selectionMode, isSelected, onTo
           className="text-bambu-gray hover:text-white transition-colors p-1"
         >
           {isSelected ? (
-            <CheckSquare className="w-4 h-4 text-bambu-green" />
+            <SelectionBox checked={true} className="w-4 h-4" />
           ) : (
-            <Square className="w-4 h-4" />
+            <SelectionBox checked={false} className="w-4 h-4" />
           )}
         </button>
       )}

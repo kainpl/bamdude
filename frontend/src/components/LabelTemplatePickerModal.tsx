@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Printer, CheckSquare, Square, Search, FileText } from 'lucide-react';
+import { X, Loader2, Printer, Search, FileText } from 'lucide-react';
+import { SelectionBox } from './SelectionBox';
 import { api, type InventorySpool, type LabelTemplate } from '../api/client';
 import { getSwatchStyle } from '../utils/colors';
 import { Button } from './Button';
@@ -645,9 +646,9 @@ export function LabelTemplatePickerModal({
                   <li key={s.id}>
                     <label className="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-bambu-dark-tertiary/50 cursor-pointer">
                       {checked ? (
-                        <CheckSquare className="w-4 h-4 text-bambu-green shrink-0" />
+                        <SelectionBox checked={true} className="w-4 h-4 shrink-0" />
                       ) : (
-                        <Square className="w-4 h-4 text-bambu-gray shrink-0" />
+                        <SelectionBox checked={false} className="w-4 h-4 shrink-0" />
                       )}
                       <input
                         type="checkbox"
@@ -677,9 +678,9 @@ export function LabelTemplatePickerModal({
         <div className="px-4 pt-2 pb-1 border-t border-bambu-dark-tertiary">
           <label className="inline-flex items-center gap-2 cursor-pointer select-none">
             {monochrome ? (
-              <CheckSquare className="w-4 h-4 text-bambu-green shrink-0" />
+              <SelectionBox checked={true} className="w-4 h-4 shrink-0" />
             ) : (
-              <Square className="w-4 h-4 text-bambu-gray shrink-0" />
+              <SelectionBox checked={false} className="w-4 h-4 shrink-0" />
             )}
             <input
               type="checkbox"

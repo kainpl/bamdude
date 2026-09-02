@@ -53,7 +53,6 @@ import {
   Search,
   Loader2,
   Square,
-  CheckSquare,
   Maximize2,
   Pause,
   Play,
@@ -83,6 +82,7 @@ import {
   Settings,
   Archive,
 } from 'lucide-react';
+import { SelectionBox } from '../components/SelectionBox';
 
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken } from '../api/client';
@@ -3144,9 +3144,9 @@ function PrinterCard({
                   aria-pressed={isSelected}
                 >
                   {isSelected ? (
-                    <CheckSquare className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] text-bambu-green" />
+                    <SelectionBox checked={true} className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
                   ) : (
-                    <Square className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] text-bambu-gray" />
+                    <SelectionBox checked={false} className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
                   )}
                 </Button>
               )}

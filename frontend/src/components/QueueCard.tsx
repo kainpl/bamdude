@@ -37,7 +37,6 @@ import {
   Layers,
   Ungroup,
   GripVertical,
-  CheckSquare,
   Pencil,
   MoreVertical,
   Upload,
@@ -46,6 +45,7 @@ import {
   ListPlus,
   Copy,
 } from 'lucide-react';
+import { SelectionBox } from './SelectionBox';
 import { BatchActionDialog } from './Queue/BatchActionDialog';
 import { CopyQueueModal } from './CopyQueueModal';
 import { copyableItems, withCurrentPrint } from '../lib/copyQueue';
@@ -1217,9 +1217,9 @@ function PendingItemRow({
             aria-pressed={selected}
           >
             {selected ? (
-              <CheckSquare className="w-3.5 h-3.5 text-bambu-green" />
+              <SelectionBox checked={true} className="w-3.5 h-3.5" />
             ) : (
-              <Square className="w-3.5 h-3.5" />
+              <SelectionBox checked={false} className="w-3.5 h-3.5" />
             )}
           </button>
         )}
