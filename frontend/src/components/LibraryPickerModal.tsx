@@ -226,7 +226,7 @@ export function LibraryPickerModal({
                             checked ? 'bg-bambu-green border-bambu-green' : 'border-bambu-gray/50'
                           }`}
                         >
-                          {checked && <Check className="w-3 h-3 text-white" />}
+                          {checked && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
                         </span>
                         <span className="w-12 h-12 shrink-0 rounded bg-bambu-dark-tertiary overflow-hidden flex items-center justify-center">
                           {file.thumbnail_path ? (

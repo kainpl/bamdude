@@ -483,7 +483,7 @@ export function PrinterSelector({
                       : 'border-bambu-gray/50'
                   }`}
                 >
-                  {selected && <Check className="w-3 h-3 text-white" />}
+                  {selected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
                 </div>
               )}
             </button>

@@ -1561,7 +1561,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
             : `border-white/30 bg-black/30 ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`
         }`}
       >
-        {isSelected && <Check className="w-3 h-3 text-white" />}
+        {isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
       </button>
       {/* Sibling of the card body, NOT of the hover-revealed action cluster:
           that wrapper is `opacity-0 group-hover:opacity-100`, so a modal nested
@@ -3444,7 +3444,7 @@ export function FileManagerPage() {
                           : 'border-bambu-gray/50'
                       }`}
                     >
-                      {selectedFiles.includes(file.id) && <Check className="w-3 h-3 text-white" />}
+                      {selectedFiles.includes(file.id) && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
                     </button>
                     {/* Name with thumbnail */}
                     <div className="flex items-center gap-3 min-w-0">

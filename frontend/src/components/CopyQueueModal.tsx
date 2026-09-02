@@ -112,7 +112,7 @@ export function CopyQueueModal({ source, items, droppedCount = 0, onCancel, onCo
         checked ? 'bg-bambu-green border-bambu-green' : 'border-bambu-gray/50'
       }`}
     >
-      {checked && <Check className="w-3 h-3 text-white" />}
+      {checked && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
     </span>
   );
 
