@@ -1229,7 +1229,7 @@ export function MakerworldPage() {
 
       {lightbox && (
         <div
-          className="fixed inset-0 bg-black/90 flex items-center justify-center z-50"
+          className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50"
           onClick={() => setLightbox(null)}
           role="dialog"
           aria-modal="true"

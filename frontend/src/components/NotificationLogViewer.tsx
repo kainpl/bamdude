@@ -81,7 +81,7 @@ export function NotificationLogViewer({ onClose }: NotificationLogViewerProps) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg w-full max-w-3xl max-h-[85vh] flex flex-col">
         {/* Header */}
         <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">

@@ -194,7 +194,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 overflow-y-auto" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto" onClick={onClose}>
       <div
         className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-lg my-8 max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}

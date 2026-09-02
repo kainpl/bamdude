@@ -1436,7 +1436,7 @@ export function GitBackupSettings() {
 
       {/* Blocking overlay during backup/restore operations */}
       {(isExporting || isRestoring) && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[100]">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[100]">
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl p-8 max-w-md w-full mx-4 text-center">
             <div className="flex justify-center mb-4">
               <div className="relative">

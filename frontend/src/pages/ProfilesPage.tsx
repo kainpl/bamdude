@@ -533,7 +533,7 @@ function PresetDetailModal({
   const metadata = extractMetadata(setting.name, detail?.setting?.inherits as string);
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <Card className="w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
         <CardContent className="p-0 flex flex-col min-h-0 flex-1">
           {/* Header */}
@@ -768,10 +768,10 @@ function TemplatesModal({
   }, [deleteConfirmId, editingId, onClose]);
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       {/* Delete confirmation modal */}
       {templateToDelete && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-60">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-60">
           <Card className="w-full max-w-md">
             <CardContent className="p-6">
               <div className="flex items-center gap-3 mb-4">
@@ -1084,7 +1084,7 @@ function DiffModal({
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <Card className="w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
         <CardContent className="p-0 flex flex-col min-h-0 flex-1">
           {/* Header */}
@@ -1703,7 +1703,7 @@ function CreatePresetModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
       onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
       onDragLeave={() => setIsDragging(false)}
       onDrop={handleFileDrop}

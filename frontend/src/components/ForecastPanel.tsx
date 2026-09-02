@@ -1930,7 +1930,7 @@ function AddToCartModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
       <div className="bg-bambu-dark-secondary rounded-2xl border border-bambu-dark-tertiary w-full max-w-sm shadow-2xl">
         <div className="flex items-center justify-between px-5 pt-5 pb-4 border-b border-bambu-dark-tertiary">
           <div className="flex items-center gap-2">

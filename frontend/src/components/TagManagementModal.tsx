@@ -124,7 +124,7 @@ export function TagManagementModal({ onClose }: TagManagementModalProps) {
   const totalUsage = tags?.reduce((sum, t) => sum + t.count, 0) || 0;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <Card className="w-full max-w-lg max-h-[80vh] flex flex-col">
         <CardContent className="p-0 flex flex-col min-h-0">
           {/* Header */}

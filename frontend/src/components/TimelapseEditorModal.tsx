@@ -234,7 +234,7 @@ export function TimelapseEditorModal({
 
   if (isLoadingInfo) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
         <div className="flex items-center gap-3 text-white">
           <Loader2 className="w-6 h-6 animate-spin" />
           Loading video info...
@@ -244,7 +244,7 @@ export function TimelapseEditorModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="relative bg-bambu-dark-secondary rounded-xl max-w-5xl w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary shrink-0">

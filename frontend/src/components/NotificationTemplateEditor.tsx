@@ -184,7 +184,7 @@ export function NotificationTemplateEditor({ template, onClose }: NotificationTe
   const hasChanges = titleTemplate !== template.title_template || bodyTemplate !== template.body_template;
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-2xl max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary shrink-0">

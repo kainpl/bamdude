@@ -83,7 +83,7 @@ export function DeviceReportingModal({ ieee, deviceName, onClose }: Props) {
   const settings = data;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose}>
       <div
         className="bg-bambu-dark-secondary rounded-xl w-full max-w-2xl max-h-[90vh] overflow-hidden"
         onClick={(e) => e.stopPropagation()}

@@ -83,7 +83,7 @@ export function PurgeArchivesModal({ onClose }: PurgeArchivesModalProps) {
   const canConfirm = days !== null && days >= 1 && archives > 0 && !runMutation.isPending;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
       <div className="bg-bambu-dark-secondary rounded-lg shadow-xl max-w-lg w-full border border-bambu-dark-tertiary">
         <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white flex items-center gap-2">

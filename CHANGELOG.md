@@ -46,6 +46,8 @@
 
 ### Fixed
 
+- **Every dialog dims the page the same way.** The backdrop behind a dialog had drifted into six different shades across the app, and the Create User and Edit User dialogs had ended up with no transparency at all — they opened onto a solid black page. All dialogs now use the same half-dark backdrop with a light blur behind them. The five full-screen viewers (photos, plate preview, project page, skip-objects, MakerWorld) keep their darker surround, where it serves what you are looking at.
+
 - **Saving a spool no longer forgets the K-profiles it could not see.** The PA tab offers profiles from printers that are connected and not archived, and saving replaced the spool's whole set with what it offered — so a profile calibrated on a printer you have since archived, or one that simply happened to be offline at that moment, was deleted by a save that had never asked about it. On one farm that was 896 of 2443 links, waiting to go on the first save of any spool. A save now replaces only the printers it could actually speak for; unticking a profile on a live printer still removes it, exactly as before.
 
 - **The K-profile count on a spool card no longer counts retired printers.** A spool calibrated on a printer you later archived keeps the link — correctly, it is history — but the inventory card listed those profiles and the badge counted them, so one spool read 11 on the card against 7 in its own dialog. The dialog was right: archiving retires a printer everywhere, and a profile you cannot use is not an option. Card and badge now agree with it. Nothing is deleted; the links are still there if the printer is ever restored.

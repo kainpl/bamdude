@@ -74,7 +74,7 @@ export function ConfirmModal({
 
   return (
     <div
-      className={`fixed inset-0 bg-black/50 flex items-center justify-center p-4 ${overlayZIndex ?? 'z-50'}`}
+      className={`fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 ${overlayZIndex ?? 'z-50'}`}
       onClick={isLoading ? undefined : onCancel}
     >
       <Card

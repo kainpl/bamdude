@@ -120,7 +120,7 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div
-        className="absolute inset-0 bg-black/60"
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
         onClick={() => {
           if (saveMutation.isPending || deleteMutation.isPending) return;
           onClose();
@@ -220,7 +220,7 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
 
       {editorOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/60" onClick={closeEditor} />
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={closeEditor} />
           <div
             className="relative w-full max-w-md mx-4 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl p-6 shadow-2xl"
             role="dialog"

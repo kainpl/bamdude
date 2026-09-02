@@ -978,7 +978,7 @@ export function CoverImage({ url, printName, paused }: { url: string | null; pri
       {/* Cover Image Overlay */}
       {showOverlay && cacheBustedUrl && (
         <div
-          className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-8"
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-8"
           onClick={() => setShowOverlay(false)}
         >
           <div className="relative max-w-2xl max-h-full">
@@ -3629,7 +3629,7 @@ function PrinterCard({
 
         {/* Delete Confirmation */}
         {showDeleteConfirm && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
             <Card className="w-full max-w-md mx-4">
               <CardContent>
                 <div className="flex items-start gap-3 mb-4">
@@ -6122,7 +6122,7 @@ function PrinterCard({
 
       {/* Plate Check Result Modal */}
       {plateCheckResult && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => closePlateCheckModal()}>
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={() => closePlateCheckModal()}>
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl max-w-lg w-full" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
               <div className="flex items-center gap-2">
@@ -6525,7 +6525,7 @@ function PrinterCard({
           StatusPanel::check_axis_z_at_home runs AFTER Ctrl_Axis has published,
           so Studio's unhomed Z jog happens and then advises recentering. */}
       {showNotHomedModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-sm p-5">
             <div className="flex items-start gap-3 mb-4">
               <AlertTriangle className="w-[var(--pc-i5,1.25rem)] h-[var(--pc-i5,1.25rem)] text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
@@ -6567,7 +6567,7 @@ function PrinterCard({
           acknowledgement on every call, so this dialog is the explanation, not
           the guard. */}
       {showFanPrintingModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-sm p-5">
             <div className="flex items-start gap-3 mb-4">
               <AlertTriangle className="w-[var(--pc-i5,1.25rem)] h-[var(--pc-i5,1.25rem)] text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
@@ -7008,7 +7008,7 @@ function MacrosPanel({
   const isBusy = executeMutation.isPending || !!macroExecuting;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div
         className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl w-full max-w-sm shadow-lg"
         onClick={(e) => e.stopPropagation()}
@@ -7286,7 +7286,7 @@ export function AddPrinterModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50"
       onClick={onClose}
     >
       <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
@@ -7773,7 +7773,7 @@ function FirmwareUpdateModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
       <Card className="w-full max-w-md mx-4">
         <CardContent>
           <div className="flex items-start gap-3 mb-4">
@@ -8086,7 +8086,7 @@ function EditPrinterModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50"
       onClick={onClose}
     >
       <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
@@ -9721,7 +9721,7 @@ export function PrintersPage() {
             // breathing room. ``overflow-y-auto`` keeps tall cards reachable
             // via scroll on the backdrop itself; the inner div uses ``my-4``
             // so a tall card has visible top/bottom gutters when scrolled.
-            className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4 overflow-y-auto"
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 flex items-center justify-center p-4 overflow-y-auto"
             onClick={() => setExpandedPrinterId(null)}
             onKeyDown={(e) => { if (e.key === 'Escape') setExpandedPrinterId(null); }}
             role="dialog"

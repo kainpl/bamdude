@@ -48,7 +48,7 @@ export function AlertModal({
     <div
       // z-[120]: above other modals (z-50 / z-[110]) and the toast stack, so
       // a slice failure surfaced from app-level context is never occluded.
-      className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-[120]"
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-[120]"
       onClick={onClose}
     >
       <Card className="w-full max-w-md" onClick={(e: React.MouseEvent) => e.stopPropagation()}>

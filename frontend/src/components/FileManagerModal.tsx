@@ -96,7 +96,7 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
     : plates.find((plate) => plate.index === selectedPlateId) ?? null;
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-6" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-6" onClick={onClose}>
       <div
         className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-4xl h-[80vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
@@ -600,7 +600,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
 
   return (
     <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
       onClick={onClose}
     >
       <div
@@ -1020,7 +1020,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
 
       {importDialogOpen && (
         <div
-          className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4"
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4"
           onClick={() => !importMutation.isPending && setImportDialogOpen(false)}
         >
           <div

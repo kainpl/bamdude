@@ -35,7 +35,7 @@ export function PrinterSettingsModal({ isOpen, onClose, printerId }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center p-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">{t('printerSettings.title')}</h2>

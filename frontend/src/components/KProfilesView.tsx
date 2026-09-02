@@ -431,7 +431,7 @@ function KProfileModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <Card className="w-full max-w-md relative">
         {/* Syncing overlay */}
         {isSyncing && (
@@ -692,7 +692,7 @@ function KProfileModal({
 
       {/* Delete Confirmation Modal */}
       {showDeleteConfirm && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60]">
           <Card className="w-full max-w-sm">
             <CardContent className="p-6">
               <div className="flex items-center gap-3 mb-4">
@@ -1243,7 +1243,7 @@ export function KProfilesView() {
     <>
       {/* Loading overlay when refetching profiles (not initial load) */}
       {isFetching && !kprofilesLoading && (
-        <div className="fixed inset-0 bg-black/50 flex flex-col items-center justify-center z-40">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex flex-col items-center justify-center z-40">
           <Loader2 className="w-10 h-10 text-bambu-green animate-spin mb-3" />
           <p className="text-white font-medium">{t('kProfiles.loadingProfiles')}</p>
         </div>
@@ -1610,7 +1610,7 @@ export function KProfilesView() {
 
       {/* Bulk Delete Confirmation Modal */}
       {showBulkDeleteConfirm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <Card className="w-full max-w-sm">
             <CardContent className="p-6">
               <div className="flex items-center gap-3 mb-4">

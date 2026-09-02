@@ -95,7 +95,7 @@ export function ColumnConfigModal({ isOpen, onClose, columns, defaultColumns, on
   const visibleCount = localColumns.filter((c) => c.visible).length;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
       <Card className="w-full max-w-lg max-h-[80vh] flex flex-col" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
         <CardContent className="p-6 flex flex-col min-h-0">
           {/* Header */}

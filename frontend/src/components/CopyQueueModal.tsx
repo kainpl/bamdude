@@ -119,7 +119,7 @@ export function CopyQueueModal({ source, items, droppedCount = 0, onCancel, onCo
   const canCopy = pickedItems.size > 0 && pickedPrinters.size > 0;
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-5xl h-[80vh] flex flex-col">
         <div className="flex items-center justify-between gap-3 p-4 border-b border-bambu-dark shrink-0">
           <div className="min-w-0">

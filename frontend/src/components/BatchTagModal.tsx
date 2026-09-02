@@ -94,7 +94,7 @@ export function BatchTagModal({ selectedIds, existingTags, onClose }: BatchTagMo
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <Card className="w-full max-w-md">
         <CardContent className="p-0">
           {/* Header */}

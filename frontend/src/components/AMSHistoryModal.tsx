@@ -171,7 +171,7 @@ export function AMSHistoryModal({
   const textSecondary = 'var(--text-muted)';
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose}>
       <div
         className="rounded-xl w-full max-w-4xl max-h-[90vh] overflow-hidden shadow-xl"
         style={{ backgroundColor: modalBg }}

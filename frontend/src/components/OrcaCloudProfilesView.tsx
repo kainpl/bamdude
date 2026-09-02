@@ -376,7 +376,7 @@ function OrcaPresetDetailModal({ setting, onClose, t }: OrcaPresetDetailModalPro
   });
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div
         className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}

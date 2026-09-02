@@ -189,7 +189,7 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       {/* max-h + flex column on the card + overflow on the fields wrapper so the
           modal stays inside the viewport on short screens (#1642). Outer p-4 is
           1rem each side, hence the 2rem subtraction below. */}

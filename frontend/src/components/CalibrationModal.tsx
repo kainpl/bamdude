@@ -96,7 +96,7 @@ export function CalibrationModal({ printerId, printerName, printerModel, onClose
   const availableCalibrations = calibrations.filter(c => c.available);
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div
         className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-md"
         onClick={(e) => e.stopPropagation()}

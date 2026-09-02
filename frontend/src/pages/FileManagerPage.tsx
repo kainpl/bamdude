@@ -150,7 +150,7 @@ function NewFolderModal({ parentId, parentName, externalRedirected, onClose, onS
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-sm border border-bambu-dark-tertiary">
         <div className="p-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">{t('fileManager.newFolder')}</h2>
@@ -219,7 +219,7 @@ function ExternalFolderModal({ onClose, onSave, isLoading, t }: ExternalFolderMo
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary">
         <div className="p-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -329,7 +329,7 @@ function RenameModal({ type, currentName, onClose, onSave, isLoading, t }: Renam
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-sm border border-bambu-dark-tertiary">
         <div className="p-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">{type === 'file' ? t('fileManager.renameFile') : t('fileManager.renameFolder')}</h2>
@@ -387,7 +387,7 @@ function MoveFilesModal({ folders, selectedFiles, currentFolderId, onClose, onMo
   const [targetFolder, setTargetFolder] = useState<number | null>(null);
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-sm border border-bambu-dark-tertiary">
         <div className="p-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">{t('fileManager.moveFiles', { count: selectedFiles.length })}</h2>
@@ -457,7 +457,7 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary">
         <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -585,7 +585,7 @@ function LinkFileModal({ file, onClose, onLink, isLoading, t }: LinkFileModalPro
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary">
         <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white flex items-center gap-2">

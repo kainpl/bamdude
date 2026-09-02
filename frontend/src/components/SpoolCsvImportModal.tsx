@@ -127,7 +127,7 @@ export function SpoolCsvImportModal({ onClose, onImported }: SpoolCsvImportModal
   const validCount = preview?.valid_count ?? 0;
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-3xl border border-bambu-dark-tertiary flex flex-col max-h-[90vh]">
         <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white">{t('inventory.csv.modalTitle', 'Import spools from CSV')}</h2>
@@ -363,7 +363,7 @@ export function SpoolCsvExportModal({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary">
         <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white">{t('inventory.csv.exportTitle', 'Export spools to CSV')}</h2>

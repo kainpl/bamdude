@@ -382,7 +382,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
           (upstream Bambuddy #1336). */}
       <div className="fixed inset-0 z-[100] flex items-start sm:items-center justify-center overflow-y-auto p-4">
         <div
-          className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          className="absolute inset-0 bg-black/50 backdrop-blur-sm"
           onClick={onClose}
         />
 
@@ -674,7 +674,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
 
       {replacementPrompt && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setReplacementPrompt(null)} />
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setReplacementPrompt(null)} />
           <div className="relative w-full max-w-md bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl p-5">
             <h3 className="text-lg font-semibold text-white">
               {windowMode === 'optin'

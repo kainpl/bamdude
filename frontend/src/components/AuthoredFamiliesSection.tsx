@@ -160,7 +160,7 @@ export function AuthoredFamiliesSection() {
       ))}
 
       {conflicts && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="bg-bambu-dark border border-bambu-dark-tertiary rounded-xl w-full max-w-md shadow-2xl">
             <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
               <h2 className="text-lg font-semibold text-white">{t('authoring.families.conflictTitle')}</h2>
@@ -209,7 +209,7 @@ export function AuthoredFamiliesSection() {
       )}
 
       {deleting && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="bg-bambu-dark border border-bambu-dark-tertiary rounded-xl w-full max-w-sm shadow-2xl">
             <div className="p-4 space-y-3">
               <p className="text-sm text-white">

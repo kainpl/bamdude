@@ -4300,7 +4300,7 @@ export function SettingsPage() {
 
       {/* Home Assistant Test Connection Modal */}
       {haTestResult && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-bambu-dark-secondary rounded-lg p-6 max-w-md w-full mx-4">
             <div className="flex items-center gap-3 mb-4">
               {haTestResult.success ? (
@@ -5993,7 +5993,7 @@ export function SettingsPage() {
       {/* Release Notes Modal */}
       {showReleaseNotes && updateCheck?.release_notes && (
         <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
           onClick={() => setShowReleaseNotes(false)}
         >
           <Card className="w-full max-w-2xl max-h-[80vh] flex flex-col" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
@@ -6528,7 +6528,7 @@ export function SettingsPage() {
       {/* Create User Modal */}
       {showCreateUserModal && !advancedAuthStatus?.advanced_auth_enabled && (
         <div
-          className="fixed inset-0 bg-black flex items-center justify-center z-50 p-4"
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
           onClick={() => {
             setShowCreateUserModal(false);
             setUserFormData({ username: '', password: '', email: '', confirmPassword: '', role: 'user', group_ids: [] });
@@ -6721,7 +6721,7 @@ export function SettingsPage() {
       {/* Edit User Modal */}
       {showEditUserModal && editingUserId !== null && (
         <div
-          className="fixed inset-0 bg-black flex items-center justify-center z-50 p-4"
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
           onClick={() => {
             setShowEditUserModal(false);
             setEditingUserId(null);
@@ -6917,7 +6917,7 @@ export function SettingsPage() {
       {/* Delete User Confirmation Modal */}
       {deleteUserId !== null && (
         <div
-          className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
           onClick={() => {
             setDeleteUserId(null);
             setDeleteUserItemCounts(null);
@@ -7038,7 +7038,7 @@ export function SettingsPage() {
       {/* Macro Add/Edit Modal */}
       {showMacroModal && (
         <div
-          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
           onClick={() => { setShowMacroModal(false); setEditingMacro(null); }}
         >
           <Card
@@ -7378,7 +7378,7 @@ export function SettingsPage() {
 
       {showChangePasswordModal && (
         <div
-          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
           onClick={() => {
             setShowChangePasswordModal(false);
             setChangePasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });

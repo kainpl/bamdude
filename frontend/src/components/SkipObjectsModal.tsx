@@ -92,7 +92,7 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
       ref={(el) => el?.focus()}
     >
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/50 z-0" />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-0" />
       {/* Modal */}
       <div
         style={{ width: DIALOG_WIDTH_PX }}
@@ -290,7 +290,7 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
     {/* Enlarged lightbox overlay */}
     {enlarged && objectsData && (
       <div
-        className="fixed inset-0 bg-black/90 flex items-center justify-center z-60"
+        className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-60"
         onClick={() => setEnlarged(false)}
       >
         <button

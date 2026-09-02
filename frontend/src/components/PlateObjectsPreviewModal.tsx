@@ -118,7 +118,7 @@ export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateO
         ref={(el) => el?.focus()}
       >
         {/* Backdrop */}
-        <div className="absolute inset-0 bg-black/50 z-0" />
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-0" />
         {/* Modal */}
         <div
           style={{ width: DIALOG_WIDTH_PX }}
@@ -297,7 +297,7 @@ export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateO
           would squash one axis independently and break exactly that. */}
       {enlarged && data?.has_top_view && (
         <div
-          className="fixed inset-0 bg-black/90 flex items-center justify-center z-60"
+          className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-60"
           onClick={() => setEnlarged(false)}
         >
           <button

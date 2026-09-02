@@ -91,7 +91,7 @@ export function SensorThresholdsModal({ isOpen, onClose, sensor }: Props) {
     setRows((current) => current.map((row) => (row.kind === kind ? { ...row, [field]: value } : row)));
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div
         className="bg-bambu-dark-secondary rounded-xl w-full max-w-2xl max-h-[90vh] overflow-hidden"
         onClick={(e) => e.stopPropagation()}
