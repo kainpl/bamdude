@@ -229,12 +229,162 @@ async def test_auto_queue_item_carries_the_line(async_client, db_session, order_
 
 
 @pytest.mark.asyncio
-async def test_the_scheduler_copies_the_line_onto_the_printer_row(db_session, order_line, linked_file):
-    """``auto_queue_scheduler`` builds the per-printer row by hand, field by
-    field — the one place a new column is silently left behind."""
-    import inspect
+async def test_the_scheduler_copies_the_line_onto_the_printer_row(
+    db_session, order_line, linked_file, printer_with_queue
+):
+    """``AutoQueueScheduler._assign`` builds the per-printer row by hand, field
+    by field — the one place a new column is silently left behind.
 
-    from backend.app.services import auto_queue_scheduler
+    Driven directly rather than through a tick: routing needs a live printer to
+    pick one, but the copy itself is the part that can drop a column, and it
+    only needs an item, a printer and that printer's queue.
+    """
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.printer import Printer
+    from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
 
-    source = inspect.getsource(auto_queue_scheduler)
-    assert "project_line_id=item.project_line_id" in source
+    project, line = order_line
+    item = AutoQueueItem(
+        library_file_id=linked_file.id,
+        project_id=project.id,
+        project_line_id=line.id,
+        position=1,
+        status="pending",
+    )
+    db_session.add(item)
+    await db_session.commit()
+    await db_session.refresh(item)
+
+    printer = await db_session.get(Printer, printer_with_queue.id)
+    queue_item = await AutoQueueScheduler()._assign(db_session, item, printer)
+
+    assert queue_item.project_line_id == line.id
+    assert queue_item.project_id == project.id
+
+
+@pytest.mark.asyncio
+async def test_direct_print_refuses_a_line_from_another_order(
+    async_client: AsyncClient, db_session, order_line, printer_with_queue, linked_file
+):
+    """Every door asks the same question. A bogus or foreign line is a 404
+    here, not an FK-constraint 500 on PostgreSQL and a dangling reference on
+    SQLite — which is what it was before the printer was even contacted."""
+    _, line = order_line
+    other = Project(name="Order 2")
+    db_session.add(other)
+    await db_session.commit()
+    await db_session.refresh(other)
+
+    with patch(
+        "backend.app.services.printer_manager.printer_manager.is_connected",
+        return_value=True,
+    ):
+        r = await async_client.post(
+            f"/api/v1/library/files/{linked_file.id}/print?printer_id={printer_with_queue.id}",
+            json={"project_id": other.id, "project_line_id": line.id},
+        )
+    assert r.status_code == 404, r.text
+
+
+@pytest.mark.asyncio
+async def test_direct_print_derives_the_order_from_the_line_alone(
+    async_client: AsyncClient, order_line, printer_with_queue, linked_file
+):
+    project, line = order_line
+    with (
+        patch(
+            "backend.app.services.printer_manager.printer_manager.is_connected",
+            return_value=True,
+        ),
+        patch(
+            "backend.app.services.background_dispatch.background_dispatch.dispatch_print_library_file",
+            new=AsyncMock(return_value={"status": "dispatched", "dispatch_job_id": 1, "dispatch_position": 1}),
+        ) as dispatch,
+    ):
+        r = await async_client.post(
+            f"/api/v1/library/files/{linked_file.id}/print?printer_id={printer_with_queue.id}",
+            json={"project_line_id": line.id},
+        )
+    assert r.status_code == 200, r.text
+    assert dispatch.await_args.kwargs["project_id"] == project.id
+    assert dispatch.await_args.kwargs["project_line_id"] == line.id
+
+
+@pytest.mark.asyncio
+async def test_auto_queue_refuses_a_line_from_another_order(
+    async_client: AsyncClient, db_session, order_line, linked_file
+):
+    _, line = order_line
+    other = Project(name="Order 3")
+    db_session.add(other)
+    await db_session.commit()
+    await db_session.refresh(other)
+
+    r = await async_client.post(
+        "/api/v1/auto-queue/",
+        json={"library_file_id": linked_file.id, "project_id": other.id, "project_line_id": line.id},
+    )
+    assert r.status_code == 404, r.text
+
+
+@pytest.mark.asyncio
+async def test_refiling_an_archive_drops_a_line_that_belonged_to_the_old_order(
+    async_client: AsyncClient, db_session, order_line, printer_factory
+):
+    """A line must never stay attached to an order it no longer belongs to.
+
+    Moving an archive to another order without naming a new line drops the old
+    one rather than refusing — re-filing is a routine correction — but leaving
+    it would credit one order's progress to a line of another.
+    """
+    from backend.app.models.archive import PrintArchive
+
+    project, line = order_line
+    other = Project(name="Order 4")
+    db_session.add(other)
+    await db_session.flush()
+    archive = PrintArchive(
+        printer_id=None,
+        file_path="",
+        file_size=0,
+        filename="x.gcode.3mf",
+        print_name="x",
+        status="completed",
+        project_id=project.id,
+        project_line_id=line.id,
+    )
+    db_session.add(archive)
+    await db_session.commit()
+    await db_session.refresh(archive)
+
+    r = await async_client.patch(f"/api/v1/archives/{archive.id}", json={"project_id": other.id})
+    assert r.status_code == 200, r.text
+    assert r.json()["project_id"] == other.id
+    assert r.json()["project_line_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_refiling_an_archive_keeps_a_line_that_still_belongs(
+    async_client: AsyncClient, db_session, order_line, printer_factory
+):
+    """The other half: a PUT that names the SAME order leaves the line alone."""
+    from backend.app.models.archive import PrintArchive
+
+    project, line = order_line
+    archive = PrintArchive(
+        printer_id=None,
+        file_path="",
+        file_size=0,
+        filename="y.gcode.3mf",
+        print_name="y",
+        status="completed",
+        project_id=project.id,
+        project_line_id=line.id,
+    )
+    db_session.add(archive)
+    await db_session.commit()
+    await db_session.refresh(archive)
+
+    r = await async_client.patch(f"/api/v1/archives/{archive.id}", json={"project_id": project.id})
+    assert r.status_code == 200, r.text
+    assert r.json()["project_line_id"] == line.id

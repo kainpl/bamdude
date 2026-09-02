@@ -1528,6 +1528,15 @@ async def update_archive(
         target_project = update_data.project_id if "project_id" in update_data.model_fields_set else archive.project_id
         if line is None or line.project_id != target_project:
             raise HTTPException(400, "Order line does not belong to the archive's project")
+    elif "project_id" in update_data.model_fields_set and archive.project_line_id is not None:
+        # Moving the archive to another order without naming a new line: the
+        # line it carries belongs to the OLD order, and leaving it attached
+        # would credit one order's progress to a line of another. Dropped
+        # rather than refused — re-filing an archive is a routine correction,
+        # and the operator can name the new line in the same PUT if they know it.
+        stale = await db.get(ProjectLine, archive.project_line_id)
+        if stale is None or stale.project_id != update_data.project_id:
+            archive.project_line_id = None
 
     # parts_defective is not a PrintArchive column — it is applied separately
     # below against PrintArchivePart rows and must never reach setattr.

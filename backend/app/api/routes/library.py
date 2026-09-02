@@ -33,6 +33,7 @@ from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolde
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.product import Product, product_files, product_folders
 from backend.app.models.project import Project
+from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.library import (
@@ -4755,6 +4756,18 @@ async def print_library_file(
         if not project_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Project not found")
 
+    # Same question of the order LINE, and the same reason: a bogus id is an
+    # FK-constraint 500 on PostgreSQL and a silently stored dangling reference
+    # on SQLite. The rule is ``queue_add``'s — the line must be a line of the
+    # order named beside it, and naming only the line derives the order. Asked
+    # once here, before both the queue and the direct-dispatch branch below.
+    effective_project_id = body.project_id
+    if body.project_line_id is not None:
+        line = await db.get(ProjectLine, body.project_line_id)
+        if line is None or (body.project_id is not None and line.project_id != body.project_id):
+            raise HTTPException(status_code=404, detail="Order line not found in this project")
+        effective_project_id = line.project_id
+
     plate_name = body.plate_name
     if not plate_name and body.plate_id is not None:
         plate_name = f"Plate {body.plate_id}"
@@ -4802,7 +4815,7 @@ async def print_library_file(
             swap_macro_events=body.swap_macro_events,
             selected_macro_ids=body.selected_macro_ids,
             created_by_id=current_user.id if current_user else None,
-            project_id=body.project_id,
+            project_id=effective_project_id,
             project_line_id=body.project_line_id,
         )
         return {
@@ -4823,7 +4836,7 @@ async def print_library_file(
             printer_id=printer_id,
             printer_name=printer.name,
             options=body.model_dump(exclude_none=True, exclude={"cleanup_library_after_dispatch"}),
-            project_id=body.project_id,
+            project_id=effective_project_id,
             project_line_id=body.project_line_id,
             requested_by_user_id=current_user.id if current_user else None,
             requested_by_username=current_user.username if current_user else None,

@@ -40,6 +40,7 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
+from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.schemas.auto_queue import (
     AutoQueueBatchActionResponse,
@@ -227,6 +228,15 @@ async def add_to_auto_queue(
     # A file does not belong to an order, so there is nothing to fall back on:
     # the caller names the order, or the row carries none.
     effective_project_id = data.project_id
+
+    # The order LINE, by the same rule the queue and direct-print doors apply:
+    # it must be a line of the order named beside it (else 404, not a
+    # FK-constraint 500), and naming only the line derives the order.
+    if data.project_line_id is not None:
+        line = await db.get(ProjectLine, data.project_line_id)
+        if line is None or (data.project_id is not None and line.project_id != data.project_id):
+            raise HTTPException(404, "Order line not found in this project")
+        effective_project_id = line.project_id
 
     # Resolve plate IDs to fan out (one row per plate)
     plate_ids: list[int | None]
