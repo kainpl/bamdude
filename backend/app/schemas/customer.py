@@ -3,10 +3,28 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 
+def _clean_name(value: str) -> str:
+    """Trim, and refuse a name that is nothing but whitespace.
+
+    ``Field(min_length=1)`` already rejects ``""``; it cannot see that ``"   "``
+    is the same thing. Both create and update run this, so the two paths cannot
+    disagree about what a stored name looks like.
+    """
+    trimmed = value.strip()
+    if not trimmed:
+        raise ValueError("name cannot be blank")
+    return trimmed
+
+
 class CustomerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     contact: str | None = None
     notes: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_clean(cls, value: str) -> str:
+        return _clean_name(value)
 
 
 class CustomerUpdate(BaseModel):
@@ -16,7 +34,7 @@ class CustomerUpdate(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def _name_is_never_null(cls, value: str | None) -> str | None:
+    def _name_is_never_null_and_is_clean(cls, value: str | None) -> str | None:
         """An omitted ``name`` leaves it alone; an explicit ``null`` is a 422.
 
         PATCH clears a field by sending ``null`` — but ``customers.name`` is NOT
@@ -26,7 +44,7 @@ class CustomerUpdate(BaseModel):
         """
         if value is None:
             raise ValueError("name cannot be null")
-        return value
+        return _clean_name(value)
 
 
 class CustomerResponse(BaseModel):
