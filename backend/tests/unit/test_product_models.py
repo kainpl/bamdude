@@ -81,3 +81,4 @@ def test_library_links_target_products():
     assert "products" in inspect(LibraryFile).relationships
     assert "products" in inspect(LibraryFolder).relationships
     assert "projects" not in inspect(LibraryFile).relationships
+    assert "projects" not in inspect(LibraryFolder).relationships

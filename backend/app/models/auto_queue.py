@@ -45,7 +45,7 @@ class AutoQueueItem(Base):
     )
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     project_line_id: Mapped[int | None] = mapped_column(
-        ForeignKey("project_lines.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("project_lines.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
     # Routing target (upstream-style)

@@ -15,7 +15,7 @@ class PrintArchive(Base):
     # The order line this print was made for. Set by the dispatcher when the job
     # carried one; NULL prints are attributed on read (services/order_metrics).
     project_line_id: Mapped[int | None] = mapped_column(
-        ForeignKey("project_lines.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("project_lines.id", ondelete="SET NULL"), nullable=True, index=True
     )
     # Link back to the library_files row this archive was dispatched from.
     # Populated at dispatch time (see background_dispatch.py) so library
