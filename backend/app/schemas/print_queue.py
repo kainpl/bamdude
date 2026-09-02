@@ -61,6 +61,8 @@ class PrintQueueItemCreate(BaseModel):
     quantity: int = Field(default=1, ge=1, le=999)
     # Project to associate the resulting archive with (when triggered from project view)
     project_id: int | None = None
+    # The order line this print is for; travels queue → dispatcher → archive.
+    project_line_id: int | None = None
 
 
 class PrintQueueItemUpdate(BaseModel):
@@ -98,7 +100,8 @@ class PrintQueueItemResponse(BaseModel):
     id: int
     queue_id: int
     printer_id: int | None = None  # Convenience - resolved from queue
-    project_id: int | None = None  # Linked project (inherited from library_file or set directly)
+    project_id: int | None = None  # Linked project (the order this print is for)
+    project_line_id: int | None = None  # Which line of that order
     waiting_reason: str | None = None
     archive_id: int | None
     library_file_id: int | None

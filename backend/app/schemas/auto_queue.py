@@ -42,6 +42,8 @@ class AutoQueueItemCreate(BaseModel):
     archive_id: int | None = None
     library_file_id: int | None = None
     project_id: int | None = None
+    # The order line this print is for; travels queue → dispatcher → archive.
+    project_line_id: int | None = None
 
     # Routing target
     target_model: str | None = None  # auto-detected from 3MF if omitted
@@ -146,6 +148,7 @@ class AutoQueueItemResponse(BaseModel):
     archive_id: int | None
     library_file_id: int | None
     project_id: int | None
+    project_line_id: int | None = None
 
     target_model: str | None
     target_location_id: int | None = None

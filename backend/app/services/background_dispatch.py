@@ -547,6 +547,9 @@ class PrintDispatchJob:
     requested_by_user_id: int | None = None
     requested_by_username: str | None = None
     project_id: int | None = None
+    # The order line this print is for, carried from the request that started it
+    # all the way to the archive row the runner writes.
+    project_line_id: int | None = None
     cleanup_library_after_dispatch: bool = False
     # Link back to a ``print_queue.id`` when the dispatch was requested by
     # the scheduler for a queue item.  The runner updates the queue item's
@@ -776,6 +779,7 @@ class BackgroundDispatchService:
         options: dict[str, Any],
         requested_by_user_id: int | None,
         requested_by_username: str | None,
+        project_line_id: int | None = None,
     ) -> dict[str, Any]:
         return await self._dispatch(
             kind="reprint_archive",
@@ -786,6 +790,7 @@ class BackgroundDispatchService:
             options=options,
             requested_by_user_id=requested_by_user_id,
             requested_by_username=requested_by_username,
+            project_line_id=project_line_id,
         )
 
     async def get_state(self) -> dict[str, Any]:
@@ -805,6 +810,7 @@ class BackgroundDispatchService:
         requested_by_user_id: int | None,
         requested_by_username: str | None,
         project_id: int | None = None,
+        project_line_id: int | None = None,
         queue_item_id: int,
     ) -> dict[str, Any]:
         """Run a dispatch inline (bypass queue) on behalf of the scheduler.
@@ -827,6 +833,7 @@ class BackgroundDispatchService:
                 requested_by_user_id=requested_by_user_id,
                 requested_by_username=requested_by_username,
                 project_id=project_id,
+                project_line_id=project_line_id,
                 queue_item_id=queue_item_id,
                 awaited_by_scheduler=True,
             )
@@ -885,6 +892,7 @@ class BackgroundDispatchService:
         requested_by_user_id: int | None,
         requested_by_username: str | None,
         project_id: int | None = None,
+        project_line_id: int | None = None,
         cleanup_library_after_dispatch: bool = False,
     ) -> dict[str, Any]:
         return await self._dispatch(
@@ -897,6 +905,7 @@ class BackgroundDispatchService:
             requested_by_user_id=requested_by_user_id,
             requested_by_username=requested_by_username,
             project_id=project_id,
+            project_line_id=project_line_id,
             cleanup_library_after_dispatch=cleanup_library_after_dispatch,
         )
 
@@ -1013,6 +1022,7 @@ class BackgroundDispatchService:
         requested_by_user_id: int | None,
         requested_by_username: str | None,
         project_id: int | None = None,
+        project_line_id: int | None = None,
         cleanup_library_after_dispatch: bool = False,
     ) -> dict[str, Any]:
         async with self._lock:
@@ -1050,6 +1060,7 @@ class BackgroundDispatchService:
                     options=options,
                     created_by_id=requested_by_user_id,
                     project_id=project_id,
+                    project_line_id=project_line_id,
                 )
                 claim_item_id = claim_item.id if claim_item is not None else None
 
@@ -1065,6 +1076,7 @@ class BackgroundDispatchService:
                 requested_by_user_id=requested_by_user_id,
                 requested_by_username=requested_by_username,
                 project_id=project_id,
+                project_line_id=project_line_id,
                 cleanup_library_after_dispatch=cleanup_library_after_dispatch,
                 queue_item_id=claim_item_id,
                 # ⚠️ ``awaited_by_scheduler`` stays False: the dispatcher owns
@@ -1507,6 +1519,7 @@ class BackgroundDispatchService:
                     dispatched_file=upload_file_path,
                     original_filename=source_archive.filename,
                     project_id=source_archive.project_id,
+                    project_line_id=source_archive.project_line_id,
                     source_content_hash=source_archive.source_content_hash or source_archive.content_hash,
                     applied_patches=applied_patches or None,
                     library_file_id=source_archive.library_file_id,
@@ -2090,6 +2103,7 @@ class BackgroundDispatchService:
                     dispatched_file=upload_file_path,
                     original_filename=lib_file.filename,
                     project_id=job.project_id,
+                    project_line_id=job.project_line_id,
                     source_content_hash=lib_file.file_hash,
                     applied_patches=applied_patches or None,
                     library_file_id=lib_file.id,

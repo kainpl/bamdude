@@ -184,6 +184,7 @@ async def test_dispatch_finalize_branches_on_cancelled_outcome():
             options={},
             requested_by_user_id=None,
             project_id=None,
+            project_line_id=None,
             job_name_short="x",
             swap_events=[],
         )

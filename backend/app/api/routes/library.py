@@ -4803,6 +4803,7 @@ async def print_library_file(
             selected_macro_ids=body.selected_macro_ids,
             created_by_id=current_user.id if current_user else None,
             project_id=body.project_id,
+            project_line_id=body.project_line_id,
         )
         return {
             "status": "queued",
@@ -4823,6 +4824,7 @@ async def print_library_file(
             printer_name=printer.name,
             options=body.model_dump(exclude_none=True, exclude={"cleanup_library_after_dispatch"}),
             project_id=body.project_id,
+            project_line_id=body.project_line_id,
             requested_by_user_id=current_user.id if current_user else None,
             requested_by_username=current_user.username if current_user else None,
             cleanup_library_after_dispatch=body.cleanup_library_after_dispatch,

@@ -24,6 +24,7 @@ def _item_columns(
     library_file_id: int | None,
     options: dict | None,
     project_id: int | None,
+    project_line_id: int | None = None,
 ) -> dict:
     """Dispatch options → queue-item columns.
 
@@ -67,6 +68,7 @@ def _item_columns(
         "selected_macro_ids": json.dumps(selected_macro_ids) if selected_macro_ids is not None else None,
         "auto_off_after": bool(opts.get("auto_off_after", False)),
         "project_id": project_id,
+        "project_line_id": project_line_id,
     }
 
 
@@ -80,6 +82,7 @@ async def claim_printer_for_direct_print(
     options: dict | None = None,
     created_by_id: int | None = None,
     project_id: int | None = None,
+    project_line_id: int | None = None,
 ) -> PrintQueueItem | None:
     """Take the printer's queue claim for a print being dispatched right now.
 
@@ -125,6 +128,7 @@ async def claim_printer_for_direct_print(
             library_file_id=library_file_id,
             options=options,
             project_id=project_id,
+            project_line_id=project_line_id,
         ),
     )
     db.add(item)
@@ -161,6 +165,7 @@ async def enqueue_batch_copies(
     auto_off_after: bool = False,
     created_by_id: int | None = None,
     project_id: int | None = None,
+    project_line_id: int | None = None,
     batch_id: str | None = None,
 ) -> tuple[list[PrintQueueItem], str | None]:
     """Append ``count`` identical pending items to the given printer's queue.
@@ -225,6 +230,7 @@ async def enqueue_batch_copies(
                 batch_id=batch_id,
                 created_by_id=created_by_id,
                 project_id=project_id,
+                project_line_id=project_line_id,
             )
         )
     db.add_all(items)

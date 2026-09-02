@@ -30,6 +30,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
+from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import mode_to_bool
 from backend.app.schemas.print_queue import PrintQueueItemCreate
@@ -176,6 +177,15 @@ async def add_items_to_printer_queue(
     # the caller names the order, or the row carries none.
     effective_project_id = data.project_id
 
+    # An order LINE has to be a line of the order named alongside it, or this
+    # row would report progress against work nobody ordered. Naming only the
+    # line is enough — the order it belongs to is derived from it.
+    if data.project_line_id is not None:
+        line = await db.get(ProjectLine, data.project_line_id)
+        if line is None or (data.project_id is not None and line.project_id != data.project_id):
+            raise HTTPException(status_code=404, detail="Order line not found in this project")
+        effective_project_id = line.project_id
+
     # For quantity > 1, group copies under a shared batch_id
     batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
     ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
@@ -230,6 +240,7 @@ async def add_items_to_printer_queue(
                 preheat_override=data.preheat_override,
                 preheat_chamber_target_override=data.preheat_chamber_target_override,
                 project_id=effective_project_id,
+                project_line_id=data.project_line_id,
                 position=max_pos + 1 + i,
                 status="pending",
                 batch_id=batch_id,

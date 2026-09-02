@@ -2694,6 +2694,7 @@ class PrintScheduler:
                 options=options,
                 requested_by_user_id=item.created_by_id,
                 project_id=item.project_id,
+                project_line_id=item.project_line_id,
                 job_name_short=job_name_short,
                 swap_events=swap_events,
             ),
@@ -2713,6 +2714,7 @@ class PrintScheduler:
         options: dict[str, Any],
         requested_by_user_id: int | None,
         project_id: int | None,
+        project_line_id: int | None,
         job_name_short: str,
         swap_events: list[str],
     ) -> None:
@@ -2751,6 +2753,7 @@ class PrintScheduler:
                     requested_by_user_id=requested_by_user_id,
                     requested_by_username=requested_by_username,
                     project_id=project_id,
+                    project_line_id=project_line_id,
                     queue_item_id=queue_item_id,
                 )
             except Exception as e:  # pragma: no cover — belt-and-braces

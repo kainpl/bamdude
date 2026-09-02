@@ -2072,6 +2072,7 @@ class ArchiveService:
         original_filename: str | None = None,
         project_id: int | None = None,
         *,
+        project_line_id: int | None = None,
         source_content_hash: str | None = None,
         applied_patches: list[str] | None = None,
         subtask_id: str | None = None,
@@ -2422,6 +2423,7 @@ class ArchiveService:
             skip_objects_supported=skip_objects_supported_from_metadata(metadata),
             created_by_id=created_by_id,
             project_id=project_id,
+            project_line_id=project_line_id,
             subtask_id=subtask_id,
             library_file_id=library_file_id,
             is_calibration=is_calibration,
@@ -2459,8 +2461,8 @@ class ArchiveService:
         the retry service later manages to grab the file from SD.
 
         Does NOT touch ``status``, ``started_at``, ``completed_at``,
-        ``project_id``, or ``created_by_id`` — those were set when the
-        archive was originally created.
+        ``project_id``, ``project_line_id``, or ``created_by_id`` — those were
+        set when the archive was originally created.
 
         Returns True on success, False on parse/copy failure.
         """

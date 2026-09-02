@@ -422,6 +422,7 @@ class AutoQueueScheduler:
             archive_id=item.archive_id,
             library_file_id=item.library_file_id,
             project_id=item.project_id,
+            project_line_id=item.project_line_id,
             position=next_pos,
             scheduled_time=item.scheduled_time,
             manual_start=False,

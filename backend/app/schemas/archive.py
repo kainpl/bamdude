@@ -42,6 +42,8 @@ class ArchiveBase(BaseModel):
 class ArchiveUpdate(ArchiveBase):
     printer_id: int | None = None
     project_id: int | None = None
+    # The order line this print is for; validated against ``project_id``.
+    project_line_id: int | None = None
     # Allow changing status (e.g., clearing failed flag)
     status: str | None = None
     # Per-part defect write (m158). Not a column on PrintArchive — the route
@@ -63,6 +65,7 @@ class ArchiveResponse(BaseModel):
     id: int
     printer_id: int | None
     project_id: int | None = None
+    project_line_id: int | None = None
     project_name: str | None = None  # Included for convenience
     filename: str
     file_path: str

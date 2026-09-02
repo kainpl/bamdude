@@ -21,6 +21,7 @@ from backend.app.core.permissions import Permission
 from backend.app.core.timezones import client_timezone, day_bounds
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
+from backend.app.models.project_line import ProjectLine
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.models.user import User
 from backend.app.schemas.archive import (
@@ -132,6 +133,7 @@ def archive_to_response(
         "id": archive.id,
         "printer_id": archive.printer_id,
         "project_id": archive.project_id,
+        "project_line_id": archive.project_line_id,
         "project_name": archive.project.name if archive.project else None,
         "filename": archive.filename,
         "file_path": archive.file_path,
@@ -1516,6 +1518,16 @@ async def update_archive(
     if not can_modify_all:
         if archive.created_by_id != user.id:
             raise HTTPException(403, "You can only update your own archives")
+
+    # An order line has to belong to the order the archive is filed under, or
+    # the order's progress would count a print it never asked for. The target is
+    # the project_id being SET in this same request when there is one, so moving
+    # an archive and its line together in one PUT is legal.
+    if "project_line_id" in update_data.model_fields_set and update_data.project_line_id is not None:
+        line = await db.get(ProjectLine, update_data.project_line_id)
+        target_project = update_data.project_id if "project_id" in update_data.model_fields_set else archive.project_id
+        if line is None or line.project_id != target_project:
+            raise HTTPException(400, "Order line does not belong to the archive's project")
 
     # parts_defective is not a PrintArchive column — it is applied separately
     # below against PrintArchivePart rows and must never reach setattr.
@@ -3558,6 +3570,7 @@ async def reprint_archive(
             selected_macro_ids=body.selected_macro_ids,
             created_by_id=user.id if user else None,
             project_id=archive.project_id,
+            project_line_id=archive.project_line_id,
         )
         logger.info(
             "Queued %s reprint copies for archive %s on printer %s (batch %s)",
@@ -3586,6 +3599,7 @@ async def reprint_archive(
             options=body.model_dump(exclude_none=True),
             requested_by_user_id=user.id if user else None,
             requested_by_username=user.username if user else None,
+            project_line_id=archive.project_line_id,
         )
     except DispatchEnqueueRejected as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
