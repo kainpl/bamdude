@@ -121,6 +121,9 @@ def test_sliced_asks_the_content_flag_not_the_filename():
     assert recipe_for(whole, meta, "gcode", []).sliced is True
     assert recipe_for(whole, {**meta, "has_sliced_gcode": False}, "gcode", []).sliced is False
     assert recipe_for(whole, meta, "3mf", []).sliced is False
+    # ...and the other half of is_printable(): a "3mf" row the content check
+    # found gcode inside IS printable, but only on the strength of the flag.
+    assert recipe_for(whole, {**meta, "has_sliced_gcode": True}, "3mf", []).sliced is True
     # One plate of a multi-plate file is decided by its own timing alone.
     one = ProductPlate(product_id=1, library_file_id=5, plate_index=1)
     assert recipe_for(one, meta, "gcode", []).sliced is False

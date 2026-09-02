@@ -135,17 +135,21 @@ def recipe_for(
     recipe.filament_used_grams = float(grams) if isinstance(grams, (int, float)) else None
     recipe.materials = plate_materials(meta, plate.plate_index)
     recipe.colors = plate_colors(meta, plate.plate_index)
-    # Mirrors ``LibraryFile.is_printable()``: ``file_type`` alone is NOT the
-    # answer — ``detect_file_type`` collapses ``.gcode.3mf`` to "gcode" by
-    # FILENAME, and the content flag ``file_metadata["has_sliced_gcode"]``
-    # (m137) is what settles it, where a MISSING flag counts as printable
-    # (rows written before the check exists have no answer). A single plate of
-    # a multi-plate file is decided by its own timing alone — the file-level
-    # flag says nothing about which plates carry gcode.
+    # Mirrors ``LibraryFile.is_printable()`` — BOTH of its branches. ``file_type``
+    # alone is NOT the answer: ``detect_file_type`` collapses ``.gcode.3mf`` to
+    # "gcode" by FILENAME and leaves "3mf" on packages that may or may not hold
+    # gcode, so the content flag ``file_metadata["has_sliced_gcode"]`` (m137) is
+    # what settles it. A MISSING flag counts as printable for a "gcode" row
+    # (rows written before the check exists have no answer, and the filename
+    # rule is what they were created under) but NOT for a "3mf" one, which needs
+    # the flag to say yes. A single plate of a multi-plate file is decided by
+    # its own timing alone — a file-level flag says nothing about which plates
+    # carry gcode.
+    ftype = (file_type or "").lower()
+    has_gcode = (meta or {}).get("has_sliced_gcode")
     recipe.sliced = recipe.print_time_seconds is not None or (
         plate.plate_index == 0
-        and (file_type or "").lower() == "gcode"
-        and (meta or {}).get("has_sliced_gcode") is not False
+        and ((ftype == "gcode" and has_gcode is not False) or (ftype == "3mf" and has_gcode is True))
     )
     return recipe
 
