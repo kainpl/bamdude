@@ -6,6 +6,7 @@ behind), populated, and the migration's ``upgrade`` is run against them.
 """
 
 import json
+import logging
 
 import pytest
 from sqlalchemy import select, text
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.migrations import m162_products_and_orders as m162
 from backend.app.migrations.helpers import get_table_columns, table_exists
 from backend.app.models.archive import PrintArchive
+from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
@@ -155,6 +157,7 @@ async def _legacy_fixture(db: AsyncSession, engine, printer_factory) -> dict:
     await db.flush()
     queue = (await db.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer.id))).scalar_one()
     db.add(PrintQueueItem(queue_id=queue.id, library_file_id=multi.id, project_id=order.id, position=1))
+    db.add(AutoQueueItem(library_file_id=multi.id, project_id=order.id, position=1))
     await db.commit()
     return {
         "order": order.id,
@@ -238,6 +241,10 @@ async def test_every_project_becomes_a_product_with_a_single_line(db_session, te
         await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.project_id == ids["order"]))
     ).scalar_one()
     assert queue_row.project_line_id == line.id
+    auto_row = (
+        await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.project_id == ids["order"]))
+    ).scalar_one()
+    assert auto_row.project_line_id == line.id
 
     project = await db_session.get(Project, ids["order"])
     assert project.price == 12.5
@@ -284,6 +291,68 @@ async def test_legacy_tables_and_columns_are_gone_and_a_rerun_is_a_noop(db_sessi
         assert {"customer_id", "price"} <= cols
     db_session.expire_all()
     assert len((await db_session.execute(select(Product))).scalars().all()) == 3  # not 6
+
+
+@pytest.mark.asyncio
+async def test_one_corrupt_file_metadata_does_not_abort_the_upgrade(db_session, test_engine, printer_factory, caplog):
+    ids = await _legacy_fixture(db_session, test_engine, printer_factory)
+    # Two shapes of junk, and only one of them reaches the try/except.
+    # ``_load_meta`` already swallows JSON *syntax* errors, and
+    # ``{"plates": <not a list>}`` is tolerated by ``_plate_names`` — iterating
+    # it simply yields no names. A top-level non-object is what actually makes
+    # ``meta.get()`` raise, so both shapes are pinned here.
+    tolerated = LibraryFile(
+        filename="tolerated.gcode.3mf",
+        file_path="tolerated",
+        file_size=1,
+        file_type="gcode",
+        folder_id=ids["folder"],
+        file_metadata={"plates": "not-a-list"},
+    )
+    raising = LibraryFile(
+        filename="raising.gcode.3mf",
+        file_path="raising",
+        file_size=1,
+        file_type="gcode",
+        folder_id=ids["folder"],
+        file_metadata=["not", "a", "dict"],
+    )
+    db_session.add_all([tolerated, raising])
+    await db_session.flush()
+    tolerated_id, raising_id = tolerated.id, raising.id
+    for file_id in (tolerated_id, raising_id):
+        await db_session.execute(
+            text(
+                "INSERT INTO project_print_plan_items (project_id, library_file_id, copies, order_index, plate_index) "
+                "VALUES (:p, :f, 1, 1, 1)"
+            ),
+            {"p": ids["order"], "f": file_id},
+        )
+    await db_session.commit()
+
+    with caplog.at_level(logging.WARNING, logger="backend.app.migrations.m162_products_and_orders"):
+        await _run_upgrade(test_engine)  # must not raise
+    assert "skipped metadata" in caplog.text  # the guard actually fired, not "nothing raised"
+    db_session.expire_all()
+
+    line = (await db_session.execute(select(ProjectLine).where(ProjectLine.project_id == ids["order"]))).scalar_one()
+    parts = {
+        p.name_key
+        for p in (
+            await db_session.execute(select(ProductPart).where(ProductPart.product_id == line.product_id))
+        ).scalars()
+    }
+    assert {"bracket.stl", "lid.stl", "clip.stl"} <= parts  # the healthy file converted anyway
+    plate_files = (
+        (
+            await db_session.execute(
+                select(ProductPlate.library_file_id).where(ProductPlate.product_id == line.product_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert tolerated_id in plate_files and raising_id in plate_files  # both junk files still got their plate row
 
 
 @pytest.mark.asyncio

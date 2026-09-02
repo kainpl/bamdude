@@ -14,7 +14,8 @@ Order of work:
    project: one product, its files/folders/plates/parts, BOM → purchased
    parts + procurement, one order line ``× 1``, archives + queue rows get the
    line, ``budget → price``, ``archived → completed``; templates become
-   products only and their attachments move to the product directory;
+   products only and their attachments are COPIED to the product directory
+   (never moved — see ``_copy_template_attachments``);
 3. drop the five legacy tables and the six legacy ``projects`` columns.
 
 Because step 3 removes the marker step 2 keys on, a re-run (``DEBUG=true``)
@@ -259,17 +260,24 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
         },
     )
 
+    # The EXISTS guards drop dangling pivot rows. SQLite never enforced these
+    # FKs (this codebase does not set PRAGMA foreign_keys), so a legacy pivot
+    # can point at a library row that is long gone; the new pivots DO carry
+    # enforced FKs on the SQLite→PostgreSQL auto-migrate path, where copying
+    # one such row would abort the whole migration.
     await conn.execute(
         text(
             "INSERT INTO product_files (product_id, library_file_id) "
-            "SELECT :pid, file_id FROM library_file_projects WHERE project_id = :p"
+            "SELECT :pid, file_id FROM library_file_projects WHERE project_id = :p "
+            "AND EXISTS (SELECT 1 FROM library_files lf WHERE lf.id = library_file_projects.file_id)"
         ),
         {"pid": product_id, "p": project_id},
     )
     await conn.execute(
         text(
             "INSERT INTO product_folders (product_id, library_folder_id) "
-            "SELECT :pid, folder_id FROM library_folder_projects WHERE project_id = :p"
+            "SELECT :pid, folder_id FROM library_folder_projects WHERE project_id = :p "
+            "AND EXISTS (SELECT 1 FROM library_folders lf WHERE lf.id = library_folder_projects.folder_id)"
         ),
         {"pid": product_id, "p": project_id},
     )
@@ -395,7 +403,7 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
             )
 
     if is_template:
-        _move_template_attachments(project_id, product_id, row)
+        _copy_template_attachments(project_id, product_id)
         await conn.execute(text("DELETE FROM projects WHERE id = :p"), {"p": project_id})
         return
 
@@ -425,18 +433,25 @@ def _template_attachments_json(row: dict) -> str | None:
     return json.dumps(converted) if converted else None
 
 
-def _move_template_attachments(project_id: int, product_id: int, row: dict) -> None:
+def _copy_template_attachments(project_id: int, product_id: int) -> None:
+    """COPY, never move — this runs inside a transaction that can still roll back.
+
+    Moving would destroy the source before anything committed: a later raise
+    rolls the DB back, but the files are already gone, the retry finds no
+    source directory and the new product ends up naming files stranded under a
+    product id that never existed. Copying leaves
+    ``projects/<id>/attachments`` untouched, so a retry simply copies again
+    into the new id and the only residue of a failed attempt is an orphan
+    ``products/<old id>/`` directory that nothing reads.
+    """
     from backend.app.core.config import settings
 
     src = Path(settings.archive_dir) / "projects" / str(project_id) / "attachments"
     if not src.is_dir():
         return
     dst = product_attachments_dir(product_id)
-    dst.mkdir(parents=True, exist_ok=True)
-    for entry in src.iterdir():
-        if entry.is_file():
-            shutil.move(str(entry), str(dst / entry.name))
-    shutil.rmtree(src.parent, ignore_errors=True)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dst, dirs_exist_ok=True)
 
 
 async def _convert_legacy(conn) -> None:
