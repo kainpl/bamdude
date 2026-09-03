@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ClipboardList, Package, Users } from 'lucide-react';
 
@@ -25,7 +25,12 @@ export function ProjectsTabs() {
       {TABS.map(({ to, key, icon: Icon, match }) => {
         const active = match.test(pathname);
         return (
-          <NavLink
+          // A plain Link, not NavLink: NavLink renders `aria-current` from its OWN
+          // internally computed match (prefix of `to`, no `end` prop), which does not
+          // know about our exclusion regex — it would mark Orders current on
+          // /projects/12 even though `active` here is false. One `active` value drives
+          // both the class and aria-current instead.
+          <Link
             key={to}
             to={to}
             aria-current={active ? 'page' : undefined}
@@ -37,7 +42,7 @@ export function ProjectsTabs() {
           >
             <Icon className="w-4 h-4" />
             {t(key)}
-          </NavLink>
+          </Link>
         );
       })}
     </nav>

@@ -23,4 +23,19 @@ describe('ProjectsTabs', () => {
     expect(screen.getByRole('link', { name: /orders/i })).toHaveAttribute('href', '/projects');
     expect(screen.getByRole('link', { name: /customers/i })).toHaveAttribute('href', '/customers');
   });
+
+  it('does not light the Orders tab on an order detail page', () => {
+    window.history.pushState({}, '', '/projects/12');
+    render(<ProjectsTabs />);
+    expect(screen.getByRole('link', { name: /orders/i })).not.toHaveAttribute('aria-current');
+    expect(screen.getByRole('link', { name: /orders/i })).not.toHaveClass('border-bambu-green');
+    expect(screen.getByRole('link', { name: /products/i })).not.toHaveAttribute('aria-current');
+    expect(screen.getByRole('link', { name: /customers/i })).not.toHaveAttribute('aria-current');
+  });
+
+  it('marks the products tab current on a product detail page', () => {
+    window.history.pushState({}, '', '/products/3');
+    render(<ProjectsTabs />);
+    expect(screen.getByRole('link', { name: /products/i })).toHaveAttribute('aria-current', 'page');
+  });
 });
