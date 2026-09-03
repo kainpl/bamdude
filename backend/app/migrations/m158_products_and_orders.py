@@ -97,6 +97,14 @@ in the least useful way. Three rules fix that, all documented at their code:
   printed parts at all, because its files were deleted years ago, takes them
   from its own completed archives.
 
+⚠️ **Whenever one of those rules puts a number above 1 on the line, the
+purchased (BOM) totals must come down by the same factor** — a BOM row counted
+the whole project, and the order now multiplies it by the quantity
+(``_per_unit_from_total``, rounding UP so a requirement is never
+under-provisioned). ``project_procurement.quantity_acquired`` stays absolute.
+Miss this and "780 brackets + 780 screws" asks for 608 400 screws and can never
+complete a unit.
+
 ``seed(session_factory)`` therefore does two jobs, in this order and only in
 this order. First the one-time ``print_archive_parts`` backfill for
 pre-existing archives: users upgrade through migrations only, so that
@@ -403,6 +411,28 @@ async def _insert_returning_id(conn, sql: str, params: dict) -> int:
     return (await conn.execute(text(sql + " RETURNING id"), params)).scalar_one()
 
 
+def _per_unit_from_total(total: int, units: int, what: str) -> int:
+    """A legacy PROJECT TOTAL restated per one unit — rounded UP, never down.
+
+    Purchased rows are the only figures in the legacy schema that counted the
+    whole project rather than one unit, so they are the only ones that have to
+    be divided when rules A, B or D give the line a quantity above 1.
+
+    Rounding is upwards on purpose: a remainder means the operator's total was
+    never a whole number of units (they bought a 1000-pack for 780 kits), and
+    under-provisioning a requirement is the one direction that can stop a build.
+    The result is therefore never 0 either — a purchased part with
+    ``qty_per_unit = 0`` would drop out of both the need and the progress.
+    """
+    if units <= 1:
+        return total
+    exact, remainder = divmod(total, units)
+    if not remainder:
+        return exact
+    logger.info("m158: %s — %d does not divide by %d, rounded up to %d per unit", what, total, units, exact + 1)
+    return exact + 1
+
+
 def _kit_and_quantity(
     row: dict,
     targets: dict[str, tuple[str, int | None]],
@@ -602,12 +632,23 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
             "INSERT INTO project_lines (project_id, product_id, quantity, sort_order) VALUES (:p, :pid, :q, 0)",
             {"p": project_id, "pid": product_id, "q": line_quantity},
         )
+    # A BOM row counted the WHOLE project ("780 screws"), which was the same
+    # number as a per-unit figure only while the line was the literal × 1.
+    # ``order_metrics`` needs `qty_per_unit × quantity`, so the total has to be
+    # divided by however many units the line now orders — or the same rule that
+    # made the product readable would turn 780 screws into 608 400 of them and
+    # cap the order at one completed unit forever (``_units_complete`` divides
+    # the acquired total by ``qty_per_unit``). A template has no line, so its
+    # totals cover ``kit_size`` units instead — which is 1 unless rule A fired,
+    # keeping the divisor paired with what the printed parts did.
+    bom_divisor = kit_size if is_template else line_quantity
     used_keys: set[str] = set()
     for bom_name, needed, acquired, price, url, remarks in bom_rows:
         key = PURCHASED_KEY_PREFIX + " ".join((bom_name or "").split()).lower()
         if key in used_keys:  # two BOM rows with the same name — keep the first
             continue
         used_keys.add(key)
+        per_unit = _per_unit_from_total(needed or 1, bom_divisor, f"BOM row {bom_name!r} of project {project_id}")
         part_id = await _insert_returning_id(
             conn,
             "INSERT INTO product_parts "
@@ -617,7 +658,7 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
                 "pid": product_id,
                 "n": bom_name,
                 "k": key,
-                "q": needed or 1,
+                "q": per_unit,
                 "price": price,
                 "url": url,
                 "rem": remarks,
@@ -812,6 +853,34 @@ async def seed(session_factory):
     await seed_history_only_products(session_factory)
 
 
+async def _rescale_purchased_parts(session, product_id: int, units: int) -> None:
+    """Purchased totals ÷ the units the line now orders (rule D's half of it).
+
+    ``project_procurement.quantity_acquired`` is left alone on purpose: it is an
+    absolute total on both sides of this change, and the need it is compared
+    against is ``qty_per_unit × quantity``.
+    """
+    rows = (
+        await session.execute(
+            text("SELECT id, name, qty_per_unit FROM product_parts WHERE product_id = :p AND kind = 'purchased'"),
+            {"p": product_id},
+        )
+    ).all()
+    for part_id, part_name, qty_per_unit in rows:
+        total = int(qty_per_unit or 0)
+        if total <= 0:
+            # "Don't measure this one" — ``order_metrics`` skips a purchased
+            # part at 0, so scaling it up to 1 would start counting a need the
+            # operator switched off.
+            continue
+        per_unit = _per_unit_from_total(total, units, f"purchased part {part_name!r} (rule D)")
+        if per_unit != total:
+            await session.execute(
+                text("UPDATE product_parts SET qty_per_unit = :q WHERE id = :id"),
+                {"q": per_unit, "id": part_id},
+            )
+
+
 async def seed_history_only_products(session_factory) -> None:
     """Rule D (spec §Migration 6b): a part-less product takes its parts from history.
 
@@ -832,6 +901,11 @@ async def seed_history_only_products(session_factory) -> None:
     ``seed`` runs there is no target left to read. Each line is measured
     against its OWN history, so its quantity stays self-consistent even when
     the first line was the one that named the parts.
+
+    Raising a line from × 1 to × Q also divides that product's PURCHASED parts
+    by Q (``_rescale_purchased_parts``), for the same reason ``upgrade`` does:
+    their totals were the whole project's and the order multiplies them now.
+    Once per product, and only when the quantity actually moved.
 
     Idempotent and self-contained — it depends on no legacy table or column, so
     it also repairs a database that a previous run of this migration already
@@ -865,6 +939,7 @@ async def seed_history_only_products(session_factory) -> None:
                 ).all()
             ]
             written = False
+            scaled = False
             for line_id in line_ids:
                 totals = (
                     await session.execute(
@@ -907,10 +982,19 @@ async def seed_history_only_products(session_factory) -> None:
                         )
                     written = True
                 quantity = max(1, sum(usable.values()) // sum(per_unit.values()))
-                await session.execute(
+                raised = await session.execute(
                     text("UPDATE project_lines SET quantity = :q WHERE id = :l AND quantity = 1"),
                     {"q": quantity, "l": line_id},
                 )
+                # Raising the quantity multiplies every purchased requirement by
+                # it, so the totals the BOM left behind have to come down by the
+                # same factor — exactly as ``upgrade`` does it. Once per product:
+                # the parts are the product's, not the line's, and a second line
+                # must not divide them again. A quantity that did NOT move (an
+                # operator's edit) scales nothing.
+                if not scaled and quantity > 1 and (raised.rowcount or 0) > 0:
+                    await _rescale_purchased_parts(session, product_id, quantity)
+                    scaled = True
                 logger.info(
                     "m158 seed: product %d gets %d part(s) from history (line %d x %d)",
                     product_id,

@@ -624,8 +624,13 @@ _THIRTY_META = {
 }
 
 
-async def _kit_fixture(db: AsyncSession, engine, target_sets: list[dict[str, int]]) -> list[int]:
-    """Shape (ii), one project per entry: plate yield body 6 / lid 12, own targets."""
+async def _kit_fixture(
+    db: AsyncSession, engine, target_sets: list[dict[str, int]], boms: list[list[tuple[str, int, int]]] | None = None
+) -> list[int]:
+    """Shape (ii), one project per entry: plate yield body 6 / lid 12, own targets.
+
+    ``boms[i]`` is that project's ``(name, quantity_needed, quantity_acquired)``
+    rows — the legacy PROJECT totals, which is the whole point of the pairing."""
     async with engine.begin() as conn:
         for ddl in _LEGACY_DDL:
             await conn.execute(text(ddl))
@@ -662,6 +667,14 @@ async def _kit_fixture(db: AsyncSession, engine, target_sets: list[dict[str, int
             await db.execute(
                 text("INSERT INTO project_parts (project_id, name, name_key, target_qty) VALUES (:p, :n, :k, :t)"),
                 {"p": project.id, "n": key, "k": key, "t": target},
+            )
+        for bom_name, needed, acquired in (boms or [[]] * len(target_sets))[i]:
+            await db.execute(
+                text(
+                    "INSERT INTO project_bom_items (project_id, name, quantity_needed, quantity_acquired, "
+                    "sort_order) VALUES (:p, :n, :needed, :acquired, 0)"
+                ),
+                {"p": project.id, "n": bom_name, "needed": needed, "acquired": acquired},
             )
         project_ids.append(project.id)
     await db.commit()
@@ -735,7 +748,9 @@ async def test_rule_a_leaves_an_operator_zero_and_a_derived_part_alone(db_sessio
     assert line.quantity == 1  # no project-level target to divide either
 
 
-async def _plan_target_fixture(db: AsyncSession, engine, cases: list[tuple[int, int, int]]) -> list[int]:
+async def _plan_target_fixture(
+    db: AsyncSession, engine, cases: list[tuple[int, int, int]], meta: dict | None = None
+) -> list[int]:
     """Shape (i), one project per ``(copies, target_parts_count, target_count)``."""
     async with engine.begin() as conn:
         for ddl in _LEGACY_DDL_0_5_5:
@@ -750,7 +765,7 @@ async def _plan_target_fixture(db: AsyncSession, engine, cases: list[tuple[int, 
         file_size=1,
         file_type="gcode",
         folder_id=folder.id,
-        file_metadata=_THIRTY_META,
+        file_metadata=meta or _THIRTY_META,
     )
     db.add(plate)
     await db.flush()
@@ -807,7 +822,9 @@ async def test_rule_b_target_count_over_plan_copies(db_session, test_engine):
     assert (await _line_of(db_session, ids[2])).quantity == 1  # 27 % 26 != 0
 
 
-async def _history_only_fixture(db: AsyncSession, engine, printer_factory, archives: list[tuple]) -> dict:
+async def _history_only_fixture(
+    db: AsyncSession, engine, printer_factory, archives: list[tuple], bom: list[tuple[str, int, int]] | None = None
+) -> dict:
     """A project whose plan file was deleted years ago — only archives remain."""
     async with engine.begin() as conn:
         for ddl in _LEGACY_DDL_0_5_5:
@@ -828,6 +845,14 @@ async def _history_only_fixture(db: AsyncSession, engine, printer_factory, archi
         ),
         {"p": order.id},
     )
+    for bom_name, needed, acquired in bom or []:
+        await db.execute(
+            text(
+                "INSERT INTO project_bom_items (project_id, name, quantity_needed, quantity_acquired, sort_order) "
+                "VALUES (:p, :n, :needed, :acquired, 0)"
+            ),
+            {"p": order.id, "n": bom_name, "needed": needed, "acquired": acquired},
+        )
     for status, parts in archives:
         archive = PrintArchive(
             printer_id=printer.id,
@@ -916,7 +941,9 @@ async def test_rule_d_splits_several_keys_by_gcd(db_session, test_engine, printe
 @pytest.mark.asyncio
 async def test_rule_d_never_overwrites_an_edited_quantity(db_session, test_engine, printer_factory):
     """The parts are missing information; the quantity may already be a decision."""
-    ids = await _history_only_fixture(db_session, test_engine, printer_factory, [("completed", [("hfb.stl", 6, 0)])])
+    ids = await _history_only_fixture(
+        db_session, test_engine, printer_factory, [("completed", [("hfb.stl", 6, 0)])], bom=[("Glue", 6, 6)]
+    )
     await _run_upgrade(test_engine)
     async with test_engine.begin() as conn:
         await conn.execute(text("UPDATE project_lines SET quantity = 5 WHERE project_id = :p"), {"p": ids["order"]})
@@ -924,5 +951,102 @@ async def test_rule_d_never_overwrites_an_edited_quantity(db_session, test_engin
     db_session.expire_all()
 
     line = await _line_of(db_session, ids["order"])
-    assert (await _parts_of(db_session, line.product_id))["hfb.stl"].qty_per_unit == 1
+    parts = await _parts_of(db_session, line.product_id)
+    assert parts["hfb.stl"].qty_per_unit == 1
     assert line.quantity == 5
+    # The quantity did not move, so nothing may be divided by it either: the
+    # purchased total is only ever rescaled together with the raise that would
+    # otherwise have multiplied it.
+    assert parts["purchased:glue"].qty_per_unit == 6
+
+
+@pytest.mark.asyncio
+async def test_purchased_totals_divide_by_the_kit_count(db_session, test_engine):
+    """A BOM row counted the whole PROJECT, and the line now multiplies it.
+
+    Leaving the total in ``qty_per_unit`` was only ever right while the line
+    was the literal × 1: with rule A's × 780 the order would ask for 608 400
+    screws against the 780 recorded as acquired, and ``_units_complete``
+    (acquired // qty_per_unit) would cap a fully printed order at one unit
+    forever. What was bought stays an absolute total — that side is compared
+    against ``qty_per_unit × quantity`` and is correct as it is."""
+    (project_id,) = await _kit_fixture(
+        db_session,
+        test_engine,
+        [{"body.stl": 780, "lid.stl": 780}],
+        boms=[[("M3 screw", 780, 780), ("Bearing pack", 1000, 400)]],
+    )
+    await _run_upgrade(test_engine)
+    db_session.expire_all()
+
+    line = await _line_of(db_session, project_id)
+    parts = await _parts_of(db_session, line.product_id)
+    assert line.quantity == 780
+    assert parts["purchased:m3 screw"].qty_per_unit == 1  # 780 / 780
+    # 1000 for 780 kits is not a whole number of units: round UP, because
+    # under-provisioning a requirement is the direction that stops a build.
+    assert parts["purchased:bearing pack"].qty_per_unit == 2
+    acquired = {
+        row.product_part_id: row.quantity_acquired
+        for row in (
+            await db_session.execute(select(ProjectProcurement).where(ProjectProcurement.project_id == project_id))
+        ).scalars()
+    }
+    assert acquired[parts["purchased:m3 screw"].id] == 780  # absolute, untouched
+    assert acquired[parts["purchased:bearing pack"].id] == 400
+
+
+@pytest.mark.asyncio
+async def test_rule_d_divides_purchased_totals_when_it_raises_the_quantity(db_session, test_engine, printer_factory):
+    """Rule D raises the line the same way, so it owes the same division."""
+    ids = await _history_only_fixture(
+        db_session,
+        test_engine,
+        printer_factory,
+        [
+            ("completed", [("hfb.stl", 2, 0)]),
+            ("completed", [("hfb.stl", 2, 0)]),
+            ("completed", [("hfb.stl", 3, 1)]),
+        ],
+        bom=[("Glue", 6, 6)],
+    )
+    await _run_upgrade(test_engine)
+    db_session.expire_all()
+    line = await _line_of(db_session, ids["order"])
+    # Converted at × 1, so the total went in untouched — rule D is what moves it.
+    assert line.quantity == 1 and (await _parts_of(db_session, line.product_id))["purchased:glue"].qty_per_unit == 6
+
+    await _run_seed(test_engine)
+    db_session.expire_all()
+    line = await _line_of(db_session, ids["order"])
+    parts = await _parts_of(db_session, line.product_id)
+    assert line.quantity == 6
+    assert parts["purchased:glue"].qty_per_unit == 1
+    proc = (
+        await db_session.execute(select(ProjectProcurement).where(ProjectProcurement.project_id == ids["order"]))
+    ).scalar_one()
+    assert proc.quantity_acquired == 6  # absolute, untouched
+
+    await _run_seed(test_engine)  # idempotent — no second division
+    db_session.expire_all()
+    line = await _line_of(db_session, ids["order"])
+    assert line.quantity == 6
+    assert (await _parts_of(db_session, line.product_id))["purchased:glue"].qty_per_unit == 1
+
+
+@pytest.mark.asyncio
+async def test_rule_b_counts_the_raw_plan_copies_not_the_expanded_plates(db_session, test_engine):
+    """``target_count`` counts plan RUNS, so its divisor is the plan's own Σ copies.
+
+    On shape (i) a plan row is expanded into one row per plate of the file,
+    each inheriting ``copies`` — summing THAT would multiply the divisor by the
+    plate count. Here one row of ``copies = 2`` on a two-plate file: the raw
+    sum is 2, the expanded sum would be 4."""
+    ids = await _plan_target_fixture(db_session, test_engine, [(2, 0, 2), (2, 0, 4)], meta=_MULTI_META)
+    await _run_upgrade(test_engine)
+    db_session.expire_all()
+
+    assert (await _line_of(db_session, ids[0])).quantity == 1  # 2 / 2
+    # The discriminating one: raw 4 / 2 = 2, where the expanded sum would give
+    # 4 / 4 = 1 and quietly halve every requirement on the order.
+    assert (await _line_of(db_session, ids[1])).quantity == 2
