@@ -46,7 +46,7 @@ export function LinkedFiles({ product, canEdit }: LinkedFilesProps) {
     queryKey: ['product-files', product.id],
     // The product id is the LAST positional argument of `getLibraryFiles`; the
     // ones before it are the folder/scope/tag filters this view does not use.
-    queryFn: () => api.getLibraryFiles(undefined, true, undefined, undefined, [], false, product.id),
+    queryFn: () => api.getLibraryFiles(undefined, true, undefined, [], false, product.id),
     enabled: Number.isFinite(product.id),
   });
 

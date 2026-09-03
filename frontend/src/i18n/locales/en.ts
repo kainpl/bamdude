@@ -963,7 +963,7 @@ export default {
       failedDeleteArchive: 'Failed to delete archive',
       addedToFavorites: 'Added to favorites',
       removedFromFavorites: 'Removed from favorites',
-      projectUpdated: 'Order updated',
+      orderUpdated: 'Order updated',
       linkCopied: 'Link copied to clipboard',
       failedCopyLink: 'Failed to copy link',
       photoDeleted: 'Photo deleted',
@@ -1132,7 +1132,7 @@ export default {
       selected: '{{count}} selected',
       selectAll: 'Select All',
       tags: 'Tags',
-      project: 'Order',
+      order: 'Order',
       favorite: 'Favorite',
       toggledFavorites: 'Toggled favorites for {{count}} archive(s)',
       archivesDeleted: '{{count}} archive(s) deleted',
@@ -4748,6 +4748,7 @@ export default {
     },
     page: {
       notFound: 'Order not found',
+      loadFailed: 'Could not load this order:',
     },
     header: {
       breadcrumb: 'Orders',
@@ -4922,6 +4923,7 @@ export default {
       totalCost: 'Total cost',
       totalPrice: 'Total price',
       notFound: 'Customer not found',
+      loadFailed: 'Could not load this customer:',
     },
     confirm: {
       deleteTitle: 'Delete customer?',
@@ -5066,288 +5068,6 @@ export default {
       products: 'Products',
       customers: 'Customers',
     },
-    parentProject: 'Parent project',
-    parentNone: 'None — a top-level project',
-    parentHint: 'Filing this under another project rolls its figures up into that one.',
-    title: 'Projects',
-    subtitle: 'Organize and track your 3D printing projects',
-    newProject: 'New Project',
-    editProject: 'Edit Project',
-    deleteProject: 'Delete Project',
-    noProjects: 'No projects yet',
-    noProjectsFiltered: 'No {{status}} projects',
-    noProjectsFilteredHelp: "You don't have any {{status}} projects. Projects will appear here when their status changes.",
-    createFirst: 'Create your first project to start organizing related prints, tracking progress, and managing your builds.',
-    createFirstButton: 'Create Your First Project',
-    create: 'Create',
-    plates: 'plates',
-    parts: 'parts',
-    deleteConfirm: 'Are you sure you want to delete this project? Archives and queue items will be unlinked but not deleted.',
-    // Modal fields
-    namePlaceholder: 'e.g., Voron 2.4 Build',
-    descriptionPlaceholder: 'Optional description...',
-    urlLabel: 'URL',
-    urlPlaceholder: 'https://makerworld.com/...',
-    urlInvalid: 'URL must start with http:// or https://',
-    openExternalUrl: 'Open project URL',
-    coverImageLabel: 'Cover photo',
-    coverImageAlt: 'Project cover photo',
-    coverImageUpload: 'Upload',
-    coverImageReplace: 'Replace',
-    coverImageRemove: 'Remove',
-    color: 'Color',
-    targetPlates: 'Target Plates',
-    targetPlatesPlaceholder: 'e.g., 25',
-    targetPlatesHelp: 'Number of print jobs',
-    targetParts: 'Target Parts',
-    targetPartsPlaceholder: 'e.g., 150',
-    targetPartsHelp: 'Total objects needed',
-    fromPlan: 'From plan: {{count}}',
-    usePlanValueTitle: 'Apply the count derived from the print plan',
-    tagsLabel: 'Tags (comma-separated)',
-    tagsPlaceholder: 'e.g., voron, functional, gift',
-    dueDate: 'Due Date',
-    priority: 'Priority',
-    priorityLow: 'Low',
-    priorityNormal: 'Normal',
-    priorityHigh: 'High',
-    priorityUrgent: 'Urgent',
-    // Status
-    statusActive: 'Active',
-    statusCompleted: 'Completed',
-    statusArchived: 'Archived',
-    statusTemplates: 'Templates',
-    templates: {
-      empty: 'No templates yet',
-      emptyHint: 'Save a project as a template from its detail page and reuse it here to spin up new projects with the same BOM, tags, and settings.',
-      createFromTemplate: 'Create project',
-      deleteTemplate: 'Delete template'
-    },
-    done: 'Done',
-    completed: 'completed',
-    failed: 'failed',
-    inQueue: 'in queue',
-    noPrintsYet: 'No prints yet',
-    // Footer stats
-    printJobs: 'Print jobs (plates)',
-    partsPrinted: 'Parts printed',
-    defectiveParts: 'Defective parts (already deducted from parts printed)',
-    failedParts: 'Failed parts',
-    // Actions
-    import: 'Import',
-    export: 'Export',
-    importProject: 'Import project',
-    exportAll: 'Export all projects',
-    loading: 'Loading projects...',
-    // Permissions
-    noEditPermission: 'You do not have permission to edit projects',
-    noDeletePermission: 'You do not have permission to delete projects',
-    noCreatePermission: 'You do not have permission to create projects',
-    noImportPermission: 'You do not have permission to import projects',
-    noExportPermission: 'You do not have permission to export projects',
-    // Archive/Unarchive
-    archive: 'Archive',
-    unarchive: 'Unarchive',
-    // Duplicate
-    duplicate: {
-      action: 'Duplicate',
-      title: 'Duplicate project',
-      nameLabel: 'Name of the copy',
-      copies: 'Copies the settings, part list, linked files and print plan.',
-      excludes: 'Print history and queued jobs stay with the original. Purchased quantities start at zero.',
-      includeChildren_one: 'Also duplicate the sub-project',
-      includeChildren_other: 'Also duplicate the {{count}} sub-projects',
-      submit: 'Duplicate',
-      failed: 'Could not duplicate the project',
-    },
-    // Toast
-    toast: {
-      created: 'Project created',
-      updated: 'Project updated',
-      deleted: 'Project deleted',
-      duplicated: 'Project duplicated',
-      archived: 'Project archived',
-      restored: 'Project restored',
-      imported: 'Project imported',
-      multipleImported: '{{count}} projects imported',
-      importFailed: 'Import failed',
-      exported: 'Projects exported (metadata only)',
-      createdFromTemplate: 'Project created from template',
-      templateDeleted: 'Template deleted'
-    },
-    // Parts ledger table (project detail page) — namespaced as
-    // partsLedger, not parts, because `projects.parts` above is already
-    // the plain word "parts" used throughout ProjectsPage.tsx.
-    partsLedger: {
-      title: 'Parts',
-      name: 'Part',
-      target: 'Target',
-      printed: 'Printed',
-      inProgress: 'In progress',
-      defective: 'Defective',
-      usable: 'Usable',
-      remaining: 'Remaining',
-      empty: 'No parts discovered yet — link sliced files or print something.',
-      setTarget: 'Set target'
-    }
-  },
-
-  // Project detail page
-  projectDetail: {
-    rollup: {
-      title: 'This project and everything under it',
-      progress: 'Tree progress',
-      acrossTree_one: 'across {{count}} sub-project',
-      acrossTree_other: 'across {{count}} sub-projects',
-    },
-    notFound: 'Project not found',
-    backToProjects: 'Back to Projects',
-    export: 'Export',
-    exportProject: 'Export project',
-    noExportPermission: 'You do not have permission to export projects',
-    noEditPermission: 'You do not have permission to edit projects',
-    partOf: 'Part of:',
-    priorityLabel: 'Priority:',
-    noPrints: 'No prints in this project yet',
-    status: {
-      active: 'Active',
-      completed: 'Completed',
-      archived: 'Archived'
-    },
-    priority: {
-      low: 'Low',
-      normal: 'Normal',
-      high: 'High',
-      urgent: 'Urgent'
-    },
-    dueDate: {
-      overdue: 'Overdue',
-      today: 'Due today',
-      daysLeft: '{{count}} days left'
-    },
-    progress: {
-      platesProgress: 'Plates Progress',
-      partsProgress: 'Parts Progress',
-      printJobs: 'print jobs',
-      parts: 'parts',
-      percentComplete: '{{percent}}% complete',
-      remaining: '{{count}} remaining'
-    },
-    stats: {
-      printJobs: 'Print Jobs',
-      total: 'total',
-      inProgress: '{{count}} in progress',
-      failed: '{{count}} failed',
-      partsPrinted: '{{count}} parts printed',
-      defective: '{{count}} defective',
-      printTime: 'Print Time',
-      filamentUsed: 'Filament Used'
-    },
-    cost: {
-      title: 'Cost Tracking',
-      filamentCost: 'Filament Cost',
-      energy: 'Energy',
-      totalCost: 'Total Cost',
-      total: 'Total',
-      includesBom: 'incl. BOM',
-      budget: 'Budget',
-      remaining: 'Remaining'
-    },
-    subProjects: {
-      title: 'Sub-projects ({{count}})'
-    },
-    notes: {
-      title: 'Notes',
-      noEditPermission: 'You do not have permission to edit notes',
-      placeholder: 'Add notes about this project...',
-      empty: 'No notes yet. Click Edit to add notes.'
-    },
-    files: {
-      title: 'Files',
-      linkFolders: 'Link folders from the File Manager',
-      forQuickAccess: 'to this project for quick access.',
-      fileCount: '{{count}} file(s)',
-      empty: 'No folders linked. Go to File Manager and link a folder to this project.',
-      print: 'Print Now',
-      addToQueue: 'Add to Queue',
-      planEmpty: 'No printable .3mf files yet. Link a folder or move files into this project.',
-      copies: 'Copies',
-      printed: 'Already printed (completed prints in this project)',
-      remaining: 'Remaining (copies − printed)',
-      remainingValue: '{{value}} left',
-      allDone: 'Done',
-      moveUp: 'Move up',
-      moveDown: 'Move down',
-      unlinkFile: 'Unlink file from project',
-      totalPlates: 'Plates',
-      totalObjects: 'Objects',
-      totalFilament: 'Filament',
-      totalTime: 'Time',
-      totalCost: 'Cost',
-      costHint: 'At {{currency}}{{rate}}/kg',
-      applyTotals: 'Apply to project',
-      applyTotalsTitle: 'Apply to project: {{plates}} plates / {{parts}} parts / budget {{budget}}',
-    },
-    plan: {
-      plate: 'Plate {{n}}',
-      allPlates: 'All plates',
-    },
-    bom: {
-      title: 'Bill of Materials',
-      acquired: '{{completed}}/{{total}} acquired',
-      showAll: 'Show all',
-      hideDone: 'Hide done',
-      addPart: 'Add Part',
-      noAddPermission: 'You do not have permission to add parts',
-      partNamePlaceholder: 'Part name (e.g., M3x8 screws)',
-      partName: 'Part name',
-      qty: 'Qty',
-      price: 'Price ({{currency}})',
-      sourcingUrlPlaceholder: 'Sourcing URL (optional)',
-      remarksPlaceholder: 'Remarks (optional)',
-      deletePart: 'Delete Part',
-      deleteConfirm: 'Are you sure you want to delete "{{name}}"?',
-      noUpdatePermission: 'You do not have permission to update parts',
-      noEditPermission: 'You do not have permission to edit parts',
-      noDeletePermission: 'You do not have permission to delete parts',
-      totalCost: 'Total cost:',
-      empty: 'No parts in the bill of materials. Add hardware, electronics, or other components to track what needs to be sourced.'
-    },
-    timeline: {
-      title: 'Activity Timeline',
-      empty: 'No activity yet.',
-      showMore: 'Show {{count}} more',
-      showLess: 'Show less',
-      events: {
-        print_started: 'Print started',
-        print_completed: 'Print completed',
-        print_failed: 'Print failed',
-        print_cancelled: 'Print cancelled',
-        queued: 'Added to queue',
-        auto_queued: 'Added to auto-queue',
-        project_created: 'Project created'
-      }
-    },
-    template: {
-      saveAsTemplate: 'Save as Template',
-      noCreatePermission: 'You do not have permission to create templates'
-    },
-    queue: {
-      title: 'Queue',
-      viewAll: 'View all',
-      queued: '{{count}} queued'
-    },
-    prints: {
-      title: 'Prints ({{count}})'
-    },
-    toast: {
-      projectUpdated: 'Project updated',
-      totalsApplied: 'Project totals updated from the print plan',
-      partAdded: 'Part added',
-      partRemoved: 'Part removed',
-      projectExported: 'Project exported',
-      templateCreated: 'Template created'
-    }
   },
 
   // System info

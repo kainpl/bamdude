@@ -60,7 +60,7 @@ export function AddToOrderMenu({ archive, onDone }: AddToOrderMenuProps) {
       queryClient.invalidateQueries({ queryKey: ['project'] });
       queryClient.invalidateQueries({ queryKey: ['project-archives'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
-      showToast(t('archives.toast.projectUpdated'));
+      showToast(t('archives.toast.orderUpdated'));
       onDone();
     },
     onError: (e: Error) => showToast(e.message, 'error'),
@@ -76,7 +76,7 @@ export function AddToOrderMenu({ archive, onDone }: AddToOrderMenuProps) {
       queryClient.invalidateQueries({ queryKey: ['project'] });
       queryClient.invalidateQueries({ queryKey: ['project-archives'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
-      showToast(t('archives.toast.projectUpdated'));
+      showToast(t('archives.toast.orderUpdated'));
       onDone();
     },
     onError: (e: Error) => showToast(e.message, 'error'),

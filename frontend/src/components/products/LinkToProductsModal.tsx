@@ -22,7 +22,13 @@ export interface LinkToProductsItem {
    *  3MF. A row shown as "Flask lid v3" must not turn into
    *  `20260901_154302_lid.gcode.3mf` in the dialog that asks about it. */
   print_name?: string | null;
+  /** Folders and the single-file response carry full refs… */
   products?: ProductRef[];
+  /** …the FILE LIST carries ids only. ⚠️ Both are read when seeding the
+   *  selection: a file opened from the list has `product_ids` and no
+   *  `products`, and reading only the latter would open the dialog with
+   *  nothing ticked — then save that emptiness over the real links. */
+  product_ids?: number[];
 }
 
 interface LinkToProductsModalProps {
@@ -48,7 +54,7 @@ export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModal
   const queryClient = useQueryClient();
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(
-    () => new Set((item.products ?? []).map((p) => p.id)),
+    () => new Set(item.products?.map((p) => p.id) ?? item.product_ids ?? []),
   );
 
   const { data: allProducts } = useQuery({

@@ -41,6 +41,7 @@ const file = (id: number, name: string) => ({
   file_size: 1024,
   file_type: 'gcode',
   file_tags: ['gcode', '3mf', 'sliced'],
+  product_ids: [],
   folder_id: null,
   thumbnail_path: null,
   print_name: name,

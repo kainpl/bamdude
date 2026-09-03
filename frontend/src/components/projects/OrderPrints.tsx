@@ -179,9 +179,15 @@ function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
     <div className="relative rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary p-2 flex gap-2">
       {/* ⚠️ `fileName`, not `search` — ArchivesPage reads `printer`, `file` and
           `fileName` off the URL and nothing else, so the `?search=` this was
-          copied with never reached the page at all. */}
+          copied with never reached the page at all. And only `file` FILTERS:
+          `fileName` merely labels the chip, so without a library file id the
+          link opens an unfiltered archive list wearing this print's name. */}
       <Link
-        to={`/archives?fileName=${encodeURIComponent(archive.filename)}`}
+        to={
+          archive.library_file_id != null
+            ? `/archives?file=${archive.library_file_id}&fileName=${encodeURIComponent(archive.filename)}`
+            : `/archives?fileName=${encodeURIComponent(archive.filename)}`
+        }
         className="w-14 h-14 rounded bg-bambu-dark flex items-center justify-center overflow-hidden flex-shrink-0"
       >
         {archive.thumbnail_path ? (

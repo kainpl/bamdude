@@ -33,6 +33,7 @@ const mockFiles = [
     file_size: 1048576,
     file_type: 'gcode',
     file_tags: ['gcode', '3mf'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: null,
     print_name: 'Benchy',
@@ -49,6 +50,7 @@ const mockFiles = [
     file_size: 524288,
     file_type: 'stl',
     file_tags: ['stl'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: null,
     print_name: null,
@@ -68,7 +70,7 @@ describe('per-file actions', () => {
     assigned = [];
     server.use(
       http.get('/api/v1/library/folders', () =>
-        HttpResponse.json([{ id: 5, name: 'Parts', parent_id: null, file_count: 0, projects: [], children: [] }]),
+        HttpResponse.json([{ id: 5, name: 'Parts', parent_id: null, file_count: 0, products: [], children: [] }]),
       ),
       // Server-driven (task 2, 2026-08-29): FileManagerPage always sends
       // `page`, so the endpoint answers with the {items, meta} envelope.

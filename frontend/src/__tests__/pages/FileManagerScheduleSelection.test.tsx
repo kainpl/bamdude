@@ -23,6 +23,7 @@ const base = {
   file_path: '/library/x',
   file_size: 1024,
   folder_id: null,
+  product_ids: [],
   thumbnail_path: null,
   print_time_seconds: null,
   duplicate_count: 0,

@@ -135,6 +135,7 @@ def archive_to_response(
         "project_id": archive.project_id,
         "project_line_id": archive.project_line_id,
         "project_name": archive.project.name if archive.project else None,
+        "library_file_id": archive.library_file_id,
         "filename": archive.filename,
         "file_path": archive.file_path,
         "file_size": archive.file_size,

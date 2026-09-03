@@ -62,4 +62,25 @@ describe('OrderPrints', () => {
 
     expect((await screen.findByTestId('prints-unlisted')).textContent).toContain('stray.3mf');
   });
+
+  it('links a print to its library file when there is one, and to the name alone otherwise', async () => {
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
+      { id: 1, filename: 'linked.3mf', status: 'completed', project_line_id: 10, library_file_id: 42 },
+      { id: 2, filename: 'external print.3mf', status: 'completed', project_line_id: 10, library_file_id: null },
+    ] as never);
+
+    const order = {
+      id: 1,
+      other_archive_ids: [],
+      lines: [{ id: 10, product_name: 'Flask', quantity: 2, archive_ids: [1, 2] }],
+    } as unknown as Order;
+
+    render(<OrderPrints order={order} canEdit />);
+
+    const group = await screen.findByTestId('prints-line-10');
+    const hrefs = Array.from(group.querySelectorAll('a')).map((a) => a.getAttribute('href'));
+    // ``file`` is the only param that FILTERS; ``fileName`` just labels the chip.
+    expect(hrefs).toContain('/archives?file=42&fileName=linked.3mf');
+    expect(hrefs).toContain('/archives?fileName=external%20print.3mf');
+  });
 });

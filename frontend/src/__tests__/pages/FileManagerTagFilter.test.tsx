@@ -37,6 +37,7 @@ const mockFiles = [
     file_size: 1048576,
     file_type: 'gcode',
     file_tags: ['gcode', '3mf', 'sliced'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: null,
     print_name: 'Benchy',

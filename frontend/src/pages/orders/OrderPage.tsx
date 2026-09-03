@@ -46,7 +46,12 @@ export function OrderPage() {
   const [duplicating, setDuplicating] = useState(false);
   const [printing, setPrinting] = useState<ProjectLine | null>(null);
 
-  const { data: order, isLoading } = useQuery({
+  const {
+    data: order,
+    isLoading,
+    isError,
+    error,
+  } = useQuery({
     queryKey: ['project', id],
     queryFn: () => api.getOrder(id),
     enabled: Number.isFinite(id),
@@ -81,8 +86,21 @@ export function OrderPage() {
       </div>
     );
   }
+  // ⚠️ Data presence first, then `isError` — see the long note on ProductPage.
+  // TanStack v5 flips `status` to "error" on any failed fetch, a background
+  // REFETCH of a query still holding good data included, and this page
+  // invalidates `['project', id]` on every mutation its sections make. An
+  // `isError`-first check would throw the whole rendered order away because a
+  // refetch blipped. With no data the two cases still read apart: a fetch that
+  // FAILED is not an order that was deleted.
   if (!order) {
-    return <div className="p-4 md:p-6 text-bambu-gray text-sm">{t('orders.page.notFound')}</div>;
+    return isError ? (
+      <div className="p-4 md:p-6 text-sm text-red-500">
+        {t('orders.page.loadFailed')} {(error as Error)?.message}
+      </div>
+    ) : (
+      <div className="p-4 md:p-6 text-bambu-gray text-sm">{t('orders.page.notFound')}</div>
+    );
   }
 
   const canEdit = hasPermission('projects:update');

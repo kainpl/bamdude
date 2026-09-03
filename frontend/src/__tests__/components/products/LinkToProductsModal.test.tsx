@@ -58,6 +58,27 @@ describe('LinkToProductsModal', () => {
     );
   });
 
+  it('seeds the selection from product_ids when the row came from the file LIST', async () => {
+    // The list response carries ids, not refs. Reading only `products` would
+    // open the dialog with nothing ticked and the next save would write that
+    // emptiness over the file's real links.
+    vi.spyOn(api, 'getProducts').mockResolvedValue([
+      { id: 1, name: 'Flask', is_active: true },
+      { id: 2, name: 'Lid', is_active: true },
+    ] as never);
+    const update = vi.spyOn(api, 'updateLibraryFile').mockResolvedValue({} as never);
+
+    render(
+      <LinkToProductsModal kind="file" item={{ id: 3, filename: 'a.3mf', product_ids: [2] }} onClose={() => {}} />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /save/i }));
+
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(3, expect.objectContaining({ product_ids: [2] })),
+    );
+  });
+
   it('names the file the way the row does — print name over filename', async () => {
     vi.spyOn(api, 'getProducts').mockResolvedValue([] as never);
 

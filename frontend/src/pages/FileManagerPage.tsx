@@ -437,7 +437,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
   const hasChildren = folder.children.length > 0;
   // m158: folders link to PRODUCTS. A product that has left the catalog keeps
   // its chip — the link is a fact about the folder, not an offer to make one.
-  const linkedTo = folder.products ?? [];
+  const linkedTo = folder.products;
   const isLinked = linkedTo.length > 0;
   const isExternal = folder.is_external;
   // The row has no room for a date column — the order icon → name → lock →
@@ -994,16 +994,16 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
         {/* Product link overlay - bottom-right, same height as notes */}
         {onLink && (
           <div className="absolute bottom-2 right-2" onClick={(e) => e.stopPropagation()}>
-            {(file.products ?? []).length > 0 ? (
+            {file.product_ids.length > 0 ? (
               <button
                 onClick={() => onLink(file)}
                 className="rounded-md bg-blue-500/85 backdrop-blur text-white hover:bg-blue-500 transition-colors flex items-center gap-1 px-1.5 py-1"
-                title={t('fileManager.linkedToNProducts', { count: (file.products ?? []).length })}
+                title={t('fileManager.linkedToNProducts', { count: file.product_ids.length })}
               >
                 <Link2 className="w-5 h-5" />
                 <Briefcase className="w-4 h-4" />
-                {(file.products ?? []).length > 1 && (
-                  <span className="text-[10px] font-semibold">×{(file.products ?? []).length}</span>
+                {file.product_ids.length > 1 && (
+                  <span className="text-[10px] font-semibold">×{file.product_ids.length}</span>
                 )}
               </button>
             ) : canModify('library', 'update', file.created_by_id) ? (
@@ -3309,17 +3309,17 @@ export function FileManagerPage() {
                         </button>
                       )}
                       {/* Product link / unlink — sits with the other inline actions */}
-                      {(file.products ?? []).length > 0 ? (
+                      {file.product_ids.length > 0 ? (
                         <button
                           onClick={() => setLinkFile(file)}
                           className="p-1.5 rounded bg-blue-500/20 hover:bg-blue-500/30 flex items-center gap-1 transition-colors"
-                          title={t('fileManager.linkedToNProducts', { count: (file.products ?? []).length })}
+                          title={t('fileManager.linkedToNProducts', { count: file.product_ids.length })}
                         >
                           <Link2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                           <Briefcase className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                          {(file.products ?? []).length > 1 && (
+                          {file.product_ids.length > 1 && (
                             <span className="text-[10px] font-semibold text-blue-700 dark:text-blue-400">
-                              ×{(file.products ?? []).length}
+                              ×{file.product_ids.length}
                             </span>
                           )}
                         </button>

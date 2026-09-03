@@ -13,7 +13,7 @@ const page = {
 };
 
 const folders = [
-  { id: 3, name: 'Flasks', parent_id: null, projects: [], is_external: false, external_path: null, external_readonly: false, file_count: 1, children: [] },
+  { id: 3, name: 'Flasks', parent_id: null, products: [], is_external: false, external_path: null, external_readonly: false, file_count: 1, children: [] },
 ];
 
 describe('FromFileDialog', () => {

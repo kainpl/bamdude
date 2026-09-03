@@ -3324,7 +3324,7 @@ export function ArchivesPage() {
             title={!hasAnyPermission('archives:update_own', 'archives:update_all') ? t('archives.permission.noUpdateArchives') : undefined}
           >
             <FolderKanban className="w-4 h-4" />
-            {t('archives.page.project')}
+            {t('archives.page.order')}
           </Button>
           <Button
             variant="secondary"

@@ -143,37 +143,29 @@ describe('API Client Auth Header', () => {
 });
 
 describe('FormData requests include auth header', () => {
-  it('importProjectFile includes Authorization header', async () => {
-    // Mock fetch directly for FormData requests (MSW can be flaky with multipart in some environments)
+  it('uploadProjectAttachment includes Authorization header', async () => {
+    // Mock fetch directly for FormData requests (MSW can be flaky with
+    // multipart in some environments).
     const originalFetch = global.fetch;
     let capturedHeaders: Headers | null = null;
 
     global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-      if (url.includes('/projects/import/file')) {
+      if (url.includes('/projects/1/attachments')) {
         capturedHeaders = new Headers(init?.headers);
-        return Promise.resolve(new Response(JSON.stringify({
-          id: 1,
-          name: 'Test Project',
-          description: '',
-          total_cost: 0,
-          total_print_time_seconds: 0,
-          total_prints: 0,
-          total_quantity: 0,
-          status: 'active',
-          due_date: null,
-          created_at: '2026-01-01T00:00:00Z',
-          updated_at: '2026-01-01T00:00:00Z',
-          archives: [],
-          bom_items: [],
-        }), { status: 200 }));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ status: 'ok', filename: 'a.pdf', original_name: 'a.pdf', attachments: [] }),
+            { status: 200 },
+          ),
+        );
       }
       return originalFetch(url, init);
     });
 
     try {
       setAuthToken('test-token');
-      const file = new File(['test content'], 'test.zip', { type: 'application/zip' });
-      await api.importProjectFile(file);
+      const file = new File(['test content'], 'a.pdf', { type: 'application/pdf' });
+      await api.uploadProjectAttachment(1, file);
 
       expect(capturedHeaders).not.toBeNull();
       expect(capturedHeaders!.get('Authorization')).toBe('Bearer test-token');
@@ -182,28 +174,45 @@ describe('FormData requests include auth header', () => {
     }
   });
 
-  it('exportProjectZip includes Authorization header', async () => {
+  it('a blob download includes the Authorization header', async () => {
+    // The blob paths build their own `fetch` rather than going through
+    // `request()`, so the header is attached by hand in each one — which is
+    // exactly the thing that can be forgotten. jsdom has no object-URL
+    // implementation, so the download's anchor plumbing is stubbed.
     let capturedHeaders: Headers | null = null;
+    const createObjectURL = vi.fn(() => 'blob:stub');
+    const revokeObjectURL = vi.fn();
+    const originalCreate = window.URL.createObjectURL;
+    const originalRevoke = window.URL.revokeObjectURL;
+    window.URL.createObjectURL = createObjectURL;
+    window.URL.revokeObjectURL = revokeObjectURL;
+    // jsdom answers a real anchor click with "Not implemented: navigation".
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
 
     server.use(
-      http.get('/api/v1/projects/:projectId/export', ({ request }) => {
+      http.get('/api/v1/library/files/:fileId/download', ({ request }) => {
         capturedHeaders = request.headers;
-        const zipContent = new Uint8Array([0x50, 0x4b, 0x03, 0x04]); // ZIP magic bytes
-        return new HttpResponse(zipContent, {
+        return new HttpResponse(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), {
           status: 200,
           headers: {
             'Content-Type': 'application/zip',
-            'Content-Disposition': 'attachment; filename="project.zip"',
+            'Content-Disposition': 'attachment; filename="file.3mf"',
           },
         });
-      })
+      }),
     );
 
-    setAuthToken('test-token');
-    await api.exportProjectZip(1);
+    try {
+      setAuthToken('test-token');
+      await api.downloadLibraryFile(1);
 
-    expect(capturedHeaders).not.toBeNull();
-    expect(capturedHeaders!.get('Authorization')).toBe('Bearer test-token');
+      expect(capturedHeaders).not.toBeNull();
+      expect(capturedHeaders!.get('Authorization')).toBe('Bearer test-token');
+    } finally {
+      window.URL.createObjectURL = originalCreate;
+      window.URL.revokeObjectURL = originalRevoke;
+      click.mockRestore();
+    }
   });
 });
 

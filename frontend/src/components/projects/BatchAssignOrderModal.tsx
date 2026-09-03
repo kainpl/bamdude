@@ -49,7 +49,7 @@ export function BatchAssignOrderModal({ archiveIds, onClose, onDone }: BatchAssi
       queryClient.invalidateQueries({ queryKey: ['project'] });
       queryClient.invalidateQueries({ queryKey: ['project-archives'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
-      showToast(t('archives.toast.projectUpdated'));
+      showToast(t('archives.toast.orderUpdated'));
       onDone?.();
       onClose();
     },

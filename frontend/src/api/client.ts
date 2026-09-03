@@ -930,23 +930,6 @@ export interface ArchivePart {
   defective: number;
 }
 
-export interface ProjectPartRow {
-  name: string;
-  name_key: string;
-  target_qty: number | null;
-  printed: number;
-  in_progress: number;
-  defective: number;
-  usable: number;
-  remaining: number | null;
-}
-
-export interface ProjectPartTargetUpdate {
-  name_key: string;
-  name?: string;
-  target_qty: number;
-}
-
 export interface Archive {
   id: number;
   printer_id: number | null;
@@ -955,6 +938,10 @@ export interface Archive {
    *  print is bound to the order but to no line — the order's "other prints". */
   project_line_id: number | null;
   project_name: string | null;
+  /** The library file this print was dispatched from (m014). NULL for an
+   *  external print or one whose source was never matched into the library —
+   *  a print card can only link to `/archives?file=<id>` when it is set. */
+  library_file_id: number | null;
   filename: string;
   file_path: string;
   file_size: number;
@@ -1212,134 +1199,12 @@ export interface SimilarArchive {
   match_score: number;
 }
 
-// Project types
-export interface ProjectStats {
-  total_archives: number;
-  total_items: number;  // Sum of quantities (total items printed)
-  completed_prints: number;  // Usable parts: completed quantities less defective_parts
-  /** Scrap among completed prints, already subtracted from completed_prints. */
-  defective_parts: number;
-  failed_prints: number;
-  queued_prints: number;
-  in_progress_prints: number;
-  total_print_time_hours: number;
-  total_filament_grams: number;
-  progress_percent: number | null;  // Plates progress (total_archives / target_count)
-  parts_progress_percent: number | null;  // Parts progress (completed_prints / target_parts_count)
-  estimated_cost: number;
-  total_energy_kwh: number;
-  total_energy_cost: number;
-  remaining_prints: number | null;  // Remaining plates
-  remaining_parts: number | null;  // Remaining parts
-  bom_total_items: number;
-  bom_completed_items: number;
-  bom_cost: number;
-}
-
-export interface ProjectChildPreview {
-  id: number;
-  name: string;
-  color: string | null;
-  status: string;
-  progress_percent: number | null;
-}
-
-export interface Project {
-  id: number;
-  name: string;
-  description: string | null;
-  color: string | null;
-  status: string;  // active, completed, archived
-  target_count: number | null;  // Target number of plates/print jobs
-  target_parts_count: number | null;  // Target number of parts/objects
-  notes: string | null;
-  attachments: ProjectAttachment[] | null;
-  tags: string | null;
-  due_date: string | null;
-  priority: string;  // low, normal, high, urgent
-  budget: number | null;
-  is_template: boolean;
-  template_source_id: number | null;
-  parent_id: number | null;
-  parent_name: string | null;
-  children: ProjectChildPreview[];
-  // B.2 (#1155) — external link rendered as a clickable icon next to the
-  // project name. Validated http(s) on the wire; null = no link.
-  url: string | null;
-  // B.2 (#1155) — filename of the cover photo inside the project's
-  // attachments dir; serves as the card's hero image. Null = no cover.
-  cover_image_filename: string | null;
-  created_at: string;
-  updated_at: string;
-  stats?: ProjectStats;
-  /** Everything under this project, its own prints included. Present only when
-   *  it actually has sub-projects — a second figure rather than a widening of
-   *  `stats`, whose meaning is unchanged. */
-  rollup_stats?: ProjectStats | null;
-}
-
 export interface ProjectAttachment {
   filename: string;
   original_name: string;
   size: number;
   uploaded_at: string;
 }
-
-export interface ArchivePreview {
-  id: number;
-  print_name: string | null;
-  thumbnail_path: string | null;
-  status: string;
-  filament_type: string | null;
-  filament_color: string | null;
-}
-
-export interface ProjectListItem {
-  id: number;
-  name: string;
-  description: string | null;
-  color: string | null;
-  status: string;
-  target_count: number | null;  // Target number of plates/print jobs
-  target_parts_count: number | null;  // Target number of parts/objects
-  budget: number | null;
-  created_at: string;
-  // Card-level metadata the shared edit dialog seeds itself from — must match
-  // the full Project payload or editing from the list submits defaults (#2536).
-  tags: string | null;
-  due_date: string | null;
-  priority: string;
-  archive_count: number;  // Number of print jobs (plates)
-  total_items: number;  // Sum of quantities (total items printed, including failed)
-  completed_count: number;  // Sum of quantities for completed prints only (parts)
-  defective_count: number;  // Scrap off completed plates — already subtracted from completed_count
-  failed_count: number;  // Sum of quantities for failed prints
-  queue_count: number;
-  progress_percent: number | null;  // Plates progress
-  archives: ArchivePreview[];
-  url: string | null;
-  cover_image_filename: string | null;
-  /** Nesting, so the grid can group and the parent picker can rule out a
-   *  loop before the server has to. */
-  parent_id: number | null;
-  is_template: boolean;
-}
-
-export interface ProjectCreate {
-  name: string;
-  description?: string;
-  color?: string;
-  target_count?: number;
-  target_parts_count?: number;
-  notes?: string;
-  tags?: string;
-  due_date?: string;
-  priority?: string;
-  budget?: number | null;
-  parent_id?: number;
-  url?: string | null;
-}
-
 
 /** Built-in inventory bulk delete/archive/restore result (#1795). */
 export interface BulkActionResult {
@@ -1365,147 +1230,6 @@ export interface SpoolmanBulkResult {
   errors: { id: number; status: number; detail: string }[];
 }
 
-export interface ProjectUpdate {
-  name?: string;
-  description?: string;
-  color?: string;
-  status?: string;
-  // 0 = "don't measure this project in plates/parts" (that progress bar is
-  // hidden); null clears the target entirely.
-  target_count?: number | null;
-  target_parts_count?: number | null;
-  notes?: string;
-  // null clears (the backend keys off model_fields_set), like budget/url.
-  tags?: string | null;
-  due_date?: string | null;
-  priority?: string;
-  budget?: number | null;
-  parent_id?: number;
-  url?: string | null;
-}
-
-// BOM Types - Tracks sourced/purchased parts (hardware, electronics, etc.)
-export interface BOMItem {
-  id: number;
-  project_id: number;
-  name: string;
-  quantity_needed: number;
-  quantity_acquired: number;
-  unit_price: number | null;
-  sourcing_url: string | null;
-  archive_id: number | null;
-  archive_name: string | null;
-  stl_filename: string | null;
-  remarks: string | null;
-  sort_order: number;
-  is_complete: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface BOMItemCreate {
-  name: string;
-  quantity_needed?: number;
-  unit_price?: number;
-  sourcing_url?: string;
-  archive_id?: number;
-  stl_filename?: string;
-  remarks?: string;
-}
-
-export interface BOMItemUpdate {
-  name?: string;
-  quantity_needed?: number;
-  quantity_acquired?: number;
-  unit_price?: number;
-  sourcing_url?: string;
-  archive_id?: number;
-  stl_filename?: string;
-  remarks?: string;
-}
-
-// Project Export/Import Types
-export interface BOMItemExport {
-  name: string;
-  quantity_needed: number;
-  quantity_acquired: number;
-  unit_price: number | null;
-  sourcing_url: string | null;
-  stl_filename: string | null;
-  remarks: string | null;
-}
-
-export interface LinkedFolderExport {
-  name: string;
-}
-
-export interface ProjectExport {
-  name: string;
-  description: string | null;
-  color: string | null;
-  status: string;
-  target_count: number | null;
-  target_parts_count: number | null;
-  notes: string | null;
-  tags: string | null;
-  due_date: string | null;
-  priority: string;
-  budget: number | null;
-  bom_items: BOMItemExport[];
-  linked_folders: LinkedFolderExport[];
-}
-
-export interface ProjectImport {
-  name: string;
-  description?: string;
-  color?: string;
-  status?: string;
-  target_count?: number;
-  target_parts_count?: number;
-  notes?: string;
-  tags?: string;
-  due_date?: string;
-  priority?: string;
-  budget?: number | null;
-  bom_items?: BOMItemExport[];
-  linked_folders?: LinkedFolderExport[];
-}
-
-// Print Plan Types
-export interface PrintPlanItem {
-  id: number;
-  library_file_id: number;
-  plate_index: number;
-  copies: number;
-  order_index: number;
-  filename: string;
-  print_name: string | null;
-  file_type: string;
-  thumbnail_path: string | null;
-  swap_compatible: boolean;
-  filament_grams: number | null;
-  print_time_seconds: number | null;
-  object_count: number | null;
-  cost_per_copy: number | null;
-  total_filament_grams: number | null;
-  total_print_time_seconds: number | null;
-  total_objects: number | null;
-  total_cost: number | null;
-  // Per-(project, file) progress: count of completed archives + the
-  // derived ``copies - printed_count`` remainder (clamped at 0).
-  printed_count: number;
-  remaining_count: number;
-}
-
-export interface PrintPlanResponse {
-  items: PrintPlanItem[];
-  totals_filament_grams: number;
-  totals_print_time_seconds: number;
-  totals_objects: number;
-  totals_cost: number;
-  default_filament_cost_per_kg: number;
-}
-
 // Timeline Types
 export interface TimelineEvent {
   event_type: string;
@@ -1519,10 +1243,9 @@ export interface TimelineEvent {
 // Orders / products / customers (projects redesign, pass 2)
 //
 // These mirror the pass-1 wire schemas one field per field — see
-// `backend/app/schemas/{customer,product,project}.py`. They live BESIDE the
-// legacy `Project*` types above rather than replacing them: the old pages
-// still import those, and both sets are compiled at once until the final
-// cutover removes the old ones in a single commit.
+// `backend/app/schemas/{customer,product,project}.py`. They replaced the
+// legacy `Project*` / BOM / print-plan / template types, which went out with
+// the pages that read them.
 //
 // "Order" is the UI's name for what the backend still calls a project — the
 // endpoint paths stay `/projects/*`, so a function name and a URL deliberately
@@ -1736,8 +1459,8 @@ export interface CustomerUpdate {
  *  what the order's procurement list is made of. */
 export type ProductPartKind = 'printed' | 'purchased';
 
-/** Lightweight product reference embedded in library file/folder responses.
- *  Distinct from `ProjectRef`, which carries a colour instead. */
+/** Lightweight product reference embedded in library file/folder responses —
+ *  enough to render a chip without a follow-up fetch. */
 export interface ProductRef {
   id: number;
   name: string;
@@ -9367,47 +9090,13 @@ export const api = {
     request<ExternalLink>(`/external-links/${id}/icon`, { method: 'DELETE' }),
   getExternalLinkIconUrl: (id: number) => `${API_BASE}/external-links/${id}/icon`,
 
-  // Projects
-  getProjects: (status?: string) => {
-    const params = new URLSearchParams();
-    if (status) params.set('status', status);
-    return request<ProjectListItem[]>(`/projects/?${params}`);
-  },
-  getProject: (id: number) => request<Project>(`/projects/${id}`),
-  createProject: (data: ProjectCreate) =>
-    request<Project>('/projects/', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  updateProject: (id: number, data: ProjectUpdate) =>
-    request<Project>(`/projects/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    }),
-  deleteProject: (id: number) =>
-    request<{ message: string }>(`/projects/${id}`, { method: 'DELETE' }),
-  /** Copy a project's setup into a new active one. Never moves: the source keeps everything. */
-  duplicateProject: (id: number, data: { name?: string; include_children?: boolean } = {}) =>
-    request<Project>(`/projects/${id}/duplicate`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
+  // Orders — the prints bound to one, on the `/projects/*` paths the wire kept.
   getProjectArchives: (id: number, limit = 100, offset = 0) =>
     request<Archive[]>(`/projects/${id}/archives?limit=${limit}&offset=${offset}`),
-  addArchivesToProject: (projectId: number, archiveIds: number[]) =>
-    request<{ message: string }>(`/projects/${projectId}/add-archives`, {
-      method: 'POST',
-      body: JSON.stringify({ archive_ids: archiveIds }),
-    }),
   removeArchivesFromProject: (projectId: number, archiveIds: number[]) =>
     request<{ message: string }>(`/projects/${projectId}/remove-archives`, {
       method: 'POST',
       body: JSON.stringify({ archive_ids: archiveIds }),
-    }),
-  addQueueItemsToProject: (projectId: number, queueItemIds: number[]) =>
-    request<{ message: string }>(`/projects/${projectId}/add-queue`, {
-      method: 'POST',
-      body: JSON.stringify({ queue_item_ids: queueItemIds }),
     }),
 
   // Orders (projects redesign, pass 2)
@@ -9601,107 +9290,9 @@ export const api = {
   deleteProjectCoverImage: (projectId: number) =>
     request<{ status: string }>(`/projects/${projectId}/cover-image`, { method: 'DELETE' }),
 
-  // BOM (Bill of Materials)
-  getProjectBOM: (projectId: number) =>
-    request<BOMItem[]>(`/projects/${projectId}/bom`),
-  createBOMItem: (projectId: number, data: BOMItemCreate) =>
-    request<BOMItem>(`/projects/${projectId}/bom`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  updateBOMItem: (projectId: number, itemId: number, data: BOMItemUpdate) =>
-    request<BOMItem>(`/projects/${projectId}/bom/${itemId}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    }),
-  deleteBOMItem: (projectId: number, itemId: number) =>
-    request<{ status: string; message: string }>(`/projects/${projectId}/bom/${itemId}`, {
-      method: 'DELETE',
-    }),
-
-  // Print Plan (per-project list of .3mf library files with copies + order)
-  getProjectPrintPlan: (projectId: number) =>
-    request<PrintPlanResponse>(`/projects/${projectId}/print-plan`),
-  updatePrintPlanItem: (projectId: number, itemId: number, copies: number) =>
-    request<PrintPlanItem>(`/projects/${projectId}/print-plan/items/${itemId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ copies }),
-    }),
-  reorderPrintPlan: (projectId: number, libraryFileIds: number[]) =>
-    request<PrintPlanResponse>(`/projects/${projectId}/print-plan/reorder`, {
-      method: 'POST',
-      body: JSON.stringify({ library_file_ids: libraryFileIds }),
-    }),
-
-  // Templates
-  getTemplates: () => request<ProjectListItem[]>('/projects/templates'),
-  createTemplateFromProject: (projectId: number) =>
-    request<Project>(`/projects/${projectId}/create-template`, { method: 'POST' }),
-  createProjectFromTemplate: (templateId: number, name?: string) =>
-    request<Project>(`/projects/from-template/${templateId}${name ? `?name=${encodeURIComponent(name)}` : ''}`, {
-      method: 'POST',
-    }),
-
   // Timeline
   getProjectTimeline: (projectId: number, limit = 50) =>
     request<TimelineEvent[]>(`/projects/${projectId}/timeline?limit=${limit}`),
-
-  // Parts Ledger
-  getProjectParts: (projectId: number) =>
-    request<{ parts: ProjectPartRow[] }>(`/projects/${projectId}/parts`),
-  updateProjectParts: (projectId: number, parts: ProjectPartTargetUpdate[]) =>
-    request<{ parts: ProjectPartRow[] }>(`/projects/${projectId}/parts`, {
-      method: 'PATCH',
-      body: JSON.stringify({ parts }),
-    }),
-  deleteProjectPart: (projectId: number, nameKey: string) =>
-    request(`/projects/${projectId}/parts?name_key=${encodeURIComponent(nameKey)}`, {
-      method: 'DELETE',
-    }),
-
-  // Project Export/Import
-  exportProjectJson: (projectId: number) =>
-    request<ProjectExport>(`/projects/${projectId}/export?format=json`),
-  importProject: (data: ProjectImport) =>
-    request<Project>('/projects/import', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  importProjectFile: async (file: File): Promise<Project> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/projects/import/file`, {
-      method: 'POST',
-      headers,
-      body: formData,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.json();
-  },
-  exportProjectZip: async (projectId: number): Promise<{ blob: Blob; filename: string }> => {
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/projects/${projectId}/export`, {
-      headers,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    const contentDisposition = response.headers.get('Content-Disposition');
-    const filename = parseContentDispositionFilename(contentDisposition) || `project_${projectId}.zip`;
-    const blob = await response.blob();
-    return { blob, filename };
-  },
 
   // API Keys
   getAPIKeys: () => request<APIKey[]>('/api-keys/'),
@@ -9798,28 +9389,20 @@ export const api = {
       method: 'POST',
     }),
   getLibraryScanJob: (jobId: number) => request<LibraryScanJob>(`/library/scan-jobs/${jobId}`),
-  getLibraryFoldersByProject: (projectId: number) =>
-    request<LibraryFolder[]>(`/library/folders/by-project/${projectId}`),
 
   getLibraryFiles: (
     folderId?: number | null,
     includeRoot = true,
-    projectId?: number,
     scope?: 'internal' | 'external',
     tagIds: number[] = [],
     recursive = false,
-    // Pass 2: the product filter — the product's direct files ∪ the files of
-    // its linked folders. Appended LAST rather than replacing `projectId`, so
-    // the callers that still pass positional arguments keep working until the
-    // cutover drops `projectId` entirely.
+    /** The product filter — the product's direct files ∪ the files of its
+     *  linked folders. */
     productId?: number,
   ) => {
     const params = new URLSearchParams();
     if (folderId !== undefined && folderId !== null) {
       params.set('folder_id', String(folderId));
-    }
-    if (projectId !== undefined) {
-      params.set('project_id', String(projectId));
     }
     if (productId !== undefined) {
       params.set('product_id', String(productId));
@@ -9960,16 +9543,6 @@ export const api = {
     }),
   deleteLibraryFile: (id: number) =>
     request<{ status: string; message: string; trashed: boolean }>(`/library/files/${id}`, { method: 'DELETE' }),
-
-  // m044: drop a single (file, project) pivot row without read-modify-write
-  // on the whole list. Used by ProjectDetailPage's "remove from this project"
-  // affordance. Idempotent: missing pivot is a no-op (204).
-  removeLibraryFileFromProject: (fileId: number, projectId: number) =>
-    request<void>(`/library/files/${fileId}/projects/${projectId}`, { method: 'DELETE' }),
-
-  // m044: symmetric for folders.
-  removeLibraryFolderFromProject: (folderId: number, projectId: number) =>
-    request<void>(`/library/folders/${folderId}/projects/${projectId}`, { method: 'DELETE' }),
 
   // ========== Library Trash (#1008) ==========
   previewLibraryPurge: (olderThanDays: number, includeNeverPrinted: boolean = true) =>
@@ -10658,23 +10231,12 @@ export interface StorageUsageResponse {
 
 // Library (File Manager) types
 
-// m044: lightweight project reference embedded in folder/file responses.
-// Carries enough for the UI to render the colored project chip without a
-// follow-up fetch. Mirrors backend `ProjectRef` schema.
-export interface ProjectRef {
-  id: number;
-  name: string;
-  color: string | null;
-}
-
 export interface LibraryFolderTree {
-  /** Products this folder is linked to (m158) — optional until Task 12 makes it required. */
-  products?: ProductRef[];
+  /** Products this folder is a design for (m158). Empty array = unattached. */
+  products: ProductRef[];
   id: number;
   name: string;
   parent_id: number | null;
-  // m044: M2M project links. Empty array = unattached.
-  projects: ProjectRef[];
   is_external: boolean;
   external_path: string | null;
   external_readonly: boolean;
@@ -10710,10 +10272,8 @@ export interface LibraryFolder {
   id: number;
   name: string;
   parent_id: number | null;
-  projects: ProjectRef[];
-  /** Pass 2: what the folder's files are a design for. Optional only while
-   *  `projects` above still exists — the cutover swaps which one is required. */
-  products?: ProductRef[];
+  /** What the folder's files are a design for. Empty array = unattached. */
+  products: ProductRef[];
   is_external: boolean;
   external_path: string | null;
   external_readonly: boolean;
@@ -10734,9 +10294,8 @@ export interface FolderReadmeResponse {
 export interface LibraryFolderCreate {
   name: string;
   parent_id?: number | null;
-  // m044: list of project IDs to associate the folder with on creation.
-  project_ids?: number[];
-  // Pass 2: same, for products. Cascades to the folder's files server-side.
+  /** Products to link the folder to on creation. Cascades to its files
+   *  server-side. */
   product_ids?: number[];
 }
 
@@ -10751,11 +10310,9 @@ export interface ExternalFolderCreate {
 export interface LibraryFolderUpdate {
   name?: string;
   parent_id?: number | null;
-  // m044: undefined = leave links untouched, [] = unlink from every
-  // project, otherwise replace the whole list.
-  project_ids?: number[];
-  // Pass 2: same three-way semantics for products, and a change cascades to
-  // the folder's child files.
+  // undefined = leave links untouched, [] = unlink from every product,
+  // otherwise replace the whole list. A change cascades to the folder's
+  // child files.
   product_ids?: number[];
 }
 
@@ -10853,11 +10410,8 @@ export interface LibraryFile {
   id: number;
   folder_id: number | null;
   folder_name: string | null;
-  // m044: M2M project links. Empty array = unattached.
-  projects: ProjectRef[];
-  /** Pass 2: what this file is a design for. Optional only while `projects`
-   *  above still exists — the cutover swaps which one is required. */
-  products?: ProductRef[];
+  /** What this file is a design for. Empty array = unattached. */
+  products: ProductRef[];
   is_external: boolean;
   filename: string;
   file_path: string;
@@ -10906,13 +10460,13 @@ export interface LibraryFile {
 }
 
 export interface LibraryFileListItem {
-  /** Products this file is linked to (m158) — optional until Task 12 makes it required. */
-  products?: ProductRef[];
   id: number;
   folder_id: number | null;
-  // m044: M2M project IDs only (names omitted to keep list payload small —
-  // resolve names from a global ``projects`` query when rendering).
-  project_ids: number[];
+  /** ⚠️ The LIST carries product IDS, not the `ProductRef[]` the single-file
+   *  response has — names are omitted to keep the payload small. Anything that
+   *  needs a name resolves it from a `['products']` query; anything that only
+   *  counts links reads `product_ids.length`. */
+  product_ids: number[];
   is_external: boolean;
   filename: string;
   file_type: string;
@@ -11055,12 +10609,9 @@ export const LIBRARY_FILE_NOTE_MAX_LENGTH = 1000;
 export interface LibraryFileUpdate {
   filename?: string;
   folder_id?: number | null;
-  // m044: undefined = leave untouched, [] = unlink from every project,
-  // otherwise replace the whole list.
-  project_ids?: number[];
-  // Pass 2: same three-way semantics for products. ⚠️ A move without this
-  // field inherits the target folder's products — send it explicitly when the
-  // move must NOT re-link.
+  // undefined = leave untouched, [] = unlink from every product, otherwise
+  // replace the whole list. ⚠️ A move without this field inherits the target
+  // folder's products — send it explicitly when the move must NOT re-link.
   product_ids?: number[];
   notes?: string | null;
 }

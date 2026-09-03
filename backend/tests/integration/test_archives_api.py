@@ -107,6 +107,44 @@ class TestArchivesAPI:
 
         assert response.status_code == 404
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_archive_response_carries_library_file_id(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """An archive dispatched from a library file exposes that file's id.
+
+        The archive UI links a print card back to the file's print history
+        with ``?file=<library_file_id>``; without the field on the response
+        the link cannot be built. An archive with no source file keeps null.
+        """
+        from backend.app.models.library import LibraryFile
+
+        lib = LibraryFile(
+            filename="linked.3mf",
+            file_path="/library/linked.3mf",
+            file_type="3mf",
+            file_size=42,
+            file_hash="a" * 64,
+        )
+        db_session.add(lib)
+        await db_session.commit()
+        await db_session.refresh(lib)
+
+        printer = await printer_factory()
+        linked = await archive_factory(printer.id, print_name="From library", library_file_id=lib.id)
+        unlinked = await archive_factory(printer.id, print_name="External print")
+
+        detail = await async_client.get(f"/api/v1/archives/{linked.id}")
+        assert detail.status_code == 200
+        assert detail.json()["library_file_id"] == lib.id
+
+        listing = await async_client.get("/api/v1/archives/")
+        assert listing.status_code == 200
+        by_id = {a["id"]: a for a in listing.json()["data"]}
+        assert by_id[linked.id]["library_file_id"] == lib.id
+        assert by_id[unlinked.id]["library_file_id"] is None
+
     # ========================================================================
     # Update endpoints
     # ========================================================================

@@ -23,7 +23,7 @@ const file = (over: Partial<LibraryFileListItem> = {}): LibraryFileListItem =>
   ({
     id: 1,
     folder_id: null,
-    project_ids: [],
+    product_ids: [],
     is_external: false,
     filename: 'part.gcode.3mf',
     file_type: '3mf',

@@ -67,6 +67,9 @@ class ArchiveResponse(BaseModel):
     project_id: int | None = None
     project_line_id: int | None = None
     project_name: str | None = None  # Included for convenience
+    # The library file this print was dispatched from (m014). The archive UI
+    # links a print card back to the file's print history via ?file=<id>.
+    library_file_id: int | None = None
     filename: str
     file_path: str
     file_size: int

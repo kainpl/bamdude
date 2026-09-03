@@ -48,7 +48,12 @@ export function CustomerPage() {
   const [editingOrder, setEditingOrder] = useState<OrderListItem | null | 'new'>(null);
   const [deletingOrder, setDeletingOrder] = useState<OrderListItem | null>(null);
 
-  const { data: customer, isLoading } = useQuery({
+  const {
+    data: customer,
+    isLoading,
+    isError,
+    error,
+  } = useQuery({
     queryKey: ['customer', id],
     queryFn: () => api.getCustomer(id),
     enabled: Number.isFinite(id),
@@ -123,8 +128,19 @@ export function CustomerPage() {
       </div>
     );
   }
+  // ⚠️ Data presence first, then `isError` — see the long note on ProductPage.
+  // A failed background refetch (this page invalidates `['customer', id]` on
+  // every order it creates, edits or deletes) must not replace a customer the
+  // cache still holds; and with no data, a failed fetch is not a customer
+  // somebody removed.
   if (!customer) {
-    return <div className="p-4 md:p-6 text-bambu-gray text-sm">{t('customers.page.notFound')}</div>;
+    return isError ? (
+      <div className="p-4 md:p-6 text-sm text-red-500">
+        {t('customers.page.loadFailed')} {(error as Error)?.message}
+      </div>
+    ) : (
+      <div className="p-4 md:p-6 text-bambu-gray text-sm">{t('customers.page.notFound')}</div>
+    );
   }
 
   const figures = customer.figures;

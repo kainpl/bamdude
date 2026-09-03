@@ -107,4 +107,47 @@ describe('OrderPage', () => {
     expect(await screen.findByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
     expect(screen.queryByTestId('close-suggestion')).not.toBeInTheDocument();
   });
+
+  it('names the error when there is no order to fall back on', async () => {
+    vi.spyOn(api, 'getOrder').mockRejectedValue(new Error('Gateway timeout'));
+
+    window.history.pushState({}, '', '/projects/1');
+    render(
+      <Routes>
+        <Route path="/projects/:id" element={<OrderPage />} />
+      </Routes>,
+    );
+
+    expect(await screen.findByText(/could not load this order/i)).toBeInTheDocument();
+    expect(screen.getByText(/gateway timeout/i)).toBeInTheDocument();
+    expect(screen.queryByText(/order not found/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps the rendered order when a background refetch fails', async () => {
+    // TanStack v5 turns the query's status to "error" on ANY failed fetch and
+    // keeps `data` while it does. Every mutation on this page invalidates
+    // ['project', id], so a refetch that fails must not replace an order that
+    // is still cached with a load error.
+    const get = vi
+      .spyOn(api, 'getOrder')
+      .mockResolvedValueOnce(order as never)
+      .mockRejectedValue(new Error('Gateway timeout'));
+    vi.spyOn(api, 'updateOrder').mockResolvedValue({ ...order, status: 'completed' } as never);
+
+    window.history.pushState({}, '', '/projects/1');
+    render(
+      <Routes>
+        <Route path="/projects/:id" element={<OrderPage />} />
+      </Routes>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
+
+    // Closing the order invalidates ['project', id]; the refetch it fires fails.
+    fireEvent.click(await screen.findByTestId('close-suggestion-complete'));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
+    expect(screen.queryByText(/could not load this order/i)).not.toBeInTheDocument();
+  });
 });
