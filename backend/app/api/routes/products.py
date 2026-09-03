@@ -14,10 +14,11 @@ SQLite honours no ``ON DELETE CASCADE``, and there is no desired set left to
 reconcile once the product itself is going away.
 """
 
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, inspect as sqla_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -25,7 +26,7 @@ from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.models.product import Product, ProductPart, ProductPlate, product_files, product_folders
+from backend.app.models.product import Product, ProductPart, product_files, product_folders
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
 from backend.app.schemas.product import (
@@ -78,15 +79,34 @@ async def _lines_count(db: AsyncSession, product_id: int) -> int:
     ).scalar() or 0
 
 
-async def _response(db: AsyncSession, product: Product) -> ProductResponse:
-    # Two refreshes on purpose. The first lands the server-side ``created_at`` /
-    # ``updated_at``: a row that was just INSERTed or UPDATEd leaves them
-    # expired, and reading an expired attribute inside an async session is a
-    # ``MissingGreenlet``, not a lazy SELECT. The second reloads the collections
-    # the first expired — and picks up the pivot rows the sync wrote underneath
-    # the ORM.
-    await db.refresh(product)
-    await db.refresh(product, ["parts", "plates", "library_files", "library_folders"])
+async def _timestamps(db: AsyncSession, product: Product) -> tuple[datetime, datetime]:
+    """``created_at`` / ``updated_at`` come from server-side defaults, so an
+    INSERT or an UPDATE leaves them expired — and reading an expired attribute
+    inside an async session is a ``MissingGreenlet``, not a lazy SELECT.
+
+    ⚠️ A plain SELECT, never ``db.refresh(product, ["created_at", ...])``: a
+    partial refresh ALSO unloads the collections ``_get`` eager-loaded (and the
+    empty ones a freshly built row starts with), so the caller would have to
+    reload all four just to count them. Nothing is read when nothing expired,
+    which is the ordinary GET.
+    """
+    if not ({"created_at", "updated_at"} & sqla_inspect(product).unloaded):
+        return product.created_at, product.updated_at
+    row = (await db.execute(select(Product.created_at, Product.updated_at).where(Product.id == product.id))).one()
+    return row[0], row[1]
+
+
+async def _response(db: AsyncSession, product: Product, *, reload_links: bool = False) -> ProductResponse:
+    links = ["parts", "plates", "library_files", "library_folders"]
+    # ``reload_links`` — a sync ran, and it wrote ``product_files`` /
+    # ``product_plates`` with core SQL underneath the ORM, so what is loaded is
+    # stale. ``unloaded`` — a row built and flushed in this request never had
+    # its collections initialised, and touching one now would be a lazy load,
+    # i.e. a ``MissingGreenlet``. A plain GET or PATCH is neither, and pays for
+    # neither: ``_get`` already eager-loaded all four.
+    if reload_links or set(links) & sqla_inspect(product).unloaded:
+        await db.refresh(product, links)
+    created_at, updated_at = await _timestamps(db, product)
     return ProductResponse(
         id=product.id,
         name=product.name,
@@ -107,8 +127,8 @@ async def _response(db: AsyncSession, product: Product) -> ProductResponse:
         ],
         library_file_ids=sorted(f.id for f in product.library_files),
         library_folder_ids=sorted(f.id for f in product.library_folders),
-        created_at=product.created_at,
-        updated_at=product.updated_at,
+        created_at=created_at,
+        updated_at=updated_at,
     )
 
 
@@ -212,7 +232,7 @@ async def create_product_from_file(
     await db.flush()
     desired = await _file_product_ids(db, file.id) | {product.id}
     await sync_product_for_file(db, library_file_id=file.id, product_ids=sorted(desired))
-    return await _response(db, product)
+    return await _response(db, product, reload_links=True)
 
 
 @router.get("/{product_id}", response_model=ProductResponse)
@@ -302,8 +322,10 @@ async def duplicate_product(
                 sort_order=part.sort_order,
             )
         )
-    for plate in source.plates:
-        db.add(ProductPlate(product_id=copy.id, library_file_id=plate.library_file_id, plate_index=plate.plate_index))
+    # ⚠️ No hand-copied ``ProductPlate`` rows. The syncs below plant the plates
+    # for every file the copy ends up linked to, from the file's own metadata —
+    # copying them here as well only avoided ``uq_product_plates_file_plate``
+    # because autoflush happened to run before the sync read them.
     for f in list(source.library_files):
         await sync_product_for_file(
             db, library_file_id=f.id, product_ids=sorted(await _file_product_ids(db, f.id) | {copy.id})
@@ -311,7 +333,7 @@ async def duplicate_product(
     for folder in list(source.library_folders):
         await _apply_folder(db, folder.id, await _folder_product_ids(db, folder.id) | {copy.id})
     await db.flush()
-    return await _response(db, copy)
+    return await _response(db, copy, reload_links=True)
 
 
 # ---------- parts ----------
@@ -368,9 +390,11 @@ async def update_part(
     part = await _part(db, await _get(db, product_id), part_id)
     for field_name in data.model_fields_set:
         setattr(part, field_name, getattr(data, field_name))
-    # An operator edit is what ``auto`` exists to record: the seeded default is
-    # no longer the answer, so the next sync must not touch this row's figures.
-    part.auto = False
+    if data.model_fields_set:
+        # An operator edit is what ``auto`` exists to record: the seeded default
+        # is no longer the answer, so the next sync must not touch this row's
+        # figures. An empty body edited nothing and must not clear the flag.
+        part.auto = False
     await db.flush()
     await db.refresh(part)
     return ProductPartResponse.model_validate(part)
@@ -427,6 +451,11 @@ async def add_part_alias(
 ):
     product = await _get(db, product_id)
     part = await _part(db, product, part_id)
+    if part.kind == "purchased":
+        # ``ProductPart.aliases`` is printed-only by the model's contract: an
+        # alias maps a 3MF object name onto a part, and nothing on a plate is
+        # ever a purchased screw.
+        raise HTTPException(status_code=400, detail="Purchased parts have no aliases")
     try:
         add_alias(product.parts, part, data.name_key.strip().lower())
     except ValueError as e:
@@ -532,7 +561,7 @@ async def set_files(
         desired = await _file_product_ids(db, fid)
         desired = desired | {product_id} if fid in wanted else desired - {product_id}
         await sync_product_for_file(db, library_file_id=fid, product_ids=sorted(desired))
-    return await _response(db, product)
+    return await _response(db, product, reload_links=True)
 
 
 @router.delete("/{product_id}/files/{file_id}", response_model=ProductResponse)
@@ -545,7 +574,7 @@ async def unlink_file(
     product = await _get(db, product_id)
     desired = await _file_product_ids(db, file_id) - {product_id}
     await sync_product_for_file(db, library_file_id=file_id, product_ids=sorted(desired))
-    return await _response(db, product)
+    return await _response(db, product, reload_links=True)
 
 
 @router.put("/{product_id}/folders", response_model=ProductResponse)
@@ -569,7 +598,7 @@ async def set_folders(
         desired = await _folder_product_ids(db, folder_id)
         desired = desired | {product_id} if folder_id in wanted else desired - {product_id}
         await _apply_folder(db, folder_id, desired)
-    return await _response(db, product)
+    return await _response(db, product, reload_links=True)
 
 
 @router.delete("/{product_id}/folders/{folder_id}", response_model=ProductResponse)
@@ -581,4 +610,4 @@ async def unlink_folder(
 ):
     product = await _get(db, product_id)
     await _apply_folder(db, folder_id, await _folder_product_ids(db, folder_id) - {product_id})
-    return await _response(db, product)
+    return await _response(db, product, reload_links=True)

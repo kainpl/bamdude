@@ -8,8 +8,8 @@ in ``backend/tests/conftest.py``.
 import pytest
 from sqlalchemy import select
 
-from backend.app.models.library import LibraryFile
-from backend.app.models.product import ProductPlate, product_files
+from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.models.product import ProductPlate, product_files, product_folders
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 
@@ -236,9 +236,6 @@ async def test_a_second_product_on_the_same_file_survives_the_first_unlinking(
 
 @pytest.mark.asyncio
 async def test_folder_links_go_through_the_folder_door(committing_client, db_session, sliced_file):
-    from backend.app.models.library import LibraryFolder
-    from backend.app.models.product import product_folders
-
     folder = LibraryFolder(name="F")
     db_session.add(folder)
     await db_session.flush()
@@ -279,3 +276,91 @@ async def test_folder_links_go_through_the_folder_door(committing_client, db_ses
     ).status_code == 404
     db_session.expire_all()
     assert await _pivot(db_session, pid) == []
+
+
+async def _folder(db, name="F"):
+    folder = LibraryFolder(name=name)
+    db.add(folder)
+    await db.flush()
+    return folder
+
+
+async def _child(db, folder_id, name="c.gcode.3mf", meta=None):
+    f = LibraryFile(
+        filename=name, file_path=f"F/{name}", file_size=1, file_type="gcode", file_metadata=meta, folder_id=folder_id
+    )
+    db.add(f)
+    await db.commit()
+    return f
+
+
+@pytest.mark.asyncio
+async def test_unlinking_a_folder_leaves_a_childs_direct_product_alone(committing_client, db_session):
+    """The folder axis of the co-owner rule: a file linked to X directly and to
+    P through its folder keeps X — and X's plates — when P lets the folder go."""
+    folder = await _folder(db_session)
+    child = await _child(db_session, folder.id, meta=SINGLE)
+    folder_id, child_id = folder.id, child.id
+
+    x = (await committing_client.post("/api/v1/products", json={"name": "X"})).json()["id"]
+    assert (
+        await committing_client.put(f"/api/v1/products/{x}/files", json={"library_file_ids": [child_id]})
+    ).status_code == 200
+    p = (await committing_client.post("/api/v1/products", json={"name": "P"})).json()["id"]
+    assert (
+        await committing_client.put(f"/api/v1/products/{p}/folders", json={"library_folder_ids": [folder_id]})
+    ).status_code == 200
+    db_session.expire_all()
+    assert await _pivot(db_session, x) == [child_id] and await _pivot(db_session, p) == [child_id]
+
+    assert (await committing_client.delete(f"/api/v1/products/{p}/folders/{folder_id}")).status_code == 200
+    db_session.expire_all()
+    assert await _pivot(db_session, x) == [child_id]  # the direct link survives
+    assert await _plates(db_session, x) == [(child_id, 0)]
+    assert await _pivot(db_session, p) == [] and await _plates(db_session, p) == []
+
+
+@pytest.mark.asyncio
+async def test_duplicating_a_folder_linked_product_copies_folder_files_and_plates(committing_client, db_session):
+    """The copy inherits the folder, and the plates come from the sync — the
+    route plants none of its own."""
+    folder = await _folder(db_session)
+    child = await _child(db_session, folder.id, name="m.gcode.3mf", meta=MULTI)
+    folder_id, child_id = folder.id, child.id
+
+    pid = (await committing_client.post("/api/v1/products", json={"name": "P"})).json()["id"]
+    await committing_client.put(f"/api/v1/products/{pid}/folders", json={"library_folder_ids": [folder_id]})
+
+    copy = (await committing_client.post(f"/api/v1/products/{pid}/duplicate", json={})).json()
+    assert copy["name"] == "P (Copy)"
+    assert copy["library_folder_ids"] == [folder_id] and copy["library_file_ids"] == [child_id]
+    assert copy["plates_count"] == 2 and len(copy["parts"]) == 3
+    plates = (await committing_client.get(f"/api/v1/products/{copy['id']}/plates")).json()
+    assert [p["plate_index"] for p in plates] == [1, 2]
+    db_session.expire_all()
+    assert await _plates(db_session, copy["id"]) == [(child_id, 1), (child_id, 2)]
+    # a copy, not a move
+    source = (await committing_client.get(f"/api/v1/products/{pid}")).json()
+    assert source["library_folder_ids"] == [folder_id] and source["plates_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_purchased_part_refuses_an_alias(committing_client, sliced_file):
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    part_id = (
+        await committing_client.post(
+            f"/api/v1/products/{pid}/parts", json={"kind": "purchased", "name": "M3 screw", "qty_per_unit": 8}
+        )
+    ).json()["id"]
+    r = await committing_client.post(f"/api/v1/products/{pid}/parts/{part_id}/aliases", json={"name_key": "washer.stl"})
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_an_empty_patch_does_not_clear_the_seeded_flag(committing_client, sliced_file):
+    """``auto`` records that an operator has taken the row over. A PATCH that
+    edits nothing has not."""
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    part_id = (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"][0]["id"]
+    r = await committing_client.patch(f"/api/v1/products/{pid}/parts/{part_id}", json={})
+    assert r.status_code == 200 and r.json()["auto"] is True
