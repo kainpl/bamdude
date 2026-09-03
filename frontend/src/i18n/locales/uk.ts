@@ -4781,6 +4781,51 @@ export default {
     },
   },
 
+  // Projects section, customers face. The customer page borrows the order
+  // status words from `orders.status.*` and its own figure-tile labels from
+  // `customers.table.*` — the same counts under the same names in both places.
+  customers: {
+    list: {
+      title: 'Замовники',
+      newCustomer: 'Новий замовник',
+      empty: 'Замовників ще немає',
+    },
+    table: {
+      name: 'Ім’я',
+      contact: 'Контакт',
+      orders: 'Замовлення',
+      active: 'Активні',
+      completed: 'Виконані',
+      cancelled: 'Скасовані',
+      totalPrice: 'Сума',
+    },
+    modal: {
+      createTitle: 'Новий замовник',
+      editTitle: 'Редагування замовника',
+      name: 'Ім’я',
+      contact: 'Контакт',
+      notes: 'Нотатки',
+      create: 'Створити',
+      save: 'Зберегти',
+    },
+    page: {
+      orders: 'Замовлення',
+      newOrder: 'Нове замовлення для цього замовника',
+      printedOfOrdered: 'Надруковано з замовленого',
+      totalCost: 'Собівартість',
+      totalPrice: 'Сума',
+      notFound: 'Замовника не знайдено',
+    },
+    confirm: {
+      deleteTitle: 'Видалити замовника?',
+      deleteBody: 'Його замовлення залишаться, але без замовника.',
+    },
+    toast: {
+      saved: 'Замовника збережено',
+      deleted: 'Замовника видалено',
+    },
+  },
+
   // Projects
   projects: {
     tabs: {

@@ -4739,6 +4739,51 @@ export default {
     },
   },
 
+  // Projects section, customers face. The customer page borrows the order
+  // status words from `orders.status.*` and its own figure-tile labels from
+  // `customers.table.*` — the same counts under the same names in both places.
+  customers: {
+    list: {
+      title: 'Customers',
+      newCustomer: 'New customer',
+      empty: 'No customers yet',
+    },
+    table: {
+      name: 'Name',
+      contact: 'Contact',
+      orders: 'Orders',
+      active: 'Active',
+      completed: 'Completed',
+      cancelled: 'Cancelled',
+      totalPrice: 'Total price',
+    },
+    modal: {
+      createTitle: 'New customer',
+      editTitle: 'Edit customer',
+      name: 'Name',
+      contact: 'Contact',
+      notes: 'Notes',
+      create: 'Create',
+      save: 'Save',
+    },
+    page: {
+      orders: 'Orders',
+      newOrder: 'New order for this customer',
+      printedOfOrdered: 'Printed of ordered',
+      totalCost: 'Total cost',
+      totalPrice: 'Total price',
+      notFound: 'Customer not found',
+    },
+    confirm: {
+      deleteTitle: 'Delete customer?',
+      deleteBody: 'Their orders stay, without a customer.',
+    },
+    toast: {
+      saved: 'Customer saved',
+      deleted: 'Customer deleted',
+    },
+  },
+
   // Projects
   projects: {
     tabs: {
