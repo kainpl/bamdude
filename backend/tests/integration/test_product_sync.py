@@ -172,6 +172,36 @@ async def test_a_file_created_in_a_product_folder_inherits_the_products(db_sessi
 
 
 @pytest.mark.asyncio
+async def test_a_folder_link_merges_into_a_child_and_never_evicts_a_direct_one(db_session):
+    """A child can belong to a product nobody linked through this folder.
+
+    Replacing the child's set with the folder's evicted that product from the
+    pivot and had the sync delete its plates for the file — the co-owner
+    eviction, on the folder axis. The folder withdraws only what IT imposed.
+    """
+    imposed = await _product(db_session, "P")
+    direct = await _product(db_session, "X")
+    folder = LibraryFolder(name="F")
+    db_session.add(folder)
+    await db_session.flush()
+    child = await _file(db_session, "one.gcode.3mf", SINGLE, folder_id=folder.id)
+    await sync_product_for_file(db_session, library_file_id=child.id, product_ids=[direct.id])
+    await db_session.commit()
+
+    await apply_folder_products(db_session, folder_id=folder.id, product_ids=[imposed.id])
+    await db_session.commit()
+    assert await _links(db_session, child.id) == sorted([direct.id, imposed.id])
+    assert await _plates(db_session, direct.id) == [(child.id, 0)]
+    assert await _plates(db_session, imposed.id) == [(child.id, 0)]
+
+    await apply_folder_products(db_session, folder_id=folder.id, product_ids=[])
+    await db_session.commit()
+    assert await _links(db_session, child.id) == [direct.id]
+    assert await _plates(db_session, direct.id) == [(child.id, 0)]  # the direct link is untouched
+    assert await _plates(db_session, imposed.id) == []
+
+
+@pytest.mark.asyncio
 async def test_applying_products_to_a_folder_mirrors_onto_every_child_file(db_session):
     first = await _product(db_session, "A")
     second = await _product(db_session, "B")

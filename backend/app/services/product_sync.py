@@ -99,13 +99,18 @@ async def seed_parts_for_product(
     return created
 
 
-async def _reconcile_links(db: AsyncSession, library_file_id: int, desired: set[int]) -> None:
-    """Make ``product_files`` for this file equal ``desired``, as a delta."""
-    linked = set(
+async def _linked_product_ids(db: AsyncSession, library_file_id: int) -> set[int]:
+    """Every product this file belongs to, read off the pivot itself."""
+    return set(
         (await db.execute(select(product_files.c.product_id).where(product_files.c.library_file_id == library_file_id)))
         .scalars()
         .all()
     )
+
+
+async def _reconcile_links(db: AsyncSession, library_file_id: int, desired: set[int]) -> None:
+    """Make ``product_files`` for this file equal ``desired``, as a delta."""
+    linked = await _linked_product_ids(db, library_file_id)
     for product_id in sorted(desired - linked):
         await db.execute(insert(product_files).values(product_id=product_id, library_file_id=library_file_id))
     gone = linked - desired
@@ -167,21 +172,26 @@ async def sync_product_for_file(db: AsyncSession, *, library_file_id: int, produ
     await db.flush()
 
 
-async def sync_products_for_folder(db: AsyncSession, *, folder_id: int, product_ids: list[int]) -> None:
-    file_ids = (await db.execute(select(LibraryFile.id).where(LibraryFile.folder_id == folder_id))).scalars().all()
-    for file_id in file_ids:
-        await sync_product_for_file(db, library_file_id=file_id, product_ids=product_ids)
-
-
 async def apply_folder_products(db: AsyncSession, *, folder_id: int, product_ids: list[int]) -> None:
-    """Replace-semantics for a folder's product links, mirrored onto every child
-    file, then plates reconciled. This is what the old folder-PATCH route in
-    ``routes/library.py`` did inline for projects.
+    """Set a folder's product links and MERGE them into every child file.
 
     Owns BOTH sides: the folder's own ``product_folders`` link and the
     ``product_files`` link of every child. The folder's own row is not
     decoration — :func:`inherit_folder_products` reads ``folder.products`` to
     decide what the NEXT file dropped in here joins.
+
+    ⚠️ **Merge on the children, never replace.** A child can belong to a product
+    nobody linked through this folder — somebody linked the file itself. Each
+    child therefore gets ``(its own products − the folder's PREVIOUS set) ∪ the
+    folder's NEW set``: what the folder used to impose is withdrawn, what it now
+    imposes is added, and a direct link to an unrelated product survives both.
+    Assigning ``child.products = <the new set>`` instead evicted that product
+    from the pivot, and :func:`sync_product_for_file` then deleted its plates
+    for the file — a co-owner eviction, on the folder axis.
+
+    ⚠️ Children go through :func:`sync_product_for_file` and nothing here else
+    touches ``product_files``. The sync owns the pivot, the plates and the
+    seeded parts together, and only it keeps the three in step.
 
     Raises ``ValueError`` naming the ids that do not exist — the route turns
     that into a 404, and the raise happens before anything is mutated.
@@ -194,31 +204,26 @@ async def apply_folder_products(db: AsyncSession, *, folder_id: int, product_ids
         if missing:
             raise ValueError(f"Product(s) not found: {missing}")
 
-    # ⚠️ ``selectinload`` on both sides: assigning a collection that is not
-    # loaded lazy-loads the old one first, and a lazy load inside an async
-    # session is a ``MissingGreenlet``.
+    new_ids = {p.id for p in product_rows}
+
+    # ⚠️ ``selectinload``: assigning a collection that is not loaded lazy-loads
+    # the old one first, and a lazy load inside an async session is a
+    # ``MissingGreenlet``. It is also where ``previous`` comes from — read
+    # before the assignment overwrites it.
     folder = (
         await db.execute(
             select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.products))
         )
     ).scalar_one_or_none()
+    previous: set[int] = set()
     if folder is not None:
+        previous = {p.id for p in folder.products}
         folder.products = list(product_rows)
 
-    children = (
-        (
-            await db.execute(
-                select(LibraryFile)
-                .where(LibraryFile.folder_id == folder_id)
-                .options(selectinload(LibraryFile.products))
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for child in children:
-        child.products = list(product_rows)
-    await sync_products_for_folder(db, folder_id=folder_id, product_ids=[p.id for p in product_rows])
+    child_ids = (await db.execute(select(LibraryFile.id).where(LibraryFile.folder_id == folder_id))).scalars().all()
+    for child_id in child_ids:
+        desired = (await _linked_product_ids(db, child_id) - previous) | new_ids
+        await sync_product_for_file(db, library_file_id=child_id, product_ids=sorted(desired))
 
 
 async def inherit_folder_products(db: AsyncSession, library_file: LibraryFile, folder: LibraryFolder | None) -> None:
@@ -271,13 +276,9 @@ async def purge_folder_product_links(db: AsyncSession, folder_ids: Sequence[int]
 async def resync_file_products(db: AsyncSession, library_file_id: int) -> None:
     """Re-run the sync against the file's CURRENT links — for callers that
     rewrote ``file_metadata`` (re-scan) and changed nothing about the links."""
-    ids = (
-        (await db.execute(select(product_files.c.product_id).where(product_files.c.library_file_id == library_file_id)))
-        .scalars()
-        .all()
-    )
+    ids = await _linked_product_ids(db, library_file_id)
     if ids:
-        await sync_product_for_file(db, library_file_id=library_file_id, product_ids=list(ids))
+        await sync_product_for_file(db, library_file_id=library_file_id, product_ids=sorted(ids))
 
 
 __all__ = [
@@ -290,6 +291,5 @@ __all__ = [
     "resync_file_products",
     "seed_parts_for_product",
     "sync_product_for_file",
-    "sync_products_for_folder",
     "wanted_plate_indices",
 ]
