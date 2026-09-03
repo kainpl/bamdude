@@ -5,7 +5,7 @@ import { ExternalLink, Trash2, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Product, ProductPart, ProductPartUpdate } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
-import { formatMoney } from '../../utils/currency';
+import { getCurrencySymbol } from '../../utils/currency';
 import { ConfirmModal } from '../ConfirmModal';
 import { AddPartRow } from './AddPartRow';
 
@@ -52,10 +52,11 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   // The app-wide currency, fetched the way every other money-showing screen
-  // fetches it; `formatMoney` covers the unresolved first paint.
+  // fetches it; `getCurrencySymbol` falls back to USD on the first paint.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
 
   const [aliasOpen, setAliasOpen] = useState<number | null>(null);
+  const [aliasDraft, setAliasDraft] = useState('');
   const [deleting, setDeleting] = useState<ProductPart | null>(null);
   const [merging, setMerging] = useState<{ source: ProductPart; target: ProductPart } | null>(null);
 
@@ -75,9 +76,12 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
   const addAlias = useMutation({
     mutationFn: ({ partId, nameKey }: { partId: number; nameKey: string }) =>
       api.addProductPartAlias(product.id, partId, nameKey),
+    // The input stays OPEN and empties itself: parts routinely carry several
+    // aliases, and closing after each one made adding a second cost a fresh
+    // click on "+ alias".
     onSuccess: () => {
       invalidate();
-      setAliasOpen(null);
+      setAliasDraft('');
     },
     // A 409 ("that name already belongs to another part") is the server's own
     // sentence in a toast, with the input left open and still holding what was
@@ -141,6 +145,37 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
     }
     // Nothing to send — cleared, fractional, negative, or unchanged.
     field.value = String(part.qty_per_unit);
+  };
+
+  /**
+   * ⚠️ **A blank price is a real `null`, not "unchanged"** — clearing the box
+   * is how a price gets taken off a part, and the server accepts the null.
+   * `Number('')` is 0, so the empty case is decided BEFORE the parse or every
+   * cleared field would quietly become free-of-charge.
+   */
+  const commitPrice = (part: ProductPart, field: HTMLInputElement) => {
+    const raw = field.value.trim();
+    const next = raw === '' ? null : Number(raw);
+    const ok = next === null || (Number.isFinite(next) && next >= 0);
+    if (ok && next !== part.unit_price) {
+      save.mutate({ partId: part.id, data: { unit_price: next } });
+      return;
+    }
+    // Nothing to send — unparseable, negative, or unchanged.
+    field.value = part.unit_price != null ? String(part.unit_price) : '';
+  };
+
+  /** Sourcing url and remarks: same commit-on-blur, one field per patch, so a
+   *  typo in one box can never restate the other two. */
+  const commitText = (part: ProductPart, field: HTMLInputElement, key: 'sourcing_url' | 'remarks') => {
+    const raw = field.value.trim();
+    const next = raw === '' ? null : raw;
+    const current = part[key];
+    if (next !== current) {
+      save.mutate({ partId: part.id, data: { [key]: next } });
+      return;
+    }
+    field.value = current ?? '';
   };
 
   const nameCell = (part: ProductPart) => (
@@ -242,13 +277,18 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
                             <input
                               autoFocus
                               type="text"
+                              value={aliasDraft}
+                              onChange={(e) => setAliasDraft(e.target.value)}
                               data-testid={`part-${part.id}-alias-input`}
                               placeholder={t('products.composition.aliasPlaceholder')}
                               aria-label={t('products.composition.addAlias')}
                               onKeyDown={(e) => {
-                                if (e.key === 'Escape') setAliasOpen(null);
+                                if (e.key === 'Escape') {
+                                  setAliasOpen(null);
+                                  setAliasDraft('');
+                                }
                                 if (e.key !== 'Enter') return;
-                                const nameKey = e.currentTarget.value.trim();
+                                const nameKey = aliasDraft.trim();
                                 // The alias is sent AS TYPED — the server owns
                                 // the normalisation, and folding the case here
                                 // would send a key the operator never wrote.
@@ -260,7 +300,10 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
                             <button
                               type="button"
                               data-testid={`part-${part.id}-alias-add`}
-                              onClick={() => setAliasOpen(part.id)}
+                              onClick={() => {
+                                setAliasOpen(part.id);
+                                setAliasDraft('');
+                              }}
                               className="px-2 py-0.5 rounded text-xs text-bambu-gray hover:text-white hover:bg-bambu-dark transition-colors"
                             >
                               {t('products.composition.addAlias')}
@@ -325,23 +368,69 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
                   >
                     {nameCell(part)}
                     {qtyCell(part)}
-                    <td className="px-3 py-2 text-white tabular-nums">
-                      {part.unit_price != null ? formatMoney(part.unit_price, settings?.currency) : '—'}
+                    {/* ⚠️ Editable, not read-only. The only way to correct a
+                        supplier price used to be delete + re-add, and
+                        `delete_part` takes every order's `quantity_acquired`
+                        with it — a typo in a price cost the procurement
+                        history of the whole product. */}
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-bambu-gray text-xs">
+                          {getCurrencySymbol(settings?.currency || 'USD')}
+                        </span>
+                        <input
+                          key={part.unit_price ?? ''}
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          defaultValue={part.unit_price ?? ''}
+                          disabled={!canEdit}
+                          aria-label={t('products.composition.unitPrice')}
+                          onBlur={(e) => commitPrice(part, e.currentTarget)}
+                          className={`${FIELD_CLASS} w-24 text-right tabular-nums`}
+                        />
+                      </div>
                     </td>
                     <td className="px-3 py-2">
-                      {part.sourcing_url && (
-                        <a
-                          href={part.sourcing_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-bambu-green hover:underline"
-                        >
-                          <ExternalLink className="w-4 h-4" />
-                          {t('products.composition.sourcingUrl')}
-                        </a>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          key={part.sourcing_url ?? ''}
+                          type="url"
+                          defaultValue={part.sourcing_url ?? ''}
+                          disabled={!canEdit}
+                          aria-label={t('products.composition.sourcingUrl')}
+                          placeholder={t('products.composition.sourcingUrl')}
+                          onBlur={(e) => commitText(part, e.currentTarget, 'sourcing_url')}
+                          className={`${FIELD_CLASS} min-w-[10rem]`}
+                        />
+                        {part.sourcing_url && (
+                          <a
+                            href={part.sourcing_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            // The url itself, not the column label — that one
+                            // already names the input beside it, and two
+                            // controls answering to one name is a coin toss.
+                            aria-label={part.sourcing_url}
+                            className="text-bambu-green hover:text-white"
+                          >
+                            <ExternalLink className="w-4 h-4" />
+                          </a>
+                        )}
+                      </div>
                     </td>
-                    <td className="px-3 py-2 text-bambu-gray">{part.remarks}</td>
+                    <td className="px-3 py-2">
+                      <input
+                        key={part.remarks ?? ''}
+                        type="text"
+                        defaultValue={part.remarks ?? ''}
+                        disabled={!canEdit}
+                        aria-label={t('products.composition.remarks')}
+                        placeholder={t('products.composition.remarks')}
+                        onBlur={(e) => commitText(part, e.currentTarget, 'remarks')}
+                        className={`${FIELD_CLASS} min-w-[10rem]`}
+                      />
+                    </td>
                     <td className="px-3 py-2 text-right">{deleteButton(part)}</td>
                   </tr>
                 ))}
@@ -358,7 +447,15 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
       {deleting && (
         <ConfirmModal
           title={t('products.composition.delete')}
-          message={t('products.composition.confirmDelete', { name: deleting.name })}
+          message={t(
+            // ⚠️ A purchased part carries the procurement history: `delete_part`
+            // deletes the rows behind every order's `quantity_acquired`, and
+            // nothing puts them back. The generic sentence did not say so.
+            deleting.kind === 'purchased'
+              ? 'products.composition.confirmDeletePurchased'
+              : 'products.composition.confirmDelete',
+            { name: deleting.name },
+          )}
           confirmText={t('common.delete')}
           variant="danger"
           isLoading={remove.isPending}

@@ -128,4 +128,94 @@ describe('CompositionTable', () => {
     render(<CompositionTable product={product} canEdit />);
     expect(screen.queryByTestId('part-3-alias-add')).not.toBeInTheDocument();
   });
+
+  it('keeps the alias input open and empty after one lands', async () => {
+    // Parts routinely carry several aliases; closing after each one made the
+    // second cost a fresh click on "+ alias".
+    vi.spyOn(api, 'addProductPartAlias').mockResolvedValue({} as ProductPart);
+    render(<CompositionTable product={product} canEdit />);
+
+    fireEvent.click(screen.getByTestId('part-1-alias-add'));
+    const input = screen.getByTestId('part-1-alias-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'Body v2.stl' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect((screen.getByTestId('part-1-alias-input') as HTMLInputElement).value).toBe(''));
+  });
+
+  it('merging sends the picked part as the target and this row as the source', async () => {
+    // `mergeProductPart(productId, target, source)` deletes the SOURCE, so an
+    // argument swap here quietly deletes the wrong part.
+    const merge = vi.spyOn(api, 'mergeProductPart').mockResolvedValue({} as never);
+    render(<CompositionTable product={product} canEdit />);
+
+    const row = within(screen.getByTestId('part-1-row'));
+    fireEvent.change(row.getByLabelText('Merge into…'), { target: { value: '2' } });
+
+    fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+    await waitFor(() => expect(merge).toHaveBeenCalledWith(7, 2, 1));
+  });
+
+  it('edits a purchased part price, and a cleared box takes the price off', async () => {
+    // The only way to correct a price used to be delete + re-add, and deleting
+    // a purchased part deletes every order's acquisitions against it.
+    const patch = vi.spyOn(api, 'updateProductPart').mockResolvedValue({} as ProductPart);
+    render(<CompositionTable product={product} canEdit />);
+
+    const row = within(screen.getByTestId('part-3-row'));
+    const price = row.getByLabelText('Unit price') as HTMLInputElement;
+    fireEvent.change(price, { target: { value: '1.25' } });
+    fireEvent.blur(price);
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(7, 3, { unit_price: 1.25 }));
+
+    patch.mockClear();
+    fireEvent.change(price, { target: { value: '' } });
+    fireEvent.blur(price);
+    // A blank price is a real null — "no price", not "leave it alone".
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(7, 3, { unit_price: null }));
+  });
+
+  it('edits a purchased part sourcing url and remarks one field at a time', async () => {
+    const patch = vi.spyOn(api, 'updateProductPart').mockResolvedValue({} as ProductPart);
+    render(<CompositionTable product={product} canEdit />);
+
+    const row = within(screen.getByTestId('part-3-row'));
+    const url = row.getByLabelText('Where to buy') as HTMLInputElement;
+    fireEvent.change(url, { target: { value: 'https://elsewhere' } });
+    fireEvent.blur(url);
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(7, 3, { sourcing_url: 'https://elsewhere' }));
+
+    patch.mockClear();
+    const remarks = row.getByLabelText('Remarks') as HTMLInputElement;
+    fireEvent.change(remarks, { target: { value: 'stainless only' } });
+    fireEvent.blur(remarks);
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(7, 3, { remarks: 'stainless only' }));
+  });
+
+  it('restores a rejected purchased-part price instead of leaving it on screen', () => {
+    const patch = vi.spyOn(api, 'updateProductPart');
+    render(<CompositionTable product={product} canEdit />);
+
+    const price = within(screen.getByTestId('part-3-row')).getByLabelText('Unit price') as HTMLInputElement;
+    fireEvent.change(price, { target: { value: '-3' } });
+    fireEvent.blur(price);
+
+    expect(price.value).toBe('0.05');
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it('warns that deleting a purchased part takes the acquisitions with it', async () => {
+    render(<CompositionTable product={product} canEdit />);
+
+    fireEvent.click(within(screen.getByTestId('part-3-row')).getByLabelText('Delete part'));
+    expect(await screen.findByText(/recorded as acquired against it/i)).toBeInTheDocument();
+  });
+
+  it('the printed-part delete confirm says nothing about acquisitions', async () => {
+    render(<CompositionTable product={product} canEdit />);
+
+    fireEvent.click(within(screen.getByTestId('part-1-row')).getByLabelText('Delete part'));
+    expect(await screen.findByText(/remove .*flask body.* from the composition/i)).toBeInTheDocument();
+    expect(screen.queryByText(/recorded as acquired against it/i)).not.toBeInTheDocument();
+  });
 });

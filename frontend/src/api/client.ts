@@ -9090,7 +9090,6 @@ export const api = {
     request<ExternalLink>(`/external-links/${id}/icon`, { method: 'DELETE' }),
   getExternalLinkIconUrl: (id: number) => `${API_BASE}/external-links/${id}/icon`,
 
-  // Orders — the prints bound to one, on the `/projects/*` paths the wire kept.
   getProjectArchives: (id: number, limit = 100, offset = 0) =>
     request<Archive[]>(`/projects/${id}/archives?limit=${limit}&offset=${offset}`),
   removeArchivesFromProject: (projectId: number, archiveIds: number[]) =>
@@ -9101,7 +9100,8 @@ export const api = {
 
   // Orders (projects redesign, pass 2)
   //
-  // The UI calls them orders; the endpoints are still `/projects/*`. Every one
+  // The UI calls them orders; the endpoints are still `/projects/*` — including
+  // the two archive calls just above. Every one
   // of the mutating calls answers with the WHOLE order — figures included —
   // because a line edit moves the totals, so callers replace the cached order
   // rather than patching a field into it.
@@ -9424,14 +9424,14 @@ export const api = {
   // caller allowed to set `page`, which is what flips GET /library/files from
   // the legacy flat array to the `{items, meta}` envelope (task 1). Carries
   // the full filter/sort/paging surface task 1 added; used exclusively by
-  // FileManagerPage. LibraryPickerModal and ProjectDetailPage stay on the
-  // legacy `getLibraryFiles` above — see the comment at each call site.
+  // FileManagerPage. LibraryPickerModal stays on the legacy `getLibraryFiles`
+  // above — see the comment at its call site.
   getLibraryFilesPaged: (params: LibraryFileListParams = {}) => {
     const qs = new URLSearchParams();
     if (params.folder_id !== undefined && params.folder_id !== null) {
       qs.set('folder_id', String(params.folder_id));
     }
-    if (params.project_id !== undefined) qs.set('project_id', String(params.project_id));
+    if (params.product_id !== undefined) qs.set('product_id', String(params.product_id));
     if (params.include_root !== undefined) qs.set('include_root', String(params.include_root));
     if (params.scope === 'internal') qs.set('internal_only', 'true');
     else if (params.scope === 'external') qs.set('external_only', 'true');
@@ -10537,7 +10537,8 @@ export interface LibraryGroupingMetadata {
 // / ``recursive`` mirror ``getLibraryFiles``'s positional params exactly.
 export interface LibraryFileListParams {
   folder_id?: number | null;
-  project_id?: number;
+  /** The route's own filter — `project_id` was never read by the server. */
+  product_id?: number;
   include_root?: boolean;
   scope?: 'internal' | 'external';
   tag_ids?: number[];

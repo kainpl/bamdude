@@ -253,7 +253,7 @@ describe('getLibraryFilesPaged (task 2, 2026-08-29 server-driven-lists)', () => 
 
     await api.getLibraryFilesPaged({
       folder_id: 7,
-      project_id: 3,
+      product_id: 3,
       include_root: false,
       scope: 'external',
       tag_ids: [1, 2],
@@ -268,7 +268,10 @@ describe('getLibraryFilesPaged (task 2, 2026-08-29 server-driven-lists)', () => 
     });
 
     expect(query!.get('folder_id')).toBe('7');
-    expect(query!.get('project_id')).toBe('3');
+    // `product_id`, the filter the route actually reads — `project_id` was
+    // sent for months and dropped on the floor server-side.
+    expect(query!.get('product_id')).toBe('3');
+    expect(query!.has('project_id')).toBe(false);
     expect(query!.get('include_root')).toBe('false');
     expect(query!.get('external_only')).toBe('true');
     expect(query!.has('internal_only')).toBe(false);

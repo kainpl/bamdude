@@ -56,6 +56,9 @@ export function CustomerModal({ customer, onClose, onSaved }: CustomerModalProps
     onSuccess: (saved) => {
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       if (customer) queryClient.invalidateQueries({ queryKey: ['customer', customer.id] });
+      // Symmetric to the order side: `OrderListItem.customer_name` is
+      // denormalised, so renaming a customer restates every order card.
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
       showToast(t('customers.toast.saved'));
       onSaved?.(saved);
       onClose();

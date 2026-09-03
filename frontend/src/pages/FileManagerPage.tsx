@@ -610,7 +610,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
 }
 
 // Slice-related predicates moved to ``lib/fileTags`` so FileCard /
-// FileListActions / ProjectDetailPage / bulk-action handlers all read
+// FileListActions and the bulk-action handlers all read
 // from the same ``file_tags`` source. ``isPrintable(file)`` /
 // ``isSliceable(file)`` / ``isMultiPlate(file)`` replace the two
 // filename-suffix helpers that used to live here.

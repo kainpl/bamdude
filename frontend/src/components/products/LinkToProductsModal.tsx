@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link2, Loader2, Package, X } from 'lucide-react';
@@ -53,20 +53,29 @@ export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModal
   const { showToast } = useToast();
   const queryClient = useQueryClient();
 
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(
+  const initialIds = useMemo(
     () => new Set(item.products?.map((p) => p.id) ?? item.product_ids ?? []),
+    [item.products, item.product_ids],
   );
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(initialIds);
+  // ⚠️ Frozen at mount, deliberately. `selectableProducts` keeps an INACTIVE
+  // product on offer only because something is linked to it — so keying that
+  // off the live selection made unticking an inactive chip delete the chip
+  // itself, and the operator could not change their mind without reopening
+  // the dialog. What the item arrived linked to stays offered for the whole
+  // session of this dialog, ticked or not.
+  const keepOffered = useRef(initialIds);
 
   const { data: allProducts } = useQuery({
     queryKey: ['products', {}],
     queryFn: () => api.getProducts({}),
   });
 
-  // Whatever this item is already linked to stays offered, in the catalog or
+  // Whatever this item ARRIVED linked to stays offered, in the catalog or
   // not — see `selectableProducts`.
   const products = useMemo(
-    () => selectableProducts(allProducts, selectedIds),
-    [allProducts, selectedIds],
+    () => selectableProducts(allProducts, keepOffered.current),
+    [allProducts],
   );
 
   const toggle = (id: number) => {

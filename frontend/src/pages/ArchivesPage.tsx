@@ -1010,7 +1010,7 @@ function ArchiveCard({
                 backgroundColor: `${projects?.find(p => p.id === archive.project_id)?.color || '#6b7280'}20`,
                 color: projects?.find(p => p.id === archive.project_id)?.color || '#6b7280'
               }}
-              title={t('archives.card.project', { name: archive.project_name })}
+              title={t('archives.card.order', { name: archive.project_name })}
             >
               {archive.project_name}
             </Link>

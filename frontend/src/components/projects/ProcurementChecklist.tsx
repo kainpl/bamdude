@@ -44,13 +44,20 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
   // column headers is worse than no section at all.
   if (order.procurement.length === 0) return null;
 
-  const commit = (row: ProcurementRow, raw: string) => {
-    const next = Number(raw.trim());
+  const commit = (row: ProcurementRow, field: HTMLInputElement) => {
+    const raw = field.value.trim();
+    const next = Number(raw);
     // A cleared or nonsense field is not "zero acquired" — it is an edit the
     // operator abandoned, so it patches nothing.
-    if (raw.trim() === '' || !Number.isFinite(next) || next < 0) return;
-    if (next === row.acquired) return;
-    save.mutate({ partId: row.part_id, acquired: next });
+    if (raw !== '' && Number.isInteger(next) && next >= 0 && next !== row.acquired) {
+      save.mutate({ partId: row.part_id, acquired: next });
+      return;
+    }
+    // ⚠️ And the box has to say so. The input is uncontrolled and keyed on the
+    // server's number, so skipping the patch re-renders NOTHING — a cleared or
+    // negative field would have sat there looking saved until some unrelated
+    // refetch happened to remount the row.
+    field.value = String(row.acquired);
   };
 
   return (
@@ -83,7 +90,7 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
                     min={0}
                     defaultValue={row.acquired}
                     disabled={!canEdit}
-                    onBlur={(e) => commit(row, e.currentTarget.value)}
+                    onBlur={(e) => commit(row, e.currentTarget)}
                     aria-label={`${row.name} — ${t('orders.procurement.acquired')}`}
                     className="w-20 px-2 py-1 text-right tabular-nums bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:border-bambu-green focus:outline-none disabled:opacity-60"
                   />

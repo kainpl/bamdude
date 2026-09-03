@@ -1071,7 +1071,7 @@ export default {
       sourceFile: 'Source file only - no AMS mapping available',
       gcode: 'GCODE',
       source: 'SOURCE',
-      project: 'Project: {{name}}',
+      order: 'Order: {{name}}',
       layer: '{{count}} layer',
       layers: '{{count}} layers',
       object: '{{count}} object',
@@ -4677,11 +4677,11 @@ export default {
     newCustomer: 'New customer…',
     newCustomerName: 'Customer name',
     create: 'Create',
+    cancelCreate: 'Cancel',
     notInCatalog: 'not in catalog',
   },
 
-  // Projects section, orders face. Grows through the pass-2 redesign;
-  // `projects.*` below still serves the old pages until they are replaced.
+  // Projects section, orders face — the whole vocabulary of the redesign.
   orders: {
     status: {
       active: 'Active',
@@ -4840,6 +4840,7 @@ export default {
       removeFromOrder: 'Remove from order',
       actions: 'Print actions',
       empty: 'No prints for this order yet.',
+      truncated: 'Showing the {{shown}} most recent prints of {{total}}.',
     },
     queue: {
       title: 'Queue',
@@ -4882,6 +4883,7 @@ export default {
     duplicate: {
       title: 'Duplicate order',
       nameLabel: 'Name of the copy',
+      copySuffix: '(Copy)',
       copies: 'Copies: customer, lines, price, tags, notes.',
       excludes: 'Stays with the original: prints, queue items, procurement progress.',
       submit: 'Duplicate',
@@ -5029,6 +5031,8 @@ export default {
       remarks: 'Remarks',
       delete: 'Delete part',
       confirmDelete: 'Remove “{{name}}” from the composition?',
+      confirmDeletePurchased:
+        'Remove “{{name}}” from the composition? Everything recorded as acquired against it, on every order, is deleted with it and cannot be restored.',
       add: 'Add',
       kind: 'Kind',
       addPart: 'Add a part',

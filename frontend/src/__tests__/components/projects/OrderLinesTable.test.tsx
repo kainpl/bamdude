@@ -151,4 +151,16 @@ describe('OrderLinesTable', () => {
     expect(screen.getByTestId('line-10-edit')).toBeInTheDocument();
     expect(screen.queryByTestId('line-10-save')).not.toBeInTheDocument();
   });
+
+  it('offers the plate print to an operator who may control a printer', async () => {
+    // ⚠️ Gated on `printers:control`, NOT on `canEdit`. The button opens
+    // PrintModal, which dispatches to a machine — the same permission the File
+    // Manager's Print gates on. Somebody trusted with the paperwork is not
+    // thereby trusted to start a print.
+    render(<OrderLinesTable order={order} canEdit onPrintPlate={() => {}} />);
+    // `findBy`, not `getBy`: the permission arrives with `/auth/me`, so the
+    // button appears on the render after auth resolves — like every other
+    // permission-gated control in the app.
+    expect(await screen.findByTestId('line-10-print')).toBeInTheDocument();
+  });
 });

@@ -47,4 +47,46 @@ describe('CustomerPicker', () => {
     fireEvent.click(createButton);
     expect(create).not.toHaveBeenCalled();
   });
+
+  it('Escape in the name field steps back to the select without creating anything', async () => {
+    // Picking "new customer…" by accident used to be a one-way door: the only
+    // way back was to create a customer nobody wanted.
+    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+    const create = vi.spyOn(api, 'createCustomer').mockResolvedValue({ id: 9, name: 'Delta' } as never);
+    render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
+    const select = await screen.findByRole('combobox');
+    fireEvent.change(select, {
+      target: { value: screen.getByRole('option', { name: /new customer/i }).getAttribute('value') },
+    });
+
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Delta' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(await screen.findByRole('combobox')).toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('the × beside Create goes back and forgets what was typed', async () => {
+    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+    const create = vi.spyOn(api, 'createCustomer').mockResolvedValue({ id: 9, name: 'Delta' } as never);
+    render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
+    const select = await screen.findByRole('combobox');
+    fireEvent.change(select, {
+      target: { value: screen.getByRole('option', { name: /new customer/i }).getAttribute('value') },
+    });
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Delta' } });
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(await screen.findByRole('combobox')).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+
+    // Back in again: the abandoned name is gone, so Create is not offered.
+    fireEvent.change(screen.getByRole('combobox'), {
+      target: { value: screen.getByRole('option', { name: /new customer/i }).getAttribute('value') },
+    });
+    expect(screen.getByRole('textbox')).toHaveValue('');
+  });
 });

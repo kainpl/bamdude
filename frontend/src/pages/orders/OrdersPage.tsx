@@ -74,15 +74,25 @@ export function OrdersPage() {
   const visible = tab === 'all' ? orders : orders.filter((o) => o.status === tab);
   const groups = groupByCustomer ? groupBy(visible, (o) => o.customer_name ?? t('orders.list.noCustomer')) : null;
 
+  // ⚠️ The customer keys too. `CustomerListFigures` and `CustomerFigures` are
+  // computed from these very orders, so every status change, deletion and
+  // duplicate moves a customer tile. `['customer']` is the PREFIX, not
+  // `['customer', id]` — this page does not know whose order it just touched.
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
+    queryClient.invalidateQueries({ queryKey: ['customers'] });
+    queryClient.invalidateQueries({ queryKey: ['customer'] });
+  };
+
   const setStatus = useMutation({
     mutationFn: ({ id, status }: { id: number; status: ProjectStatus }) => api.updateOrder(id, { status }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
+    onSuccess: invalidate,
     onError: (e: Error) => showToast(e.message, 'error'),
   });
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteOrder(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      invalidate();
       showToast(t('orders.toast.deleted'));
       setDeleting(null);
     },
@@ -91,7 +101,7 @@ export function OrdersPage() {
   const duplicate = useMutation({
     mutationFn: (id: number) => api.duplicateOrder(id),
     onSuccess: (saved) => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      invalidate();
       showToast(t('orders.toast.duplicated'));
       navigate(`/projects/${saved.id}`);
     },

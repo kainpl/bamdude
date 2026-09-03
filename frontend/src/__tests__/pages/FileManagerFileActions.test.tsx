@@ -213,4 +213,29 @@ describe('per-file actions', () => {
     await waitFor(() => expect(assigned).toHaveLength(1));
     expect(assigned[0]).toEqual({ file_ids: [1], tag_ids: [2], action: 'remove' });
   });
+
+  it('lights the product chip on a file the list says is linked', async () => {
+    // ⚠️ The FILE LIST carries `product_ids` and no `products`. Reading only
+    // the latter leaves every card looking unlinked — and the dialog behind
+    // this chip then opens with nothing ticked and saves that emptiness over
+    // the real links.
+    server.use(
+      http.get('/api/v1/library/files', () =>
+        HttpResponse.json({
+          items: [{ ...mockFiles[0], product_ids: [1] }, mockFiles[1]],
+          meta: { total: 2, current_page: 1, per_page: 50, last_page: 1 },
+        }),
+      ),
+    );
+
+    render(<FileManagerPage />);
+    await screen.findByText('Benchy');
+
+    const linked = (await screen.findByText('Benchy')).closest('.group') as HTMLElement;
+    expect(within(linked).getByRole('button', { name: /linked to 1 product/i })).toBeInTheDocument();
+
+    // And the unlinked file offers the plain "link" action instead.
+    const plain = (await screen.findByText('bracket.stl')).closest('.group') as HTMLElement;
+    expect(within(plain).queryByRole('button', { name: /linked to/i })).not.toBeInTheDocument();
+  });
 });

@@ -77,8 +77,12 @@ export function ProductPage() {
 
   const remove = useMutation({
     mutationFn: () => api.deleteProduct(id),
+    // ⚠️ The LIST only — not `invalidate()`. Marking `['product', id]` stale
+    // asks TanStack to refetch a product that no longer exists while this page
+    // is still mounted, which lands a 404 in the query and can flash the error
+    // state over a page that is on its way out. The list is what changed.
     onSuccess: () => {
-      invalidate();
+      queryClient.invalidateQueries({ queryKey: ['products'] });
       showToast(t('products.toast.deleted'));
       navigate('/products');
     },

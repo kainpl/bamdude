@@ -49,6 +49,12 @@ export function BatchAssignOrderModal({ archiveIds, onClose, onDone }: BatchAssi
       queryClient.invalidateQueries({ queryKey: ['project'] });
       queryClient.invalidateQueries({ queryKey: ['project-archives'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      // ⚠️ And the customer keys: the customer tiles are computed from these
+      // orders, so a print moving in or out of one moves its printed totals.
+      // The PREFIX both times — the archive may have just left another
+      // customer's order, and that customer's page is stale too.
+      queryClient.invalidateQueries({ queryKey: ['customers'] });
+      queryClient.invalidateQueries({ queryKey: ['customer'] });
       showToast(t('archives.toast.orderUpdated'));
       onDone?.();
       onClose();

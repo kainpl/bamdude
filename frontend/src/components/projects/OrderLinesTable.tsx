@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight, ChevronUp, Check, Pencil, Printer, Trash2, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, ProjectLine, ProjectLineUpdate } from '../../api/client';
+import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ConfirmModal } from '../ConfirmModal';
 import { ProgressBar } from './ProgressBar';
@@ -82,6 +83,12 @@ interface OrderLinesTableProps {
  * first.
  */
 export function OrderLinesTable({ order, canEdit, onPrintPlate }: OrderLinesTableProps) {
+  // ⚠️ NOT `canEdit`. This button opens `PrintModal`, which dispatches to a
+  // machine — the same `printers:control` the File Manager's Print gates on.
+  // Editing an order line is `projects:*`, and somebody trusted with the
+  // paperwork is not thereby trusted to start a print.
+  const { hasPermission } = useAuth();
+  const canPrint = hasPermission('printers:control');
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
@@ -271,16 +278,18 @@ export function OrderLinesTable({ order, canEdit, onPrintPlate }: OrderLinesTabl
                         {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                       </button>
 
-                      <button
-                        type="button"
-                        data-testid={`line-${line.id}-print`}
-                        onClick={() => onPrintPlate(line)}
-                        title={t('orders.lines.printPlate')}
-                        aria-label={t('orders.lines.printPlate')}
-                        className={ICON_BUTTON_CLASS}
-                      >
-                        <Printer className="w-4 h-4" />
-                      </button>
+                      {canPrint && (
+                        <button
+                          type="button"
+                          data-testid={`line-${line.id}-print`}
+                          onClick={() => onPrintPlate(line)}
+                          title={t('orders.lines.printPlate')}
+                          aria-label={t('orders.lines.printPlate')}
+                          className={ICON_BUTTON_CLASS}
+                        >
+                          <Printer className="w-4 h-4" />
+                        </button>
+                      )}
 
                       {canEdit && editing && (
                         <>

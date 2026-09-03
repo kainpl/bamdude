@@ -895,8 +895,15 @@ async def seed_history_only_products(session_factory) -> None:
 
     The share is the gcd-normalised ratio of the usable totals (quantity minus
     defective), and the line quantity is Σ usable ÷ Σ share — which is the old
-    ``target_parts_count`` whenever the prints were actually run to the target,
-    and that is the only number available here: ``upgrade`` drops the legacy
+    ``target_parts_count`` whenever the prints were actually run to the target.
+    ⚠️ The gcd is why one defective print skews a whole composition: 780 and
+    780 usable give ``gcd = 780`` and a clean ``1 + 1 per unit × 780``, but a
+    single scrapped part turning them into 780 and 779 gives ``gcd = 1``, and
+    the product is then recorded as needing 780 + 779 of the two parts for ONE
+    unit, ordered × 1. The totals are still faithful — it is the split between
+    "per unit" and "how many units" that collapses — and the composition table
+    is where an operator fixes it. That is the only number available here:
+    ``upgrade`` drops the legacy
     columns in the same transaction that creates the products, so by the time
     ``seed`` runs there is no target left to read. Each line is measured
     against its OWN history, so its quantity stays self-consistent even when

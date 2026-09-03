@@ -39,12 +39,16 @@ interface Group {
  * order but named in no group would otherwise vanish from a page whose whole
  * job is to account for it.
  */
+/** What one page of `getProjectArchives` holds — the page size the notice
+ *  below reports against. */
+const ARCHIVE_PAGE = 500;
+
 export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
   const { t } = useTranslation();
 
   const { data: archives, isLoading } = useQuery({
     queryKey: ['project-archives', order.id],
-    queryFn: () => api.getProjectArchives(order.id, 500, 0),
+    queryFn: () => api.getProjectArchives(order.id, ARCHIVE_PAGE, 0),
   });
 
   const byId = new Map((archives ?? []).map((archive) => [archive.id, archive]));
@@ -79,6 +83,17 @@ export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
     });
   }
 
+  // ⚠️ One page, deliberately — an order with more than 500 prints is a
+  // reporting problem, not a browsing one. But `pick()` drops silently: the
+  // ids the response names are still counted by the figures above, so without
+  // this line the page would show fewer prints than it claims and look wrong
+  // rather than truncated. The total is the union of everything the order
+  // NAMES, which is what the figures count; the loaded page is a subset of it.
+  const named = new Set<number>();
+  for (const line of order.lines) for (const id of line.archive_ids ?? []) named.add(id);
+  for (const id of order.other_archive_ids ?? []) named.add(id);
+  const truncated = (archives?.length ?? 0) >= ARCHIVE_PAGE;
+
   const unlisted = (archives ?? []).filter((archive) => !claimed.has(archive.id));
   if (unlisted.length > 0) {
     groups.push({
@@ -95,6 +110,15 @@ export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
         <Package className="w-5 h-5" />
         {t('orders.prints.title')}
       </h2>
+
+      {truncated && (
+        <p data-testid="prints-truncated" className="text-xs text-bambu-gray/70 italic">
+          {t('orders.prints.truncated', {
+            shown: ARCHIVE_PAGE,
+            total: Math.max(named.size, archives?.length ?? 0),
+          })}
+        </p>
+      )}
 
       {isLoading ? (
         <LoadingBlock label={t('common.loading')} className="py-6 text-bambu-gray" />
@@ -141,10 +165,16 @@ function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
   // order, moves the printed roll-up the ORDER CARDS show. Refreshing only
   // this page leaves the list behind a stale number until something else
   // happens to invalidate it.
+  // ⚠️ And the customer keys: the customer tiles are computed from these
+  // orders, so a print filed or removed here moves them. The PREFIX, not
+  // `['customer', order.customer_id]` — the print may have just left another
+  // customer's order, whose page is stale too.
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['project', order.id] });
     queryClient.invalidateQueries({ queryKey: ['project-archives', order.id] });
     queryClient.invalidateQueries({ queryKey: ['projects'] });
+    queryClient.invalidateQueries({ queryKey: ['customers'] });
+    queryClient.invalidateQueries({ queryKey: ['customer'] });
   };
 
   // ⚠️ `project_id` travels with the line: the server rejects (400) a line
@@ -180,13 +210,15 @@ function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
       {/* ⚠️ `fileName`, not `search` — ArchivesPage reads `printer`, `file` and
           `fileName` off the URL and nothing else, so the `?search=` this was
           copied with never reached the page at all. And only `file` FILTERS:
-          `fileName` merely labels the chip, so without a library file id the
-          link opens an unfiltered archive list wearing this print's name. */}
+          `fileName` merely LABELS the chip. Carrying it alone therefore opened
+          an unfiltered archive list wearing this print's name, which reads as
+          a filter that silently failed — without a library file id the link
+          goes to the plain list instead. */}
       <Link
         to={
           archive.library_file_id != null
             ? `/archives?file=${archive.library_file_id}&fileName=${encodeURIComponent(archive.filename)}`
-            : `/archives?fileName=${encodeURIComponent(archive.filename)}`
+            : '/archives'
         }
         className="w-14 h-14 rounded bg-bambu-dark flex items-center justify-center overflow-hidden flex-shrink-0"
       >

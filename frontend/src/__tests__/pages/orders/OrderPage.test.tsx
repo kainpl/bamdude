@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { Routes, Route } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { OrderPage } from '../../../pages/orders/OrderPage';
@@ -66,6 +67,19 @@ const order = {
 afterEach(() => {
   window.history.pushState({}, '', '/');
 });
+
+/** A stand-in for CustomerPage's own query, mounted on the same client so an
+ *  invalidation of the `['customer', …]` PREFIX shows up as a refetch. */
+function CustomerProbe({ onFetch }: { onFetch: () => void }) {
+  useQuery({
+    queryKey: ['customer', 2],
+    queryFn: async () => {
+      onFetch();
+      return null;
+    },
+  });
+  return null;
+}
 
 describe('OrderPage', () => {
   beforeEach(() => {
@@ -149,5 +163,31 @@ describe('OrderPage', () => {
 
     expect(screen.getByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
     expect(screen.queryByText(/could not load this order/i)).not.toBeInTheDocument();
+  });
+
+  it('refreshes the customer keys when an order is completed', async () => {
+    // The customer tiles are computed from these orders, so completing one
+    // moves them. With a 60 s staleTime a key nobody invalidated is not
+    // refetched on navigation for a minute — long enough to read a fresh order
+    // grid under totals that still count this order as active.
+    vi.spyOn(api, 'getOrder').mockResolvedValue(order as never);
+    vi.spyOn(api, 'updateOrder').mockResolvedValue({ ...order, status: 'completed' } as never);
+    const probeFetch = vi.fn();
+
+    window.history.pushState({}, '', '/projects/1');
+    render(
+      <>
+        <CustomerProbe onFetch={probeFetch} />
+        <Routes>
+          <Route path="/projects/:id" element={<OrderPage />} />
+        </Routes>
+      </>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
+    await waitFor(() => expect(probeFetch).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByTestId('close-suggestion-complete'));
+    await waitFor(() => expect(probeFetch).toHaveBeenCalledTimes(2));
   });
 });

@@ -1076,7 +1076,7 @@ export default {
       sourceFile: 'Тільки вихідний файл - мапування AMS недоступне',
       gcode: 'GCODE',
       source: 'ВИХІДНИЙ',
-      project: 'Проєкт: {{name}}',
+      order: 'Замовлення: {{name}}',
       layer: '{{count}} шар',
       layers: '{{count}} шарів',
       object: '{{count}} об\'єкт',
@@ -4719,11 +4719,11 @@ export default {
     newCustomer: 'Новий замовник…',
     newCustomerName: "Ім'я замовника",
     create: 'Створити',
+    cancelCreate: 'Скасувати',
     notInCatalog: 'не в каталозі',
   },
 
-  // Projects section, orders face. Grows through the pass-2 redesign;
-  // `projects.*` below still serves the old pages until they are replaced.
+  // Projects section, orders face — the whole vocabulary of the redesign.
   orders: {
     status: {
       active: 'Активне',
@@ -4884,6 +4884,7 @@ export default {
       removeFromOrder: 'Прибрати із замовлення',
       actions: 'Дії з друком',
       empty: 'Для цього замовлення ще немає друків.',
+      truncated: 'Показано {{shown}} найновіших друків із {{total}}.',
     },
     queue: {
       title: 'Черга',
@@ -4926,6 +4927,7 @@ export default {
     duplicate: {
       title: 'Дублювати замовлення',
       nameLabel: 'Назва копії',
+      copySuffix: '(копія)',
       copies: 'Копіюється: замовник, позиції, ціна, теги, нотатки.',
       excludes: 'Залишається в оригіналі: друки, черга, поступ закупівлі.',
       submit: 'Дублювати',
@@ -5079,6 +5081,8 @@ export default {
       remarks: 'Примітки',
       delete: 'Видалити деталь',
       confirmDelete: 'Прибрати «{{name}}» зі складу виробу?',
+      confirmDeletePurchased:
+        'Прибрати «{{name}}» зі складу виробу? Усе, що записано як придбане за цією позицією, у всіх замовленнях, буде видалено разом із нею й відновити це неможливо.',
       add: 'Додати',
       kind: 'Тип',
       addPart: 'Додати деталь',

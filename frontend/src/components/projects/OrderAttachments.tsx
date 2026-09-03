@@ -5,17 +5,14 @@ import { Download, Loader2, Paperclip, Trash2, Upload } from 'lucide-react';
 import { api, getAuthToken } from '../../api/client';
 import type { Order, ProjectAttachment } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+// The app-wide byte formatter, rather than the third hand-rolled `MB / KB / B`
+// ladder — the File Manager and the library both read sizes through this one.
+import { formatFileSize } from '../../utils/file';
 import { Button } from '../Button';
 
 interface OrderAttachmentsProps {
   order: Order;
   canEdit: boolean;
-}
-
-function formatSize(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${bytes} B`;
 }
 
 /**
@@ -116,7 +113,7 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
             >
               <div className="min-w-0 flex-1">
                 <p className="text-sm text-white truncate">{attachment.original_name || attachment.filename}</p>
-                <p className="text-xs text-bambu-gray">{formatSize(attachment.size)}</p>
+                <p className="text-xs text-bambu-gray">{formatFileSize(attachment.size)}</p>
               </div>
               <button
                 type="button"

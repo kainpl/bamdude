@@ -57,9 +57,17 @@ export function OrderPage() {
     enabled: Number.isFinite(id),
   });
 
+  // ⚠️ The customer keys too. The customer page's tiles are computed from this
+  // order and its siblings, so completing or deleting it moves them; with a
+  // 60 s `staleTime` a key left un-invalidated is not refetched on navigation
+  // for a minute, which is long enough to read a fresh grid under stale totals.
+  // `['customer']` is the PREFIX — an order can move between customers, and
+  // then the customer it LEFT is stale too.
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['project', id] });
     queryClient.invalidateQueries({ queryKey: ['projects'] });
+    queryClient.invalidateQueries({ queryKey: ['customers'] });
+    queryClient.invalidateQueries({ queryKey: ['customer'] });
   };
 
   const setStatus = useMutation({

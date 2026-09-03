@@ -186,6 +186,10 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       // edit could have touched have to reload their figures and prints.
       queryClient.invalidateQueries({ queryKey: ['project'] });
       queryClient.invalidateQueries({ queryKey: ['project-archives'] });
+      // ⚠️ And the customer keys — the customer tiles count these prints.
+      // The PREFIX: the archive may have just left another customer's order.
+      queryClient.invalidateQueries({ queryKey: ['customers'] });
+      queryClient.invalidateQueries({ queryKey: ['customer'] });
       onClose();
     },
   });

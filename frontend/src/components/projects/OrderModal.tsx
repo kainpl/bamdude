@@ -27,6 +27,20 @@ const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
 const LABEL_CLASS = 'block text-sm font-medium text-white mb-1';
 
+/**
+ * The price field as a number, or `fallback` when it cannot be read as one.
+ *
+ * An empty field means "no price" and is a real `null`; anything the browser's
+ * number input let through that `Number()` still cannot parse is NOT a null —
+ * `NaN` goes over the wire as `null` and would clear a price nobody meant to
+ * clear, so an unparseable value keeps whatever was there before.
+ */
+function readPrice(raw: string, fallback: number | null): number | null {
+  if (raw.trim() === '') return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 interface OrderModalProps {
   order?: OrderListItem | Order | null;
   defaultCustomerId?: number | null;
@@ -109,7 +123,10 @@ export function OrderModal({ order, defaultCustomerId, onClose, onSaved }: Order
         const normDueDate = dueDate === '' ? null : dueDate;
         if (normDueDate !== initialDueDate) data.due_date = normDueDate;
         if (priority !== initialPriority) data.priority = priority;
-        const normPrice = price.trim() === '' ? null : Number(price);
+        // ⚠️ `Number('12,50')` is NaN, and NaN serialises to `null` — a typo in
+        // the price field would have silently CLEARED the price instead of
+        // being rejected. An unparseable value counts as "no change".
+        const normPrice = readPrice(price, initialPrice);
         if (normPrice !== initialPrice) data.price = normPrice;
         const normUrl = url.trim() === '' ? null : url.trim();
         if (normUrl !== (initialUrl === '' ? null : initialUrl)) data.url = normUrl;
@@ -124,7 +141,7 @@ export function OrderModal({ order, defaultCustomerId, onClose, onSaved }: Order
         tags: tags.trim() === '' ? null : tags.trim(),
         due_date: dueDate === '' ? null : dueDate,
         priority,
-        price: price.trim() === '' ? null : Number(price),
+        price: readPrice(price, null),
         url: url.trim() === '' ? null : url.trim(),
       };
       return api.createOrder(data);
@@ -132,6 +149,12 @@ export function OrderModal({ order, defaultCustomerId, onClose, onSaved }: Order
     onSuccess: (saved) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       if (order) queryClient.invalidateQueries({ queryKey: ['project', order.id] });
+      // ⚠️ The customer tiles are computed from these orders, so a price, a
+      // status or a re-assignment moves them. `['customer']` is the PREFIX and
+      // not `['customer', id]`: an order can move between customers, which
+      // leaves the OLD customer's page stale as well as the new one's.
+      queryClient.invalidateQueries({ queryKey: ['customers'] });
+      queryClient.invalidateQueries({ queryKey: ['customer'] });
       showToast(t('orders.toast.saved'));
       onSaved?.(saved);
       onClose();

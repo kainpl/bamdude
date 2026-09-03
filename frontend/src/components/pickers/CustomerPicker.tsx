@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { X } from 'lucide-react';
 import { api } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 
@@ -38,6 +39,11 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate }: Custo
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
+  const cancelCreate = () => {
+    setCreating(false);
+    setName('');
+  };
+
   if (creating) {
     return (
       <div className="flex gap-2">
@@ -45,6 +51,15 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate }: Custo
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          // ⚠️ `stopPropagation` is the point: the modals this picker lives in
+          // close themselves on a `window` keydown, so an unguarded Escape
+          // here would throw away the whole order the user was editing
+          // instead of stepping back out of the create field.
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape') return;
+            e.stopPropagation();
+            cancelCreate();
+          }}
           placeholder={t('pickers.newCustomerName')}
           className={FIELD_CLASS}
           disabled={disabled}
@@ -57,6 +72,18 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate }: Custo
           className="px-3 py-2 rounded-lg text-sm bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors whitespace-nowrap"
         >
           {t('pickers.create')}
+        </button>
+        {/* Picking "new customer…" by accident used to be a one-way door: the
+            select was gone and only creating a customer brought it back. */}
+        <button
+          type="button"
+          onClick={cancelCreate}
+          disabled={createMutation.isPending}
+          aria-label={t('pickers.cancelCreate')}
+          title={t('pickers.cancelCreate')}
+          className="px-2 py-2 rounded-lg text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+        >
+          <X className="w-4 h-4" />
         </button>
       </div>
     );

@@ -84,7 +84,7 @@ export function DuplicateOrderModal({ order, onClose }: DuplicateOrderModalProps
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder={`${order.name} (Copy)`}
+                placeholder={`${order.name} ${t('orders.duplicate.copySuffix')}`}
                 disabled={duplicate.isPending}
                 className="w-full px-3 py-2 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary text-white placeholder:text-bambu-gray focus:outline-none focus:border-bambu-green"
               />
