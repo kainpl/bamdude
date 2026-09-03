@@ -106,6 +106,7 @@ from backend.app.utils.filename import (
     safe_path_component,
     validate_print_filename,
 )
+from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 from backend.app.utils.threemf_tools import (
     expand_to_project_slots,
@@ -4531,7 +4532,12 @@ async def get_library_file_card_download(
         content=data,
         media_type=media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{name}"',
+            # ⚠️ Never an f-string here. ``name`` is a filename a STRANGER chose
+            # inside a 3MF somebody downloaded: Starlette encodes headers as
+            # latin-1, so a Cyrillic name is a 500, and a quote in the name
+            # breaks out of the quoted parameter. ``build_content_disposition``
+            # is the RFC 6266 form the rest of the codebase already uses.
+            "Content-Disposition": build_content_disposition(name),
             "Cache-Control": "private",
         },
     )

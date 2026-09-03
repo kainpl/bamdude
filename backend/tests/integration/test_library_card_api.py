@@ -353,3 +353,44 @@ async def test_a_member_past_the_size_cap_is_413_not_a_50_mb_allocation(
     # The card itself still lists everything — the cap bounds a transfer, not a listing.
     listed = (await committing_client.get(f"{base}/card")).json()
     assert [e["name"] for e in listed["auxiliaries"]["pictures"]] == ["a.png", "b.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_a_download_header_survives_the_name_a_stranger_chose(committing_client, db_session, tmp_path):
+    """``card-download`` names the file after a member of a FOREIGN 3MF.
+
+    Starlette encodes response headers as latin-1, so a Cyrillic filename in a
+    raw ``filename="..."`` parameter is a 500 — and a quote inside the name
+    breaks out of the quoted parameter, which is a header-injection shape rather
+    than a cosmetic bug. ``build_content_disposition`` is the RFC 6266 form the
+    archive, label, maintenance, printer and support downloads already use: an
+    ASCII fallback with the quotes stripped, plus ``filename*=UTF-8''`` carrying
+    the real name percent-encoded, which is the one every modern browser
+    prefers. The assertion is on what that helper produces, not on a rewrite of
+    its rules here.
+    """
+    from backend.app.utils.http import build_content_disposition
+
+    hostile = 'специфікація "v2".csv'
+    file = await make_card_file(
+        db_session,
+        tmp_path,
+        name="foreign.3mf",
+        members={f"Auxiliaries/Bill of Materials/{hostile}": BOM_CSV},
+    )
+
+    listed = (await committing_client.get(f"/api/v1/library/files/{file.id}/card")).json()
+    entry = listed["auxiliaries"]["bom_docs"][0]
+    assert entry["name"] == hostile
+
+    got = await committing_client.get(entry["url"])
+    assert got.status_code == 200, got.text
+    assert got.content == BOM_CSV
+    header = got.headers["content-disposition"]
+    assert header == build_content_disposition(hostile)
+    # Spelled out once, so a change to the helper cannot pass unnoticed here:
+    # the fallback carries no quote and no Cyrillic, and the real name rides in
+    # the RFC 5987 parameter.
+    assert 'filename="v2.csv"' in header
+    assert "filename*=UTF-8''" in header and "%22v2%22" in header
+    assert header.isascii(), "a latin-1 header encoder gets nothing but ASCII from us"

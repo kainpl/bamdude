@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import logging
@@ -3665,8 +3666,12 @@ async def get_project_page(
     if not file_path.is_file():
         raise HTTPException(404, "Archive file not found")
 
+    # Off the event loop: ``parse`` inflates ``3D/3dmodel.model`` and regex-scans
+    # it, which for a real model is megabytes of CPU. Same reason the library
+    # card routes thread theirs — a long walk holds neither the transaction nor
+    # the loop.
     parser = ThreeMFCardParser(file_path)
-    data = to_project_page_dict(parser.parse(), archive_id)
+    data = to_project_page_dict(await asyncio.to_thread(parser.parse), archive_id)
 
     return ProjectPageResponse(**data)
 
@@ -3694,14 +3699,17 @@ async def update_project_page(
     if not file_path.is_file():
         raise HTTPException(404, "Archive file not found")
 
+    # ``update_metadata`` REWRITES the whole 3MF — every member copied through a
+    # temp file and moved back over the original. That is the heaviest thing any
+    # of these three handlers does, and it must not run on the loop.
     parser = ThreeMFCardParser(file_path)
-    success = parser.update_metadata(update_data)
+    success = await asyncio.to_thread(parser.update_metadata, update_data)
 
     if not success:
         raise HTTPException(500, "Failed to update project page")
 
     # Return updated data
-    return to_project_page_dict(parser.parse(), archive_id)
+    return to_project_page_dict(await asyncio.to_thread(parser.parse), archive_id)
 
 
 @router.get("/{archive_id}/project-image/{image_path:path}")
@@ -3726,7 +3734,7 @@ async def get_project_image(
         raise HTTPException(404, "Archive file not found")
 
     parser = ThreeMFCardParser(file_path)
-    result = parser.read(image_path)
+    result = await asyncio.to_thread(parser.read, image_path)
 
     if not result:
         raise HTTPException(404, "Image not found in 3MF file")
