@@ -1412,6 +1412,110 @@ export interface OrderListParams {
   product_id?: number;
 }
 
+// ---- the print plan (pass 3) ----
+//
+// One contiguous block mirroring `backend/app/schemas/project.py`'s own plan
+// block. Every `part_id → count` map the engine speaks in becomes a list of
+// `PlanPartCount` on the wire, sorted by part id, with the names resolved by
+// the route.
+
+/** One part, counted. */
+export interface PlanPartCount {
+  part_id: number;
+  name: string;
+  count: number;
+}
+
+/**
+ * One plate of the plan, printed `count` times.
+ *
+ * ⚠️ `print_time_seconds` / `filament_used_grams` / `cost` are **per print** —
+ * `count` is the multiplier, which is what lets the block redo the arithmetic
+ * while the operator edits the count. `useful`, by contrast, is **aggregated
+ * over the row's prints** and clipped to what was still outstanding at each
+ * pick, so it is NOT the plate's per-print yield: see `planMath.ts`.
+ */
+export interface PlanRow {
+  /** `ProductPlate.id` — NOT the slicer's plate index. */
+  plate_id: number;
+  library_file_id: number;
+  /** 0 means the whole file rather than a numbered plate. */
+  plate_index: number;
+  filename: string;
+  count: number;
+  useful: PlanPartCount[];
+  print_time_seconds: number | null;
+  filament_used_grams: number | null;
+  cost: number | null;
+  /** Sliced, but the file carries no estimate — the plate was ranked on its
+   *  useful count alone. */
+  time_unknown: boolean;
+}
+
+export interface LinePlan {
+  line_id: number;
+  product_id: number;
+  product_name: string;
+  material: string | null;
+  /** Non-zero entries only. */
+  outstanding_before: PlanPartCount[];
+  rows: PlanRow[];
+  /** Non-zero entries only. */
+  surplus_after: PlanPartCount[];
+  /** Parts still outstanding that no candidate plate yields at all — the count
+   *  is what is missing, and there is nothing to print for it yet. */
+  unsatisfiable: PlanPartCount[];
+  /** `ProductPlate` ids eligible for this line. */
+  candidates: number[];
+  /** `ProductPlate` ids skipped because they are not sliced. */
+  not_sliced: number[];
+}
+
+export interface PlanTotals {
+  prints: number;
+  /** null as soon as ONE row has no estimate. */
+  print_time_seconds: number | null;
+  filament_used_grams: number;
+  /** null when the farm has no filament rate. */
+  cost: number | null;
+}
+
+export interface OrderPlan {
+  lines: LinePlan[];
+  totals: PlanTotals;
+}
+
+export interface PlanEnqueueItem {
+  /** `ProductPlate.id`. */
+  plate_id: number;
+  /** 1…999, server-validated. */
+  count: number;
+  line_id: number;
+}
+
+/** `auto` = the auto-queue distributor picks the printer; `printer` = that
+ *  printer's own queue. Naming a printer is a ROUTING choice, never a dispatch
+ *  one — nothing here or downstream asks whether it is ready. */
+export interface PlanEnqueueTarget {
+  kind: 'auto' | 'printer';
+  printer_id?: number | null;
+}
+
+export interface PlanEnqueueRequest {
+  items: PlanEnqueueItem[];
+  target: PlanEnqueueTarget;
+}
+
+export interface PlanEnqueueCreated {
+  line_id: number;
+  plate_id: number;
+  queue_item_ids: number[];
+}
+
+export interface PlanEnqueueResponse {
+  created: PlanEnqueueCreated[];
+}
+
 // ---- customers ----
 
 /** What the list endpoint computes — one grouped query, nothing archive-derived. */
@@ -9145,6 +9249,16 @@ export const api = {
     request<{ message: string }>(`/projects/${orderId}/add-archives`, {
       method: 'POST',
       body: JSON.stringify({ archive_ids: archiveIds, project_line_id: lineId ?? null }),
+    }),
+
+  /** What to print next for every line of the order. Computed on every read,
+   *  never cached server-side: a second call after enqueuing plans that much
+   *  less. */
+  getOrderPlan: (id: number) => request<OrderPlan>(`/projects/${id}/plan`),
+  enqueueOrderPlan: (id: number, body: PlanEnqueueRequest) =>
+    request<PlanEnqueueResponse>(`/projects/${id}/plan/enqueue`, {
+      method: 'POST',
+      body: JSON.stringify(body),
     }),
 
   // Customers
