@@ -1,56 +1,62 @@
 /**
- * Which projects may be offered for binding.
+ * Which orders and products may be offered for binding.
  *
- * Archiving a project is the explicit "stop showing me this" action — the same
- * meaning it carries for printers, where an archived one leaves every place
- * that offers a choice instead of being labelled in small print.
+ * ⚠️ **The trap this is mostly here to pin:** a row already bound must stay on
+ * the list even when it is closed or out of the catalog. Hiding it renders the
+ * field as "nothing chosen", and the next save writes that emptiness back — the
+ * filter would quietly destroy the binding it was meant to tidy around.
  *
- * ⚠️ **The trap this is mostly here to pin:** a project already bound must stay
- * on the list even when archived. Hiding it renders the field as "nothing
- * chosen", and the next save writes that emptiness back — the filter would
- * quietly destroy the binding it was meant to tidy around.
- *
- * ⚠️ **`completed` is still offered.** Only `archived` means "put away"; a
- * finished project can still take a reprint.
+ * ⚠️ **`completed` is NOT offered.** An order has three statuses — `active`,
+ * `completed`, `cancelled` — and only the first is open work. A reprint for a
+ * closed order is filed by reopening it, not by quietly adding to a finished
+ * ledger.
  */
 
 import { describe, it, expect } from 'vitest';
-import { selectableProjects } from '../../utils/projects';
+import { selectableProjects, selectableProducts } from '../../utils/projects';
 
 const ACTIVE = { id: 1, status: 'active' };
 const COMPLETED = { id: 2, status: 'completed' };
-const ARCHIVED = { id: 3, status: 'archived' };
-const ALL = [ACTIVE, COMPLETED, ARCHIVED];
+const CANCELLED = { id: 3, status: 'cancelled' };
+const ALL = [ACTIVE, COMPLETED, CANCELLED];
 
 describe('selectableProjects', () => {
-  it('drops archived projects', () => {
-    expect(selectableProjects(ALL).map((p) => p.id)).toEqual([1, 2]);
+  it('offers active orders only', () => {
+    expect(selectableProjects(ALL)).toEqual([ACTIVE]);
   });
 
-  it('keeps completed ones, which are finished rather than put away', () => {
-    expect(selectableProjects(ALL).map((p) => p.id)).toContain(2);
+  it('keeps a closed order that is already bound', () => {
+    expect(selectableProjects(ALL, [2])).toEqual([ACTIVE, COMPLETED]);
+    // The multi-select dialogs hold the current binding as a Set.
+    expect(selectableProjects(ALL, new Set([3]))).toEqual([ACTIVE, CANCELLED]);
   });
 
-  it('keeps an archived project that is already bound', () => {
-    expect(selectableProjects(ALL, [3]).map((p) => p.id)).toEqual([1, 2, 3]);
+  it('does not resurrect an unbound closed order', () => {
+    expect(selectableProjects(ALL, [1])).toEqual([ACTIVE]);
   });
 
-  it('keeps it when the binding is a Set, as the multi-select dialogs hold it', () => {
-    expect(selectableProjects(ALL, new Set([3])).map((p) => p.id)).toEqual([1, 2, 3]);
-  });
-
-  it('does not resurrect an archived project that is not bound', () => {
-    expect(selectableProjects(ALL, [1]).map((p) => p.id)).toEqual([1, 2]);
-  });
-
-  it('answers an empty list for nothing at all', () => {
+  it('tolerates empty input and rows without a status', () => {
     expect(selectableProjects(undefined)).toEqual([]);
     expect(selectableProjects(null)).toEqual([]);
+    expect(selectableProjects([{ id: 9 }])).toEqual([]);
+  });
+});
+
+describe('selectableProducts', () => {
+  const IN = { id: 1, is_active: true };
+  const OUT = { id: 2, is_active: false };
+
+  it('offers catalog products only, plus the bound one', () => {
+    expect(selectableProducts([IN, OUT])).toEqual([IN]);
+    expect(selectableProducts([IN, OUT], [2])).toEqual([IN, OUT]);
   });
 
-  it('leaves a project with no status alone', () => {
-    /* Only an explicit "archived" hides anything — an absent status is not a
-       reason to drop a row from a picker. */
-    expect(selectableProjects([{ id: 9 }]).map((p) => p.id)).toEqual([9]);
+  it('treats a missing flag as in the catalog', () => {
+    expect(selectableProducts([{ id: 3 }])).toEqual([{ id: 3 }]);
+  });
+
+  it('tolerates empty input', () => {
+    expect(selectableProducts(undefined)).toEqual([]);
+    expect(selectableProducts(null)).toEqual([]);
   });
 });

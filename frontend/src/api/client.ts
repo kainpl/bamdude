@@ -951,6 +951,9 @@ export interface Archive {
   id: number;
   printer_id: number | null;
   project_id: number | null;
+  /** Pass 2: which line of the order this print counts against. NULL means the
+   *  print is bound to the order but to no line — the order's "other prints". */
+  project_line_id: number | null;
   project_name: string | null;
   filename: string;
   file_path: string;
@@ -1510,6 +1513,347 @@ export interface TimelineEvent {
   title: string;
   description: string | null;
   metadata: Record<string, unknown> | null;
+}
+
+// ---------------------------------------------------------------------------
+// Orders / products / customers (projects redesign, pass 2)
+//
+// These mirror the pass-1 wire schemas one field per field — see
+// `backend/app/schemas/{customer,product,project}.py`. They live BESIDE the
+// legacy `Project*` types above rather than replacing them: the old pages
+// still import those, and both sets are compiled at once until the final
+// cutover removes the old ones in a single commit.
+//
+// "Order" is the UI's name for what the backend still calls a project — the
+// endpoint paths stay `/projects/*`, so a function name and a URL deliberately
+// disagree here. The wire is the thing that cannot be renamed cheaply.
+// ---------------------------------------------------------------------------
+
+/** `active` is the only OPEN status. The other two are closed ledgers. */
+export type ProjectStatus = 'active' | 'completed' | 'cancelled';
+export type ProjectPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+/**
+ * One part of a product, counted against one order line. `need` is what the
+ * line asks for, `usable` what has been printed and is not scrap, `surplus`
+ * what was printed beyond the need — all server-computed, never derived here.
+ */
+export interface PartFigures {
+  part_id: number;
+  name: string;
+  qty_per_unit: number;
+  need: number;
+  usable: number;
+  in_progress: number;
+  remaining: number;
+  surplus: number;
+}
+
+export interface ProjectLine {
+  id: number;
+  product_id: number;
+  product_name: string;
+  quantity: number;
+  material: string | null;
+  color: string | null;
+  note: string | null;
+  sort_order: number;
+  units_printed: number;
+  progress: number;
+  parts: PartFigures[];
+  /** Archives attributed to this line, in processing order. One archive can
+   *  appear under two lines — this is not a partition of the order's prints. */
+  archive_ids: number[];
+}
+
+export interface ProjectLineCreate {
+  product_id: number;
+  quantity?: number;
+  material?: string | null;
+  color?: string | null;
+  note?: string | null;
+}
+
+export interface ProjectLineUpdate {
+  quantity?: number;
+  material?: string | null;
+  color?: string | null;
+  note?: string | null;
+  sort_order?: number;
+}
+
+/** A purchased part rolled up across every line of the order. */
+export interface ProcurementRow {
+  part_id: number;
+  name: string;
+  need: number;
+  acquired: number;
+  remaining: number;
+}
+
+export interface ProjectFigures {
+  ordered: number;
+  printed: number;
+  complete: number;
+  remaining: number;
+  total_time_seconds: number;
+  total_filament_grams: number;
+  total_cost: number;
+  defective: number;
+  /** null when the order carries no price — not zero, which would read as
+   *  "sold at cost". */
+  margin: number | null;
+  progress: number;
+  other_prints_count: number;
+  all_printed: boolean;
+}
+
+export interface Order {
+  id: number;
+  name: string;
+  customer_id: number | null;
+  customer_name: string | null;
+  description: string | null;
+  color: string | null;
+  status: ProjectStatus;
+  notes: string | null;
+  attachments: ProjectAttachment[] | null;
+  tags: string | null;
+  due_date: string | null;
+  priority: ProjectPriority;
+  price: number | null;
+  url: string | null;
+  cover_image_filename: string | null;
+  created_at: string;
+  updated_at: string;
+  lines: ProjectLine[];
+  procurement: ProcurementRow[];
+  figures: ProjectFigures;
+  /** Prints bound to the order that no line could take. */
+  other_archive_ids: number[];
+}
+
+export interface OrderListItem {
+  id: number;
+  name: string;
+  customer_id: number | null;
+  customer_name: string | null;
+  color: string | null;
+  status: ProjectStatus;
+  due_date: string | null;
+  priority: ProjectPriority;
+  price: number | null;
+  tags: string | null;
+  cover_image_filename: string | null;
+  created_at: string;
+  lines_count: number;
+  ordered: number;
+  printed: number;
+  progress: number;
+  /** One entry per line, in line order; null where that product has no cover. */
+  product_cover_filenames: (string | null)[];
+}
+
+export interface OrderCreate {
+  name: string;
+  customer_id?: number | null;
+  description?: string | null;
+  color?: string | null;
+  notes?: string | null;
+  tags?: string | null;
+  due_date?: string | null;
+  priority?: ProjectPriority;
+  price?: number | null;
+  url?: string | null;
+}
+
+export interface OrderUpdate {
+  name?: string;
+  description?: string | null;
+  color?: string | null;
+  status?: ProjectStatus;
+  notes?: string | null;
+  tags?: string | null;
+  url?: string | null;
+  customer_id?: number | null;
+  due_date?: string | null;
+  priority?: ProjectPriority;
+  price?: number | null;
+}
+
+/** The three filters compose server-side; `product_id` selects orders that
+ *  have a line of that product. */
+export interface OrderListParams {
+  status?: ProjectStatus;
+  customer_id?: number;
+  product_id?: number;
+}
+
+// ---- customers ----
+
+/** What the list endpoint computes — one grouped query, nothing archive-derived. */
+export interface CustomerListFigures {
+  projects: number;
+  active: number;
+  completed: number;
+  cancelled: number;
+  total_price: number;
+}
+
+/** The detail endpoint's superset. Reading a list row for `printed` is the
+ *  mistake this split exists to make visible. */
+export interface CustomerFigures extends CustomerListFigures {
+  ordered: number;
+  printed: number;
+  total_cost: number;
+}
+
+export interface Customer {
+  id: number;
+  name: string;
+  contact: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  figures: CustomerListFigures | CustomerFigures;
+}
+
+export interface CustomerCreate {
+  name: string;
+  contact?: string | null;
+  notes?: string | null;
+}
+
+export interface CustomerUpdate {
+  name?: string;
+  contact?: string | null;
+  notes?: string | null;
+}
+
+// ---- products ----
+
+/** A printed part is produced by a plate; a purchased one is bought, and is
+ *  what the order's procurement list is made of. */
+export type ProductPartKind = 'printed' | 'purchased';
+
+/** Lightweight product reference embedded in library file/folder responses.
+ *  Distinct from `ProjectRef`, which carries a colour instead. */
+export interface ProductRef {
+  id: number;
+  name: string;
+  is_active: boolean;
+}
+
+export interface ProductPart {
+  id: number;
+  kind: ProductPartKind;
+  name: string;
+  /** Normalised name the plate walk matches on. */
+  name_key: string;
+  qty_per_unit: number;
+  /** Extra keys that also mean this part. Never null. */
+  aliases: string[];
+  /** True when the part was discovered from a plate rather than typed. */
+  auto: boolean;
+  unit_price: number | null;
+  sourcing_url: string | null;
+  remarks: string | null;
+  sort_order: number;
+}
+
+export interface ProductPartCreate {
+  kind: ProductPartKind;
+  name: string;
+  qty_per_unit?: number;
+  unit_price?: number | null;
+  sourcing_url?: string | null;
+  remarks?: string | null;
+}
+
+export interface ProductPartUpdate {
+  name?: string;
+  qty_per_unit?: number;
+  unit_price?: number | null;
+  sourcing_url?: string | null;
+  remarks?: string | null;
+  sort_order?: number;
+}
+
+export interface PlateYieldEntry {
+  part_id: number;
+  name: string;
+  count: number;
+}
+
+/** An object on the plate that matches no part yet — the prompt to add one. */
+export interface PlateUnassignedEntry {
+  name_key: string;
+  count: number;
+}
+
+export interface PlateRecipe {
+  id: number;
+  library_file_id: number;
+  /** 0 means the whole file rather than a numbered plate. */
+  plate_index: number;
+  filename: string;
+  sliced: boolean;
+  /** `yield` is the wire name — a JS keyword only inside a generator, so it
+   *  is a legal property here. */
+  yield: PlateYieldEntry[];
+  unassigned: PlateUnassignedEntry[];
+  materials: string[];
+  colors: string[];
+  print_time_seconds: number | null;
+  filament_used_grams: number | null;
+}
+
+export interface ProductListItem {
+  id: number;
+  name: string;
+  is_active: boolean;
+  cover_image_filename: string | null;
+  parts_count: number;
+  plates_count: number;
+  lines_count: number;
+}
+
+export interface Product extends ProductListItem {
+  description: string | null;
+  notes: string | null;
+  designer: string | null;
+  license: string | null;
+  source_url: string | null;
+  design_id: string | null;
+  attachments: unknown[] | null;
+  parts: ProductPart[];
+  library_file_ids: number[];
+  library_folder_ids: number[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductCreate {
+  name: string;
+  description?: string | null;
+  notes?: string | null;
+  designer?: string | null;
+  license?: string | null;
+  source_url?: string | null;
+  design_id?: string | null;
+}
+
+/** `Partial<ProductCreate>` rather than `extends ProductCreate`: an interface
+ *  may not relax a required member of the one it extends, and every field is
+ *  optional on a PATCH. */
+export interface ProductUpdate extends Partial<ProductCreate> {
+  is_active?: boolean;
+}
+
+export interface ProductListParams {
+  /** Unset = both; `false` is a real filter, so it is sent as `active=false`. */
+  active?: boolean;
+  q?: string;
 }
 
 // API Key types
@@ -3328,6 +3672,8 @@ export interface PrintQueueItemCreate {
   quantity?: number;
   // Project to associate the resulting archive with
   project_id?: number;
+  // Pass 2: and which line of it the resulting print counts against.
+  project_line_id?: number | null;
 }
 
 export interface PrintQueueItemUpdate {
@@ -3476,6 +3822,8 @@ export interface AutoQueueItemCreate {
   archive_id?: number | null;
   library_file_id?: number | null;
   project_id?: number | null;
+  // Pass 2: which line of the order the resulting print counts against.
+  project_line_id?: number | null;
   target_model?: string | null;
   target_location_id?: number | null;
   required_filament_types?: string[] | null;
@@ -6829,6 +7177,10 @@ export const api = {
   updateArchive: (id: number, data: {
     printer_id?: number | null;
     project_id?: number | null;
+    // Pass 2. ⚠️ The server rejects (400) a line that belongs to a different
+    // order than the one being set, and moving `project_id` without naming a
+    // line silently clears a now-stale one.
+    project_line_id?: number | null;
     print_name?: string;
     is_favorite?: boolean;
     tags?: string;
@@ -9054,6 +9406,134 @@ export const api = {
       body: JSON.stringify({ queue_item_ids: queueItemIds }),
     }),
 
+  // Orders (projects redesign, pass 2)
+  //
+  // The UI calls them orders; the endpoints are still `/projects/*`. Every one
+  // of the mutating calls answers with the WHOLE order — figures included —
+  // because a line edit moves the totals, so callers replace the cached order
+  // rather than patching a field into it.
+  getOrders: (params: OrderListParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set('status', params.status);
+    if (params.customer_id != null) qs.set('customer_id', String(params.customer_id));
+    if (params.product_id != null) qs.set('product_id', String(params.product_id));
+    return request<OrderListItem[]>(`/projects/?${qs}`);
+  },
+  getOrder: (id: number) => request<Order>(`/projects/${id}`),
+  createOrder: (data: OrderCreate) =>
+    request<Order>('/projects/', { method: 'POST', body: JSON.stringify(data) }),
+  updateOrder: (id: number, data: OrderUpdate) =>
+    request<Order>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteOrder: (id: number) =>
+    request<{ message: string }>(`/projects/${id}`, { method: 'DELETE' }),
+  duplicateOrder: (id: number, name?: string) =>
+    request<Order>(`/projects/${id}/duplicate`, {
+      method: 'POST',
+      body: JSON.stringify({ name: name ?? null }),
+    }),
+  addOrderLine: (orderId: number, data: ProjectLineCreate) =>
+    request<Order>(`/projects/${orderId}/lines`, { method: 'POST', body: JSON.stringify(data) }),
+  updateOrderLine: (orderId: number, lineId: number, data: ProjectLineUpdate) =>
+    request<Order>(`/projects/${orderId}/lines/${lineId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteOrderLine: (orderId: number, lineId: number) =>
+    request<Order>(`/projects/${orderId}/lines/${lineId}`, { method: 'DELETE' }),
+  updateOrderProcurement: (orderId: number, partId: number, quantityAcquired: number) =>
+    request<Order>(`/projects/${orderId}/procurement/${partId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ quantity_acquired: quantityAcquired }),
+    }),
+  /** `lineId` omitted binds the prints to the order without a line — the
+   *  server then files them under `other_archive_ids`. The null is explicit so
+   *  "no line chosen" cannot be read as "field forgotten". */
+  addArchivesToOrder: (orderId: number, archiveIds: number[], lineId?: number | null) =>
+    request<{ message: string }>(`/projects/${orderId}/add-archives`, {
+      method: 'POST',
+      body: JSON.stringify({ archive_ids: archiveIds, project_line_id: lineId ?? null }),
+    }),
+
+  // Customers
+  getCustomers: () => request<Customer[]>('/customers/'),
+  getCustomer: (id: number) => request<Customer>(`/customers/${id}`),
+  createCustomer: (data: CustomerCreate) =>
+    request<Customer>('/customers/', { method: 'POST', body: JSON.stringify(data) }),
+  updateCustomer: (id: number, data: CustomerUpdate) =>
+    request<Customer>(`/customers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteCustomer: (id: number) =>
+    request<{ message: string }>(`/customers/${id}`, { method: 'DELETE' }),
+
+  // Products
+  getProducts: (params: ProductListParams = {}) => {
+    const qs = new URLSearchParams();
+    // `!= null`, not truthiness: `active=false` is a filter, not an absence.
+    if (params.active != null) qs.set('active', String(params.active));
+    if (params.q) qs.set('q', params.q);
+    return request<ProductListItem[]>(`/products/?${qs}`);
+  },
+  getProduct: (id: number) => request<Product>(`/products/${id}`),
+  createProduct: (data: ProductCreate) =>
+    request<Product>('/products/', { method: 'POST', body: JSON.stringify(data) }),
+  createProductFromFile: (libraryFileId: number) =>
+    request<Product>(`/products/from-file/${libraryFileId}`, { method: 'POST' }),
+  updateProduct: (id: number, data: ProductUpdate) =>
+    request<Product>(`/products/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteProduct: (id: number) =>
+    request<{ message: string }>(`/products/${id}`, { method: 'DELETE' }),
+  duplicateProduct: (id: number, name?: string) =>
+    request<Product>(`/products/${id}/duplicate`, {
+      method: 'POST',
+      body: JSON.stringify({ name: name ?? null }),
+    }),
+  getProductPlates: (id: number) => request<PlateRecipe[]>(`/products/${id}/plates`),
+  createProductPart: (productId: number, data: ProductPartCreate) =>
+    request<ProductPart>(`/products/${productId}/parts`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateProductPart: (productId: number, partId: number, data: ProductPartUpdate) =>
+    request<ProductPart>(`/products/${productId}/parts/${partId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteProductPart: (productId: number, partId: number) =>
+    request<{ message: string }>(`/products/${productId}/parts/${partId}`, { method: 'DELETE' }),
+  mergeProductPart: (productId: number, targetPartId: number, sourcePartId: number) =>
+    request<ProductPart>(`/products/${productId}/parts/${targetPartId}/merge`, {
+      method: 'POST',
+      body: JSON.stringify({ source_part_id: sourcePartId }),
+    }),
+  addProductPartAlias: (productId: number, partId: number, nameKey: string) =>
+    request<ProductPart>(`/products/${productId}/parts/${partId}/aliases`, {
+      method: 'POST',
+      body: JSON.stringify({ name_key: nameKey }),
+    }),
+  /** The key travels in the query string, not a body — DELETE with a payload
+   *  is not carried reliably by every proxy in front of this app. */
+  removeProductPartAlias: (productId: number, partId: number, nameKey: string) =>
+    request<ProductPart>(
+      `/products/${productId}/parts/${partId}/aliases?name_key=${encodeURIComponent(nameKey)}`,
+      { method: 'DELETE' },
+    ),
+  /** Replaces the whole set of directly-linked files. `[]` unlinks them all. */
+  setProductFiles: (productId: number, libraryFileIds: number[]) =>
+    request<Product>(`/products/${productId}/files`, {
+      method: 'PUT',
+      body: JSON.stringify({ library_file_ids: libraryFileIds }),
+    }),
+  unlinkProductFile: (productId: number, fileId: number) =>
+    request<Product>(`/products/${productId}/files/${fileId}`, { method: 'DELETE' }),
+  setProductFolders: (productId: number, libraryFolderIds: number[]) =>
+    request<Product>(`/products/${productId}/folders`, {
+      method: 'PUT',
+      body: JSON.stringify({ library_folder_ids: libraryFolderIds }),
+    }),
+  unlinkProductFolder: (productId: number, folderId: number) =>
+    request<Product>(`/products/${productId}/folders/${folderId}`, { method: 'DELETE' }),
+  getFoldersByProduct: (productId: number) =>
+    request<LibraryFolder[]>(`/library/folders/by-product/${productId}`),
+
   // Project Attachments
   uploadProjectAttachment: async (projectId: number, file: File): Promise<{
     status: string;
@@ -9324,6 +9804,11 @@ export const api = {
     scope?: 'internal' | 'external',
     tagIds: number[] = [],
     recursive = false,
+    // Pass 2: the product filter — the product's direct files ∪ the files of
+    // its linked folders. Appended LAST rather than replacing `projectId`, so
+    // the callers that still pass positional arguments keep working until the
+    // cutover drops `projectId` entirely.
+    productId?: number,
   ) => {
     const params = new URLSearchParams();
     if (folderId !== undefined && folderId !== null) {
@@ -9331,6 +9816,9 @@ export const api = {
     }
     if (projectId !== undefined) {
       params.set('project_id', String(projectId));
+    }
+    if (productId !== undefined) {
+      params.set('product_id', String(productId));
     }
     params.set('include_root', String(includeRoot));
     // #1621: scope the top-level view to managed vs external storage.
@@ -10214,6 +10702,9 @@ export interface LibraryFolder {
   name: string;
   parent_id: number | null;
   projects: ProjectRef[];
+  /** Pass 2: what the folder's files are a design for. Optional only while
+   *  `projects` above still exists — the cutover swaps which one is required. */
+  products?: ProductRef[];
   is_external: boolean;
   external_path: string | null;
   external_readonly: boolean;
@@ -10236,6 +10727,8 @@ export interface LibraryFolderCreate {
   parent_id?: number | null;
   // m044: list of project IDs to associate the folder with on creation.
   project_ids?: number[];
+  // Pass 2: same, for products. Cascades to the folder's files server-side.
+  product_ids?: number[];
 }
 
 export interface ExternalFolderCreate {
@@ -10252,6 +10745,9 @@ export interface LibraryFolderUpdate {
   // m044: undefined = leave links untouched, [] = unlink from every
   // project, otherwise replace the whole list.
   project_ids?: number[];
+  // Pass 2: same three-way semantics for products, and a change cascades to
+  // the folder's child files.
+  product_ids?: number[];
 }
 
 export interface LibraryFileDuplicate {
@@ -10350,6 +10846,9 @@ export interface LibraryFile {
   folder_name: string | null;
   // m044: M2M project links. Empty array = unattached.
   projects: ProjectRef[];
+  /** Pass 2: what this file is a design for. Optional only while `projects`
+   *  above still exists — the cutover swaps which one is required. */
+  products?: ProductRef[];
   is_external: boolean;
   filename: string;
   file_path: string;
@@ -10548,6 +11047,10 @@ export interface LibraryFileUpdate {
   // m044: undefined = leave untouched, [] = unlink from every project,
   // otherwise replace the whole list.
   project_ids?: number[];
+  // Pass 2: same three-way semantics for products. ⚠️ A move without this
+  // field inherits the target folder's products — send it explicitly when the
+  // move must NOT re-link.
+  product_ids?: number[];
   notes?: string | null;
 }
 
