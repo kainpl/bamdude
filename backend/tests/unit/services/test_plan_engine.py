@@ -347,3 +347,34 @@ def test_not_sliced_plates_are_listed_not_planned():
     assert only_raw.candidates == []
     assert only_raw.not_sliced == [1]
     assert only_raw.unsatisfiable == [1]
+
+
+def test_a_zero_print_time_is_no_estimate_and_never_wins_a_tie():
+    """``print_time_seconds = 0`` is a file with no estimate, not an instant plate.
+
+    Before this was normalised the two halves of the ranking disagreed: the
+    score divided by ``secs or 1`` (reading the zero as "unknown") while the
+    tie-break read the same zero as a real, unbeatable 0 s — so a plate that
+    "takes no time" won every tie in the plan while reporting
+    ``time_unknown=False``, i.e. claiming an estimate it did not have.
+    """
+    p = _part(1, 10, "a", 1)
+    line = _line(100, 10, 2)
+    ctx = _ctx([line], [p])
+    # Both score 1.0 and neither wastes anything, so the time tie-break decides
+    # — and no estimate must sort LAST, exactly as ``secs=None`` does.
+    zero = _cand(1, 10, {1: 1}, secs=0)
+    timed = _cand(2, 10, {1: 2}, secs=2)
+    plan = plan_lines(ctx, {line.id: _figs(line, [p], {1: 2})}, {10: [zero, timed]}, {}, None)
+    lp = plan.lines[0]
+    assert [(r.plate_id, r.count) for r in lp.rows] == [(2, 1)]
+    assert plan.totals.print_time_seconds == 2
+
+    # And on its own the zero reports what it is: no time on the row, the flag
+    # raised, and the footer's time voided rather than summed as 0 s.
+    alone = plan_lines(ctx, {line.id: _figs(line, [p], {1: 2})}, {10: [zero]}, {}, None)
+    row = alone.lines[0].rows[0]
+    assert row.count == 2
+    assert row.print_time_seconds is None
+    assert row.time_unknown is True
+    assert alone.totals.print_time_seconds is None

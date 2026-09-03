@@ -131,6 +131,22 @@ def _material_ok(material: str | None, materials: set[str]) -> bool:
     return material is None or material.strip().upper() in materials
 
 
+def _estimate(recipe: PlateRecipe) -> int | None:
+    """The plate's print time, normalised to "an estimate or nothing".
+
+    ⚠️ **A zero is not an instant plate — it is a file that carries no estimate**,
+    and the whole engine must read it that way or the two halves of the ranking
+    disagree with each other. They did: :func:`_pick_key` scored a 0 as unknown
+    (``secs or 1``) while its own tie-break read the same 0 as a real,
+    unbeatable 0 s, and the row then reported ``time_unknown=False``, claiming
+    an estimate it did not have. Normalising HERE — the one place the recipe's
+    time is read — is what keeps the flag, the score and the tie-break saying
+    the same thing.
+    """
+    secs = recipe.print_time_seconds
+    return secs if secs is not None and secs > 0 else None
+
+
 def _pick_key(useful: int, waste: int, secs: int | None, plate_id: int) -> tuple:
     """Spec decision 4, as a sort key (lower is better).
 
@@ -139,21 +155,25 @@ def _pick_key(useful: int, waste: int, secs: int | None, plate_id: int) -> tuple
     to lower waste, then to the shorter print (an unknown time sorts last, so a
     timeless plate never wins a tie it did not earn on score), then to the lower
     plate id so the same order comes back on every read.
+
+    ``secs`` arrives already normalised by :func:`_estimate`, so ``None`` is the
+    only spelling of "no estimate" this key ever sees.
     """
     return (-(useful / (secs or 1)), waste, (secs is None, secs or 0), plate_id)
 
 
 def _row_for(plate: ProductPlate, file: LibraryFile, recipe: PlateRecipe, price_per_gram: float | None) -> PlanRow:
     grams = recipe.filament_used_grams
+    secs = _estimate(recipe)
     return PlanRow(
         plate_id=plate.id,
         library_file_id=plate.library_file_id,
         plate_index=plate.plate_index,
         filename=file.filename,
-        print_time_seconds=recipe.print_time_seconds,
+        print_time_seconds=secs,
         filament_used_grams=grams,
         cost=round(grams * price_per_gram, 2) if grams and price_per_gram else None,
-        time_unknown=recipe.print_time_seconds is None,
+        time_unknown=secs is None,
     )
 
 
@@ -183,7 +203,7 @@ def cover(
             if useful <= 0:
                 continue
             waste = sum(max(0, n - remaining.get(pid, 0)) for pid, n in yields[plate.id].items())
-            key = _pick_key(useful, waste, recipe.print_time_seconds, plate.id)
+            key = _pick_key(useful, waste, _estimate(recipe), plate.id)
             if best is None or key < best[0]:
                 best = (key, plate, file, recipe, gain)
         if best is None:
@@ -307,7 +327,6 @@ def plan_lines(
 
 async def queued_yield_by_line(
     db: AsyncSession,
-    project_id: int,
     recipes_by_product: dict[int, list[Candidate]],
     lines: list[ProjectLine],
 ) -> dict[int, dict[int, int]]:
@@ -330,9 +349,11 @@ async def queued_yield_by_line(
     rather than a library file (``library_file_id IS NULL``): every writer the
     plan itself uses stamps the file, so the plan's own work always round-trips.
 
-    ``project_id`` names the order these lines belong to; the filter is on the
-    line ids, which already scope it — a row may carry ``project_line_id``
-    without ``project_id`` and must still count.
+    ⚠️ **The order is never named here, on purpose.** The filter is on the LINE
+    ids, which already scope it, and a queue row may carry ``project_line_id``
+    without ``project_id`` and must still count — so an order filter would drop
+    real work. The parameter that used to say so was passed and never read;
+    naming it in this docstring is the whole of it.
 
     ⚠️ Both reads select THREE COLUMNS, never the entity. Loading an
     ``AutoQueueItem`` drags its ``target_location`` in on ``lazy="selectin"``,
@@ -400,7 +421,7 @@ async def plan_for_order(db: AsyncSession, project_id: int) -> OrderPlan | None:
     recipes_by_product = {
         product_id: await recipes_for_product(db, product) for product_id, product in ctx.products_by_id.items()
     }
-    queued = await queued_yield_by_line(db, project_id, recipes_by_product, ctx.lines)
+    queued = await queued_yield_by_line(db, recipes_by_product, ctx.lines)
     rate_per_kg = await default_rate_per_kg(db)
     price_per_gram = rate_per_kg / 1000.0 if rate_per_kg > 0 else None
     return plan_lines(ctx, figures, recipes_by_product, queued, price_per_gram)

@@ -990,7 +990,7 @@ async def test_plan_enqueue_reports_what_landed_when_a_later_item_fails(
 async def _queued_yield(db, project_id):
     ctx = await load_order_context(db, project_id)
     recipes = {pid: await recipes_for_product(db, product) for pid, product in ctx.products_by_id.items()}
-    return await queued_yield_by_line(db, project_id, recipes, ctx.lines)
+    return await queued_yield_by_line(db, recipes, ctx.lines)
 
 
 async def _parts_of(db, product_id):

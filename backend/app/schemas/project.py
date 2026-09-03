@@ -323,7 +323,10 @@ class PlanTotalsOut(BaseModel):
     prints: int
     print_time_seconds: int | None = None  # null as soon as ONE row has no estimate
     filament_used_grams: float
-    cost: float | None = None  # null when the farm has no filament rate
+    # null when the farm has no filament rate OR when no counted row could be
+    # costed (a rate exists, but nothing planned carries a weight to price).
+    # 0.00 would read as "this plan is free" — see ``plan_engine._totals``.
+    cost: float | None = None
 
 
 class OrderPlanResponse(BaseModel):
