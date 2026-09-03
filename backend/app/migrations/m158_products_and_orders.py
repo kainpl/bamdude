@@ -14,9 +14,19 @@ never been released: on 2026-09-03 the user folded the conversion (then
 already recorded the version would silently skip the new content. It was
 only safe here because nothing shipped.
 
-Everything happens in ``upgrade(conn)`` — one transaction (FK off on SQLite),
-the m044 precedent — so a conversion that fails half-way rolls back whole and
-the legacy tables are still there for the next attempt.
+The whole conversion happens in ``upgrade(conn)`` — one transaction (FK off on
+SQLite), the m044 precedent — so a conversion that fails half-way rolls back
+whole and the legacy tables are still there for the next attempt.
+
+**Runner order** (``migrations/__init__.py::_run_pending``): ``upgrade(conn)``
+runs inside one ``engine.begin()`` and is COMMITTED when it returns; ``seed()``
+runs after that, outside it, on its own sessions; only then does
+``_record_migration`` write the version. So a ``seed()`` that raises leaves the
+DDL and the conversion already committed with no ``_migrations`` row, and the
+next boot re-enters m158 from the top. That is safe here: every DDL statement
+is guarded, and ``_convert_legacy``'s marker (``library_file_projects``) was
+dropped by the committed half, so the second pass converts nothing and only the
+backfill is retried — which is itself idempotent.
 
 Order of work:
 
@@ -33,8 +43,11 @@ Order of work:
    (never moved — see ``_copy_template_attachments``);
 4. drop the five legacy tables and the six legacy ``projects`` columns.
 
-Because step 4 removes the marker step 3 keys on, a re-run (``DEBUG=true``)
-finds nothing to convert and touches no data. Named columns everywhere.
+Because step 4 removes the marker step 3 keys on, a second pass over this
+module finds nothing to convert and touches no data. (``DEBUG=true`` will not
+produce that pass — the dev re-run deletes and re-applies only the HIGHEST
+version, m161 today, so m158 is never re-entered that way. The pass that does
+happen is the one after a failed ``seed()``, above.) Named columns everywhere.
 
 **Three starting shapes**, all of which reach this migration:
 
@@ -44,9 +57,19 @@ finds nothing to convert and touches no data. Named columns everywhere.
   plate from the file's own metadata during the conversion (see
   ``_expanded_plan_rows``), which is what the retired parts-ledger seed used
   to do to the plan table itself.
-* **(ii) after the unreleased parts-ledger m158** — the developer's own
-  SQLite and the dev PostgreSQL. ``plate_index`` and ``project_parts`` are
-  both present; plan rows are read as they are and ``target_qty`` is honoured.
+* **(ii) after the unreleased parts-ledger m158** — ``plate_index`` and
+  ``project_parts`` are both present; plan rows are read as they are and
+  ``target_qty`` is honoured. ⚠️ **Such a database reaches this shape only if
+  somebody deletes its ``_migrations`` row first.** The runner keys on the
+  VERSION alone (the recorded ``name`` is cosmetic), so a database holding
+  ``(158, 'parts_ledger')`` counts m158 as applied and SKIPS this module
+  entirely: it would keep the legacy tables, gain no products, and look
+  healthy while doing it. The manual step before such a boot is
+  ``DELETE FROM _migrations WHERE version IN (158, 162)``. Verified 2026-09-03:
+  the parts-ledger m158 never reached ``dev`` or the ``:dev`` image (it lived
+  only on ``origin/feature/v0.5.6-fixes``), so the only databases that ever
+  need this are the developer's own SQLite and the dev PostgreSQL — no user
+  install can be in shape (ii), and none needs the manual delete.
 * **(iii) already converted** — the new tables are there and the legacy ones
   are gone. ``_convert_legacy`` sees no ``library_file_projects`` and returns;
   every DDL statement is guarded, so the whole run is a no-op.
@@ -56,7 +79,7 @@ backfill for pre-existing archives. Users upgrade through migrations only, so
 that population has to happen here; ``scripts/backfill_archive_parts.py``
 remains the manual RE-RUN tool (rule changes, troubleshooting), not the normal
 upgrade path. It is idempotent — archives that already have rows are skipped,
-so a ``DEBUG=true`` re-run adds nothing.
+so the retry after a failed run adds nothing to what the first pass wrote.
 
 FK CASCADE is honoured by PostgreSQL only — this codebase never sets
 ``PRAGMA foreign_keys`` on SQLite; hard-delete paths clean up explicitly.
@@ -320,6 +343,12 @@ def _expanded_plan_rows(rows, has_plate_index: bool) -> list[tuple]:
     every sum identical. A single-plate file (or one with no plate metadata)
     stays a single ``plate_index = 0`` row, which ``_plate_names`` reads as "the
     whole file".
+
+    Metadata this cannot read costs the row its expansion, not the upgrade: it
+    is kept as a single whole-file plate and says so in the log. Nothing further
+    downstream will report it — ``_load_meta`` hands ``_plate_key_counts`` an
+    empty dict for the same bytes, which raises nothing and simply yields no
+    parts, so this is the only place the loss is visible.
     """
     if has_plate_index:
         return [(r[0], r[1], r[2], r[3]) for r in rows]
@@ -328,7 +357,12 @@ def _expanded_plan_rows(rows, has_plate_index: bool) -> list[tuple]:
         try:
             plates = _load_meta(raw_meta).get("plates") or []
             indices = sorted({int(p["index"]) for p in plates if isinstance(p.get("index"), int) and p["index"] > 0})
-        except Exception:  # noqa: BLE001 — corrupt metadata is reported where the counts are read, below
+        except Exception:  # noqa: BLE001 — one unreadable file_metadata must not abort the upgrade
+            logger.warning(
+                "m158: plan row for file %s has unreadable metadata, kept as a whole-file plate",
+                file_id,
+                exc_info=True,
+            )
             indices = []
         if len(indices) > 1:
             expanded.extend((file_id, idx, copies, raw_meta) for idx in indices)

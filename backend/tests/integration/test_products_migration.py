@@ -521,3 +521,51 @@ async def test_print_archive_parts_table_is_created_on_shape_i(db_session, test_
     await _run_upgrade(test_engine)
     async with test_engine.begin() as conn:
         assert await table_exists(conn, "print_archive_parts")
+
+
+@pytest.mark.asyncio
+async def test_shape_i_unreadable_metadata_keeps_the_row_as_a_whole_file_plate(
+    db_session, test_engine, printer_factory, caplog
+):
+    """Expansion is where a 0.5.5 plan row meets its file's metadata, so it is
+    also where junk shows up — and the only place it can be reported: the same
+    bytes reach ``_plate_key_counts`` as an empty dict, which raises nothing."""
+    ids = await _fixture_0_5_5(db_session, test_engine, printer_factory)
+    raising = LibraryFile(
+        filename="raising.gcode.3mf",
+        file_path="raising",
+        file_size=1,
+        file_type="gcode",
+        folder_id=(await db_session.get(LibraryFile, ids["multi"])).folder_id,
+        file_metadata=["not", "a", "dict"],
+    )
+    db_session.add(raising)
+    await db_session.flush()
+    raising_id = raising.id
+    await db_session.execute(
+        text(
+            "INSERT INTO project_print_plan_items (project_id, library_file_id, copies, order_index) "
+            "VALUES (:p, :f, 2, 1)"
+        ),
+        {"p": ids["order"], "f": raising_id},
+    )
+    await db_session.commit()
+
+    with caplog.at_level(logging.WARNING, logger="backend.app.migrations.m158_products_and_orders"):
+        await _run_upgrade(test_engine)  # must not raise
+    assert "unreadable metadata" in caplog.text  # the guard fired, not "nothing raised"
+    db_session.expire_all()
+
+    line = (await db_session.execute(select(ProjectLine).where(ProjectLine.project_id == ids["order"]))).scalar_one()
+    plates = {
+        (f, p)
+        for f, p in (
+            await db_session.execute(
+                select(ProductPlate.library_file_id, ProductPlate.plate_index).where(
+                    ProductPlate.product_id == line.product_id
+                )
+            )
+        ).all()
+    }
+    assert (raising_id, 0) in plates  # kept as one whole-file plate, not expanded away
+    assert (ids["multi"], 1) in plates and (ids["multi"], 2) in plates  # the healthy file expanded anyway
