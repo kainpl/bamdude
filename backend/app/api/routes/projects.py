@@ -1182,25 +1182,16 @@ def _counts(mapping: dict[int, int], names: dict[int, str]) -> list[PlanPartCoun
     return [PlanPartCount(part_id=pid, name=names.get(pid, "?"), count=n) for pid, n in sorted(mapping.items())]
 
 
-async def _plan_response(db: AsyncSession, plan: OrderPlan) -> OrderPlanResponse:
-    """Name every id the engine returned. Two small SELECTs, no second walk."""
-    part_ids: set[int] = set()
-    product_ids: set[int] = set()
-    for line in plan.lines:
-        product_ids.add(line.product_id)
-        part_ids |= set(line.outstanding_before) | set(line.surplus_after) | set(line.unsatisfiable)
-        for row in line.rows:
-            part_ids |= set(row.useful)
-    part_names = (
-        dict((await db.execute(select(ProductPart.id, ProductPart.name).where(ProductPart.id.in_(part_ids)))).all())
-        if part_ids
-        else {}
-    )
-    product_names = (
-        dict((await db.execute(select(Product.id, Product.name).where(Product.id.in_(product_ids)))).all())
-        if product_ids
-        else {}
-    )
+def _plan_response(plan: OrderPlan) -> OrderPlanResponse:
+    """Name every id the engine returned — no SELECT, no walk.
+
+    The engine builds the plan from an ``OrderContext`` that already holds every
+    product and part of the order, so it hands the two name maps out beside the
+    rows. Re-reading ``products`` and ``product_parts`` here was two queries for
+    rows the request had just had in memory.
+    """
+    part_names = plan.part_names
+    product_names = plan.product_names
     return OrderPlanResponse(
         lines=[
             LinePlanOut(
@@ -1259,7 +1250,7 @@ async def get_order_plan(
     plan = await plan_for_order(db, project_id)
     if plan is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return await _plan_response(db, plan)
+    return _plan_response(plan)
 
 
 @router.post("/{project_id}/plan/enqueue", response_model=PlanEnqueueResponse)

@@ -96,11 +96,13 @@ def test_worked_case_from_the_spec():
     ctx = _ctx([line], [c])
     figures = {line.id: _figs(line, [c], {1: 120})}
     # The parent spec's "plate A yields 100 in ~10·T": the tilde is load-bearing.
-    # At exactly 10·T both plates score 10/T on the first pick and the tie-break
-    # (lower waste, then lower TIME) takes B every round — twelve prints, never
-    # A. Just under 10·T is what makes A the first pick, and after it the 20 that
-    # are left cost A 80 of waste per 10·T while B still delivers 10 per T.
-    a = _cand(1, 10, {1: 100}, secs=900, grams=100.0)
+    # At exactly 10·T (999 → 1000 below) both plates score 10/T on the first
+    # pick and the tie-break (lower waste — both 0 — then lower TIME) takes B;
+    # and it keeps tying, so B wins every round and A is never picked at all,
+    # twelve prints instead of three. A hair under 10·T is what makes A the
+    # first pick, and after it the 20 that are left cost A 80 of waste per 10·T
+    # while B still delivers 10 per T.
+    a = _cand(1, 10, {1: 100}, secs=999, grams=100.0)
     b = _cand(2, 10, {1: 10}, secs=100, grams=10.0)
     plan = plan_lines(ctx, figures, {10: [a, b]}, {}, 0.02)
     lp = plan.lines[0]
@@ -111,11 +113,15 @@ def test_worked_case_from_the_spec():
     assert lp.surplus_after == {}
     assert lp.unsatisfiable == []
     assert plan.totals.prints == 3
-    assert plan.totals.print_time_seconds == 900 + 2 * 100
+    assert plan.totals.print_time_seconds == 999 + 2 * 100
     assert plan.totals.filament_used_grams == 120.0
     # A row carries the per-print figures; the count is the frontend's multiplier.
     assert (lp.rows[0].cost, lp.rows[1].cost) == (2.0, 0.2)
     assert plan.totals.cost == 2.4
+    # The names ride out beside the plan, from the context it was built on, so
+    # the route never re-reads rows the request already had.
+    assert plan.part_names == {1: "c"}
+    assert plan.product_names == {10: "P10"}
 
 
 def test_waste_tie_break_then_time():
@@ -134,6 +140,76 @@ def test_waste_tie_break_then_time():
     quick = _cand(2, 10, {1: 5}, secs=100)
     plan = plan_lines(ctx, {line.id: _figs(line, [p], {1: 10})}, {10: [slow, quick]}, {}, None)
     assert [(r.plate_id, r.count) for r in plan.lines[0].rows] == [(2, 2)]
+
+
+def test_a_foreign_objects_waste_is_not_this_lines_waste():
+    """The one place ``line_yield``'s filter changes a DECISION rather than a count.
+
+    A foreign object contributes 0 useful (it has no outstanding entry) and
+    never reaches the surplus (which walks the line's own outstanding parts), so
+    dropping the filter is invisible everywhere except ``waste`` — where it
+    makes a shared plate look like a spendthrift and hands the pick to a plate
+    that ties with it. Both plates below score 10/100; the shared one wins only
+    on the plate-id tie-break, which it reaches only if its 50 foreign objects
+    were filtered out of its waste first.
+    """
+    ours = _part(1, 10, "ours", 1)
+    theirs = _part(2, 20, "theirs", 1)  # another product's part, riding the same bed
+    line = _line(100, 10, 10)
+    ctx = _ctx([line], [ours, theirs])
+    shared = _cand(1, 10, {1: 10, 2: 50}, secs=100)
+    solo = _cand(2, 10, {1: 10}, secs=100)
+    lp = plan_lines(ctx, {line.id: _figs(line, [ours, theirs], {1: 10})}, {10: [shared, solo]}, {}, None).lines[0]
+    assert [(r.plate_id, r.count) for r in lp.rows] == [(1, 1)]
+    assert lp.rows[0].useful == {1: 10}
+    assert lp.surplus_after == {}
+
+
+def test_surplus_is_reported_when_a_plate_overshoots():
+    p = _part(1, 10, "a", 1)
+    line = _line(100, 10, 3)
+    ctx = _ctx([line], [p])
+    # Need 3, the plate makes 2: one print leaves 1 outstanding, the second
+    # covers it and makes one spare. Nothing smaller exists, so the spare is the
+    # honest price of finishing the line — it is reported, not hidden.
+    plate = _cand(1, 10, {1: 2}, secs=100)
+    lp = plan_lines(ctx, {line.id: _figs(line, [p], {1: 3})}, {10: [plate]}, {}, None).lines[0]
+    assert [(r.plate_id, r.count) for r in lp.rows] == [(1, 2)]
+    assert lp.rows[0].useful == {1: 3}  # covered outstanding, not parts produced
+    assert lp.surplus_after == {1: 1}
+
+
+def test_an_unknown_time_loses_a_tie_it_did_not_win_on_score():
+    p = _part(1, 10, "a", 1)
+    line = _line(100, 10, 2)
+    ctx = _ctx([line], [p])
+    # Both score 1.0 (the timeless plate divides by 1) and both waste nothing,
+    # so the time tie-break decides — and an unknown time sorts LAST. The
+    # timeless plate also holds the lower plate id, so it would win both a
+    # "None first" ordering and the id tie-break: only the None-last rule keeps
+    # the plate with a real estimate in front.
+    timeless = _cand(1, 10, {1: 1}, secs=None)
+    timed = _cand(2, 10, {1: 2}, secs=2)
+    lp = plan_lines(ctx, {line.id: _figs(line, [p], {1: 2})}, {10: [timeless, timed]}, {}, None).lines[0]
+    assert [(r.plate_id, r.count) for r in lp.rows] == [(2, 1)]
+    assert lp.rows[0].time_unknown is False
+
+
+def test_more_queued_than_remaining_floors_at_zero():
+    p = _part(1, 10, "a", 1)
+    line = _line(100, 10, 5)
+    ctx = _ctx([line], [p])
+    # An over-producing plate was queued earlier: 9 parts coming for 5 still
+    # owed. Outstanding floors at 0 — a negative would flow into the surplus
+    # arithmetic as a phantom and into the pick loop as free useful count.
+    plate = _cand(1, 10, {1: 4}, secs=100)
+    plan = plan_lines(ctx, {line.id: _figs(line, [p], {1: 5})}, {10: [plate]}, {line.id: {1: 9}}, None)
+    lp = plan.lines[0]
+    assert lp.outstanding_before == {}
+    assert lp.rows == []
+    assert lp.surplus_after == {}
+    assert lp.unsatisfiable == []
+    assert plan.totals.prints == 0
 
 
 def test_in_progress_and_queued_work_are_excluded():
@@ -222,14 +298,19 @@ def test_unknown_time_ranks_by_useful_only_and_is_flagged():
     line = _line(100, 10, 5)
     ctx = _ctx([line], [p])
     figures = {line.id: _figs(line, [p], {1: 5})}
-    timeless = _cand(1, 10, {1: 5}, secs=None)
+    timeless = _cand(1, 10, {1: 5}, secs=None, grams=None)
     timed = _cand(2, 10, {1: 1}, secs=10)
-    plan = plan_lines(ctx, figures, {10: [timeless, timed]}, {}, None)
+    plan = plan_lines(ctx, figures, {10: [timeless, timed]}, {}, 0.02)
     lp = plan.lines[0]
     assert [(r.plate_id, r.count) for r in lp.rows] == [(1, 1)]
     assert lp.rows[0].time_unknown is True
     assert lp.rows[0].print_time_seconds is None
     assert plan.totals.print_time_seconds is None
+    # A rate exists but the only planned plate has no weight: the footer says
+    # "unknown", never 0.00, which would read as "this plan is free".
+    assert lp.rows[0].cost is None
+    assert plan.totals.filament_used_grams == 0.0
+    assert plan.totals.cost is None
 
 
 def test_iteration_guard(monkeypatch):

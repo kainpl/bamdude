@@ -91,13 +91,24 @@ class PlanTotals:
     prints: int = 0
     print_time_seconds: int | None = None  # None as soon as ONE row has no estimate
     filament_used_grams: float = 0.0
-    cost: float | None = None  # None when the farm has no filament rate
+    cost: float | None = None  # None with no farm rate, and also when no row could be costed
 
 
 @dataclass
 class OrderPlan:
+    """The rows stay bare ids; the two name maps ride BESIDE them.
+
+    Every id the plan can mention is already named in the ``OrderContext`` the
+    plan was built from, so carrying the maps out costs nothing and spares the
+    route two SELECTs to look up rows it just had in memory. They are lookup
+    tables, not part of a row's identity — nothing downstream may key off a
+    name, and a missing entry is a "?" placeholder, never an error.
+    """
+
     lines: list[LinePlan] = field(default_factory=list)
     totals: PlanTotals = field(default_factory=PlanTotals)
+    part_names: dict[int, str] = field(default_factory=dict)  # ProductPart.id → name
+    product_names: dict[int, str] = field(default_factory=dict)  # Product.id → name
 
 
 def line_yield(recipe: PlateRecipe, counted_part_ids: set[int]) -> dict[int, int]:
@@ -199,13 +210,21 @@ def cover(
 
 def _totals(lines: list[LinePlan], price_per_gram: float | None) -> PlanTotals:
     """Time is ``None`` the moment one row has no estimate — a partial sum would
-    read as a promise. Grams and cost sum what is known: a row with no figure
-    contributes nothing rather than voiding the column."""
-    totals = PlanTotals(cost=0.0 if price_per_gram is not None else None)
+    read as a promise. Grams sum what is known: a row with no figure contributes
+    nothing rather than voiding the column.
+
+    ``cost`` is ``None`` unless a rate exists AND at least one row could be
+    costed. A farm that has entered a rate but plans only plates with no weight
+    would otherwise read 0.00, i.e. "this plan is free" — the same lie
+    ``filament_cost.cost_of`` refuses to tell, and the same reason time voids
+    itself rather than reporting the half it knows.
+    """
+    totals = PlanTotals()
     seconds = 0
     unknown = False
     grams = 0.0
     cost = 0.0
+    costed = False
     for line in lines:
         for row in line.rows:
             totals.prints += row.count
@@ -217,9 +236,10 @@ def _totals(lines: list[LinePlan], price_per_gram: float | None) -> PlanTotals:
                 grams += row.count * row.filament_used_grams
             if row.cost is not None:
                 cost += row.count * row.cost
+                costed = True
     totals.print_time_seconds = None if unknown else seconds
     totals.filament_used_grams = round(grams, 2)
-    totals.cost = round(cost, 2) if price_per_gram is not None else None
+    totals.cost = round(cost, 2) if price_per_gram is not None and costed else None
     return totals
 
 
@@ -239,6 +259,14 @@ def plan_lines(
     outstanding work that no candidate plate yields at all is ``unsatisfiable``
     — note that a part the iteration guard simply ran out of prints for is NOT,
     because the guard is a defence and not a verdict about the plate.
+
+    ⚠️ The ``max(0, …)`` floor is not decoration: more queued than remaining is
+    an ordinary state (somebody queued a plate that over-produces), and a
+    negative outstanding would flow straight into the surplus arithmetic as a
+    phantom.
+
+    The names ride out with the plan (see :class:`OrderPlan`) — they come from
+    the context this function was handed, so no caller need re-read them.
     """
     plans: list[LinePlan] = []
     for line in ctx.lines:
@@ -269,7 +297,12 @@ def plan_lines(
                 not_sliced=not_sliced,
             )
         )
-    return OrderPlan(lines=plans, totals=_totals(plans, price_per_gram))
+    return OrderPlan(
+        lines=plans,
+        totals=_totals(plans, price_per_gram),
+        part_names={part.id: part.name for parts in ctx.parts_by_product.values() for part in parts},
+        product_names={pid: product.name for pid, product in ctx.products_by_id.items()},
+    )
 
 
 async def queued_yield_by_line(
@@ -300,6 +333,13 @@ async def queued_yield_by_line(
     ``project_id`` names the order these lines belong to; the filter is on the
     line ids, which already scope it — a row may carry ``project_line_id``
     without ``project_id`` and must still count.
+
+    ⚠️ Both reads select THREE COLUMNS, never the entity. Loading an
+    ``AutoQueueItem`` drags its ``target_location`` in on ``lazy="selectin"``,
+    and a ``printer_locations`` SELECT inside the plan path is a lie about what
+    this code does: a reader grepping the planner for "printer" must find
+    nothing, because routing is not dispatching. The three columns are also all
+    the yield lookup needs.
     """
     out: dict[int, dict[int, int]] = {line.id: {} for line in lines}
     if not out:
@@ -314,38 +354,34 @@ async def queued_yield_by_line(
     waiting = list(
         (
             await db.execute(
-                select(PrintQueueItem).where(
+                select(PrintQueueItem.project_line_id, PrintQueueItem.library_file_id, PrintQueueItem.plate_id).where(
                     PrintQueueItem.project_line_id.in_(line_ids), PrintQueueItem.status == "pending"
                 )
             )
-        )
-        .scalars()
-        .all()
+        ).all()
     ) + list(
         (
             await db.execute(
-                select(AutoQueueItem).where(
+                select(AutoQueueItem.project_line_id, AutoQueueItem.library_file_id, AutoQueueItem.plate_id).where(
                     AutoQueueItem.project_line_id.in_(line_ids),
                     AutoQueueItem.status == "pending",
                     AutoQueueItem.assigned_to_item_id.is_(None),
                 )
             )
-        )
-        .scalars()
-        .all()
+        ).all()
     )
-    for row in waiting:
-        if row.library_file_id is None:
+    for line_id, library_file_id, plate_id in waiting:
+        if library_file_id is None:
             continue
-        product_id = product_by_line.get(row.project_line_id)
+        product_id = product_by_line.get(line_id)
         if product_id is None:
             continue
-        recipe = exact.get(product_id, {}).get((row.library_file_id, row.plate_id or 0)) or whole_file.get(
-            product_id, {}
-        ).get(row.library_file_id)
+        recipe = exact.get(product_id, {}).get((library_file_id, plate_id or 0)) or whole_file.get(product_id, {}).get(
+            library_file_id
+        )
         if recipe is None:
             continue
-        bucket = out[row.project_line_id]
+        bucket = out[line_id]
         for part_id, n in recipe.yield_by_part.items():
             bucket[part_id] = bucket.get(part_id, 0) + n
     return out
