@@ -496,8 +496,12 @@ async def list_plates(
         {
             f.id: f
             for f in (
+                # ``active()``: a trashed file is restorable, so its links and
+                # plate rows stay — but its plates must not render as recipes
+                # somebody can print from. The loop below already drops a plate
+                # whose file it cannot find.
                 await db.execute(
-                    select(LibraryFile).where(LibraryFile.id.in_({p.library_file_id for p in product.plates}))
+                    LibraryFile.active().where(LibraryFile.id.in_({p.library_file_id for p in product.plates}))
                 )
             ).scalars()
         }
