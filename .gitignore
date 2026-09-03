@@ -96,3 +96,6 @@ graphify-out/
 # Subagent-driven-development scratch (ledger, briefs, review packages).
 .superpowers/
 .playwright-mcp/
+
+# git worktrees for parallel passes (superpowers:using-git-worktrees)
+.worktrees/
