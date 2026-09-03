@@ -13,6 +13,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse, JSONResponse
@@ -22,6 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import (
+    RequireCameraStreamToken,
     require_ownership_permission,
     require_permission,
 )
@@ -42,6 +44,8 @@ from backend.app.schemas.library import (
     BatchThumbnailResult,
     BulkDeleteRequest,
     BulkDeleteResponse,
+    CardAuxOut,
+    CardResponse,
     ExternalFolderCreate,
     FileDuplicate,
     FileListResponse,
@@ -92,6 +96,7 @@ from backend.app.services.product_sync import (
 from backend.app.services.slice_output_check import missing_start_gcode_message, start_gcode_is_missing
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
+from backend.app.services.threemf_card import ThreeMFCardParser
 from backend.app.utils.filename import (
     MAX_FILENAME_BYTES,
     InvalidFilenameError,
@@ -4322,6 +4327,110 @@ async def get_library_file_plate_objects(
         raise HTTPException(status_code=404, detail="File not found on disk")
 
     return build_plate_objects_payload(file_path.read_bytes(), plate)
+
+
+# ============ Model card (spec §Decisions 5) ============
+#
+# The card is READ-ONLY here. ``ThreeMFCardParser.update_metadata`` writes into
+# a 3MF and belongs to the archive, which owns its copy of the file; a library
+# file is the operator's original and is never written into (spec §Risks).
+
+
+def _card_payload(card, file_id: int) -> CardResponse:
+    """``CardData`` on the wire, each auxiliary carrying the url that serves it.
+
+    The url is built here rather than on the frontend because the ZIP path needs
+    percent-encoding — folder names carry spaces (``Model Pictures``) and the
+    filenames are the designer's, not ours.
+    """
+    return CardResponse(
+        **{key: getattr(card, key) for key in CardResponse.model_fields if key not in ("auxiliaries", "error")},
+        auxiliaries={
+            category: [
+                CardAuxOut(
+                    name=entry.name,
+                    zip_path=entry.zip_path,
+                    size=entry.size,
+                    url=f"/api/v1/library/files/{file_id}/card-file/{quote(entry.zip_path)}",
+                )
+                for entry in entries
+            ]
+            for category, entries in card.auxiliaries.items()
+        },
+        error=card.error,
+    )
+
+
+@router.get("/files/{file_id}/card", response_model=CardResponse)
+async def get_library_file_card(
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
+):
+    """The model card of a library file, parsed from the file itself.
+
+    Not from ``file_metadata``: that carries only ``designer`` and
+    ``print_name``, and the card is the designer's whole description of the
+    thing. One user-initiated request per opened dialog, not a list render.
+    """
+    user, can_read_all = auth_result
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    lib_file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all)
+
+    file_path = to_absolute_path(lib_file.file_path)
+    if file_path is None or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    return _card_payload(ThreeMFCardParser(file_path).parse(), file_id)
+
+
+@router.get("/files/{file_id}/card-file/{zip_path:path}")
+async def get_library_file_card_file(
+    file_id: int,
+    zip_path: str,
+    db: AsyncSession = Depends(get_db),
+    _=RequireCameraStreamToken,
+):
+    """One file out of the card's ``Auxiliaries/`` folders, for an ``<img src>``.
+
+    ⚠️ **Only a member the parsed card LISTED is served.** The client names the
+    ZIP path, so without that check this route is an arbitrary read of every
+    file an operator ever uploaded — ``3D/3dmodel.model``, the sliced G-code,
+    anything a crafted 3MF hides beside them. Membership of the card's own
+    listing is also what makes traversal moot: a name that is not in the list is
+    a 404 whatever it looks like.
+
+    Token-gated like the cover routes, because an ``<img>`` cannot carry an
+    Authorization header — and ``/card-file/`` is in ``main.py``'s
+    ``PUBLIC_API_PATTERNS`` so the request reaches this gate at all.
+    """
+    result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+    lib_file = result.scalar_one_or_none()
+    if lib_file is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file_path = to_absolute_path(lib_file.file_path)
+    if file_path is None or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    parser = ThreeMFCardParser(file_path)
+    card = parser.parse()
+    listed = {entry.zip_path for entries in card.auxiliaries.values() for entry in entries}
+    if zip_path not in listed:
+        raise HTTPException(status_code=404, detail="Not a file of this model card")
+    payload = parser.read(zip_path)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Not a file of this model card")
+    data, media_type = payload
+    # An hour of browser cache: a card dialog re-renders its gallery on every
+    # open, and these bytes only ever change when the file behind them is
+    # replaced — a cost the card is happy to pay, unlike a cover route whose
+    # URL survives the picture being swapped.
+    return Response(content=data, media_type=media_type, headers={"Cache-Control": "max-age=3600"})
 
 
 @router.get("/files/{file_id}/plate-thumbnail/{plate_index}")

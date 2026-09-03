@@ -254,5 +254,21 @@ class ProductResponse(ProductListItem):
     parts: list[ProductPartResponse] = []
     library_file_ids: list[int] = []
     library_folder_ids: list[int] = []
+    # All-time units printed across EVERY order of this product (spec §Decisions
+    # 7). Computed per request from the order figures, never stored — the number
+    # on the product page and the one on the order must not be able to disagree.
+    units_printed_total: int = 0
     created_at: datetime
     updated_at: datetime
+
+
+class RereadResponse(BaseModel):
+    """``POST /products/{id}/card/reread``.
+
+    The notes ride beside the product rather than in a header: they are the only
+    place the operator learns that a field was left alone because it was theirs,
+    or that a file was skipped because its category does not carry that type.
+    """
+
+    product: ProductResponse
+    notes: list[str] = []

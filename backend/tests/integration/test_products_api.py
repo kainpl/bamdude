@@ -8,10 +8,22 @@ in ``backend/tests/conftest.py``.
 import pytest
 from sqlalchemy import select
 
+from backend.app.models.archive import PrintArchive
+from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import ProductPlate, product_files, product_folders
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
+from backend.app.services.product_files import product_attachments_dir
+
+# One builder for the card 3MF, shared with the library-card tests, so the
+# auto-fill side and the card side cannot drift about what a card file holds.
+from backend.tests.integration.test_library_card_api import (
+    EVIL_EXE,
+    PNG_A,
+    make_card_file,
+    write_card_3mf,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -364,3 +376,270 @@ async def test_an_empty_patch_does_not_clear_the_seeded_flag(committing_client, 
     part_id = (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"][0]["id"]
     r = await committing_client.patch(f"/api/v1/products/{pid}/parts/{part_id}", json={})
     assert r.status_code == 200 and r.json()["auto"] is True
+
+
+# ---------- the model card: auto-fill, re-read, all-time printed (spec §Decisions 2, 5, 7) ----------
+#
+# The two rules everything below defends:
+#   * auto-fill NEVER overwrites — a field the operator wrote is theirs, and the
+#     only way to get the file's value back is to clear it and re-read;
+#   * only the designer's ``Auxiliaries/`` files are imported, and only into a
+#     category whose allowlist accepts them. A 3MF is a ZIP an operator was
+#     handed; the mesh, the sliced G-code and an .exe hidden in ``Others/`` must
+#     all stay out of the attachments directory.
+
+
+async def _card_product(client, db, tmp_path, **card):
+    file = await make_card_file(db, tmp_path, **card)
+    body = (await client.post(f"/api/v1/products/from-file/{file.id}")).json()
+    return file.id, body
+
+
+def _by_category(attachments: list[dict]) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for a in attachments:
+        out.setdefault(a["category"], []).append(a)
+    return out
+
+
+@pytest.mark.asyncio
+async def test_from_file_fills_the_card_and_imports_the_designers_files(committing_client, db_session, tmp_path):
+    file_id, body = await _card_product(committing_client, db_session, tmp_path)
+
+    assert body["name"] == "Desk Lamp", "the card's Title names the product, not the filename stem"
+    assert body["designer"] == "Chef&koch" and body["license"] == "CC-BY-4.0"
+    assert body["description"] == "A lamp & a shade"
+    assert body["design_id"] == "1234567"
+    assert body["units_printed_total"] == 0
+
+    by_category = _by_category(body["attachments"])
+    assert sorted(by_category) == ["assembly", "bom_docs", "other", "pictures"], (
+        "profile pictures and thumbnails are BambuStudio's, not the designer's"
+    )
+    assert [a["original_name"] for a in by_category["pictures"]] == ["a.png", "b.jpg"]
+    assert [a["sort_order"] for a in by_category["pictures"]] == [0, 1]
+    assert [a["original_name"] for a in by_category["bom_docs"]] == ["bom.csv"]
+    assert [a["original_name"] for a in by_category["other"]] == ["notes.txt"]
+    for entry in body["attachments"]:
+        assert entry["source"] == "3mf" and entry["source_file_id"] == file_id
+        assert entry["filename"] != entry["original_name"], "stored under a uuid, like every upload"
+        assert (product_attachments_dir(body["id"]) / entry["filename"]).exists()
+
+    # The first picture becomes the effective cover for free (the cover rule).
+    assert body["has_cover"] is True and body["cover_image_filename"] is None
+    assert (product_attachments_dir(body["id"]) / by_category["pictures"][0]["filename"]).read_bytes() == PNG_A
+
+
+@pytest.mark.asyncio
+async def test_a_placeholder_title_never_becomes_the_product_name(committing_client, db_session, tmp_path):
+    """BambuStudio stamps 'Exported 3D Model' on everything it exports. A farm
+    of products all called that is worse than the filename it came from."""
+    for title, filename, stem in (
+        ("Exported 3D Model", "bracket.3mf", "bracket"),
+        ("Untitled", "hinge.3mf", "hinge"),
+        ("   ", "spacer.3mf", "spacer"),
+        (None, "washer.3mf", "washer"),
+    ):
+        _, body = await _card_product(committing_client, db_session, tmp_path, name=filename, title=title)
+        assert body["name"] == stem, f"{title!r} should have left the filename stem alone"
+        assert body["designer"] == "Chef&koch", "the rest of the card is filled either way"
+
+
+@pytest.mark.asyncio
+async def test_a_second_product_from_the_same_file_gets_its_own_copies(committing_client, db_session, tmp_path):
+    file = await make_card_file(db_session, tmp_path)
+    first = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()
+    second = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()
+
+    assert first["id"] != second["id"]
+    assert len(first["attachments"]) == len(second["attachments"]) == 5
+    for entry in second["attachments"]:
+        assert (product_attachments_dir(second["id"]) / entry["filename"]).exists()
+    # Nothing is shared: a delete on one product cannot reach the other's files.
+    assert {a["filename"] for a in first["attachments"]} & {a["filename"] for a in second["attachments"]} == set()
+
+
+@pytest.mark.asyncio
+async def test_an_import_skips_what_the_category_does_not_allow(committing_client, db_session, tmp_path):
+    """The allowlists are the only defence against an executable landing in the
+    attachments directory (spec §Risks) — and an import is an upload nobody
+    watched, so it obeys them too."""
+    file = await make_card_file(
+        db_session,
+        tmp_path,
+        members={
+            "Auxiliaries/Others/run.exe": EVIL_EXE,
+            "Auxiliaries/Model Pictures/a.png": PNG_A,
+            "Auxiliaries/Bill of Materials/sheet.png": PNG_A,
+        },
+    )
+    body = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()
+
+    assert [a["original_name"] for a in body["attachments"]] == ["a.png"]
+    assert sorted(p.suffix for p in product_attachments_dir(body["id"]).iterdir()) == [".png"]
+
+
+@pytest.mark.asyncio
+async def test_reread_keeps_the_operators_values_and_replaces_only_this_files_imports(
+    committing_client, db_session, tmp_path
+):
+    file = await make_card_file(db_session, tmp_path)
+    file_id = file.id
+    pid = (await committing_client.post("/api/v1/products/", json={"name": "Lamp", "designer": "Me"})).json()["id"]
+    assert (
+        await committing_client.put(f"/api/v1/products/{pid}/files", json={"library_file_ids": [file_id]})
+    ).status_code == 200, "linking a file does NOT auto-fill — the page offers a re-read"
+    linked = (await committing_client.get(f"/api/v1/products/{pid}")).json()
+    assert linked["license"] is None and linked["attachments"] == []
+
+    r = await committing_client.post(f"/api/v1/products/{pid}/card/reread", params={"file_id": file_id})
+    assert r.status_code == 200, r.text
+    first = r.json()["product"]
+    assert r.json()["notes"], "the operator is told what was filled"
+    assert first["name"] == "Lamp" and first["designer"] == "Me", "a value the operator wrote is never overwritten"
+    assert first["license"] == "CC-BY-4.0" and first["description"] == "A lamp & a shade"
+    imported = [a["filename"] for a in first["attachments"]]
+    assert len(imported) == 5
+
+    manual = (
+        await committing_client.post(
+            f"/api/v1/products/{pid}/attachments",
+            data={"category": "pictures"},
+            files={"file": ("mine.png", PNG_A, "image/png")},
+        )
+    ).json()["filename"]
+
+    # A SECOND linked file's import is not this file's to replace either, so it
+    # is here to be counted after the second read.
+    other_file = await make_card_file(db_session, tmp_path, name="second.3mf", title="Second")
+    other_id = other_file.id
+    assert (
+        await committing_client.put(f"/api/v1/products/{pid}/files", json={"library_file_ids": [file_id, other_id]})
+    ).status_code == 200
+    from_other = [
+        a["filename"]
+        for a in (
+            await committing_client.post(f"/api/v1/products/{pid}/card/reread", params={"file_id": other_id})
+        ).json()["product"]["attachments"]
+        if a["source_file_id"] == other_id
+    ]
+    assert len(from_other) == 5
+
+    again = await committing_client.post(f"/api/v1/products/{pid}/card/reread", params={"file_id": file_id})
+    assert again.status_code == 200, again.text
+    second = again.json()["product"]
+    names = {a["filename"] for a in second["attachments"]}
+    assert manual in names, "a manual attachment is not the file's to replace"
+    assert set(from_other) <= names, "another file's import is not this file's to replace"
+    assert not (names & set(imported)), "the previous import of THIS file is gone"
+    assert len([a for a in second["attachments"] if a["source"] == "3mf"]) == 10
+    for gone in imported:
+        assert not (product_attachments_dir(pid) / gone).exists()
+    for kept in [manual, *from_other]:
+        assert (product_attachments_dir(pid) / kept).exists()
+
+
+@pytest.mark.asyncio
+async def test_reread_wants_a_file_the_product_is_actually_linked_to(committing_client, db_session, tmp_path):
+    linked = await make_card_file(db_session, tmp_path, name="linked.3mf")
+    stranger = await make_card_file(db_session, tmp_path, name="stranger.3mf")
+    linked_id, stranger_id = linked.id, stranger.id
+
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{linked_id}")).json()["id"]
+    assert (
+        await committing_client.post(f"/api/v1/products/{pid}/card/reread", params={"file_id": stranger_id})
+    ).status_code == 404
+    assert (
+        await committing_client.post(f"/api/v1/products/{pid}/card/reread", params={"file_id": 999999})
+    ).status_code == 404
+    assert (
+        await committing_client.post("/api/v1/products/999999/card/reread", params={"file_id": linked_id})
+    ).status_code == 404
+
+    # A file the product holds THROUGH A FOLDER is linked just as much.
+    folder = LibraryFolder(name="Lamps")
+    db_session.add(folder)
+    await db_session.flush()
+    written = write_card_3mf(tmp_path / "library" / "child.3mf", title="Child Lamp", designer="Someone")
+    child = LibraryFile(
+        filename="child.3mf",
+        file_path="library/child.3mf",
+        file_size=written.stat().st_size,
+        file_type="3mf",
+        folder_id=folder.id,
+        file_metadata=SINGLE,
+    )
+    db_session.add(child)
+    await db_session.commit()
+    folder_id, child_id = folder.id, child.id
+
+    other = (await committing_client.post("/api/v1/products/", json={"name": "Via folder"})).json()["id"]
+    assert (
+        await committing_client.put(f"/api/v1/products/{other}/folders", json={"library_folder_ids": [folder_id]})
+    ).status_code == 200
+    r = await committing_client.post(f"/api/v1/products/{other}/card/reread", params={"file_id": child_id})
+    assert r.status_code == 200, r.text
+    assert r.json()["product"]["designer"] == "Someone"
+
+
+@pytest.mark.asyncio
+async def test_units_printed_total_counts_every_order_the_product_appears_in(committing_client, db_session):
+    """The all-time count on the product page (spec §Decisions 7): Σ over the
+    lines of EVERY order, and never over another product's lines."""
+    file = LibraryFile(
+        filename="lamp.gcode.3mf",
+        file_path="lamp",
+        file_size=1,
+        file_type="gcode",
+        file_metadata={
+            "plates": [
+                {
+                    "index": 1,
+                    "printable_objects": {"1": "shade"},
+                    "print_time_seconds": 10,
+                    "filaments": [{"slot_id": 1, "type": "PETG"}],
+                }
+            ]
+        },
+    )
+    db_session.add(file)
+    await db_session.commit()
+    file_id = file.id
+
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{file_id}")).json()["id"]
+    other_pid = (await committing_client.post("/api/v1/products/", json={"name": "Not a lamp"})).json()["id"]
+    assert (await committing_client.get(f"/api/v1/products/{pid}")).json()["units_printed_total"] == 0
+
+    async def _order(product_id: int, quantity: int, printed: int) -> None:
+        body = (
+            await committing_client.post(
+                "/api/v1/projects/",
+                json={
+                    "name": f"O{product_id}-{quantity}",
+                    "lines": [{"product_id": product_id, "quantity": quantity}],
+                },
+            )
+        ).json()
+        archive = PrintArchive(
+            project_id=body["id"],
+            project_line_id=body["lines"][0]["id"],
+            library_file_id=file_id,
+            plate_index=1,
+            filename="lamp",
+            file_path="",
+            file_size=0,
+            status="completed",
+            filament_type="PETG",
+            quantity=printed,
+        )
+        db_session.add(archive)
+        await db_session.flush()
+        db_session.add(PrintArchivePart(archive_id=archive.id, name="shade", name_key="shade", quantity=printed))
+        await db_session.commit()
+
+    await _order(pid, 2, 2)
+    await _order(pid, 5, 3)
+    await _order(other_pid, 4, 4)  # another product's order contributes nothing
+
+    assert (await committing_client.get(f"/api/v1/products/{pid}")).json()["units_printed_total"] == 5
+    assert (await committing_client.get(f"/api/v1/products/{other_pid}")).json()["units_printed_total"] == 0

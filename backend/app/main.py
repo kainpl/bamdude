@@ -8984,6 +8984,12 @@ PUBLIC_API_PATTERNS = [
     # Images and media
     "/photos/",  # /archives/{id}/photos/{filename}
     "/project-image/",  # /archives/{id}/project-image/{path}
+    # /library/files/{id}/card-file/{zip_path} — the model card's pictures, loaded
+    # by <img> from the card dialog. Narrow like /overlay-status above: the two
+    # slashes mean this substring can only ever match that one endpoint, and the
+    # route's own RequireCameraStreamToken is what authenticates it — this entry
+    # only lets the request reach that gate.
+    "/card-file/",
     "/qrcode",  # /archives/{id}/qrcode
     "/timelapse",  # /archives/{id}/timelapse (video)
     "/cover",  # /printers/{id}/cover

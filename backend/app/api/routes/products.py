@@ -53,8 +53,10 @@ from backend.app.schemas.product import (
     ProductPartUpdate,
     ProductResponse,
     ProductUpdate,
+    RereadResponse,
 )
 from backend.app.services.part_names import canonicalize, name_key
+from backend.app.services.product_card import fill_from_file, read_card, units_printed_total, usable_title
 from backend.app.services.product_composition import (
     add_alias,
     merge_parts,
@@ -151,6 +153,7 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
         ],
         library_file_ids=sorted(f.id for f in product.library_files),
         library_folder_ids=sorted(f.id for f in product.library_folders),
+        units_printed_total=await units_printed_total(db, product.id),
         created_at=created_at,
         updated_at=updated_at,
     )
@@ -243,7 +246,13 @@ async def create_product_from_file(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
 ):
-    """'Print this file five times' must not require authoring a product."""
+    """'Print this file five times' must not require authoring a product.
+
+    The card names it when it can: a 3MF's ``Title`` beats a filename, EXCEPT
+    when it is one of BambuStudio's placeholders, in which case the stem stands
+    (spec §Risks, "``Title`` ≠ name"). The parse is handed on to
+    :func:`fill_from_file` so the ZIP is opened once, not twice.
+    """
     file = (await db.execute(LibraryFile.active().where(LibraryFile.id == library_file_id))).scalar_one_or_none()
     if file is None:
         raise HTTPException(status_code=404, detail="Library file not found")
@@ -252,11 +261,13 @@ async def create_product_from_file(
         if stem.lower().endswith(suffix):
             stem = stem[: -len(suffix)]
             break
-    product = Product(name=stem or file.filename)
+    card = read_card(file)
+    product = Product(name=usable_title(card) or stem or file.filename)
     db.add(product)
     await db.flush()
     desired = await _file_product_ids(db, file.id) | {product.id}
     await sync_product_for_file(db, library_file_id=file.id, product_ids=sorted(desired))
+    await fill_from_file(db, product, file, replace_3mf_attachments=False, card=card)
     return await _response(db, product, reload_links=True)
 
 
@@ -640,6 +651,49 @@ async def unlink_folder(
     product = await _get(db, product_id)
     await _apply_folder(db, folder_id, await _folder_product_ids(db, folder_id) - {product_id})
     return await _response(db, product, reload_links=True)
+
+
+# ---------- the model card (spec §Decisions 2) ----------
+
+
+async def _linked_file(db: AsyncSession, product: Product, file_id: int) -> LibraryFile:
+    """The file, when this product really holds it — directly or through a folder.
+
+    A folder link is mirrored onto every child's ``product_files`` row by
+    ``apply_folder_products``, so the pivot alone answers both cases for every
+    file the sync has seen. The folder check behind it is not redundant: a file
+    that landed in a linked folder without a sync (a restored row, a scan that
+    has not run) is still the operator's to re-read from.
+    """
+    file = (await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))).scalar_one_or_none()
+    if file is not None and product.id in await _file_product_ids(db, file.id):
+        return file
+    if file is not None and file.folder_id is not None:
+        if product.id in await _folder_product_ids(db, file.folder_id):
+            return file
+    # 404, not 403: whether a stranger's file exists is not this route's to say.
+    raise HTTPException(status_code=404, detail="That file is not linked to this product")
+
+
+@router.post("/{product_id}/card/reread", response_model=RereadResponse)
+async def reread_card(
+    product_id: int,
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Read the card out of a linked file again.
+
+    Blank fields are filled and this file's previous ``source = "3mf"``
+    attachments are replaced; everything the operator wrote or uploaded is left
+    alone (spec §Decisions 2). Linking a file does NOT do this on its own —
+    the page offers it, so re-reading is always something somebody asked for.
+    """
+    product = await _get(db, product_id)
+    file = await _linked_file(db, product, file_id)
+    notes = await fill_from_file(db, product, file, replace_3mf_attachments=True)
+    await db.flush()
+    return RereadResponse(product=await _response(db, product), notes=notes)
 
 
 # ---------- typed attachments (spec §Decisions 3) ----------
