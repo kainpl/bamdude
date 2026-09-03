@@ -41,9 +41,15 @@ export function AddLineRow({ orderId }: { orderId: number }) {
       api.addOrderLine(orderId, {
         product_id: productId!,
         quantity,
+        // Folded here as well as on blur: blur is what the operator SEES, this
+        // is what actually goes on the wire, and the two must not be able to
+        // disagree — a submit that never blurred the field (Enter, or a click
+        // straight from the picker) would otherwise send the raw casing. The
+        // inline-edit path folds it in `changedFields` for the same reason.
+        //
         // An empty box is "not said", which on the wire is null — an empty
         // string would be a colour named "" that no plate can ever match.
-        material: material.trim() || null,
+        material: material.trim().toUpperCase() || null,
         color: color.trim() || null,
         note: note.trim() || null,
       }),

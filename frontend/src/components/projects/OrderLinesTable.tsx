@@ -115,7 +115,15 @@ export function OrderLinesTable({ order, canEdit, onPrintPlate }: OrderLinesTabl
       await api.updateOrderLine(order.id, a.id, { sort_order: b.sort_order });
       await api.updateOrderLine(order.id, b.id, { sort_order: a.sort_order });
     },
-    onSuccess: invalidate,
+    // ⚠️ `onSettled`, NOT `onSuccess`: a swap is two writes and the first can
+    // land while the second does not (a dropped connection, a 404 on a line
+    // another session just deleted). The server is then holding two lines with
+    // the SAME `sort_order` — and on `onSuccess` alone the cache would never be
+    // invalidated, so the table would keep drawing the pre-swap order. Both
+    // buttons then look broken for ever: swapping equal values is a no-op, and
+    // the `id` tiebreak keeps the wrong display perfectly stable. Refetching
+    // whatever happened is the only way the operator sees the real state.
+    onSettled: invalidate,
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
@@ -127,6 +135,23 @@ export function OrderLinesTable({ order, canEdit, onPrintPlate }: OrderLinesTabl
     },
     onError: (e: Error) => showToast(e.message, 'error'),
   });
+
+  /**
+   * Save, unless there is nothing to save.
+   *
+   * A `PATCH {}` is a request that asks the server to change nothing, bumps the
+   * order's `updated_at` and invalidates two query keys for a row the operator
+   * only opened and closed. Pressing Save on an untouched row is the same
+   * gesture as Cancel, so it does the same thing.
+   */
+  const commitDraft = (line: ProjectLine, editing: Draft) => {
+    const data = changedFields(line, editing);
+    if (Object.keys(data).length === 0) {
+      setDraft(null);
+      return;
+    }
+    save.mutate({ lineId: line.id, data });
+  };
 
   const toggleExpanded = (lineId: number) =>
     setExpanded((prev) => {
@@ -262,7 +287,7 @@ export function OrderLinesTable({ order, canEdit, onPrintPlate }: OrderLinesTabl
                           <button
                             type="button"
                             data-testid={`line-${line.id}-save`}
-                            onClick={() => save.mutate({ lineId: line.id, data: changedFields(line, editing) })}
+                            onClick={() => commitDraft(line, editing)}
                             disabled={busy}
                             title={t('orders.lines.save')}
                             aria-label={t('orders.lines.save')}
