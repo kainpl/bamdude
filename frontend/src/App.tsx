@@ -16,7 +16,7 @@ import { MaintenancePage } from './pages/MaintenancePage';
 import { OrdersPage } from './pages/orders/OrdersPage';
 import { CustomersPage } from './pages/customers/CustomersPage';
 import { CustomerPage } from './pages/customers/CustomerPage';
-import { ProjectDetailPage } from './pages/ProjectDetailPage';
+import { OrderPage } from './pages/orders/OrderPage';
 import { FileManagerPage } from './pages/FileManagerPage';
 import { LibraryTrashPage } from './pages/LibraryTrashPage';
 import { ArchiveTrashPage } from './pages/ArchiveTrashPage';
@@ -262,7 +262,7 @@ function App() {
                   <Route path="profiles" element={<ProfilesPage />} />
                   <Route path="maintenance" element={<MaintenancePage />} />
                   <Route path="projects" element={<OrdersPage />} />
-                  <Route path="projects/:id" element={<ProjectDetailPage />} />
+                  <Route path="projects/:id" element={<OrderPage />} />
                   <Route path="customers" element={<CustomersPage />} />
                   <Route path="customers/:id" element={<CustomerPage />} />
                   <Route path="inventory" element={<InventoryPage />} />
