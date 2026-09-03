@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -71,7 +71,7 @@ import { formatDateTime, formatDateOnly, type TimeFormat, type DateFormat, forma
 import { getCurrencySymbol } from '../utils/currency';
 import { getBedTypeInfo } from '../utils/bedType';
 import { useIsMobile } from '../hooks/useIsMobile';
-import type { Archive, ProjectListItem, ArchiveListParams } from '../api/client';
+import type { Archive, OrderListItem, ArchiveListParams } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { PaginationBar } from '../components/PaginationBar';
@@ -85,7 +85,8 @@ import { EditArchiveModal } from '../components/EditArchiveModal';
 import { SaveArchiveToLibraryModal } from '../components/SaveArchiveToLibraryModal';
 import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu';
 import { BatchTagModal } from '../components/BatchTagModal';
-import { BatchProjectModal } from '../components/BatchProjectModal';
+import { BatchAssignOrderModal } from '../components/projects/BatchAssignOrderModal';
+import { AddToOrderMenu } from '../components/projects/AddToOrderMenu';
 import { CalendarView } from '../components/CalendarView';
 import { QRCodeModal } from '../components/QRCodeModal';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
@@ -197,7 +198,7 @@ function ArchiveCard({
   isSelected: boolean;
   onSelect: (id: number) => void;
   selectionMode: boolean;
-  projects: ProjectListItem[] | undefined;
+  projects: OrderListItem[] | undefined;
   isHighlighted?: boolean;
   timeFormat?: TimeFormat;
   dateFormat?: DateFormat;
@@ -212,6 +213,7 @@ function ArchiveCard({
   }
 
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { showToast } = useToast();
   const { hasPermission, canModify } = useAuth();
   const isMobile = useIsMobile();
@@ -230,6 +232,7 @@ function ArchiveCard({
   const [showQRCode, setShowQRCode] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
   const [showProjectPage, setShowProjectPage] = useState(false);
+  const [showAddToOrder, setShowAddToOrder] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showDeleteSource3mfConfirm, setShowDeleteSource3mfConfirm] = useState(false);
   const [showDeleteF3dConfirm, setShowDeleteF3dConfirm] = useState(false);
@@ -412,18 +415,6 @@ function ArchiveCard({
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
       showToast(data.is_favorite ? t('archives.toast.addedToFavorites') : t('archives.toast.removedFromFavorites'));
-    },
-  });
-
-  const assignProjectMutation = useMutation({
-    mutationFn: (projectId: number | null) => api.updateArchive(archive.id, { project_id: projectId }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['archives'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      showToast(t('archives.toast.projectUpdated'));
-    },
-    onError: () => {
-      showToast(t('archives.toast.failedUpdateProject'), 'error');
     },
   });
 
@@ -662,64 +653,22 @@ function ArchiveCard({
       disabled: !canModify('archives', 'update', archive.created_by_id),
       title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
     },
+    // The order's own page, not the list. It opened the list only because
+    // there was no detail page worth landing on.
     ...(archive.project_id && archive.project_name ? [{
-      label: t('archives.menu.goToProject', { name: archive.project_name }),
+      label: t('archives.menu.goToOrder', { name: archive.project_name }),
       icon: <FolderKanban className="w-4 h-4 text-bambu-green" />,
-      onClick: () => window.location.href = '/projects',
+      onClick: () => navigate(`/projects/${archive.project_id}`),
     }] : []),
     {
-      label: t('archives.menu.addToProject'),
+      // Order, then line, is one level more than `ContextMenu` can nest, so
+      // the choice opens as its own panel — and one component now serves card
+      // and row, where this page carried two copies of the same submenu.
+      label: t('archives.menu.addToOrder'),
       icon: <FolderKanban className="w-4 h-4" />,
-      onClick: () => {},
+      onClick: () => setShowAddToOrder(true),
       disabled: !canModify('archives', 'update', archive.created_by_id),
       title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
-      submenuSearchPlaceholder: t('archives.menu.searchProjects'),
-      submenu: (() => {
-        const items: ContextMenuItem[] = [];
-
-        // Add "Remove from Project" if archive is in a project
-        if (archive.project_id) {
-          items.push({
-            label: t('archives.menu.removeFromProject'),
-            icon: <X className="w-4 h-4" />,
-            onClick: () => assignProjectMutation.mutate(null),
-            disabled: !canModify('archives', 'update', archive.created_by_id),
-          });
-        }
-
-        // Add project options
-        if (!projects) {
-          items.push({
-            label: t('archives.menu.loading'),
-            icon: <Loader2 className="w-4 h-4 animate-spin" />,
-            onClick: () => {},
-            disabled: true,
-          });
-        } else {
-          const activeProjects = projects
-            .filter(p => p.status === 'active')
-            .sort((a, b) => a.name.localeCompare(b.name));
-          if (activeProjects.length === 0) {
-            items.push({
-              label: t('archives.menu.noProjectsAvailable'),
-              icon: <FolderKanban className="w-4 h-4 opacity-50" />,
-              onClick: () => {},
-              disabled: true,
-            });
-          } else {
-            activeProjects.forEach(p => {
-              items.push({
-                label: p.name,
-                icon: <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: p.color || '#888' }} />,
-                onClick: () => assignProjectMutation.mutate(p.id),
-                disabled: archive.project_id === p.id || !canModify('archives', 'update', archive.created_by_id),
-              });
-            });
-          }
-        }
-
-        return items;
-      })(),
     },
     {
       label: isSelected ? t('archives.menu.deselect') : t('archives.menu.select'),
@@ -1572,6 +1521,10 @@ function ArchiveCard({
         />
       )}
 
+      {showAddToOrder && (
+        <AddToOrderMenu archive={archive} onDone={() => setShowAddToOrder(false)} />
+      )}
+
       {showSchedule && (
         <PrintModal
           mode="add-to-queue"
@@ -1677,7 +1630,6 @@ function ArchiveListRow({
   isSelected,
   onSelect,
   selectionMode,
-  projects,
   isHighlighted,
   preferredSlicer = 'bambu_studio',
   t,
@@ -1688,13 +1640,13 @@ function ArchiveListRow({
   isSelected: boolean;
   onSelect: (id: number) => void;
   selectionMode: boolean;
-  projects: ProjectListItem[] | undefined;
   isHighlighted?: boolean;
   preferredSlicer?: SlicerType;
   t: TFunction;
   onNavigateToArchive?: (archiveId: number) => void;
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { showToast } = useToast();
   const { hasPermission, canModify } = useAuth();
   const { data: rowSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
@@ -1716,6 +1668,7 @@ function ArchiveListRow({
   const [showQRCode, setShowQRCode] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
   const [showProjectPage, setShowProjectPage] = useState(false);
+  const [showAddToOrder, setShowAddToOrder] = useState(false);
   const [showDeleteSource3mfConfirm, setShowDeleteSource3mfConfirm] = useState(false);
   const [showDeleteF3dConfirm, setShowDeleteF3dConfirm] = useState(false);
   const [showDeleteTimelapseConfirm, setShowDeleteTimelapseConfirm] = useState(false);
@@ -1864,18 +1817,6 @@ function ArchiveListRow({
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
       showToast(data.is_favorite ? t('archives.toast.addedToFavorites') : t('archives.toast.removedFromFavorites'));
-    },
-  });
-
-  const assignProjectMutation = useMutation({
-    mutationFn: (projectId: number | null) => api.updateArchive(archive.id, { project_id: projectId }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['archives'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      showToast(t('archives.toast.projectUpdated'));
-    },
-    onError: () => {
-      showToast(t('archives.toast.failedUpdateProject'), 'error');
     },
   });
 
@@ -2103,55 +2044,16 @@ function ArchiveListRow({
       title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
     },
     ...(archive.project_id && archive.project_name ? [{
-      label: t('archives.menu.goToProject', { name: archive.project_name }),
+      label: t('archives.menu.goToOrder', { name: archive.project_name }),
       icon: <FolderKanban className="w-4 h-4 text-bambu-green" />,
-      onClick: () => window.location.href = '/projects',
+      onClick: () => navigate(`/projects/${archive.project_id}`),
     }] : []),
     {
-      label: t('archives.menu.addToProject'),
+      label: t('archives.menu.addToOrder'),
       icon: <FolderKanban className="w-4 h-4" />,
-      onClick: () => {},
-      submenuSearchPlaceholder: t('archives.menu.searchProjects'),
-      submenu: (() => {
-        const items: ContextMenuItem[] = [];
-        if (archive.project_id) {
-          items.push({
-            label: t('archives.menu.removeFromProject'),
-            icon: <X className="w-4 h-4" />,
-            onClick: () => assignProjectMutation.mutate(null),
-          });
-        }
-        if (!projects) {
-          items.push({
-            label: t('archives.menu.loading'),
-            icon: <Loader2 className="w-4 h-4 animate-spin" />,
-            onClick: () => {},
-            disabled: true,
-          });
-        } else {
-          const activeProjects = projects
-            .filter(p => p.status === 'active')
-            .sort((a, b) => a.name.localeCompare(b.name));
-          if (activeProjects.length === 0) {
-            items.push({
-              label: t('archives.menu.noProjectsAvailable'),
-              icon: <FolderKanban className="w-4 h-4 opacity-50" />,
-              onClick: () => {},
-              disabled: true,
-            });
-          } else {
-            activeProjects.forEach(p => {
-              items.push({
-                label: p.name,
-                icon: <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: p.color || '#888' }} />,
-                onClick: () => assignProjectMutation.mutate(p.id),
-                disabled: archive.project_id === p.id,
-              });
-            });
-          }
-        }
-        return items;
-      })(),
+      onClick: () => setShowAddToOrder(true),
+      disabled: !canModify('archives', 'update', archive.created_by_id),
+      title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
     },
     {
       label: isSelected ? t('archives.menu.deselect') : t('archives.menu.select'),
@@ -2742,6 +2644,10 @@ function ArchiveListRow({
         />
       )}
 
+      {showAddToOrder && (
+        <AddToOrderMenu archive={archive} onDone={() => setShowAddToOrder(false)} />
+      )}
+
       {/* Schedule Modal */}
       {showSchedule && (
         <PrintModal
@@ -3105,8 +3011,8 @@ export function ArchivesPage() {
   });
 
   const { data: projects } = useQuery({
-    queryKey: ['projects'],
-    queryFn: () => api.getProjects(),
+    queryKey: ['projects', {}],
+    queryFn: () => api.getOrders({}),
   });
 
   // Archive trash count for the header badge (#1008 follow-up). Empty/error
@@ -3951,7 +3857,6 @@ export function ArchivesPage() {
                 isSelected={selectedIds.has(archive.id)}
                 onSelect={toggleSelect}
                 selectionMode={selectionMode}
-                projects={projects}
                 isHighlighted={archive.id === highlightedArchiveId}
                 preferredSlicer={preferredSlicer}
                 t={t}
@@ -3991,10 +3896,10 @@ export function ArchivesPage() {
         />
       )}
 
-      {/* Batch Project Modal */}
+      {/* Bulk "assign to order" */}
       {showBatchProject && (
-        <BatchProjectModal
-          selectedIds={Array.from(selectedIds)}
+        <BatchAssignOrderModal
+          archiveIds={Array.from(selectedIds)}
           onClose={() => setShowBatchProject(false)}
         />
       )}

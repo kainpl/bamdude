@@ -10112,6 +10112,9 @@ export const api = {
       selected_macro_ids?: number[] | null;
       quantity?: number;
       project_id?: number;
+      /** Pass 2: which line of the order the resulting print counts against.
+       *  Only meaningful alongside `project_id`. */
+      project_line_id?: number | null;
       cleanup_library_after_dispatch?: boolean;
     }
   ) =>

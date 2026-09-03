@@ -164,6 +164,13 @@ export interface PrintModalProps {
   onSuccess?: () => void;
   /** Project ID to associate the resulting archive with (only when triggered from project view) */
   projectId?: number;
+  /** Which LINE of that order the resulting print counts against.
+   *
+   *  ⚠️ Only meaningful beside ``projectId`` — a line names nothing without
+   *  its order, and the server rejects a line from a different one. Absent
+   *  means "bound to the order, to no line of it", which is what the order
+   *  page shows as its other prints. */
+  projectLineId?: number | null;
   /** Delete the LibraryFile after dispatch — used by the Printers-page Direct-Print flow
    *  so transient uploads don't linger in File Manager. Only applies to library-file prints. */
   cleanupLibraryAfterDispatch?: boolean;

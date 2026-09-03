@@ -1,11 +1,12 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link, PackageX } from 'lucide-react';
 import { api } from '../api/client';
 import type { Archive } from '../api/client';
 import { Button } from './Button';
-import { selectableProjects } from '../utils/projects';
+import { OrderPicker } from './pickers/OrderPicker';
+import { OrderLinePicker } from './pickers/OrderLinePicker';
 
 // Keys for failure reasons - translated at render time
 const FAILURE_REASON_KEYS = [
@@ -48,6 +49,10 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const [printName, setPrintName] = useState(archive.print_name || '');
   const [printerId, setPrinterId] = useState<number | null>(archive.printer_id);
   const [projectId, setProjectId] = useState<number | null>(archive.project_id ?? null);
+  // Pass 2: which LINE of the order the print counts against. ⚠️ Reset whenever
+  // the order changes — the server rejects (400) a line belonging to another
+  // order, so the mismatch must never be submittable from here.
+  const [projectLineId, setProjectLineId] = useState<number | null>(archive.project_line_id ?? null);
   const [notes, setNotes] = useState(archive.notes || '');
   const [tags, setTags] = useState(archive.tags || '');
   // Failure reason is stored as a camelCase key (`filamentRunout`), but earlier
@@ -113,18 +118,6 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     queryFn: api.getPrinters,
   });
 
-  const { data: allProjects } = useQuery({
-    queryKey: ['projects'],
-    queryFn: () => api.getProjects(),
-  });
-
-  // Keep the archive's own project on the list even when archived — dropping it
-  // would render the field as "no project" and save that back.
-  const projects = useMemo(
-    () => selectableProjects(allProjects, projectId != null ? [projectId] : null),
-    [allProjects, projectId],
-  );
-
   // Fetch all tags using the dedicated API
   const { data: tagsData } = useQuery({
     queryKey: ['tags'],
@@ -189,6 +182,10 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      // Re-filing a print moves it between orders, so both order pages the
+      // edit could have touched have to reload their figures and prints.
+      queryClient.invalidateQueries({ queryKey: ['project'] });
+      queryClient.invalidateQueries({ queryKey: ['project-archives'] });
       onClose();
     },
   });
@@ -229,6 +226,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       print_name: printName || undefined,
       printer_id: printerId,
       project_id: projectId,
+      project_line_id: projectLineId,
       notes: notes || undefined,
       tags: tags || undefined,
       quantity: quantity,
@@ -319,24 +317,34 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
             </select>
           </div>
 
-          {/* Project */}
+          {/* Order */}
           <div>
-            <label className="block text-sm text-bambu-gray mb-1">
+            <label htmlFor="edit-archive-order" className="block text-sm text-bambu-gray mb-1">
               <FolderKanban className="w-4 h-4 inline mr-1" />
-              {t('editArchive.project')}
+              {t('editArchive.order')}
             </label>
-            <select
-              value={projectId ?? ''}
-              onChange={(e) => setProjectId(e.target.value ? Number(e.target.value) : null)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-            >
-              <option value="">{t('editArchive.noProject')}</option>
-              {projects?.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+            <OrderPicker
+              id="edit-archive-order"
+              value={projectId}
+              onChange={(next) => {
+                setProjectId(next);
+                setProjectLineId(null);
+              }}
+            />
+          </div>
+
+          {/* Order line */}
+          <div>
+            <label htmlFor="edit-archive-line" className="block text-sm text-bambu-gray mb-1">
+              <FolderKanban className="w-4 h-4 inline mr-1" />
+              {t('editArchive.line')}
+            </label>
+            <OrderLinePicker
+              id="edit-archive-line"
+              orderId={projectId}
+              value={projectLineId}
+              onChange={setProjectLineId}
+            />
           </div>
 
           {/* Quantity - number of items printed */}

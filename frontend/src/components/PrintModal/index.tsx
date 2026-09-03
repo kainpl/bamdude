@@ -86,6 +86,7 @@ export function PrintModal({
   onClose,
   onSuccess,
   projectId,
+  projectLineId,
   cleanupLibraryAfterDispatch,
   initialDispatchMode,
   lockDispatchMode,
@@ -1054,6 +1055,7 @@ export function PrintModal({
           archive_id: isLibraryFile ? undefined : archiveId,
           library_file_id: isLibraryFile ? libraryFileId : undefined,
           project_id: projectId,
+          project_line_id: projectLineId ?? null,
           target_model: autoModeOptions.target_model ?? undefined,
           target_location_id: autoModeOptions.target_location_id ?? undefined,
           force_color_match: autoModeOptions.force_color_match,
@@ -1244,6 +1246,7 @@ export function PrintModal({
       ...getSwapPayloadForPrinter(printerId),
       quantity: mode === 'edit-queue-item' ? 1 : quantityForPlate(plateId),
       project_id: projectId,
+      project_line_id: projectLineId ?? null,
       };
     };
 
@@ -1272,11 +1275,13 @@ export function PrintModal({
                 selected_macro_ids: selectedMacroIds,
                 quantity,
                 project_id: projectId,
+                project_line_id: projectLineId ?? null,
                 cleanup_library_after_dispatch: cleanupLibraryAfterDispatch,
               });
             } else {
-              // project_id is intentionally omitted here: reprintArchive targets an existing
-              // archive that already carries its own project association from the original print.
+              // project_id (and with it project_line_id) is intentionally omitted here:
+              // reprintArchive targets an existing archive that already carries its own
+              // order association from the original print.
               await api.reprintArchive(archiveId!, printerId, {
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,

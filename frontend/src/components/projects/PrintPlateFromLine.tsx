@@ -154,7 +154,7 @@ export function PrintPlateFromLine({
           // this caller HAS read the file's plates, so it may pin one.
           preselectedPlateId={printing.plate_index || undefined}
           projectId={order.id}
-          // TODO(Task 11): pass projectLineId={line.id}
+          projectLineId={line.id}
           onClose={() => setPrinting(null)}
           onSuccess={() => {
             setPrinting(null);

@@ -53,9 +53,7 @@ import type {
   LibraryFolderTree,
   LibraryFileListItem,
   LibraryFileListParams,
-  LibraryFileUpdate,
   LibraryFolderCreate,
-  LibraryFolderUpdate,
   ExternalFolderCreate,
   AppSettings,
   Permission,
@@ -90,7 +88,7 @@ import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
 import { QueueSequencer } from '../components/QueueSequencer';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
-import { selectableProjects } from '../utils/projects';
+import { LinkToProductsModal } from '../components/products/LinkToProductsModal';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
@@ -416,253 +414,6 @@ function MoveFilesModal({ folders, selectedFiles, currentFolderId, onClose, onMo
   );
 }
 
-// Link Folder Modal
-interface LinkFolderModalProps {
-  folder: LibraryFolderTree;
-  onClose: () => void;
-  onLink: (update: LibraryFolderUpdate) => void;
-  isLoading: boolean;
-  t: TFunction;
-}
-
-function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderModalProps) {
-  // m044: folder ↔ projects is M2M.
-  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<number>>(
-    () => new Set((folder.projects ?? []).map((p) => p.id)),
-  );
-
-  const { data: allProjects } = useQuery({
-    queryKey: ['projects'],
-    queryFn: () => api.getProjects(),
-  });
-
-  // Whatever this folder is already in stays offered, archived or not.
-  const projects = useMemo(
-    () => selectableProjects(allProjects, selectedProjectIds),
-    [allProjects, selectedProjectIds],
-  );
-
-  const toggleProject = (projectId: number) => {
-    setSelectedProjectIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(projectId)) next.delete(projectId);
-      else next.add(projectId);
-      return next;
-    });
-  };
-
-  const handleSave = () => {
-    // Replace the project list. Per-project unlink happens by deselecting
-    // individual chips above; the legacy "wipe everything" red button is gone.
-    onLink({ project_ids: Array.from(selectedProjectIds) });
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary">
-        <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-            <Link2 className="w-5 h-5 text-bambu-green" />
-            {t('fileManager.linkFolder')}
-          </h2>
-          <button onClick={onClose} className="p-1 hover:bg-bambu-dark rounded">
-            <X className="w-5 h-5 text-bambu-gray" />
-          </button>
-        </div>
-
-        <div className="p-4 space-y-4">
-          <p className="text-sm text-bambu-gray">
-            {t('fileManager.linkFolderDescription', { name: folder.name })}
-          </p>
-
-          {/* Chip multi-select. Each project is a clickable colored chip;
-              selected = full color + check, unselected = outline only. */}
-          <div className="bg-bambu-dark rounded-lg p-3">
-            {projects && projects.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5">
-                {projects.map((project) => {
-                  const selected = selectedProjectIds.has(project.id);
-                  return (
-                    <button
-                      key={project.id}
-                      type="button"
-                      onClick={() => toggleProject(project.id)}
-                      // m044 (post-feedback): selected chips show an
-                      // inline × so the per-project unlink affordance
-                      // is visually obvious — replaces the legacy
-                      // "wipe all" red button.
-                      title={
-                        selected
-                          ? t('fileManager.removeFromProject', { name: project.name })
-                          : project.name
-                      }
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                        selected
-                          ? 'border-transparent text-white'
-                          : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
-                      }`}
-                      style={
-                        selected
-                          ? { backgroundColor: project.color || '#00ae42' }
-                          : undefined
-                      }
-                    >
-                      <div
-                        className="w-2 h-2 rounded-full"
-                        style={{ backgroundColor: project.color || '#00ae42' }}
-                      />
-                      {project.name}
-                      {selected && <X className="w-3 h-3 ml-0.5 opacity-80" />}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="text-sm text-bambu-gray text-center py-4">
-                {t('fileManager.noProjectsFound')}
-              </p>
-            )}
-            {selectedProjectIds.size === 0 && (
-              <p className="text-xs text-bambu-gray italic mt-2">
-                {t('fileManager.noProjectsSelected')}
-              </p>
-            )}
-          </div>
-        </div>
-
-        <div className="p-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
-            {t('common.cancel')}
-          </Button>
-          <Button onClick={handleSave} disabled={isLoading}>
-            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.save')}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Link File Modal — per-file project link
-interface LinkFileModalProps {
-  file: LibraryFileListItem;
-  onClose: () => void;
-  onLink: (update: LibraryFileUpdate) => void;
-  isLoading: boolean;
-  t: TFunction;
-}
-
-function LinkFileModal({ file, onClose, onLink, isLoading, t }: LinkFileModalProps) {
-  // m044: file ↔ projects is M2M. Chip multi-select.
-  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<number>>(
-    () => new Set(file.project_ids ?? []),
-  );
-
-  const { data: allProjects } = useQuery({
-    queryKey: ['projects'],
-    queryFn: () => api.getProjects(),
-  });
-
-  // Whatever this folder is already in stays offered, archived or not.
-  const projects = useMemo(
-    () => selectableProjects(allProjects, selectedProjectIds),
-    [allProjects, selectedProjectIds],
-  );
-
-  const toggleProject = (projectId: number) => {
-    setSelectedProjectIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(projectId)) next.delete(projectId);
-      else next.add(projectId);
-      return next;
-    });
-  };
-
-  const handleSave = () => {
-    // Per-project unlink lives on the chips (deselect = remove from
-    // file's project list). Saving without any selected chip is the
-    // explicit "unlink from everything" path.
-    onLink({ project_ids: Array.from(selectedProjectIds) });
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary">
-        <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-            <Link2 className="w-5 h-5 text-bambu-green" />
-            {t('fileManager.linkFile')}
-          </h2>
-          <button onClick={onClose} className="p-1 hover:bg-bambu-dark rounded">
-            <X className="w-5 h-5 text-bambu-gray" />
-          </button>
-        </div>
-
-        <div className="p-4 space-y-4">
-          <p className="text-sm text-bambu-gray">
-            {t('fileManager.linkFileDescription', { name: file.print_name || file.filename })}
-          </p>
-
-          <div className="bg-bambu-dark rounded-lg p-3">
-            {projects && projects.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5">
-                {projects.map((project) => {
-                  const selected = selectedProjectIds.has(project.id);
-                  return (
-                    <button
-                      key={project.id}
-                      type="button"
-                      onClick={() => toggleProject(project.id)}
-                      title={
-                        selected
-                          ? t('fileManager.removeFromProject', { name: project.name })
-                          : project.name
-                      }
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                        selected
-                          ? 'border-transparent text-white'
-                          : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
-                      }`}
-                      style={
-                        selected
-                          ? { backgroundColor: project.color || '#00ae42' }
-                          : undefined
-                      }
-                    >
-                      <div
-                        className="w-2 h-2 rounded-full"
-                        style={{ backgroundColor: project.color || '#00ae42' }}
-                      />
-                      {project.name}
-                      {selected && <X className="w-3 h-3 ml-0.5 opacity-80" />}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="text-sm text-bambu-gray text-center py-4">{t('fileManager.noProjectsFound')}</p>
-            )}
-            {selectedProjectIds.size === 0 && (
-              <p className="text-xs text-bambu-gray italic mt-2">
-                {t('fileManager.noProjectsSelected')}
-              </p>
-            )}
-          </div>
-        </div>
-
-        <div className="p-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
-            {t('common.cancel')}
-          </Button>
-          <Button onClick={handleSave} disabled={isLoading}>
-            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.save')}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // Folder Tree Item
 interface FolderTreeItemProps {
   folder: LibraryFolderTree;
@@ -684,9 +435,9 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [showActions, setShowActions] = useState(false);
   const hasChildren = folder.children.length > 0;
-  // m158: folders link to PRODUCTS now; the old `projects` field is gone from the wire.
-  // Hotfix (2026-09-03) until Task 11 retargets the chips: read whichever the server sent.
-  const linkedTo = folder.products ?? folder.projects ?? [];
+  // m158: folders link to PRODUCTS. A product that has left the catalog keeps
+  // its chip — the link is a fact about the folder, not an offer to make one.
+  const linkedTo = folder.products ?? [];
   const isLinked = linkedTo.length > 0;
   const isExternal = folder.is_external;
   // The row has no room for a date column — the order icon → name → lock →
@@ -755,7 +506,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
           <button
             onClick={(e) => { e.stopPropagation(); onLink(folder); }}
             className="flex-shrink-0 p-1 rounded hover:bg-bambu-dark-tertiary"
-            title={t('fileManager.linkToProject')}
+            title={t('fileManager.linkToProducts')}
           >
             <Link2 className="w-3.5 h-3.5 text-bambu-gray hover:text-bambu-green" />
           </button>
@@ -1240,26 +991,26 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
         <div className="absolute bottom-1 left-2" onClick={(e) => e.stopPropagation()}>
           <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="overlay" />
         </div>
-        {/* Project link overlay - bottom-right, same height as notes */}
+        {/* Product link overlay - bottom-right, same height as notes */}
         {onLink && (
           <div className="absolute bottom-2 right-2" onClick={(e) => e.stopPropagation()}>
-            {(file.products ?? file.project_ids ?? []).length > 0 ? (
+            {(file.products ?? []).length > 0 ? (
               <button
                 onClick={() => onLink(file)}
                 className="rounded-md bg-blue-500/85 backdrop-blur text-white hover:bg-blue-500 transition-colors flex items-center gap-1 px-1.5 py-1"
-                title={t('fileManager.linkedToNProjects', { count: (file.products ?? file.project_ids ?? []).length })}
+                title={t('fileManager.linkedToNProducts', { count: (file.products ?? []).length })}
               >
                 <Link2 className="w-5 h-5" />
                 <Briefcase className="w-4 h-4" />
-                {(file.products ?? file.project_ids ?? []).length > 1 && (
-                  <span className="text-[10px] font-semibold">×{(file.products ?? file.project_ids ?? []).length}</span>
+                {(file.products ?? []).length > 1 && (
+                  <span className="text-[10px] font-semibold">×{(file.products ?? []).length}</span>
                 )}
               </button>
             ) : canModify('library', 'update', file.created_by_id) ? (
               <button
                 onClick={() => onLink(file)}
                 className="rounded-md bg-bambu-dark/80 backdrop-blur text-bambu-gray hover:text-bambu-green hover:bg-bambu-dark transition-colors flex items-center p-1 opacity-0 group-hover:opacity-100"
-                title={t('fileManager.linkToProject')}
+                title={t('fileManager.linkToProducts')}
               >
                 <Link2 className="w-5 h-5" />
               </button>
@@ -2202,50 +1953,6 @@ export function FileManagerPage() {
       setSelectedFiles([]);
       setShowMoveModal(false);
       showToast(t('fileManager.toast.filesMoved'), 'success');
-    },
-    onError: (error: Error) => showToast(error.message, 'error'),
-  });
-
-  const updateFolderMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: LibraryFolderUpdate }) =>
-      api.updateLibraryFolder(id, data),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['library-folders'] });
-      // Invalidate project folder queries so other pages see the update
-      queryClient.invalidateQueries({ queryKey: ['project-folders'] });
-      // Folder→project link rewires every child file's project list AND the
-      // affected projects' print plans (server-side `sync_plan_for_folder`
-      // plants/drops plan rows for every eligible file in the folder). The
-      // file browser pulls `library-files` to render the file column and
-      // each project view pulls `project-print-plan`; both must be refreshed
-      // so the linked files/projects show the new state without a manual
-      // reload. `library-stats` carries the per-project file count too.
-      queryClient.invalidateQueries({ queryKey: ['library-files'] });
-      queryClient.invalidateQueries({ queryKey: ['library-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['project-print-plan'] });
-      setLinkFolder(null);
-      // m044: project_ids is an array; an empty list is a full unlink,
-      // otherwise it's a link/update.
-      const isUnlink =
-        Array.isArray(variables.data.project_ids) && variables.data.project_ids.length === 0;
-      showToast(isUnlink ? t('fileManager.toast.folderUnlinked') : t('fileManager.toast.folderLinked'), 'success');
-    },
-    onError: (error: Error) => showToast(error.message, 'error'),
-  });
-
-  const linkFileMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: LibraryFileUpdate }) =>
-      api.updateLibraryFile(id, data),
-    onSuccess: (_, variables) => {
-      // File's project list change rewires plan rows for every affected
-      // project, so invalidate both library-files and project-* queries.
-      queryClient.invalidateQueries({ queryKey: ['library-files'] });
-      queryClient.invalidateQueries({ queryKey: ['project-print-plan'] });
-      queryClient.invalidateQueries({ queryKey: ['project-files'] });
-      setLinkFile(null);
-      const isUnlink =
-        Array.isArray(variables.data.project_ids) && variables.data.project_ids.length === 0;
-      showToast(isUnlink ? t('fileManager.toast.fileUnlinked') : t('fileManager.toast.fileLinked'), 'success');
     },
     onError: (error: Error) => showToast(error.message, 'error'),
   });
@@ -3601,18 +3308,18 @@ export function FileManagerPage() {
                           <Layers className="w-4 h-4" />
                         </button>
                       )}
-                      {/* Project link / unlink — sits with the other inline actions */}
-                      {(file.products ?? file.project_ids ?? []).length > 0 ? (
+                      {/* Product link / unlink — sits with the other inline actions */}
+                      {(file.products ?? []).length > 0 ? (
                         <button
                           onClick={() => setLinkFile(file)}
                           className="p-1.5 rounded bg-blue-500/20 hover:bg-blue-500/30 flex items-center gap-1 transition-colors"
-                          title={t('fileManager.linkedToNProjects', { count: (file.products ?? file.project_ids ?? []).length })}
+                          title={t('fileManager.linkedToNProducts', { count: (file.products ?? []).length })}
                         >
                           <Link2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                           <Briefcase className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                          {(file.products ?? file.project_ids ?? []).length > 1 && (
+                          {(file.products ?? []).length > 1 && (
                             <span className="text-[10px] font-semibold text-blue-700 dark:text-blue-400">
-                              ×{(file.products ?? file.project_ids ?? []).length}
+                              ×{(file.products ?? []).length}
                             </span>
                           )}
                         </button>
@@ -3620,7 +3327,7 @@ export function FileManagerPage() {
                         <button
                           onClick={() => setLinkFile(file)}
                           className="p-1.5 rounded transition-colors hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
-                          title={t('fileManager.linkToProject')}
+                          title={t('fileManager.linkToProducts')}
                         >
                           <Link2 className="w-4 h-4" />
                         </button>
@@ -3851,23 +3558,11 @@ export function FileManagerPage() {
       />
 
       {linkFolder && (
-        <LinkFolderModal
-          folder={linkFolder}
-          onClose={() => setLinkFolder(null)}
-          onLink={(data) => updateFolderMutation.mutate({ id: linkFolder.id, data })}
-          isLoading={updateFolderMutation.isPending}
-          t={t}
-        />
+        <LinkToProductsModal kind="folder" item={linkFolder} onClose={() => setLinkFolder(null)} />
       )}
 
       {linkFile && (
-        <LinkFileModal
-          file={linkFile}
-          onClose={() => setLinkFile(null)}
-          onLink={(data) => linkFileMutation.mutate({ id: linkFile.id, data })}
-          isLoading={linkFileMutation.isPending}
-          t={t}
-        />
+        <LinkToProductsModal kind="file" item={linkFile} onClose={() => setLinkFile(null)} />
       )}
 
       {deleteConfirm && (

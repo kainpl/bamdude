@@ -40,7 +40,8 @@ const mockFolders = [
     name: 'Art Projects',
     parent_id: null,
     file_count: 2,
-    projects: [{ id: 1, name: 'My Art Project', color: null }],
+    // m158: folders link to PRODUCTS; the chip row reads `products` only.
+    products: [{ id: 1, name: 'My Art Product', is_active: true }],
     children: [],
   },
 ];
@@ -306,7 +307,7 @@ describe('FileManagerPage', () => {
       render(<FileManagerPage />);
 
       await waitFor(() => {
-        // Art Projects has a project_id
+        // Art Projects is the one folder linked to a product.
         expect(screen.getByText('Art Projects')).toBeInTheDocument();
       });
     });
