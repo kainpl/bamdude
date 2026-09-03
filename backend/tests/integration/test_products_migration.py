@@ -20,7 +20,7 @@ import logging
 
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.migrations import m158_products_and_orders as m158
 from backend.app.migrations.helpers import get_table_columns, table_exists
@@ -585,3 +585,344 @@ async def test_shape_i_unreadable_metadata_keeps_the_row_as_a_whole_file_plate(
     }
     assert (raising_id, 0) in plates  # kept as one whole-file plate, not expanded away
     assert (ids["multi"], 1) in plates and (ids["multi"], 2) in plates  # the healthy file expanded anyway
+
+
+# ---------------------------------------------------------------------------
+# Rules A, B and D — the legacy targets survive the conversion (2026-09-03)
+# ---------------------------------------------------------------------------
+
+# Plate 1: three bodies. Plate 2: six lids. With ``copies = 2`` on each plan
+# row the derived yield is body 6 / lid 12 — deliberately unrelated to the
+# targets below, so a test that passes can only be reading the targets.
+_KIT_META = {
+    "plates": [
+        {
+            "index": 1,
+            "objects": ["body.stl"],
+            "printable_objects": {"1": "body.stl", "2": "body.stl_2", "3": "body.stl_3"},
+        },
+        {
+            "index": 2,
+            "objects": ["lid.stl"],
+            "printable_objects": {str(i): ("lid.stl" if i == 1 else f"lid.stl_{i}") for i in range(1, 7)},
+        },
+    ]
+}
+
+# One plate, 3 × a + 12 × b. Shape (i) reads it as a single whole-file plate.
+_THIRTY_META = {
+    "plates": [
+        {
+            "index": 1,
+            "objects": ["a.stl", "b.stl"],
+            "printable_objects": (
+                {str(i): ("a.stl" if i == 1 else f"a.stl_{i}") for i in range(1, 4)}
+                | {str(i + 3): ("b.stl" if i == 1 else f"b.stl_{i}") for i in range(1, 13)}
+            ),
+        }
+    ]
+}
+
+
+async def _kit_fixture(db: AsyncSession, engine, target_sets: list[dict[str, int]]) -> list[int]:
+    """Shape (ii), one project per entry: plate yield body 6 / lid 12, own targets."""
+    async with engine.begin() as conn:
+        for ddl in _LEGACY_DDL:
+            await conn.execute(text(ddl))
+
+    folder = LibraryFolder(name="Kits")
+    db.add(folder)
+    await db.flush()
+    kit = LibraryFile(
+        filename="kit.gcode.3mf",
+        file_path="kit",
+        file_size=1,
+        file_type="gcode",
+        folder_id=folder.id,
+        file_metadata=_KIT_META,
+    )
+    db.add(kit)
+    await db.flush()
+
+    project_ids: list[int] = []
+    for i, targets in enumerate(target_sets):
+        project = Project(name=f"Kit {i}", status="active")
+        db.add(project)
+        await db.flush()
+        await db.execute(text("UPDATE projects SET is_template = 0 WHERE id = :id"), {"id": project.id})
+        for plate in (1, 2):
+            await db.execute(
+                text(
+                    "INSERT INTO project_print_plan_items (project_id, library_file_id, copies, order_index, "
+                    "plate_index) VALUES (:p, :f, 2, 0, :pl)"
+                ),
+                {"p": project.id, "f": kit.id, "pl": plate},
+            )
+        for key, target in targets.items():
+            await db.execute(
+                text("INSERT INTO project_parts (project_id, name, name_key, target_qty) VALUES (:p, :n, :k, :t)"),
+                {"p": project.id, "n": key, "k": key, "t": target},
+            )
+        project_ids.append(project.id)
+    await db.commit()
+    return project_ids
+
+
+async def _parts_of(db: AsyncSession, product_id: int) -> dict:
+    return {
+        p.name_key: p
+        for p in (await db.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars()
+    }
+
+
+async def _line_of(db: AsyncSession, project_id: int) -> ProjectLine:
+    return (await db.execute(select(ProjectLine).where(ProjectLine.project_id == project_id))).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_rule_a_part_targets_become_a_kit_times_n(db_session, test_engine):
+    """Every counted part has a target → the product reads as a kit × N.
+
+    ``N = gcd(targets)``, ``qty_per_unit = target / N``, so the need per part
+    (``N × qty_per_unit``) is exactly the old target. Coprime targets give
+    ``N = 1``, i.e. the original rule, unchanged."""
+    ids = await _kit_fixture(
+        db_session,
+        test_engine,
+        [
+            {"body.stl": 780, "lid.stl": 780},
+            {"body.stl": 236, "lid.stl": 118},
+            {"body.stl": 7, "lid.stl": 5},
+        ],
+    )
+    await _run_upgrade(test_engine)
+    db_session.expire_all()
+
+    line = await _line_of(db_session, ids[0])
+    parts = await _parts_of(db_session, line.product_id)
+    assert line.quantity == 780
+    assert parts["body.stl"].qty_per_unit == 1 and parts["body.stl"].auto is False
+    assert parts["lid.stl"].qty_per_unit == 1 and parts["lid.stl"].auto is False
+
+    line = await _line_of(db_session, ids[1])
+    parts = await _parts_of(db_session, line.product_id)
+    assert line.quantity == 118
+    assert parts["body.stl"].qty_per_unit == 2 and parts["lid.stl"].qty_per_unit == 1
+
+    line = await _line_of(db_session, ids[2])
+    parts = await _parts_of(db_session, line.product_id)
+    assert line.quantity == 1  # coprime: nothing to factor out
+    assert parts["body.stl"].qty_per_unit == 7 and parts["lid.stl"].qty_per_unit == 5
+
+
+@pytest.mark.asyncio
+async def test_rule_a_leaves_an_operator_zero_and_a_derived_part_alone(db_session, test_engine):
+    """Rule A needs EVERY counted part to carry a target.
+
+    ``lid.stl`` is on a plate and has no target of its own, so a kit split
+    would be a guess about a part nobody sized: rule A stands down, the
+    targets stay as they are and rule B decides the quantity. The operator
+    zero (a part on no plate) is untouched either way."""
+    (project_id,) = await _kit_fixture(db_session, test_engine, [{"body.stl": 780, "ghost.stl": 0}])
+    await _run_upgrade(test_engine)
+    db_session.expire_all()
+
+    line = await _line_of(db_session, project_id)
+    parts = await _parts_of(db_session, line.product_id)
+    assert parts["body.stl"].qty_per_unit == 780 and parts["body.stl"].auto is False  # NOT divided by 780
+    assert parts["ghost.stl"].qty_per_unit == 0 and parts["ghost.stl"].auto is False
+    assert parts["lid.stl"].qty_per_unit == 12 and parts["lid.stl"].auto is True  # 2 copies × 6
+    assert line.quantity == 1  # no project-level target to divide either
+
+
+async def _plan_target_fixture(db: AsyncSession, engine, cases: list[tuple[int, int, int]]) -> list[int]:
+    """Shape (i), one project per ``(copies, target_parts_count, target_count)``."""
+    async with engine.begin() as conn:
+        for ddl in _LEGACY_DDL_0_5_5:
+            await conn.execute(text(ddl))
+
+    folder = LibraryFolder(name="Runs")
+    db.add(folder)
+    await db.flush()
+    plate = LibraryFile(
+        filename="run.gcode.3mf",
+        file_path="run",
+        file_size=1,
+        file_type="gcode",
+        folder_id=folder.id,
+        file_metadata=_THIRTY_META,
+    )
+    db.add(plate)
+    await db.flush()
+
+    project_ids: list[int] = []
+    for i, (copies, target_parts_count, target_count) in enumerate(cases):
+        project = Project(name=f"Run {i}", status="active")
+        db.add(project)
+        await db.flush()
+        await db.execute(
+            text("UPDATE projects SET is_template = 0, target_parts_count = :tp, target_count = :tc WHERE id = :id"),
+            {"id": project.id, "tp": target_parts_count, "tc": target_count},
+        )
+        await db.execute(
+            text(
+                "INSERT INTO project_print_plan_items (project_id, library_file_id, copies, order_index) "
+                "VALUES (:p, :f, :c, 0)"
+            ),
+            {"p": project.id, "f": plate.id, "c": copies},
+        )
+        project_ids.append(project.id)
+    await db.commit()
+    return project_ids
+
+
+@pytest.mark.asyncio
+async def test_rule_b_target_parts_count_sets_the_quantity_when_it_divides(db_session, test_engine):
+    """No part targets, but the project counted parts: 1560 / 30 per run = 52.
+
+    A remainder means the two numbers never described the same plan, so the
+    quantity falls back to 1 rather than rounding the operator's target."""
+    ids = await _plan_target_fixture(db_session, test_engine, [(2, 1560, 0), (2, 1561, 0)])
+    await _run_upgrade(test_engine)
+    db_session.expire_all()
+
+    line = await _line_of(db_session, ids[0])
+    parts = await _parts_of(db_session, line.product_id)
+    assert line.quantity == 52
+    assert parts["a.stl"].qty_per_unit == 6 and parts["a.stl"].auto is True
+    assert parts["b.stl"].qty_per_unit == 24 and parts["b.stl"].auto is True
+
+    assert (await _line_of(db_session, ids[1])).quantity == 1  # 1561 % 30 != 0
+
+
+@pytest.mark.asyncio
+async def test_rule_b_target_count_over_plan_copies(db_session, test_engine):
+    """``target_count`` is the second chance: whole plan runs, not parts."""
+    ids = await _plan_target_fixture(db_session, test_engine, [(26, 0, 26), (26, 0, 52), (26, 0, 27)])
+    await _run_upgrade(test_engine)
+    db_session.expire_all()
+
+    assert (await _line_of(db_session, ids[0])).quantity == 1
+    assert (await _line_of(db_session, ids[1])).quantity == 2
+    assert (await _line_of(db_session, ids[2])).quantity == 1  # 27 % 26 != 0
+
+
+async def _history_only_fixture(db: AsyncSession, engine, printer_factory, archives: list[tuple]) -> dict:
+    """A project whose plan file was deleted years ago — only archives remain."""
+    async with engine.begin() as conn:
+        for ddl in _LEGACY_DDL_0_5_5:
+            await conn.execute(text(ddl))
+
+    printer = await printer_factory()
+    order = Project(name="Order 42", status="active")
+    db.add(order)
+    await db.flush()
+    await db.execute(text("UPDATE projects SET is_template = 0 WHERE id = :id"), {"id": order.id})
+    # The plan still names a library file that no longer exists: the
+    # conversion's JOIN drops the row, so the product gets no plates, no
+    # yields and therefore no printed parts at all.
+    await db.execute(
+        text(
+            "INSERT INTO project_print_plan_items (project_id, library_file_id, copies, order_index) "
+            "VALUES (:p, 999999, 4, 0)"
+        ),
+        {"p": order.id},
+    )
+    for status, parts in archives:
+        archive = PrintArchive(
+            printer_id=printer.id,
+            project_id=order.id,
+            plate_index=1,
+            filename="gone.gcode.3mf",
+            file_path="",
+            file_size=0,
+            status=status,
+            filament_type="PETG",
+        )
+        db.add(archive)
+        await db.flush()
+        for part_name, quantity, defective in parts:
+            await db.execute(
+                text(
+                    "INSERT INTO print_archive_parts (archive_id, name, name_key, quantity, defective) "
+                    "VALUES (:a, :n, :k, :q, :d)"
+                ),
+                {"a": archive.id, "n": part_name, "k": part_name.lower(), "q": quantity, "d": defective},
+            )
+    await db.commit()
+    return {"order": order.id}
+
+
+async def _run_seed(engine):
+    await m158.seed(async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False))
+
+
+@pytest.mark.asyncio
+async def test_rule_d_history_only_product_gets_parts_from_its_archives(db_session, test_engine, printer_factory):
+    """Nothing on disk, hundreds of archives: the parts come from the history.
+
+    ``qty_per_unit`` is the gcd-normalised share and the line quantity is the
+    completed usable total — which is the old target whenever the prints were
+    actually run to it. An unfinished print is not history yet."""
+    ids = await _history_only_fixture(
+        db_session,
+        test_engine,
+        printer_factory,
+        [
+            ("completed", [("hfb.stl", 2, 0)]),
+            ("completed", [("hfb.stl", 2, 0)]),
+            ("completed", [("hfb.stl", 3, 1)]),
+            ("printing", [("hfb.stl", 4, 0)]),
+        ],
+    )
+    await _run_upgrade(test_engine)
+    await _run_seed(test_engine)
+    db_session.expire_all()
+
+    line = await _line_of(db_session, ids["order"])
+    parts = await _parts_of(db_session, line.product_id)
+    assert set(parts) == {"hfb.stl"}
+    assert parts["hfb.stl"].qty_per_unit == 1 and parts["hfb.stl"].auto is False
+    assert parts["hfb.stl"].aliases == ["hfb.stl"]
+    assert line.quantity == 6  # 2 + 2 + (3 - 1); the printing archive is not counted
+
+    await _run_seed(test_engine)  # idempotent — the product now has printed parts
+    db_session.expire_all()
+    line = await _line_of(db_session, ids["order"])
+    assert len(await _parts_of(db_session, line.product_id)) == 1 and line.quantity == 6
+
+
+@pytest.mark.asyncio
+async def test_rule_d_splits_several_keys_by_gcd(db_session, test_engine, printer_factory):
+    ids = await _history_only_fixture(
+        db_session,
+        test_engine,
+        printer_factory,
+        [
+            ("completed", [("body.stl", 12, 0), ("lid.stl", 6, 0)]),
+            ("completed", [("body.stl", 8, 0), ("lid.stl", 5, 1)]),
+        ],
+    )
+    await _run_upgrade(test_engine)
+    await _run_seed(test_engine)
+    db_session.expire_all()
+
+    line = await _line_of(db_session, ids["order"])
+    parts = await _parts_of(db_session, line.product_id)
+    assert parts["body.stl"].qty_per_unit == 2 and parts["lid.stl"].qty_per_unit == 1  # 20 : 10
+    assert line.quantity == 10  # 30 usable / 3 per unit
+
+
+@pytest.mark.asyncio
+async def test_rule_d_never_overwrites_an_edited_quantity(db_session, test_engine, printer_factory):
+    """The parts are missing information; the quantity may already be a decision."""
+    ids = await _history_only_fixture(db_session, test_engine, printer_factory, [("completed", [("hfb.stl", 6, 0)])])
+    await _run_upgrade(test_engine)
+    async with test_engine.begin() as conn:
+        await conn.execute(text("UPDATE project_lines SET quantity = 5 WHERE project_id = :p"), {"p": ids["order"]})
+    await _run_seed(test_engine)
+    db_session.expire_all()
+
+    line = await _line_of(db_session, ids["order"])
+    assert (await _parts_of(db_session, line.product_id))["hfb.stl"].qty_per_unit == 1
+    assert line.quantity == 5

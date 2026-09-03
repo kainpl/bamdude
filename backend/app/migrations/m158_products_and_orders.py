@@ -81,12 +81,31 @@ happen is the one after a failed ``seed()``, above.) Named columns everywhere.
   are gone. ``_convert_legacy`` sees no ``library_file_projects`` and returns;
   every DDL statement is guarded, so the whole run is a no-op.
 
-``seed(session_factory)`` does one job: the one-time ``print_archive_parts``
-backfill for pre-existing archives. Users upgrade through migrations only, so
-that population has to happen here; ``scripts/backfill_archive_parts.py``
-remains the manual RE-RUN tool (rule changes, troubleshooting), not the normal
-upgrade path. It is idempotent — archives that already have rows are skipped,
-so the retry after a failed run adds nothing to what the first pass wrote.
+**The legacy targets are kept, not dropped** (amended 2026-09-03, after the
+first conversion of the user's live database). A project sized its work in
+three unrelated places and none of them survived the first cut: a product came
+out reading "780 + 780 per unit" ordered ``× 1``, which is the same need said
+in the least useful way. Three rules fix that, all documented at their code:
+
+* **rule A** (``_kit_and_quantity``) — every part the plates yield carries a
+  target > 0 → the product becomes a kit, ``N = gcd(targets)`` becomes the
+  line quantity and each part keeps ``target / N``;
+* **rule B** (same helper) — no part targets, but ``target_parts_count`` or
+  ``target_count`` divides EXACTLY into one run of the plan → that quotient is
+  the line quantity;
+* **rule D** (``seed_history_only_products``) — a product that ends up with no
+  printed parts at all, because its files were deleted years ago, takes them
+  from its own completed archives.
+
+``seed(session_factory)`` therefore does two jobs, in this order and only in
+this order. First the one-time ``print_archive_parts`` backfill for
+pre-existing archives: users upgrade through migrations only, so that
+population has to happen here; ``scripts/backfill_archive_parts.py`` remains
+the manual RE-RUN tool (rule changes, troubleshooting), not the normal upgrade
+path. It is idempotent — archives that already have rows are skipped, so the
+retry after a failed run adds nothing to what the first pass wrote. ⚠️ **Then**
+rule D, which reads exactly the rows that backfill has just written — swap the
+two and every history-only product stays part-less, silently.
 
 FK CASCADE is honoured by PostgreSQL only — this codebase never sets
 ``PRAGMA foreign_keys`` on SQLite; hard-delete paths clean up explicitly.
@@ -96,6 +115,7 @@ import json
 import logging
 import shutil
 from collections import Counter
+from math import gcd
 from pathlib import Path
 
 from sqlalchemy import text
@@ -383,6 +403,61 @@ async def _insert_returning_id(conn, sql: str, params: dict) -> int:
     return (await conn.execute(text(sql + " RETURNING id"), params)).scalar_one()
 
 
+def _kit_and_quantity(
+    row: dict,
+    targets: dict[str, tuple[str, int | None]],
+    yield_by_key: Counter,
+    plan_rows: list,
+) -> tuple[int, int]:
+    """``(kit_size, line_quantity)`` — rules A and B (spec §Migration 4 and 6).
+
+    The legacy project carried its targets in three unrelated places and the
+    first cut of this migration kept none of them: a project of "780 brackets
+    + 780 lids" converted to a product of *780 + 780 per unit* ordered *× 1*,
+    which is the same need said in the least useful way.
+
+    **Rule A** — when every part the plates yield also carries a target > 0,
+    the targets are a multiple of one kit: ``N = gcd(targets)`` comes out as
+    the line quantity and each part keeps ``target / N``. The need per part is
+    unchanged (``N × qty_per_unit == target``) but the product now reads as
+    what it is — 1 + 1, ordered 780 times. Coprime targets give ``N = 1``,
+    i.e. exactly the old behaviour, so nothing regresses.
+
+    The condition is deliberately *every counted part*, not *any*: a part that
+    is on a plate but was never given a target has no share in the kit, and
+    inventing one would put a number nobody chose into the composition. Such a
+    product falls through to rule B with its targets untouched.
+
+    **Rule B** — no part targets to divide, but the project's own
+    ``target_parts_count`` / ``target_count`` may still divide exactly into
+    what one run of the plan produces. Exactly, or not at all: a remainder
+    means the two numbers never described the same plan (the plan was edited
+    after the target was typed), and rounding it would silently restate the
+    operator's target. ``target_parts_count`` is tried first because it counts
+    the same things the parts do; ``target_count`` counts whole plan runs, so
+    it is divided by Σ plan copies instead.
+
+    Neither rule can invent a target where there is none: a project with no
+    targets at all converts to ``× 1`` and rule D may still fill it from
+    history in ``seed()``.
+    """
+    counted = {key: target for key, (_name, target) in targets.items() if target and target > 0}
+    if counted and set(yield_by_key) <= set(counted):
+        n = gcd(*counted.values())
+        return n, n
+
+    if yield_by_key:
+        per_run = sum(yield_by_key.values())
+        plan_copies = sum((r[2] or 1) for r in plan_rows)
+        target_parts_count = row.get("target_parts_count") or 0
+        target_count = row.get("target_count") or 0
+        if per_run > 0 and target_parts_count > 0 and target_parts_count % per_run == 0:
+            return 1, target_parts_count // per_run
+        if plan_copies > 0 and target_count > 0 and target_count % plan_copies == 0:
+            return 1, target_count // plan_copies
+    return 1, 1
+
+
 async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
     project_id = row["id"]
     product_id = await _insert_returning_id(
@@ -469,12 +544,16 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
                 )
             ).all()
         }
+    kit_size, line_quantity = _kit_and_quantity(row, targets, yield_by_key, plan_rows)
+
     sort_order = 0
     for key in sorted(set(targets) | set(yield_by_key)):
         if key in targets:
             part_name, target = targets[key]
             if target and target > 0:
-                qty, auto = target, False
+                # ``kit_size`` is 1 unless rule A fired, so this is the plain
+                # "explicit target wins" rule in every other case.
+                qty, auto = target // kit_size, False
             elif target == 0 and key not in yield_by_key:
                 # An operator zero — "don't measure this one" — and the only
                 # zero we can tell apart. The retired seed planted EVERY
@@ -520,8 +599,8 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
     if not is_template:
         line_id = await _insert_returning_id(
             conn,
-            "INSERT INTO project_lines (project_id, product_id, quantity, sort_order) VALUES (:p, :pid, 1, 0)",
-            {"p": project_id, "pid": product_id},
+            "INSERT INTO project_lines (project_id, product_id, quantity, sort_order) VALUES (:p, :pid, :q, 0)",
+            {"p": project_id, "pid": product_id, "q": line_quantity},
         )
     used_keys: set[str] = set()
     for bom_name, needed, acquired, price, url, remarks in bom_rows:
@@ -619,6 +698,10 @@ async def _convert_legacy(conn) -> None:
     cols = "id, name, description, status, is_template, attachments"
     cols += ", budget" if has_budget else ", NULL AS budget"
     cols += ", cover_image_filename" if has_cover else ", NULL AS cover_image_filename"
+    # Rule B reads these two; ``_drop_legacy`` removes them three statements
+    # later, which is why nothing downstream of ``upgrade`` can ask for them.
+    for legacy in ("target_count", "target_parts_count"):
+        cols += f", {legacy}" if await column_exists(conn, "projects", legacy) else f", NULL AS {legacy}"
     rows = (await conn.execute(text(f"SELECT {cols} FROM projects ORDER BY id"))).mappings().all()
 
     converted = 0
@@ -721,4 +804,118 @@ async def seed(session_factory):
                 logger.warning("m158 seed: parts backfill skipped archive %s", archive_id, exc_info=True)
         if backfilled:
             logger.info("m158 seed: backfilled part rows for %d archive(s)", backfilled)
+        await session.commit()
+
+    # AFTER the backfill, never before: rule D reads exactly the rows the
+    # backfill has just written, and reordering the two leaves every
+    # history-only product part-less.
+    await seed_history_only_products(session_factory)
+
+
+async def seed_history_only_products(session_factory) -> None:
+    """Rule D (spec §Migration 6b): a part-less product takes its parts from history.
+
+    An order whose library files were deleted years ago converts to a product
+    with no plates and therefore no printed parts — nothing to measure, no
+    progress, a page that shows only a name. But its archives are still there,
+    and after the backfill above each of them knows what it printed. So a
+    product with **no printed parts** whose line's completed archives do carry
+    ``print_archive_parts`` rows gets one part per distinct ``name_key``,
+    ``auto=False`` (there is no file left for a sync to re-derive them from, so
+    they must never be rewritten) and ``aliases=[name_key]``.
+
+    The share is the gcd-normalised ratio of the usable totals (quantity minus
+    defective), and the line quantity is Σ usable ÷ Σ share — which is the old
+    ``target_parts_count`` whenever the prints were actually run to the target,
+    and that is the only number available here: ``upgrade`` drops the legacy
+    columns in the same transaction that creates the products, so by the time
+    ``seed`` runs there is no target left to read. Each line is measured
+    against its OWN history, so its quantity stays self-consistent even when
+    the first line was the one that named the parts.
+
+    Idempotent and self-contained — it depends on no legacy table or column, so
+    it also repairs a database that a previous run of this migration already
+    converted (m158 is not the head migration, so ``DEBUG=true`` will not
+    re-enter it; this function is what gets called by hand instead). Two
+    guards keep the repair from overwriting decisions: a product that already
+    has any printed part is skipped whole, and a line whose quantity is no
+    longer 1 has been edited by an operator and keeps its number.
+    """
+    async with session_factory() as session:
+        product_ids = [
+            pid
+            for (pid,) in (
+                await session.execute(
+                    text(
+                        "SELECT p.id FROM products p WHERE NOT EXISTS "
+                        "(SELECT 1 FROM product_parts pp WHERE pp.product_id = p.id AND pp.kind = 'printed') "
+                        "ORDER BY p.id"
+                    )
+                )
+            ).all()
+        ]
+        for product_id in product_ids:
+            line_ids = [
+                lid
+                for (lid,) in (
+                    await session.execute(
+                        text("SELECT id FROM project_lines WHERE product_id = :p ORDER BY sort_order, id"),
+                        {"p": product_id},
+                    )
+                ).all()
+            ]
+            written = False
+            for line_id in line_ids:
+                totals = (
+                    await session.execute(
+                        text(
+                            "SELECT pap.name_key, MIN(pap.name) AS name, "
+                            "SUM(pap.quantity - COALESCE(pap.defective, 0)) AS usable "
+                            "FROM print_archives pa JOIN print_archive_parts pap ON pap.archive_id = pa.id "
+                            "WHERE pa.project_line_id = :l AND pa.status = 'completed' AND pa.deleted_at IS NULL "
+                            "GROUP BY pap.name_key "
+                            # The expression, not the alias: PostgreSQL does not
+                            # accept a select alias in HAVING.
+                            "HAVING SUM(pap.quantity - COALESCE(pap.defective, 0)) > 0 "
+                            "ORDER BY pap.name_key"
+                        ),
+                        {"l": line_id},
+                    )
+                ).all()
+                if not totals:
+                    continue
+                usable = {key: int(total) for key, _name, total in totals}
+                share = gcd(*usable.values())
+                per_unit = {key: value // share for key, value in usable.items()}
+                if not written:
+                    for sort_order, (key, part_name, _total) in enumerate(totals):
+                        await session.execute(
+                            text(
+                                "INSERT INTO product_parts (product_id, kind, name, name_key, qty_per_unit, "
+                                "aliases, auto, sort_order) "
+                                "VALUES (:pid, 'printed', :n, :k, :q, :al, :auto, :so)"
+                            ),
+                            {
+                                "pid": product_id,
+                                "n": part_name or key,
+                                "k": key,
+                                "q": per_unit[key],
+                                "al": json.dumps([key]),
+                                "auto": 0 if is_sqlite() else False,
+                                "so": sort_order,
+                            },
+                        )
+                    written = True
+                quantity = max(1, sum(usable.values()) // sum(per_unit.values()))
+                await session.execute(
+                    text("UPDATE project_lines SET quantity = :q WHERE id = :l AND quantity = 1"),
+                    {"q": quantity, "l": line_id},
+                )
+                logger.info(
+                    "m158 seed: product %d gets %d part(s) from history (line %d x %d)",
+                    product_id,
+                    len(usable),
+                    line_id,
+                    quantity,
+                )
         await session.commit()
