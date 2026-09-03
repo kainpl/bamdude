@@ -35,7 +35,8 @@ describe('CustomersPage', () => {
     render(<CustomersPage />);
     const row = (await screen.findByText('ACME')).closest('tr')!;
     expect(row.textContent).toContain('3'); // orders
-    expect(row.textContent).toContain('450'); // total price
+    // total price, through the shared money formatter — symbol in front, two decimals
+    expect(row.textContent).toContain('$450.00');
     expect(screen.getByRole('link', { name: 'ACME' })).toHaveAttribute('href', '/customers/1');
   });
 

@@ -13,6 +13,7 @@ import { OrderModal } from '../../components/projects/OrderModal';
 import { CustomerModal } from '../../components/customers/CustomerModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
+import { formatMoney } from '../../utils/currency';
 
 /** One figure, as the server counted it — this page never adds anything up. */
 function Tile({ label, value }: { label: string; value: string | number }) {
@@ -57,6 +58,9 @@ export function CustomerPage() {
     queryFn: () => api.getOrders({ customer_id: id }),
     enabled: Number.isFinite(id),
   });
+  // The app-wide currency, fetched the way every other money-showing screen
+  // fetches it; `formatMoney` covers the unresolved first paint.
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
 
   const counts = useMemo(
     () => ({
@@ -170,8 +174,10 @@ export function CustomerPage() {
         <Tile label={t('customers.table.active')} value={figures.active} />
         <Tile label={t('customers.table.completed')} value={figures.completed} />
         <Tile label={t('customers.table.cancelled')} value={figures.cancelled} />
-        <Tile label={t('customers.page.totalPrice')} value={figures.total_price.toLocaleString()} />
-        {detailed && <Tile label={t('customers.page.totalCost')} value={detailed.total_cost.toLocaleString()} />}
+        <Tile label={t('customers.page.totalPrice')} value={formatMoney(figures.total_price, settings?.currency)} />
+        {detailed && (
+          <Tile label={t('customers.page.totalCost')} value={formatMoney(detailed.total_cost, settings?.currency)} />
+        )}
       </section>
 
       {detailed && (

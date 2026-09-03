@@ -1,8 +1,11 @@
 import { Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Pencil, Trash2 } from 'lucide-react';
+import { api } from '../../api/client';
 import type { Customer } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { formatMoney } from '../../utils/currency';
 
 interface CustomersTableProps {
   customers: Customer[];
@@ -26,6 +29,9 @@ export function CustomersTable({ customers, onEdit, onDelete }: CustomersTablePr
   const { hasPermission } = useAuth();
   const canEdit = hasPermission('projects:update');
   const canDelete = hasPermission('projects:delete');
+  // The app-wide currency, fetched the way every other money-showing screen
+  // fetches it; `formatMoney` covers the unresolved first paint.
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
 
   return (
     <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary">
@@ -55,7 +61,9 @@ export function CustomersTable({ customers, onEdit, onDelete }: CustomersTablePr
               <td className={`${NUM_CELL} text-bambu-gray`}>{customer.figures.active}</td>
               <td className={`${NUM_CELL} text-bambu-gray`}>{customer.figures.completed}</td>
               <td className={`${NUM_CELL} text-bambu-gray`}>{customer.figures.cancelled}</td>
-              <td className={`${NUM_CELL} text-white`}>{customer.figures.total_price.toLocaleString()}</td>
+              <td className={`${NUM_CELL} text-white`}>
+                {formatMoney(customer.figures.total_price, settings?.currency)}
+              </td>
               {(canEdit || canDelete) && (
                 <td className={`${CELL} text-right whitespace-nowrap`}>
                   {canEdit && (
