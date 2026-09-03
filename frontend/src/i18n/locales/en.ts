@@ -4656,8 +4656,29 @@ export default {
     }
   },
 
+  // Projects section, orders face. Grows through the pass-2 redesign;
+  // `projects.*` below still serves the old pages until they are replaced.
+  orders: {
+    status: {
+      active: 'Active',
+      completed: 'Completed',
+      cancelled: 'Cancelled',
+    },
+    priority: {
+      low: 'Low',
+      normal: 'Normal',
+      high: 'High',
+      urgent: 'Urgent',
+    },
+  },
+
   // Projects
   projects: {
+    tabs: {
+      orders: 'Orders',
+      products: 'Products',
+      customers: 'Customers',
+    },
     parentProject: 'Parent project',
     parentNone: 'None — a top-level project',
     parentHint: 'Filing this under another project rolls its figures up into that one.',

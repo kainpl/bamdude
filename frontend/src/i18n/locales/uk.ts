@@ -4698,8 +4698,29 @@ export default {
     }
   },
 
+  // Projects section, orders face. Grows through the pass-2 redesign;
+  // `projects.*` below still serves the old pages until they are replaced.
+  orders: {
+    status: {
+      active: 'Активне',
+      completed: 'Виконане',
+      cancelled: 'Скасоване',
+    },
+    priority: {
+      low: 'Низький',
+      normal: 'Звичайний',
+      high: 'Високий',
+      urgent: 'Терміновий',
+    },
+  },
+
   // Projects
   projects: {
+    tabs: {
+      orders: 'Замовлення',
+      products: 'Вироби',
+      customers: 'Замовники',
+    },
     parentProject: 'Батьківський проєкт',
     parentNone: 'Немає — проєкт верхнього рівня',
     parentHint: 'Підпорядкування іншому проєкту зводить показники цього в нього.',
