@@ -14,15 +14,20 @@ SQLite honours no ``ON DELETE CASCADE``, and there is no desired set left to
 reconcile once the product itself is going away.
 """
 
+import logging
+import os
+import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import delete, func, inspect as sqla_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.library import LibraryFile, LibraryFolder
@@ -30,11 +35,14 @@ from backend.app.models.product import Product, ProductPart, product_files, prod
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
 from backend.app.schemas.product import (
+    AttachmentOrderRequest,
+    CoverPickRequest,
     FileLinkRequest,
     FolderLinkRequest,
     PlateRecipeResponse,
     PlateUnassignedEntry,
     PlateYieldEntry,
+    ProductAttachmentOut,
     ProductCreate,
     ProductDuplicate,
     ProductListItem,
@@ -54,7 +62,22 @@ from backend.app.services.product_composition import (
     recipe_for,
     remove_alias,
 )
+from backend.app.services.product_files import (
+    ATTACHMENT_CATEGORIES,
+    CATEGORY_EXTENSIONS,
+    COVER_EXTENSIONS,
+    attachment_entry,
+    category_entries,
+    effective_cover,
+    image_media_type,
+    next_sort_order,
+    product_attachments_dir,
+    safe_attachment_name,
+    sorted_attachments,
+)
 from backend.app.services.product_sync import apply_folder_products, sync_product_for_file
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -112,6 +135,7 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
         name=product.name,
         is_active=product.is_active,
         cover_image_filename=product.cover_image_filename,
+        has_cover=effective_cover(product) is not None,
         parts_count=len(product.parts),
         plates_count=len(product.plates),
         lines_count=await _lines_count(db, product.id),
@@ -121,7 +145,7 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
         license=product.license,
         source_url=product.source_url,
         design_id=product.design_id,
-        attachments=product.attachments,
+        attachments=sorted_attachments(product),
         parts=[
             ProductPartResponse.model_validate(p) for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))
         ],
@@ -191,6 +215,7 @@ async def list_products(
             name=p.name,
             is_active=p.is_active,
             cover_image_filename=p.cover_image_filename,
+            has_cover=effective_cover(p) is not None,
             parts_count=len(p.parts),
             plates_count=len(p.plates),
             lines_count=counts.get(p.id, 0),
@@ -615,3 +640,310 @@ async def unlink_folder(
     product = await _get(db, product_id)
     await _apply_folder(db, folder_id, await _folder_product_ids(db, folder_id) - {product_id})
     return await _response(db, product, reload_links=True)
+
+
+# ---------- typed attachments (spec §Decisions 3) ----------
+#
+# One JSON list on the row, the files under ``archive_dir/products/<id>/attachments``.
+# ⚠️ ``Product.attachments`` is a plain JSON column, so every writer below
+# ASSIGNS a new list — mutating the loaded one in place is invisible to the
+# flush and the write is silently lost.
+
+
+@router.get("/{product_id}/attachments", response_model=list[ProductAttachmentOut])
+async def list_attachments(
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    return sorted_attachments(await _get(db, product_id))
+
+
+@router.post("/{product_id}/attachments", response_model=ProductAttachmentOut)
+async def upload_attachment(
+    product_id: int,
+    file: UploadFile = File(...),
+    category: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """⚠️ ``CATEGORY_EXTENSIONS[category]`` is the only defence against an
+    executable landing in the attachments directory (spec §Risks) — the category
+    is checked first precisely so the lookup can never fall back to "anything"."""
+    product = await _get(db, product_id)
+    if category not in ATTACHMENT_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"Category must be one of {list(ATTACHMENT_CATEGORIES)}")
+    original_name = file.filename or "unknown"
+    ext = os.path.splitext(original_name)[1].lower()
+    allowed = CATEGORY_EXTENSIONS[category]
+    if ext not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{ext or original_name}' is not allowed in {category}. Allowed: {sorted(allowed)}",
+        )
+
+    directory = product_attachments_dir(product_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    stored = f"{uuid.uuid4().hex}{ext}"
+    path = (
+        directory / stored
+    )  # SEC-PATH-OK: stored = uuid4().hex + an extension validated against this category's allowlist just above
+    content = await file.read()
+    try:
+        path.write_bytes(content)
+    except OSError as e:
+        logger.error("Failed to save product attachment %s: %s", path, e)
+        raise HTTPException(status_code=500, detail="Failed to save attachment") from e
+
+    entry = {
+        "category": category,
+        "filename": stored,
+        "original_name": original_name,
+        "size": len(content),
+        "sort_order": next_sort_order(product, category),
+        "source": "manual",
+        "uploaded_at": datetime.now().isoformat(),
+    }
+    product.attachments = [*(product.attachments or []), entry]
+    await db.flush()
+    return entry
+
+
+@router.patch("/{product_id}/attachments/order", response_model=list[ProductAttachmentOut])
+async def reorder_attachments(
+    product_id: int,
+    data: AttachmentOrderRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """The gallery order is data, not a render-time sort (parent spec).
+
+    ``sort_order`` is per category, so this rewrites ONE category and leaves the
+    others alone. A filename from another category is a 400 rather than a silent
+    no-op: it means the caller and the server disagree about what is where.
+    """
+    product = await _get(db, product_id)
+    if data.category not in ATTACHMENT_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"Category must be one of {list(ATTACHMENT_CATEGORIES)}")
+    mine = [a["filename"] for a in category_entries(product, data.category)]
+    strangers = [f for f in data.filenames if f not in mine]
+    if strangers:
+        raise HTTPException(status_code=400, detail=f"Not attachments of '{data.category}': {sorted(strangers)}")
+    if len(set(data.filenames)) != len(data.filenames):
+        raise HTTPException(status_code=400, detail="The same filename appears twice in the order")
+
+    ranked = {filename: i for i, filename in enumerate(data.filenames)}
+    # A partial order is legal: whatever was not named keeps its relative order
+    # behind what was, so a drag of one thumbnail need not resend the gallery.
+    for i, filename in enumerate((f for f in mine if f not in ranked), start=len(ranked)):
+        ranked[filename] = i
+    product.attachments = [
+        {**a, "sort_order": ranked[a["filename"]]}
+        if isinstance(a, dict) and a.get("category") == data.category and a.get("filename") in ranked
+        else a
+        for a in (product.attachments or [])
+    ]
+    await db.flush()
+    return sorted_attachments(product)
+
+
+@router.get("/{product_id}/attachments/{filename}")
+async def download_attachment(
+    product_id: int,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """Bearer-authenticated, and it gives the operator's own name back."""
+    safe_attachment_name(filename)
+    product = await _get(db, product_id)
+    entry = attachment_entry(product, filename)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    path = (
+        product_attachments_dir(product_id) / filename
+    )  # SEC-PATH-OK: filename is rejected for separators, .. and empty just above the join
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Attachment file not found")
+    return FileResponse(path, filename=entry.get("original_name") or filename, media_type="application/octet-stream")
+
+
+@router.get("/{product_id}/attachments/{filename}/image")
+async def get_attachment_image(
+    product_id: int,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+    _=RequireCameraStreamToken,
+):
+    """Pictures for ``<img src>``, which cannot carry an Authorization header —
+    so this takes the same ``?token=`` credential as the project cover route.
+
+    Pictures ONLY: a bom_docs PDF is not served to a token-gated surface just
+    because it happens to be attached. The stored name is a uuid and never
+    changes, so an hour of browser cache is safe here — it would NOT be on
+    ``/cover-image``, whose URL survives the cover being replaced.
+    """
+    safe_attachment_name(filename)
+    product = await _get(db, product_id)
+    entry = attachment_entry(product, filename)
+    if entry is None or entry.get("category") != "pictures":
+        raise HTTPException(status_code=404, detail="Picture not found")
+    path = (
+        product_attachments_dir(product_id) / filename
+    )  # SEC-PATH-OK: filename is rejected for separators, .. and empty just above the join
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Picture file not found")
+    return FileResponse(path, media_type=image_media_type(filename), headers={"Cache-Control": "max-age=3600"})
+
+
+@router.delete("/{product_id}/attachments/{filename}", response_model=list[ProductAttachmentOut])
+async def delete_attachment(
+    product_id: int,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    safe_attachment_name(filename)
+    product = await _get(db, product_id)
+    if attachment_entry(product, filename) is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    product.attachments = [
+        a for a in (product.attachments or []) if not (isinstance(a, dict) and a.get("filename") == filename)
+    ]
+    # The cover column may point at exactly this picture; leaving it would be a
+    # dangling reference for someone else's request to heal.
+    if product.cover_image_filename == filename:
+        product.cover_image_filename = None
+    path = (
+        product_attachments_dir(product_id) / filename
+    )  # SEC-PATH-OK: filename is rejected for separators, .. and empty just above the join
+    if path.exists():
+        try:
+            path.unlink()
+        except OSError as e:
+            logger.warning("Failed to delete product attachment file %s: %s", path, e)
+    await db.flush()
+    return sorted_attachments(product)
+
+
+# ---------- the cover (spec §Decisions 4) ----------
+
+
+def _drop_dedicated_cover(product: Product, directory: Path) -> None:
+    """Delete the current cover file when NOTHING but the column references it.
+
+    A ``cover_<uuid>`` upload is not a gallery entry, so replacing or clearing
+    the column strands its file. A picked gallery picture is not ours to delete —
+    the gallery still shows it.
+    """
+    current = product.cover_image_filename
+    if not current or attachment_entry(product, current) is not None:
+        return
+    try:
+        safe_attachment_name(current)
+    except HTTPException:  # a hand-edited row; leave the file alone
+        return
+    path = directory / current  # SEC-PATH-OK: guarded by safe_attachment_name just above
+    if path.exists():
+        try:
+            path.unlink()
+        except OSError as e:
+            logger.warning("Failed to delete the previous product cover %s: %s", path, e)
+
+
+@router.put("/{product_id}/cover-image")
+async def set_product_cover_image(
+    product_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Two bodies on one path (spec §Decisions 4).
+
+    JSON ``{filename}`` PICKS a picture already in the gallery; a multipart
+    ``file`` UPLOADS a dedicated cover stored beside the gallery and deliberately
+    not listed in it. Both write the same column, so the page has one route to
+    call whichever the operator chose.
+    """
+    product = await _get(db, product_id)
+    directory = product_attachments_dir(product_id)
+
+    if request.headers.get("content-type", "").startswith("multipart/form-data"):
+        form = await request.form()
+        upload = form.get("file")
+        if not isinstance(upload, StarletteUploadFile):
+            raise HTTPException(status_code=400, detail="A multipart body must carry 'file'")
+        original_name = upload.filename or "cover"
+        ext = os.path.splitext(original_name)[1].lower()
+        if ext not in COVER_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Cover image must be one of {sorted(COVER_EXTENSIONS)}")
+        directory.mkdir(parents=True, exist_ok=True)
+        _drop_dedicated_cover(product, directory)
+        stored = f"cover_{uuid.uuid4().hex}{ext}"
+        path = (
+            directory / stored
+        )  # SEC-PATH-OK: 'cover_' + uuid4().hex + an extension validated against the cover allowlist just above
+        content = await upload.read()
+        try:
+            path.write_bytes(content)
+        except OSError as e:
+            logger.error("Failed to save product cover image %s: %s", path, e)
+            raise HTTPException(status_code=500, detail="Failed to save cover image") from e
+        product.cover_image_filename = stored
+        await db.flush()
+        return {"status": "success", "filename": stored, "size": len(content)}
+
+    try:
+        pick = CoverPickRequest.model_validate(await request.json())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Body must be JSON {filename} or a multipart file") from e
+    safe_attachment_name(pick.filename)
+    entry = attachment_entry(product, pick.filename)
+    if entry is None or entry.get("category") != "pictures":
+        raise HTTPException(status_code=400, detail="The cover must be a picture attachment of this product")
+    _drop_dedicated_cover(product, directory)
+    product.cover_image_filename = pick.filename
+    await db.flush()
+    return {"status": "success", "filename": pick.filename}
+
+
+@router.get("/{product_id}/cover-image")
+async def get_product_cover_image(
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    _=RequireCameraStreamToken,
+):
+    """The effective cover — the explicit column, else the first picture."""
+    product = await _get(db, product_id)
+    name = effective_cover(product)
+    if not name:
+        raise HTTPException(status_code=404, detail="No cover image set")
+    safe_attachment_name(name)
+    path = product_attachments_dir(product_id) / name  # SEC-PATH-OK: guarded by safe_attachment_name just above
+    if not path.exists():
+        # The column references a file that vanished. Clear it — and RETURN the
+        # 404 rather than raise it: ``get_db`` rolls the request back on anything
+        # that escapes the handler, so a raise would undo the very heal it just
+        # performed. (The project cover route's twin has exactly that bug.)
+        logger.warning("Cover image file missing for product %s: %s", product_id, path)
+        if product.cover_image_filename == name:
+            product.cover_image_filename = None
+            await db.flush()
+        return JSONResponse(status_code=404, content={"detail": "Cover image file not found"})
+    return FileResponse(path, media_type=image_media_type(name))
+
+
+@router.delete("/{product_id}/cover-image")
+async def delete_product_cover_image(
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Clears the explicit choice; the first-picture default resumes."""
+    product = await _get(db, product_id)
+    if product.cover_image_filename:
+        _drop_dedicated_cover(product, product_attachments_dir(product_id))
+        product.cover_image_filename = None
+        await db.flush()
+    return {"status": "success"}

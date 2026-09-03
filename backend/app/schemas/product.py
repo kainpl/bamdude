@@ -197,11 +197,47 @@ class FolderLinkRequest(BaseModel):
     library_folder_ids: list[int]
 
 
+class ProductAttachmentOut(BaseModel):
+    """One typed attachment (spec §Decisions 3) — the shape m158 already wrote
+    for the project templates it converted.
+
+    ``size`` and ``uploaded_at`` are tolerant on purpose: m158 carried over
+    legacy project attachments whose entries held neither, so an upgraded farm
+    has rows a strict model would 500 the product page over.
+    """
+
+    category: str
+    filename: str
+    original_name: str
+    size: int = 0
+    sort_order: int = 0
+    source: str = "manual"
+    source_file_id: int | None = None
+    uploaded_at: str | None = None
+
+    @field_validator("size", "sort_order", mode="before")
+    @classmethod
+    def _missing_number_is_zero(cls, v: int | None) -> int:
+        return 0 if v is None else v
+
+
+class AttachmentOrderRequest(BaseModel):
+    category: str
+    filenames: list[str]
+
+
+class CoverPickRequest(BaseModel):
+    filename: str = Field(min_length=1)
+
+
 class ProductListItem(BaseModel):
     id: int
     name: str
     is_active: bool
     cover_image_filename: str | None = None
+    # The EFFECTIVE cover — the explicit column or the first picture. The card
+    # renders ``GET /products/{id}/cover-image`` on this, never on the column.
+    has_cover: bool = False
     parts_count: int = 0
     plates_count: int = 0
     lines_count: int = 0
@@ -214,7 +250,7 @@ class ProductResponse(ProductListItem):
     license: str | None = None
     source_url: str | None = None
     design_id: str | None = None
-    attachments: list | None = None
+    attachments: list[ProductAttachmentOut] = []
     parts: list[ProductPartResponse] = []
     library_file_ids: list[int] = []
     library_folder_ids: list[int] = []

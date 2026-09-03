@@ -364,10 +364,12 @@ async def test_list_filters_by_status_and_customer(committing_client, catalog):
     await committing_client.patch(f"/api/v1/projects/{b}", json={"status": "cancelled"})
     names = lambda r: sorted(p["name"] for p in r.json())  # noqa: E731
     assert names(await committing_client.get("/api/v1/projects/")) == ["A", "B"]
-    # The list carries the line count and each line's product cover — one
-    # grouped lookup rather than a product query per row.
+    # The list carries the line count and, per line, whether its product has a
+    # cover to draw — one grouped lookup rather than a product query per row.
     row = next(p for p in (await committing_client.get("/api/v1/projects/")).json() if p["name"] == "A")
-    assert row["lines_count"] == 1 and row["ordered"] == 2 and row["product_cover_filenames"] == [None]
+    assert row["lines_count"] == 1 and row["ordered"] == 2
+    assert row["line_products"] == [{"product_id": catalog["product"].id, "has_cover": False}]
+    assert "product_cover_filenames" not in row
     assert names(await committing_client.get("/api/v1/projects/?status=active")) == ["A"]
     assert names(await committing_client.get(f"/api/v1/projects/?customer_id={catalog['customer'].id}")) == ["A"]
     # An unknown status is refused, not answered with an empty list — the same
@@ -731,3 +733,35 @@ async def test_project_archives_lists_only_this_orders_archives(committing_clien
     assert [a["id"] for a in r.json()] == [mine.id]
 
     assert (await committing_client.get("/api/v1/projects/9999/archives")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_line_products_carries_a_cover_flag_per_line_in_line_order(committing_client, catalog):
+    """The order card draws a cover strip from ``line_products`` — one entry per
+    line, in line order, saying whether that product has a cover to draw at all
+    (spec §Decisions 4). It replaces ``product_cover_filenames``: the effective
+    cover may be the first picture attachment, which is not a column."""
+    plain = (await committing_client.post("/api/v1/products/", json={"name": "Plain"})).json()["id"]
+    covered = catalog["product"].id
+    up = await committing_client.post(
+        f"/api/v1/products/{covered}/attachments",
+        data={"category": "pictures"},
+        files={"file": ("a.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+    )
+    assert up.status_code == 200, up.text
+
+    pid = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Strip",
+                "lines": [{"product_id": plain, "quantity": 1}, {"product_id": covered, "quantity": 1}],
+            },
+        )
+    ).json()["id"]
+
+    row = next(p for p in (await committing_client.get("/api/v1/projects/")).json() if p["id"] == pid)
+    assert row["line_products"] == [
+        {"product_id": plain, "has_cover": False},
+        {"product_id": covered, "has_cover": True},
+    ]

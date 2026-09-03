@@ -256,7 +256,7 @@ class ProjectListResponse(BaseModel):
     ordered: int
     printed: int
     progress: float
-    product_cover_filenames: list[str | None] = []
+    line_products: list["LineProductOut"] = []
 
 
 class TimelineEvent(BaseModel):
@@ -265,3 +265,22 @@ class TimelineEvent(BaseModel):
     title: str
     description: str | None = None
     metadata: dict | None = None
+
+
+class LineProductOut(BaseModel):
+    """What the order card's cover strip needs about one line's product.
+
+    A filename would be the wrong thing to send: the effective cover may be the
+    first picture ATTACHMENT rather than the ``cover_image_filename`` column, and
+    the strip fetches ``GET /products/{id}/cover-image`` either way. So the flag,
+    not the name — this replaced ``product_cover_filenames`` in pass 4.
+    """
+
+    product_id: int
+    has_cover: bool
+
+
+# ``ProjectListResponse`` above annotates ``line_products`` with a forward
+# reference so the class can live here, at the end, where the parallel passes'
+# edits to this file cannot collide with it.
+ProjectListResponse.model_rebuild()

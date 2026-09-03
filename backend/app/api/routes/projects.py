@@ -35,6 +35,7 @@ from backend.app.schemas.project import (
     PROJECT_STATUSES,
     BatchAddArchives,
     BatchAddQueueItems,
+    LineProductOut,
     PartFiguresOut,
     ProcurementOut,
     ProcurementUpdate,
@@ -176,16 +177,24 @@ async def list_projects(
         # than a join, so an order carrying two lines of the same product is
         # still one row. Composes with the filters above.
         query = query.where(Project.id.in_(select(ProjectLine.project_id).where(ProjectLine.product_id == product_id)))
+    # Imported here, not at module scope: ``product_files`` reads THIS module's
+    # attachment allowlist (``other`` is the project one), so a top-level import
+    # would close the cycle.
+    from backend.app.services.product_files import effective_cover
+
     projects = (await db.execute(query)).scalars().all()
     product_ids = {line.product_id for p in projects for line in p.lines}
-    covers = (
-        dict(
-            (
-                await db.execute(select(Product.id, Product.cover_image_filename).where(Product.id.in_(product_ids)))
-            ).all()
-        )
+    # The order card draws a cover strip per line, and the EFFECTIVE cover may be
+    # the first picture attachment rather than the column — hence a flag per
+    # line, not a filename. One grouped lookup rather than a query per row.
+    covered = (
+        {
+            product.id
+            for product in (await db.execute(select(Product).where(Product.id.in_(product_ids)))).scalars()
+            if effective_cover(product) is not None
+        }
         if product_ids
-        else {}
+        else set()
     )
     out: list[ProjectListResponse] = []
     for project in projects:
@@ -214,7 +223,10 @@ async def list_projects(
                 ordered=pf.ordered,
                 printed=pf.printed,
                 progress=pf.progress,
-                product_cover_filenames=[covers.get(line.product_id) for line in project.lines],
+                line_products=[
+                    LineProductOut(product_id=line.product_id, has_cover=line.product_id in covered)
+                    for line in project.lines
+                ],
             )
         )
     return out
