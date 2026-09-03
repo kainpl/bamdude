@@ -4656,6 +4656,22 @@ export default {
     }
   },
 
+  // Shared pickers (order, order line, product, customer) — pass-2 redesign.
+  pickers: {
+    noOrder: 'No order',
+    noLine: 'No line',
+    chooseOrderFirst: 'Choose an order first',
+    noProduct: 'No product',
+    searchProducts: 'Search products…',
+    newProduct: 'New product',
+    newProductName: 'Product name',
+    noCustomer: 'No customer',
+    newCustomer: 'New customer…',
+    newCustomerName: 'Customer name',
+    create: 'Create',
+    notInCatalog: 'not in catalog',
+  },
+
   // Projects section, orders face. Grows through the pass-2 redesign;
   // `projects.*` below still serves the old pages until they are replaced.
   orders: {
