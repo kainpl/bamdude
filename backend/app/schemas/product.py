@@ -6,6 +6,7 @@ every read from the linked file's ``file_metadata``.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -262,6 +263,30 @@ class ProductResponse(ProductListItem):
     updated_at: datetime
 
 
+class CardNote(BaseModel):
+    """One thing a card fill did, or refused to do — as a CODE, never prose.
+
+    ⚠️ No English on the wire. The operator reads these in their own language,
+    and the frontend owns the translation: it switches on ``code`` and formats
+    ``params``. A sentence built here would be untranslatable by the only layer
+    that knows the user's locale (i18n rule: en + uk, keys in both).
+    """
+
+    code: Literal[
+        "file_missing",  # the row outlived its bytes
+        "unreadable",  # params: error
+        "filled_field",  # params: field
+        "replaced_files",  # params: count
+        "imported_files",  # params: category, count
+        "skipped_extension",  # params: name, ext, category
+        "skipped_too_large",  # params: name, size, limit
+        "skipped_unreadable",  # params: name
+        "skipped_unsaved",  # params: name
+        "nothing_to_fill",
+    ]
+    params: dict[str, str | int] = {}
+
+
 class RereadResponse(BaseModel):
     """``POST /products/{id}/card/reread``.
 
@@ -271,4 +296,4 @@ class RereadResponse(BaseModel):
     """
 
     product: ProductResponse
-    notes: list[str] = []
+    notes: list[CardNote] = []

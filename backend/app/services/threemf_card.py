@@ -43,6 +43,12 @@ CATEGORY_FOLDERS: dict[str, str] = {
     "Auxiliaries/.thumbnails/": "thumbnails",
 }
 
+# The categories whose members a browser can be asked to RENDER. Everything
+# else a designer ships — a bill of materials, an assembly PDF, whatever landed
+# in ``Others/`` — is a download, and the routes gate on this: a token surface
+# built for ``<img src>`` hands out pictures, never arbitrary documents.
+CARD_PICTURE_CATEGORIES = ("pictures", "profile_pictures", "thumbnails")
+
 # 3MF metadata name → CardData attribute.
 _FIELD_MAPPING: dict[str, str] = {
     "Title": "title",
@@ -93,6 +99,18 @@ _CONTENT_TYPES: dict[str, str] = {
 }
 
 _MODEL_PATH = "3D/3dmodel.model"
+
+
+def content_type_for(name: str) -> str:
+    """The content type we would serve this member as.
+
+    Public because the routes need it BEFORE they read anything: which of the two
+    card routes can serve a member depends on whether we can name it as an image,
+    and the answer has to be the same one :meth:`ThreeMFCardParser.read` will
+    give later — a url that promises a picture the serving route then refuses is
+    a broken ``<img>`` on the page.
+    """
+    return _CONTENT_TYPES.get(name.lower().rsplit(".", 1)[-1], "application/octet-stream")
 
 
 @dataclass
@@ -157,37 +175,56 @@ class ThreeMFCardParser:
     def __init__(self, file_path: Path):
         self.file_path = file_path
 
+    def list_auxiliaries(self) -> dict[str, list[AuxEntry]]:
+        """The ``Auxiliaries/`` listing alone — the central directory, nothing else.
+
+        :meth:`parse` decompresses ``3D/3dmodel.model`` and regex-scans it, which
+        for a real model is megabytes of work. A route that only needs to answer
+        "is this ZIP member one the card offered?" must not pay that, and one
+        picture-per-request means it would pay it once per ``<img>`` on the page.
+
+        Same walk :meth:`parse` uses (it calls this), so the two can never
+        disagree about what the card offers. Never raises: an unreadable file
+        offers nothing, which is the same answer as a file with no auxiliaries —
+        callers of this method are asking a membership question, and both answers
+        are "no".
+        """
+        found: dict[str, list[AuxEntry]] = {category: [] for category in CATEGORY_FOLDERS.values()}
+        try:
+            with zipfile.ZipFile(self.file_path, "r") as zf:
+                for name in zf.namelist():
+                    for prefix, category in CATEGORY_FOLDERS.items():
+                        if not name.startswith(prefix):
+                            continue
+                        filename = name.split("/")[-1]
+                        if filename:  # skip the folder entry itself
+                            found[category].append(
+                                AuxEntry(name=filename, zip_path=name, size=zf.getinfo(name).file_size)
+                            )
+                        break
+        except Exception:
+            pass  # A ZIP we cannot open lists nothing; :meth:`parse` reports the error.
+        return found
+
     def parse(self) -> CardData:
         """Extract metadata and auxiliary listings. Never raises — see module docstring."""
         card = CardData()
 
         try:
             with zipfile.ZipFile(self.file_path, "r") as zf:
-                names = zf.namelist()
-
-                if _MODEL_PATH in names:
+                if _MODEL_PATH in zf.namelist():
                     content = zf.read(_MODEL_PATH).decode("utf-8", errors="ignore")
                     for name, value in re.findall(_METADATA_PATTERN, content):
                         attribute = _FIELD_MAPPING.get(name)
                         if attribute:
                             decoded = _unescape(value)
                             setattr(card, attribute, decoded or None)
-
-                for name in names:
-                    for prefix, category in CATEGORY_FOLDERS.items():
-                        if not name.startswith(prefix):
-                            continue
-                        filename = name.split("/")[-1]
-                        if filename:  # skip the folder entry itself
-                            info = zf.getinfo(name)
-                            card.auxiliaries[category].append(
-                                AuxEntry(name=filename, zip_path=name, size=info.file_size)
-                            )
-                        break
-
         except Exception as e:
             card.error = str(e)
 
+        # Outside the try, and deliberately: a 3MF whose model file is malformed
+        # still has pictures worth showing, and the listing has its own guard.
+        card.auxiliaries = self.list_auxiliaries()
         return card
 
     def read(self, zip_path: str) -> tuple[bytes, str] | None:

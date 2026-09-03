@@ -19,11 +19,21 @@ from backend.app.services.product_files import product_attachments_dir
 # One builder for the card 3MF, shared with the library-card tests, so the
 # auto-fill side and the card side cannot drift about what a card file holds.
 from backend.tests.integration.test_library_card_api import (
+    BOM_CSV,
     EVIL_EXE,
     PNG_A,
     make_card_file,
     write_card_3mf,
 )
+
+
+def _codes(notes: list[dict]) -> list[str]:
+    return [n["code"] for n in notes]
+
+
+def _params(notes: list[dict], code: str) -> list[dict]:
+    return [n["params"] for n in notes if n["code"] == code]
+
 
 pytestmark = pytest.mark.integration
 
@@ -495,7 +505,18 @@ async def test_reread_keeps_the_operators_values_and_replaces_only_this_files_im
     r = await committing_client.post(f"/api/v1/products/{pid}/card/reread", params={"file_id": file_id})
     assert r.status_code == 200, r.text
     first = r.json()["product"]
-    assert r.json()["notes"], "the operator is told what was filled"
+    notes = r.json()["notes"]
+    # Codes and params, never prose: the operator reads these in their own
+    # language and only the frontend knows which that is.
+    assert {n["field"] for n in _params(notes, "filled_field")} == {"license", "description", "design_id"}
+    assert "name" not in {n["field"] for n in _params(notes, "filled_field")}
+    assert sorted(n["category"] for n in _params(notes, "imported_files")) == [
+        "assembly",
+        "bom_docs",
+        "other",
+        "pictures",
+    ]
+    assert sum(n["count"] for n in _params(notes, "imported_files")) == 5
     assert first["name"] == "Lamp" and first["designer"] == "Me", "a value the operator wrote is never overwritten"
     assert first["license"] == "CC-BY-4.0" and first["description"] == "A lamp & a shade"
     imported = [a["filename"] for a in first["attachments"]]
@@ -527,6 +548,7 @@ async def test_reread_keeps_the_operators_values_and_replaces_only_this_files_im
 
     again = await committing_client.post(f"/api/v1/products/{pid}/card/reread", params={"file_id": file_id})
     assert again.status_code == 200, again.text
+    assert _params(again.json()["notes"], "replaced_files") == [{"count": 5}]
     second = again.json()["product"]
     names = {a["filename"] for a in second["attachments"]}
     assert manual in names, "a manual attachment is not the file's to replace"
@@ -643,3 +665,108 @@ async def test_units_printed_total_counts_every_order_the_product_appears_in(com
 
     assert (await committing_client.get(f"/api/v1/products/{pid}")).json()["units_printed_total"] == 5
     assert (await committing_client.get(f"/api/v1/products/{other_pid}")).json()["units_printed_total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_the_same_name_in_two_folders_is_two_files(committing_client, db_session, tmp_path):
+    """The re-import guard is keyed on (category, name), not the name alone.
+
+    One 3MF legitimately ships ``guide.png`` as a model picture AND as a step of
+    the assembly guide; they are different images and both belong on the product.
+    Keyed on the name alone the second one silently vanished.
+    """
+    file = await make_card_file(
+        db_session,
+        tmp_path,
+        name="twins.3mf",
+        members={
+            "Auxiliaries/Model Pictures/guide.png": PNG_A,
+            "Auxiliaries/Assembly Guide/guide.png": PNG_A + b"different",
+        },
+    )
+    body = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()
+
+    pairs = sorted((a["category"], a["original_name"]) for a in body["attachments"])
+    assert pairs == [("assembly", "guide.png"), ("pictures", "guide.png")]
+    stored = {a["category"]: a["filename"] for a in body["attachments"]}
+    assert (product_attachments_dir(body["id"]) / stored["pictures"]).read_bytes() == PNG_A
+    assert (product_attachments_dir(body["id"]) / stored["assembly"]).read_bytes() == PNG_A + b"different"
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_member_is_skipped_with_a_note_never_read(
+    committing_client, db_session, tmp_path, monkeypatch
+):
+    """An import buffers each member whole, so the ZIP's DECLARED uncompressed
+    size is checked before a byte is inflated — a 2 GB member inside a 3MF must
+    not become a 2 GB allocation on a Raspberry Pi."""
+    monkeypatch.setattr("backend.app.services.product_files.MAX_ATTACHMENT_BYTES", len(PNG_A))
+
+    file = await make_card_file(
+        db_session,
+        tmp_path,
+        name="heavy.3mf",
+        members={
+            "Auxiliaries/Model Pictures/small.png": PNG_A,
+            "Auxiliaries/Bill of Materials/huge.csv": BOM_CSV * 20,
+        },
+    )
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()["id"]
+    notes = (await committing_client.post(f"/api/v1/products/{pid}/card/reread", params={"file_id": file.id})).json()[
+        "notes"
+    ]
+
+    skipped = _params(notes, "skipped_too_large")
+    assert [n["name"] for n in skipped] == ["huge.csv"]
+    assert skipped[0]["size"] == len(BOM_CSV) * 20 and skipped[0]["limit"] == len(PNG_A)
+    body = (await committing_client.get(f"/api/v1/products/{pid}")).json()
+    assert [a["original_name"] for a in body["attachments"]] == ["small.png"]
+
+
+@pytest.mark.asyncio
+async def test_an_upload_past_the_cap_is_413(committing_client, monkeypatch):
+    """The same ceiling on the manual route, so the two ways a file reaches the
+    attachments directory cannot disagree about what fits."""
+    monkeypatch.setattr("backend.app.services.product_files.MAX_ATTACHMENT_BYTES", 8)
+    pid = (await committing_client.post("/api/v1/products/", json={"name": "Heavy"})).json()["id"]
+
+    r = await committing_client.post(
+        f"/api/v1/products/{pid}/attachments",
+        data={"category": "pictures"},
+        files={"file": ("big.png", PNG_A + b"way past the cap", "image/png")},
+    )
+    assert r.status_code == 413, r.text
+    assert (await committing_client.get(f"/api/v1/products/{pid}/attachments")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_a_file_with_nothing_left_to_give_says_so(committing_client, db_session, tmp_path):
+    """``nothing_to_fill`` is a code like any other — an empty list would leave
+    the dialog with nothing to say and look like a failure."""
+    file = await make_card_file(db_session, tmp_path, name="twice.3mf")
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()["id"]
+
+    # Everything is already filled and every attachment is re-imported, so the
+    # second read reports the replacement and the imports, not "nothing".
+    notes = (await committing_client.post(f"/api/v1/products/{pid}/card/reread", params={"file_id": file.id})).json()[
+        "notes"
+    ]
+    assert "nothing_to_fill" not in _codes(notes)
+
+    empty = await make_card_file(
+        db_session,
+        tmp_path,
+        name="empty.3mf",
+        title=None,
+        description=None,
+        designer=None,
+        license=None,
+        design_model_id=None,
+        members={},
+    )
+    other = (await committing_client.post("/api/v1/products/", json={"name": "Named already"})).json()["id"]
+    await committing_client.put(f"/api/v1/products/{other}/files", json={"library_file_ids": [empty.id]})
+    nothing = (
+        await committing_client.post(f"/api/v1/products/{other}/card/reread", params={"file_id": empty.id})
+    ).json()["notes"]
+    assert _codes(nothing) == ["nothing_to_fill"]

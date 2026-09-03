@@ -532,10 +532,13 @@ class LibraryGroupingMetadata(BaseModel):
 class CardAuxOut(BaseModel):
     """One file inside an ``Auxiliaries/`` folder, plus the url that serves it.
 
-    ``url`` is the token-gated ``card-file`` route — an ``<img src>`` cannot
-    carry an Authorization header, so the frontend appends a camera stream token
-    to this and nothing else. It is built server-side because the ZIP path needs
-    percent-encoding the frontend has no reason to reimplement.
+    ``url`` names WHICH of the two card routes can serve this member, and the
+    server decides: ``card-file`` for a picture the browser will render (append
+    a camera stream token — an ``<img src>`` cannot carry an Authorization
+    header), ``card-download`` for everything else (an ordinary bearer read, so
+    a customer's bill of materials never sits behind a long-lived kiosk token).
+    Built server-side because the ZIP path needs percent-encoding and because
+    that split is a server rule the frontend should not re-derive.
     """
 
     name: str

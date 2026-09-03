@@ -69,8 +69,10 @@ from backend.app.services.product_files import (
     CATEGORY_EXTENSIONS,
     COVER_EXTENSIONS,
     attachment_entry,
+    attachment_limit,
     category_entries,
     effective_cover,
+    exceeds_attachment_limit,
     image_media_type,
     next_sort_order,
     product_attachments_dir,
@@ -261,7 +263,7 @@ async def create_product_from_file(
         if stem.lower().endswith(suffix):
             stem = stem[: -len(suffix)]
             break
-    card = read_card(file)
+    card = await read_card(file)
     product = Product(name=usable_title(card) or stem or file.filename)
     db.add(product)
     await db.flush()
@@ -736,6 +738,12 @@ async def upload_attachment(
             detail=f"'{ext or original_name}' is not allowed in {category}. Allowed: {sorted(allowed)}",
         )
 
+    # The declared size first when the client sent one, so an oversized body is
+    # refused before it is buffered; the read is checked again because that
+    # header is the client's word, not a fact.
+    if exceeds_attachment_limit(getattr(file, "size", None)):
+        raise HTTPException(status_code=413, detail=f"An attachment may be at most {attachment_limit()} bytes")
+
     directory = product_attachments_dir(product_id)
     directory.mkdir(parents=True, exist_ok=True)
     stored = f"{uuid.uuid4().hex}{ext}"
@@ -743,6 +751,8 @@ async def upload_attachment(
         directory / stored
     )  # SEC-PATH-OK: stored = uuid4().hex + an extension validated against this category's allowlist just above
     content = await file.read()
+    if exceeds_attachment_limit(len(content)):
+        raise HTTPException(status_code=413, detail=f"An attachment may be at most {attachment_limit()} bytes")
     try:
         path.write_bytes(content)
     except OSError as e:

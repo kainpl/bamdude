@@ -342,6 +342,52 @@ class TestUpdateMetadata:
         assert ThreeMFCardParser(path).update_metadata({"title": "x"}) is False
 
 
+class TestListAuxiliaries:
+    """The cheap half of ``parse``, and the one a serving route may run per request.
+
+    ``parse`` inflates ``3D/3dmodel.model`` and regex-scans it — megabytes of CPU
+    for a real model. Answering "is this ZIP member one the card offered?" must
+    not cost that, because a card dialog asks it once per picture on the page.
+    ``parse`` therefore CALLS this, which is what keeps the two from drifting
+    about what the card offers.
+    """
+
+    def test_it_lists_exactly_what_parse_lists(self, card_3mf: Path):
+        parser = ThreeMFCardParser(card_3mf)
+
+        listed = parser.list_auxiliaries()
+
+        assert listed == parser.parse().auxiliaries
+        assert sorted(listed) == sorted(set(CATEGORY_FOLDERS.values()))
+        assert [(e.name, e.size) for e in listed["pictures"]] == [("a.png", len(PNG_A)), ("b.jpg", len(JPG_B))]
+
+    def test_it_never_opens_the_model(self, tmp_path: Path):
+        """A 3MF whose model part is not even XML still has pictures worth
+        showing — and a card whose metadata failed to parse still lists them."""
+        path = tmp_path / "malformed.3mf"
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr("3D/3dmodel.model", b"\x00\x01 not xml, not utf-8, not anything")
+            zf.writestr("Auxiliaries/Model Pictures/a.png", PNG_A)
+
+        parser = ThreeMFCardParser(path)
+        listed = parser.list_auxiliaries()
+
+        assert [e.zip_path for e in listed["pictures"]] == ["Auxiliaries/Model Pictures/a.png"]
+        card = parser.parse()
+        assert card.title is None
+        assert [e.name for e in card.auxiliaries["pictures"]] == ["a.png"]
+
+    def test_a_broken_zip_lists_nothing_rather_than_raising(self, tmp_path: Path):
+        """A membership question has two answers and 'exception' is neither."""
+        path = tmp_path / "broken.3mf"
+        path.write_bytes(b"not a zip at all")
+
+        listed = ThreeMFCardParser(path).list_auxiliaries()
+
+        assert all(entries == [] for entries in listed.values())
+        assert sorted(listed) == sorted(set(CATEGORY_FOLDERS.values()))
+
+
 class TestTheOldNameStillResolves:
     def test_archive_module_re_exports_the_parser(self):
         """``services.archive.ProjectPageParser`` is an alias for one pass."""

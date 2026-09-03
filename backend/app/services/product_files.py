@@ -94,6 +94,32 @@ IMAGE_CONTENT_TYPES = {
     ".webp": "image/webp",
 }
 
+# One attachment's ceiling. Every path that moves these bytes — the upload
+# route, the 3MF import, the card-file/card-download readers — buffers the WHOLE
+# file in memory, so the cap is a memory bound before it is a policy: without it
+# a 2 GB member inside a 3MF is a 2 GB allocation on a Raspberry Pi. 50 MB
+# comfortably clears a photo, a slicer PDF and a spreadsheet.
+MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+
+
+def attachment_limit() -> int:
+    """The ceiling, read at call time.
+
+    ⚠️ Every caller asks through this and :func:`exceeds_attachment_limit`, never
+    by importing the constant: a module that binds the name at import time keeps
+    the value it saw, so the number a 413 REPORTS would drift from the number the
+    gate ENFORCED the moment anything changed it. (That is also what lets a test
+    lower the cap instead of building a 50 MB fixture — and the first version of
+    this code shipped exactly that drift, caught by such a test.)
+    """
+    return MAX_ATTACHMENT_BYTES
+
+
+def exceeds_attachment_limit(size: int | None) -> bool:
+    """``True`` when a member is too big to move."""
+    return size is not None and size > attachment_limit()
+
+
 # Order matters: it is the order the product page renders the sections in, and
 # therefore the order ``GET /attachments`` answers in.
 ATTACHMENT_CATEGORIES = ("pictures", "bom_docs", "assembly", "other")

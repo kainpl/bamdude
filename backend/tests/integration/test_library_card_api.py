@@ -7,10 +7,15 @@ Two routes, and the difference between them is the whole point:
   takes.
 * ``GET /library/files/{id}/card-file/{zip_path}`` feeds an ``<img src>``,
   which cannot carry an Authorization header, so it takes the same ``?token=``
-  stream credential the cover routes take.
+  stream credential the cover routes take — and therefore serves PICTURES ONLY.
+  A camera stream token is long-lived and lives in kiosks and Home Assistant
+  cards; a customer's bill of materials has no business behind one.
+* ``GET /library/files/{id}/card-download/{zip_path}`` is the bearer surface for
+  everything else the card lists, under the same ownership permission as
+  ``/card``.
 
-⚠️ The second route hands out bytes from inside a file the operator uploaded,
-addressed by a path the CLIENT supplies. It therefore serves **only** a member
+⚠️ The serving routes hand out bytes from inside a file the operator uploaded,
+addressed by a path the CLIENT supplies. They therefore serve **only** a member
 the parsed card listed under ``Auxiliaries/`` — never ``3D/3dmodel.model``,
 never the sliced G-code, never a name that merely looks like one. That
 restriction is pinned below and must not be relaxed into "any ZIP member".
@@ -147,16 +152,33 @@ async def test_the_card_is_parsed_off_disk_with_token_gated_urls(committing_clie
     assert first["zip_path"] == "Auxiliaries/Model Pictures/a.png" and first["size"] == len(PNG_A)
     assert first["url"] == f"/api/v1/library/files/{file_id}/card-file/Auxiliaries/Model%20Pictures/a.png"
 
-    # The url is the token-gated route, and it really is gated.
+    # Each entry names the route that can actually serve it: pictures through the
+    # token surface, documents through the bearer one. The frontend does not
+    # re-derive that split from the category.
+    for category in ("pictures", "profile_pictures", "thumbnails"):
+        assert all("/card-file/" in e["url"] for e in aux[category]), category
+    for category in ("bom_docs", "assembly", "other"):
+        assert all("/card-download/" in e["url"] for e in aux[category]), category
+
+    # The picture url is the token-gated route, and it really is gated.
     assert (await committing_client.get(first["url"])).status_code == 401
     token = await _stream_token()
     got = await committing_client.get(first["url"], params={"token": token})
     assert got.status_code == 200, got.text
     assert got.content == PNG_A and got.headers["content-type"] == "image/png"
+    assert got.headers["cache-control"].startswith("private")
 
-    # And the same route serves the documents the card lists, with their own type.
-    bom = await committing_client.get(aux["bom_docs"][0]["url"], params={"token": token})
-    assert bom.status_code == 200 and bom.content == BOM_CSV and bom.headers["content-type"].startswith("text/csv")
+    # The bill of materials is NOT on the token surface, whatever the token.
+    as_picture = f"/api/v1/library/files/{file_id}/card-file/Auxiliaries/Bill%20of%20Materials/bom.csv"
+    assert (await committing_client.get(as_picture, params={"token": token})).status_code == 404
+
+    # It comes through the bearer route, with the designer's own filename.
+    bom = await committing_client.get(aux["bom_docs"][0]["url"])
+    assert bom.status_code == 200, bom.text
+    assert bom.content == BOM_CSV and bom.headers["content-type"].startswith("text/csv")
+    assert "bom.csv" in bom.headers["content-disposition"]
+    # A stream token is not a credential for it.
+    assert aux["bom_docs"][0]["url"].startswith(f"/api/v1/library/files/{file_id}/card-download/")
 
 
 @pytest.mark.asyncio
@@ -233,5 +255,101 @@ async def test_the_browser_reaches_card_file_with_only_a_stream_token(committing
         assert served.status_code == 200, served.text
         assert served.content == PNG_A
 
-        # The card itself is an ordinary bearer read and stays behind the JWT.
+        # The card and the download surface are ordinary bearer reads and stay
+        # behind the JWT — a stream token buys neither.
         assert (await anonymous.get(f"/api/v1/library/files/{file_id}/card")).status_code == 401
+        document = f"/api/v1/library/files/{file_id}/card-download/Auxiliaries/Bill of Materials/bom.csv"
+        assert (await anonymous.get(document)).status_code == 401
+        assert (await anonymous.get(document, params={"token": token})).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_card_download_needs_a_bearer_token_even_when_the_path_fools_the_middleware(
+    committing_client, db_session, tmp_path
+):
+    """``auth_middleware`` matches ``PUBLIC_API_PATTERNS`` as a SUBSTRING of the
+    whole path, and ``zip_path`` is client text — so a member called
+    ``thumbnail.txt`` makes the middleware wave the request straight through
+    (``/thumbnail`` is a pattern, for the archive and library thumbnail routes).
+
+    The route's own ``require_ownership_permission`` is what refuses it: that
+    dependency answers 401 when no credentials arrive at all. This test exists so
+    a future refactor cannot quietly swap it for something that treats "no user"
+    as "no restriction".
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from backend.app.main import app
+
+    file = await make_card_file(
+        db_session,
+        tmp_path,
+        name="tricky.3mf",
+        members={"Auxiliaries/Others/thumbnail.txt": NOTES_TXT},
+    )
+    url = f"/api/v1/library/files/{file.id}/card-download/Auxiliaries/Others/thumbnail.txt"
+    assert "/thumbnail" in url, "the whole point of this fixture"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as anonymous:
+        assert (await anonymous.get(url)).status_code == 401
+        # And a camera stream token is not a substitute for the bearer one.
+        assert (await anonymous.get(url, params={"token": await _stream_token()})).status_code == 401
+
+    served = await committing_client.get(url)
+    assert served.status_code == 200 and served.content == NOTES_TXT
+
+
+@pytest.mark.asyncio
+async def test_a_picture_folder_is_a_folder_not_a_promise(committing_client, db_session, tmp_path):
+    """``card-file`` renders from our own origin, so what it serves must be
+    something we can name as an image. A designer's stray ``.txt`` in
+    ``Model Pictures/`` is a download, not an ``<img>`` — the card still lists it
+    and ``card-download`` still hands it over."""
+    file = await make_card_file(
+        db_session,
+        tmp_path,
+        name="stray.3mf",
+        members={
+            "Auxiliaries/Model Pictures/a.png": PNG_A,
+            "Auxiliaries/Model Pictures/readme.txt": NOTES_TXT,
+        },
+    )
+    token = await _stream_token()
+    base = f"/api/v1/library/files/{file.id}"
+
+    # The card says so too: a url must never promise what the route would refuse.
+    listed = {
+        e["name"]: e["url"] for e in (await committing_client.get(f"{base}/card")).json()["auxiliaries"]["pictures"]
+    }
+    assert "/card-file/" in listed["a.png"] and "/card-download/" in listed["readme.txt"]
+
+    assert (
+        await committing_client.get(f"{base}/card-file/Auxiliaries/Model Pictures/a.png", params={"token": token})
+    ).status_code == 200
+    assert (
+        await committing_client.get(f"{base}/card-file/Auxiliaries/Model Pictures/readme.txt", params={"token": token})
+    ).status_code == 404
+    stray = await committing_client.get(f"{base}/card-download/Auxiliaries/Model Pictures/readme.txt")
+    assert stray.status_code == 200 and stray.content == NOTES_TXT
+
+
+@pytest.mark.asyncio
+async def test_a_member_past_the_size_cap_is_413_not_a_50_mb_allocation(
+    committing_client, db_session, tmp_path, monkeypatch
+):
+    """Both serving routes buffer the whole member in memory, so the ZIP's
+    DECLARED uncompressed size is checked before a byte is inflated. The cap is
+    lowered here rather than building a 50 MB fixture — which is exactly why
+    ``exceeds_attachment_limit`` reads it at call time."""
+    monkeypatch.setattr("backend.app.services.product_files.MAX_ATTACHMENT_BYTES", 4)
+
+    file = await make_card_file(db_session, tmp_path, name="big.3mf")
+    token = await _stream_token()
+    base = f"/api/v1/library/files/{file.id}"
+
+    too_big = await committing_client.get(f"{base}/card-file/Auxiliaries/Model Pictures/a.png", params={"token": token})
+    assert too_big.status_code == 413, too_big.text
+    assert (await committing_client.get(f"{base}/card-download/Auxiliaries/Others/notes.txt")).status_code == 413
+    # The card itself still lists everything — the cap bounds a transfer, not a listing.
+    listed = (await committing_client.get(f"{base}/card")).json()
+    assert [e["name"] for e in listed["auxiliaries"]["pictures"]] == ["a.png", "b.jpg"]
