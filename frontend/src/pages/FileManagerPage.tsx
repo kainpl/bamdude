@@ -428,7 +428,7 @@ interface LinkFolderModalProps {
 function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderModalProps) {
   // m044: folder ↔ projects is M2M.
   const [selectedProjectIds, setSelectedProjectIds] = useState<Set<number>>(
-    () => new Set(folder.projects.map((p) => p.id)),
+    () => new Set((folder.projects ?? []).map((p) => p.id)),
   );
 
   const { data: allProjects } = useQuery({
@@ -684,8 +684,10 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [showActions, setShowActions] = useState(false);
   const hasChildren = folder.children.length > 0;
-  // m044: M2M projects.
-  const isLinked = folder.projects.length > 0;
+  // m158: folders link to PRODUCTS now; the old `projects` field is gone from the wire.
+  // Hotfix (2026-09-03) until Task 11 retargets the chips: read whichever the server sent.
+  const linkedTo = folder.products ?? folder.projects ?? [];
+  const isLinked = linkedTo.length > 0;
   const isExternal = folder.is_external;
   // The row has no room for a date column — the order icon → name → lock →
   // link → count → menu is deliberate and keeps every row's right edge aligned.
@@ -741,12 +743,12 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
           <button
             onClick={(e) => { e.stopPropagation(); onLink(folder); }}
             className="flex-shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 hover:bg-blue-200 dark:hover:bg-blue-500/30 transition-colors"
-            title={folder.projects.map(p => p.name).join(', ')}
+            title={linkedTo.map(p => p.name).join(', ')}
           >
             <Link2 className="w-3 h-3" />
             <Briefcase className="w-3 h-3" />
-            {folder.projects.length > 1 && (
-              <span className="text-[10px] font-semibold">×{folder.projects.length}</span>
+            {linkedTo.length > 1 && (
+              <span className="text-[10px] font-semibold">×{linkedTo.length}</span>
             )}
           </button>
         ) : !isExternal ? (
@@ -1241,16 +1243,16 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
         {/* Project link overlay - bottom-right, same height as notes */}
         {onLink && (
           <div className="absolute bottom-2 right-2" onClick={(e) => e.stopPropagation()}>
-            {(file.project_ids ?? []).length > 0 ? (
+            {(file.products ?? file.project_ids ?? []).length > 0 ? (
               <button
                 onClick={() => onLink(file)}
                 className="rounded-md bg-blue-500/85 backdrop-blur text-white hover:bg-blue-500 transition-colors flex items-center gap-1 px-1.5 py-1"
-                title={t('fileManager.linkedToNProjects', { count: file.project_ids.length })}
+                title={t('fileManager.linkedToNProjects', { count: (file.products ?? file.project_ids ?? []).length })}
               >
                 <Link2 className="w-5 h-5" />
                 <Briefcase className="w-4 h-4" />
-                {file.project_ids.length > 1 && (
-                  <span className="text-[10px] font-semibold">×{file.project_ids.length}</span>
+                {(file.products ?? file.project_ids ?? []).length > 1 && (
+                  <span className="text-[10px] font-semibold">×{(file.products ?? file.project_ids ?? []).length}</span>
                 )}
               </button>
             ) : canModify('library', 'update', file.created_by_id) ? (
@@ -3600,17 +3602,17 @@ export function FileManagerPage() {
                         </button>
                       )}
                       {/* Project link / unlink — sits with the other inline actions */}
-                      {(file.project_ids ?? []).length > 0 ? (
+                      {(file.products ?? file.project_ids ?? []).length > 0 ? (
                         <button
                           onClick={() => setLinkFile(file)}
                           className="p-1.5 rounded bg-blue-500/20 hover:bg-blue-500/30 flex items-center gap-1 transition-colors"
-                          title={t('fileManager.linkedToNProjects', { count: file.project_ids.length })}
+                          title={t('fileManager.linkedToNProjects', { count: (file.products ?? file.project_ids ?? []).length })}
                         >
                           <Link2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                           <Briefcase className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                          {file.project_ids.length > 1 && (
+                          {(file.products ?? file.project_ids ?? []).length > 1 && (
                             <span className="text-[10px] font-semibold text-blue-700 dark:text-blue-400">
-                              ×{file.project_ids.length}
+                              ×{(file.products ?? file.project_ids ?? []).length}
                             </span>
                           )}
                         </button>

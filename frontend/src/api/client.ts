@@ -10661,6 +10661,8 @@ export interface ProjectRef {
 }
 
 export interface LibraryFolderTree {
+  /** Products this folder is linked to (m158) — optional until Task 12 makes it required. */
+  products?: ProductRef[];
   id: number;
   name: string;
   parent_id: number | null;
@@ -10897,6 +10899,8 @@ export interface LibraryFile {
 }
 
 export interface LibraryFileListItem {
+  /** Products this file is linked to (m158) — optional until Task 12 makes it required. */
+  products?: ProductRef[];
   id: number;
   folder_id: number | null;
   // m044: M2M project IDs only (names omitted to keep list payload small —
