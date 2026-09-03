@@ -122,6 +122,33 @@ describe('PrintModal — order line', () => {
     expect(options).not.toHaveProperty('project_line_id');
   });
 
+  it('carries the line into the auto-queue payload', async () => {
+    // The third payload site. Auto mode never picks a printer — the router
+    // does that at dispatch — so the line has to travel on the item itself or
+    // the print lands attributed to the order and to nothing in it.
+    const add = vi.spyOn(api, 'addToAutoQueue').mockResolvedValue({ id: 1 } as never);
+    const user = userEvent.setup();
+
+    render(
+      <PrintModal
+        mode="add-to-queue"
+        libraryFileId={5}
+        archiveName="flask.gcode.3mf"
+        projectId={3}
+        projectLineId={10}
+        initialDispatchMode="auto"
+        lockDispatchMode
+        onClose={() => {}}
+      />,
+    );
+
+    await user.click(await screen.findByRole('button', { name: /^add to queue$/i }));
+
+    await waitFor(() =>
+      expect(add).toHaveBeenCalledWith(expect.objectContaining({ project_id: 3, project_line_id: 10 })),
+    );
+  });
+
   it('carries the line into the add-to-queue payload', async () => {
     const add = vi.spyOn(api, 'addToQueue').mockResolvedValue({ id: 1 } as never);
     const user = userEvent.setup();

@@ -18,6 +18,10 @@ export interface LinkToProductsItem {
   name?: string;
   /** Files. */
   filename?: string;
+  /** Files again, and the one the operator actually reads: the name out of the
+   *  3MF. A row shown as "Flask lid v3" must not turn into
+   *  `20260901_154302_lid.gcode.3mf` in the dialog that asks about it. */
+  print_name?: string | null;
   products?: ProductRef[];
 }
 
@@ -99,7 +103,10 @@ export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModal
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
-  const label = item.name ?? item.filename ?? '';
+  // `||`, not `??` — an empty `print_name` is as absent as a null one, which
+  // is exactly what the file modal this replaced did with `print_name ||
+  // filename`. A folder has neither field and falls through to its name.
+  const label = item.print_name || item.name || item.filename || '';
 
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">

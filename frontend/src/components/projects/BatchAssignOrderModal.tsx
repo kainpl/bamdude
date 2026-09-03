@@ -41,9 +41,13 @@ export function BatchAssignOrderModal({ archiveIds, onClose, onDone }: BatchAssi
 
   const assign = useMutation({
     mutationFn: (target: number) => api.addArchivesToOrder(target, archiveIds, lineId),
-    onSuccess: (_, target) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
-      queryClient.invalidateQueries({ queryKey: ['project', target] });
+      // The prefix, not the picked order alone — a selection can be pulled
+      // out of several other orders in one go, and each of those pages is now
+      // showing figures and a prints list that no longer hold.
+      queryClient.invalidateQueries({ queryKey: ['project'] });
+      queryClient.invalidateQueries({ queryKey: ['project-archives'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       showToast(t('archives.toast.projectUpdated'));
       onDone?.();

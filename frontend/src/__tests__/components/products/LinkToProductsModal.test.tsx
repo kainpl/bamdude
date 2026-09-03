@@ -58,6 +58,21 @@ describe('LinkToProductsModal', () => {
     );
   });
 
+  it('names the file the way the row does — print name over filename', async () => {
+    vi.spyOn(api, 'getProducts').mockResolvedValue([] as never);
+
+    render(
+      <LinkToProductsModal
+        kind="file"
+        item={{ id: 3, filename: '20260901_154302_lid.gcode.3mf', print_name: 'Flask lid v3', products: [] }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText(/Flask lid v3/)).toBeInTheDocument();
+    expect(screen.queryByText(/20260901_154302_lid/)).not.toBeInTheDocument();
+  });
+
   it('keeps an inactive product that is already linked', async () => {
     vi.spyOn(api, 'getProducts').mockResolvedValue([
       { id: 1, name: 'Flask', is_active: true },

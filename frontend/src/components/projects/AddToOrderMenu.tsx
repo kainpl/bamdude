@@ -52,9 +52,13 @@ export function AddToOrderMenu({ archive, onDone }: AddToOrderMenuProps) {
   const assign = useMutation({
     mutationFn: ({ orderId, lineId }: { orderId: number; lineId: number | null }) =>
       api.addArchivesToOrder(orderId, [archive.id], lineId),
-    onSuccess: (_, { orderId }) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
-      queryClient.invalidateQueries({ queryKey: ['project', orderId] });
+      // The PREFIX, not the one order that was picked: the archive may have
+      // just left another order, whose figures are now wrong too — and every
+      // order page reads its prints from its own `project-archives` key.
+      queryClient.invalidateQueries({ queryKey: ['project'] });
+      queryClient.invalidateQueries({ queryKey: ['project-archives'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       showToast(t('archives.toast.projectUpdated'));
       onDone();
@@ -69,6 +73,8 @@ export function AddToOrderMenu({ archive, onDone }: AddToOrderMenuProps) {
     mutationFn: () => api.updateArchive(archive.id, { project_id: null, project_line_id: null }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
+      queryClient.invalidateQueries({ queryKey: ['project'] });
+      queryClient.invalidateQueries({ queryKey: ['project-archives'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       showToast(t('archives.toast.projectUpdated'));
       onDone();
