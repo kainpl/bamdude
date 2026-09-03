@@ -47,12 +47,13 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate }: Custo
           onChange={(e) => setName(e.target.value)}
           placeholder={t('pickers.newCustomerName')}
           className={FIELD_CLASS}
+          disabled={disabled}
           autoFocus
         />
         <button
           type="button"
           onClick={() => name.trim() && createMutation.mutate(name.trim())}
-          disabled={!name.trim() || createMutation.isPending}
+          disabled={disabled || !name.trim() || createMutation.isPending}
           className="px-3 py-2 rounded-lg text-sm bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors whitespace-nowrap"
         >
           {t('pickers.create')}

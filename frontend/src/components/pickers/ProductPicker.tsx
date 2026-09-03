@@ -83,7 +83,7 @@ export function ProductPicker({ value, onChange, disabled, allowCreate }: Produc
             <button
               type="button"
               onClick={() => createMutation.mutate(filter.trim())}
-              disabled={createMutation.isPending}
+              disabled={disabled || createMutation.isPending}
               title={t('pickers.newProductName')}
               className="w-full px-3 py-1.5 rounded-lg text-sm bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors"
             >

@@ -29,4 +29,16 @@ describe('ProductPicker', () => {
     await waitFor(() => expect(create).toHaveBeenCalledWith({ name: 'Cap' }));
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(9));
   });
+  it('honours disabled while offering to create a product', async () => {
+    vi.spyOn(api, 'getProducts').mockResolvedValue(products as never);
+    const create = vi.spyOn(api, 'createProduct').mockResolvedValue({ id: 10, name: 'Mug' } as never);
+    render(<ProductPicker value={null} onChange={() => {}} allowCreate disabled />);
+    const input = await screen.findByRole('textbox');
+    expect(input).toBeDisabled();
+    fireEvent.change(input, { target: { value: 'Mug' } });
+    const createButton = await screen.findByRole('button', { name: /create/i });
+    expect(createButton).toBeDisabled();
+    fireEvent.click(createButton);
+    expect(create).not.toHaveBeenCalled();
+  });
 });

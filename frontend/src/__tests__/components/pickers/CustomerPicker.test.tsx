@@ -31,4 +31,20 @@ describe('CustomerPicker', () => {
     await waitFor(() => expect(create).toHaveBeenCalledWith({ name: 'Beta' }));
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(7));
   });
+
+  it('honours disabled once the create-name view is showing', async () => {
+    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+    const create = vi.spyOn(api, 'createCustomer').mockResolvedValue({ id: 8, name: 'Gamma' } as never);
+    const { rerender } = render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
+    const select = await screen.findByRole('combobox');
+    fireEvent.change(select, {
+      target: { value: screen.getByRole('option', { name: /new customer/i }).getAttribute('value') },
+    });
+    rerender(<CustomerPicker value={null} onChange={() => {}} allowCreate disabled />);
+    expect(screen.getByRole('textbox')).toBeDisabled();
+    const createButton = screen.getByRole('button', { name: /create/i });
+    expect(createButton).toBeDisabled();
+    fireEvent.click(createButton);
+    expect(create).not.toHaveBeenCalled();
+  });
 });
