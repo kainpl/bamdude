@@ -1,8 +1,12 @@
 from collections import Counter
+from datetime import datetime
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
-from backend.app.models.product import ProductPart, ProductPlate
+from backend.app.models.library import LibraryFile
+from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.services.product_composition import (
     add_alias,
     merge_parts,
@@ -11,6 +15,7 @@ from backend.app.services.product_composition import (
     plate_materials,
     purchased_name_key,
     recipe_for,
+    recipes_for_product,
     remove_alias,
 )
 
@@ -127,3 +132,78 @@ def test_sliced_asks_the_content_flag_not_the_filename():
     # One plate of a multi-plate file is decided by its own timing alone.
     one = ProductPlate(product_id=1, library_file_id=5, plate_index=1)
     assert recipe_for(one, meta, "gcode", []).sliced is False
+
+
+async def test_recipes_for_product_drops_a_trashed_files_plates_and_orders_by_plate_id(db_session):
+    """The one loop that turns a product's plates into recipes.
+
+    A trashed file is restorable, so its ``product_plates`` rows stay — but
+    nothing may offer them as something to print. Order is ``ProductPlate.id``
+    so the engine and the route read the same sequence; the route sorts for
+    display itself.
+    """
+    live = LibraryFile(filename="live.gcode.3mf", file_path="live", file_size=1, file_type="gcode", file_metadata=META)
+    trashed = LibraryFile(
+        filename="gone.gcode.3mf",
+        file_path="gone",
+        file_size=1,
+        file_type="gcode",
+        file_metadata=META,
+        deleted_at=datetime(2026, 1, 1),
+    )
+    product = Product(name="Box")
+    db_session.add_all([live, trashed, product])
+    await db_session.commit()
+
+    bracket = ProductPart(
+        product_id=product.id,
+        kind="printed",
+        name="bracket",
+        name_key="bracket",
+        qty_per_unit=1,
+        aliases=["bracket", "bracket.stl"],
+    )
+    # Inserted so that plate id order and (library_file_id, plate_index) order
+    # disagree — the assertion below would pass by accident otherwise.
+    db_session.add_all(
+        [
+            bracket,
+            ProductPlate(product_id=product.id, library_file_id=live.id, plate_index=2),
+            ProductPlate(product_id=product.id, library_file_id=trashed.id, plate_index=1),
+            ProductPlate(product_id=product.id, library_file_id=live.id, plate_index=1),
+        ]
+    )
+    await db_session.commit()
+
+    loaded = (
+        await db_session.execute(
+            select(Product)
+            .options(selectinload(Product.parts), selectinload(Product.plates))
+            .where(Product.id == product.id)
+        )
+    ).scalar_one()
+
+    rows = await recipes_for_product(db_session, loaded)
+
+    assert [(f.id, p.plate_index) for p, f, _ in rows] == [(live.id, 2), (live.id, 1)]
+    assert [p.id for p, _, _ in rows] == sorted(p.id for p, _, _ in rows)
+    for plate, file, recipe in rows:
+        expected = recipe_for(plate, file.file_metadata, file.file_type, loaded.parts)
+        assert recipe.yield_by_part == expected.yield_by_part
+        assert recipe.unassigned == expected.unassigned
+        assert recipe.sliced == expected.sliced
+    assert rows[1][2].yield_by_part == {bracket.id: 2}  # plate 1 of META: two bracket instances
+
+
+async def test_recipes_for_product_asks_nothing_of_the_database_for_a_plateless_product(db_session):
+    product = Product(name="Empty")
+    db_session.add(product)
+    await db_session.commit()
+    loaded = (
+        await db_session.execute(
+            select(Product)
+            .options(selectinload(Product.parts), selectinload(Product.plates))
+            .where(Product.id == product.id)
+        )
+    ).scalar_one()
+    assert await recipes_for_product(db_session, loaded) == []

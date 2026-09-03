@@ -51,7 +51,7 @@ from backend.app.services.product_composition import (
     add_alias,
     merge_parts,
     purchased_name_key,
-    recipe_for,
+    recipes_for_product,
     remove_alias,
 )
 from backend.app.services.product_sync import apply_folder_products, sync_product_for_file
@@ -492,29 +492,13 @@ async def list_plates(
     product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
 ):
     product = await _get(db, product_id)
-    files = (
-        {
-            f.id: f
-            for f in (
-                # ``active()``: a trashed file is restorable, so its links and
-                # plate rows stay — but its plates must not render as recipes
-                # somebody can print from. The loop below already drops a plate
-                # whose file it cannot find.
-                await db.execute(
-                    LibraryFile.active().where(LibraryFile.id.in_({p.library_file_id for p in product.plates}))
-                )
-            ).scalars()
-        }
-        if product.plates
-        else {}
-    )
     names = {p.id: p.name for p in product.parts}
     out: list[PlateRecipeResponse] = []
-    for plate in sorted(product.plates, key=lambda p: (p.library_file_id, p.plate_index)):
-        file = files.get(plate.library_file_id)
-        if file is None:
-            continue
-        r = recipe_for(plate, file.file_metadata, file.file_type, product.parts)
+    # ``recipes_for_product`` is the shared loop (it drops a trashed file's
+    # plates); it hands rows back in plate-id order, this list is by file then
+    # plate for the operator.
+    rows = await recipes_for_product(db, product)
+    for plate, file, r in sorted(rows, key=lambda row: (row[0].library_file_id, row[0].plate_index)):
         out.append(
             PlateRecipeResponse(
                 id=plate.id,
