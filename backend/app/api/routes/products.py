@@ -14,6 +14,7 @@ SQLite honours no ``ON DELETE CASCADE``, and there is no desired set left to
 reconcile once the product itself is going away.
 """
 
+import io
 import logging
 import os
 import uuid
@@ -21,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import delete, func, inspect as sqla_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -45,6 +46,7 @@ from backend.app.schemas.product import (
     ProductAttachmentOut,
     ProductCreate,
     ProductDuplicate,
+    ProductImportResponse,
     ProductListItem,
     ProductPartAlias,
     ProductPartCreate,
@@ -56,7 +58,14 @@ from backend.app.schemas.product import (
     RereadResponse,
 )
 from backend.app.services.part_names import canonicalize, name_key
-from backend.app.services.product_card import fill_from_file, read_card, units_printed_total, usable_title
+from backend.app.services.product_card import (
+    export_zip,
+    fill_from_file,
+    import_zip,
+    read_card,
+    units_printed_total,
+    usable_title,
+)
 from backend.app.services.product_composition import (
     add_alias,
     merge_parts,
@@ -271,6 +280,43 @@ async def create_product_from_file(
     await sync_product_for_file(db, library_file_id=file.id, product_ids=sorted(desired))
     await fill_from_file(db, product, file, replace_3mf_attachments=False, card=card)
     return await _response(db, product, reload_links=True)
+
+
+# ---------- export / import (spec §Decisions 6) ----------
+#
+# ⚠️ Declared BEFORE every ``/{product_id}``-shaped route below. Nothing in this
+# router matches ``POST /products/import`` today — the id-shaped POSTs all carry
+# a second segment — but the day somebody adds ``POST /products/{product_id}``
+# the literal has to already be in front of it, or FastAPI hands "import" to an
+# ``int`` path parameter and answers 422 to a working request.
+
+
+@router.post("/import", response_model=ProductImportResponse)
+async def import_product(
+    file: UploadFile = File(...),
+    folder_id: int | None = Form(default=None),
+    db: AsyncSession = Depends(get_db),
+    # Both permissions, and the library's own is not decoration: an import
+    # INGESTS FILES INTO THE LIBRARY. A caller who may create products but may
+    # not upload must not gain an upload route by wrapping the bytes in a
+    # product archive.
+    current_user: User | None = RequirePermission(Permission.PROJECTS_CREATE, Permission.LIBRARY_UPLOAD),
+):
+    product, warnings = await import_zip(db, await file.read(), folder_id=folder_id, user=current_user)
+    return ProductImportResponse(product=await _response(db, product, reload_links=True), warnings=warnings)
+
+
+@router.get("/{product_id}/export")
+async def export_product(
+    product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+):
+    """The product as a ZIP: ``product.json``, its files, its attachments."""
+    data, filename = await export_zip(db, await _get(db, product_id))
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{product_id}", response_model=ProductResponse)

@@ -287,6 +287,22 @@ class CardNote(BaseModel):
     params: dict[str, str | int] = {}
 
 
+class ProductImportResponse(BaseModel):
+    """``POST /products/import``.
+
+    ⚠️ ``warnings`` is prose, not codes — unlike :class:`CardNote`. An import
+    warning names something from a STRANGER's archive (a category BamDude does
+    not have, a plate a file no longer carries, a filename the library refused),
+    so the interesting half of every message is untranslatable data anyway, and
+    the fixed half reads like the HTTPException details beside it. A code
+    vocabulary here would have to grow a member for every way somebody else's
+    file can be wrong.
+    """
+
+    product: ProductResponse
+    warnings: list[str] = []
+
+
 class RereadResponse(BaseModel):
     """``POST /products/{id}/card/reread``.
 
