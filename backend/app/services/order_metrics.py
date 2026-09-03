@@ -90,6 +90,13 @@ class OrderContext:
     archives: list[PrintArchive]  # not trashed, oldest first
     archive_parts_by_archive: dict[int, list[PrintArchivePart]]
     procurement_by_part: dict[int, int]  # product_part_id → quantity_acquired
+    # ``plate_index = 0`` on a product plate means THE WHOLE FILE (spec §Data
+    # model, Conventions): every plate of that file matches it. Kept as its own
+    # index because the two sides of the join count plates differently — a
+    # single-plate file gets a 0-row from ``wanted_plate_indices``, while its
+    # archives carry the slicer's own index, which is 1. An exact tuple lookup
+    # therefore misses nearly every single-plate print there is.
+    whole_file_product: dict[int, int] = field(default_factory=dict)  # library_file_id → product_id
 
 
 async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext | None:
@@ -114,9 +121,12 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         else []
     )
     plate_product: dict[tuple[int, int], int] = {}
+    whole_file_product: dict[int, int] = {}
     for product in products:
         for plate in product.plates:
             plate_product[(plate.library_file_id, plate.plate_index)] = product.id
+            if plate.plate_index == 0:
+                whole_file_product[plate.library_file_id] = product.id
     archives = (
         (
             await db.execute(
@@ -153,6 +163,7 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         archives=list(archives),
         archive_parts_by_archive=dict(by_archive),
         procurement_by_part=procurement,
+        whole_file_product=whole_file_product,
     )
 
 
@@ -219,7 +230,14 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         figs = figures[archive.project_line_id]
         _apply(figs, archive, ctx.archive_parts_by_archive.get(archive.id, []), indexes.get(figs.product_id, {}))
     for archive in implicit:
-        product_id = ctx.plate_product.get((archive.library_file_id, archive.plate_index or 0))
+        # The exact plate first, then the whole-file wildcard: a product plate
+        # with ``plate_index = 0`` claims EVERY plate of that file, which is how
+        # a single-plate file (one 0-row from the sync) meets its prints (which
+        # carry the slicer's index, 1). Without the second lookup those two
+        # numbers never meet and every such print lands in "other".
+        product_id = ctx.plate_product.get(
+            (archive.library_file_id, archive.plate_index or 0)
+        ) or ctx.whole_file_product.get(archive.library_file_id)
         materials = archive_material_set(archive.filament_type)
         candidates = [ln for ln in lines_by_product.get(product_id, []) if _line_accepts(ln, materials)]
         if product_id is None or not candidates:
@@ -241,7 +259,9 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
     return figures, other
 
 
-def procurement_figures(ctx: OrderContext, line_figures: dict[int, LineFigures]) -> list[ProcurementFigures]:
+def procurement_figures(ctx: OrderContext) -> list[ProcurementFigures]:
+    """Need per purchased part is Σ over the ORDER's lines — printed progress
+    never enters it, which is why no line figures are taken here."""
     out: list[ProcurementFigures] = []
     for product_id, parts in ctx.parts_by_product.items():
         ordered = sum(line.quantity for line in ctx.lines if line.product_id == product_id)

@@ -24,6 +24,9 @@ def _ctx(lines, parts, archives, archive_parts, plate_product, procurement=None)
     parts_by_product = {}
     for p in parts:
         parts_by_product.setdefault(p.product_id, []).append(p)
+    # Derived exactly as ``load_order_context`` derives it, so a test that
+    # writes a 0-plate gets the same wildcard production would.
+    whole_file = {file_id: pid for (file_id, plate), pid in plate_product.items() if plate == 0}
     return OrderContext(
         project=project,
         lines=lines,
@@ -33,6 +36,7 @@ def _ctx(lines, parts, archives, archive_parts, plate_product, procurement=None)
         archives=archives,
         archive_parts_by_archive=dict(archive_parts),
         procurement_by_part=procurement or {},
+        whole_file_product=whole_file,
     )
 
 
@@ -95,6 +99,25 @@ def test_units_printed_is_the_bottleneck_part():
     assert line.progress == 0.5 and other == []
 
 
+def test_a_whole_file_plate_claims_every_plate_index_an_archive_can_carry():
+    """``plate_index = 0`` on a product plate means THE WHOLE FILE, and the two
+    sides of this join count plates differently: ``product_sync`` gives a
+    single-plate file one 0-row, while its archives carry the slicer's own
+    index — which is **1**, not 0, for essentially every single-plate 3MF ever
+    printed (553 of 558 archives on the developer's own farm). An exact
+    ``(file, plate)`` tuple therefore matches nothing, and every print of a
+    single-plate product falls into "other prints" while the order it belongs
+    to reports zero progress against a full shelf of parts.
+    """
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 2)]
+    archives = [_archive(1, file_id=5, plate=1), _archive(2, file_id=5, plate=7)]
+    ap = {1: [_ap(1, "a", 1)], 2: [_ap(2, "a", 1)]}
+    figs, other = attribute(_ctx(lines, parts, archives, ap, {(5, 0): 10}))
+    assert figs[100].archive_ids == [1, 2] and other == []
+    assert figs[100].parts[0].usable == 2 and figs[100].units_printed == 2
+
+
 def test_material_is_a_hard_filter_and_unmatched_prints_go_to_other():
     parts = [_part(1, 10, "a", 1)]
     lines = [_line(100, 10, 5, material="PETG")]
@@ -138,7 +161,7 @@ def test_in_progress_and_project_totals():
     figs, other = attribute(ctx)
     a = figs[100].parts[0]
     assert a.usable == 4 and a.in_progress == 2 and a.need == 6 and a.remaining == 2
-    proc = procurement_figures(ctx, figs)
+    proc = procurement_figures(ctx)
     assert proc[0].need == 12 and proc[0].acquired == 6 and proc[0].remaining == 6
     pf = project_figures(ctx, figs, other)
     assert pf.ordered == 3 and pf.printed == 2 and pf.remaining == 1

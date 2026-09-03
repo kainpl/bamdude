@@ -137,7 +137,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
         lines=lines,
         procurement=[
             ProcurementOut(part_id=p.part_id, name=p.name, need=p.need, acquired=p.acquired, remaining=p.remaining)
-            for p in procurement_figures(ctx, figs)
+            for p in procurement_figures(ctx)
         ],
         figures=ProjectFiguresOut(**pf.__dict__),
     )
@@ -160,6 +160,11 @@ async def list_projects(
         .order_by(Project.updated_at.desc())
     )
     if status:
+        # Same answer ``update_project`` gives an unknown status: an empty list
+        # reads as "no orders like that" and hides the typo — most cruelly for
+        # ``archived``, which m158 retired and which a stale bookmark still asks for.
+        if status not in PROJECT_STATUSES:
+            raise HTTPException(status_code=400, detail="Invalid status")
         query = query.where(Project.status == status)
     if customer_id is not None:
         query = query.where(Project.customer_id == customer_id)
@@ -452,7 +457,13 @@ async def add_queue_items_to_project(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
-    """Batch add queue items to a project."""
+    """Batch add queue items to a project.
+
+    A line only ever travels with the order it belongs to — the same rule
+    ``add-archives``, ``remove-archives`` and ``archives.update_archive``
+    follow. Re-filing an item under another order therefore drops the line it
+    carries: keeping it would credit this order's work to a line of the old one.
+    """
     # Verify project exists
     result = await db.execute(select(Project).where(Project.id == project_id))
     if not result.scalar_one_or_none():
@@ -464,6 +475,10 @@ async def add_queue_items_to_project(
         result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
         item = result.scalar_one_or_none()
         if item:
+            if item.project_line_id is not None:
+                stale = await db.get(ProjectLine, item.project_line_id)
+                if stale is None or stale.project_id != project_id:
+                    item.project_line_id = None
             item.project_id = project_id
             updated += 1
 

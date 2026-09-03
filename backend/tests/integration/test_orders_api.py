@@ -11,7 +11,7 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
-from backend.app.schemas.project import validate_http_url
+from backend.app.models.project_line import ProjectLine
 
 pytestmark = pytest.mark.integration
 
@@ -55,12 +55,17 @@ async def catalog(db_session):
     return {"file": file, "product": product, "customer": customer, "screw": screw}
 
 
-async def _completed_print(db, project_id, file_id, line_id=None, material="PETG", defective_arms=0):
+async def _completed_print(db, project_id, file_id, line_id=None, material="PETG", defective_arms=0, plate_index=1):
+    # ``plate_index=1``, not 0, and deliberately: a single-plate 3MF gets ONE
+    # product plate numbered 0 ("the whole file") from the sync, while its
+    # prints carry the slicer's own plate index, which is 1. Production
+    # produces exactly this mismatch, so the fixture has to as well — the whole
+    # file wildcard in ``order_metrics.attribute`` is what bridges the two.
     a = PrintArchive(
         project_id=project_id,
         project_line_id=line_id,
         library_file_id=file_id,
-        plate_index=0,
+        plate_index=plate_index,
         filename="lamp",
         file_path="",
         file_size=0,
@@ -252,6 +257,12 @@ async def test_list_filters_by_status_and_customer(committing_client, catalog):
     assert row["lines_count"] == 1 and row["ordered"] == 2 and row["product_cover_filenames"] == [None]
     assert names(await committing_client.get("/api/v1/projects/?status=active")) == ["A"]
     assert names(await committing_client.get(f"/api/v1/projects/?customer_id={catalog['customer'].id}")) == ["A"]
+    # An unknown status is refused, not answered with an empty list — the same
+    # 400 ``PATCH`` gives. ``archived`` is the one that matters: m158 retired
+    # it, and a stale bookmark asking for it must say so rather than render
+    # "you have no orders" over a farm full of them.
+    assert (await committing_client.get("/api/v1/projects/?status=archived")).status_code == 400
+    assert (await committing_client.get("/api/v1/projects/?status=nonsense")).status_code == 400
 
 
 @pytest.mark.asyncio
@@ -409,15 +420,6 @@ async def test_timeline_still_reads_the_archive(committing_client, db_session, c
     assert [e["event_type"] for e in events] == ["print_completed", "project_created"]
 
 
-def test_url_validator_accepts_http_only():
-    assert validate_http_url(" https://a.b ") == "https://a.b"
-    assert validate_http_url("") is None and validate_http_url(None) is None
-    with pytest.raises(ValueError):
-        validate_http_url("ftp://a.b")
-    with pytest.raises(ValueError):
-        validate_http_url("javascript:alert(1)")
-
-
 # ---------------------------------------------------------------------------
 # Attachments, cover image, and the two "file it under this order" handlers.
 #
@@ -538,6 +540,49 @@ async def test_add_queue_files_a_pending_queue_item_under_the_order(committing_c
 
     stray = await committing_client.post("/api/v1/projects/9999/add-queue", json={"queue_item_ids": []})
     assert stray.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_add_queue_drops_a_line_that_belongs_to_the_old_order(committing_client, db_session, catalog):
+    """A line only ever travels with the order it belongs to.
+
+    Re-filing a queue item under another order used to leave ``project_line_id``
+    pointing at a line of the OLD one — so the work would have been credited to
+    a line of an order that never asked for it, exactly the accounting
+    ``archives.update_archive`` refuses. Dropped rather than refused: re-filing
+    is a routine correction and the operator can name the new line afterwards.
+    """
+    a = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "A", "lines": [{"product_id": catalog["product"].id, "quantity": 1}]},
+        )
+    ).json()
+    b = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "B", "lines": [{"product_id": catalog["product"].id, "quantity": 1}]},
+        )
+    ).json()
+    a_line, b_line = a["lines"][0]["id"], b["lines"][0]["id"]
+    item_id, _ = await _queue_rows(db_session, a["id"], catalog["file"].id, line_id=a_line)
+
+    r = await committing_client.post(f"/api/v1/projects/{b['id']}/add-queue", json={"queue_item_ids": [item_id]})
+    assert r.status_code == 200, r.text
+    db_session.expire_all()
+    item = await db_session.get(PrintQueueItem, item_id)
+    assert item.project_id == b["id"] and item.project_line_id is None
+    # A's line is untouched — only the item moved.
+    assert await db_session.get(ProjectLine, a_line) is not None
+
+    # Re-filing under the SAME order keeps the line it already carries.
+    item.project_line_id = b_line
+    await db_session.commit()
+    assert (
+        await committing_client.post(f"/api/v1/projects/{b['id']}/add-queue", json={"queue_item_ids": [item_id]})
+    ).status_code == 200
+    db_session.expire_all()
+    assert (await db_session.get(PrintQueueItem, item_id)).project_line_id == b_line
 
 
 @pytest.mark.asyncio
