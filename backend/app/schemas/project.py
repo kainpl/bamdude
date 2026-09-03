@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 PROJECT_STATUSES = ("active", "completed", "cancelled")
 PROJECT_PRIORITIES = ("low", "normal", "high", "urgent")
@@ -24,6 +24,20 @@ def validate_http_url(value: str | None) -> str | None:
     if not trimmed.lower().startswith(("http://", "https://")):
         raise ValueError("url must start with http:// or https://")
     return trimmed
+
+
+def _reject_null(value, info: ValidationInfo):
+    """These columns are NOT NULL, so an explicit ``null`` must be a 422.
+
+    A PATCH clears a field by sending ``null``; on a NOT NULL column that
+    clearing surfaces as an IntegrityError from the flush — a 500 on malformed
+    input. This answers 422 instead, and does NOT fire when the field is absent:
+    pydantic does not validate defaults, so an omitted field is still left
+    alone. Same shape as ``schemas/customer.py::CustomerUpdate``.
+    """
+    if value is None:
+        raise ValueError(f"{info.field_name} cannot be null")
+    return value
 
 
 def _normalize_material(value: str | None) -> str | None:
@@ -56,6 +70,11 @@ class ProjectLineUpdate(BaseModel):
     color: str | None = Field(default=None, max_length=64)
     note: str | None = None
     sort_order: int | None = None
+
+    @field_validator("quantity", "sort_order")
+    @classmethod
+    def _not_null(cls, v: int | None, info: ValidationInfo) -> int:
+        return _reject_null(v, info)
 
     @field_validator("material")
     @classmethod
@@ -106,6 +125,11 @@ class ProjectUpdate(BaseModel):
     price: float | None = Field(default=None, ge=0)
     url: str | None = None
 
+    @field_validator("name", "status", "priority")
+    @classmethod
+    def _not_null(cls, v: str | None, info: ValidationInfo) -> str:
+        return _reject_null(v, info)
+
     @field_validator("url")
     @classmethod
     def _url(cls, v: str | None) -> str | None:
@@ -114,6 +138,18 @@ class ProjectUpdate(BaseModel):
 
 class ProjectDuplicate(BaseModel):
     name: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str | None) -> str | None:
+        """Whitespace-only falls back to the generated name rather than 422ing.
+
+        An empty box in the duplicate dialog means "you pick", which is what the
+        old handler said with ``(data.name or "").strip() or _duplicate_name(...)``.
+        Normalising here keeps the route's ``data.name or _duplicate_name(...)``
+        honest — without it, ``"   "`` is truthy and becomes the copy's name.
+        """
+        return (v or "").strip() or None
 
 
 class BatchAddArchives(BaseModel):

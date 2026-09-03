@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -330,7 +330,9 @@ async def delete_line(
 ):
     line = await _get_line(db, project_id, line_id)
     # The prints stay, and stay in the order: only the line they were filed
-    # under goes. Cleared BEFORE the delete, or PostgreSQL refuses the row.
+    # under goes. Done explicitly because SQLite enforces nothing — this
+    # codebase never sets ``PRAGMA foreign_keys = ON``, so the ON DELETE SET
+    # NULL these three FKs declare is honoured by PostgreSQL alone.
     for model in (PrintArchive, PrintQueueItem, AutoQueueItem):
         await db.execute(update(model).where(model.project_line_id == line_id).values(project_line_id=None))
     project = await _get_project(db, project_id)
@@ -1090,7 +1092,7 @@ async def _copy_attachment_files(source_id: int, new_id: int) -> bool:
 @router.post("/{project_id}/duplicate", response_model=ProjectResponse)
 async def duplicate_project(
     project_id: int,
-    data: ProjectDuplicate,
+    data: ProjectDuplicate = Body(default_factory=ProjectDuplicate),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
 ):

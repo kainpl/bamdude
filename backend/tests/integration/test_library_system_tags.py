@@ -257,6 +257,11 @@ async def test_every_library_file_construction_syncs_its_tags():
     from every server-side tag filter. Files arrive through the VP straight from
     the slicer, so that was a primary path, not a corner. A hand-written list
     asserts exactly as much as the list.
+
+    ``routes/projects.py`` was dropped from the list by the 2026-09-02 orders
+    redesign: the rewritten module builds no ``LibraryFile`` at all, so scanning
+    it asserted nothing. Put it back the moment orders learn to ingest a file
+    again.
     """
     import re
     from pathlib import Path
@@ -264,7 +269,6 @@ async def test_every_library_file_construction_syncs_its_tags():
     root = Path(__file__).resolve().parents[3]
     for rel in (
         "backend/app/api/routes/library.py",
-        "backend/app/api/routes/projects.py",
         "backend/app/services/calibration_service.py",
         "backend/app/services/virtual_printer/manager.py",
     ):

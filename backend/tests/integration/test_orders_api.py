@@ -4,8 +4,11 @@ import pytest
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
+from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.customer import Customer
 from backend.app.models.library import LibraryFile
+from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.schemas.project import validate_http_url
@@ -77,6 +80,25 @@ async def _completed_print(db, project_id, file_id, line_id=None, material="PETG
     )
     await db.commit()
     return a
+
+
+async def _queue_rows(db, project_id, file_id, line_id=None):
+    """One row in each queue table, filed under the order. Returns their ids.
+
+    ``PrinterQueue`` is built here rather than fixtured because SQLite does not
+    enforce the FK to ``printers`` and the queue's identity is irrelevant to
+    what is being asserted.
+    """
+    queue = PrinterQueue(id=1, printer_id=1)
+    db.add(queue)
+    await db.flush()
+    item = PrintQueueItem(
+        queue_id=queue.id, project_id=project_id, project_line_id=line_id, library_file_id=file_id, status="pending"
+    )
+    auto = AutoQueueItem(project_id=project_id, project_line_id=line_id, library_file_id=file_id, status="pending")
+    db.add_all([item, auto])
+    await db.commit()
+    return item.id, auto.id
 
 
 @pytest.mark.asyncio
@@ -169,6 +191,12 @@ async def test_lines_crud_and_product_guard(committing_client, catalog):
             f"/api/v1/projects/{pid}/lines", json={"product_id": catalog["product"].id, "quantity": 0}
         )
     ).status_code == 422
+    # ``quantity`` / ``sort_order`` are NOT NULL too — same 422, not an
+    # IntegrityError from the flush.
+    for field in ("quantity", "sort_order"):
+        assert (
+            await committing_client.patch(f"/api/v1/projects/{pid}/lines/{line_id}", json={field: None})
+        ).status_code == 422
     r = await committing_client.delete(f"/api/v1/projects/{pid}/lines/{line_id}")
     assert r.json()["lines"] == []
 
@@ -195,6 +223,13 @@ async def test_status_lifecycle_and_nullable_fields(committing_client, catalog):
     assert (
         await committing_client.patch(f"/api/v1/projects/{pid}", json={"url": "javascript:alert(1)"})
     ).status_code == 422
+
+    # ``status`` / ``name`` / ``priority`` are NOT NULL: clearing one used to
+    # reach the flush and surface as a 500. 422, and the stored value untouched.
+    for field in ("status", "name", "priority"):
+        assert (await committing_client.patch(f"/api/v1/projects/{pid}", json={field: None})).status_code == 422
+    body = (await committing_client.get(f"/api/v1/projects/{pid}")).json()
+    assert body["status"] == "active" and body["name"] == "O" and body["priority"] == "normal"
 
 
 @pytest.mark.asyncio
@@ -233,6 +268,15 @@ async def test_delete_unlinks_archives_and_duplicate_copies_lines_not_history(co
     copy = (await committing_client.post(f"/api/v1/projects/{pid}/duplicate", json={})).json()
     assert copy["name"] == "O (Copy)" and len(copy["lines"]) == 1 and copy["figures"]["printed"] == 0
     assert copy["lines"][0]["product_id"] == catalog["product"].id and copy["lines"][0]["id"] != line_id
+    assert copy["status"] == "active"  # a reorder starts open, whatever the source was
+
+    # No body at all: the dialog's common case, and what the old signature took.
+    second = await committing_client.post(f"/api/v1/projects/{pid}/duplicate")
+    assert second.status_code == 200, second.text
+    assert second.json()["name"] == "O (Copy 2)"  # every copy gets its own name
+    # Whitespace is not a name — it falls back to the generated one.
+    third = await committing_client.post(f"/api/v1/projects/{pid}/duplicate", json={"name": "  "})
+    assert third.json()["name"] == "O (Copy 3)"
 
     assert (await committing_client.delete(f"/api/v1/projects/{pid}")).status_code == 200
     db_session.expire_all()
@@ -268,6 +312,93 @@ async def test_add_archives_can_name_the_line(committing_client, db_session, cat
             f"/api/v1/projects/{pid}/add-archives", json={"archive_ids": [stray_id], "project_line_id": 9999}
         )
     ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_project_unlinks_both_queue_tables(committing_client, db_session, catalog):
+    """The queue tables are what the explicit UPDATEs are for.
+
+    An archive would be unlinked anyway — ``Project.archives`` is a relationship
+    and the ORM de-associates it on delete. Neither queue table gets that much:
+    only ``PrintQueueItem`` has a relationship, it would clear ``project_id``
+    alone, and ``AutoQueueItem`` has none at all. Without the explicit
+    statements both keep pointing at an order that no longer exists.
+    """
+    body = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "O", "lines": [{"product_id": catalog["product"].id, "quantity": 1}]},
+        )
+    ).json()
+    pid, line_id = body["id"], body["lines"][0]["id"]
+    item_id, auto_id = await _queue_rows(db_session, pid, catalog["file"].id, line_id=line_id)
+
+    assert (await committing_client.delete(f"/api/v1/projects/{pid}")).status_code == 200
+    db_session.expire_all()
+    for model, row_id in ((PrintQueueItem, item_id), (AutoQueueItem, auto_id)):
+        row = await db_session.get(model, row_id)
+        assert row is not None, f"{model.__name__} was deleted instead of unlinked"
+        assert row.project_id is None and row.project_line_id is None
+
+
+@pytest.mark.asyncio
+async def test_delete_line_drops_the_line_and_keeps_the_order(committing_client, db_session, catalog):
+    """Deleting a line un-files the work from the LINE, not from the order.
+
+    The prints were still made for this customer and the order still paid for
+    them — losing ``project_id`` too would take them out of its cost and out of
+    its history.
+    """
+    body = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "O", "lines": [{"product_id": catalog["product"].id, "quantity": 1}]},
+        )
+    ).json()
+    pid, line_id = body["id"], body["lines"][0]["id"]
+    archive_id = (await _completed_print(db_session, pid, catalog["file"].id, line_id=line_id)).id
+    _, auto_id = await _queue_rows(db_session, pid, catalog["file"].id, line_id=line_id)
+
+    r = await committing_client.delete(f"/api/v1/projects/{pid}/lines/{line_id}")
+    assert r.status_code == 200 and r.json()["lines"] == []
+
+    db_session.expire_all()
+    archive = await db_session.get(PrintArchive, archive_id)
+    auto = await db_session.get(AutoQueueItem, auto_id)
+    assert archive.project_id == pid and archive.project_line_id is None
+    assert auto.project_id == pid and auto.project_line_id is None
+    # Still the order's print: it stays in the cost, now as an "other" print.
+    figures = (await committing_client.get(f"/api/v1/projects/{pid}")).json()["figures"]
+    assert figures["total_cost"] == 1.5 and figures["other_prints_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_line_of_another_order_is_not_a_line_of_this_one(committing_client, db_session, catalog):
+    """``_get_line`` checks OWNERSHIP, not existence — a real id belonging to
+    somebody else is exactly what a "does this row exist" check waves through."""
+    a = (await committing_client.post("/api/v1/projects/", json={"name": "A"})).json()["id"]
+    b = (await committing_client.post("/api/v1/projects/", json={"name": "B"})).json()["id"]
+    b_line = (
+        await committing_client.post(
+            f"/api/v1/projects/{b}/lines", json={"product_id": catalog["product"].id, "quantity": 1}
+        )
+    ).json()["lines"][0]["id"]
+    stray = PrintArchive(filename="x", file_path="", file_size=0, status="completed")
+    db_session.add(stray)
+    await db_session.commit()
+    stray_id = stray.id
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{a}/add-archives", json={"archive_ids": [stray_id], "project_line_id": b_line}
+    )
+    assert r.status_code == 404, r.text
+    db_session.expire_all()
+    assert (await db_session.get(PrintArchive, stray_id)).project_id is None  # nothing filed on the way out
+    assert (
+        await committing_client.patch(f"/api/v1/projects/{a}/lines/{b_line}", json={"quantity": 2})
+    ).status_code == 404
+    assert (await committing_client.delete(f"/api/v1/projects/{a}/lines/{b_line}")).status_code == 404
+    assert len((await committing_client.get(f"/api/v1/projects/{b}")).json()["lines"]) == 1  # B keeps its line
 
 
 @pytest.mark.asyncio
