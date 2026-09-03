@@ -8990,6 +8990,12 @@ PUBLIC_API_PATTERNS = [
     # route's own RequireCameraStreamToken is what authenticates it — this entry
     # only lets the request reach that gate.
     "/card-file/",
+    # /products/{id}/attachment-image/{filename} — a product's gallery pictures,
+    # loaded by <img> from the product page. Same reasoning and same narrowness:
+    # the segment exists on exactly one route (the bearer-only attachment
+    # download deliberately lives under /attachments/ instead, so no pattern can
+    # reach both), and the route's own RequireCameraStreamToken authenticates it.
+    "/attachment-image/",
     "/qrcode",  # /archives/{id}/qrcode
     "/timelapse",  # /archives/{id}/timelapse (video)
     "/cover",  # /printers/{id}/cover

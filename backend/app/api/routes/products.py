@@ -822,7 +822,7 @@ async def download_attachment(
     return FileResponse(path, filename=entry.get("original_name") or filename, media_type="application/octet-stream")
 
 
-@router.get("/{product_id}/attachments/{filename}/image")
+@router.get("/{product_id}/attachment-image/{filename}")
 async def get_attachment_image(
     product_id: int,
     filename: str,
@@ -832,10 +832,19 @@ async def get_attachment_image(
     """Pictures for ``<img src>``, which cannot carry an Authorization header —
     so this takes the same ``?token=`` credential as the project cover route.
 
-    Pictures ONLY: a bom_docs PDF is not served to a token-gated surface just
+    ⚠️ ``/attachment-image/`` is a UNIQUE segment on purpose, and it is listed in
+    ``main.py``'s ``PUBLIC_API_PATTERNS``. ``auth_middleware`` runs BEFORE any
+    route dependency, so without that entry every request would be 401'd by the
+    middleware and never reach this route's own stream-token gate — the route
+    would be dead for the only client that needs it, a browser ``<img>``. The
+    whitelist entry lets the request REACH the gate; it does not open the route.
+    Nesting it under ``/attachments/`` would have needed a pattern that also
+    matched the bearer-only download beside it.
+
+    Pictures ONLY: a bom_docs PDF is not served through a token surface just
     because it happens to be attached. The stored name is a uuid and never
-    changes, so an hour of browser cache is safe here — it would NOT be on
-    ``/cover-image``, whose URL survives the cover being replaced.
+    changes, so an hour of PRIVATE browser cache is safe here — it would NOT be
+    on ``/cover-image``, whose URL survives the cover being replaced.
     """
     safe_attachment_name(filename)
     product = await _get(db, product_id)
@@ -847,7 +856,9 @@ async def get_attachment_image(
     )  # SEC-PATH-OK: filename is rejected for separators, .. and empty just above the join
     if not path.exists():
         raise HTTPException(status_code=404, detail="Picture file not found")
-    return FileResponse(path, media_type=image_media_type(filename), headers={"Cache-Control": "max-age=3600"})
+    # ``private``: this is one operator's data behind a token, never a shared
+    # cache's to keep.
+    return FileResponse(path, media_type=image_media_type(filename), headers={"Cache-Control": "private, max-age=3600"})
 
 
 @router.delete("/{product_id}/attachments/{filename}", response_model=list[ProductAttachmentOut])
@@ -985,7 +996,9 @@ async def get_product_cover_image(
             product.cover_image_filename = None
             await db.flush()
         return JSONResponse(status_code=404, content={"detail": "Cover image file not found"})
-    return FileResponse(path, media_type=image_media_type(name))
+    # ``private`` and nothing else: token-gated user data, and this URL is stable
+    # across a cover being replaced, so it must never be cached by age.
+    return FileResponse(path, media_type=image_media_type(name), headers={"Cache-Control": "private"})
 
 
 @router.delete("/{product_id}/cover-image")

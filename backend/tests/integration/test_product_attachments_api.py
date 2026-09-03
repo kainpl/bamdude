@@ -145,15 +145,15 @@ async def test_the_image_route_wants_a_stream_token_and_serves_pictures_only(com
     pic = (await _upload(committing_client, product, "pictures", "a.png")).json()["filename"]
     doc = (await _upload(committing_client, product, "bom_docs", "b.csv", b"a,b")).json()["filename"]
 
-    assert (await committing_client.get(f"/api/v1/products/{product}/attachments/{pic}/image")).status_code == 401
+    assert (await committing_client.get(f"/api/v1/products/{product}/attachment-image/{pic}")).status_code == 401
     token = await _stream_token()
-    img = await committing_client.get(f"/api/v1/products/{product}/attachments/{pic}/image", params={"token": token})
+    img = await committing_client.get(f"/api/v1/products/{product}/attachment-image/{pic}", params={"token": token})
     assert img.status_code == 200, img.text
     assert img.content == PNG and img.headers["content-type"] == "image/png"
-    assert "max-age=3600" in img.headers["cache-control"]
+    assert img.headers["cache-control"] == "private, max-age=3600"
 
     not_a_picture = await committing_client.get(
-        f"/api/v1/products/{product}/attachments/{doc}/image", params={"token": token}
+        f"/api/v1/products/{product}/attachment-image/{doc}", params={"token": token}
     )
     assert not_a_picture.status_code == 404
 
@@ -277,3 +277,89 @@ async def test_has_cover_is_the_effective_cover_in_list_and_detail(committing_cl
     other = (await committing_client.post("/api/v1/products/", json={"name": "Other"})).json()["id"]
     await _upload(committing_client, other, "bom_docs", "b.csv", b"a,b")
     assert (await committing_client.get(f"/api/v1/products/{other}")).json()["has_cover"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_browser_reaches_the_picture_with_only_a_stream_token(committing_client, product):
+    """Issued from an UNAUTHENTICATED client, and that is the whole point.
+
+    ``main.py``'s ``auth_middleware`` runs BEFORE any route dependency, so a
+    token-gated ``<img>`` route answers 401 from the middleware — never reaching
+    its own ``RequireCameraStreamToken`` — unless its path matches an entry in
+    ``PUBLIC_API_PATTERNS``. The ``committing_client`` fixture carries an admin
+    JWT and sails past that middleware, so it cannot see the bug at all: it
+    would report a green ``<img>`` route no browser can load. That is exactly
+    how ``/attachments/{filename}/image`` shipped, and why the picture route is
+    now ``/attachment-image/{filename}`` with its own whitelist entry.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from backend.app.main import app
+
+    pic = (await _upload(committing_client, product, "pictures", "a.png")).json()["filename"]
+    await committing_client.put(f"/api/v1/products/{product}/cover-image", json={"filename": pic})
+    token = await _stream_token()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as anonymous:
+        picture = f"/api/v1/products/{product}/attachment-image/{pic}"
+        assert (await anonymous.get(picture)).status_code == 401, "no token is still no entry"
+        served = await anonymous.get(picture, params={"token": token})
+        assert served.status_code == 200, served.text
+        assert served.content == PNG
+
+        # The cover route is reachable the same way (``/cover`` is already a
+        # whitelisted pattern, as it is for the project cover route).
+        cover = await anonymous.get(f"/api/v1/products/{product}/cover-image", params={"token": token})
+        assert cover.status_code == 200 and cover.content == PNG
+        assert (await anonymous.get(f"/api/v1/products/{product}/cover-image")).status_code == 401
+
+        # The whitelist entry is narrow: the bearer-only download beside it, and
+        # the ordinary reads, are still 401 for a client with no session.
+        assert (await anonymous.get(f"/api/v1/products/{product}/attachments/{pic}")).status_code == 401
+        assert (await anonymous.get(f"/api/v1/products/{product}/attachments")).status_code == 401
+        assert (await anonymous.get(f"/api/v1/products/{product}")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_unknown_names_and_unknown_products_are_404(committing_client, product):
+    ghost = "deadbeefdeadbeefdeadbeefdeadbeef.png"
+    assert (await committing_client.get(f"/api/v1/products/{product}/attachments/{ghost}")).status_code == 404
+    assert (await committing_client.delete(f"/api/v1/products/{product}/attachments/{ghost}")).status_code == 404
+    token = await _stream_token()
+    assert (
+        await committing_client.get(f"/api/v1/products/{product}/attachment-image/{ghost}", params={"token": token})
+    ).status_code == 404
+    assert (await committing_client.get("/api/v1/products/9999/attachments")).status_code == 404
+    assert (await _upload(committing_client, 9999, "pictures", "a.png")).status_code == 404
+    assert (
+        await committing_client.patch(
+            "/api/v1/products/9999/attachments/order", json={"category": "pictures", "filenames": []}
+        )
+    ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_implicit_cover_hands_the_role_to_the_next_picture(committing_client, product):
+    """No cover column is set anywhere in this test: the cover is whichever
+    picture is first by ``sort_order``, so deleting it must promote the next one
+    and deleting the last must leave the product with no cover at all."""
+    first = (await _upload(committing_client, product, "pictures", "a.png", PNG + b"AAA")).json()["filename"]
+    second = (await _upload(committing_client, product, "pictures", "b.png", PNG + b"BBB")).json()["filename"]
+    token = await _stream_token()
+
+    detail = (await committing_client.get(f"/api/v1/products/{product}")).json()
+    assert detail["cover_image_filename"] is None and detail["has_cover"] is True
+
+    assert (await committing_client.delete(f"/api/v1/products/{product}/attachments/{first}")).status_code == 200
+    detail = (await committing_client.get(f"/api/v1/products/{product}")).json()
+    assert detail["cover_image_filename"] is None and detail["has_cover"] is True
+    assert (
+        await committing_client.get(f"/api/v1/products/{product}/cover-image", params={"token": token})
+    ).content == PNG + b"BBB"
+
+    assert (await committing_client.delete(f"/api/v1/products/{product}/attachments/{second}")).status_code == 200
+    detail = (await committing_client.get(f"/api/v1/products/{product}")).json()
+    assert detail["has_cover"] is False
+    assert (
+        await committing_client.get(f"/api/v1/products/{product}/cover-image", params={"token": token})
+    ).status_code == 404

@@ -17,22 +17,86 @@ from typing import Any
 
 from fastapi import HTTPException
 
-# The project attachment routes own three constants this module refuses to
-# copy: ``other`` IS the project attachments' allowlist, and the picture set IS
-# the project cover set — both answer "will a browser render this in an <img>".
-# A second copy would drift, and the drift would be silent.
-from backend.app.api.routes.projects import (
-    ALLOWED_ATTACHMENT_EXTENSIONS,
-    COVER_IMAGE_CONTENT_TYPES,
-    COVER_IMAGE_EXTENSIONS,
-)
 from backend.app.core.config import settings
+
+# The upload allowlists live HERE, in the service, and both the project routes
+# and the product routes read them from here. They started out in
+# ``routes/projects.py``; a service importing a route module was the wrong way
+# round and made ``routes/projects.py`` unable to import this module back.
+# Duplicating them instead was never an option: ``other`` IS the project
+# attachments' allowlist and the picture set IS the project cover set (both
+# answer "will a browser render this in an <img>"), so two copies would drift,
+# and the drift would be silent.
+ALLOWED_ATTACHMENT_EXTENSIONS = {
+    # Images
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".svg",
+    ".bmp",
+    ".ico",
+    # Documents
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".odt",
+    ".ods",
+    ".odp",
+    ".txt",
+    ".rtf",
+    ".csv",
+    ".md",
+    # 3D/CAD files
+    ".stl",
+    ".obj",
+    ".3mf",
+    ".step",
+    ".stp",
+    ".iges",
+    ".igs",
+    ".f3d",
+    ".scad",
+    # Archives
+    ".zip",
+    ".rar",
+    ".7z",
+    ".tar",
+    ".gz",
+    # Code/scripts (for Klipper macros, scripts, etc.)
+    ".py",
+    ".sh",
+    ".cfg",
+    ".conf",
+    ".gcode",
+    ".ini",
+    # Other common formats
+    ".json",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+
+# Cover / picture uploads accept only common web-renderable image types.
+# Subset of ALLOWED_ATTACHMENT_EXTENSIONS minus .svg/.ico because those don't
+# render well as a card thumbnail (#1155).
+COVER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+IMAGE_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 # Order matters: it is the order the product page renders the sections in, and
 # therefore the order ``GET /attachments`` answers in.
 ATTACHMENT_CATEGORIES = ("pictures", "bom_docs", "assembly", "other")
-
-COVER_EXTENSIONS = set(COVER_IMAGE_EXTENSIONS)
 
 CATEGORY_EXTENSIONS: dict[str, set[str]] = {
     "pictures": set(COVER_EXTENSIONS),
@@ -41,8 +105,6 @@ CATEGORY_EXTENSIONS: dict[str, set[str]] = {
     "assembly": {".pdf", ".md"} | COVER_EXTENSIONS,
     "other": set(ALLOWED_ATTACHMENT_EXTENSIONS),
 }
-
-IMAGE_CONTENT_TYPES = dict(COVER_IMAGE_CONTENT_TYPES)
 
 
 def product_attachments_dir(product_id: int) -> Path:
