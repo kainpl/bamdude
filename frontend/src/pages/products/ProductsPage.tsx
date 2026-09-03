@@ -9,7 +9,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ProjectsTabs } from '../../components/projects/ProjectsTabs';
 import { ProductCard } from '../../components/products/ProductCard';
-import { ProductModal } from '../../components/products/ProductModal';
+import { ProductCardDialog } from '../../components/products/ProductCardDialog';
 import { FromFileDialog } from '../../components/products/FromFileDialog';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
@@ -153,7 +153,7 @@ export function ProductsPage() {
         ))}
       </div>
 
-      {editing && <ProductModal product={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
+      {editing && <ProductCardDialog product={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
 
       {fromFile && <FromFileDialog onClose={() => setFromFile(false)} onCreated={openCreated} />}
 

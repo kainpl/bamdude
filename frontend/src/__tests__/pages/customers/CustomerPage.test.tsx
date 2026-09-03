@@ -40,7 +40,7 @@ const orders = [
     progress: 0.5,
     lines_count: 1,
     priority: 'normal',
-    product_cover_filenames: [],
+    line_products: [],
   },
 ];
 

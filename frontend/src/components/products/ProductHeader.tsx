@@ -1,8 +1,13 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Copy, ExternalLink, Pencil, Trash2 } from 'lucide-react';
-import type { Product } from '../../api/client';
+import { ChevronRight, Copy, ExternalLink, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
+import { api } from '../../api/client';
+import type { CardNote, Product } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { useToast } from '../../contexts/ToastContext';
+import { formatFileSize } from '../../utils/file';
 import { Button } from '../Button';
 
 interface ProductHeaderProps {
@@ -34,14 +39,60 @@ function Fact({ label, value }: { label: string; value: string }) {
  * (422), so the toggle always sends a boolean; there is no "clear it" state to
  * reach from here.
  *
- * There is no cover image this pass (design decision 3): the field is read and
- * ignored until a route exists to serve it, and no linked file's thumbnail is
- * borrowed to stand in for one.
+ * ⚠️ **"Re-read from file…" is a PICKER, not a button.** A product can hold
+ * several linked files and the server fills from exactly one of them, so there
+ * is no "the" file to guess; and linking a file deliberately does not fill
+ * anything on its own, which makes this the only way a re-read ever happens.
+ * The fill never overwrites a value somebody typed — the notes say what it
+ * left alone, and they arrive as CODES because only this layer knows which
+ * language the operator reads.
  */
 export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggleActive }: ProductHeaderProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
+  const { showToast } = useToast();
+  const queryClient = useQueryClient();
   const canEdit = hasPermission('projects:update');
+  const [rereadOpen, setRereadOpen] = useState(false);
+
+  // ⚠️ Not `product.library_file_ids`, which carries only the DIRECT half:
+  // `GET /library/files?product_id=` unions in the files of linked folders,
+  // and the server re-reads happily from either. Same query key as
+  // `LinkedFiles`, so opening the picker costs nothing on a page that already
+  // listed them. Fetched only once the menu is opened — a header that is on
+  // every product page should not pull a file list nobody asked for.
+  const { data: files = [] } = useQuery({
+    queryKey: ['product-files', product.id],
+    queryFn: () => api.getLibraryFiles(undefined, true, undefined, [], false, product.id),
+    enabled: rereadOpen && Number.isFinite(product.id),
+  });
+
+  /** One note, in the operator's language. `field` and `category` are raw
+   *  server vocabulary (`design_id`, `bom_docs`) and are translated before they
+   *  reach the sentence; `size` and `limit` are bytes and are formatted. */
+  const noteText = (note: CardNote): string => {
+    const params: Record<string, string | number> = { ...note.params };
+    if (typeof params.field === 'string') params.field = t(`products.card.fields.${params.field}`);
+    if (typeof params.category === 'string') {
+      params.category = t(`products.attachments.category.${params.category}`);
+    }
+    if (typeof params.size === 'number') params.size = formatFileSize(params.size);
+    if (typeof params.limit === 'number') params.limit = formatFileSize(params.limit);
+    return t(`products.card.notes.${note.code}`, params);
+  };
+
+  const reread = useMutation({
+    mutationFn: (fileId: number) => api.rereadProductCard(product.id, fileId),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['product', product.id] });
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      setRereadOpen(false);
+      // One toast, every note in it: they are one answer to one question, and
+      // five stacked toasts would push the first off screen before it is read.
+      showToast(result.notes.map(noteText).join(' · '));
+    },
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
 
   return (
     <header className="space-y-3">
@@ -113,8 +164,50 @@ export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggle
               {t('products.header.duplicate')}
             </Button>
           )}
+          {canEdit && (
+            <div className="relative">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setRereadOpen((v) => !v)}
+                disabled={reread.isPending}
+              >
+                {reread.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-4 h-4" />
+                )}
+                {t('products.card.reread')}
+              </Button>
+              {rereadOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setRereadOpen(false)} />
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-full mt-1 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[220px] max-h-64 overflow-y-auto"
+                  >
+                    {files.length === 0 ? (
+                      <p className="px-3 py-2 text-sm text-bambu-gray">{t('products.card.rereadNoFiles')}</p>
+                    ) : (
+                      files.map((file) => (
+                        <button
+                          key={file.id}
+                          type="button"
+                          role="menuitem"
+                          className="w-full px-3 py-2 text-left text-sm text-white hover:bg-bambu-dark truncate"
+                          onClick={() => reread.mutate(file.id)}
+                        >
+                          {file.filename}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           {hasPermission('projects:delete') && (
-            <Button variant="secondary" onClick={onDelete}>
+            <Button type="button" variant="secondary" onClick={onDelete}>
               <Trash2 className="w-4 h-4" />
               {t('products.header.delete')}
             </Button>

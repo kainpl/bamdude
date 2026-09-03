@@ -6,12 +6,14 @@ import { Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
+import { ProductGallery } from '../../components/products/ProductGallery';
 import { ProductHeader } from '../../components/products/ProductHeader';
 import { CompositionTable } from '../../components/products/CompositionTable';
 import { PlatesByFile } from '../../components/products/PlatesByFile';
+import { ProductAttachments } from '../../components/products/ProductAttachments';
 import { LinkedFiles } from '../../components/products/LinkedFiles';
 import { ProductOrders } from '../../components/products/ProductOrders';
-import { ProductModal } from '../../components/products/ProductModal';
+import { ProductCardDialog } from '../../components/products/ProductCardDialog';
 import { ConfirmModal } from '../../components/ConfirmModal';
 
 /**
@@ -127,6 +129,11 @@ export function ProductPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-6">
+      {/* Top-down, per the parent spec: what the thing LOOKS like, then what it
+          is, then what it is made of, then what prints it, then its papers,
+          then its files, then who wants it. */}
+      <ProductGallery product={product} canEdit={canEdit} />
+
       <ProductHeader
         product={product}
         onEdit={() => setEditing(true)}
@@ -139,11 +146,24 @@ export function ProductPage() {
 
       <PlatesByFile productId={product.id} />
 
+      <ProductAttachments product={product} canEdit={canEdit} />
+
       <LinkedFiles product={product} canEdit={canEdit} />
 
-      <ProductOrders productId={product.id} />
+      <div className="space-y-2">
+        <ProductOrders productId={product.id} />
+        {/* ⚠️ Units DELIVERED against orders — every order status, capped at
+            each line's need. Not "units ever printed": a print nobody ordered
+            is not in it, and neither is the eleventh of ten. */}
+        <p className="text-sm text-bambu-gray">
+          {t('products.card.unitsPrintedTotal')}:{' '}
+          <span className="text-white" data-testid="product-units-printed-total">
+            {product.units_printed_total}
+          </span>
+        </p>
+      </div>
 
-      {editing && <ProductModal product={product} onClose={() => setEditing(false)} />}
+      {editing && <ProductCardDialog product={product} onClose={() => setEditing(false)} />}
 
       {deleting && (
         <ConfirmModal

@@ -22,6 +22,7 @@ const product = {
   name: 'Flask',
   is_active: true,
   cover_image_filename: null,
+  has_cover: false,
   parts_count: 0,
   plates_count: 0,
   lines_count: 0,
@@ -31,10 +32,11 @@ const product = {
   license: 'CC-BY',
   source_url: null,
   design_id: null,
-  attachments: null,
+  attachments: [],
   parts: [],
   library_file_ids: [],
   library_folder_ids: [],
+  units_printed_total: 12,
   created_at: '2026-09-01T00:00:00Z',
   updated_at: '2026-09-01T00:00:00Z',
 };
@@ -73,6 +75,19 @@ describe('ProductPage', () => {
     expect(await screen.findByText(/no plates yet/i)).toBeInTheDocument();
     expect(await screen.findByText(/nothing linked yet/i)).toBeInTheDocument();
     expect(await screen.findByText(/no order asks for this product/i)).toBeInTheDocument();
+
+    // The gallery and the typed attachments are sections of their own, and both
+    // must say they are empty rather than render an empty frame.
+    expect(screen.getByTestId('product-gallery')).toBeInTheDocument();
+    expect(screen.getByTestId('product-cover-placeholder')).toBeInTheDocument();
+    expect(screen.getByTestId('attachment-section-bom_docs')).toBeInTheDocument();
+  });
+
+  it('names the all-time figure for what it is — units delivered against orders', async () => {
+    mountAt();
+
+    expect(await screen.findByText(/printed for orders/i)).toBeInTheDocument();
+    expect(screen.getByTestId('product-units-printed-total')).toHaveTextContent('12');
   });
 
   it('keeps the rendered page when a background refetch fails', async () => {
