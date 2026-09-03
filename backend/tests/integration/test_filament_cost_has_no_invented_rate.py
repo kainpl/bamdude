@@ -87,11 +87,7 @@ async def test_recalculating_costs_invents_nothing(async_client: AsyncClient, db
     assert cost is None
 
 
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_the_project_plan_invents_nothing(async_client: AsyncClient, db_session, no_rate):
-    """The plan estimates from file metadata alone — there is no spool to fall
-    back to, so an invented rate was the only number it ever showed."""
-    from backend.app.api.routes.projects import _get_default_filament_cost
-
-    assert await _get_default_filament_cost(db_session) == 0.0
+# The sixth site was the project print plan's ``_get_default_filament_cost``.
+# The plan is gone with the 2026-09-02 orders redesign — an order's cost is now
+# summed from the archives it actually produced, and estimates nothing — so
+# there is no longer a rate for it to invent.
