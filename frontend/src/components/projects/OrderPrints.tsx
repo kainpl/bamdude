@@ -137,9 +137,14 @@ function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [pickingLine, setPickingLine] = useState(false);
 
+  // ⚠️ `['projects']` too: filing a print under a line, or taking it off the
+  // order, moves the printed roll-up the ORDER CARDS show. Refreshing only
+  // this page leaves the list behind a stale number until something else
+  // happens to invalidate it.
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['project', order.id] });
     queryClient.invalidateQueries({ queryKey: ['project-archives', order.id] });
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
   };
 
   // ⚠️ `project_id` travels with the line: the server rejects (400) a line
@@ -172,8 +177,11 @@ function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
 
   return (
     <div className="relative rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary p-2 flex gap-2">
+      {/* ⚠️ `fileName`, not `search` — ArchivesPage reads `printer`, `file` and
+          `fileName` off the URL and nothing else, so the `?search=` this was
+          copied with never reached the page at all. */}
       <Link
-        to={`/archives?search=${encodeURIComponent(name)}`}
+        to={`/archives?fileName=${encodeURIComponent(archive.filename)}`}
         className="w-14 h-14 rounded bg-bambu-dark flex items-center justify-center overflow-hidden flex-shrink-0"
       >
         {archive.thumbnail_path ? (

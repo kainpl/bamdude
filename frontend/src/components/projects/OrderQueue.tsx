@@ -66,7 +66,9 @@ export function OrderQueue({ orderId }: OrderQueueProps) {
           <ListTodo className="w-5 h-5" />
           {t('orders.queue.title')}
         </h2>
-        <Link to={`/queue?project=${orderId}`} className="text-sm text-bambu-green hover:underline">
+        {/* No `?project=` — QueuePage reads only `view` off the URL, so the
+            filter this link was copied with was never applied. */}
+        <Link to="/queue" className="text-sm text-bambu-green hover:underline">
           {t('orders.queue.viewAll')}
         </Link>
       </div>

@@ -25,12 +25,16 @@ describe('ProcurementChecklist', () => {
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
 
     const patch = vi.spyOn(api, 'updateOrderProcurement').mockResolvedValue({} as Order);
+    // ⚠️ `remaining` is deliberately NOT `need - acquired`. A self-consistent
+    // fixture is passed by an implementation that quietly subtracts, which is
+    // exactly the bug this test exists to catch: the server owns the number
+    // (a part shared by two lines does not remain what the arithmetic says).
     rerender(
       <ProcurementChecklist
         order={
           {
             id: 1,
-            procurement: [{ part_id: 4, name: 'M3 screw', need: 40, acquired: 10, remaining: 30 }],
+            procurement: [{ part_id: 4, name: 'M3 screw', need: 40, acquired: 10, remaining: 7 }],
           } as unknown as Order
         }
         canEdit
@@ -43,7 +47,7 @@ describe('ProcurementChecklist', () => {
 
     await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 4, 25));
     // Server value until refetch — never recomputed on the client.
-    expect(screen.getByTestId('procurement-4-remaining').textContent).toBe('30');
+    expect(screen.getByTestId('procurement-4-remaining').textContent).toBe('7');
   });
 
   it('leaves the numbers read-only without the permission', () => {
