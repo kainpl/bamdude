@@ -55,7 +55,8 @@ export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
   const claimed = new Set<number>();
 
   for (const line of order.lines) {
-    const items = pick(line.archive_ids);
+    // ``?? []``: a backend older than pass-2 Task 1 (or a cached response) has no archive_ids yet.
+    const items = pick(line.archive_ids ?? []);
     for (const item of items) claimed.add(item.id);
     if (items.length > 0) {
       groups.push({
@@ -67,7 +68,7 @@ export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
     }
   }
 
-  const other = pick(order.other_archive_ids);
+  const other = pick(order.other_archive_ids ?? []);
   for (const item of other) claimed.add(item.id);
   if (other.length > 0) {
     groups.push({
