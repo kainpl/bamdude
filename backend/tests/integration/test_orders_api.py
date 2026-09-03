@@ -224,6 +224,62 @@ async def test_one_file_in_two_products_feeds_both_lines(committing_client, db_s
 
 
 @pytest.mark.asyncio
+async def test_the_response_names_which_archives_fed_each_line_and_which_fed_none(
+    committing_client, db_session, catalog
+):
+    """The order page groups prints by line from the response alone: every line
+    lists the archives attributed to it, and ``other_archive_ids`` lists the
+    prints no line could take.
+
+    Same shape as ``test_one_file_in_two_products_feeds_both_lines`` — two lines
+    over two products sharing one file — plus a print of a file neither product
+    holds, which is what "no line could take" means.
+    """
+    file_id = catalog["file"].id
+    stray_file = LibraryFile(filename="stranger.gcode.3mf", file_path="stranger", file_size=1, file_type="gcode")
+    products = [Product(name="Small vase"), Product(name="Tall vase")]
+    db_session.add_all([stray_file, *products])
+    await db_session.flush()
+    for product in products:
+        db_session.add_all(
+            [
+                ProductPart(
+                    product_id=product.id,
+                    kind="printed",
+                    name="shade",
+                    name_key="shade",
+                    qty_per_unit=1,
+                    aliases=["shade"],
+                ),
+                ProductPlate(product_id=product.id, library_file_id=file_id, plate_index=0),
+            ]
+        )
+    await db_session.commit()
+
+    pid = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Two vases",
+                "lines": [
+                    {"product_id": products[0].id, "quantity": 1},
+                    {"product_id": products[1].id, "quantity": 2},
+                ],
+            },
+        )
+    ).json()["id"]
+    prints = [await _completed_print(db_session, pid, file_id) for _ in range(3)]
+    stray = await _completed_print(db_session, pid, stray_file.id)
+
+    body = (await committing_client.get(f"/api/v1/projects/{pid}")).json()
+    lines = sorted(body["lines"], key=lambda ln: ln["sort_order"])
+    # The first line is full after one print; the other two go on to its sibling.
+    assert lines[0]["archive_ids"] == [prints[0].id]
+    assert lines[1]["archive_ids"] == [prints[1].id, prints[2].id]
+    assert body["other_archive_ids"] == [stray.id]
+
+
+@pytest.mark.asyncio
 async def test_an_order_without_lines_is_not_printed(committing_client):
     """``all_printed`` over an empty set of lines is False, not the vacuous True
     ``all()`` would give — an empty order is not a finished one."""
@@ -320,6 +376,27 @@ async def test_list_filters_by_status_and_customer(committing_client, catalog):
     # "you have no orders" over a farm full of them.
     assert (await committing_client.get("/api/v1/projects/?status=archived")).status_code == 400
     assert (await committing_client.get("/api/v1/projects/?status=nonsense")).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_orders_can_be_listed_by_product(committing_client, catalog):
+    """The product page asks where its product is ordered — and that filter
+    composes with the others rather than replacing them."""
+    a = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "A", "lines": [{"product_id": catalog["product"].id, "quantity": 1}]},
+        )
+    ).json()
+    b = (await committing_client.post("/api/v1/projects/", json={"name": "B"})).json()
+
+    resp = await committing_client.get(f"/api/v1/projects/?product_id={catalog['product'].id}")
+    assert resp.status_code == 200, resp.text
+    ids = {row["id"] for row in resp.json()}
+    assert a["id"] in ids and b["id"] not in ids
+
+    resp = await committing_client.get(f"/api/v1/projects/?product_id={catalog['product'].id}&status=completed")
+    assert resp.json() == []
 
 
 @pytest.mark.asyncio

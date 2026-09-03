@@ -112,6 +112,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
                 )
                 for p in figs[line.id].parts
             ],
+            archive_ids=list(figs[line.id].archive_ids),
         )
         for line in ctx.lines
     ]
@@ -140,6 +141,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
             for p in procurement_figures(ctx)
         ],
         figures=ProjectFiguresOut(**pf.__dict__),
+        other_archive_ids=[a.id for a in other],
     )
 
 
@@ -151,6 +153,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
 async def list_projects(
     status: str | None = None,
     customer_id: int | None = None,
+    product_id: int | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
@@ -168,6 +171,11 @@ async def list_projects(
         query = query.where(Project.status == status)
     if customer_id is not None:
         query = query.where(Project.customer_id == customer_id)
+    if product_id is not None:
+        # "Where is this product ordered?" — a subquery over the lines rather
+        # than a join, so an order carrying two lines of the same product is
+        # still one row. Composes with the filters above.
+        query = query.where(Project.id.in_(select(ProjectLine.project_id).where(ProjectLine.product_id == product_id)))
     projects = (await db.execute(query)).scalars().all()
     product_ids = {line.product_id for p in projects for line in p.lines}
     covers = (

@@ -184,6 +184,10 @@ class ProjectLineResponse(BaseModel):
     units_printed: int
     progress: float
     parts: list[PartFiguresOut] = []
+    # Every archive attributed to this line, in processing order. One archive
+    # may appear under two lines — a plate carrying parts of both products, or a
+    # file both hold — so these lists are not a partition of the order's prints.
+    archive_ids: list[int] = []
 
 
 class ProcurementOut(BaseModel):
@@ -230,6 +234,9 @@ class ProjectResponse(BaseModel):
     lines: list[ProjectLineResponse]
     procurement: list[ProcurementOut]
     figures: ProjectFiguresOut
+    # Prints filed under this order that no line could take (spec §Line
+    # resolution step 3), oldest first — the ids behind ``other_prints_count``.
+    other_archive_ids: list[int] = []
 
 
 class ProjectListResponse(BaseModel):
