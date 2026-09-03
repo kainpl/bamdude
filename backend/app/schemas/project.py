@@ -1,6 +1,7 @@
 """Order (project) schemas — spec §Data model / §API."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
@@ -265,3 +266,96 @@ class TimelineEvent(BaseModel):
     title: str
     description: str | None = None
     metadata: dict | None = None
+
+
+# ---------- the print plan (spec pass 3) ----------
+#
+# One contiguous block: everything the plan endpoints put on the wire. The
+# engine's dataclasses (``services/plan_engine.py``) speak in bare part ids
+# because they are pure; the wire needs names, so every ``part_id → count`` map
+# becomes a list of ``PlanPartCount`` sorted by part id and the route resolves
+# the names.
+
+
+class PlanPartCount(BaseModel):
+    part_id: int
+    name: str
+    count: int
+
+
+class PlanRowOut(BaseModel):
+    """One plate, printed ``count`` times.
+
+    ``print_time_seconds`` / ``filament_used_grams`` / ``cost`` are PER PRINT —
+    the count is the multiplier, so the block can re-do its own arithmetic while
+    the operator edits the count. ``time_unknown`` says the plate is sliced but
+    carries no estimate, i.e. it was ranked on its useful count alone.
+    """
+
+    plate_id: int  # ProductPlate.id — NOT the slicer's plate index
+    library_file_id: int
+    plate_index: int  # 0 = the whole file
+    filename: str
+    count: int
+    useful: list[PlanPartCount]
+    print_time_seconds: int | None = None
+    filament_used_grams: float | None = None
+    cost: float | None = None
+    time_unknown: bool = False
+
+
+class LinePlanOut(BaseModel):
+    line_id: int
+    product_id: int
+    product_name: str
+    material: str | None = None
+    outstanding_before: list[PlanPartCount] = []
+    rows: list[PlanRowOut] = []
+    surplus_after: list[PlanPartCount] = []
+    # Parts still outstanding that no candidate plate yields at all: the count
+    # is what is missing, and there is nothing to print for it yet.
+    unsatisfiable: list[PlanPartCount] = []
+    candidates: list[int] = []  # ProductPlate ids eligible for this line
+    not_sliced: list[int] = []  # ProductPlate ids skipped because not sliced
+
+
+class PlanTotalsOut(BaseModel):
+    prints: int
+    print_time_seconds: int | None = None  # null as soon as ONE row has no estimate
+    filament_used_grams: float
+    cost: float | None = None  # null when the farm has no filament rate
+
+
+class OrderPlanResponse(BaseModel):
+    lines: list[LinePlanOut] = []
+    totals: PlanTotalsOut
+
+
+class PlanEnqueueItem(BaseModel):
+    plate_id: int  # ProductPlate.id
+    count: int = Field(ge=1, le=999)
+    line_id: int
+
+
+class PlanEnqueueTarget(BaseModel):
+    """``auto`` = the auto-queue distributor picks the printer; ``printer`` =
+    this printer's own queue. Naming a printer is a ROUTING choice, never a
+    dispatch one — nothing here or downstream asks whether it is ready."""
+
+    kind: Literal["auto", "printer"]
+    printer_id: int | None = None
+
+
+class PlanEnqueueRequest(BaseModel):
+    items: list[PlanEnqueueItem] = Field(min_length=1)
+    target: PlanEnqueueTarget
+
+
+class PlanEnqueueCreated(BaseModel):
+    line_id: int
+    plate_id: int
+    queue_item_ids: list[int]
+
+
+class PlanEnqueueResponse(BaseModel):
+    created: list[PlanEnqueueCreated] = []

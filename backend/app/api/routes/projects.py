@@ -26,16 +26,26 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.customer import Customer
 from backend.app.models.print_queue import PrintQueueItem
-from backend.app.models.product import Product, ProductPart
+from backend.app.models.printer import Printer
+from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
+from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
     PROJECT_STATUSES,
     BatchAddArchives,
     BatchAddQueueItems,
+    LinePlanOut,
+    OrderPlanResponse,
     PartFiguresOut,
+    PlanEnqueueCreated,
+    PlanEnqueueRequest,
+    PlanEnqueueResponse,
+    PlanPartCount,
+    PlanRowOut,
+    PlanTotalsOut,
     ProcurementOut,
     ProcurementUpdate,
     ProjectCreate,
@@ -49,7 +59,11 @@ from backend.app.schemas.project import (
     ProjectUpdate,
     TimelineEvent,
 )
+from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.order_metrics import attribute, load_order_context, procurement_figures, project_figures
+from backend.app.services.plan_engine import OrderPlan, plan_for_order
+from backend.app.services.product_composition import PlateRecipe, recipes_for_product
+from backend.app.services.queue_batch import enqueue_batch_copies
 
 logger = logging.getLogger(__name__)
 
@@ -1153,3 +1167,207 @@ async def duplicate_project(
             copy.attachments = source.attachments
             copy.cover_image_filename = source.cover_image_filename
     return await _response(db, copy.id)
+
+
+# ---------- the print plan (spec pass 3) ----------
+
+
+def _counts(mapping: dict[int, int], names: dict[int, str]) -> list[PlanPartCount]:
+    """``part_id → count`` as the wire's named list, in part-id order.
+
+    The engine speaks in bare ids because it is pure; a name never enters it.
+    ``"?"`` for an id whose part vanished between the two reads — the same
+    placeholder ``_response`` uses for a missing product.
+    """
+    return [PlanPartCount(part_id=pid, name=names.get(pid, "?"), count=n) for pid, n in sorted(mapping.items())]
+
+
+async def _plan_response(db: AsyncSession, plan: OrderPlan) -> OrderPlanResponse:
+    """Name every id the engine returned. Two small SELECTs, no second walk."""
+    part_ids: set[int] = set()
+    product_ids: set[int] = set()
+    for line in plan.lines:
+        product_ids.add(line.product_id)
+        part_ids |= set(line.outstanding_before) | set(line.surplus_after) | set(line.unsatisfiable)
+        for row in line.rows:
+            part_ids |= set(row.useful)
+    part_names = (
+        dict((await db.execute(select(ProductPart.id, ProductPart.name).where(ProductPart.id.in_(part_ids)))).all())
+        if part_ids
+        else {}
+    )
+    product_names = (
+        dict((await db.execute(select(Product.id, Product.name).where(Product.id.in_(product_ids)))).all())
+        if product_ids
+        else {}
+    )
+    return OrderPlanResponse(
+        lines=[
+            LinePlanOut(
+                line_id=line.line_id,
+                product_id=line.product_id,
+                product_name=product_names.get(line.product_id, "?"),
+                material=line.material,
+                outstanding_before=_counts(line.outstanding_before, part_names),
+                rows=[
+                    PlanRowOut(
+                        plate_id=row.plate_id,
+                        library_file_id=row.library_file_id,
+                        plate_index=row.plate_index,
+                        filename=row.filename,
+                        count=row.count,
+                        useful=_counts(row.useful, part_names),
+                        print_time_seconds=row.print_time_seconds,
+                        filament_used_grams=row.filament_used_grams,
+                        cost=row.cost,
+                        time_unknown=row.time_unknown,
+                    )
+                    for row in line.rows
+                ],
+                surplus_after=_counts(line.surplus_after, part_names),
+                # The count on an unsatisfiable part is what is still MISSING —
+                # its outstanding figure, which no candidate plate yields.
+                unsatisfiable=_counts(
+                    {pid: line.outstanding_before.get(pid, 0) for pid in line.unsatisfiable}, part_names
+                ),
+                candidates=line.candidates,
+                not_sliced=line.not_sliced,
+            )
+            for line in plan.lines
+        ],
+        totals=PlanTotalsOut(
+            prints=plan.totals.prints,
+            print_time_seconds=plan.totals.print_time_seconds,
+            filament_used_grams=plan.totals.filament_used_grams,
+            cost=plan.totals.cost,
+        ),
+    )
+
+
+@router.get("/{project_id}/plan", response_model=OrderPlanResponse)
+async def get_order_plan(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """What to print next for every line of this order (spec pass 3).
+
+    Computed on every read, never cached and never stored: a second call after
+    enqueuing sees the new queue rows and plans that much less. Reads nothing
+    about any printer — this is a question about parts, not about machines.
+    """
+    plan = await plan_for_order(db, project_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return await _plan_response(db, plan)
+
+
+@router.post("/{project_id}/plan/enqueue", response_model=PlanEnqueueResponse)
+async def enqueue_order_plan(
+    project_id: int,
+    data: PlanEnqueueRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE, Permission.QUEUE_CREATE),
+):
+    """Send plan rows to the auto-queue, or to one printer's queue.
+
+    Both queue doors (``POST /queue/``, ``POST /auto-queue/``) require
+    ``queue:create``; this one also changes what an order has coming, so it
+    asks for ``projects:update`` too — ``RequirePermission`` demands ALL of the
+    permissions it is given.
+
+    ⚠️ **Routing is not dispatching.** Naming a printer says WHERE the work is
+    filed, not whether the machine can take it now. The only thing this
+    endpoint may ask about a printer is that it exists and is not archived;
+    readiness — plate clear, drying, stagger, filament — remains
+    ``check_queue``'s question, asked again at dispatch. Nothing here reads
+    printer state or ranks anything.
+
+    Each item is one call to the existing writer with ``quantity = count``, and
+    **the writers commit per call**: ``add_items_to_auto_queue`` and
+    ``enqueue_batch_copies`` each end in their own ``commit()``, so no
+    transaction spans the items. That is why every item is validated before any
+    of them is written — and why a failure part-way through leaves what was
+    already created in place, and returns what that was.
+    """
+    lines_by_id = {line.id: line for line in (await _get_project(db, project_id)).lines}
+
+    printer_id: int | None = None
+    if data.target.kind == "printer":
+        if data.target.printer_id is None:
+            raise HTTPException(status_code=400, detail="A printer target needs printer_id")
+        printer = await db.get(Printer, data.target.printer_id)
+        # Exists and is not archived. That is the whole of it — see the warning
+        # above before adding a third condition here.
+        if printer is None or printer.archived:
+            raise HTTPException(status_code=404, detail="Printer not found")
+        printer_id = printer.id
+
+    plates_by_product: dict[int, dict[int, tuple[ProductPlate, PlateRecipe]]] = {}
+    # (line_id, ProductPlate.id, library_file_id, queue plate number, count) —
+    # plain scalars, read BEFORE the first writer commits, because a commit may
+    # expire every instance loaded above it.
+    resolved: list[tuple[int, int, int, int | None, int]] = []
+    for item in data.items:
+        line = lines_by_id.get(item.line_id)
+        if line is None:
+            raise HTTPException(status_code=404, detail="Order line not found in this project")
+        plates = plates_by_product.get(line.product_id)
+        if plates is None:
+            product = (
+                await db.execute(
+                    select(Product)
+                    .options(selectinload(Product.parts), selectinload(Product.plates))
+                    .where(Product.id == line.product_id)
+                )
+            ).scalar_one_or_none()
+            rows = await recipes_for_product(db, product) if product is not None else []
+            plates = plates_by_product[line.product_id] = {plate.id: (plate, r) for plate, _file, r in rows}
+        entry = plates.get(item.plate_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Plate not found in this line's product")
+        plate, recipe = entry
+        if not recipe.sliced:
+            raise HTTPException(status_code=404, detail="Plate is not sliced")
+        # ⚠️ ``plate_index = 0`` means the whole file, which on a queue row is
+        # no plate at all — that column carries the slicer's 1-based index.
+        resolved.append((line.id, plate.id, plate.library_file_id, plate.plate_index or None, item.count))
+
+    created: list[PlanEnqueueCreated] = []
+    for line_id, plate_id, library_file_id, plate_number, count in resolved:
+        if printer_id is None:
+            rows = await add_items_to_auto_queue(
+                db,
+                AutoQueueItemCreate(
+                    library_file_id=library_file_id,
+                    plate_id=plate_number,
+                    quantity=count,
+                    project_id=project_id,
+                    project_line_id=line_id,
+                ),
+                current_user,
+            )
+        else:
+            rows, _batch_id = await enqueue_batch_copies(
+                db,
+                printer_id=printer_id,
+                count=count,
+                library_file_id=library_file_id,
+                plate_id=plate_number,
+                project_id=project_id,
+                project_line_id=line_id,
+                created_by_id=current_user.id if current_user else None,
+            )
+            if not rows:
+                # The printer has no queue row at all — a broken install, not a
+                # readiness verdict. Earlier items are already committed, so say
+                # what landed instead of reporting an empty success.
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "message": "That printer has no queue",
+                        "created": [c.model_dump() for c in created],
+                    },
+                )
+        created.append(PlanEnqueueCreated(line_id=line_id, plate_id=plate_id, queue_item_ids=[r.id for r in rows]))
+    return PlanEnqueueResponse(created=created)

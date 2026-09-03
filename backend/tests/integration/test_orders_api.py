@@ -1,6 +1,7 @@
 """Orders: lines, figures, procurement, lifecycle, links — spec §5/§8 + §Order lifecycle."""
 
 import pytest
+from sqlalchemy import select
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
@@ -8,10 +9,14 @@ from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.customer import Customer
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.app.services.order_metrics import load_order_context
+from backend.app.services.plan_engine import queued_yield_by_line
+from backend.app.services.product_composition import recipes_for_product
 
 pytestmark = pytest.mark.integration
 
@@ -731,3 +736,336 @@ async def test_project_archives_lists_only_this_orders_archives(committing_clien
     assert [a["id"] for a in r.json()] == [mine.id]
 
     assert (await committing_client.get("/api/v1/projects/9999/archives")).status_code == 404
+
+
+# ---------- the plan (spec pass 3) ----------
+
+
+async def _order_with_line(client, product_id, quantity, material="PETG"):
+    body = (
+        await client.post(
+            "/api/v1/projects/",
+            json={"name": "O", "lines": [{"product_id": product_id, "quantity": quantity, "material": material}]},
+        )
+    ).json()
+    return body["id"], body["lines"][0]["id"]
+
+
+def _by_name(rows):
+    return {row["name"]: row["count"] for row in rows}
+
+
+async def _plate_id_of_the_only_row(client, project_id):
+    plan = (await client.get(f"/api/v1/projects/{project_id}/plan")).json()
+    return plan["lines"][0]["rows"][0]["plate_id"]
+
+
+@pytest.mark.asyncio
+async def test_plan_subtracts_finished_and_queued_work(committing_client, db_session, catalog):
+    """Four units wanted, one plate printed, two pending queue rows filed under
+    the line: 4 shades - 1 made - 2 queued = 1, and 8 arms - 2 - 4 = 2. Exactly
+    one more print of the plate covers that."""
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+    await _completed_print(db_session, pid, catalog["file"].id, line_id=line_id)
+    await _queue_rows(db_session, pid, catalog["file"].id, line_id=line_id)
+
+    r = await committing_client.get(f"/api/v1/projects/{pid}/plan")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    line = body["lines"][0]
+    assert line["line_id"] == line_id and line["product_name"] == "Lamp" and line["material"] == "PETG"
+    assert _by_name(line["outstanding_before"]) == {"shade": 1, "arm": 2}
+    assert len(line["rows"]) == 1
+    row = line["rows"][0]
+    assert row["count"] == 1 and row["plate_index"] == 0 and row["filename"] == "lamp.gcode.3mf"
+    assert row["library_file_id"] == catalog["file"].id
+    assert _by_name(row["useful"]) == {"shade": 1, "arm": 2}
+    assert row["print_time_seconds"] == 100 and row["time_unknown"] is False
+    # No filament rate in settings and no grams in the metadata: both stay null
+    # rather than claiming the print is free.
+    assert row["cost"] is None and row["filament_used_grams"] is None
+    assert line["surplus_after"] == [] and line["unsatisfiable"] == []
+    assert line["candidates"] == [row["plate_id"]] and line["not_sliced"] == []
+    assert body["totals"] == {"prints": 1, "print_time_seconds": 100, "filament_used_grams": 0.0, "cost": None}
+
+    assert (await committing_client.get("/api/v1/projects/9999/plan")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_plan_ignores_an_auto_queue_row_already_handed_to_a_printer(committing_client, db_session, catalog):
+    """An assigned auto-queue row is counted once - through the printer item it
+    was copied into. Counting it twice would plan one print too few."""
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+    await _completed_print(db_session, pid, catalog["file"].id, line_id=line_id)
+    item_id, auto_id = await _queue_rows(db_session, pid, catalog["file"].id, line_id=line_id)
+    (await db_session.get(AutoQueueItem, auto_id)).assigned_to_item_id = item_id
+    await db_session.commit()
+
+    line = (await committing_client.get(f"/api/v1/projects/{pid}/plan")).json()["lines"][0]
+    assert _by_name(line["outstanding_before"]) == {"shade": 2, "arm": 4}
+    assert line["rows"][0]["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_plan_enqueue_auto_creates_rows_and_the_next_plan_sees_them(committing_client, db_session, catalog):
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue",
+        json={"items": [{"plate_id": plate_id, "count": 3, "line_id": line_id}], "target": {"kind": "auto"}},
+    )
+    assert r.status_code == 200, r.text
+    created = r.json()["created"]
+    assert len(created) == 1 and created[0]["line_id"] == line_id and created[0]["plate_id"] == plate_id
+    ids = created[0]["queue_item_ids"]
+    assert len(ids) == 3
+
+    rows = (await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.id.in_(ids)))).scalars().all()
+    assert len(rows) == 3
+    assert {row.project_id for row in rows} == {pid}
+    assert {row.project_line_id for row in rows} == {line_id}
+    assert {row.library_file_id for row in rows} == {catalog["file"].id}
+    # ``plate_index = 0`` is "the whole file", which on a queue row is no plate
+    # at all - the slicer's 1-based index is what that column carries.
+    assert {row.plate_id for row in rows} == {None}
+    assert {row.status for row in rows} == {"pending"}
+    assert len({row.batch_id for row in rows}) == 1 and all(row.batch_id for row in rows)
+
+    body = (await committing_client.get(f"/api/v1/projects/{pid}/plan")).json()
+    assert _by_name(body["lines"][0]["outstanding_before"]) == {"shade": 7, "arm": 14}
+    assert body["totals"]["prints"] == 7
+
+
+@pytest.mark.asyncio
+async def test_plan_enqueue_to_a_printer_fills_that_printers_queue(committing_client, db_session, catalog):
+    printer = Printer(name="P1", serial_number="S1", ip_address="10.0.0.1", access_code="1234", model="P1S")
+    db_session.add(printer)
+    await db_session.flush()
+    db_session.add(PrinterQueue(printer_id=printer.id))
+    await db_session.commit()
+    printer_id = printer.id
+
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue",
+        json={
+            "items": [{"plate_id": plate_id, "count": 3, "line_id": line_id}],
+            "target": {"kind": "printer", "printer_id": printer_id},
+        },
+    )
+    assert r.status_code == 200, r.text
+    ids = r.json()["created"][0]["queue_item_ids"]
+    assert len(ids) == 3
+
+    rows = (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id.in_(ids)))).scalars().all()
+    assert len(rows) == 3
+    assert {row.project_id for row in rows} == {pid}
+    assert {row.project_line_id for row in rows} == {line_id}
+    assert {row.library_file_id for row in rows} == {catalog["file"].id}
+    assert {row.plate_id for row in rows} == {None}
+    assert {row.status for row in rows} == {"pending"}
+    assert len({row.batch_id for row in rows}) == 1 and all(row.batch_id for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_plan_enqueue_validates_every_item_before_writing_anything(committing_client, db_session, catalog):
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+    _other_pid, other_line = await _order_with_line(committing_client, catalog["product"].id, 1)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+
+    stranger = Product(name="Stranger")
+    raw = LibraryFile(filename="raw.3mf", file_path="raw", file_size=1, file_type="3mf")
+    db_session.add_all([stranger, raw])
+    await db_session.flush()
+    foreign = ProductPlate(product_id=stranger.id, library_file_id=catalog["file"].id, plate_index=0)
+    unsliced = ProductPlate(product_id=catalog["product"].id, library_file_id=raw.id, plate_index=0)
+    archived = Printer(name="Old", serial_number="S9", ip_address="10.0.0.9", access_code="9999", archived=True)
+    db_session.add_all([foreign, unsliced, archived])
+    await db_session.commit()
+    foreign_id, unsliced_id, archived_id = foreign.id, unsliced.id, archived.id
+
+    auto = {"kind": "auto"}
+    refused = [
+        ([{"plate_id": plate_id, "count": 1, "line_id": other_line}], auto, 404),  # a line of another order
+        ([{"plate_id": foreign_id, "count": 1, "line_id": line_id}], auto, 404),  # a plate of another product
+        ([{"plate_id": unsliced_id, "count": 1, "line_id": line_id}], auto, 404),  # nothing to print yet
+        ([{"plate_id": 999999, "count": 1, "line_id": line_id}], auto, 404),
+        ([{"plate_id": plate_id, "count": 1, "line_id": 999999}], auto, 404),
+        ([{"plate_id": plate_id, "count": 1, "line_id": line_id}], {"kind": "printer"}, 400),  # no printer named
+        ([{"plate_id": plate_id, "count": 1, "line_id": line_id}], {"kind": "printer", "printer_id": 9999}, 404),
+        (
+            [{"plate_id": plate_id, "count": 1, "line_id": line_id}],
+            {"kind": "printer", "printer_id": archived_id},
+            404,
+        ),
+        # A good item beside a bad one: the whole call is refused.
+        (
+            [
+                {"plate_id": plate_id, "count": 1, "line_id": line_id},
+                {"plate_id": foreign_id, "count": 1, "line_id": line_id},
+            ],
+            auto,
+            404,
+        ),
+    ]
+    for items, target, code in refused:
+        r = await committing_client.post(
+            f"/api/v1/projects/{pid}/plan/enqueue", json={"items": items, "target": target}
+        )
+        assert r.status_code == code, f"{items} / {target} -> {r.status_code} {r.text}"
+
+    # Nothing was written by any of them - validation precedes every writer.
+    assert (await db_session.execute(select(AutoQueueItem))).scalars().all() == []
+    assert (await db_session.execute(select(PrintQueueItem))).scalars().all() == []
+
+    # An empty item list is a 422 from the schema, not an empty success.
+    r = await committing_client.post(f"/api/v1/projects/{pid}/plan/enqueue", json={"items": [], "target": auto})
+    assert r.status_code == 422, r.text
+
+
+# ---------- queued_yield_by_line: the cases that need a session ----------
+
+
+async def _queued_yield(db, project_id):
+    ctx = await load_order_context(db, project_id)
+    recipes = {pid: await recipes_for_product(db, product) for pid, product in ctx.products_by_id.items()}
+    return await queued_yield_by_line(db, project_id, recipes, ctx.lines)
+
+
+async def _parts_of(db, product_id):
+    rows = (await db.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars().all()
+    return {row.name: row.id for row in rows}
+
+
+@pytest.mark.asyncio
+async def test_queued_yield_counts_a_pending_print_queue_row(committing_client, db_session, catalog):
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+    parts = await _parts_of(db_session, catalog["product"].id)
+    queue = PrinterQueue(id=1, printer_id=1)
+    db_session.add(queue)
+    await db_session.flush()
+    db_session.add(
+        PrintQueueItem(queue_id=queue.id, project_line_id=line_id, library_file_id=catalog["file"].id, status="pending")
+    )
+    await db_session.commit()
+
+    assert await _queued_yield(db_session, pid) == {line_id: {parts["shade"]: 1, parts["arm"]: 2}}
+
+
+@pytest.mark.asyncio
+async def test_queued_yield_counts_a_pending_unassigned_auto_queue_row(committing_client, db_session, catalog):
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+    parts = await _parts_of(db_session, catalog["product"].id)
+    db_session.add(AutoQueueItem(project_line_id=line_id, library_file_id=catalog["file"].id, status="pending"))
+    await db_session.commit()
+
+    assert await _queued_yield(db_session, pid) == {line_id: {parts["shade"]: 1, parts["arm"]: 2}}
+
+
+@pytest.mark.asyncio
+async def test_queued_yield_ignores_an_assigned_auto_queue_row(committing_client, db_session, catalog):
+    """It is already counted through the printer item it was copied into."""
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+    db_session.add(
+        AutoQueueItem(
+            project_line_id=line_id,
+            library_file_id=catalog["file"].id,
+            status="pending",
+            assigned_to_item_id=4242,
+        )
+    )
+    await db_session.commit()
+
+    assert await _queued_yield(db_session, pid) == {line_id: {}}
+
+
+@pytest.mark.asyncio
+async def test_queued_yield_takes_the_exact_plate_index(committing_client, db_session, catalog):
+    """Two plates of one file, each its own product plate: the row's ``plate_id``
+    picks one of them, never the other and never their sum."""
+    two = LibraryFile(
+        filename="two.gcode.3mf",
+        file_path="two",
+        file_size=1,
+        file_type="gcode",
+        file_metadata={
+            "plates": [
+                {"index": 1, "printable_objects": {"1": "shade"}, "print_time_seconds": 50},
+                {"index": 2, "printable_objects": {"1": "arm", "2": "arm_2"}, "print_time_seconds": 70},
+            ]
+        },
+    )
+    db_session.add(two)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            ProductPlate(product_id=catalog["product"].id, library_file_id=two.id, plate_index=1),
+            ProductPlate(product_id=catalog["product"].id, library_file_id=two.id, plate_index=2),
+        ]
+    )
+    await db_session.commit()
+    two_id = two.id
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+    parts = await _parts_of(db_session, catalog["product"].id)
+
+    db_session.add(AutoQueueItem(project_line_id=line_id, library_file_id=two_id, plate_id=2, status="pending"))
+    await db_session.commit()
+
+    assert await _queued_yield(db_session, pid) == {line_id: {parts["arm"]: 2}}
+
+
+@pytest.mark.asyncio
+async def test_queued_yield_falls_through_to_the_whole_file_plate(committing_client, db_session, catalog):
+    """The product holds ONE plate at index 0 - the whole file - while the queue
+    row carries the slicer's own index. The exact lookup misses and the
+    whole-file plate claims it; a row naming no plate hits index 0 outright."""
+    body = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "O",
+                "lines": [
+                    {"product_id": catalog["product"].id, "quantity": 4, "material": "PETG"},
+                    {"product_id": catalog["product"].id, "quantity": 4, "material": "PETG"},
+                ],
+            },
+        )
+    ).json()
+    pid = body["id"]
+    first, second = body["lines"][0]["id"], body["lines"][1]["id"]
+    parts = await _parts_of(db_session, catalog["product"].id)
+    db_session.add_all(
+        [
+            AutoQueueItem(project_line_id=first, library_file_id=catalog["file"].id, plate_id=1, status="pending"),
+            AutoQueueItem(project_line_id=second, library_file_id=catalog["file"].id, plate_id=None, status="pending"),
+        ]
+    )
+    await db_session.commit()
+
+    yielded = await _queued_yield(db_session, pid)
+    assert yielded[first] == {parts["shade"]: 1, parts["arm"]: 2}
+    assert yielded[second] == {parts["shade"]: 1, parts["arm"]: 2}
+
+
+@pytest.mark.asyncio
+async def test_queued_yield_counts_nothing_for_a_file_the_product_does_not_have(committing_client, db_session, catalog):
+    """The file was unlinked, or the row points somewhere else entirely. There
+    is no yield to invent - and the same goes for a row queued from an archive,
+    which names no library file at all."""
+    stray = LibraryFile(filename="stray.gcode.3mf", file_path="stray", file_size=1, file_type="gcode")
+    db_session.add(stray)
+    await db_session.flush()
+    stray_id = stray.id
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+    db_session.add_all(
+        [
+            AutoQueueItem(project_line_id=line_id, library_file_id=stray_id, status="pending"),
+            AutoQueueItem(project_line_id=line_id, archive_id=1, status="pending"),
+        ]
+    )
+    await db_session.commit()
+
+    assert await _queued_yield(db_session, pid) == {line_id: {}}
