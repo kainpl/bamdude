@@ -250,6 +250,18 @@ def _transform_ams_labels(row: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _transform_project(row: dict[str, Any]) -> dict[str, Any]:
+    """Upstream still has an ``archived`` project status; m158 folded it into
+    ``completed``. Unlike ``budget → price`` this is a VALUE, not a column, so
+    auto-detection carries it across happily and the row lands with a status
+    no filter, picker or validator here accepts — invisible in every list and
+    a 400 the moment somebody patches it. Every other status is left alone.
+    """
+    if row.get("status") == "archived":
+        row["status"] = "completed"
+    return row
+
+
 def _transform_virtual_printer(row: dict[str, Any]) -> dict[str, Any]:
     """Fix SSDP model codes and add auto_dispatch default."""
     row.setdefault("auto_dispatch", 1)
@@ -359,19 +371,23 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
                     summary[tbl] = n
                     logger.info("Imported %d rows into %s", n, tbl)
 
-            # projects: upstream's ``budget`` is our ``price``. Auto-detection
-            # matches source columns to destination columns BY NAME, so without
-            # this rename the money on every imported project is dropped in
-            # silence — the destination has no ``budget`` to land in, m158
-            # having renamed it. m158 does the same rename for THIS install's
-            # own rows; an import has to do it itself, because it runs after the
-            # whole chain, against the already-converted schema.
+            # projects: upstream's ``budget`` is our ``price``, and its
+            # ``archived`` status is our ``completed``. Auto-detection matches
+            # source columns to destination columns BY NAME, so without this
+            # rename the money on every imported project is dropped in silence —
+            # the destination has no ``budget`` to land in, m158 having renamed
+            # it. The status is the mirror-image trap: the column DOES exist, so
+            # the retired value copies straight through unless a transform stops
+            # it. m158 does both conversions for THIS install's own rows; an
+            # import has to do them itself, because it runs after the whole
+            # chain, against the already-converted schema.
             n = await _import_table(
                 conn,
                 old_db,
                 "projects",
                 defaults=_COPY_WITH_DEFAULTS["projects"],
                 rename={"budget": "price"},
+                transform=_transform_project,
             )
             if n:
                 summary["projects"] = n

@@ -59,7 +59,14 @@ happen is the one after a failed ``seed()``, above.) Named columns everywhere.
   to do to the plan table itself.
 * **(ii) after the unreleased parts-ledger m158** — ``plate_index`` and
   ``project_parts`` are both present; plan rows are read as they are and
-  ``target_qty`` is honoured. ⚠️ **Such a database reaches this shape only if
+  ``target_qty`` is honoured — **except a zero on a part that is on a plate**.
+  The retired ``services/project_parts.py`` seed planted every discovered part
+  with ``target_qty = 0``, so such a zero is almost always that default and
+  never a decision, and honouring it would convert to ``qty_per_unit = 0`` —
+  "don't measure", which counts in no need and no surplus. It is therefore
+  derived like any unseen part (``auto=True``). A zero on a part that is on
+  NO plate keeps its zero: nothing ever seeded it, so somebody typed it.
+  ⚠️ **Such a database reaches this shape only if
   somebody deletes its ``_migrations`` row first.** The runner keys on the
   VERSION alone (the recorded ``name`` is cosmetic), so a database holding
   ``(158, 'parts_ledger')`` counts m158 as applied and SKIPS this module
@@ -468,7 +475,15 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
             part_name, target = targets[key]
             if target and target > 0:
                 qty, auto = target, False
-            elif target == 0:
+            elif target == 0 and key not in yield_by_key:
+                # An operator zero — "don't measure this one" — and the only
+                # zero we can tell apart. The retired seed planted EVERY
+                # discovered part with target_qty = 0, so a zero on a part that
+                # IS on a plate is far more likely to be that default than a
+                # decision, and carrying it across would make the part
+                # unmeasurable: qty_per_unit = 0 counts in no need and no
+                # surplus. A part on no plate was never seeded by that walk, so
+                # its zero can only have been typed.
                 qty, auto = 0, False
             else:
                 qty, auto = (yield_by_key.get(key) or first_count.get(key) or 1), True

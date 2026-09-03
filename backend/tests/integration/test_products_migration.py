@@ -134,7 +134,11 @@ async def _legacy_fixture(db: AsyncSession, engine, printer_factory) -> dict:
             ),
             {"p": order.id, "f": multi.id, "c": copies, "pl": plate},
         )
-    # bracket has an explicit target; lid has 0 (= not counted); clip is only known from plates.
+    # bracket has an explicit target; clip is only known from plates. The two
+    # zeros are the interesting pair: ``lid.stl`` IS on plate 1, so its zero is
+    # the retired seed's default and must be derived away; ``ghost.stl`` is on
+    # no plate at all, so nothing could have seeded it and its zero is an
+    # operator's "don't measure this".
     await db.execute(
         text(
             "INSERT INTO project_parts (project_id, name, name_key, target_qty) VALUES (:p, 'bracket.stl', 'bracket.stl', 5)"
@@ -143,6 +147,12 @@ async def _legacy_fixture(db: AsyncSession, engine, printer_factory) -> dict:
     )
     await db.execute(
         text("INSERT INTO project_parts (project_id, name, name_key, target_qty) VALUES (:p, 'lid.stl', 'lid.stl', 0)"),
+        {"p": order.id},
+    )
+    await db.execute(
+        text(
+            "INSERT INTO project_parts (project_id, name, name_key, target_qty) VALUES (:p, 'ghost.stl', 'ghost.stl', 0)"
+        ),
         {"p": order.id},
     )
     await db.execute(
@@ -234,7 +244,13 @@ async def test_every_project_becomes_a_product_with_a_single_line(db_session, te
         for p in (await db_session.execute(select(ProductPart).where(ProductPart.product_id == product.id))).scalars()
     }
     assert parts["bracket.stl"].qty_per_unit == 5 and parts["bracket.stl"].auto is False  # explicit target wins
-    assert parts["lid.stl"].qty_per_unit == 0  # zero stays zero
+    # lid: target 0, but it IS on plate 1 — the retired seed planted every
+    # discovered part with 0, so that zero is derived away rather than kept
+    # (2 copies of plate 1 × 1 lid). Keeping it would make the part unmeasurable.
+    assert parts["lid.stl"].qty_per_unit == 2 and parts["lid.stl"].auto is True
+    # ghost: target 0 and on no plate — nothing seeded it, so the zero is the
+    # operator's "don't measure" and survives.
+    assert parts["ghost.stl"].qty_per_unit == 0 and parts["ghost.stl"].auto is False
     # clip was never in project_parts: Σ copies × yield = 3 × 10, marked auto
     assert parts["clip.stl"].qty_per_unit == 30 and parts["clip.stl"].auto is True
     assert parts["clip.stl"].aliases == ["clip.stl"]
