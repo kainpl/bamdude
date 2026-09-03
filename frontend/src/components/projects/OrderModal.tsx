@@ -40,8 +40,9 @@ interface OrderModalProps {
  * Line editing lives on the order page, not here (design decision 5) — this
  * modal only ever touches the order's own fields. An edit sends only the
  * fields that changed from what this modal was opened with: a list row lacks
- * `description`/`url`, so those diff against `null` and are never clobbered
- * by an untouched, blank textbox.
+ * `description`/`url` entirely, so those two fields are hidden rather than
+ * shown as blank boxes a user could type into and silently overwrite text
+ * they were never shown.
  */
 export function OrderModal({ order, defaultCustomerId, onClose, onSaved }: OrderModalProps) {
   const { t } = useTranslation();
@@ -49,12 +50,28 @@ export function OrderModal({ order, defaultCustomerId, onClose, onSaved }: Order
   const { showToast } = useToast();
   const isEdit = !!order;
 
+  // A list row (`OrderListItem`) carries neither field at all — not "empty",
+  // absent. Showing an input for either would invite typing into a box that
+  // looks blank but may not be: whatever gets typed REPLACES text the user
+  // was never shown. Only a full `Order` (or a brand new order) gets the field.
+  const hasDescription = !order || 'description' in order;
+  const hasUrl = !order || 'url' in order;
   const initialDescription = order && 'description' in order ? (order.description ?? '') : '';
   const initialUrl = order && 'url' in order ? (order.url ?? '') : '';
   const initialColor = order?.color ?? null;
-  const initialCustomerId = order?.customer_id ?? defaultCustomerId ?? null;
+  // `defaultCustomerId` (the page's customer filter) seeds only a NEW order —
+  // on edit the picker must reflect the order's own customer, or the page's
+  // active filter leaks into an order that has none.
+  const initialCustomerId = order ? (order.customer_id ?? null) : (defaultCustomerId ?? null);
   const initialTags = order?.tags ?? null;
-  const initialDueDate = order?.due_date ?? null;
+  // `due_date` arrives as a full datetime string (`ProjectResponse`/
+  // `ProjectListResponse` declare it `datetime`, e.g. "2026-09-10T00:00:00"),
+  // but `<input type="date">` only accepts an exact `YYYY-MM-DD` — anything
+  // else is silently discarded, rendering the field blank. Normalise to the
+  // date-only form HERE, once, so both the seeded value and the edit-diff
+  // compare like with like (comparing the raw datetime against the trimmed
+  // input value would treat an untouched field as "changed" and resend it).
+  const initialDueDate = order?.due_date?.slice(0, 10) ?? null;
   const initialPriority: ProjectPriority = order?.priority ?? 'normal';
   const initialPrice = order?.price ?? null;
   const initialStatus: ProjectStatus = order?.status ?? 'active';
@@ -169,18 +186,20 @@ export function OrderModal({ order, defaultCustomerId, onClose, onSaved }: Order
                 <CustomerPicker value={customerId} onChange={setCustomerId} disabled={mutation.isPending} allowCreate />
               </div>
 
-              <div>
-                <label className={LABEL_CLASS} htmlFor="order-description">
-                  {t('orders.modal.description')}
-                </label>
-                <textarea
-                  id="order-description"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className={`${FIELD_CLASS} min-h-[72px]`}
-                  disabled={mutation.isPending}
-                />
-              </div>
+              {hasDescription && (
+                <div>
+                  <label className={LABEL_CLASS} htmlFor="order-description">
+                    {t('orders.modal.description')}
+                  </label>
+                  <textarea
+                    id="order-description"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    className={`${FIELD_CLASS} min-h-[72px]`}
+                    disabled={mutation.isPending}
+                  />
+                </div>
+              )}
 
               <div>
                 <label className={LABEL_CLASS}>{t('orders.modal.color')}</label>
@@ -285,19 +304,21 @@ export function OrderModal({ order, defaultCustomerId, onClose, onSaved }: Order
                 )}
               </div>
 
-              <div>
-                <label className={LABEL_CLASS} htmlFor="order-url">
-                  {t('orders.modal.url')}
-                </label>
-                <input
-                  id="order-url"
-                  type="url"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  className={FIELD_CLASS}
-                  disabled={mutation.isPending}
-                />
-              </div>
+              {hasUrl && (
+                <div>
+                  <label className={LABEL_CLASS} htmlFor="order-url">
+                    {t('orders.modal.url')}
+                  </label>
+                  <input
+                    id="order-url"
+                    type="url"
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    className={FIELD_CLASS}
+                    disabled={mutation.isPending}
+                  />
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary">

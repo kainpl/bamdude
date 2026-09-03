@@ -31,6 +31,7 @@ describe('OrdersPage', () => {
     expect(await screen.findByText('A')).toBeInTheDocument();
     // the counts need the unfiltered list; the grid needs the filtered one — one request without status, filtered client-side
     expect(get).toHaveBeenCalledWith({});
+    expect(get).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('tab', { name: /active/i }).textContent).toContain('1');
     expect(screen.getByRole('tab', { name: /completed/i }).textContent).toContain('1');
     expect(screen.queryByText('B')).not.toBeInTheDocument();

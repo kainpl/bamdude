@@ -4743,7 +4743,10 @@ export default {
       },
     },
     card: {
-      lines: '{{count}} позицій',
+      lines_one: '{{count}} позиція',
+      lines_few: '{{count}} позиції',
+      lines_many: '{{count}} позицій',
+      lines_other: '{{count}} позиції',
       overdue: 'Прострочено',
       menu: {
         edit: 'Редагувати',

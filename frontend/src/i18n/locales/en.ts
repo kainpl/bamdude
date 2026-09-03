@@ -4701,7 +4701,8 @@ export default {
       },
     },
     card: {
-      lines: '{{count}} line(s)',
+      lines_one: '{{count}} line',
+      lines_other: '{{count}} lines',
       overdue: 'Overdue',
       menu: {
         edit: 'Edit',
