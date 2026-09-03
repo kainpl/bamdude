@@ -1,0 +1,222 @@
+"""Wire shapes for the products API (spec §API, §Data model).
+
+Plate recipes are DERIVED, never stored: :class:`PlateRecipeResponse` is the
+serialised form of ``services/product_composition.PlateRecipe``, recomputed on
+every read from the linked file's ``file_metadata``.
+"""
+
+from datetime import datetime
+
+from pydantic import BaseModel, Field, field_validator
+
+from backend.app.schemas.project import validate_http_url
+
+
+def _clean_name(value: str) -> str:
+    """Trim, and refuse a name that is nothing but whitespace.
+
+    ``Field(min_length=1)`` already rejects ``""``; it cannot see that ``"   "``
+    is the same thing. Create and update both run this, so the two paths cannot
+    disagree about what a stored name looks like (same rule as ``customers``).
+    """
+    trimmed = value.strip()
+    if not trimmed:
+        raise ValueError("name cannot be blank")
+    return trimmed
+
+
+def _never_null(value, field: str):
+    """PATCH clears a field by sending ``null`` — but these columns are NOT NULL,
+    so clearing one would surface as an IntegrityError from the flush, i.e. a 500
+    on malformed input. A validator answers 422 instead. It does not fire when
+    the field is absent: pydantic does not validate defaults."""
+    if value is None:
+        raise ValueError(f"{field} cannot be null")
+    return value
+
+
+class ProductCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    notes: str | None = None
+    designer: str | None = None
+    license: str | None = None
+    source_url: str | None = None
+    design_id: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_clean(cls, v: str) -> str:
+        return _clean_name(v)
+
+    @field_validator("source_url")
+    @classmethod
+    def _url(cls, v: str | None) -> str | None:
+        return validate_http_url(v)
+
+
+class ProductUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    notes: str | None = None
+    designer: str | None = None
+    license: str | None = None
+    source_url: str | None = None
+    design_id: str | None = None
+    is_active: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_never_null_and_is_clean(cls, v: str | None) -> str | None:
+        return _clean_name(_never_null(v, "name"))
+
+    @field_validator("is_active")
+    @classmethod
+    def _flag_is_never_null(cls, v: bool | None) -> bool | None:
+        return _never_null(v, "is_active")
+
+    @field_validator("source_url")
+    @classmethod
+    def _url(cls, v: str | None) -> str | None:
+        return validate_http_url(v)
+
+
+class ProductDuplicate(BaseModel):
+    name: str | None = None
+
+
+class ProductPartCreate(BaseModel):
+    kind: str = Field(pattern="^(printed|purchased)$")
+    name: str = Field(min_length=1, max_length=512)
+    qty_per_unit: int = Field(default=1, ge=0)
+    unit_price: float | None = None
+    sourcing_url: str | None = None
+    remarks: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_clean(cls, v: str) -> str:
+        return _clean_name(v)
+
+    @field_validator("sourcing_url")
+    @classmethod
+    def _url(cls, v: str | None) -> str | None:
+        return validate_http_url(v)
+
+
+class ProductPartUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=512)
+    qty_per_unit: int | None = Field(default=None, ge=0)
+    unit_price: float | None = None
+    sourcing_url: str | None = None
+    remarks: str | None = None
+    sort_order: int | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_never_null_and_is_clean(cls, v: str | None) -> str | None:
+        return _clean_name(_never_null(v, "name"))
+
+    @field_validator("qty_per_unit", "sort_order")
+    @classmethod
+    def _number_is_never_null(cls, v: int | None) -> int | None:
+        return _never_null(v, "value")
+
+    @field_validator("sourcing_url")
+    @classmethod
+    def _url(cls, v: str | None) -> str | None:
+        return validate_http_url(v)
+
+
+class ProductPartMerge(BaseModel):
+    source_part_id: int
+
+
+class ProductPartAlias(BaseModel):
+    name_key: str = Field(min_length=1, max_length=512)
+
+
+class ProductPartResponse(BaseModel):
+    id: int
+    kind: str
+    name: str
+    name_key: str
+    qty_per_unit: int
+    aliases: list[str] = []
+    auto: bool = False
+    unit_price: float | None = None
+    sourcing_url: str | None = None
+    remarks: str | None = None
+    sort_order: int = 0
+
+    @field_validator("aliases", mode="before")
+    @classmethod
+    def _aliases(cls, v: list | None) -> list:
+        """``ProductPart.aliases`` is NULL for a purchased part — the column is
+        printed-only. Reaching the field with ``None`` would fail validation on
+        a row that is perfectly valid, so the wire type stays a list either way."""
+        return list(v or [])
+
+    class Config:
+        from_attributes = True
+
+
+class PlateYieldEntry(BaseModel):
+    part_id: int
+    name: str
+    count: int
+
+
+class PlateUnassignedEntry(BaseModel):
+    name_key: str
+    count: int
+
+
+class PlateRecipeResponse(BaseModel):
+    id: int
+    library_file_id: int
+    filename: str
+    plate_index: int
+    sliced: bool
+    yield_: list[PlateYieldEntry] = Field(default_factory=list, alias="yield")
+    unassigned: list[PlateUnassignedEntry] = []
+    materials: list[str] = []
+    colors: list[str] = []
+    print_time_seconds: int | None = None
+    filament_used_grams: float | None = None
+
+    class Config:
+        populate_by_name = True
+
+
+class FileLinkRequest(BaseModel):
+    library_file_ids: list[int]
+
+
+class FolderLinkRequest(BaseModel):
+    library_folder_ids: list[int]
+
+
+class ProductListItem(BaseModel):
+    id: int
+    name: str
+    is_active: bool
+    cover_image_filename: str | None = None
+    parts_count: int = 0
+    plates_count: int = 0
+    lines_count: int = 0
+
+
+class ProductResponse(ProductListItem):
+    description: str | None = None
+    notes: str | None = None
+    designer: str | None = None
+    license: str | None = None
+    source_url: str | None = None
+    design_id: str | None = None
+    attachments: list | None = None
+    parts: list[ProductPartResponse] = []
+    library_file_ids: list[int] = []
+    library_folder_ids: list[int] = []
+    created_at: datetime
+    updated_at: datetime

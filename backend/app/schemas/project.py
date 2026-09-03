@@ -3,10 +3,15 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 
-def _validate_project_url(value: str | None) -> str | None:
+def validate_http_url(value: str | None) -> str | None:
     """Reject anything that isn't an http(s) URL — the URL is rendered as a
     clickable `<a href>` so a `javascript:` / `data:` / `file:` value would
-    be an XSS vector even with React's default escaping (#1155)."""
+    be an XSS vector even with React's default escaping (#1155).
+
+    Public because it guards every operator-supplied link in the domain, not
+    just a project's: ``schemas/product.py`` validates ``source_url`` with it
+    too. The old private name stays as an alias below for the legacy callers.
+    """
     if value is None:
         return value
     trimmed = value.strip()
@@ -16,6 +21,9 @@ def _validate_project_url(value: str | None) -> str | None:
     if not (lowered.startswith("http://") or lowered.startswith("https://")):
         raise ValueError("url must start with http:// or https://")
     return trimmed
+
+
+_validate_project_url = validate_http_url
 
 
 class ProjectCreate(BaseModel):
