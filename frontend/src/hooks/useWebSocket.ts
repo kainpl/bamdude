@@ -344,8 +344,8 @@ export function useWebSocket() {
     debouncedInvalidate('project');           // stats: total / in-progress / progress
     debouncedInvalidate('project-archives');  // the Prints grid
     debouncedInvalidate('project-timeline');  // a print is a timeline event
-    debouncedInvalidate('project-print-plan');// per-item printed_count
-    debouncedInvalidate('projects');          // roll-up on the project cards
+    debouncedInvalidate('customer');          // the customer's printed figure
+    debouncedInvalidate('projects');          // roll-up on the order cards
   }, [debouncedInvalidate]);
 
   const handleMessage = useCallback((message: WebSocketMessage) => {

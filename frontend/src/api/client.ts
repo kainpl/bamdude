@@ -3560,6 +3560,10 @@ export interface PrintQueueItem {
   queue_id: number;
   printer_id?: number | null;  // Convenience - resolved from queue
   project_id?: number | null;
+  /** Pass 2: which line of the order this job counts against. Carried queue →
+   *  dispatcher → archive; NULL means the job is bound to the order but to no
+   *  line of it. */
+  project_line_id?: number | null;
   waiting_reason: string | null;
   archive_id: number | null;
   library_file_id: number | null;

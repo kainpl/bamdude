@@ -13,6 +13,14 @@ import { OrderFigures } from '../../components/projects/OrderFigures';
 import { OrderLinesTable } from '../../components/projects/OrderLinesTable';
 import { PrintPlateFromLine } from '../../components/projects/PrintPlateFromLine';
 import { OrderModal } from '../../components/projects/OrderModal';
+import { OrderCover } from '../../components/projects/OrderCover';
+import { ProcurementChecklist } from '../../components/projects/ProcurementChecklist';
+import { OrderPrints } from '../../components/projects/OrderPrints';
+import { OrderQueue } from '../../components/projects/OrderQueue';
+import { OrderTimeline } from '../../components/projects/OrderTimeline';
+import { OrderNotes } from '../../components/projects/OrderNotes';
+import { OrderAttachments } from '../../components/projects/OrderAttachments';
+import { DuplicateOrderModal } from '../../components/projects/DuplicateOrderModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 
 /**
@@ -35,6 +43,7 @@ export function OrderPage() {
 
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
   const [printing, setPrinting] = useState<ProjectLine | null>(null);
 
   const { data: order, isLoading } = useQuery({
@@ -64,16 +73,6 @@ export function OrderPage() {
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
-  const duplicate = useMutation({
-    mutationFn: () => api.duplicateOrder(id),
-    onSuccess: (saved) => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      showToast(t('orders.toast.duplicated'));
-      navigate(`/projects/${saved.id}`);
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-
   if (isLoading) {
     return (
       <div className="p-4 md:p-6 flex items-center gap-2 text-bambu-gray">
@@ -90,13 +89,21 @@ export function OrderPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-6">
-      <OrderHeader
-        order={order}
-        onEdit={() => setEditing(true)}
-        onDuplicate={() => duplicate.mutate()}
-        onDelete={() => setDeleting(true)}
-        onSetStatus={(status) => setStatus.mutate(status)}
-      />
+      {/* The cover sits in the header's right column without OrderHeader
+          knowing about it — the header owns the actions row, this owns the
+          picture, and neither has to grow a slot for the other. */}
+      <div className="flex items-start gap-4 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <OrderHeader
+            order={order}
+            onEdit={() => setEditing(true)}
+            onDuplicate={() => setDuplicating(true)}
+            onDelete={() => setDeleting(true)}
+            onSetStatus={(status) => setStatus.mutate(status)}
+          />
+        </div>
+        <OrderCover order={order} canEdit={canEdit} />
+      </div>
 
       {canEdit && <CloseSuggestionBanner order={order} onComplete={() => setStatus.mutate('completed')} />}
 
@@ -107,7 +114,21 @@ export function OrderPage() {
       {/* Reserved for the plan block (pass 3) — empty on purpose. */}
       <div id="order-plan" />
 
+      <ProcurementChecklist order={order} canEdit={canEdit} />
+
+      <OrderPrints order={order} canEdit={canEdit} />
+
+      <OrderQueue orderId={order.id} />
+
+      <OrderTimeline orderId={order.id} />
+
+      <OrderNotes order={order} canEdit={canEdit} />
+
+      <OrderAttachments order={order} canEdit={canEdit} />
+
       {editing && <OrderModal order={order} onClose={() => setEditing(false)} />}
+
+      {duplicating && <DuplicateOrderModal order={order} onClose={() => setDuplicating(false)} />}
 
       {deleting && (
         <ConfirmModal

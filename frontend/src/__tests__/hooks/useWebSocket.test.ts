@@ -422,7 +422,7 @@ describe('useWebSocket hook', () => {
         'project',
         'project-archives',
         'project-timeline',
-        'project-print-plan',
+        'customer',
         'projects',
       ]) {
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: [key] });

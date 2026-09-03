@@ -1,0 +1,264 @@
+import { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
+import { MoreVertical, Package, Unlink } from 'lucide-react';
+import { api } from '../../api/client';
+import type { Archive, Order, ProjectLine } from '../../api/client';
+import { useToast } from '../../contexts/ToastContext';
+import { formatDateOnly } from '../../utils/date';
+import { getArchiveStatusBadge } from '../../utils/archiveStatus';
+import { LoadingBlock } from '../LoadingBlock';
+import { OrderLinePicker } from '../pickers/OrderLinePicker';
+
+interface OrderPrintsProps {
+  order: Order;
+  canEdit: boolean;
+}
+
+interface Group {
+  key: string;
+  testId: string;
+  title: string;
+  archives: Archive[];
+}
+
+/**
+ * Every print that counts towards this order, grouped the way the SERVER
+ * grouped it.
+ *
+ * ⚠️ **`lines[].archive_ids` is not a partition.** A plate that carries parts
+ * of two products counts against both lines, so the same archive is expected
+ * under two headings — walking the archives and asking each one "which line?"
+ * would file it under one of them and quietly under-count the other. The
+ * grouping is therefore read out of the order response, never rebuilt from
+ * `archive.project_line_id`; that field only decides which BADGE the card
+ * wears (filed by hand vs attributed by the server's own accounting).
+ *
+ * "Unlisted" is a net, not a feature: an archive the response bound to the
+ * order but named in no group would otherwise vanish from a page whose whole
+ * job is to account for it.
+ */
+export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
+  const { t } = useTranslation();
+
+  const { data: archives, isLoading } = useQuery({
+    queryKey: ['project-archives', order.id],
+    queryFn: () => api.getProjectArchives(order.id, 500, 0),
+  });
+
+  const byId = new Map((archives ?? []).map((archive) => [archive.id, archive]));
+  const pick = (ids: number[]): Archive[] =>
+    ids.map((id) => byId.get(id)).filter((archive): archive is Archive => archive != null);
+
+  const groups: Group[] = [];
+  const claimed = new Set<number>();
+
+  for (const line of order.lines) {
+    const items = pick(line.archive_ids);
+    for (const item of items) claimed.add(item.id);
+    if (items.length > 0) {
+      groups.push({
+        key: `line-${line.id}`,
+        testId: `prints-line-${line.id}`,
+        title: `${line.product_name} × ${line.quantity}`,
+        archives: items,
+      });
+    }
+  }
+
+  const other = pick(order.other_archive_ids);
+  for (const item of other) claimed.add(item.id);
+  if (other.length > 0) {
+    groups.push({
+      key: 'other',
+      testId: 'prints-other',
+      title: t('orders.prints.otherPrints'),
+      archives: other,
+    });
+  }
+
+  const unlisted = (archives ?? []).filter((archive) => !claimed.has(archive.id));
+  if (unlisted.length > 0) {
+    groups.push({
+      key: 'unlisted',
+      testId: 'prints-unlisted',
+      title: t('orders.prints.unlisted'),
+      archives: unlisted,
+    });
+  }
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+        <Package className="w-5 h-5" />
+        {t('orders.prints.title')}
+      </h2>
+
+      {isLoading ? (
+        <LoadingBlock label={t('common.loading')} className="py-6 text-bambu-gray" />
+      ) : groups.length === 0 ? (
+        <p className="text-sm text-bambu-gray/70 italic">{t('orders.prints.empty')}</p>
+      ) : (
+        groups.map((group) => (
+          <div key={group.key} data-testid={group.testId} className="space-y-2">
+            <h3 className="text-sm text-bambu-gray">{group.title}</h3>
+            <div className="grid gap-2 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
+              {group.archives.map((archive) => (
+                <ArchiveCard
+                  key={`${group.key}-${archive.id}`}
+                  archive={archive}
+                  order={order}
+                  lines={order.lines}
+                  canEdit={canEdit}
+                />
+              ))}
+            </div>
+          </div>
+        ))
+      )}
+    </section>
+  );
+}
+
+interface ArchiveCardProps {
+  archive: Archive;
+  order: Order;
+  lines: ProjectLine[];
+  canEdit: boolean;
+}
+
+/** One print: what it was, how it ended, and which line it answers to. */
+function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const { showToast } = useToast();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [pickingLine, setPickingLine] = useState(false);
+
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['project', order.id] });
+    queryClient.invalidateQueries({ queryKey: ['project-archives', order.id] });
+  };
+
+  // ⚠️ `project_id` travels with the line: the server rejects (400) a line
+  // that belongs to another order, and a bare line change on an archive whose
+  // order is being re-stated is exactly that case.
+  const fileUnder = useMutation({
+    mutationFn: (lineId: number | null) =>
+      api.updateArchive(archive.id, { project_id: order.id, project_line_id: lineId }),
+    onSuccess: () => {
+      refresh();
+      setPickingLine(false);
+      setMenuOpen(false);
+    },
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
+
+  const remove = useMutation({
+    mutationFn: () => api.removeArchivesFromProject(order.id, [archive.id]),
+    onSuccess: () => {
+      refresh();
+      setMenuOpen(false);
+    },
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
+
+  const badge = getArchiveStatusBadge(archive.status);
+  const name = archive.print_name || archive.filename;
+  const when = archive.completed_at || archive.started_at || archive.created_at;
+  const lineName = lines.find((line) => line.id === archive.project_line_id)?.product_name;
+
+  return (
+    <div className="relative rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary p-2 flex gap-2">
+      <Link
+        to={`/archives?search=${encodeURIComponent(name)}`}
+        className="w-14 h-14 rounded bg-bambu-dark flex items-center justify-center overflow-hidden flex-shrink-0"
+      >
+        {archive.thumbnail_path ? (
+          <img src={api.getArchiveThumbnail(archive.id)} alt="" className="w-full h-full object-contain" />
+        ) : (
+          <Package className="w-5 h-5 text-bambu-gray" />
+        )}
+      </Link>
+
+      <div className="min-w-0 flex-1">
+        <p className="text-sm text-white truncate" title={name}>
+          {name}
+        </p>
+        <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+          {badge && (
+            <span className={`px-1.5 py-0.5 rounded text-[10px] ${badge.className}`}>{t(badge.labelKey)}</span>
+          )}
+          <span
+            className={`px-1.5 py-0.5 rounded text-[10px] ${
+              archive.project_line_id != null
+                ? 'bg-bambu-green/20 text-bambu-green'
+                : 'bg-bambu-dark-tertiary text-bambu-gray'
+            }`}
+            title={lineName}
+          >
+            {archive.project_line_id != null ? t('orders.prints.explicit') : t('orders.prints.attributed')}
+          </span>
+        </div>
+        {when && <p className="text-[11px] text-bambu-gray/70 mt-0.5">{formatDateOnly(when)}</p>}
+      </div>
+
+      {canEdit && (
+        <div className="relative flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => setMenuOpen((open) => !open)}
+            aria-label={t('orders.prints.actions')}
+            className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
+
+          {menuOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-10"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setPickingLine(false);
+                }}
+              />
+              <div className="absolute right-0 top-7 z-20 w-56 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-lg p-1">
+                {pickingLine ? (
+                  <div className="p-2 space-y-2">
+                    <OrderLinePicker
+                      orderId={order.id}
+                      value={archive.project_line_id}
+                      onChange={(lineId) => fileUnder.mutate(lineId)}
+                      disabled={fileUnder.isPending}
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setPickingLine(true)}
+                      className="w-full text-left px-3 py-2 text-sm text-white rounded hover:bg-bambu-dark-tertiary"
+                    >
+                      {t('orders.prints.fileUnderLine')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => remove.mutate()}
+                      disabled={remove.isPending}
+                      className="w-full flex items-center gap-2 text-left px-3 py-2 text-sm text-status-error rounded hover:bg-bambu-dark-tertiary disabled:opacity-50"
+                    >
+                      <Unlink className="w-4 h-4" />
+                      {t('orders.prints.removeFromOrder')}
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
