@@ -20,17 +20,27 @@ function hoursMinutes(seconds: number): string {
   return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}`;
 }
 
-/** File order is the order the server sent, not alphabetical — the plates come
- *  back grouped already, and re-sorting them would shuffle a product's files on
- *  every rename for no gain. */
-function groupByFile(plates: PlateRecipe[]): [string, PlateRecipe[]][] {
-  const groups = new Map<string, PlateRecipe[]>();
+/**
+ * Plates grouped per library FILE, labelled with that file's name.
+ *
+ * ⚠️ **The key is `library_file_id`, never `filename`.** Two library files in
+ * different folders may carry the same basename — a `lids.3mf` under `v1` and
+ * another under `v2` is the normal way a design gets revised — and grouping on
+ * the name silently welds their plates into one block, so plate 1 appears
+ * twice under one heading and the operator prints from the wrong revision.
+ *
+ * File order is the order the server sent, not alphabetical: the plates come
+ * back grouped already, and re-sorting would shuffle a product's files on
+ * every rename for no gain.
+ */
+function groupByFile(plates: PlateRecipe[]): { fileId: number; filename: string; plates: PlateRecipe[] }[] {
+  const groups = new Map<number, { fileId: number; filename: string; plates: PlateRecipe[] }>();
   for (const plate of plates) {
-    const existing = groups.get(plate.filename);
-    if (existing) existing.push(plate);
-    else groups.set(plate.filename, [plate]);
+    const existing = groups.get(plate.library_file_id);
+    if (existing) existing.plates.push(plate);
+    else groups.set(plate.library_file_id, { fileId: plate.library_file_id, filename: plate.filename, plates: [plate] });
   }
-  return [...groups.entries()];
+  return [...groups.values()];
 }
 
 /**
@@ -69,11 +79,11 @@ export function PlatesByFile({ productId }: { productId: number }) {
 
       {!isLoading && files.length === 0 && <p className="text-sm text-bambu-gray">{t('products.plates.empty')}</p>}
 
-      {files.map(([filename, filePlates]) => (
-        <div key={filename} className="rounded-xl border border-bambu-dark-tertiary p-3 space-y-3">
-          <h3 className="text-sm font-medium text-white truncate">{filename}</h3>
+      {files.map((file) => (
+        <div key={file.fileId} className="rounded-xl border border-bambu-dark-tertiary p-3 space-y-3">
+          <h3 className="text-sm font-medium text-white truncate">{file.filename}</h3>
 
-          {filePlates.map((plate) => (
+          {file.plates.map((plate) => (
             <div key={plate.id} className="space-y-2 border-t border-bambu-dark-tertiary pt-2 first:border-0 first:pt-0">
               <div className="flex items-center gap-2 flex-wrap text-sm">
                 <span className="text-white">

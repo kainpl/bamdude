@@ -38,7 +38,12 @@ export function ProductPage() {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const { data: product, isLoading } = useQuery({
+  const {
+    data: product,
+    isLoading,
+    isError,
+    error,
+  } = useQuery({
     queryKey: ['product', id],
     queryFn: () => api.getProduct(id),
     enabled: Number.isFinite(id),
@@ -87,6 +92,18 @@ export function ProductPage() {
       <div className="p-4 md:p-6 flex items-center gap-2 text-bambu-gray">
         <Loader2 className="w-4 h-4 animate-spin" />
         {t('common.loading')}
+      </div>
+    );
+  }
+  // ⚠️ A fetch that FAILED is not a product that is gone. "This product no
+  // longer exists" over an expired session, a proxy hiccup or a 500 sends the
+  // operator hunting for a deletion nobody performed — so the server's own
+  // sentence is shown instead, and only an answered request with nothing in it
+  // reads as not-found.
+  if (isError) {
+    return (
+      <div className="p-4 md:p-6 text-sm text-red-500">
+        {t('products.page.loadFailed')} {(error as Error)?.message}
       </div>
     );
   }

@@ -11,14 +11,17 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { Product, ProductPart } from '../../../api/client';
 import { CompositionTable } from '../../../components/products/CompositionTable';
 
 const product = {
-  id: 1,
+  // Product 7, parts 1-3: the ids must DIFFER, or an argument swap in
+  // `addProductPartAlias(productId, partId, key)` passes both assertions below
+  // while sending the pair the wrong way round.
+  id: 7,
   name: 'Flask',
   parts: [
     {
@@ -82,10 +85,10 @@ describe('CompositionTable', () => {
     fireEvent.click(screen.getByTestId('part-1-alias-add'));
     fireEvent.change(screen.getByTestId('part-1-alias-input'), { target: { value: 'Body v2.stl' } });
     fireEvent.keyDown(screen.getByTestId('part-1-alias-input'), { key: 'Enter' });
-    await waitFor(() => expect(add).toHaveBeenCalledWith(1, 1, 'Body v2.stl'));
+    await waitFor(() => expect(add).toHaveBeenCalledWith(7, 1, 'Body v2.stl'));
 
     fireEvent.click(screen.getByTestId('part-1-alias-remove-body.stl'));
-    await waitFor(() => expect(remove).toHaveBeenCalledWith(1, 1, 'body.stl'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(7, 1, 'body.stl'));
   });
 
   it('a 409 on alias add is reported as a toast', async () => {
@@ -97,6 +100,28 @@ describe('CompositionTable', () => {
     fireEvent.keyDown(screen.getByTestId('part-1-alias-input'), { key: 'Enter' });
 
     expect(await screen.findByText(/already belongs/i)).toBeInTheDocument();
+  });
+
+  it('puts the server value back when an inline edit is not sendable', () => {
+    // The inputs are uncontrolled and keyed on the server's value, so nothing
+    // re-renders when the patch is skipped — a cleared name or a fractional
+    // quantity would sit there looking saved until some later refetch happened
+    // to remount the row.
+    const patch = vi.spyOn(api, 'updateProductPart');
+    render(<CompositionTable product={product} canEdit />);
+
+    const row = within(screen.getByTestId('part-1-row'));
+    const name = row.getByLabelText('Part') as HTMLInputElement;
+    fireEvent.change(name, { target: { value: '   ' } });
+    fireEvent.blur(name);
+    expect(name.value).toBe('flask body');
+
+    const qty = row.getByLabelText('Per unit') as HTMLInputElement;
+    fireEvent.change(qty, { target: { value: '2.5' } });
+    fireEvent.blur(qty);
+    expect(qty.value).toBe('1');
+
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it('purchased parts never offer an alias input', () => {

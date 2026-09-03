@@ -5036,6 +5036,7 @@ export default {
     },
     page: {
       notFound: 'Такого виробу вже немає.',
+      loadFailed: 'Не вдалося завантажити виріб:',
     },
     header: {
       breadcrumb: 'Вироби',
@@ -5089,6 +5090,7 @@ export default {
       files: 'Файли',
       folders: 'Теки',
       unlink: 'Відв’язати',
+      viaFolder: 'через теку',
       empty: 'Нічого не прив’язано.',
       linkHint: 'Файли й теки прив’язують у Менеджері файлів.',
       openFiles: 'Відкрити Менеджер файлів',

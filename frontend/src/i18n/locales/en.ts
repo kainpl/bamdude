@@ -4986,6 +4986,7 @@ export default {
     },
     page: {
       notFound: 'This product no longer exists.',
+      loadFailed: 'Could not load this product:',
     },
     header: {
       breadcrumb: 'Products',
@@ -5039,6 +5040,7 @@ export default {
       files: 'Files',
       folders: 'Folders',
       unlink: 'Unlink',
+      viaFolder: 'via folder',
       empty: 'Nothing linked yet.',
       linkHint: 'Link files and folders from the File Manager.',
       openFiles: 'Open the File Manager',

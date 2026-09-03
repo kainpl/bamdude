@@ -114,16 +114,33 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
   const printed = product.parts.filter((p) => p.kind === 'printed').sort(byOrder);
   const purchased = product.parts.filter((p) => p.kind === 'purchased').sort(byOrder);
 
-  /** Both inline fields commit the same way: an abandoned edit patches nothing. */
-  const commitName = (part: ProductPart, raw: string) => {
-    const name = raw.trim();
-    if (name === '' || name === part.name) return;
-    save.mutate({ partId: part.id, data: { name } });
+  /**
+   * Both inline fields commit the same way: an abandoned edit patches nothing.
+   *
+   * ⚠️ **A rejected edit puts the server's value back in the box.** These
+   * inputs are uncontrolled and keyed on what the server sent, so nothing
+   * re-renders when the patch is skipped — an empty name, `2.5`, or `-1` would
+   * otherwise sit there looking saved until the next refetch happened to
+   * remount the row. The field has to say what the product actually holds.
+   */
+  const commitName = (part: ProductPart, field: HTMLInputElement) => {
+    const name = field.value.trim();
+    if (name !== '' && name !== part.name) {
+      save.mutate({ partId: part.id, data: { name } });
+      return;
+    }
+    // Nothing to send — an emptied box, or the same name in different padding.
+    field.value = part.name;
   };
-  const commitQty = (part: ProductPart, raw: string) => {
-    const next = Number(raw.trim());
-    if (raw.trim() === '' || !Number.isInteger(next) || next < 0 || next === part.qty_per_unit) return;
-    save.mutate({ partId: part.id, data: { qty_per_unit: next } });
+  const commitQty = (part: ProductPart, field: HTMLInputElement) => {
+    const raw = field.value.trim();
+    const next = Number(raw);
+    if (raw !== '' && Number.isInteger(next) && next >= 0 && next !== part.qty_per_unit) {
+      save.mutate({ partId: part.id, data: { qty_per_unit: next } });
+      return;
+    }
+    // Nothing to send — cleared, fractional, negative, or unchanged.
+    field.value = String(part.qty_per_unit);
   };
 
   const nameCell = (part: ProductPart) => (
@@ -135,7 +152,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
           defaultValue={part.name}
           disabled={!canEdit}
           aria-label={t('products.composition.name')}
-          onBlur={(e) => commitName(part, e.currentTarget.value)}
+          onBlur={(e) => commitName(part, e.currentTarget)}
           className={`${FIELD_CLASS} min-w-[10rem]`}
         />
         {part.auto && <span className={CHIP_CLASS}>{t('products.composition.fromFile')}</span>}
@@ -153,7 +170,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
           defaultValue={part.qty_per_unit}
           disabled={!canEdit}
           aria-label={t('products.composition.perUnit')}
-          onBlur={(e) => commitQty(part, e.currentTarget.value)}
+          onBlur={(e) => commitQty(part, e.currentTarget)}
           className={`${FIELD_CLASS} w-20 text-right tabular-nums`}
         />
         {part.qty_per_unit === 0 && (

@@ -25,17 +25,24 @@ interface LinkedFilesProps {
  * ⚠️ **The file list is not `library_file_ids`.** `GET /library/files?
  * product_id=` returns the product's direct files UNION the files of its
  * linked folders, which is what the operator means by "this product's files";
- * the id array on the product carries only the direct half. Unlinking a file
- * that arrived through a folder is therefore a 404 — the folder is what holds
- * it — so files are unlinked and folders are unlinked separately, each from
- * its own list.
+ * `product.library_file_ids` carries only the DIRECT half.
+ *
+ * ⚠️ **Only a direct link gets an unlink button, and that is load-bearing.**
+ * `DELETE /products/{id}/files/{file_id}` does not refuse a folder-derived
+ * file — `routes/products.py::unlink_file` reads the file's own pivot rows
+ * (`product_files`), subtracts this product, and syncs the result. A file that
+ * reached the product through a folder has NO row there, so the set comes back
+ * unchanged, the sync writes nothing, and the endpoint answers 200 with the
+ * product. The × would therefore "succeed", the list would refetch, and the
+ * chip would still be sitting there with nothing said. Such a file is marked
+ * as coming from a folder instead; the folder chip above it is what unlinks it.
  */
 export function LinkedFiles({ product, canEdit }: LinkedFilesProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data: files = [] } = useQuery({
+  const { data: files = [], isLoading: filesLoading } = useQuery({
     queryKey: ['product-files', product.id],
     // The product id is the LAST positional argument of `getLibraryFiles`; the
     // ones before it are the folder/scope/tag filters this view does not use.
@@ -43,7 +50,7 @@ export function LinkedFiles({ product, canEdit }: LinkedFilesProps) {
     enabled: Number.isFinite(product.id),
   });
 
-  const { data: folders = [] } = useQuery({
+  const { data: folders = [], isLoading: foldersLoading } = useQuery({
     queryKey: ['product-folders', product.id],
     queryFn: () => api.getFoldersByProduct(product.id),
     enabled: Number.isFinite(product.id),
@@ -71,7 +78,11 @@ export function LinkedFiles({ product, canEdit }: LinkedFilesProps) {
     onError: fail,
   });
 
-  const empty = files.length === 0 && folders.length === 0;
+  // Gated on both queries: a product WITH files must not flash "nothing linked
+  // yet" on the way to showing them.
+  const empty = !filesLoading && !foldersLoading && files.length === 0 && folders.length === 0;
+  /** The direct half — the only files this page can actually unlink. */
+  const directIds = new Set(product.library_file_ids);
 
   return (
     <section className="space-y-3">
@@ -109,10 +120,19 @@ export function LinkedFiles({ product, canEdit }: LinkedFilesProps) {
           <p className="text-xs text-bambu-gray">{t('products.files.files')}</p>
           <div className="flex items-center gap-2 flex-wrap">
             {files.map((file) => (
-              <span key={file.id} className={CHIP_CLASS}>
+              <span
+                key={file.id}
+                className={CHIP_CLASS}
+                title={directIds.has(file.id) ? undefined : t('products.files.viaFolder')}
+              >
                 <File className="w-4 h-4 shrink-0" />
                 <span className="truncate">{file.filename}</span>
-                {canEdit && (
+                {!directIds.has(file.id) && (
+                  <span className="text-[0.65rem] uppercase tracking-wide text-bambu-gray/70 shrink-0">
+                    {t('products.files.viaFolder')}
+                  </span>
+                )}
+                {canEdit && directIds.has(file.id) && (
                   <button
                     type="button"
                     onClick={() => unlinkFile.mutate(file.id)}

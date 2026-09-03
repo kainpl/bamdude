@@ -8,6 +8,12 @@
  * ⚠️ An `unassigned` object is a real object on the plate that no part claims —
  * shown, muted, with the reason in its title. Hiding it is how a product ends
  * up silently under-counting what it prints.
+ *
+ * ⚠️ The fixture holds TWO different library files both called `lids.3mf` —
+ * the ordinary shape of a revised design, one per folder. Grouping on the
+ * filename welds them into a single block with two "plate 1"s in it, so the
+ * heading count below is what separates grouping per FILE from grouping per
+ * name; a fixture whose filenames happened to differ would pass either way.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -53,7 +59,7 @@ describe('PlatesByFile', () => {
         id: 3,
         library_file_id: 8,
         plate_index: 0,
-        filename: 'flask.gcode',
+        filename: 'lids.3mf',
         sliced: true,
         yield: [{ part_id: 2, name: 'flask', count: 1 }],
         unassigned: [],
@@ -66,7 +72,9 @@ describe('PlatesByFile', () => {
 
     render(<PlatesByFile productId={1} />);
 
-    expect(await screen.findAllByRole('heading', { level: 3 })).toHaveLength(2); // two files
+    // Two library files, even though they share a basename.
+    expect(await screen.findAllByRole('heading', { level: 3 })).toHaveLength(2);
+    expect(screen.getAllByText('lids.3mf')).toHaveLength(2);
     expect(screen.getByText(/whole file/i)).toBeInTheDocument();
     expect(screen.getByText('lid a × 4')).toBeInTheDocument();
     expect(screen.getByText('lid b × 4')).toHaveAttribute('title', expect.stringMatching(/not in composition/i));
