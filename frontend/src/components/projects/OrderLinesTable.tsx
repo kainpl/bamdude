@@ -2,10 +2,9 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, ChevronRight, ChevronUp, Check, Pencil, Printer, Trash2, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, Check, Pencil, Trash2, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, ProjectLine, ProjectLineUpdate } from '../../api/client';
-import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ConfirmModal } from '../ConfirmModal';
 import { ProgressBar } from './ProgressBar';
@@ -66,7 +65,6 @@ function changedFields(line: ProjectLine, draft: Draft): ProjectLineUpdate {
 interface OrderLinesTableProps {
   order: Order;
   canEdit: boolean;
-  onPrintPlate: (line: ProjectLine) => void;
 }
 
 /**
@@ -81,14 +79,13 @@ interface OrderLinesTableProps {
  * whatever another session had just done. Sequential rather than parallel:
  * the pair is a swap, and sending both at once means the second can land
  * first.
+ *
+ * ⚠️ **Nothing prints from here.** The row's own "print a plate…" picker was
+ * the interim answer of pass 2; the plan block below the table replaced it,
+ * and a second door onto `PrintModal` from the same page would let an operator
+ * queue a plate the plan is not counting.
  */
-export function OrderLinesTable({ order, canEdit, onPrintPlate }: OrderLinesTableProps) {
-  // ⚠️ NOT `canEdit`. This button opens `PrintModal`, which dispatches to a
-  // machine — the same `printers:control` the File Manager's Print gates on.
-  // Editing an order line is `projects:*`, and somebody trusted with the
-  // paperwork is not thereby trusted to start a print.
-  const { hasPermission } = useAuth();
-  const canPrint = hasPermission('printers:control');
+export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
@@ -277,19 +274,6 @@ export function OrderLinesTable({ order, canEdit, onPrintPlate }: OrderLinesTabl
                       >
                         {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                       </button>
-
-                      {canPrint && (
-                        <button
-                          type="button"
-                          data-testid={`line-${line.id}-print`}
-                          onClick={() => onPrintPlate(line)}
-                          title={t('orders.lines.printPlate')}
-                          aria-label={t('orders.lines.printPlate')}
-                          className={ICON_BUTTON_CLASS}
-                        >
-                          <Printer className="w-4 h-4" />
-                        </button>
-                      )}
 
                       {canEdit && editing && (
                         <>

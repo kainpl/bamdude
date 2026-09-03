@@ -94,10 +94,16 @@ export function PlanLine({
     return new Set(source.parts.filter((p) => p.qty_per_unit > 0).map((p) => p.part_id));
   }, [order.lines, line.line_id]);
 
+  // ⚠️ No line, no yields — NOT an unrestricted one. When the line has gone
+  // from the order between the two reads there is nothing to say which parts it
+  // counts, and a plate's full yield would report another product's parts as
+  // this line's surplus. An empty map makes `projectPlan` answer
+  // `surplusAfter: null`, and the server's own `surplus_after` is shown.
   const yields = useMemo(() => {
     const out: YieldByPlate = {};
+    if (counted === null) return out;
     for (const plate of plates ?? []) {
-      out[plate.id] = plate.yield.filter((y) => counted === null || counted.has(y.part_id));
+      out[plate.id] = plate.yield.filter((y) => counted.has(y.part_id));
     }
     return out;
   }, [plates, counted]);
@@ -107,7 +113,12 @@ export function PlanLine({
 
   const planned = new Set(line.rows.map((r) => r.plate_id));
   const addable = (plates ?? []).filter((p) => line.candidates.includes(p.id) && !planned.has(p.id));
-  const notSliced = line.not_sliced.map((id) => plates?.find((p) => p.id === id)?.filename ?? `#${id}`);
+  // Named or not shown. A bare `#42` is a database id on an operator's screen
+  // — it names nothing they can act on, and while the recipes are in flight it
+  // would flash up and then be replaced by the real filename.
+  const notSliced = line.not_sliced
+    .map((id) => plates?.find((p) => p.id === id)?.filename)
+    .filter((filename): filename is string => filename != null);
 
   // plate · covers · count · time · grams · [cost] · actions
   const columns = showCost ? 7 : 6;

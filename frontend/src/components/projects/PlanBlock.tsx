@@ -45,6 +45,8 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
   const {
     data: plan,
     isLoading,
+    isError,
+    refetch,
     dataUpdatedAt,
   } = useQuery({
     queryKey: ['project-plan', order.id],
@@ -178,6 +180,30 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
         <div className="flex items-center gap-2 text-bambu-gray text-sm">
           <Loader2 className="w-4 h-4 animate-spin" />
           {t('common.loading')}
+        </div>
+      </section>
+    );
+  }
+
+  // ⚠️ The heading stays, and so does a way back. Returning null on a failed
+  // fetch removed the whole section from the page, and a block that is simply
+  // absent reads as "this order has nothing to print" — the one thing a failed
+  // plan must not say.
+  //
+  // Data first, then `isError`: the plan is re-read after every enqueue and on
+  // every print event, so a refetch that blips must not replace a plan still on
+  // screen with an error.
+  if (isError && !plan) {
+    return (
+      <section className="space-y-3" data-testid="plan-block">
+        {heading}
+        <div className="flex items-center gap-3 flex-wrap text-sm">
+          <p className="text-red-400" data-testid="plan-error">
+            {t('orders.plan.loadFailed')}
+          </p>
+          <Button size="sm" variant="outline" data-testid="plan-retry" onClick={() => refetch()}>
+            {t('orders.plan.retry')}
+          </Button>
         </div>
       </section>
     );

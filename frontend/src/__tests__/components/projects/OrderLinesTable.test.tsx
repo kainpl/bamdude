@@ -76,7 +76,7 @@ describe('OrderLinesTable', () => {
   });
 
   it('renders lines in sort order with server progress and expands into parts', async () => {
-    render(<OrderLinesTable order={order} canEdit onPrintPlate={() => {}} />);
+    render(<OrderLinesTable order={order} canEdit />);
     const rows = screen.getAllByRole('row').filter((r) => r.getAttribute('data-line'));
     expect(rows.map((r) => r.getAttribute('data-line'))).toEqual(['10', '11']);
     expect(screen.getByText('1 / 2')).toBeInTheDocument();
@@ -87,7 +87,7 @@ describe('OrderLinesTable', () => {
 
   it('moving a line down swaps sort_order with its neighbour through two PATCHes', async () => {
     const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
-    render(<OrderLinesTable order={order} canEdit onPrintPlate={() => {}} />);
+    render(<OrderLinesTable order={order} canEdit />);
     fireEvent.click(screen.getByTestId('line-10-down'));
     await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
     expect(patch).toHaveBeenCalledWith(1, 10, { sort_order: 1 });
@@ -97,7 +97,7 @@ describe('OrderLinesTable', () => {
   it('adds a line with the picked product and an uppercased material', async () => {
     vi.spyOn(api, 'getProducts').mockResolvedValue([{ id: 3, name: 'Cap', is_active: true }] as never);
     const add = vi.spyOn(api, 'addOrderLine').mockResolvedValue(order);
-    render(<OrderLinesTable order={order} canEdit onPrintPlate={() => {}} />);
+    render(<OrderLinesTable order={order} canEdit />);
     fireEvent.click(await screen.findByRole('button', { name: 'Cap' }));
     fireEvent.change(screen.getByLabelText(/material/i), { target: { value: 'petg' } });
     fireEvent.blur(screen.getByLabelText(/material/i));
@@ -122,7 +122,7 @@ describe('OrderLinesTable', () => {
     render(
       <>
         <OrderProbe id={1} />
-        <OrderLinesTable order={order} canEdit onPrintPlate={() => {}} />
+        <OrderLinesTable order={order} canEdit />
       </>,
     );
     await waitFor(() => expect(refetch).toHaveBeenCalledTimes(1));
@@ -139,7 +139,7 @@ describe('OrderLinesTable', () => {
 
   it('a save with nothing changed sends no PATCH and just closes the editor', async () => {
     const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
-    render(<OrderLinesTable order={order} canEdit onPrintPlate={() => {}} />);
+    render(<OrderLinesTable order={order} canEdit />);
 
     fireEvent.click(screen.getByTestId('line-10-edit'));
     fireEvent.click(screen.getByTestId('line-10-save'));
@@ -152,15 +152,13 @@ describe('OrderLinesTable', () => {
     expect(screen.queryByTestId('line-10-save')).not.toBeInTheDocument();
   });
 
-  it('offers the plate print to an operator who may control a printer', async () => {
-    // ⚠️ Gated on `printers:control`, NOT on `canEdit`. The button opens
-    // PrintModal, which dispatches to a machine — the same permission the File
-    // Manager's Print gates on. Somebody trusted with the paperwork is not
-    // thereby trusted to start a print.
-    render(<OrderLinesTable order={order} canEdit onPrintPlate={() => {}} />);
-    // `findBy`, not `getBy`: the permission arrives with `/auth/me`, so the
-    // button appears on the render after auth resolves — like every other
-    // permission-gated control in the app.
-    expect(await screen.findByTestId('line-10-print')).toBeInTheDocument();
+  it('no longer offers a print of its own — the plan block owns that', async () => {
+    // The row's "print a plate…" picker was the interim answer of pass 2. The
+    // plan block replaced it, and a second door onto PrintModal from the same
+    // page would queue plates the plan is not counting.
+    render(<OrderLinesTable order={order} canEdit />);
+
+    expect(await screen.findByTestId('line-10-expand')).toBeInTheDocument();
+    expect(screen.queryByTestId('line-10-print')).not.toBeInTheDocument();
   });
 });

@@ -4,19 +4,36 @@
  * the what-if follows the PLATE'S yields (not the row's clipped `useful`), and
  * "whole plan to queue" sends exactly the rows the operator left standing.
  *
- * ⚠️ `useful` on row 100 is deliberately 10 while its plate yields 10 and row
- * 200's `useful` is 2 while its plate yields 5 — a projection that reached for
- * `useful` instead of the recipe would pass the first test and fail the second.
+ * ⚠️ The fixture is built so all three possible sources of the surplus figure
+ * disagree. The server says 3; row 100's `useful` is 10 and row 200's is 2,
+ * summing to 12 against a need of 12, i.e. 0; the plate recipes yield 10 and 6,
+ * which is 4. Only a projection that reads the RECIPES can show 4 — and it must
+ * show 4 at the very counts the server planned, before anything is edited.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react';
 import { useQuery } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
 import { api } from '../../../api/client';
-import type { Order, OrderPlan, PlateRecipe } from '../../../api/client';
+import type { Order, OrderPlan, Permission, PlateRecipe } from '../../../api/client';
 import { PlanBlock } from '../../../components/projects/PlanBlock';
+
+/** What the mocked `useAuth` grants — reset in `beforeEach`, narrowed per test. */
+const auth = vi.hoisted(() => ({ granted: new Set<string>() }));
+
+// The block gates its two row actions on two DIFFERENT permissions, and the
+// real `AuthProvider` in the render helper always resolves the same admin. Only
+// the hook is replaced; everything else (the provider itself, above all) is the
+// real module, so the tree still mounts the way the app mounts it.
+vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../contexts/AuthContext')>();
+  return {
+    ...actual,
+    useAuth: () => ({ ...actual.useAuth(), hasPermission: (p: Permission) => auth.granted.has(p) }),
+  };
+});
 
 /** A stand-in for `OrderPage`'s own `['project', id]` query — an invalidation
  *  is observable only as a refetch, and only while something watches the key. */
@@ -90,6 +107,8 @@ const plan: OrderPlan = {
           time_unknown: false,
         },
       ],
+      // The server's own answer, and deliberately NOT what the recipes below
+      // make of the same counts — see the file header.
       surplus_after: [{ part_id: 1, name: 'Body', count: 3 }],
       unsatisfiable: [{ part_id: 2, name: 'Cap', count: 3 }],
       candidates: [100, 200],
@@ -119,7 +138,7 @@ const plates: PlateRecipe[] = [
     plate_index: 0,
     filename: 'small.3mf',
     sliced: true,
-    yield: [{ part_id: 1, name: 'Body', count: 5 }],
+    yield: [{ part_id: 1, name: 'Body', count: 6 }],
     unassigned: [],
     materials: ['PETG'],
     colors: [],
@@ -131,18 +150,22 @@ const plates: PlateRecipe[] = [
 describe('PlanBlock', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    auth.granted = new Set(['projects:update', 'queue:create', 'printers:control']);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(plan);
     vi.spyOn(api, 'getProductPlates').mockResolvedValue(plates);
+    // The currency is the test's choice, not `formatMoney`'s USD fallback —
+    // otherwise the money assertions pass on an unresolved settings query.
+    vi.spyOn(api, 'getSettings').mockResolvedValue({ currency: 'UAH' } as never);
   });
 
   it('renders the recommended plates of every line', async () => {
     render(<PlanBlock order={order} canEdit />);
 
-    expect(await screen.findByTestId('plan-row-100')).toHaveTextContent('big.3mf');
-    expect(screen.getByTestId('plan-row-200')).toHaveTextContent('small.3mf');
-    expect(screen.getByTestId('plan-row-100-count')).toHaveValue(1);
+    expect(await screen.findByTestId('plan-row-10-100')).toHaveTextContent('big.3mf');
+    expect(screen.getByTestId('plan-row-10-200')).toHaveTextContent('small.3mf');
+    expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(1);
     // The whole file, not "plate 0".
-    expect(screen.getByTestId('plan-row-200')).toHaveTextContent(/whole file/i);
+    expect(screen.getByTestId('plan-row-10-200')).toHaveTextContent(/whole file/i);
     expect(screen.getByTestId('plan-totals-prints')).toHaveTextContent('2');
     // `0 && <jsx>` renders the NUMBER, and this block is full of counts that
     // legitimately reach zero — the detector is the only thing that sees one
@@ -153,7 +176,7 @@ describe('PlanBlock', () => {
   it('leaves no bare zero behind when a row is emptied', async () => {
     render(<PlanBlock order={order} canEdit />);
 
-    fireEvent.click(await screen.findByTestId('plan-row-200-dec'));
+    fireEvent.click(await screen.findByTestId('plan-row-10-200-dec'));
 
     // The count INPUT holds "0" as a value, not as a text node, so the row at
     // zero is still expected to leave the tree clean.
@@ -163,19 +186,20 @@ describe('PlanBlock', () => {
   it('recomputes the surplus and the totals from the plate yields when a count is raised', async () => {
     render(<PlanBlock order={order} canEdit />);
 
-    // The server's own surplus first: 10 + 5 bodies against a need of 12.
+    // The projection wins the moment the recipes resolve: 10 + 6 bodies against
+    // a need of 12 is 4, where the server said 3 and the rows' `useful` says 0.
     const surplus = await screen.findByTestId('plan-line-10-surplus');
-    await waitFor(() => expect(surplus).toHaveTextContent('3'));
+    await waitFor(() => expect(surplus).toHaveTextContent('Body +4'));
 
-    fireEvent.click(screen.getByTestId('plan-row-100-inc'));
+    fireEvent.click(screen.getByTestId('plan-row-10-100-inc'));
 
-    expect(screen.getByTestId('plan-row-100-count')).toHaveValue(2);
-    // 2 × 10 + 1 × 5 = 25 bodies, 13 more than the 12 outstanding.
-    await waitFor(() => expect(screen.getByTestId('plan-line-10-surplus')).toHaveTextContent('13'));
+    expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(2);
+    // 2 × 10 + 1 × 6 = 26 bodies, 14 more than the 12 outstanding.
+    await waitFor(() => expect(screen.getByTestId('plan-line-10-surplus')).toHaveTextContent('Body +14'));
     expect(screen.getByTestId('plan-totals-prints')).toHaveTextContent('3');
     expect(screen.getByTestId('plan-totals-time')).toHaveTextContent('2h 30m');
     expect(screen.getByTestId('plan-totals-grams')).toHaveTextContent('220.0');
-    expect(screen.getByTestId('plan-totals-cost')).toHaveTextContent('$4.40');
+    expect(screen.getByTestId('plan-totals-cost')).toHaveTextContent('₴4.40');
   });
 
   it('sends only the rows left standing, and drops the caches the order is read from', async () => {
@@ -191,8 +215,8 @@ describe('PlanBlock', () => {
       </>,
     );
 
-    fireEvent.click(await screen.findByTestId('plan-row-200-dec'));
-    expect(screen.getByTestId('plan-row-200-count')).toHaveValue(0);
+    fireEvent.click(await screen.findByTestId('plan-row-10-200-dec'));
+    expect(screen.getByTestId('plan-row-10-200-count')).toHaveValue(0);
 
     fireEvent.click(screen.getByTestId('plan-enqueue-all'));
 
@@ -223,7 +247,7 @@ describe('PlanBlock', () => {
     render(<PlanBlock order={{ ...order, status: 'completed' }} canEdit />);
 
     expect(await screen.findByTestId('plan-closed')).toBeInTheDocument();
-    expect(screen.queryByTestId('plan-row-100')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('plan-row-10-100')).not.toBeInTheDocument();
     expect(api.getOrderPlan).not.toHaveBeenCalled();
   });
 
@@ -239,11 +263,74 @@ describe('PlanBlock', () => {
     expect(screen.queryByTestId('plan-enqueue-all')).not.toBeInTheDocument();
   });
 
+  it('keeps the block and offers a retry when the plan cannot be loaded', async () => {
+    // ⚠️ A block that returns null on a failed fetch is simply absent from the
+    // page, which reads as "this order has nothing to print" — the one thing a
+    // failed plan must not say.
+    const get = vi.spyOn(api, 'getOrderPlan').mockRejectedValue(new Error('Gateway timeout'));
+
+    render(<PlanBlock order={order} canEdit />);
+
+    expect(await screen.findByTestId('plan-error')).toHaveTextContent(/could not load the plan/i);
+    expect(screen.getByRole('heading', { name: /what to print next/i })).toBeInTheDocument();
+
+    get.mockResolvedValue(plan);
+    fireEvent.click(screen.getByTestId('plan-retry'));
+
+    expect(await screen.findByTestId('plan-row-10-100')).toBeInTheDocument();
+    expect(screen.queryByTestId('plan-error')).not.toBeInTheDocument();
+  });
+
+  it('says nothing it cannot know when the plan names a line the order has lost', async () => {
+    // ⚠️ Without the line there is no way to tell which parts it counts, so the
+    // plate yields are UNKNOWN — not unrestricted. An unrestricted yield would
+    // report another product's parts on a shared plate as this line's surplus.
+    // The server's own `surplus_after` is what is shown instead.
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
+      ...plan,
+      lines: [{ ...plan.lines[0], line_id: 99, not_sliced: [300, 400] }],
+    });
+    vi.spyOn(api, 'getProductPlates').mockResolvedValue([
+      ...plates,
+      { ...plates[1], id: 300, filename: 'raw.stl', sliced: false },
+    ]);
+
+    render(<PlanBlock order={order} canEdit />);
+
+    // The recipes have resolved — this text is drawn from them.
+    expect(await screen.findByText(/raw\.stl/)).toBeInTheDocument();
+    // Still the server's 3, not the recipes' 4.
+    expect(screen.getByTestId('plan-line-99-surplus')).toHaveTextContent('Body +3');
+    // A plate id the recipes never named is left out, not printed as `#400`.
+    expect(screen.getByTestId('plan-line-99')).not.toHaveTextContent('#400');
+  });
+
+  it('gates the queue and the printer on their own permissions', async () => {
+    // ⚠️ Two different answers. Filing work under a queue is `queue:create`;
+    // opening PrintModal dispatches to a machine and is `printers:control`.
+    // Somebody trusted with the paperwork is not thereby trusted to start a
+    // print, and vice versa.
+    auth.granted = new Set(['projects:update', 'printers:control']);
+    render(<PlanBlock order={order} canEdit />);
+
+    expect(await screen.findByTestId('plan-row-10-100-printer')).toBeInTheDocument();
+    expect(screen.queryByTestId('plan-row-10-100-queue')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('plan-enqueue-all')).not.toBeInTheDocument();
+
+    cleanup();
+    auth.granted = new Set(['projects:update', 'queue:create']);
+    render(<PlanBlock order={order} canEdit />);
+
+    expect(await screen.findByTestId('plan-row-10-100-queue')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-enqueue-all')).toBeInTheDocument();
+    expect(screen.queryByTestId('plan-row-10-100-printer')).not.toBeInTheDocument();
+  });
+
   it('hides every queue action from a reader', async () => {
     render(<PlanBlock order={order} canEdit={false} />);
 
-    expect(await screen.findByTestId('plan-row-100')).toBeInTheDocument();
+    expect(await screen.findByTestId('plan-row-10-100')).toBeInTheDocument();
     expect(screen.queryByTestId('plan-enqueue-all')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('plan-row-100-queue')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('plan-row-10-100-queue')).not.toBeInTheDocument();
   });
 });

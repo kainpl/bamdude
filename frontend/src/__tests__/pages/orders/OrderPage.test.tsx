@@ -84,6 +84,30 @@ function CustomerProbe({ onFetch }: { onFetch: () => void }) {
 describe('OrderPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    // The page mounts `PlanBlock`, which fetches its own plan. These tests are
+    // about the page's composition, not the plan — an empty one keeps the block
+    // quiet without letting the request escape to the network.
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
+      lines: [],
+      totals: { prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null },
+    });
+  });
+
+  it('plans what to print next, right under the lines', async () => {
+    vi.spyOn(api, 'getOrder').mockResolvedValue(order as never);
+
+    window.history.pushState({}, '', '/projects/1');
+    render(
+      <Routes>
+        <Route path="/projects/:id" element={<OrderPage />} />
+      </Routes>,
+    );
+
+    expect(await screen.findByTestId('plan-block')).toBeInTheDocument();
+    await waitFor(() => expect(api.getOrderPlan).toHaveBeenCalledWith(1));
+    // The interim picker is gone with its button — the plan block is the only
+    // way from this page into the queue.
+    expect(screen.queryByTestId('line-10-print')).not.toBeInTheDocument();
   });
 
   it('suggests closing an order whose lines are all printed, and closes it on demand', async () => {

@@ -4796,7 +4796,6 @@ export default {
       cancel: 'Cancel',
       moveUp: 'Move up',
       moveDown: 'Move down',
-      printPlate: 'Print a plate…',
       delete: 'Delete line',
       confirmDeleteTitle: 'Delete this line?',
       confirmDelete: 'Prints filed under this line stay in the order, unfiled.',
@@ -4816,6 +4815,8 @@ export default {
     },
     plan: {
       title: 'What to print next',
+      loadFailed: 'Could not load the plan',
+      retry: 'Retry',
       closed: 'This order is closed — nothing is planned for it.',
       nothingOutstanding: 'Everything is printed or already queued.',
       outstanding: 'Outstanding:',
@@ -4849,15 +4850,6 @@ export default {
         enqueued_other: '{{count}} prints added to the queue',
         nothingToEnqueue: 'Nothing to send — every row is at zero.',
       },
-    },
-    printPlate: {
-      title: 'Print a plate',
-      wholeFile: 'Whole file',
-      plate: 'Plate {{n}}',
-      notSliced: 'Not sliced',
-      print: 'Print',
-      noPlates: 'This product has no plates yet — link a file to it first.',
-      materials: 'Materials:',
     },
     procurement: {
       title: 'Purchased parts',

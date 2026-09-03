@@ -40,6 +40,12 @@ interface PlanRowProps {
  * The `+` is deliberately uncapped: a count over the server's 999 disables the
  * *queue* button with the reason in its title, rather than silently refusing a
  * click or clamping a number the operator typed on purpose.
+ *
+ * ⚠️ **The test ids carry the LINE id beside the plate's.** `ProductPlate.id`
+ * is unique per product, not per order — two lines of the same product put the
+ * same plate on screen twice, and a bare `plan-row-100` would match both. The
+ * `counts` state upstream has always been keyed `lineId → plateId`; this is the
+ * ids catching up with it.
  */
 export function PlanRow({
   order,
@@ -63,7 +69,7 @@ export function PlanRow({
 
   return (
     <tr
-      data-testid={`plan-row-${row.plate_id}`}
+      data-testid={`plan-row-${lineId}-${row.plate_id}`}
       className={`border-b border-bambu-dark-tertiary last:border-0 ${count === 0 ? 'opacity-50' : ''}`}
     >
       <td className="px-3 py-2 min-w-0">
@@ -83,7 +89,7 @@ export function PlanRow({
         <div className="inline-flex items-center gap-1">
           <button
             type="button"
-            data-testid={`plan-row-${row.plate_id}-dec`}
+            data-testid={`plan-row-${lineId}-${row.plate_id}-dec`}
             className={step}
             disabled={count <= 0}
             onClick={() => onCount(count - 1)}
@@ -93,7 +99,7 @@ export function PlanRow({
           <input
             type="number"
             min={0}
-            data-testid={`plan-row-${row.plate_id}-count`}
+            data-testid={`plan-row-${lineId}-${row.plate_id}-count`}
             value={count}
             aria-label={t('orders.plan.row.count')}
             onChange={(e) => onCount(Math.max(0, Math.trunc(Number(e.currentTarget.value) || 0)))}
@@ -101,7 +107,7 @@ export function PlanRow({
           />
           <button
             type="button"
-            data-testid={`plan-row-${row.plate_id}-inc`}
+            data-testid={`plan-row-${lineId}-${row.plate_id}-inc`}
             className={step}
             onClick={() => onCount(count + 1)}
           >
@@ -130,7 +136,7 @@ export function PlanRow({
             <Button
               size="sm"
               variant="outline"
-              data-testid={`plan-row-${row.plate_id}-queue`}
+              data-testid={`plan-row-${lineId}-${row.plate_id}-queue`}
               disabled={busy || count === 0 || tooMany}
               title={tooMany ? t('orders.plan.row.tooMany') : undefined}
               onClick={onEnqueue}
@@ -142,7 +148,7 @@ export function PlanRow({
             <Button
               size="sm"
               variant="ghost"
-              data-testid={`plan-row-${row.plate_id}-printer`}
+              data-testid={`plan-row-${lineId}-${row.plate_id}-printer`}
               onClick={() => setPrinting(true)}
             >
               {t('orders.plan.row.toPrinter')}

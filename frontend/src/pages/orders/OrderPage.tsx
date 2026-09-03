@@ -4,14 +4,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
-import type { ProjectLine, ProjectStatus } from '../../api/client';
+import type { ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { OrderHeader } from '../../components/projects/OrderHeader';
 import { CloseSuggestionBanner } from '../../components/projects/CloseSuggestionBanner';
 import { OrderFigures } from '../../components/projects/OrderFigures';
 import { OrderLinesTable } from '../../components/projects/OrderLinesTable';
-import { PrintPlateFromLine } from '../../components/projects/PrintPlateFromLine';
+import { PlanBlock } from '../../components/projects/PlanBlock';
 import { OrderModal } from '../../components/projects/OrderModal';
 import { OrderCover } from '../../components/projects/OrderCover';
 import { ProcurementChecklist } from '../../components/projects/ProcurementChecklist';
@@ -28,9 +28,9 @@ import { ConfirmModal } from '../../components/ConfirmModal';
  *
  * The page composes sections and owns nothing but dialog state — every figure
  * comes from `GET /projects/{id}` and is shown as sent (design decision 8).
- * The `#order-plan` anchor below the lines is deliberately empty this pass:
- * it is where the plan block lands, and reserving it now keeps the section
- * order from shifting under the operator when it arrives.
+ * `PlanBlock` below the lines answers the other half: what to print next, and
+ * how to send it. It owns its own query and its own what-if counts, so the
+ * page hands it the order and the edit permission and nothing else.
  */
 export function OrderPage() {
   const { t } = useTranslation();
@@ -44,7 +44,6 @@ export function OrderPage() {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
-  const [printing, setPrinting] = useState<ProjectLine | null>(null);
 
   const {
     data: order,
@@ -135,10 +134,9 @@ export function OrderPage() {
 
       <OrderFigures figures={order.figures} />
 
-      <OrderLinesTable order={order} canEdit={canEdit} onPrintPlate={setPrinting} />
+      <OrderLinesTable order={order} canEdit={canEdit} />
 
-      {/* Reserved for the plan block (pass 3) — empty on purpose. */}
-      <div id="order-plan" />
+      <PlanBlock order={order} canEdit={canEdit} />
 
       <ProcurementChecklist order={order} canEdit={canEdit} />
 
@@ -166,8 +164,6 @@ export function OrderPage() {
           onCancel={() => setDeleting(false)}
         />
       )}
-
-      {printing && <PrintPlateFromLine order={order} line={printing} onClose={() => setPrinting(null)} />}
     </div>
   );
 }

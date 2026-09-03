@@ -344,6 +344,7 @@ export function useWebSocket() {
     debouncedInvalidate('project');           // stats: total / in-progress / progress
     debouncedInvalidate('project-archives');  // the Prints grid
     debouncedInvalidate('project-timeline');  // a print is a timeline event
+    debouncedInvalidate('project-plan');      // a finished print is work the plan must stop planning
     debouncedInvalidate('customer');          // the customer's printed figure
     debouncedInvalidate('projects');          // roll-up on the order cards
   }, [debouncedInvalidate]);
