@@ -352,12 +352,30 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
             # Phase 4: Tables with defaults for new columns
             # ---------------------------------------------------------------
             for tbl, defs in _COPY_WITH_DEFAULTS.items():
-                if tbl == "printers":
-                    continue  # already imported
+                if tbl in ("printers", "projects"):
+                    continue  # each has its own call — printers above, projects below
                 n = await _import_table(conn, old_db, tbl, defaults=defs)
                 if n:
                     summary[tbl] = n
                     logger.info("Imported %d rows into %s", n, tbl)
+
+            # projects: upstream's ``budget`` is our ``price``. Auto-detection
+            # matches source columns to destination columns BY NAME, so without
+            # this rename the money on every imported project is dropped in
+            # silence — the destination has no ``budget`` to land in, m158
+            # having renamed it. m158 does the same rename for THIS install's
+            # own rows; an import has to do it itself, because it runs after the
+            # whole chain, against the already-converted schema.
+            n = await _import_table(
+                conn,
+                old_db,
+                "projects",
+                defaults=_COPY_WITH_DEFAULTS["projects"],
+                rename={"budget": "price"},
+            )
+            if n:
+                summary["projects"] = n
+                logger.info("Imported %d rows into projects", n)
 
             # ---------------------------------------------------------------
             # Phase 5: Tables with transforms
@@ -375,15 +393,30 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
                 logger.info("Imported %d rows into ams_labels", n)
 
             # ⚠️ Upstream ``project_bom_items`` is deliberately NOT imported.
-            # The projects redesign (m162) replaced the free-text BOM with
+            # The projects redesign (m158) replaced the free-text BOM with
             # ``product_parts`` + ``project_procurement``, a fact table keyed by
             # ``product_part_id``. A legacy BOM row carries a name, not a part,
             # so moving it across is a conversion (invent the product, invent
             # the purchased part, then the fact) rather than a column rename —
-            # m162 does exactly that, but only for THIS install's own legacy
+            # m158 does exactly that, but only for THIS install's own legacy
             # rows, and it runs long after m000. Re-adding a rename here would
             # not resurrect the data: the destination table no longer exists at
             # any point of the chain, so ``_import_table`` returns 0 in silence.
+            #
+            # ⚠️ The same boundary costs the rest of the old projects feature,
+            # and the losses are deliberate. An upstream ``is_template = 1``
+            # project arrives as an ORDINARY order, not as a product: converting
+            # it the way m158 converts a local template would mean inventing a
+            # product out of pivots (``library_file_projects``,
+            # ``project_print_plan_items``) that are already gone from the
+            # destination schema by the time this runs, so there is nothing to
+            # build the composition from. Users get a plainly-named order they
+            # can retire by hand — a legitimate deferral, not an oversight.
+            # ``target_count``, ``target_parts_count``, ``target_sets``,
+            # ``parent_id`` and ``template_source_id`` are dropped for the same
+            # reason: the columns no longer exist, and the concepts they carried
+            # (plate/part quotas, sub-projects) were retired with the redesign,
+            # replaced by order lines and product composition.
 
             # virtual_printers - model code fix + auto_dispatch default
             n = await _import_table(

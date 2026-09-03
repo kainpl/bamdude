@@ -170,7 +170,7 @@ async def test_three_copies_leave_exactly_one(db_session):
 async def test_a_row_referenced_only_by_a_product_survives(db_session):
     """A file's only reference can be its product link, and that has to count.
 
-    m141 is frozen and runs at two different moments — before m162 on an
+    m141 is frozen and runs at two different moments — before m158 on an
     upgrade (legacy pivot present, product tables absent) and after
     ``create_all`` on a fresh install (the reverse) — so the counter asks the
     database which filing tables exist instead of importing either era's model.
@@ -238,7 +238,7 @@ async def test_a_row_referenced_only_by_a_product_plate_survives(db_session):
 async def test_the_legacy_pivot_still_counts_when_it_is_there(db_session):
     """The upgrade half of the same rule, and the only place it can be tested.
 
-    On an existing install m141 runs BEFORE m162: ``library_file_projects``
+    On an existing install m141 runs BEFORE m158: ``library_file_projects``
     exists, ``product_files`` does not, and the legacy table has no model left
     to select from — so it is counted in raw SQL, guarded by a table check. A
     fresh test database never has that table, which means a typo in that SQL

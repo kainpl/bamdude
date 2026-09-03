@@ -1,8 +1,18 @@
-"""m162: legacy projects → products + order lines, atomically, then drop.
+"""m158: legacy projects → products + order lines, atomically, then drop.
 
 The test engine builds TODAY's schema from the models, so the legacy tables
-and columns are created here by hand (the exact shapes m016/m044/m158 left
-behind), populated, and the migration's ``upgrade`` is run against them.
+and columns are created here by hand and populated, then the migration's
+``upgrade`` is run against them.
+
+Two starting shapes are exercised, because m158 has to survive both:
+
+* **shape (i)** — straight from 0.5.5: ``project_print_plan_items`` has no
+  ``plate_index`` and there is no ``project_parts`` table at all. The whole-file
+  plan row is expanded per plate from the file's metadata during the conversion.
+* **shape (ii)** — the DB of anyone who ran the unreleased parts-ledger form of
+  m158 first: ``plate_index`` and ``project_parts`` are both there.
+
+Shape (iii) — already converted — is the re-run, and must change nothing.
 """
 
 import json
@@ -12,7 +22,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.migrations import m162_products_and_orders as m162
+from backend.app.migrations import m158_products_and_orders as m158
 from backend.app.migrations.helpers import get_table_columns, table_exists
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
@@ -172,7 +182,7 @@ async def _legacy_fixture(db: AsyncSession, engine, printer_factory) -> dict:
 async def _run_upgrade(engine):
     async with engine.begin() as conn:
         await conn.execute(text("PRAGMA foreign_keys = OFF"))
-        await m162.upgrade(conn)
+        await m158.upgrade(conn)
 
 
 @pytest.mark.asyncio
@@ -266,7 +276,7 @@ async def test_archived_becomes_completed_and_templates_become_products_only(db_
 
 
 @pytest.mark.asyncio
-async def test_legacy_tables_and_columns_are_gone_and_a_rerun_is_a_noop(db_session, test_engine, printer_factory):
+async def test_shape_iii_already_converted_is_a_noop(db_session, test_engine, printer_factory):
     await _legacy_fixture(db_session, test_engine, printer_factory)
     await _run_upgrade(test_engine)
     await _run_upgrade(test_engine)  # DEBUG=true re-runs the head migration
@@ -330,7 +340,7 @@ async def test_one_corrupt_file_metadata_does_not_abort_the_upgrade(db_session, 
         )
     await db_session.commit()
 
-    with caplog.at_level(logging.WARNING, logger="backend.app.migrations.m162_products_and_orders"):
+    with caplog.at_level(logging.WARNING, logger="backend.app.migrations.m158_products_and_orders"):
         await _run_upgrade(test_engine)  # must not raise
     assert "skipped metadata" in caplog.text  # the guard actually fired, not "nothing raised"
     db_session.expire_all()
@@ -359,3 +369,155 @@ async def test_one_corrupt_file_metadata_does_not_abort_the_upgrade(db_session, 
 async def test_fresh_install_has_nothing_to_convert(db_session, test_engine):
     await _run_upgrade(test_engine)  # no legacy tables at all
     assert (await db_session.execute(select(Product))).first() is None
+
+
+# ---------------------------------------------------------------------------
+# Shape (i): straight from 0.5.5 — no plate_index, no project_parts
+# ---------------------------------------------------------------------------
+
+_LEGACY_DDL_0_5_5 = [
+    "ALTER TABLE projects ADD COLUMN target_count INTEGER",
+    "ALTER TABLE projects ADD COLUMN target_parts_count INTEGER",
+    "ALTER TABLE projects ADD COLUMN parent_id INTEGER",
+    "ALTER TABLE projects ADD COLUMN is_template BOOLEAN DEFAULT 0",
+    "ALTER TABLE projects ADD COLUMN template_source_id INTEGER",
+    "ALTER TABLE projects ADD COLUMN budget FLOAT",
+    "CREATE TABLE library_file_projects (file_id INTEGER NOT NULL, project_id INTEGER NOT NULL, PRIMARY KEY (file_id, project_id))",
+    "CREATE TABLE library_folder_projects (folder_id INTEGER NOT NULL, project_id INTEGER NOT NULL, PRIMARY KEY (folder_id, project_id))",
+    # No plate_index — a plan row still means "N × the whole file".
+    """CREATE TABLE project_print_plan_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, library_file_id INTEGER NOT NULL,
+        copies INTEGER NOT NULL DEFAULT 1, order_index INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME, updated_at DATETIME)""",
+    # No project_parts at all — that table only ever existed in the unreleased
+    # parts-ledger form of m158.
+    """CREATE TABLE project_bom_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name VARCHAR(255) NOT NULL,
+        quantity_needed INTEGER DEFAULT 1, quantity_acquired INTEGER DEFAULT 0, unit_price FLOAT, sourcing_url VARCHAR(512),
+        archive_id INTEGER, stl_filename VARCHAR(255), remarks TEXT, sort_order INTEGER DEFAULT 0,
+        created_at DATETIME, updated_at DATETIME)""",
+]
+
+# One plate, one object: nothing to expand, so the row stays plate_index = 0.
+_SINGLE_META = {
+    "plates": [
+        {
+            "index": 1,
+            "objects": ["knob.stl"],
+            "printable_objects": {"1": "knob.stl"},
+            "print_time_seconds": 600,
+            "filament_used_grams": 5.0,
+        }
+    ]
+}
+
+
+async def _fixture_0_5_5(db: AsyncSession, engine, printer_factory) -> dict:
+    async with engine.begin() as conn:
+        for ddl in _LEGACY_DDL_0_5_5:
+            await conn.execute(text(ddl))
+
+    printer = await printer_factory()
+    db.add(PrinterQueue(printer_id=printer.id))
+    folder = LibraryFolder(name="Voron")
+    db.add(folder)
+    await db.flush()
+    multi = LibraryFile(
+        filename="parts.gcode.3mf",
+        file_path="parts",
+        file_size=1,
+        file_type="gcode",
+        folder_id=folder.id,
+        file_metadata=_MULTI_META,
+    )
+    single = LibraryFile(
+        filename="knob.gcode.3mf",
+        file_path="knob",
+        file_size=1,
+        file_type="gcode",
+        folder_id=folder.id,
+        file_metadata=_SINGLE_META,
+    )
+    db.add_all([multi, single])
+    order = Project(name="Voron build", status="active")
+    db.add(order)
+    await db.flush()
+    await db.execute(text("UPDATE projects SET is_template = 0 WHERE id = :id"), {"id": order.id})
+    await db.execute(
+        text("INSERT INTO library_file_projects (file_id, project_id) VALUES (:f, :p)"), {"f": multi.id, "p": order.id}
+    )
+    # One row per file, each meaning "N × the whole file".
+    for file_id, copies in ((multi.id, 3), (single.id, 5)):
+        await db.execute(
+            text(
+                "INSERT INTO project_print_plan_items (project_id, library_file_id, copies, order_index) "
+                "VALUES (:p, :f, :c, 0)"
+            ),
+            {"p": order.id, "f": file_id, "c": copies},
+        )
+    archive = PrintArchive(
+        printer_id=printer.id,
+        project_id=order.id,
+        library_file_id=multi.id,
+        plate_index=1,
+        filename="parts.gcode.3mf",
+        file_path="",
+        file_size=0,
+        status="completed",
+        filament_type="PETG",
+    )
+    db.add(archive)
+    await db.flush()
+    await db.commit()
+    return {"order": order.id, "multi": multi.id, "single": single.id, "archive": archive.id}
+
+
+@pytest.mark.asyncio
+async def test_shape_i_straight_from_0_5_5_expands_the_plan_from_metadata(db_session, test_engine, printer_factory):
+    """No ``plate_index`` column: the whole-file plan row becomes one plate row
+    per plate of the file, each inheriting ``copies``, so Σ copies × yield is
+    the same number the old per-plate expansion seed would have produced."""
+    ids = await _fixture_0_5_5(db_session, test_engine, printer_factory)
+    await _run_upgrade(test_engine)
+    db_session.expire_all()
+
+    line = (await db_session.execute(select(ProjectLine).where(ProjectLine.project_id == ids["order"]))).scalar_one()
+    assert line.quantity == 1
+    product_id = line.product_id
+
+    plates = sorted(
+        (
+            await db_session.execute(
+                select(ProductPlate.library_file_id, ProductPlate.plate_index).where(
+                    ProductPlate.product_id == product_id
+                )
+            )
+        ).all()
+    )
+    assert plates == sorted([(ids["multi"], 1), (ids["multi"], 2), (ids["single"], 0)])
+
+    parts = {
+        p.name_key: p
+        for p in (await db_session.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars()
+    }
+    assert parts["bracket.stl"].qty_per_unit == 6  # 3 copies × 2 on plate 1
+    assert parts["lid.stl"].qty_per_unit == 3  # 3 copies × 1 on plate 1
+    assert parts["clip.stl"].qty_per_unit == 30  # 3 copies × 10 on plate 2
+    assert parts["knob.stl"].qty_per_unit == 5  # single-plate file, 5 copies of the whole file
+    assert all(p.auto is True for p in parts.values())  # no project_parts table = no explicit targets
+
+    archive = await db_session.get(PrintArchive, ids["archive"])
+    assert archive.project_line_id == line.id
+
+
+@pytest.mark.asyncio
+async def test_print_archive_parts_table_is_created_on_shape_i(db_session, test_engine, printer_factory):
+    """The parts-ledger DDL of the old m158 has to survive the fold — ``seed()``
+    backfills into it, and a 0.5.5 install has never seen it."""
+    await _fixture_0_5_5(db_session, test_engine, printer_factory)
+    async with test_engine.begin() as conn:
+        await conn.execute(text("DROP TABLE IF EXISTS print_archive_parts"))
+        assert not await table_exists(conn, "print_archive_parts")
+    await _run_upgrade(test_engine)
+    async with test_engine.begin() as conn:
+        assert await table_exists(conn, "print_archive_parts")

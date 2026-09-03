@@ -1,7 +1,7 @@
 """Manual re-run: seed print_archive_parts for every archive with a 3MF on disk.
 
 First population now happens automatically, on upgrade, in m158's ``seed()``
-(``backend/app/migrations/m158_parts_ledger.py``) — every user gets the
+(``backend/app/migrations/m158_products_and_orders.py``) — every user gets the
 ledger backfilled the moment they migrate through it, since users upgrade
 through migrations only. This script is NOT part of that path; it stays
 for MANUAL re-runs after a canonicalisation-rule change (``services/

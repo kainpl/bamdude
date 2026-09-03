@@ -455,7 +455,7 @@ async def test_attachment_upload_list_download_and_delete(committing_client):
 
 
 @pytest.mark.asyncio
-async def test_attachment_handlers_reject_a_bad_extension_and_a_traversing_name(committing_client):
+async def test_attachment_upload_rejects_a_bad_extension(committing_client):
     pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
     bad = await committing_client.post(
         f"/api/v1/projects/{pid}/attachments", files={"file": ("payload.exe", b"MZ", "application/octet-stream")}

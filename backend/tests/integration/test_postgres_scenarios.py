@@ -123,14 +123,14 @@ class TestFreshInstall:
         assert result["counts"].get("users") == 0
 
     def test_the_legacy_project_tables_are_gone(self, result):
-        """m162 retires the whole make-it side of the old projects feature.
+        """m158 retires the whole make-it side of the old projects feature.
 
-        Replaces an m044/m158 test that asserted which unique constraint
+        Replaces an m044-era test that asserted which unique constraint
         ``project_print_plan_items`` ends up with: the table itself is dropped
         now, so the only thing left worth pinning on a real server is that the
-        drop actually happened — the frozen migrations still CREATE these
-        tables earlier in the chain, so a fresh install proves m162 runs last
-        and cleans up after them.
+        drop actually happened — the frozen migrations (m016, m044, m048) still
+        CREATE and fill these tables earlier in the chain, so a fresh install
+        proves m158 runs after them and cleans up.
         """
         psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
         import asyncio
@@ -156,7 +156,7 @@ class TestFreshInstall:
                 await conn.close()
 
         survivors = asyncio.run(go())
-        assert survivors == set(), f"m162 left legacy project tables behind on a fresh install: {sorted(survivors)}"
+        assert survivors == set(), f"m158 left legacy project tables behind on a fresh install: {sorted(survivors)}"
 
 
 class TestSqliteMigration:

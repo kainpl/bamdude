@@ -148,7 +148,7 @@ async def trash_duplicate_rows(db: AsyncSession) -> tuple[int, int]:
 
     ⚠️ **The filing tables it counts differ by era, so it asks the database
     which ones are there.** m141 is frozen and runs at two different moments:
-    on an existing install it runs BEFORE m162, when the legacy
+    on an existing install it runs BEFORE m158, when the legacy
     ``library_file_projects`` / ``project_print_plan_items`` still exist and
     ``product_files`` does not; on a fresh install ``create_all`` has already
     made the product tables and the legacy pair never existed at all. Importing

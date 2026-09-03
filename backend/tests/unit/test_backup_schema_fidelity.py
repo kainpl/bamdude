@@ -109,7 +109,9 @@ class TestPortableExportEndToEnd:
         raw.commit()
         raw.close()
 
-        monkeypatch.setattr(db_portable, "is_sqlite", lambda: False, raising=False)
+        # db_portable imports is_sqlite inside the function, so the patch has
+        # to land on db_dialect itself — patching the module attribute would be
+        # inert.
         monkeypatch.setattr("backend.app.core.db_dialect.is_sqlite", lambda: False)
 
         engine = create_async_engine(f"sqlite+aiosqlite:///{src_path}")
@@ -190,7 +192,7 @@ class TestNullCoalescingIsTypeAware:
 
 
 class TestPortableRoundTripCarriesProductsAndOrders:
-    """The projects redesign (m162) added eight NOT NULL columns whose
+    """The projects redesign (m158) added eight NOT NULL columns whose
     ``server_default`` is an integer, not a datetime: ``products.is_active``,
     ``product_parts.qty_per_unit`` / ``auto`` / ``sort_order``,
     ``product_plates.plate_index``, ``project_lines.quantity`` /
@@ -254,7 +256,9 @@ class TestPortableRoundTripCarriesProductsAndOrders:
         finally:
             src_sync.dispose()
 
-        monkeypatch.setattr(db_portable, "is_sqlite", lambda: False, raising=False)
+        # db_portable imports is_sqlite inside the function, so the patch has
+        # to land on db_dialect itself — patching the module attribute would be
+        # inert.
         monkeypatch.setattr("backend.app.core.db_dialect.is_sqlite", lambda: False)
 
         engine = create_async_engine(f"sqlite+aiosqlite:///{src_path}")
@@ -282,7 +286,9 @@ class TestPortableRoundTripCarriesProductsAndOrders:
             assert out.execute(
                 "SELECT id, project_id, product_id, quantity, material, sort_order FROM project_lines ORDER BY id"
             ).fetchall() == [(1, 1, 1, 3, "PETG", 0), (2, 1, 1, 7, None, 1)]
-            assert out.execute("SELECT * FROM project_procurement").fetchall() == [(1, 2, 9)]
+            assert out.execute(
+                "SELECT project_id, product_part_id, quantity_acquired FROM project_procurement"
+            ).fetchall() == [(1, 2, 9)]
 
             # And the DDL that makes those columns un-NULLable in the first
             # place has to arrive with them, or a restore loses the guarantee.

@@ -1,25 +1,65 @@
-"""m162: projects become orders; products, customers, order lines appear.
+"""m158: projects become orders; products, customers, order lines appear.
 
 Design: docs/superpowers/specs/2026-09-02-projects-redesign-design.md.
 
+**Why this number.** This slot first held ``m158_parts_ledger`` — the
+per-part plate state, a ``project_parts`` target ledger and a per-plate
+widening of the plan table. The redesign that followed retires both of the
+latter, so shipping them and then converting them away would have made two
+migrations out of one change and left every fresh install building tables
+it drops three statements later. v0.5.5 ends at m156, so m157–m162 had
+never been released: on 2026-09-03 the user folded the conversion (then
+``m162_products_and_orders``) back into m158 and the m162 file went away.
+⚠️ **Do not repeat this trick on a released migration** — anyone who has
+already recorded the version would silently skip the new content. It was
+only safe here because nothing shipped.
+
 Everything happens in ``upgrade(conn)`` — one transaction (FK off on SQLite),
 the m044 precedent — so a conversion that fails half-way rolls back whole and
-the legacy tables are still there for the next attempt. There is no ``seed``.
+the legacy tables are still there for the next attempt.
 
 Order of work:
 
-1. create the new tables and columns (guarded; fresh installs already have
+1. ``print_archive_parts`` — the live per-part state of one printed plate
+   (seeded at print start; skips and the defect dialog write into it). It
+   comes FIRST because ``seed()`` backfills into it;
+2. create the new tables and columns (guarded; fresh installs already have
    them from ``create_all()``);
-2. IF the legacy pivot ``library_file_projects`` still exists, convert every
+3. IF the legacy pivot ``library_file_projects`` still exists, convert every
    project: one product, its files/folders/plates/parts, BOM → purchased
    parts + procurement, one order line ``× 1``, archives + queue rows get the
    line, ``budget → price``, ``archived → completed``; templates become
    products only and their attachments are COPIED to the product directory
    (never moved — see ``_copy_template_attachments``);
-3. drop the five legacy tables and the six legacy ``projects`` columns.
+4. drop the five legacy tables and the six legacy ``projects`` columns.
 
-Because step 3 removes the marker step 2 keys on, a re-run (``DEBUG=true``)
+Because step 4 removes the marker step 3 keys on, a re-run (``DEBUG=true``)
 finds nothing to convert and touches no data. Named columns everywhere.
+
+**Three starting shapes**, all of which reach this migration:
+
+* **(i) straight from 0.5.5** — the ordinary upgrade. ``project_print_plan_
+  items`` has NO ``plate_index`` and there is no ``project_parts`` table, so
+  a plan row still means "N × the whole file". Such a row is expanded per
+  plate from the file's own metadata during the conversion (see
+  ``_expanded_plan_rows``), which is what the retired parts-ledger seed used
+  to do to the plan table itself.
+* **(ii) after the unreleased parts-ledger m158** — the developer's own
+  SQLite and the dev PostgreSQL. ``plate_index`` and ``project_parts`` are
+  both present; plan rows are read as they are and ``target_qty`` is honoured.
+* **(iii) already converted** — the new tables are there and the legacy ones
+  are gone. ``_convert_legacy`` sees no ``library_file_projects`` and returns;
+  every DDL statement is guarded, so the whole run is a no-op.
+
+``seed(session_factory)`` does one job: the one-time ``print_archive_parts``
+backfill for pre-existing archives. Users upgrade through migrations only, so
+that population has to happen here; ``scripts/backfill_archive_parts.py``
+remains the manual RE-RUN tool (rule changes, troubleshooting), not the normal
+upgrade path. It is idempotent — archives that already have rows are skipped,
+so a ``DEBUG=true`` re-run adds nothing.
+
+FK CASCADE is honoured by PostgreSQL only — this codebase never sets
+``PRAGMA foreign_keys`` on SQLite; hard-delete paths clean up explicitly.
 """
 
 import json
@@ -37,7 +77,7 @@ from backend.app.services.product_files import product_attachments_dir
 
 logger = logging.getLogger(__name__)
 
-version = 162
+version = 158
 name = "products_and_orders"
 
 PURCHASED_KEY_PREFIX = "purchased:"
@@ -72,6 +112,34 @@ _PROJECTS_KEEP_COLS = (
     "id, name, customer_id, description, color, status, notes, attachments, tags, due_date, priority, price, url, "
     "cover_image_filename, created_at, updated_at"
 )
+
+
+async def _create_archive_parts(conn) -> None:
+    """Per-part state of one printed plate. First, because ``seed()`` fills it.
+
+    Shape (i) has never seen this table; shapes (ii) and (iii) already have it,
+    from the retired parts-ledger form of m158 or from ``create_all()``.
+    """
+    if await table_exists(conn, "print_archive_parts"):
+        return
+    sqlite = is_sqlite()
+    pk = "INTEGER PRIMARY KEY AUTOINCREMENT" if sqlite else "SERIAL PRIMARY KEY"
+    json_t = "TEXT" if sqlite else "JSON"
+    await conn.exec_driver_sql(
+        f"""
+        CREATE TABLE print_archive_parts (
+            id {pk},
+            archive_id INTEGER NOT NULL REFERENCES print_archives(id) ON DELETE CASCADE,
+            name VARCHAR(512) NOT NULL,
+            name_key VARCHAR(512) NOT NULL,
+            identify_ids {json_t},
+            quantity INTEGER NOT NULL DEFAULT 1,
+            defective INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    await conn.exec_driver_sql("CREATE INDEX ix_print_archive_parts_archive_id ON print_archive_parts (archive_id)")
+    await conn.exec_driver_sql("CREATE INDEX ix_print_archive_parts_name_key ON print_archive_parts (name_key)")
 
 
 async def _create_tables(conn) -> None:
@@ -240,6 +308,35 @@ def _plate_key_counts(meta: dict, plate_index: int) -> tuple[Counter, dict[str, 
     return counts, display
 
 
+def _expanded_plan_rows(rows, has_plate_index: bool) -> list[tuple]:
+    """Plan rows as ``(file_id, plate_index, copies, raw_meta)``, per plate.
+
+    On shape (ii) the rows already name a plate and come through untouched. On
+    shape (i) there is no ``plate_index`` column at all — a row means "N × the
+    whole file" — so a file whose metadata reports more than one plate becomes
+    one row PER plate, each inheriting ``copies``. That is exactly what the
+    retired parts-ledger seed did to the plan table, moved here: totals used to
+    multiply whole-file metadata by ``copies``, and per-plate inheritance keeps
+    every sum identical. A single-plate file (or one with no plate metadata)
+    stays a single ``plate_index = 0`` row, which ``_plate_names`` reads as "the
+    whole file".
+    """
+    if has_plate_index:
+        return [(r[0], r[1], r[2], r[3]) for r in rows]
+    expanded: list[tuple] = []
+    for file_id, _zero, copies, raw_meta in rows:
+        try:
+            plates = _load_meta(raw_meta).get("plates") or []
+            indices = sorted({int(p["index"]) for p in plates if isinstance(p.get("index"), int) and p["index"] > 0})
+        except Exception:  # noqa: BLE001 — corrupt metadata is reported where the counts are read, below
+            indices = []
+        if len(indices) > 1:
+            expanded.extend((file_id, idx, copies, raw_meta) for idx in indices)
+        else:
+            expanded.append((file_id, 0, copies, raw_meta))
+    return expanded
+
+
 async def _insert_returning_id(conn, sql: str, params: dict) -> int:
     """INSERT … RETURNING id — SQLite ≥ 3.35 (Python 3.12 bundles 3.4x) and PostgreSQL."""
     return (await conn.execute(text(sql + " RETURNING id"), params)).scalar_one()
@@ -282,10 +379,14 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
         {"pid": product_id, "p": project_id},
     )
 
+    # Shape (i) has no plate_index column; the literal 0 keeps one row shape for
+    # both, and _expanded_plan_rows turns it into real plates from the metadata.
+    has_plate_index = await column_exists(conn, "project_print_plan_items", "plate_index")
+    plate_col = "p.plate_index" if has_plate_index else "0 AS plate_index"
     plan_rows = (
         await conn.execute(
             text(
-                "SELECT p.library_file_id, p.plate_index, p.copies, f.file_metadata "
+                f"SELECT p.library_file_id, {plate_col}, p.copies, f.file_metadata "
                 "FROM project_print_plan_items p JOIN library_files f ON f.id = p.library_file_id "
                 "WHERE p.project_id = :p"
             ),
@@ -296,7 +397,7 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
     yield_by_key: Counter = Counter()  # Σ copies × instances
     first_count: dict[str, int] = {}
     display: dict[str, str] = {}
-    for file_id, plate_index, copies, raw_meta in plan_rows:
+    for file_id, plate_index, copies, raw_meta in _expanded_plan_rows(plan_rows, has_plate_index):
         if (file_id, plate_index) not in seen_plates:
             seen_plates.add((file_id, plate_index))
             await conn.execute(
@@ -307,7 +408,7 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
             counts, names = _plate_key_counts(_load_meta(raw_meta), plate_index)
         except Exception:  # noqa: BLE001 — one corrupt file_metadata must not abort the upgrade
             logger.warning(
-                "m162: skipped metadata of file %s while converting project %s", file_id, project_id, exc_info=True
+                "m158: skipped metadata of file %s while converting project %s", file_id, project_id, exc_info=True
             )
             continue
         for key, n in counts.items():
@@ -315,14 +416,18 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
             first_count.setdefault(key, n)
             display.setdefault(key, names[key])
 
-    targets = {
-        r[1]: (r[0], r[2])
-        for r in (
-            await conn.execute(
-                text("SELECT name, name_key, target_qty FROM project_parts WHERE project_id = :p"), {"p": project_id}
-            )
-        ).all()
-    }
+    # Shape (i) never had a target ledger — every printed part is then derived.
+    targets: dict[str, tuple[str, int | None]] = {}
+    if await table_exists(conn, "project_parts"):
+        targets = {
+            r[1]: (r[0], r[2])
+            for r in (
+                await conn.execute(
+                    text("SELECT name, name_key, target_qty FROM project_parts WHERE project_id = :p"),
+                    {"p": project_id},
+                )
+            ).all()
+        }
     sort_order = 0
     for key in sorted(set(targets) | set(yield_by_key)):
         if key in targets:
@@ -474,7 +579,7 @@ async def _convert_legacy(conn) -> None:
     if has_budget:
         await conn.execute(text("UPDATE projects SET price = budget WHERE budget IS NOT NULL AND price IS NULL"))
     await conn.execute(text("UPDATE projects SET status = 'completed' WHERE status = 'archived'"))
-    logger.info("m162: converted %d project(s) into products + order lines", converted)
+    logger.info("m158: converted %d project(s) into products + order lines", converted)
 
 
 async def _drop_legacy(conn) -> None:
@@ -492,6 +597,79 @@ async def _drop_legacy(conn) -> None:
 
 
 async def upgrade(conn):
+    await _create_archive_parts(conn)
     await _create_tables(conn)
     await _convert_legacy(conn)
     await _drop_legacy(conn)
+
+
+async def seed(session_factory):
+    """One-time parts-ledger backfill for pre-existing archives.
+
+    ``scripts/backfill_archive_parts.py`` stays as the manual RE-RUN tool (rule
+    changes, troubleshooting); first population happens here so every user gets
+    it on upgrade. Idempotent: archives that already have rows are skipped, so a
+    ``DEBUG=true`` re-run adds nothing. Path resolution and error posture mirror
+    m114_skip_objects_supported's precedent for a migration that opens archive
+    3MFs. Named-column selects only — this seed must survive later schema drift.
+    """
+    from backend.app.core.config import settings as _settings
+    from backend.app.services.archive import extract_printable_objects_from_3mf
+    from backend.app.services.part_names import tally_objects
+
+    async with session_factory() as session:
+        have_rows = {
+            aid for (aid,) in (await session.execute(text("SELECT DISTINCT archive_id FROM print_archive_parts"))).all()
+        }
+        archives = (
+            await session.execute(
+                text(
+                    "SELECT id, plate_index, file_path, defective_count FROM print_archives "
+                    "WHERE file_path != '' AND deleted_at IS NULL"
+                )
+            )
+        ).all()
+        backfilled = 0
+        for archive_id, plate_index, file_path, flat_defective in archives:
+            if archive_id in have_rows:
+                continue
+            try:
+                path = Path(file_path)
+                if not path.is_absolute():
+                    path = _settings.base_dir / file_path
+                if not path.is_file():
+                    continue
+                objects = extract_printable_objects_from_3mf(path.read_bytes(), plate_number=plate_index)
+                if not isinstance(objects, dict) or not objects:
+                    continue
+                tallies = tally_objects(objects)
+                for part in tallies:
+                    await session.execute(
+                        text(
+                            "INSERT INTO print_archive_parts "
+                            "(archive_id, name, name_key, identify_ids, quantity, defective) "
+                            "VALUES (:a, :n, :k, :ids, :q, 0)"
+                        ),
+                        {
+                            "a": archive_id,
+                            "n": part.name,
+                            "k": part.name_key,
+                            "ids": json.dumps(part.identify_ids),
+                            "q": part.quantity,
+                        },
+                    )
+                # Mono-plate rule (mirrors services/archive_parts.py::apply_flat_defective):
+                # a plate holding copies of exactly ONE part adopts the legacy flat
+                # count as that part's scrap. A multi-part plate stays unattributed —
+                # there is no way to know which part went in the bin.
+                if len(tallies) == 1 and (flat_defective or 0) > 0:
+                    await session.execute(
+                        text("UPDATE print_archive_parts SET defective = :d WHERE archive_id = :a"),
+                        {"d": min(flat_defective, tallies[0].quantity), "a": archive_id},
+                    )
+                backfilled += 1
+            except Exception:  # noqa: BLE001 — one bad 3MF must not sink the upgrade
+                logger.warning("m158 seed: parts backfill skipped archive %s", archive_id, exc_info=True)
+        if backfilled:
+            logger.info("m158 seed: backfilled part rows for %d archive(s)", backfilled)
+        await session.commit()
