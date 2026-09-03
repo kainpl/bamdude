@@ -14,6 +14,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { ProfilesPage } from './pages/ProfilesPage';
 import { MaintenancePage } from './pages/MaintenancePage';
 import { OrdersPage } from './pages/orders/OrdersPage';
+import { ProductsPage } from './pages/products/ProductsPage';
 import { CustomersPage } from './pages/customers/CustomersPage';
 import { CustomerPage } from './pages/customers/CustomerPage';
 import { OrderPage } from './pages/orders/OrderPage';
@@ -263,6 +264,7 @@ function App() {
                   <Route path="maintenance" element={<MaintenancePage />} />
                   <Route path="projects" element={<OrdersPage />} />
                   <Route path="projects/:id" element={<OrderPage />} />
+                  <Route path="products" element={<ProductsPage />} />
                   <Route path="customers" element={<CustomersPage />} />
                   <Route path="customers/:id" element={<CustomerPage />} />
                   <Route path="inventory" element={<InventoryPage />} />

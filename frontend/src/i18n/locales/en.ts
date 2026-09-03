@@ -4925,6 +4925,67 @@ export default {
     },
   },
 
+  // Projects section, products face. A product is what an order line orders:
+  // a composition of printed parts and purchased items, with the library files
+  // it is printed from. Covers arrive in pass 4 — until then every card shows
+  // the same neutral tile.
+  products: {
+    list: {
+      title: 'Products',
+      newProduct: 'New product',
+      fromFile: 'From file…',
+      search: 'Search products…',
+      inCatalog: 'In catalog',
+      empty: 'No products yet',
+    },
+    card: {
+      inactive: 'not in catalog',
+      parts_one: '{{count}} part',
+      parts_other: '{{count}} parts',
+      plates_one: '{{count}} plate',
+      plates_other: '{{count}} plates',
+      inOrders_one: 'in {{count}} order',
+      inOrders_other: 'in {{count}} orders',
+      menu: {
+        edit: 'Edit',
+        duplicate: 'Duplicate',
+        hide: 'Hide from catalog',
+        show: 'Show in catalog',
+        delete: 'Delete',
+      },
+    },
+    modal: {
+      createTitle: 'New product',
+      editTitle: 'Edit product',
+      name: 'Name',
+      description: 'Description',
+      designer: 'Designer',
+      license: 'Licence',
+      sourceUrl: 'Source URL',
+      designId: 'Design ID',
+      notes: 'Notes',
+      create: 'Create',
+      save: 'Save',
+    },
+    fromFile: {
+      title: 'New product from a file',
+      search: 'Search library files…',
+      create: 'Create product',
+      empty: 'No files match',
+    },
+    toast: {
+      saved: 'Product saved',
+      deleted: 'Product deleted',
+      duplicated: 'Product duplicated',
+      hidden: 'Product hidden from the catalog',
+      shown: 'Product is back in the catalog',
+    },
+    confirm: {
+      deleteTitle: 'Delete product?',
+      deleteBody: 'A product used by an order line cannot be deleted; hide it from the catalog instead.',
+    },
+  },
+
   // Projects
   projects: {
     tabs: {

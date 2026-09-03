@@ -4969,6 +4969,73 @@ export default {
     },
   },
 
+  // Projects section, products face. A product is what an order line orders:
+  // a composition of printed parts and purchased items, with the library files
+  // it is printed from. Covers arrive in pass 4 — until then every card shows
+  // the same neutral tile.
+  products: {
+    list: {
+      title: 'Вироби',
+      newProduct: 'Новий виріб',
+      fromFile: 'З файлу…',
+      search: 'Пошук виробів…',
+      inCatalog: 'У каталозі',
+      empty: 'Виробів ще немає',
+    },
+    card: {
+      inactive: 'не в каталозі',
+      parts_one: '{{count}} деталь',
+      parts_few: '{{count}} деталі',
+      parts_many: '{{count}} деталей',
+      parts_other: '{{count}} деталі',
+      plates_one: '{{count}} платформа',
+      plates_few: '{{count}} платформи',
+      plates_many: '{{count}} платформ',
+      plates_other: '{{count}} платформи',
+      inOrders_one: 'у {{count}} замовленні',
+      inOrders_few: 'у {{count}} замовленнях',
+      inOrders_many: 'у {{count}} замовленнях',
+      inOrders_other: 'у {{count}} замовленнях',
+      menu: {
+        edit: 'Редагувати',
+        duplicate: 'Дублювати',
+        hide: 'Прибрати з каталогу',
+        show: 'Повернути до каталогу',
+        delete: 'Видалити',
+      },
+    },
+    modal: {
+      createTitle: 'Новий виріб',
+      editTitle: 'Редагування виробу',
+      name: 'Назва',
+      description: 'Опис',
+      designer: 'Автор моделі',
+      license: 'Ліцензія',
+      sourceUrl: 'Посилання на джерело',
+      designId: 'Ідентифікатор моделі',
+      notes: 'Нотатки',
+      create: 'Створити',
+      save: 'Зберегти',
+    },
+    fromFile: {
+      title: 'Новий виріб із файлу',
+      search: 'Пошук файлів бібліотеки…',
+      create: 'Створити виріб',
+      empty: 'Немає файлів за запитом',
+    },
+    toast: {
+      saved: 'Виріб збережено',
+      deleted: 'Виріб видалено',
+      duplicated: 'Виріб дубльовано',
+      hidden: 'Виріб прибрано з каталогу',
+      shown: 'Виріб повернуто до каталогу',
+    },
+    confirm: {
+      deleteTitle: 'Видалити виріб?',
+      deleteBody: 'Виріб, який використовує позиція замовлення, видалити не можна — приберіть його з каталогу.',
+    },
+  },
+
   // Projects
   projects: {
     tabs: {
