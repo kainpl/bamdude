@@ -167,6 +167,63 @@ async def test_defective_is_counted_flat_and_per_part(committing_client, db_sess
 
 
 @pytest.mark.asyncio
+async def test_one_file_in_two_products_feeds_both_lines(committing_client, db_session, catalog):
+    """A file shared by two products of the SAME order — a real farm case. Both
+    products hold the file's whole-file plate, so both lines are candidates and
+    the prints are dealt out across them in sort order. While the plate index in
+    ``OrderContext`` held ONE product id per key, whichever product loaded last
+    took every print of the file and its sibling reported nothing printed.
+
+    This is the DB-level half of the unit tests in ``test_order_metrics.py``: it
+    proves ``load_order_context`` builds the product LISTS and that the split
+    reaches the API, not only the pure function.
+    """
+    file_id = catalog["file"].id
+    products = [Product(name="Small vase"), Product(name="Tall vase")]
+    db_session.add_all(products)
+    await db_session.flush()
+    for product in products:
+        db_session.add_all(
+            [
+                ProductPart(
+                    product_id=product.id,
+                    kind="printed",
+                    name="shade",
+                    name_key="shade",
+                    qty_per_unit=1,
+                    aliases=["shade"],
+                ),
+                ProductPlate(product_id=product.id, library_file_id=file_id, plate_index=0),
+            ]
+        )
+    await db_session.commit()
+
+    body = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Two vases",
+                # ``sort_order`` comes from the position in this list, and the
+                # response lists the lines in that same order.
+                "lines": [
+                    {"product_id": products[0].id, "quantity": 1},
+                    {"product_id": products[1].id, "quantity": 2},
+                ],
+            },
+        )
+    ).json()
+    pid = body["id"]
+    for _ in range(3):
+        await _completed_print(db_session, pid, file_id)
+
+    body = (await committing_client.get(f"/api/v1/projects/{pid}")).json()
+    first, second = body["lines"]
+    assert first["units_printed"] == 1  # its one unit, then it is full
+    assert second["units_printed"] == 2  # the other two go on to the next line
+    assert body["figures"]["printed"] == 3 and body["figures"]["other_prints_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_an_order_without_lines_is_not_printed(committing_client):
     """``all_printed`` over an empty set of lines is False, not the vacuous True
     ``all()`` would give — an empty order is not a finished one."""

@@ -86,7 +86,11 @@ class OrderContext:
     lines: list[ProjectLine]
     products_by_id: dict[int, Product]
     parts_by_product: dict[int, list[ProductPart]]
-    plate_product: dict[tuple[int, int], int]  # (library_file_id, plate_index) → product_id
+    # A plate names a SET of products, not one (spec §Data model, "A plate
+    # linked to several products is normal"): a shared file sits in several
+    # products, and one bed may carry two products' parts. While these indexes
+    # held a single id, whichever product loaded last silently took every print.
+    plate_product: dict[tuple[int, int], list[int]]  # (library_file_id, plate_index) → product ids
     archives: list[PrintArchive]  # not trashed, oldest first
     archive_parts_by_archive: dict[int, list[PrintArchivePart]]
     procurement_by_part: dict[int, int]  # product_part_id → quantity_acquired
@@ -96,7 +100,7 @@ class OrderContext:
     # single-plate file gets a 0-row from ``wanted_plate_indices``, while its
     # archives carry the slicer's own index, which is 1. An exact tuple lookup
     # therefore misses nearly every single-plate print there is.
-    whole_file_product: dict[int, int] = field(default_factory=dict)  # library_file_id → product_id
+    whole_file_product: dict[int, list[int]] = field(default_factory=dict)  # library_file_id → product ids
 
 
 async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext | None:
@@ -120,13 +124,13 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         if product_ids
         else []
     )
-    plate_product: dict[tuple[int, int], int] = {}
-    whole_file_product: dict[int, int] = {}
+    plate_products: dict[tuple[int, int], set[int]] = defaultdict(set)
+    whole_file_products: dict[int, set[int]] = defaultdict(set)
     for product in products:
         for plate in product.plates:
-            plate_product[(plate.library_file_id, plate.plate_index)] = product.id
+            plate_products[(plate.library_file_id, plate.plate_index)].add(product.id)
             if plate.plate_index == 0:
-                whole_file_product[plate.library_file_id] = product.id
+                whole_file_products[plate.library_file_id].add(product.id)
     archives = (
         (
             await db.execute(
@@ -159,11 +163,11 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         lines=lines,
         products_by_id={p.id: p for p in products},
         parts_by_product={p.id: list(p.parts) for p in products},
-        plate_product=plate_product,
+        plate_product={key: sorted(pids) for key, pids in plate_products.items()},
         archives=list(archives),
         archive_parts_by_archive=dict(by_archive),
         procurement_by_part=procurement,
-        whole_file_product=whole_file_product,
+        whole_file_product={file_id: sorted(pids) for file_id, pids in whole_file_products.items()},
     )
 
 
@@ -198,62 +202,138 @@ def _finish(figs: LineFigures) -> None:
     figs.progress = round(figs.units_printed / figs.quantity, 4) if figs.quantity else 0.0
 
 
-def _apply(figs: LineFigures, archive: PrintArchive, rows: list[PrintArchivePart], idx: dict[str, ProductPart]) -> None:
-    by_id = {p.part_id: p for p in figs.parts}
-    for row in rows:
-        part = idx.get(row.name_key)
-        if part is None or part.id not in by_id:
-            continue
-        target = by_id[part.id]
-        if archive.status == _DONE:
-            target.usable += max(0, (row.quantity or 0) - (row.defective or 0))
-        elif archive.status == _RUNNING:
-            target.in_progress += row.quantity or 0
-    figs.archive_ids.append(archive.id)
-
-
 def _line_accepts(line: ProjectLine, materials: set[str]) -> bool:
     return line.material is None or line.material.strip().upper() in materials
 
 
+def _row_quantity(row: PrintArchivePart, status: str) -> int:
+    """A completed row hands over what came out good; a running one its full count."""
+    if status == _DONE:
+        return max(0, (row.quantity or 0) - (row.defective or 0))
+    return row.quantity or 0
+
+
+def _room(pf: PartFigures, status: str) -> int:
+    """How many of this part the line still needs, never below zero. A print in
+    progress competes with what is already on other printers; a finished one
+    does not."""
+    taken = pf.usable if status == _DONE else pf.usable + pf.in_progress
+    return max(0, pf.need - taken)
+
+
+def _award(pf: PartFigures, status: str, quantity: int) -> None:
+    if status == _DONE:
+        pf.usable += quantity
+    else:
+        pf.in_progress += quantity
+
+
 def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArchive]]:
+    """Spec §Line resolution for an archive: the unit is the archive's PART ROW.
+
+    One plate may carry parts of several products (two lids on one bed) and one
+    file may sit in several products (a shared flask), so a single print can feed
+    several lines — and did, wrongly, when it was handed out whole.
+    """
     figures = {line.id: _new_line_figures(line, ctx.parts_by_product.get(line.product_id, [])) for line in ctx.lines}
     indexes = {pid: part_index(parts) for pid, parts in ctx.parts_by_product.items()}
-    lines_by_product: dict[int, list[ProjectLine]] = defaultdict(list)
-    for line in ctx.lines:
-        lines_by_product[line.product_id].append(line)
-    other: list[PrintArchive] = []
+    by_part_id = {line_id: {pf.part_id: pf for pf in figs.parts} for line_id, figs in figures.items()}
+    line_by_id = {line.id: line for line in ctx.lines}
 
+    def counted(line: ProjectLine, name_key: str) -> PartFigures | None:
+        """This line's figures for that object, or None when its product does not
+        count it — an object the product never heard of, or one it zeroed."""
+        part = indexes.get(line.product_id, {}).get(name_key)
+        return None if part is None else by_part_id[line.id].get(part.id)
+
+    def candidates(archive: PrintArchive, exclude: ProjectLine | None = None) -> list[ProjectLine]:
+        """The lines this print may feed, in ``sort_order``.
+
+        The exact plate first, then the whole-file wildcard: a product plate with
+        ``plate_index = 0`` claims EVERY plate of that file, which is how a
+        single-plate file (one 0-row from the sync) meets its prints, which carry
+        the slicer's index, 1. Without the second lookup those two numbers never
+        meet and every such print lands in "other".
+        """
+        product_ids = (
+            ctx.plate_product.get((archive.library_file_id, archive.plate_index or 0))
+            or ctx.whole_file_product.get(archive.library_file_id)
+            or []
+        )
+        materials = archive_material_set(archive.filament_type)
+        return [
+            ln
+            for ln in ctx.lines
+            if ln.product_id in product_ids and ln is not exclude and _line_accepts(ln, materials)
+        ]
+
+    def hand_out(archive: PrintArchive, rows: list[PrintArchivePart], lines: list[ProjectLine]) -> set[int]:
+        """Deal every part row out over ``lines`` greedily; return the ids of the
+        lines that got something.
+
+        Each row goes to the first line that counts the part and still needs it,
+        the remainder to the next, and whatever survives every need to the first
+        line that counts the part at all — surplus is visible, never dropped. A
+        row no line counts is skipped, exactly like a ``qty_per_unit = 0`` part.
+        """
+        fed: set[int] = set()
+        if archive.status not in (_DONE, _RUNNING):
+            return fed  # neither usable nor in progress: a failed or cancelled print counts nowhere
+        for row in rows:
+            takers = [(ln, pf) for ln in lines if (pf := counted(ln, row.name_key)) is not None]
+            if not takers:
+                continue
+            quantity = _row_quantity(row, archive.status)
+            for line, pf in takers:
+                give = min(quantity, _room(pf, archive.status))
+                if not give:
+                    continue
+                _award(pf, archive.status, give)
+                quantity -= give
+                fed.add(line.id)
+                if not quantity:
+                    break
+            if quantity:
+                _award(takers[0][1], archive.status, quantity)
+                fed.add(takers[0][0].id)
+        return fed
+
+    def list_under(archive: PrintArchive, fed: set[int]) -> None:
+        """``archive_ids`` in processing order, no duplicates. One archive may
+        legitimately appear under several lines; time, grams and cost are summed
+        per project, so nothing is double-counted by that."""
+        for line_id, figs in figures.items():
+            if line_id in fed:
+                figs.archive_ids.append(archive.id)
+
+    other: list[PrintArchive] = []
+    # Explicit filings first, oldest first within each group, so a hand-filed
+    # print counts towards a line's need before the greedy pass deals out the
+    # rest — otherwise one line absorbs every loose print while its sibling sits
+    # empty.
     explicit = [a for a in ctx.archives if a.project_line_id in figures]
     implicit = [a for a in ctx.archives if a.project_line_id not in figures]
     for archive in explicit:
-        figs = figures[archive.project_line_id]
-        _apply(figs, archive, ctx.archive_parts_by_archive.get(archive.id, []), indexes.get(figs.product_id, {}))
+        home = line_by_id[archive.project_line_id]
+        rows = ctx.archive_parts_by_archive.get(archive.id, [])
+        home_rows = [row for row in rows if counted(home, row.name_key) is not None]
+        foreign_rows = [row for row in rows if counted(home, row.name_key) is None]
+        # With the home as the only taker the greedy pass fills its room and drops
+        # the leftover on it as surplus — which IS "in full, need or no need": an
+        # operator's filing is never second-guessed. Rows the home's product does
+        # not count fall through to the other candidates rather than vanishing.
+        fed = hand_out(archive, home_rows, [home]) | hand_out(archive, foreign_rows, candidates(archive, exclude=home))
+        list_under(archive, fed | {home.id})
     for archive in implicit:
-        # The exact plate first, then the whole-file wildcard: a product plate
-        # with ``plate_index = 0`` claims EVERY plate of that file, which is how
-        # a single-plate file (one 0-row from the sync) meets its prints (which
-        # carry the slicer's index, 1). Without the second lookup those two
-        # numbers never meet and every such print lands in "other".
-        product_id = ctx.plate_product.get(
-            (archive.library_file_id, archive.plate_index or 0)
-        ) or ctx.whole_file_product.get(archive.library_file_id)
-        materials = archive_material_set(archive.filament_type)
-        candidates = [ln for ln in lines_by_product.get(product_id, []) if _line_accepts(ln, materials)]
-        if product_id is None or not candidates:
+        lines = candidates(archive)
+        if not lines:
             other.append(archive)
             continue
-        # Sequential greedy (spec §Line resolution for an archive, step 2): the
-        # first line in sort order whose need is not yet met, else the first
-        # matching line. Explicit filings are applied FIRST and count towards
-        # that — a line an operator already filled by hand must not keep
-        # absorbing loose prints while its sibling sits empty; and once every
-        # candidate is met the surplus falls back to the first matching line.
-        unmet = [ln for ln in candidates if _units_printed(figures[ln.id]) < ln.quantity]
-        chosen = (unmet or candidates)[0]
-        _apply(
-            figures[chosen.id], archive, ctx.archive_parts_by_archive.get(archive.id, []), indexes.get(product_id, {})
-        )
+        # Candidates but nothing counted — a failed print, a plate of test pieces:
+        # the work still belongs to the order, so it is listed on the first
+        # candidate line, uncounted, instead of being reported as a stranger's.
+        rows = ctx.archive_parts_by_archive.get(archive.id, [])
+        list_under(archive, hand_out(archive, rows, lines) or {lines[0].id})
     for figs in figures.values():
         _finish(figs)
     return figures, other
