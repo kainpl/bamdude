@@ -416,3 +416,139 @@ def test_url_validator_accepts_http_only():
         validate_http_url("ftp://a.b")
     with pytest.raises(ValueError):
         validate_http_url("javascript:alert(1)")
+
+
+# ---------------------------------------------------------------------------
+# Attachments, cover image, and the two "file it under this order" handlers.
+#
+# These four handlers survived the redesign untouched, but their only coverage
+# lived in ``test_projects_api.py``, which went out with the legacy feature.
+# What follows are regression guards, not specifications: each one walks the
+# handler end to end once and asserts the shape the frontend actually reads.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_attachment_upload_list_download_and_delete(committing_client):
+    pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
+
+    up = await committing_client.post(
+        f"/api/v1/projects/{pid}/attachments",
+        files={"file": ("spec.txt", b"how to build it", "text/plain")},
+    )
+    assert up.status_code == 200, up.text
+    stored = up.json()["filename"]
+    assert up.json()["original_name"] == "spec.txt"
+
+    # The order reads its own attachments back — this is the list the UI renders.
+    listed = (await committing_client.get(f"/api/v1/projects/{pid}")).json()["attachments"]
+    assert [a["original_name"] for a in listed] == ["spec.txt"]
+    assert listed[0]["filename"] == stored and listed[0]["size"] == len(b"how to build it")
+
+    got = await committing_client.get(f"/api/v1/projects/{pid}/attachments/{stored}")
+    assert got.status_code == 200 and got.content == b"how to build it"
+
+    gone = await committing_client.delete(f"/api/v1/projects/{pid}/attachments/{stored}")
+    assert gone.status_code == 200, gone.text
+    assert (await committing_client.get(f"/api/v1/projects/{pid}")).json()["attachments"] is None
+    assert (await committing_client.get(f"/api/v1/projects/{pid}/attachments/{stored}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_attachment_handlers_reject_a_bad_extension_and_a_traversing_name(committing_client):
+    pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
+    bad = await committing_client.post(
+        f"/api/v1/projects/{pid}/attachments", files={"file": ("payload.exe", b"MZ", "application/octet-stream")}
+    )
+    assert bad.status_code == 400, bad.text
+
+
+@pytest.mark.asyncio
+async def test_a_traversing_attachment_name_is_refused_before_the_path_join():
+    """Called directly, not over HTTP, and deliberately so.
+
+    ``{filename}`` is a plain path parameter, so Starlette never routes a name
+    containing a separator to the handler at all — over the wire a traversal
+    attempt is a 404 from the router and the guard inside is never reached.
+    That makes the guard defence in depth against a future ``:path`` converter
+    or a second caller, and the only way to show it still works is to call it.
+    """
+    from fastapi import HTTPException
+
+    from backend.app.api.routes.projects import delete_attachment, download_attachment
+
+    for handler in (download_attachment, delete_attachment):
+        for name in ("../../secret.txt", "sub/file.txt", "..\\win.txt", ""):
+            with pytest.raises(HTTPException) as raised:
+                await handler(project_id=1, filename=name, db=None, _=None)
+            assert raised.value.status_code == 400, f"{handler.__name__} accepted {name!r}"
+
+
+@pytest.mark.asyncio
+async def test_cover_image_upload_stream_and_delete(committing_client):
+    """The GET is gated by ``RequireCameraStreamToken``, not by the JWT.
+
+    ``<img src>`` cannot carry an Authorization header, so the route takes the
+    same ``?token=`` credential as ``/archives/{id}/thumbnail``.
+    """
+    from backend.app.core.auth import create_camera_stream_token
+
+    pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
+
+    up = await committing_client.post(
+        f"/api/v1/projects/{pid}/cover-image", files={"file": ("cover.png", b"\x89PNG\r\n\x1a\n", "image/png")}
+    )
+    assert up.status_code == 200, up.text
+    assert up.json()["filename"].startswith("cover_") and up.json()["filename"].endswith(".png")
+    assert (await committing_client.get(f"/api/v1/projects/{pid}")).json()["cover_image_filename"] == up.json()[
+        "filename"
+    ]
+
+    token = await create_camera_stream_token()
+    img = await committing_client.get(f"/api/v1/projects/{pid}/cover-image", params={"token": token})
+    assert img.status_code == 200, img.text
+    assert img.headers["content-type"] == "image/png"
+    assert img.content == b"\x89PNG\r\n\x1a\n"
+
+    assert (await committing_client.delete(f"/api/v1/projects/{pid}/cover-image")).status_code == 200
+    assert (await committing_client.get(f"/api/v1/projects/{pid}")).json()["cover_image_filename"] is None
+    missing = await committing_client.get(f"/api/v1/projects/{pid}/cover-image", params={"token": token})
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_add_queue_files_a_pending_queue_item_under_the_order(committing_client, db_session, catalog):
+    pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
+    queue = PrinterQueue(id=1, printer_id=1)
+    db_session.add(queue)
+    await db_session.flush()
+    item = PrintQueueItem(queue_id=queue.id, library_file_id=catalog["file"].id, status="pending")
+    db_session.add(item)
+    await db_session.flush()
+    item_id = item.id  # read before the commit expires the instance
+    assert item.project_id is None
+    await db_session.commit()
+
+    r = await committing_client.post(f"/api/v1/projects/{pid}/add-queue", json={"queue_item_ids": [item_id, 9999]})
+    assert r.status_code == 200, r.text
+    # The unknown id is skipped rather than failing the batch, and says so.
+    assert r.json()["message"] == "Added 1 queue items to project"
+    db_session.expire_all()
+    assert (await db_session.get(PrintQueueItem, item_id)).project_id == pid
+
+    stray = await committing_client.post("/api/v1/projects/9999/add-queue", json={"queue_item_ids": []})
+    assert stray.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_project_archives_lists_only_this_orders_archives(committing_client, db_session, catalog):
+    pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
+    other = (await committing_client.post("/api/v1/projects/", json={"name": "P"})).json()["id"]
+    mine = await _completed_print(db_session, pid, catalog["file"].id)
+    await _completed_print(db_session, other, catalog["file"].id)
+
+    r = await committing_client.get(f"/api/v1/projects/{pid}/archives")
+    assert r.status_code == 200, r.text
+    assert [a["id"] for a in r.json()] == [mine.id]
+
+    assert (await committing_client.get("/api/v1/projects/9999/archives")).status_code == 404

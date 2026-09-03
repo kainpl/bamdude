@@ -122,35 +122,41 @@ class TestFreshInstall:
     def test_starts_with_no_users_so_setup_is_required(self, result):
         assert result["counts"].get("users") == 0
 
-    def test_plan_items_unique_constraint_is_plate_scoped_only(self, result):
-        """m044 (frozen, released) re-adds the pre-plate ``uq_plan_project_
-        file`` unique on a fresh PostgreSQL install — its guard predates the
-        plate-era constraint name m158 introduces. m158 must drop that stale
-        constraint unconditionally, so a fresh install ends with exactly the
-        plate-scoped unique and never forbids two plate rows of one file.
+    def test_the_legacy_project_tables_are_gone(self, result):
+        """m162 retires the whole make-it side of the old projects feature.
+
+        Replaces an m044/m158 test that asserted which unique constraint
+        ``project_print_plan_items`` ends up with: the table itself is dropped
+        now, so the only thing left worth pinning on a real server is that the
+        drop actually happened — the frozen migrations still CREATE these
+        tables earlier in the chain, so a fresh install proves m162 runs last
+        and cleans up after them.
         """
         psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
         import asyncio
 
         url = _pg_url()
+        legacy = (
+            "project_bom_items",
+            "project_print_plan_items",
+            "project_parts",
+            "library_file_projects",
+            "library_folder_projects",
+        )
 
         async def go() -> set[str]:
             conn = await psycopg.connect(url, timeout=20)
             try:
                 rows = await conn.fetch(
-                    "SELECT c.conname FROM pg_constraint c "
-                    "JOIN pg_class t ON t.oid = c.conrelid "
-                    "WHERE t.relname = 'project_print_plan_items' AND c.contype = 'u'"
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = ANY($1::text[])",
+                    list(legacy),
                 )
-                return {r["conname"] for r in rows}
+                return {r["tablename"] for r in rows}
             finally:
                 await conn.close()
 
-        names = asyncio.run(go())
-        assert names == {"uq_plan_project_file_plate"}, (
-            f"unexpected unique constraints on project_print_plan_items: {names} — "
-            "a fresh PostgreSQL install must not carry the pre-plate uq_plan_project_file"
-        )
+        survivors = asyncio.run(go())
+        assert survivors == set(), f"m162 left legacy project tables behind on a fresh install: {sorted(survivors)}"
 
 
 class TestSqliteMigration:

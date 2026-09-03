@@ -187,3 +187,117 @@ class TestNullCoalescingIsTypeAware:
         assert _is_datetime_column(Column("flag", Boolean, server_default="0")) is False
         assert _is_datetime_column(Column("count", Integer, server_default="0")) is False
         assert _is_datetime_column(Column("name", String(20), server_default="x")) is False
+
+
+class TestPortableRoundTripCarriesProductsAndOrders:
+    """The projects redesign (m162) added eight NOT NULL columns whose
+    ``server_default`` is an integer, not a datetime: ``products.is_active``,
+    ``product_parts.qty_per_unit`` / ``auto`` / ``sort_order``,
+    ``product_plates.plate_index``, ``project_lines.quantity`` /
+    ``sort_order`` and ``project_procurement.quantity_acquired``.
+
+    ``_export_pg_to_sqlite`` coalesces a NULL only from a column's Python-side
+    ``default``, or from a datetime ``server_default``; an integer or boolean
+    ``server_default`` alone it deliberately refuses to guess at, and the
+    portable file's NOT NULL then aborts the backup. All eight declare BOTH a
+    Python ``default=`` and a ``server_default=``, so they land in the
+    substitutable half and no such NULL can reach the INSERT — but that is a
+    property of eight model lines, which is exactly the sort of thing a later
+    edit drops in passing. So: drive the real export over a product with parts
+    and plates and an order with lines, and read the rows back.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_product_with_parts_and_an_order_with_lines_survive_a_round_trip(self, tmp_path, monkeypatch):
+        import importlib
+        import pkgutil
+
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        import backend.app.models as models_pkg
+        from backend.app.core import db_portable
+
+        for mod in pkgutil.iter_modules(models_pkg.__path__):
+            importlib.import_module(f"{models_pkg.__name__}.{mod.name}")
+
+        # The PostgreSQL stand-in: the real schema, holding real rows.
+        src_path = tmp_path / "source.db"
+        src_sync = create_engine(f"sqlite:///{src_path}")
+        try:
+            Base.metadata.create_all(src_sync)
+            with src_sync.begin() as conn:
+                conn.exec_driver_sql("INSERT INTO customers (id, name) VALUES (1, 'ACME')")
+                conn.exec_driver_sql("INSERT INTO products (id, name, is_active) VALUES (1, 'Lamp', 1)")
+                conn.exec_driver_sql(
+                    "INSERT INTO product_parts (id, product_id, kind, name, name_key, qty_per_unit, auto, "
+                    "sort_order, aliases) VALUES (1, 1, 'printed', 'shade', 'shade', 1, 0, 0, '[\"shade\"]')"
+                )
+                conn.exec_driver_sql(
+                    "INSERT INTO product_parts (id, product_id, kind, name, name_key, qty_per_unit, auto, "
+                    "sort_order) VALUES (2, 1, 'purchased', 'M3', 'purchased:m3', 4, 0, 1)"
+                )
+                conn.exec_driver_sql(
+                    "INSERT INTO projects (id, name, customer_id, status, priority) VALUES (1, 'Order 1', 1, "
+                    "'active', 'normal')"
+                )
+                conn.exec_driver_sql(
+                    "INSERT INTO project_lines (id, project_id, product_id, quantity, material, sort_order) "
+                    "VALUES (1, 1, 1, 3, 'PETG', 0)"
+                )
+                conn.exec_driver_sql(
+                    "INSERT INTO project_lines (id, project_id, product_id, quantity, sort_order) "
+                    "VALUES (2, 1, 1, 7, 1)"
+                )
+                conn.exec_driver_sql(
+                    "INSERT INTO project_procurement (project_id, product_part_id, quantity_acquired) VALUES (1, 2, 9)"
+                )
+        finally:
+            src_sync.dispose()
+
+        monkeypatch.setattr(db_portable, "is_sqlite", lambda: False, raising=False)
+        monkeypatch.setattr("backend.app.core.db_dialect.is_sqlite", lambda: False)
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{src_path}")
+        out_path = tmp_path / "portable.db"
+        try:
+            await db_portable.dump_to_sqlite(engine, Base.metadata, out_path)
+        finally:
+            await engine.dispose()
+
+        out = sqlite3.connect(str(out_path))
+        try:
+            # Row for row, values included — a coalesced integer would show up
+            # here as the default rather than what was stored.
+            assert out.execute("SELECT id, name, is_active FROM products").fetchall() == [(1, "Lamp", 1)]
+            assert out.execute(
+                "SELECT id, product_id, kind, name_key, qty_per_unit, auto, sort_order FROM product_parts ORDER BY id"
+            ).fetchall() == [
+                (1, 1, "printed", "shade", 1, 0, 0),
+                (2, 1, "purchased", "purchased:m3", 4, 0, 1),
+            ]
+            assert out.execute("SELECT aliases FROM product_parts WHERE id = 1").fetchone()[0] == '["shade"]'
+            assert out.execute("SELECT id, name, customer_id, status FROM projects").fetchall() == [
+                (1, "Order 1", 1, "active")
+            ]
+            assert out.execute(
+                "SELECT id, project_id, product_id, quantity, material, sort_order FROM project_lines ORDER BY id"
+            ).fetchall() == [(1, 1, 1, 3, "PETG", 0), (2, 1, 1, 7, None, 1)]
+            assert out.execute("SELECT * FROM project_procurement").fetchall() == [(1, 2, 9)]
+
+            # And the DDL that makes those columns un-NULLable in the first
+            # place has to arrive with them, or a restore loses the guarantee.
+            for table, column in (
+                ("products", "is_active"),
+                ("product_parts", "qty_per_unit"),
+                ("product_parts", "auto"),
+                ("product_parts", "sort_order"),
+                ("product_plates", "plate_index"),
+                ("project_lines", "quantity"),
+                ("project_lines", "sort_order"),
+                ("project_procurement", "quantity_acquired"),
+            ):
+                row = next(r for r in out.execute(f"PRAGMA table_info({table})") if r[1] == column)
+                assert row[_NOTNULL] == 1, f"{table}.{column} lost NOT NULL in the portable file"
+                assert row[_DFLT] is not None, f"{table}.{column} lost its DEFAULT in the portable file"
+        finally:
+            out.close()

@@ -103,7 +103,6 @@ _COPY_WITH_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "projects": {
         "priority": "normal",
-        "is_template": 0,
     },
     "spool": {
         "data_origin": None,
@@ -375,16 +374,16 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
                 summary["ams_labels"] = n
                 logger.info("Imported %d rows into ams_labels", n)
 
-            # project_bom_items - column renames
-            n = await _import_table(
-                conn,
-                old_db,
-                "project_bom_items",
-                rename={"quantity_printed": "quantity_acquired", "notes": "remarks"},
-            )
-            if n:
-                summary["project_bom_items"] = n
-                logger.info("Imported %d rows into project_bom_items", n)
+            # ⚠️ Upstream ``project_bom_items`` is deliberately NOT imported.
+            # The projects redesign (m162) replaced the free-text BOM with
+            # ``product_parts`` + ``project_procurement``, a fact table keyed by
+            # ``product_part_id``. A legacy BOM row carries a name, not a part,
+            # so moving it across is a conversion (invent the product, invent
+            # the purchased part, then the fact) rather than a column rename —
+            # m162 does exactly that, but only for THIS install's own legacy
+            # rows, and it runs long after m000. Re-adding a rename here would
+            # not resurrect the data: the destination table no longer exists at
+            # any point of the chain, so ``_import_table`` returns 0 in silence.
 
             # virtual_printers - model code fix + auto_dispatch default
             n = await _import_table(

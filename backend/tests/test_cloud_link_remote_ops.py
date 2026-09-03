@@ -239,9 +239,7 @@ async def test_an_oversized_payload_is_refused_not_sent(ctx, monkeypatch):
     async def _huge(db, args):
         return {"blob": "x" * (remote_ops.MAX_RESULT_PAYLOAD_BYTES + 1)}
 
-    bogus = remote_ops.RemoteOp(
-        op="x.huge", permission=Permission.INVENTORY_READ, args_model=ListSpoolsArgs, run=_huge
-    )
+    bogus = remote_ops.RemoteOp(op="x.huge", permission=Permission.INVENTORY_READ, args_model=ListSpoolsArgs, run=_huge)
     monkeypatch.setitem(remote_ops.REMOTE_OPS, "x.huge", bogus)
 
     res = await dispatch_remote_op("x.huge", {}, ctx)
