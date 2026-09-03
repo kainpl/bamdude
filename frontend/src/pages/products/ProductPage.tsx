@@ -95,20 +95,28 @@ export function ProductPage() {
       </div>
     );
   }
-  // ⚠️ A fetch that FAILED is not a product that is gone. "This product no
-  // longer exists" over an expired session, a proxy hiccup or a 500 sends the
-  // operator hunting for a deletion nobody performed — so the server's own
-  // sentence is shown instead, and only an answered request with nothing in it
-  // reads as not-found.
-  if (isError) {
-    return (
+  // ⚠️ **Data presence is asked FIRST, and that order is load-bearing.**
+  // TanStack v5 flips `status` to "error" on ANY failed fetch — a background
+  // REFETCH of a query that still holds good data included — and it keeps
+  // `data` while it does. This page invalidates `['product', id]` on every
+  // mutation it and its sections make (the catalog toggle, part create / edit /
+  // delete / merge, both alias calls, both unlinks), so a refetch is in flight
+  // routinely; one that fails would, on an `isError`-first check, throw the
+  // whole rendered page away and show a load error over a product still sitting
+  // in the cache.
+  //
+  // With no data, the two cases still read apart: a fetch that FAILED is not a
+  // product that is gone. "This product no longer exists" over an expired
+  // session, a proxy hiccup or a 500 sends the operator hunting for a deletion
+  // nobody performed, so the server's own sentence is shown instead.
+  if (!product) {
+    return isError ? (
       <div className="p-4 md:p-6 text-sm text-red-500">
         {t('products.page.loadFailed')} {(error as Error)?.message}
       </div>
+    ) : (
+      <div className="p-4 md:p-6 text-bambu-gray text-sm">{t('products.page.notFound')}</div>
     );
-  }
-  if (!product) {
-    return <div className="p-4 md:p-6 text-bambu-gray text-sm">{t('products.page.notFound')}</div>;
   }
 
   const canEdit = hasPermission('projects:update');

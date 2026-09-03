@@ -75,6 +75,36 @@ describe('ProductPage', () => {
     expect(await screen.findByText(/no order asks for this product/i)).toBeInTheDocument();
   });
 
+  it('keeps the rendered page when a background refetch fails', async () => {
+    // TanStack v5 turns the query's status to "error" on ANY failed fetch and
+    // keeps `data` while it does. Every mutation on this page invalidates
+    // ['product', id], so a refetch is in flight routinely — one that fails
+    // must not replace a product that is still cached with a load error.
+    const get = vi
+      .spyOn(api, 'getProduct')
+      .mockResolvedValueOnce(product as never)
+      .mockRejectedValue(new Error('Gateway timeout'));
+    vi.spyOn(api, 'updateProduct').mockResolvedValue({ ...product, is_active: false } as never);
+    mountAt();
+
+    expect(await screen.findByRole('heading', { name: 'Flask' })).toBeInTheDocument();
+
+    // The catalog toggle invalidates ['product', id]; the refetch it triggers fails.
+    fireEvent.click(screen.getByRole('checkbox', { name: /in catalog/i }));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByRole('heading', { name: 'Flask' })).toBeInTheDocument();
+    expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
+  });
+
+  it('names the error when there is no product to fall back on', async () => {
+    vi.spyOn(api, 'getProduct').mockRejectedValue(new Error('Gateway timeout'));
+    mountAt();
+
+    expect(await screen.findByText(/could not load this product/i)).toBeInTheDocument();
+    expect(screen.getByText(/gateway timeout/i)).toBeInTheDocument();
+  });
+
   it('takes the product out of the catalog through the switch', async () => {
     const update = vi.spyOn(api, 'updateProduct').mockResolvedValue({ ...product, is_active: false } as never);
     mountAt();
