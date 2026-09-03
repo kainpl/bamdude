@@ -3,6 +3,7 @@
 import pytest
 from sqlalchemy import select
 
+from backend.app.api.routes import projects as projects_routes
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.auto_queue import AutoQueueItem
@@ -894,7 +895,12 @@ async def test_plan_enqueue_validates_every_item_before_writing_anything(committ
         ([{"plate_id": unsliced_id, "count": 1, "line_id": line_id}], auto, 404),  # nothing to print yet
         ([{"plate_id": 999999, "count": 1, "line_id": line_id}], auto, 404),
         ([{"plate_id": plate_id, "count": 1, "line_id": 999999}], auto, 404),
-        ([{"plate_id": plate_id, "count": 1, "line_id": line_id}], {"kind": "printer"}, 400),  # no printer named
+        # The target's SHAPE is the schema's business, so both halves are 422s
+        # and neither reaches the handler: a printer kind with no id …
+        ([{"plate_id": plate_id, "count": 1, "line_id": line_id}], {"kind": "printer"}, 422),
+        # … and an auto kind carrying one, which used to be accepted with the
+        # id quietly dropped — i.e. filed nowhere near the printer it named.
+        ([{"plate_id": plate_id, "count": 1, "line_id": line_id}], {"kind": "auto", "printer_id": 1}, 422),
         ([{"plate_id": plate_id, "count": 1, "line_id": line_id}], {"kind": "printer", "printer_id": 9999}, 404),
         (
             [{"plate_id": plate_id, "count": 1, "line_id": line_id}],
@@ -924,6 +930,58 @@ async def test_plan_enqueue_validates_every_item_before_writing_anything(committ
     # An empty item list is a 422 from the schema, not an empty success.
     r = await committing_client.post(f"/api/v1/projects/{pid}/plan/enqueue", json={"items": [], "target": auto})
     assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_plan_enqueue_reports_what_landed_when_a_later_item_fails(
+    committing_client, db_session, catalog, monkeypatch
+):
+    """The writers commit per item, so a failure half-way cannot be rolled back.
+
+    The first item's rows are real and stay real; the 500 names them rather than
+    leaving the operator with queue rows nobody mentioned.
+    """
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+
+    real = projects_routes.add_items_to_auto_queue
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("the writer fell over")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(projects_routes, "add_items_to_auto_queue", flaky)
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue",
+        json={
+            "items": [
+                {"plate_id": plate_id, "count": 2, "line_id": line_id},
+                {"plate_id": plate_id, "count": 3, "line_id": line_id},
+            ],
+            "target": {"kind": "auto"},
+        },
+    )
+    assert r.status_code == 500, r.text
+    detail = r.json()["detail"]
+    assert "the writer fell over" in detail["message"]
+    # Same shape as a success, so one reader covers both.
+    assert len(detail["created"]) == 1
+    landed = detail["created"][0]
+    assert landed["line_id"] == line_id and landed["plate_id"] == plate_id
+    assert len(landed["queue_item_ids"]) == 2
+
+    rows = (
+        (await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.id.in_(landed["queue_item_ids"]))))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 2
+    # The second item wrote nothing at all — 2 rows in the table, not 5.
+    assert len((await db_session.execute(select(AutoQueueItem))).scalars().all()) == 2
 
 
 # ---------- queued_yield_by_line: the cases that need a session ----------

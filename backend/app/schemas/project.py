@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 PROJECT_STATUSES = ("active", "completed", "cancelled")
 PROJECT_PRIORITIES = ("low", "normal", "high", "urgent")
@@ -344,6 +344,22 @@ class PlanEnqueueTarget(BaseModel):
 
     kind: Literal["auto", "printer"]
     printer_id: int | None = None
+
+    @model_validator(mode="after")
+    def _printer_id_belongs_to_the_kind(self) -> "PlanEnqueueTarget":
+        """The two kinds are two SHAPES, so the shape refuses a wrong one.
+
+        A hand-written check in the handler answered 400 for the same fact the
+        schema already knew, and only for the missing half — an ``auto`` target
+        carrying a printer id was accepted and the id silently dropped, which
+        reads to the caller as "filed under that printer" and is the opposite of
+        what happens. Both halves are a 422 naming ``target``.
+        """
+        if self.kind == "printer" and self.printer_id is None:
+            raise ValueError("A printer target needs printer_id")
+        if self.kind == "auto" and self.printer_id is not None:
+            raise ValueError("An auto target takes no printer_id — the distributor picks the printer")
+        return self
 
 
 class PlanEnqueueRequest(BaseModel):

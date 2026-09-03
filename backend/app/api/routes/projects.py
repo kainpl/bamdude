@@ -1280,13 +1280,14 @@ async def enqueue_order_plan(
     transaction spans the items. That is why every item is validated before any
     of them is written — and why a failure part-way through leaves what was
     already created in place, and returns what that was.
+
+    The target's shape is the schema's business (``PlanEnqueueTarget``): a
+    printer kind without an id, or an auto kind with one, never reaches here.
     """
     lines_by_id = {line.id: line for line in (await _get_project(db, project_id)).lines}
 
     printer_id: int | None = None
     if data.target.kind == "printer":
-        if data.target.printer_id is None:
-            raise HTTPException(status_code=400, detail="A printer target needs printer_id")
         printer = await db.get(Printer, data.target.printer_id)
         # Exists and is not archived. That is the whole of it — see the warning
         # above before adding a third condition here.
@@ -1325,40 +1326,58 @@ async def enqueue_order_plan(
         resolved.append((line.id, plate.id, plate.library_file_id, plate.plate_index or None, item.count))
 
     created: list[PlanEnqueueCreated] = []
+
+    def _partial(message: str) -> HTTPException:
+        """A 500 that still says what landed.
+
+        Every writer above committed its own item, so nothing here can be rolled
+        back — a bare 500 would leave the operator with queue rows nobody told
+        them about. ``detail`` carries the ``PlanEnqueueResponse`` shape beside
+        the message, so the same client code can read it.
+        """
+        return HTTPException(
+            status_code=500,
+            detail={"message": message, "created": [c.model_dump() for c in created]},
+        )
+
     for line_id, plate_id, library_file_id, plate_number, count in resolved:
-        if printer_id is None:
-            rows = await add_items_to_auto_queue(
-                db,
-                AutoQueueItemCreate(
+        try:
+            if printer_id is None:
+                rows = await add_items_to_auto_queue(
+                    db,
+                    AutoQueueItemCreate(
+                        library_file_id=library_file_id,
+                        plate_id=plate_number,
+                        quantity=count,
+                        project_id=project_id,
+                        project_line_id=line_id,
+                    ),
+                    current_user,
+                )
+            else:
+                rows, _batch_id = await enqueue_batch_copies(
+                    db,
+                    printer_id=printer_id,
+                    count=count,
                     library_file_id=library_file_id,
                     plate_id=plate_number,
-                    quantity=count,
                     project_id=project_id,
                     project_line_id=line_id,
-                ),
-                current_user,
-            )
-        else:
-            rows, _batch_id = await enqueue_batch_copies(
-                db,
-                printer_id=printer_id,
-                count=count,
-                library_file_id=library_file_id,
-                plate_id=plate_number,
-                project_id=project_id,
-                project_line_id=line_id,
-                created_by_id=current_user.id if current_user else None,
-            )
-            if not rows:
-                # The printer has no queue row at all — a broken install, not a
-                # readiness verdict. Earlier items are already committed, so say
-                # what landed instead of reporting an empty success.
-                raise HTTPException(
-                    status_code=500,
-                    detail={
-                        "message": "That printer has no queue",
-                        "created": [c.model_dump() for c in created],
-                    },
+                    created_by_id=current_user.id if current_user else None,
                 )
+        except Exception as exc:
+            # ⚠️ ANY failure past the first committed item, not just a tidy one.
+            # With nothing written yet there is nothing to report, so the
+            # original error travels on untouched — that is what the first item
+            # failing has always done.
+            if not created:
+                raise
+            logger.exception("Plan enqueue for project %s failed after %s item(s)", project_id, len(created))
+            raise _partial(str(exc) or exc.__class__.__name__) from exc
+        if printer_id is not None and not rows:
+            # The printer has no queue row at all — a broken install, not a
+            # readiness verdict. Earlier items are already committed, so say
+            # what landed instead of reporting an empty success.
+            raise _partial("That printer has no queue")
         created.append(PlanEnqueueCreated(line_id=line_id, plate_id=plate_id, queue_item_ids=[r.id for r in rows]))
     return PlanEnqueueResponse(created=created)
