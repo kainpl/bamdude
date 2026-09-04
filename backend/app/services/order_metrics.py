@@ -541,13 +541,15 @@ async def _batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[
         archives_by_project[archive.project_id].append(archive)
     archive_ids = [a.id for archives in archives_by_project.values() for a in archives]
     parts_by_archive: dict[int, list[PrintArchivePart]] = defaultdict(list)
-    # ⚠️ Chunked. This ``IN`` list is every archive of every order asked for, and
-    # the callers ask for a whole page of them — the orders list, the customer
-    # page, every product endpoint. A farm with a few hundred orders of a few
-    # hundred prints each puts tens of thousands of bound parameters into one
-    # statement, and SQLite refuses past 32766 of them (``too many SQL
-    # variables``); PostgreSQL accepts it and plans it badly. Slicing costs one
-    # extra statement per 500 archives and bounds the worst case instead.
+    # ⚠️ Chunked, and it is the only list here that is. The three project-keyed
+    # ``IN``s above grow with the NUMBER OF ORDERS the caller asked about —
+    # unpaginated today (``list_projects`` answers every matching order), but
+    # bounded by a farm's order count. This one multiplies that by the prints
+    # each order carries: a few hundred orders of a few hundred prints each puts
+    # tens of thousands of bound parameters into one statement, and SQLite
+    # refuses past 32766 of them (``too many SQL variables``); PostgreSQL accepts
+    # it and plans it badly. Slicing costs one extra statement per 500 archives
+    # and bounds the worst case instead.
     for start in range(0, len(archive_ids), _IN_CHUNK):
         for row in (
             (

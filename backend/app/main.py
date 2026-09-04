@@ -9275,9 +9275,14 @@ async def auth_middleware(request, call_next):
     # either — the trailing ``$`` every pattern carries also matches immediately
     # BEFORE a final newline, and the ASGI path is percent-DECODED, so a request
     # for ``…/thumbnail%0A`` arrived here as ``…/thumbnail\n`` and skipped the
-    # gate. Nothing routes to such a path, so this closes a hole that led only
-    # to a 404 — but the whitelist's promise is "exactly these paths", and
-    # ``fullmatch`` is what makes it exactly.
+    # gate. Such a path DOES route — Starlette's own route regex ends in ``$``
+    # and is ``.match``ed, so ``…/thumbnail\n`` reached the thumbnail handler.
+    # What made it harmless is narrower: the only paths ``match`` let in were a
+    # whitelisted route plus a trailing newline, which route to the very handler
+    # that entry was written for, so no route OUTSIDE the whitelist was ever
+    # opened and each route's own gate applied either way. The whitelist's
+    # promise is still "exactly these paths", and ``fullmatch`` is what makes it
+    # exactly.
     if any(pattern.fullmatch(path) for pattern in PUBLIC_API_PATTERNS):
         return await call_next(request)
 

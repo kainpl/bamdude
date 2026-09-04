@@ -852,10 +852,13 @@ async def _seed_printed_parts_from_plates(session, library_file_ids: list[int]) 
     ``seed()`` after the library object backfill has filled the metadata this
     reads. Returns the number of parts created.
 
-    ⚠️ **Scoped to the files the backfill just filled**, never to every product
-    plate in the database. A hand re-run that walked them all would re-create an
-    ``auto`` part an operator had deleted, on a product this run never touched —
-    a migration silently editing a composition somebody curated.
+    ⚠️ **Scoped to the files the caller names** — the ids this run's object
+    backfill filled UNION the files ``_PENDING_COPIES`` still owes parts to —
+    never to every product plate in the database. A hand re-run that walked them
+    all would re-create an ``auto`` part an operator had deleted, on a product
+    this run never touched — a migration silently editing a composition somebody
+    curated. Why the union rather than the filled ids alone is at the call site:
+    it is what makes ``seed()`` re-entrant after an interrupted chunk run.
 
     ⚠️ **Why not ``sync_product_for_file``**, which is the single writer of this
     everywhere else: it emits ``select(ProductPlate)`` and ``select(ProductPart)``
