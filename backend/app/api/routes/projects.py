@@ -70,6 +70,7 @@ from backend.app.services.order_metrics import (
     project_figures,
 )
 from backend.app.services.plan_engine import OrderPlan, plan_for_order
+from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.product_composition import PlateRecipe, recipes_for_products
 from backend.app.services.product_files import (
     ALLOWED_ATTACHMENT_EXTENSIONS,
@@ -1272,11 +1273,19 @@ async def enqueue_order_plan(
     permissions it is given.
 
     ⚠️ **Routing is not dispatching.** Naming a printer says WHERE the work is
-    filed, not whether the machine can take it now. The only thing this
-    endpoint may ask about a printer is that it exists and is not archived;
-    readiness — plate clear, drying, stagger, filament — remains
-    ``check_queue``'s question, asked again at dispatch. Nothing here reads
-    printer state or ranks anything.
+    filed, not whether the machine can take it now. The only thing this endpoint
+    may ask about a printer's READINESS is that it exists and is not archived;
+    plate clear, drying, stagger, filament remain ``check_queue``'s question,
+    asked again at dispatch. Nothing here reads live printer state or ranks
+    anything. Its model and its swap-mode setting are read, but only to fill the
+    row being written — never to decide whether to write it.
+
+    ⚠️ **The options come from the operator's saved preference**, the same row
+    the print dialog reads before it builds a payload (``preference_options``).
+    This door has no dialog in front of it, and until 2026-09-04 it therefore
+    wrote the writers' own defaults — a farm configured to run swap macros
+    printed without them. Explicit fields in a future request body would win;
+    today the body carries none.
 
     Each item is one call to the existing writer with ``quantity = count``, and
     **the writers commit per call**: ``add_items_to_auto_queue`` and
@@ -1291,6 +1300,8 @@ async def enqueue_order_plan(
     lines_by_id = {line.id: line for line in (await _get_project(db, project_id)).lines}
 
     printer_id: int | None = None
+    printer_model: str | None = None
+    printer_swap_on = False
     if data.target.kind == "printer":
         printer = await db.get(Printer, data.target.printer_id)
         # Exists and is not archived. That is the whole of it — see the warning
@@ -1298,6 +1309,8 @@ async def enqueue_order_plan(
         if printer is None or printer.archived:
             raise HTTPException(status_code=404, detail="Printer not found")
         printer_id = printer.id
+        printer_model = printer.model
+        printer_swap_on = bool(printer.swap_mode_enabled)
 
     # ⚠️ ONE load for the whole request, before the loop — this used to fetch a
     # product AND build its recipes inside it, per distinct product of the
@@ -1327,26 +1340,36 @@ async def enqueue_order_plan(
         .all()
     )
     recipes_by_product = await recipes_for_products(db, products)
-    plates_by_product: dict[int, dict[int, tuple[ProductPlate, PlateRecipe]]] = {
-        product_id: {plate.id: (plate, recipe) for plate, _file, recipe in rows}
+    # ``swap_compatible`` rather than the file: the loaded row is wanted for one
+    # boolean, and carrying it would mean importing a model this module has no
+    # other use for.
+    plates_by_product: dict[int, dict[int, tuple[ProductPlate, bool, PlateRecipe]]] = {
+        product_id: {plate.id: (plate, bool(file.swap_compatible), recipe) for plate, file, recipe in rows}
         for product_id, rows in recipes_by_product.items()
     }
-    # (line_id, ProductPlate.id, library_file_id, queue plate number, count) —
-    # plain scalars, read BEFORE the first writer commits, because a commit may
-    # expire every instance loaded above it.
-    resolved: list[tuple[int, int, int, int | None, int]] = []
+    # (line_id, ProductPlate.id, library_file_id, queue plate number, count,
+    # the file's baked-in swap macros) — plain scalars, read BEFORE the first
+    # writer commits, because a commit may expire every instance loaded above it.
+    resolved: list[tuple[int, int, int, int | None, int, bool]] = []
     for item in data.items:
         line = lines_by_id[item.line_id]
         plates = plates_by_product.get(line.product_id, {})
         entry = plates.get(item.plate_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="Plate not found in this line's product")
-        plate, recipe = entry
+        plate, baked_swap_macros, recipe = entry
         if not recipe.sliced:
             raise HTTPException(status_code=404, detail="Plate is not sliced")
         # ⚠️ ``plate_index = 0`` means the whole file, which on a queue row is
         # no plate at all — that column carries the slicer's 1-based index.
-        resolved.append((line.id, plate.id, plate.library_file_id, plate.plate_index or None, item.count))
+        resolved.append(
+            (line.id, plate.id, plate.library_file_id, plate.plate_index or None, item.count, baked_swap_macros)
+        )
+
+    # What the print dialog would have sent for this operator and this target.
+    # ⚠️ ONE read for the whole request, before the loop: it is the same answer
+    # for every item, and the first writer's commit may expire what it read.
+    option_defaults = await preference_options(db, current_user, printer_model)
 
     created: list[PlanEnqueueCreated] = []
 
@@ -1363,7 +1386,19 @@ async def enqueue_order_plan(
             detail={"message": message, "created": [c.model_dump() for c in created]},
         )
 
-    for line_id, plate_id, library_file_id, plate_number, count in resolved:
+    for line_id, plate_id, library_file_id, plate_number, count, baked_swap_macros in resolved:
+        options = dict(option_defaults)
+        # The rule every other queue door applies (``services/queue_add.py`` and
+        # the two print-now routes): swap macros are meaningful only on a printer
+        # with swap mode ON and a source file that does not already carry them
+        # baked in by third-party tooling — otherwise the plate change fires
+        # twice. Only ever turns OFF what the preference turned on, so a request
+        # with no preference behind it still lands on the writers' own defaults.
+        if options.get("execute_swap_macros") and (
+            baked_swap_macros or (printer_id is not None and not printer_swap_on)
+        ):
+            options["execute_swap_macros"] = False
+            options["swap_macro_events"] = None
         try:
             if printer_id is None:
                 rows = await add_items_to_auto_queue(
@@ -1374,6 +1409,7 @@ async def enqueue_order_plan(
                         quantity=count,
                         project_id=project_id,
                         project_line_id=line_id,
+                        **options,
                     ),
                     current_user,
                 )
@@ -1387,6 +1423,7 @@ async def enqueue_order_plan(
                     project_id=project_id,
                     project_line_id=line_id,
                     created_by_id=current_user.id if current_user else None,
+                    **options,
                 )
         except Exception as exc:
             # ⚠️ ANY failure past the first committed item, not just a tidy one.

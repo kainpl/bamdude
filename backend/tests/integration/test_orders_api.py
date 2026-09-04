@@ -1,5 +1,6 @@
 """Orders: lines, figures, procurement, lifecycle, links — spec §5/§8 + §Order lifecycle."""
 
+import json
 from collections import Counter
 
 import pytest
@@ -11,12 +12,16 @@ from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.customer import Customer
 from backend.app.models.library import LibraryFile
+from backend.app.models.macro import Macro
+from backend.app.models.print_options_preference import PrintOptionsPreference
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.app.models.user import User
+from backend.app.schemas.print_options_preference import PrintOptionsPreferenceData
 from backend.app.services import plan_engine
 from backend.app.services.order_metrics import attribute, load_order_context
 from backend.app.services.plan_engine import queued_yield_by_line
@@ -1853,3 +1858,196 @@ async def test_enqueue_loads_the_products_and_their_recipes_once_for_the_whole_c
 
     rows = (await db_session.execute(select(AutoQueueItem))).scalars().all()
     assert sorted(row.project_line_id for row in rows) == sorted(lines)
+
+
+# ── The plan's enqueue applies the operator's print-options preference ───────
+#
+# The print dialog reads ``print_options_preferences`` before it builds a queue
+# payload; the plan block sends the same work with no dialog in front of it.
+# Until 2026-09-04 it therefore wrote the writers' own defaults, and a farm
+# configured to run swap macros printed without them.
+
+
+async def _the_dialogs_saved_preference(db, *, printer_model="P1S", deselected_macro_ids=()):
+    """The row a PrintModal submit leaves behind for ``test_admin``."""
+    user_id = (await db.execute(select(User.id).where(User.username == "test_admin"))).scalar_one()
+    db.add(
+        PrintOptionsPreference(
+            user_id=user_id,
+            printer_model=printer_model,
+            options=PrintOptionsPreferenceData.model_validate(
+                {
+                    "print_options": {
+                        "bed_levelling": "auto",
+                        "flow_cali": "off",
+                        "layer_inspect": False,
+                        "timelapse": False,
+                        "mesh_mode_fast_check": True,
+                        "gcode_injection": False,
+                    },
+                    "swap_macros": {"execute": True, "events": ["swap_mode_start", "swap_mode_change_table"]},
+                    "event_macros": {"deselected_ids": list(deselected_macro_ids)},
+                }
+            ).model_dump(),
+        )
+    )
+    await db.commit()
+
+
+async def _three_macros(db):
+    """Two event macros and a swap macro — the swap one has its own fields and
+    its own trigger, so it must never reach ``selected_macro_ids``."""
+    ticked = Macro(name="lights on", event="print_started", gcode="M355 S1", printer_models='["*"]')
+    unticked = Macro(name="beep", event="print_completed", gcode="M300", printer_models='["*"]')
+    swap = Macro(name="change table", event="swap_mode_change_table", gcode="G28", printer_models='["*"]')
+    db.add_all([ticked, unticked, swap])
+    await db.commit()
+    return ticked.id, unticked.id, swap.id
+
+
+async def _swap_printer(db, *, swap_mode_enabled=True):
+    printer = Printer(
+        name="Pswap",
+        serial_number="SW1",
+        ip_address="10.0.0.7",
+        access_code="1234",
+        model="P1S",
+        swap_mode_enabled=swap_mode_enabled,
+    )
+    db.add(printer)
+    await db.flush()
+    db.add(PrinterQueue(printer_id=printer.id))
+    await db.commit()
+    return printer.id
+
+
+async def _written_rows(db, model, ids):
+    rows = (await db.execute(select(model).where(model.id.in_(ids)))).scalars().all()
+    assert len(rows) == len(ids)
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_plan_enqueue_to_the_auto_queue_carries_the_saved_preference(committing_client, db_session, catalog):
+    """The auto target names no machine, so there is no model to key the
+    preference by — the operator's saved row is still what the dialog would
+    have shown them, and applying nothing is the bug being fixed."""
+    ticked, unticked, _swap = await _three_macros(db_session)
+    await _the_dialogs_saved_preference(db_session, deselected_macro_ids=[unticked])
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue",
+        json={"items": [{"plate_id": plate_id, "count": 2, "line_id": line_id}], "target": {"kind": "auto"}},
+    )
+    assert r.status_code == 200, r.text
+    rows = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
+    assert len(rows) == 2
+    for row in rows:
+        assert row.execute_swap_macros is True
+        assert json.loads(row.swap_macro_events) == ["swap_mode_start", "swap_mode_change_table"]
+        # The preference stores the EXCEPTIONS, so the unticked macro is the
+        # only one missing — and the swap macro is not an event macro at all.
+        assert json.loads(row.selected_macro_ids) == [ticked]
+        # 'auto' and 'off' both mirror to False: the auto-queue has no ``*_mode``
+        # column, which is why the mode itself only survives the per-printer
+        # tier. Both differ from the schema's own ``"on"`` default.
+        assert row.bed_levelling is False and row.flow_cali is False
+
+
+@pytest.mark.asyncio
+async def test_plan_enqueue_to_a_printer_carries_the_saved_preference(committing_client, db_session, catalog):
+    """Same preference, the other target — and here the tri-state survives."""
+    ticked, unticked, _swap = await _three_macros(db_session)
+    await _the_dialogs_saved_preference(db_session, deselected_macro_ids=[unticked])
+    printer_id = await _swap_printer(db_session)
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue",
+        json={
+            "items": [{"plate_id": plate_id, "count": 2, "line_id": line_id}],
+            "target": {"kind": "printer", "printer_id": printer_id},
+        },
+    )
+    assert r.status_code == 200, r.text
+    rows = await _written_rows(db_session, PrintQueueItem, r.json()["created"][0]["queue_item_ids"])
+    assert len(rows) == 2
+    for row in rows:
+        assert row.execute_swap_macros is True
+        assert json.loads(row.swap_macro_events) == ["swap_mode_start", "swap_mode_change_table"]
+        assert json.loads(row.selected_macro_ids) == [ticked]
+        assert row.bed_levelling is False and row.bed_levelling_mode == "auto"
+        assert row.flow_cali is False and row.flow_cali_mode == "off"
+
+
+@pytest.mark.asyncio
+async def test_plan_enqueue_without_a_preference_keeps_the_writers_defaults(committing_client, db_session, catalog):
+    """Nothing saved changes nothing: the two writers' own defaults, pinned —
+    including the asymmetry between them, which is theirs and not this
+    handler's to smooth over."""
+    printer_id = await _swap_printer(db_session)
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+    item = {"plate_id": plate_id, "count": 1, "line_id": line_id}
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue", json={"items": [item], "target": {"kind": "auto"}}
+    )
+    assert r.status_code == 200, r.text
+    (auto_row,) = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
+    assert auto_row.execute_swap_macros is True  # ``AutoQueueItemCreate``'s own default
+    assert auto_row.swap_macro_events is None
+    assert auto_row.selected_macro_ids is None
+    assert auto_row.bed_levelling is True and auto_row.flow_cali is True
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue",
+        json={"items": [item], "target": {"kind": "printer", "printer_id": printer_id}},
+    )
+    assert r.status_code == 200, r.text
+    (queue_row,) = await _written_rows(db_session, PrintQueueItem, r.json()["created"][0]["queue_item_ids"])
+    assert queue_row.execute_swap_macros is False  # ``enqueue_batch_copies``' own default
+    assert queue_row.swap_macro_events is None
+    assert queue_row.selected_macro_ids is None
+    assert queue_row.bed_levelling is True and queue_row.bed_levelling_mode == "on"
+    assert queue_row.flow_cali is True and queue_row.flow_cali_mode == "on"
+
+
+@pytest.mark.asyncio
+async def test_plan_enqueue_mutes_swap_macros_that_would_fire_twice(committing_client, db_session, catalog):
+    """The rule every other queue door applies (``queue_add``, both print-now
+    routes): swap macros are meaningful only on a printer with swap mode ON and
+    a file that does not already carry them baked in by third-party tooling.
+    Carrying the preference here without that gate would run the plate change
+    twice — the printer target used to default the flag to False, so nothing
+    ever asked the question on this path before."""
+    await _the_dialogs_saved_preference(db_session)
+    printer_id = await _swap_printer(db_session, swap_mode_enabled=False)
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+    item = {"plate_id": plate_id, "count": 1, "line_id": line_id}
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue",
+        json={"items": [item], "target": {"kind": "printer", "printer_id": printer_id}},
+    )
+    assert r.status_code == 200, r.text
+    (row,) = await _written_rows(db_session, PrintQueueItem, r.json()["created"][0]["queue_item_ids"])
+    assert row.execute_swap_macros is False and row.swap_macro_events is None
+    # Only the swap half is muted — the calibration half of the same preference
+    # has nothing to do with the gate.
+    assert row.bed_levelling_mode == "auto" and row.flow_cali_mode == "off"
+
+    # The file's own baked-in macros mute it on either target, printer or not.
+    catalog["file"].swap_compatible = True
+    await db_session.commit()
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue", json={"items": [item], "target": {"kind": "auto"}}
+    )
+    assert r.status_code == 200, r.text
+    (auto_row,) = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
+    assert auto_row.execute_swap_macros is False and auto_row.swap_macro_events is None
+    assert auto_row.bed_levelling is False
