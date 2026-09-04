@@ -173,6 +173,37 @@ async def test_defective_is_counted_flat_and_per_part(committing_client, db_sess
 
 
 @pytest.mark.asyncio
+async def test_progress_is_capped_at_one_on_every_wire_that_carries_it(committing_client, db_session, catalog):
+    """A line printed twice over is 100% done, not 200%.
+
+    ``progress`` is what a bar fills from; the excess is reported by
+    ``units_printed`` and ``surplus``, which stay uncapped so nothing is hidden.
+    Three surfaces carry the number — the line, the order's figures and the
+    order list row — and each was clamping it (or not) on its own.
+    """
+    body = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Twice over", "lines": [{"product_id": catalog["product"].id, "quantity": 1}]},
+        )
+    ).json()
+    pid, line_id = body["id"], body["lines"][0]["id"]
+    await _completed_print(db_session, pid, catalog["file"].id, line_id=line_id)
+    await _completed_print(db_session, pid, catalog["file"].id, line_id=line_id)
+
+    body = (await committing_client.get(f"/api/v1/projects/{pid}")).json()
+    line = body["lines"][0]
+    assert line["units_printed"] == 2 and line["progress"] == 1.0
+    parts = {p["name"]: p for p in line["parts"]}
+    assert parts["arm"]["surplus"] == 2 and parts["shade"]["surplus"] == 1  # the excess is still on the wire
+    assert body["figures"]["printed"] == 2 and body["figures"]["ordered"] == 1
+    assert body["figures"]["progress"] == 1.0
+
+    row = next(p for p in (await committing_client.get("/api/v1/projects/")).json() if p["id"] == pid)
+    assert row["printed"] == 2 and row["progress"] == 1.0
+
+
+@pytest.mark.asyncio
 async def test_one_file_in_two_products_feeds_both_lines(committing_client, db_session, catalog):
     """A file shared by two products of the SAME order — a real farm case. Both
     products hold the file's whole-file plate, so both lines are candidates and

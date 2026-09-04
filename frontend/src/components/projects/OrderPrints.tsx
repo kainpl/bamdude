@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
@@ -24,6 +24,51 @@ interface Group {
   archives: Archive[];
 }
 
+/** What one page of `getProjectArchives` asks for. The endpoint declares no
+ *  maximum, so this is the page size, not a ceiling somebody else set. */
+const ARCHIVE_PAGE = 500;
+
+/** How many pages one read will walk before it stops and asks the operator.
+ *  Ten thousand prints under one order is a reporting problem; the walk must
+ *  not become an unbounded loop over somebody's whole archive because a single
+ *  id cannot be found. */
+const MAX_PAGES = 20;
+
+interface LoadedArchives {
+  archives: Archive[];
+  /** The walk hit `MAX_PAGES` with ids the order names still unloaded. */
+  truncated: boolean;
+}
+
+/**
+ * Read pages until the order's own list is satisfied.
+ *
+ * ⚠️ **A full page is not the end of the history.** `limit` rows back means
+ * `limit` was the LIMIT, so the walk asks again; a SHORT page is the only
+ * proof there is nothing older. The other stop is the order's own accounting:
+ * once every id it names is in hand, older prints belong to nobody here.
+ *
+ * ⚠️ **Pages overlap.** Offset paging over `created_at desc` shifts under a
+ * farm that is still printing, so the same archive can arrive twice — hence
+ * the id-keyed map rather than a concatenation. Insertion order is the
+ * server's order, which is what the groups render in.
+ *
+ * ⚠️ **An EMPTY `named` is not "nothing to fetch".** A server older than the
+ * per-line archive ids names nothing at all, and stopping on that would show
+ * one page of a long history with no sign of the rest; the short page is then
+ * the only stop the walk has.
+ */
+async function loadOrderArchives(orderId: number, named: Set<number>, maxPages: number): Promise<LoadedArchives> {
+  const byId = new Map<number, Archive>();
+  for (let page = 0; page < maxPages; page++) {
+    const batch = await api.getProjectArchives(orderId, ARCHIVE_PAGE, page * ARCHIVE_PAGE);
+    for (const archive of batch) byId.set(archive.id, archive);
+    const satisfied = named.size > 0 && [...named].every((id) => byId.has(id));
+    if (batch.length < ARCHIVE_PAGE || satisfied) return { archives: [...byId.values()], truncated: false };
+  }
+  return { archives: [...byId.values()], truncated: true };
+}
+
 /**
  * Every print that counts towards this order, grouped the way the SERVER
  * grouped it.
@@ -40,17 +85,32 @@ interface Group {
  * order but named in no group would otherwise vanish from a page whose whole
  * job is to account for it.
  */
-/** What one page of `getProjectArchives` holds — the page size the notice
- *  below reports against. */
-const ARCHIVE_PAGE = 500;
-
 export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
   const { t } = useTranslation();
 
-  const { data: archives, isLoading } = useQuery({
-    queryKey: ['project-archives', order.id],
-    queryFn: () => api.getProjectArchives(order.id, ARCHIVE_PAGE, 0),
+  // Every archive the order NAMES — the walk's own finish line, and the same
+  // set the figures above were computed from. `pick()` drops an id it cannot
+  // resolve in silence, so a page that stopped short showed fewer prints than
+  // the order claimed and looked wrong rather than incomplete.
+  const named = useMemo(() => {
+    const ids = new Set<number>();
+    for (const line of order.lines) for (const id of line.archive_ids ?? []) ids.add(id);
+    for (const id of order.other_archive_ids ?? []) ids.add(id);
+    return ids;
+  }, [order]);
+
+  // Pages bought by hand past the guard. In the key, so a click is a fetch —
+  // `placeholderData` keeps the prints on screen while it runs, rather than
+  // dropping the grid back to its spinner.
+  const [extraPages, setExtraPages] = useState(0);
+
+  const { data, isLoading, isFetching } = useQuery({
+    queryKey: ['project-archives', order.id, extraPages],
+    queryFn: () => loadOrderArchives(order.id, named, MAX_PAGES + extraPages),
+    placeholderData: (prev) => prev,
   });
+  const archives = data?.archives;
+  const truncated = data?.truncated ?? false;
 
   const byId = new Map((archives ?? []).map((archive) => [archive.id, archive]));
   const pick = (ids: number[]): Archive[] =>
@@ -84,17 +144,6 @@ export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
     });
   }
 
-  // ⚠️ One page, deliberately — an order with more than 500 prints is a
-  // reporting problem, not a browsing one. But `pick()` drops silently: the
-  // ids the response names are still counted by the figures above, so without
-  // this line the page would show fewer prints than it claims and look wrong
-  // rather than truncated. The total is the union of everything the order
-  // NAMES, which is what the figures count; the loaded page is a subset of it.
-  const named = new Set<number>();
-  for (const line of order.lines) for (const id of line.archive_ids ?? []) named.add(id);
-  for (const id of order.other_archive_ids ?? []) named.add(id);
-  const truncated = (archives?.length ?? 0) >= ARCHIVE_PAGE;
-
   const unlisted = (archives ?? []).filter((archive) => !claimed.has(archive.id));
   if (unlisted.length > 0) {
     groups.push({
@@ -113,12 +162,15 @@ export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
       </h2>
 
       {truncated && (
-        <p data-testid="prints-truncated" className="text-xs text-bambu-gray/70 italic">
-          {t('orders.prints.truncated', {
-            shown: ARCHIVE_PAGE,
-            total: Math.max(named.size, archives?.length ?? 0),
-          })}
-        </p>
+        <button
+          type="button"
+          data-testid="prints-load-older"
+          onClick={() => setExtraPages((pages) => pages + 1)}
+          disabled={isFetching}
+          className="rounded-lg border border-bambu-dark-tertiary px-3 py-1.5 text-xs text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors disabled:opacity-50"
+        >
+          {t('orders.prints.loadOlder')}
+        </button>
       )}
 
       {isLoading ? (

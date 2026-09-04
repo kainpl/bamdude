@@ -6,14 +6,29 @@
  * expected under two headings and an id-set walk over the archives would show
  * it under neither. Whatever no line claimed lands under "other prints" from
  * `other_archive_ids`; the leftover group exists only as a defensive net.
+ *
+ * The other half of this file is the READ: the order names every archive it
+ * counts, so the page keeps asking for pages until it holds them all. Reading
+ * one page and captioning the shortfall was honest and useless — the figures
+ * counted prints the grid could not show.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { Order } from '../../../api/client';
 import { OrderPrints } from '../../../components/projects/OrderPrints';
+
+/** `id` → a minimal archive row, the shape `getProjectArchives` answers with. */
+function rows(ids: number[], lineId: number | null = 10) {
+  return ids.map((id) => ({
+    id,
+    filename: `p${id}.3mf`,
+    status: 'completed',
+    project_line_id: lineId,
+  }));
+}
 
 describe('OrderPrints', () => {
   beforeEach(() => {
@@ -88,35 +103,63 @@ describe('OrderPrints', () => {
     expect(hrefs).not.toContain('/archives?fileName=external%20print.3mf');
   });
 
-  it('says so when the response filled a whole page and older prints were left behind', async () => {
-    // 500 back means 500 was the LIMIT, not the count. `pick()` drops every id
-    // it cannot resolve in silence, while the figures above still count them —
-    // so without the notice the page shows fewer prints than it claims.
-    const loaded = Array.from({ length: 500 }, (_, i) => ({
-      id: i + 1,
-      filename: `p${i + 1}.3mf`,
-      status: 'completed',
-      project_line_id: 10,
-    }));
-    vi.spyOn(api, 'getProjectArchives').mockResolvedValue(loaded as never);
+  it('keeps reading pages until every archive the order names is loaded', async () => {
+    // A FULL page says nothing about whether it was the last one, so the walk
+    // asks again; the short second page ends it. 750 prints, two reads — where
+    // the old page read 500 and captioned the missing 250 as "truncated".
+    const all = rows(Array.from({ length: 750 }, (_, i) => i + 1));
+    const getArchives = vi
+      .spyOn(api, 'getProjectArchives')
+      .mockImplementation((async (_id: number, limit = 500, offset = 0) =>
+        all.slice(offset, offset + limit)) as never);
 
     const order = {
       id: 1,
-      other_archive_ids: [900],
-      lines: [
-        { id: 10, product_name: 'Flask', quantity: 600, archive_ids: [...loaded.map((a) => a.id), 601, 602] },
-      ],
+      other_archive_ids: [],
+      lines: [{ id: 10, product_name: 'Flask', quantity: 750, archive_ids: all.map((a) => a.id) }],
     } as unknown as Order;
 
     render(<OrderPrints order={order} canEdit />);
 
-    const notice = await screen.findByTestId('prints-truncated');
-    expect(notice.textContent).toContain('500');
-    // 500 loaded + ids 601 and 602 + the one under other prints.
-    expect(notice.textContent).toContain('503');
+    const group = await screen.findByTestId('prints-line-10');
+    // The last print of the SECOND page: proof the walk did not stop at 500.
+    await waitFor(() => expect(group.textContent).toContain('p750.3mf'));
+    expect(getArchives).toHaveBeenCalledTimes(2);
+    expect(getArchives).toHaveBeenNthCalledWith(1, 1, 500, 0);
+    expect(getArchives).toHaveBeenNthCalledWith(2, 1, 500, 500);
+    expect(screen.queryByTestId('prints-load-older')).not.toBeInTheDocument();
   });
 
-  it('keeps the notice away while one page holds everything', async () => {
+  it('stops at its page guard and offers the rest as a button', async () => {
+    // The stub answers every offset with the SAME full page, so the walk runs
+    // to its twenty-page cap without ten thousand cards in jsdom. Overlapping
+    // pages are real — rows arrive mid-walk — which is why the loader keys
+    // archives by id and only the 500 distinct ones render.
+    const page = rows(Array.from({ length: 500 }, (_, i) => i + 1));
+    const getArchives = vi.spyOn(api, 'getProjectArchives').mockResolvedValue(page as never);
+
+    const order = {
+      id: 1,
+      other_archive_ids: [],
+      // 9999 is never answered, so the walk can never satisfy the order and
+      // stops only because the guard says so.
+      lines: [{ id: 10, product_name: 'Flask', quantity: 600, archive_ids: [...page.map((a) => a.id), 9999] }],
+    } as unknown as Order;
+
+    render(<OrderPrints order={order} canEdit />);
+
+    const button = await screen.findByTestId('prints-load-older');
+    expect(getArchives).toHaveBeenCalledTimes(20);
+    expect(getArchives).not.toHaveBeenCalledWith(1, 500, 20 * 500);
+
+    fireEvent.click(button);
+
+    // One more page than last time — the button buys pages, it does not restate
+    // the shortfall.
+    await waitFor(() => expect(getArchives).toHaveBeenCalledWith(1, 500, 20 * 500));
+  });
+
+  it('keeps the button away while one page holds everything', async () => {
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
       { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10 },
     ] as never);
@@ -130,6 +173,6 @@ describe('OrderPrints', () => {
     render(<OrderPrints order={order} canEdit />);
 
     expect(await screen.findByTestId('prints-line-10')).toBeInTheDocument();
-    expect(screen.queryByTestId('prints-truncated')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('prints-load-older')).not.toBeInTheDocument();
   });
 });

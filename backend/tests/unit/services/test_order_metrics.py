@@ -263,3 +263,55 @@ def test_in_progress_and_project_totals():
     # loop from _units_complete yields 2 and fails this line.
     assert pf.complete == 1  # min(2 printed, 6 // 4 = 1 kit of screws)
     assert pf.total_cost == 3.0 and pf.margin == 97.0 and pf.total_time_seconds == 100 and pf.all_printed is False
+
+
+def test_a_scrapped_plate_is_listed_under_the_line_whose_product_counts_it():
+    """An archive that credited nothing is still the order's work, and WHICH
+    line's work is readable off its part rows.
+
+    Two products share a bed, each zeroing the other's object (the modelling
+    convention every plate-sharing test here uses). A plate of lid_b that came
+    out entirely defective credits nobody — and used to be listed under
+    whichever line happened to sort first, so a scrapped batch of lids showed up
+    against the product that never had a lid on that bed. The row keys say whose
+    it was; only the counting failed.
+    """
+    parts = [_part(1, 10, "lid_a", 1), _part(2, 10, "lid_b", 0), _part(3, 20, "lid_b", 1), _part(4, 20, "lid_a", 0)]
+    lines = [_line(100, 10, 4, sort=0), _line(101, 20, 4, sort=1)]
+    archives = [_archive(1, file_id=7, plate=1)]
+    ap = {1: [_ap(1, "lid_b", 4, defective=4)]}
+    figs, other = attribute(_ctx(lines, parts, archives, ap, {(7, 1): [10, 20]}))
+    assert figs[101].archive_ids == [1]
+    assert figs[100].archive_ids == []  # sorts first, counts no lid_b: not its plate
+    assert figs[101].parts[0].usable == 0 and other == []
+
+
+def test_a_print_whose_rows_no_candidate_counts_falls_back_to_the_first():
+    """No row key resolves anywhere — a failed print that never produced rows, or
+    a plate of test pieces. There is nothing to read, so the oldest rule stands:
+    the first candidate lists it, uncounted. Binning it would report the order's
+    own work as a stranger's."""
+    parts = [_part(1, 10, "lid_a", 1), _part(2, 10, "lid_b", 0), _part(3, 20, "lid_b", 1), _part(4, 20, "lid_a", 0)]
+    lines = [_line(100, 10, 4, sort=0), _line(101, 20, 4, sort=1)]
+    archives = [_archive(1, file_id=7, plate=1, status="failed"), _archive(2, file_id=7, plate=1)]
+    ap = {2: [_ap(2, "sacrificial_raft", 1)]}
+    figs, other = attribute(_ctx(lines, parts, archives, ap, {(7, 1): [10, 20]}))
+    assert figs[100].archive_ids == [1, 2]  # a failed print keeps its rows, and they credit nothing
+    assert figs[101].archive_ids == []
+    assert other == []
+
+
+def test_progress_never_exceeds_one_however_far_a_line_is_overprinted():
+    """The surplus is what reports the excess (``surplus``, ``units_printed``);
+    ``progress`` is a bar's fill and a bar cannot be 300% full. It was, on the
+    wire, and every consumer had to remember to clamp it."""
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 1)]
+    archives = [_archive(i, file_id=5, plate=0) for i in (1, 2, 3)]
+    ap = {i: [_ap(i, "a", 1)] for i in (1, 2, 3)}
+    ctx = _ctx(lines, parts, archives, ap, {(5, 0): 10})
+    figs, other = attribute(ctx)
+    assert figs[100].units_printed == 3 and figs[100].parts[0].surplus == 2  # the excess still shows
+    assert figs[100].progress == 1.0
+    pf = project_figures(ctx, figs, other)
+    assert pf.printed == 3 and pf.ordered == 1 and pf.progress == 1.0

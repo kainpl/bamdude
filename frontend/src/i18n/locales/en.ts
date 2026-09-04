@@ -4877,7 +4877,7 @@ export default {
       removeFromOrder: 'Remove from order',
       actions: 'Print actions',
       empty: 'No prints for this order yet.',
-      truncated: 'Showing the {{shown}} most recent prints of {{total}}.',
+      loadOlder: 'Load older prints',
     },
     queue: {
       title: 'Queue',

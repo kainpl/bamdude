@@ -199,7 +199,12 @@ def _finish(figs: LineFigures) -> None:
         p.remaining = max(0, p.need - p.usable)
         p.surplus = max(0, p.usable - p.need)
     figs.units_printed = _units_printed(figs)
-    figs.progress = round(figs.units_printed / figs.quantity, 4) if figs.quantity else 0.0
+    # Capped on the wire: ``progress`` is what a bar fills from, and a bar
+    # cannot be 300% full. The excess is not lost — ``units_printed`` and each
+    # part's ``surplus`` carry it uncapped, which is where the overprint is
+    # meant to be read. Clamping at every consumer instead was the alternative,
+    # and the frontend was the only one that remembered.
+    figs.progress = min(1.0, round(figs.units_printed / figs.quantity, 4)) if figs.quantity else 0.0
 
 
 def _line_accepts(line: ProjectLine, materials: set[str]) -> bool:
@@ -298,6 +303,24 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
                 fed.add(takers[0][0].id)
         return fed
 
+    def uncounted_home(rows: list[PrintArchivePart], lines: list[ProjectLine]) -> ProjectLine:
+        """Which candidate lists an archive that credited nobody.
+
+        ``hand_out`` feeds nothing when every row nets to zero (a plate scrapped
+        in full) or when the print failed. The work is still the order's, so it
+        is listed — and the ROWS say whose: the first candidate whose product
+        counts any of the row keys. Listing the first candidate flat put a
+        scrapped batch of lid_b against the product that has no lid_b on that
+        bed, which reads as that line's failure.
+
+        With nothing to read — a failed print that produced no rows at all, a
+        plate of test pieces no product knows — the first candidate stands.
+        """
+        for line in lines:
+            if any(counted(line, row.name_key) is not None for row in rows):
+                return line
+        return lines[0]
+
     def list_under(archive: PrintArchive, fed: set[int]) -> None:
         """``archive_ids`` in processing order, no duplicates. One archive may
         legitimately appear under several lines; time, grams and cost are summed
@@ -330,10 +353,10 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
             other.append(archive)
             continue
         # Candidates but nothing counted — a failed print, a plate of test pieces:
-        # the work still belongs to the order, so it is listed on the first
-        # candidate line, uncounted, instead of being reported as a stranger's.
+        # the work still belongs to the order, so it is listed uncounted on the
+        # candidate its rows point at instead of being reported as a stranger's.
         rows = ctx.archive_parts_by_archive.get(archive.id, [])
-        list_under(archive, hand_out(archive, rows, lines) or {lines[0].id})
+        list_under(archive, hand_out(archive, rows, lines) or {uncounted_home(rows, lines).id})
     for figs in figures.values():
         _finish(figs)
     return figures, other
@@ -385,7 +408,10 @@ def project_figures(
     pf.total_filament_grams = round(pf.total_filament_grams, 2)
     pf.total_cost = round(pf.total_cost, 2)
     pf.margin = round(ctx.project.price - pf.total_cost, 2) if ctx.project.price is not None else None
-    pf.progress = round(pf.printed / pf.ordered, 4) if pf.ordered else 0.0
+    # Capped for the same reason a line's is (see ``_finish``): ``printed`` and
+    # ``ordered`` sit beside it uncapped, so an overprinted order still reads
+    # "5 of 3" while its bar stays full rather than overflowing its track.
+    pf.progress = min(1.0, round(pf.printed / pf.ordered, 4)) if pf.ordered else 0.0
     pf.other_prints_count = len(other)
     pf.all_printed = bool(line_figures) and all(f.units_printed >= f.quantity for f in line_figures.values())
     return pf

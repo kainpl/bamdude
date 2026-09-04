@@ -183,6 +183,9 @@ class ProjectLineResponse(BaseModel):
     note: str | None
     sort_order: int
     units_printed: int
+    # 0.0–1.0, capped server-side (``order_metrics._finish`` /
+    # ``project_figures``). An overprinted line reports its excess through
+    # ``units_printed`` and each part's ``surplus``, never through this.
     progress: float
     parts: list[PartFiguresOut] = []
     # Every archive attributed to this line, in processing order. One archive
@@ -209,6 +212,9 @@ class ProjectFiguresOut(BaseModel):
     total_cost: float
     defective: int
     margin: float | None
+    # 0.0–1.0, capped server-side (see ``ProjectLineResponse.progress``).
+    # An overprinted order reports its excess through ``printed`` against
+    # ``ordered``, which stay uncapped.
     progress: float
     other_prints_count: int
     all_printed: bool
@@ -256,6 +262,9 @@ class ProjectListResponse(BaseModel):
     lines_count: int
     ordered: int
     printed: int
+    # 0.0–1.0, capped server-side (see ``ProjectLineResponse.progress``).
+    # An overprinted order reports its excess through ``printed`` against
+    # ``ordered``, which stay uncapped.
     progress: float
     line_products: list["LineProductOut"] = []
 

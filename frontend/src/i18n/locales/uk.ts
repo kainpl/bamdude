@@ -4925,7 +4925,7 @@ export default {
       removeFromOrder: 'Прибрати із замовлення',
       actions: 'Дії з друком',
       empty: 'Для цього замовлення ще немає друків.',
-      truncated: 'Показано {{shown}} найновіших друків із {{total}}.',
+      loadOlder: 'Завантажити старіші друки',
     },
     queue: {
       title: 'Черга',
