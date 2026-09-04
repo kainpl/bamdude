@@ -2,6 +2,8 @@ import pytest
 from sqlalchemy import select
 
 from backend.app.models.project import Project
+from backend.app.schemas.customer import CustomerFigures, CustomerListFigures
+from backend.tests.unit.services.test_order_metrics import build_parity_fixture
 
 pytestmark = pytest.mark.integration
 
@@ -103,3 +105,39 @@ async def test_the_name_is_trimmed_on_create_and_on_update(committing_client):
     # Whitespace-only is the same as empty: 422 on both paths, never a stored blank.
     assert (await committing_client.post("/api/v1/customers", json={"name": "   "})).status_code == 422
     assert (await committing_client.patch(f"/api/v1/customers/{cid}", json={"name": "   "})).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_the_detail_figures_survive_the_grouped_query(committing_client, db_session):
+    """The customer page stops loading an order context per order; the numbers
+    it shows may not move. Written out by hand in ``build_parity_fixture``:
+    ordered 3+1, printed 4+0, cost 3.5+3.0, price 100+50."""
+    ids = await build_parity_fixture(db_session)
+
+    figures = (await committing_client.get(f"/api/v1/customers/{ids['customer']}")).json()["figures"]
+    assert figures == {
+        "projects": 2,
+        "active": 1,
+        "completed": 0,
+        "cancelled": 1,
+        "ordered": 4,
+        "printed": 4,
+        "total_cost": 6.5,
+        "total_price": 150.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_figures_are_a_typed_model_on_both_endpoints(committing_client, db_session):
+    """``figures`` was a bare ``dict`` on the wire, so nothing but the frontend
+    knew which keys either endpoint promises. The list one is the light half and
+    must stay free of the archive-derived keys - ``CustomerPage`` reads
+    ``'ordered' in figures`` to tell the two apart."""
+    ids = await build_parity_fixture(db_session)
+
+    detail = (await committing_client.get(f"/api/v1/customers/{ids['customer']}")).json()["figures"]
+    assert CustomerFigures.model_validate(detail).ordered == 4
+
+    row = next(c for c in (await committing_client.get("/api/v1/customers")).json() if c["id"] == ids["customer"])
+    assert CustomerListFigures.model_validate(row["figures"]).projects == 2
+    assert not {"ordered", "printed", "total_cost"} & set(row["figures"])

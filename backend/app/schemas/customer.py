@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def _clean_name(value: str) -> str:
@@ -47,6 +47,37 @@ class CustomerUpdate(BaseModel):
         return _clean_name(value)
 
 
+class CustomerListFigures(BaseModel):
+    """What the LIST endpoint promises: counts and a price sum, no archive work.
+
+    ``extra="allow"`` on purpose — a status this build has never heard of is
+    counted under its own key rather than dropped, which is the rule both
+    figure builders follow. Declaring the four known statuses still documents
+    what a client may rely on.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    projects: int
+    active: int
+    completed: int
+    cancelled: int
+    total_price: float
+
+
+class CustomerFigures(CustomerListFigures):
+    """The DETAIL endpoint's superset — the three keys that cost archive work.
+
+    ``CustomerPage`` tells the two apart with ``'ordered' in figures``, so the
+    list model must never grow these fields "for symmetry": an absent key means
+    "not asked", a zero would mean "measured, and it is nothing".
+    """
+
+    ordered: int
+    printed: int
+    total_cost: float
+
+
 class CustomerResponse(BaseModel):
     id: int
     name: str
@@ -54,7 +85,9 @@ class CustomerResponse(BaseModel):
     notes: str | None
     created_at: datetime
     updated_at: datetime
-    figures: dict
+    # The detail model first: it is the more specific of the two, and a union
+    # resolves left to right.
+    figures: CustomerFigures | CustomerListFigures
 
     class Config:
         from_attributes = True

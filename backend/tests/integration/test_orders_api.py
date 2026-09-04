@@ -18,6 +18,7 @@ from backend.app.models.project_line import ProjectLine
 from backend.app.services.order_metrics import load_order_context
 from backend.app.services.plan_engine import queued_yield_by_line
 from backend.app.services.product_composition import recipes_for_product
+from backend.tests.unit.services.test_order_metrics import build_parity_fixture
 
 pytestmark = pytest.mark.integration
 
@@ -1192,3 +1193,25 @@ async def test_line_products_carries_a_cover_flag_per_line_in_line_order(committ
         {"product_id": plain, "has_cover": False},
         {"product_id": covered, "has_cover": True},
     ]
+
+
+@pytest.mark.asyncio
+async def test_the_orders_list_reports_what_each_order_page_reports(committing_client, db_session):
+    """The list stopped loading an order context per row. The figures it prints
+    are hand-written in ``build_parity_fixture`` - and must still equal, order
+    for order, what the detail endpoint answers."""
+    ids = await build_parity_fixture(db_session)
+
+    rows = {r["name"]: r for r in (await committing_client.get("/api/v1/projects/")).json()}
+    live, dead = rows["Parity live order"], rows["Parity cancelled order"]
+    assert (live["ordered"], live["printed"], live["progress"]) == (3, 4, 1.0)
+    assert (dead["ordered"], dead["printed"], dead["progress"]) == (1, 0, 0.0)
+    assert (live["lines_count"], dead["lines_count"]) == (2, 1)
+
+    for row, project_id in ((live, ids["live"]), (dead, ids["dead"])):
+        figures = (await committing_client.get(f"/api/v1/projects/{project_id}")).json()["figures"]
+        assert (row["ordered"], row["printed"], row["progress"]) == (
+            figures["ordered"],
+            figures["printed"],
+            figures["progress"],
+        )

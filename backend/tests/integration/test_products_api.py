@@ -5,6 +5,8 @@ production's ``get_db`` does it after the response. See the fixture docstrings
 in ``backend/tests/conftest.py``.
 """
 
+from datetime import datetime, timezone
+
 import pytest
 from sqlalchemy import select
 
@@ -25,6 +27,10 @@ from backend.tests.integration.test_library_card_api import (
     make_card_file,
     write_card_3mf,
 )
+
+# The order fixture whose figures are written out by hand — the product page's
+# all-time count is asserted against the same numbers the order pages show.
+from backend.tests.unit.services.test_order_metrics import build_parity_fixture
 
 
 def _codes(notes: list[dict]) -> list[str]:
@@ -842,3 +848,123 @@ async def test_a_file_with_nothing_left_to_give_says_so(committing_client, db_se
         await committing_client.post(f"/api/v1/products/{other}/card/reread", params={"file_id": empty.id})
     ).json()["notes"]
     assert _codes(nothing) == ["nothing_to_fill"]
+
+
+@pytest.mark.asyncio
+async def test_plates_count_ignores_the_plates_of_a_trashed_file(committing_client, db_session):
+    """``plates_count`` is what the card promises can be printed, so it has to
+    count what ``GET /plates`` lists - and that one drops a trashed file's
+    plates. A trashed file keeps its ``product_plates`` rows (it is restorable),
+    which is exactly why the count has to ask rather than count the links."""
+    doomed = LibraryFile(
+        filename="doomed.gcode.3mf", file_path="doomed", file_size=1, file_type="gcode", file_metadata=MULTI
+    )
+    kept = LibraryFile(
+        filename="kept.gcode.3mf", file_path="kept", file_size=1, file_type="gcode", file_metadata=SINGLE
+    )
+    db_session.add_all([doomed, kept])
+    await db_session.commit()
+
+    pid = (await committing_client.post("/api/v1/products/", json={"name": "Two files"})).json()["id"]
+    db_session.add_all(
+        [
+            ProductPlate(product_id=pid, library_file_id=doomed.id, plate_index=1),
+            ProductPlate(product_id=pid, library_file_id=doomed.id, plate_index=2),
+            ProductPlate(product_id=pid, library_file_id=kept.id, plate_index=1),
+        ]
+    )
+    await db_session.commit()
+
+    async def counts() -> tuple[int, int, int]:
+        detail = (await committing_client.get(f"/api/v1/products/{pid}")).json()["plates_count"]
+        listed = next(p for p in (await committing_client.get("/api/v1/products/")).json() if p["id"] == pid)
+        plates = (await committing_client.get(f"/api/v1/products/{pid}/plates")).json()
+        return detail, listed["plates_count"], len(plates)
+
+    assert await counts() == (3, 3, 3)
+
+    doomed.deleted_at = datetime.now(timezone.utc)
+    await db_session.commit()
+
+    assert await counts() == (1, 1, 1)
+
+    rows = (await db_session.execute(select(ProductPlate).where(ProductPlate.product_id == pid))).scalars().all()
+    assert len(rows) == 3, "the links themselves survive the trash - only the count stops believing them"
+
+
+@pytest.mark.asyncio
+async def test_renaming_a_purchased_part_refreshes_its_key(committing_client, db_session, sliced_file):
+    """A purchased part IS its name: ``name_key`` is derived from it, and a
+    rename that leaves the key behind makes the two disagree for good. The
+    procurement rows reference the part id, so nothing of the order moves."""
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    screw = (
+        await committing_client.post(
+            f"/api/v1/products/{pid}/parts", json={"kind": "purchased", "name": "M3 screw", "qty_per_unit": 8}
+        )
+    ).json()
+    nut = (
+        await committing_client.post(
+            f"/api/v1/products/{pid}/parts", json={"kind": "purchased", "name": "M4 screw", "qty_per_unit": 1}
+        )
+    ).json()
+    assert (screw["name_key"], nut["name_key"]) == ("purchased:m3 screw", "purchased:m4 screw")
+
+    order = (
+        await committing_client.post(
+            "/api/v1/projects/", json={"name": "Screws", "lines": [{"product_id": pid, "quantity": 2}]}
+        )
+    ).json()
+    r = await committing_client.patch(
+        f"/api/v1/projects/{order['id']}/procurement/{screw['id']}", json={"quantity_acquired": 9}
+    )
+    assert r.status_code == 200, r.text
+
+    # A rename onto a key another part already holds is a 409, not an IntegrityError.
+    r = await committing_client.patch(f"/api/v1/products/{pid}/parts/{screw['id']}", json={"name": "M4 SCREW"})
+    assert r.status_code == 409, r.text
+    kept = next(
+        p for p in (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"] if p["id"] == screw["id"]
+    )
+    assert (kept["name"], kept["name_key"]) == ("M3 screw", "purchased:m3 screw"), "the refused rename changed nothing"
+
+    r = await committing_client.patch(f"/api/v1/products/{pid}/parts/{screw['id']}", json={"name": "  M5  screw  "})
+    assert r.status_code == 200, r.text
+    assert (r.json()["name"], r.json()["name_key"]) == ("M5  screw", "purchased:m5 screw")
+
+    procurement = (await committing_client.get(f"/api/v1/projects/{order['id']}")).json()["procurement"]
+    entry = next(p for p in procurement if p["part_id"] == screw["id"])
+    assert (entry["name"], entry["acquired"], entry["need"]) == ("M5  screw", 9, 16)
+
+    rows = (
+        (await db_session.execute(select(ProjectProcurement).where(ProjectProcurement.product_part_id == screw["id"])))
+        .scalars()
+        .all()
+    )
+    assert [row.quantity_acquired for row in rows] == [9], "the row follows the id, so there is nothing to move"
+
+
+@pytest.mark.asyncio
+async def test_a_printed_parts_key_survives_a_rename(committing_client, sliced_file):
+    """The mirror image: a printed part's key is the 3MF object name, not its
+    display name. Refreshing it on a rename would orphan every archive row."""
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    part = next(
+        p
+        for p in (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"]
+        if p["name_key"] == "bracket.stl"
+    )
+    r = await committing_client.patch(f"/api/v1/products/{pid}/parts/{part['id']}", json={"name": "Bracket Mk II"})
+    assert r.status_code == 200, r.text
+    assert (r.json()["name"], r.json()["name_key"]) == ("Bracket Mk II", "bracket.stl")
+
+
+@pytest.mark.asyncio
+async def test_units_printed_total_matches_the_order_pages_on_a_shared_plate(committing_client, db_session):
+    """The product page's all-time count now rides the same batched loader the
+    orders list does. Hand-written in ``build_parity_fixture``: the lamp is
+    printed 3 times across a live and a cancelled order, the hook once."""
+    ids = await build_parity_fixture(db_session)
+
+    assert (await committing_client.get(f"/api/v1/products/{ids['lamp']}")).json()["units_printed_total"] == 3
+    assert (await committing_client.get(f"/api/v1/products/{ids['hook_product']}")).json()["units_printed_total"] == 1

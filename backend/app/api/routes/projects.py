@@ -61,7 +61,13 @@ from backend.app.schemas.project import (
     TimelineEvent,
 )
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
-from backend.app.services.order_metrics import attribute, load_order_context, procurement_figures, project_figures
+from backend.app.services.order_metrics import (
+    attribute,
+    grouped_figures,
+    load_order_context,
+    procurement_figures,
+    project_figures,
+)
 from backend.app.services.plan_engine import OrderPlan, plan_for_order
 from backend.app.services.product_composition import PlateRecipe, recipes_for_product
 from backend.app.services.product_files import (
@@ -211,15 +217,17 @@ async def list_projects(
         if product_ids
         else set()
     )
+    # One batched load for the whole page instead of an order context per row.
+    # The figures are the same ones the detail endpoint answers — same loader,
+    # same arithmetic, asked once (``services/order_metrics.grouped_figures``).
+    figures = {
+        order.project_id: order for order in await grouped_figures(db, project_ids=[project.id for project in projects])
+    }
     out: list[ProjectListResponse] = []
     for project in projects:
-        # One order context per row. Accepted for now (spec: measured later) —
-        # an order has tens of archives and a farm has tens of orders.
-        ctx = await load_order_context(db, project.id)
-        if ctx is None:  # deleted between the two statements; nothing to report
+        pf = figures.get(project.id)
+        if pf is None:  # deleted between the two statements; nothing to report
             continue
-        figs, other = attribute(ctx)
-        pf = project_figures(ctx, figs, other)
         out.append(
             ProjectListResponse(
                 id=project.id,

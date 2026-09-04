@@ -11,7 +11,13 @@ from backend.app.core.permissions import Permission
 from backend.app.models.customer import Customer
 from backend.app.models.project import Project
 from backend.app.models.user import User
-from backend.app.schemas.customer import CustomerCreate, CustomerResponse, CustomerUpdate
+from backend.app.schemas.customer import (
+    CustomerCreate,
+    CustomerFigures,
+    CustomerListFigures,
+    CustomerResponse,
+    CustomerUpdate,
+)
 from backend.app.services.order_metrics import customer_figures
 
 router = APIRouter(prefix="/customers", tags=["customers"])
@@ -25,15 +31,16 @@ async def _response(db: AsyncSession, customer: Customer) -> CustomerResponse:
         notes=customer.notes,
         created_at=customer.created_at,
         updated_at=customer.updated_at,
-        figures=await customer_figures(db, customer.id),
+        figures=CustomerFigures.model_validate(await customer_figures(db, customer.id)),
     )
 
 
-def _empty_light_figures() -> dict:
-    return {"projects": 0, "active": 0, "completed": 0, "cancelled": 0, "total_price": 0.0}
+def _empty_light_figures() -> CustomerListFigures:
+    """A customer with no orders at all: zeros, never a missing key."""
+    return CustomerListFigures(projects=0, active=0, completed=0, cancelled=0, total_price=0.0)
 
 
-async def _light_figures_by_customer(db: AsyncSession) -> dict[int, dict]:
+async def _light_figures_by_customer(db: AsyncSession) -> dict[int, CustomerListFigures]:
     """Figures for the LIST endpoint, in one grouped query.
 
     ``customer_figures`` loads a full ``OrderContext`` per PROJECT — several
@@ -59,13 +66,13 @@ async def _light_figures_by_customer(db: AsyncSession) -> dict[int, dict]:
     )
     out: dict[int, dict] = {}
     for customer_id, status, count, price_sum in rows:
-        figures = out.setdefault(customer_id, _empty_light_figures())
+        figures = out.setdefault(customer_id, _empty_light_figures().model_dump())
         figures["projects"] += count
         figures[status] = figures.get(status, 0) + count
         figures["total_price"] += float(price_sum or 0)
     for figures in out.values():
         figures["total_price"] = round(figures["total_price"], 2)
-    return out
+    return {customer_id: CustomerListFigures.model_validate(figures) for customer_id, figures in out.items()}
 
 
 async def _get_or_404(db: AsyncSession, customer_id: int) -> Customer:
@@ -90,7 +97,7 @@ async def list_customers(
             notes=c.notes,
             created_at=c.created_at,
             updated_at=c.updated_at,
-            figures=figures.get(c.id, _empty_light_figures()),
+            figures=figures.get(c.id) or _empty_light_figures(),
         )
         for c in rows
     ]

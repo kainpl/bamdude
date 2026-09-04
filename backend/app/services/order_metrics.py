@@ -8,6 +8,7 @@ tens to hundreds of archives, which is nothing.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
@@ -417,10 +418,209 @@ def project_figures(
     return pf
 
 
+# ---------- the same figures, for many orders at once ----------
+
+
+@dataclass(slots=True)
+class GroupedLineFigures:
+    """One order line's units, as ``attribute`` counts them.
+
+    ``usable_units`` is ``LineFigures.units_printed`` — the number of whole units
+    the line's parts support, and deliberately NOT capped: an overprinted line
+    reports 3 against an ordered 2, which is what the product page and the order
+    page both show. ``printed_units`` is that number capped at ``need``, which is
+    what a progress bar fills from.
+    """
+
+    line_id: int
+    project_id: int
+    product_id: int
+    need: int
+    usable_units: int
+    printed_units: int
+
+
+@dataclass(slots=True)
+class GroupedOrderFigures:
+    """The order-level half. ``total_cost`` lives HERE and not on the line: an
+    archive may legitimately be listed under several lines (a shared plate), so
+    the cost is summed once per order over its archives — putting it on the line
+    would double-count it the moment anybody added the lines up."""
+
+    project_id: int
+    ordered: int
+    printed: int
+    progress: float
+    total_cost: float
+    lines: list[GroupedLineFigures] = field(default_factory=list)
+
+
+async def _batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[OrderContext]:
+    """Every :class:`OrderContext` in ``project_ids``, in a fixed number of queries.
+
+    The per-order loader is right for one order and wrong once per row of a
+    list — five statements per order plus every archive of it, which is how the
+    orders list, the customer page and every product endpoint each ran an N+1.
+
+    This is the SAME loader, batched: identical filters, identical ordering,
+    identical indexes, so the contexts it returns are the ones
+    :func:`load_order_context` would have returned one at a time — and a test
+    asserts exactly that. The arithmetic afterwards is untouched; nothing here
+    re-derives a figure in SQL, because a second implementation of the
+    attribution rules is a second answer waiting to disagree with the first.
+    """
+    if not project_ids:
+        return []
+    projects = (
+        (await db.execute(select(Project).options(selectinload(Project.lines)).where(Project.id.in_(project_ids))))
+        .scalars()
+        .all()
+    )
+    lines_by_project = {p.id: sorted(p.lines, key=lambda line: (line.sort_order, line.id)) for p in projects}
+    product_ids = {line.product_id for lines in lines_by_project.values() for line in lines}
+    products = (
+        (
+            await db.execute(
+                select(Product)
+                .options(selectinload(Product.parts), selectinload(Product.plates))
+                .where(Product.id.in_(product_ids))
+            )
+        )
+        .scalars()
+        .all()
+        if product_ids
+        else []
+    )
+    products_by_id = {p.id: p for p in products}
+    archives_by_project: dict[int, list[PrintArchive]] = defaultdict(list)
+    for archive in (
+        (
+            await db.execute(
+                select(PrintArchive)
+                .where(PrintArchive.project_id.in_(project_ids), PrintArchive.deleted_at.is_(None))
+                .order_by(PrintArchive.project_id, PrintArchive.created_at, PrintArchive.id)
+            )
+        )
+        .scalars()
+        .all()
+    ):
+        archives_by_project[archive.project_id].append(archive)
+    archive_ids = [a.id for archives in archives_by_project.values() for a in archives]
+    parts_by_archive: dict[int, list[PrintArchivePart]] = defaultdict(list)
+    if archive_ids:
+        for row in (
+            (await db.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id.in_(archive_ids))))
+            .scalars()
+            .all()
+        ):
+            parts_by_archive[row.archive_id].append(row)
+    procurement_by_project: dict[int, dict[int, int]] = defaultdict(dict)
+    for row in (
+        await db.execute(select(ProjectProcurement).where(ProjectProcurement.project_id.in_(project_ids)))
+    ).scalars():
+        procurement_by_project[row.project_id][row.product_part_id] = row.quantity_acquired
+
+    out: list[OrderContext] = []
+    for project in projects:
+        lines = lines_by_project[project.id]
+        # Built from THIS order's products only, exactly as the per-order loader
+        # does. A shared index over every order's products would answer the same
+        # (``candidates`` filters on the order's own lines) but it would be a
+        # different object than the one parity is claimed against.
+        own_products = [products_by_id[pid] for pid in {line.product_id for line in lines} if pid in products_by_id]
+        plate_products: dict[tuple[int, int], set[int]] = defaultdict(set)
+        whole_file_products: dict[int, set[int]] = defaultdict(set)
+        for product in own_products:
+            for plate in product.plates:
+                plate_products[(plate.library_file_id, plate.plate_index)].add(product.id)
+                if plate.plate_index == 0:
+                    whole_file_products[plate.library_file_id].add(product.id)
+        archives = archives_by_project.get(project.id, [])
+        out.append(
+            OrderContext(
+                project=project,
+                lines=lines,
+                products_by_id={p.id: p for p in own_products},
+                parts_by_product={p.id: list(p.parts) for p in own_products},
+                plate_product={key: sorted(pids) for key, pids in plate_products.items()},
+                archives=list(archives),
+                archive_parts_by_archive={a.id: parts_by_archive[a.id] for a in archives if a.id in parts_by_archive},
+                procurement_by_part=procurement_by_project.get(project.id, {}),
+                whole_file_product={file_id: sorted(pids) for file_id, pids in whole_file_products.items()},
+            )
+        )
+    return out
+
+
+async def grouped_figures(
+    db: AsyncSession, *, project_ids: Sequence[int] | None = None, product_ids: Sequence[int] | None = None
+) -> list[GroupedOrderFigures]:
+    """The order figures for many orders in one round of queries.
+
+    Ask by order (the orders list, the customer page) or by product (the product
+    page, which knows a product and not the orders it sits in — ``product_ids``
+    resolves them through ``project_lines``, and finds cancelled orders too:
+    "how many were ever printed" counts every status).
+
+    Cost of an empty ask is nothing; asking for neither is a programming error,
+    not "everything", because a silent full-table sweep is what this function
+    exists to stop.
+    """
+    if project_ids is None and product_ids is None:
+        raise ValueError("grouped_figures needs project_ids or product_ids")
+    ids = set(project_ids or ())
+    if product_ids:
+        ids |= set(
+            (await db.execute(select(ProjectLine.project_id).where(ProjectLine.product_id.in_(product_ids)).distinct()))
+            .scalars()
+            .all()
+        )
+    out: list[GroupedOrderFigures] = []
+    for ctx in await _batch_contexts(db, sorted(ids)):
+        line_figures, other = attribute(ctx)
+        pf = project_figures(ctx, line_figures, other)
+        out.append(
+            GroupedOrderFigures(
+                project_id=ctx.project.id,
+                ordered=pf.ordered,
+                printed=pf.printed,
+                progress=pf.progress,
+                total_cost=pf.total_cost,
+                lines=[
+                    GroupedLineFigures(
+                        line_id=figs.line_id,
+                        project_id=ctx.project.id,
+                        product_id=figs.product_id,
+                        need=figs.quantity,
+                        usable_units=figs.units_printed,
+                        printed_units=min(figs.units_printed, figs.quantity),
+                    )
+                    for figs in (line_figures[line.id] for line in ctx.lines)
+                ],
+            )
+        )
+    return out
+
+
+def units_delivered(figures: Iterable[GroupedOrderFigures], product_id: int) -> int:
+    """How many units of ``product_id`` the given orders have printed, all statuses.
+
+    The per-part ``need`` cap is already inside ``usable_units`` — it is what
+    ``attribute`` awards against — but the LINE's quantity is deliberately not
+    applied here: an order that printed 3 of an ordered 2 really did print 3, and
+    the order page says so. Capping only this side would make the product page
+    and the order page disagree about the same prints, which is the one thing
+    this helper exists to prevent.
+    """
+    return sum(line.usable_units for order in figures for line in order.lines if line.product_id == product_id)
+
+
 async def customer_figures(db: AsyncSession, customer_id: int) -> dict:
-    projects = (await db.execute(select(Project).where(Project.customer_id == customer_id))).scalars().all()
+    rows = (
+        await db.execute(select(Project.id, Project.status, Project.price).where(Project.customer_id == customer_id))
+    ).all()
     out = {
-        "projects": len(projects),
+        "projects": len(rows),
         "active": 0,
         "completed": 0,
         "cancelled": 0,
@@ -429,23 +629,23 @@ async def customer_figures(db: AsyncSession, customer_id: int) -> dict:
         "total_cost": 0.0,
         "total_price": 0.0,
     }
-    for project in projects:
-        out[project.status] = out.get(project.status, 0) + 1
-        ctx = await load_order_context(db, project.id)
-        if ctx is None:
-            continue
-        figs, other = attribute(ctx)
-        pf = project_figures(ctx, figs, other)
-        out["ordered"] += pf.ordered
-        out["printed"] += pf.printed
-        out["total_cost"] += pf.total_cost
-        out["total_price"] += float(project.price or 0)
+    for _project_id, status, price in rows:
+        # A status this build has never heard of is counted under its own key
+        # rather than dropped — the same rule the list endpoint follows.
+        out[status] = out.get(status, 0) + 1
+        out["total_price"] += float(price or 0)
+    for order in await grouped_figures(db, project_ids=[project_id for project_id, _s, _p in rows]):
+        out["ordered"] += order.ordered
+        out["printed"] += order.printed
+        out["total_cost"] += order.total_cost
     out["total_cost"] = round(out["total_cost"], 2)
     out["total_price"] = round(out["total_price"], 2)
     return out
 
 
 __all__ = [
+    "GroupedLineFigures",
+    "GroupedOrderFigures",
     "LineFigures",
     "OrderContext",
     "PartFigures",
@@ -454,7 +654,9 @@ __all__ = [
     "archive_material_set",
     "attribute",
     "customer_figures",
+    "grouped_figures",
     "load_order_context",
     "procurement_figures",
     "project_figures",
+    "units_delivered",
 ]

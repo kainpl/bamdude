@@ -35,7 +35,7 @@ from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.models.product import Product, ProductPart, product_files, product_folders
+from backend.app.models.product import Product, ProductPart, ProductPlate, product_files, product_folders
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
 from backend.app.schemas.product import (
@@ -121,6 +121,26 @@ async def _lines_count(db: AsyncSession, product_id: int) -> int:
     ).scalar() or 0
 
 
+async def _plates_count(db: AsyncSession, product_ids: list[int]) -> dict[int, int]:
+    """Plates per product, counting only those a printer could still be sent.
+
+    ⚠️ NOT ``len(product.plates)``. A trashed file is restorable, so its
+    ``product_plates`` rows stay — and ``recipes_for_product`` (which is what
+    ``GET /plates`` lists and what the plan engine offers) drops them. Counting
+    the links instead made the card promise plates the plate list did not show.
+    One grouped query, so the list endpoint pays for it once.
+    """
+    if not product_ids:
+        return {}
+    rows = await db.execute(
+        select(ProductPlate.product_id, func.count(ProductPlate.id))
+        .join(LibraryFile, LibraryFile.id == ProductPlate.library_file_id)
+        .where(ProductPlate.product_id.in_(product_ids), LibraryFile.deleted_at.is_(None))
+        .group_by(ProductPlate.product_id)
+    )
+    return dict(rows.all())
+
+
 async def _timestamps(db: AsyncSession, product: Product) -> tuple[datetime, datetime]:
     """``created_at`` / ``updated_at`` come from server-side defaults, so an
     INSERT or an UPDATE leaves them expired — and reading an expired attribute
@@ -156,7 +176,7 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
         cover_image_filename=product.cover_image_filename,
         has_cover=effective_cover(product) is not None,
         parts_count=len(product.parts),
-        plates_count=len(product.plates),
+        plates_count=(await _plates_count(db, [product.id])).get(product.id, 0),
         lines_count=await _lines_count(db, product.id),
         description=product.description,
         notes=product.notes,
@@ -229,6 +249,7 @@ async def list_products(
             )
         ).all()
     )
+    plates = await _plates_count(db, [p.id for p in products])
     return [
         ProductListItem(
             id=p.id,
@@ -237,7 +258,7 @@ async def list_products(
             cover_image_filename=p.cover_image_filename,
             has_cover=effective_cover(p) is not None,
             parts_count=len(p.parts),
-            plates_count=len(p.plates),
+            plates_count=plates.get(p.id, 0),
             lines_count=counts.get(p.id, 0),
         )
         for p in products
@@ -605,9 +626,26 @@ async def update_part(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
-    part = await _part(db, await _get(db, product_id), part_id)
+    product = await _get(db, product_id)
+    part = await _part(db, product, part_id)
+    # A PURCHASED part IS its name — ``name_key`` is derived from it (there is no
+    # 3MF object to key off), so a rename that left the key behind made the two
+    # disagree for good and let a second "M4 screw" be created beside the first.
+    # A PRINTED part's key is the object name inside the file and must survive
+    # every rename: refreshing it would orphan the archive rows that match on it.
+    new_key = None
+    if "name" in data.model_fields_set and part.kind == "purchased":
+        new_key = purchased_name_key(data.name)
+        if new_key != part.name_key and any(
+            p is not part and (new_key == p.name_key or new_key in (p.aliases or [])) for p in product.parts
+        ):
+            raise HTTPException(status_code=409, detail="A part with this name already exists")
     for field_name in data.model_fields_set:
         setattr(part, field_name, getattr(data, field_name))
+    if new_key is not None:
+        # The procurement rows reference the part ID, so nothing of the order
+        # moves with the key — there is no migration here, only a stale value.
+        part.name_key = new_key
     if data.model_fields_set:
         # An operator edit is what ``auto`` exists to record: the seeded default
         # is no longer the answer, so the next sync must not touch this row's

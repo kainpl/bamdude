@@ -72,10 +72,9 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import Product, ProductPart, ProductPlate, product_files
-from backend.app.models.project_line import ProjectLine
 from backend.app.schemas.product import CardNote
 from backend.app.services.library_ingest import external_hash_is_stale, find_reusable_row
-from backend.app.services.order_metrics import attribute, load_order_context
+from backend.app.services.order_metrics import grouped_figures, units_delivered
 from backend.app.services.part_names import canonicalize, name_key
 from backend.app.services.product_composition import purchased_name_key
 from backend.app.services.product_files import (
@@ -373,24 +372,15 @@ async def units_printed_total(db: AsyncSession, product_id: int) -> int:
     """How many units of this product every order has ever printed (spec §Decisions 7).
 
     Σ of ``units_printed`` over every line of this product, across every order —
-    computed the way the order page computes it, through ``load_order_context``
-    and ``attribute``, so the number on the product page and the number on the
-    order can never disagree. Products are few and their orders are hundreds at
-    most; pass 6's grouped-figures work may replace the loop.
+    the same arithmetic the order page runs, so the number on the product page
+    and the number on the order can never disagree.
+
+    ⚠️ EVERY product endpoint answers through ``routes/products.py::_response``,
+    so this runs on create, patch, duplicate, every part and link route, not
+    only the detail GET. It used to load a full order context per order that
+    ever printed the product; ``grouped_figures`` loads them all at once.
     """
-    project_ids = (
-        (await db.execute(select(ProjectLine.project_id).where(ProjectLine.product_id == product_id).distinct()))
-        .scalars()
-        .all()
-    )
-    total = 0
-    for project_id in project_ids:
-        context = await load_order_context(db, project_id)
-        if context is None:
-            continue
-        figures, _ = attribute(context)
-        total += sum(figs.units_printed for figs in figures.values() if figs.product_id == product_id)
-    return total
+    return units_delivered(await grouped_figures(db, product_ids=[product_id]), product_id)
 
 
 # ---------- export / import (spec §Decisions 6) ----------

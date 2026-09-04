@@ -2,15 +2,20 @@
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
-from backend.app.models.product import Product, ProductPart
+from backend.app.models.customer import Customer
+from backend.app.models.library import LibraryFile
+from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.services.order_metrics import (
     OrderContext,
     archive_material_set,
     attribute,
+    grouped_figures,
+    load_order_context,
     procurement_figures,
     project_figures,
+    units_delivered,
 )
 
 
@@ -315,3 +320,193 @@ def test_progress_never_exceeds_one_however_far_a_line_is_overprinted():
     assert figs[100].progress == 1.0
     pf = project_figures(ctx, figs, other)
     assert pf.printed == 3 and pf.ordered == 1 and pf.progress == 1.0
+
+
+# ---------- the batched figures (pass 6): one loader, the same arithmetic ----------
+#
+# ``grouped_figures`` answers for MANY orders what ``load_order_context`` +
+# ``attribute`` answer for one. The fixture below is the shared subject: two
+# orders on one customer, one of them cancelled, a line overprinted past its
+# quantity, and one plate that two products both claim. Every number it produces
+# is written out by hand in the parity test, and the products / orders /
+# customers suites import the builder so all four screens are pinned to the same
+# arithmetic.
+
+
+async def build_parity_fixture(db) -> dict:
+    """Two orders, a cancelled one, an overprint and a shared plate.
+
+    Returns the ids the consumer tests need. Nothing here is derived from the
+    code under test - the plate links, the part rows and the archive rows are
+    written out, and the figures they imply are asserted literally.
+    """
+    shared = LibraryFile(
+        filename="shared.gcode.3mf",
+        file_path="shared",
+        file_size=1,
+        file_type="gcode",
+        file_metadata={
+            "plates": [
+                {
+                    "index": 1,
+                    "printable_objects": {"1": "shade", "2": "hook"},
+                    "print_time_seconds": 10,
+                    "filaments": [{"slot_id": 1, "type": "PETG"}],
+                }
+            ]
+        },
+    )
+    bases = LibraryFile(
+        filename="bases.gcode.3mf",
+        file_path="bases",
+        file_size=1,
+        file_type="gcode",
+        file_metadata={
+            "plates": [
+                {
+                    "index": 1,
+                    "printable_objects": {"1": "base"},
+                    "print_time_seconds": 20,
+                    "filaments": [{"slot_id": 1, "type": "PETG"}],
+                }
+            ]
+        },
+    )
+    lamp, hook_product = Product(name="Parity Lamp"), Product(name="Parity Hook")
+    customer = Customer(name="Parity Co")
+    db.add_all([shared, bases, lamp, hook_product, customer])
+    await db.flush()
+    db.add_all(
+        [
+            ProductPart(
+                product_id=lamp.id, kind="printed", name="shade", name_key="shade", qty_per_unit=1, aliases=["shade"]
+            ),
+            ProductPart(
+                product_id=lamp.id, kind="printed", name="base", name_key="base", qty_per_unit=2, aliases=["base"]
+            ),
+            ProductPart(
+                product_id=hook_product.id,
+                kind="printed",
+                name="hook",
+                name_key="hook",
+                qty_per_unit=1,
+                aliases=["hook"],
+            ),
+            # The shared plate: ONE bed carrying two products' parts.
+            ProductPlate(product_id=lamp.id, library_file_id=shared.id, plate_index=1),
+            ProductPlate(product_id=hook_product.id, library_file_id=shared.id, plate_index=1),
+            ProductPlate(product_id=lamp.id, library_file_id=bases.id, plate_index=1),
+        ]
+    )
+    live = Project(name="Parity live order", customer_id=customer.id, status="active", price=100.0)
+    dead = Project(name="Parity cancelled order", customer_id=customer.id, status="cancelled", price=50.0)
+    db.add_all([live, dead])
+    await db.flush()
+    lines = [
+        ProjectLine(project_id=live.id, product_id=lamp.id, quantity=2, sort_order=0),
+        ProjectLine(project_id=live.id, product_id=hook_product.id, quantity=1, sort_order=1),
+        ProjectLine(project_id=dead.id, product_id=lamp.id, quantity=1, sort_order=0),
+    ]
+    db.add_all(lines)
+    await db.flush()
+
+    async def _print(project_id, file_id, *, cost, energy, rows):
+        archive = PrintArchive(
+            project_id=project_id,
+            library_file_id=file_id,
+            plate_index=1,
+            filename="p",
+            file_path="",
+            file_size=0,
+            status="completed",
+            filament_type="PETG",
+            quantity=1,
+            cost=cost,
+            energy_cost=energy,
+            defective_count=sum(defective for _, _, defective in rows),
+        )
+        db.add(archive)
+        await db.flush()
+        db.add_all(
+            [
+                PrintArchivePart(archive_id=archive.id, name=key, name_key=key, quantity=qty, defective=defective)
+                for key, qty, defective in rows
+            ]
+        )
+
+    # 3 shades on a 2-shade line (the overprint) plus the hook line's one hook.
+    await _print(live.id, shared.id, cost=1.0, energy=0.5, rows=[("shade", 3, 0), ("hook", 1, 0)])
+    # 10 bases against a need of 4 - the surplus that carries the overprint.
+    await _print(live.id, bases.id, cost=2.0, energy=None, rows=[("base", 10, 0)])
+    # The cancelled order: one usable shade (the other was scrapped), no bases at
+    # all, and a hook no line of THIS order counts.
+    await _print(dead.id, shared.id, cost=3.0, energy=None, rows=[("shade", 2, 1), ("hook", 1, 0)])
+    await db.commit()
+    return {
+        "customer": customer.id,
+        "live": live.id,
+        "dead": dead.id,
+        "lamp": lamp.id,
+        "hook_product": hook_product.id,
+        "l1": lines[0].id,
+        "l2": lines[1].id,
+        "l3": lines[2].id,
+    }
+
+
+async def test_grouped_figures_reproduce_the_per_order_arithmetic(db_session):
+    """The batched loader is the only new thing; the arithmetic must be the old one.
+
+    Hand-computed from ``build_parity_fixture``:
+
+    * live order, line 1 (Lamp x2): shade need 2, awarded 2 and the 3rd as
+      surplus -> usable 3; base need 4, awarded 4 and 6 as surplus -> usable 10.
+      ``units_printed`` = min(3 // 1, 10 // 2) = 3, over the 2 ordered.
+    * live order, line 2 (Hook x1): hook usable 1 -> 1 unit.
+      Order: ordered 3, printed 4, progress capped at 1.0, cost 1.0+0.5+2.0 = 3.5.
+    * cancelled order, line 3 (Lamp x1): shade 2 printed - 1 scrapped = 1 usable;
+      no base printed at all -> min(1 // 1, 0 // 2) = 0 units.
+      Order: ordered 1, printed 0, progress 0.0, cost 3.0.
+    * the product totals: Lamp 3 + 0 = 3 units, Hook 1.
+    """
+    ids = await build_parity_fixture(db_session)
+    orders = {o.project_id: o for o in await grouped_figures(db_session, project_ids=[ids["live"], ids["dead"]])}
+
+    live, dead = orders[ids["live"]], orders[ids["dead"]]
+    assert (live.ordered, live.printed, live.progress, live.total_cost) == (3, 4, 1.0, 3.5)
+    assert (dead.ordered, dead.printed, dead.progress, dead.total_cost) == (1, 0, 0.0, 3.0)
+
+    by_line = {line.line_id: line for line in [*live.lines, *dead.lines]}
+    assert (by_line[ids["l1"]].need, by_line[ids["l1"]].usable_units, by_line[ids["l1"]].printed_units) == (2, 3, 2)
+    assert (by_line[ids["l2"]].need, by_line[ids["l2"]].usable_units, by_line[ids["l2"]].printed_units) == (1, 1, 1)
+    assert (by_line[ids["l3"]].need, by_line[ids["l3"]].usable_units, by_line[ids["l3"]].printed_units) == (1, 0, 0)
+
+    assert units_delivered(orders.values(), ids["lamp"]) == 3
+    assert units_delivered(orders.values(), ids["hook_product"]) == 1
+
+    # ...and field by field against what one order at a time still answers.
+    for project_id, grouped in orders.items():
+        ctx = await load_order_context(db_session, project_id)
+        figs, other = attribute(ctx)
+        pf = project_figures(ctx, figs, other)
+        assert (grouped.ordered, grouped.printed, grouped.progress, grouped.total_cost) == (
+            pf.ordered,
+            pf.printed,
+            pf.progress,
+            pf.total_cost,
+        )
+        assert {line.line_id: line.usable_units for line in grouped.lines} == {
+            line_id: f.units_printed for line_id, f in figs.items()
+        }
+        assert {line.line_id: line.need for line in grouped.lines} == {
+            line_id: f.quantity for line_id, f in figs.items()
+        }
+
+
+async def test_grouped_figures_can_be_asked_by_product(db_session):
+    """The product page knows a product, not the orders it sits in - so the
+    loader resolves them itself, and finds the cancelled one too."""
+    ids = await build_parity_fixture(db_session)
+    orders = await grouped_figures(db_session, product_ids=[ids["lamp"]])
+    assert sorted(o.project_id for o in orders) == sorted([ids["live"], ids["dead"]])
+    assert units_delivered(orders, ids["lamp"]) == 3
