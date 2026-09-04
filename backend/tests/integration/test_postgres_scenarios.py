@@ -168,6 +168,38 @@ class TestFreshInstall:
             f"m158 left legacy or scratch project tables behind on a fresh install: {sorted(survivors)}"
         )
 
+    def test_the_part_stock_ledger_is_there_with_its_index(self, result):
+        """m162's table and the one index every read of it rides.
+
+        The table alone is already covered by ``test_every_declared_table_exists``
+        through ``Base.metadata``; the INDEX is invisible from there. On a fresh
+        install ``create_all`` builds it and m162's ``CREATE INDEX IF NOT EXISTS``
+        finds it already present — the branch that would show up as a duplicate
+        index or an error only on a real server, which is what this file is for.
+        """
+        assert "product_part_stock_movements" in result["tables"]
+
+        psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
+        import asyncio
+
+        url = _pg_url()
+
+        async def go() -> list[str]:
+            conn = await psycopg.connect(url, timeout=20)
+            try:
+                rows = await conn.fetch(
+                    "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = $1",
+                    "product_part_stock_movements",
+                )
+                return sorted(r["indexname"] for r in rows)
+            finally:
+                await conn.close()
+
+        indexes = asyncio.run(go())
+        assert "ix_product_part_stock_movements_part_created" in indexes, (
+            f"the (product_part_id, created_at) index is missing; the table has {indexes}"
+        )
+
 
 class TestSqliteMigration:
     """An existing SQLite install must carry its rows across."""

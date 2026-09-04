@@ -256,6 +256,7 @@ async def init_db():
         notification_template,
         oidc_provider,
         orca_base_cache,
+        part_stock,
         print_options_preference,
         print_queue,
         print_usage_event,
