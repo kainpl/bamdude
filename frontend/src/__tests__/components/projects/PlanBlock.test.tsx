@@ -277,8 +277,8 @@ const alternativePlate: PlateRecipe = {
 };
 
 const farm = [
-  { id: 1, name: 'Carbon', model: 'X1C' },
-  { id: 2, name: 'Pea', model: 'P1S' },
+  { id: 1, name: 'Carbon', model: 'X1C', is_active: true },
+  { id: 2, name: 'Pea', model: 'P1S', is_active: true },
 ] as unknown as Printer[];
 
 describe('PlanBlock', () => {
@@ -949,6 +949,47 @@ describe('PlanBlock', () => {
     fireEvent.change(await screen.findByTestId('plan-row-10-100-printer-pick'), { target: { value: '1' } });
 
     expect(printModal.props).toMatchObject({ libraryFileId: 5, preselectedPlateId: 1, initialSelectedPrinterIds: [1] });
+  });
+
+  it('matches an alternative to a printer whose model row is the long marketing name', async () => {
+    // ⚠️ The two sides of this comparison are spelled by different writers: a
+    // `Printer.model` column carries whatever the machine (or the operator)
+    // called itself, and the plate's `printer_model` is the 3MF's, normalised to
+    // the short name. Compared with `mapModelCode` alone — which passes a long
+    // name straight through — nothing ever matched, and the menu silently kept
+    // the row's own file for every printer named the long way.
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    vi.spyOn(api, 'getPrinters').mockResolvedValue([
+      { id: 3, name: 'Longhand', model: 'Bambu Lab P1S', is_active: true },
+    ] as unknown as Printer[]);
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    fireEvent.change(await screen.findByTestId('plan-row-10-100-printer-pick'), { target: { value: '3' } });
+
+    // The P1S alternative, not the row's own X1C file.
+    expect(printModal.props).toMatchObject({ libraryFileId: 8, preselectedPlateId: 2 });
+  });
+
+  it('does not offer a parked printer', async () => {
+    // ⚠️ Maintenance Mode is an axis of its own: the card stays on the printers
+    // page and the machine takes no work. Offering it here mounts the dialog on
+    // a printer whose queue nothing will dispatch from, and says so nowhere.
+    // (Archived printers never arrive — `getPrinters` leaves them out.)
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    vi.spyOn(api, 'getPrinters').mockResolvedValue([
+      { id: 1, name: 'Carbon', model: 'X1C', is_active: true },
+      { id: 2, name: 'Parked', model: 'P1S', is_active: false },
+    ] as unknown as Printer[]);
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
+    const offered = [...pick.querySelectorAll('option')].map((o) => o.textContent);
+
+    expect(offered).toEqual(['To printer…', 'Carbon (X1C)']);
   });
 
   it('splits a row across the two files, and refuses a split that does not add up', async () => {

@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import type { Order, PlanRow as PlanRowData } from '../../api/client';
 import { formatMoney } from '../../utils/currency';
 import { formatDuration } from '../../utils/date';
-import { mapModelCode } from '../../utils/printer';
+import { normalizeModelName } from '../../utils/printer';
 import { Button } from '../Button';
 import { PrintModal } from '../PrintModal';
 import { chosenPlate, parseCount, splitIsOff, type ChosenPlate } from './planMath';
@@ -110,11 +110,19 @@ export function PlanRow({
   // nothing about printers, which keeps "routing is not dispatching" true of
   // the ordinary block. What the list is for is matching a MODEL to a file —
   // nothing here reads a printer's state, and nothing here may start to.
-  const { data: printers } = useQuery({
+  const { data: allPrinters } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
     enabled: canPrint && hasAlternatives,
   });
+  // ⚠️ Parked printers are not offered. `getPrinters` already leaves ARCHIVED
+  // ones out server-side, but Maintenance Mode (`is_active === false`) is the
+  // independent axis: the card stays visible on the printers page and the
+  // machine takes no work, so offering it here mounts the dialog on a printer
+  // whose queue nothing will ever dispatch from — and the operator is told
+  // nothing until they go looking. Same rule every other "available printer"
+  // list applies.
+  const printers = useMemo(() => (allPrinters ?? []).filter((p) => p.is_active), [allPrinters]);
 
   const tooMany = count > MAX_PER_PLATE;
   const atZero = count === 0;
@@ -133,9 +141,16 @@ export function PlanRow({
    *  the same model is a library the operator has to sort out, and picking one
    *  of them for them would send a print they never chose. */
   const fileForPrinter = (model: string | null): ChosenPlate => {
-    const wanted = mapModelCode(model).toLowerCase();
+    // ⚠️ BOTH sides through the same normaliser. A printer row spells its model
+    // "Bambu Lab X1 Carbon" while the 3MF the plate came from says "X1C", and
+    // `mapModelCode` passes the long name straight through — so the two never
+    // compared equal and this quietly returned the row's own file for every
+    // printer named the long way, which is the bug the feature exists to fix.
+    const wanted = normalizeModelName(model).toLowerCase();
     if (!wanted) return plate;
-    const matches = options.filter((o) => mapModelCode(o.printer_model).toLowerCase() === wanted);
+    const matches = options.filter(
+      (o) => normalizeModelName(o.printer_model).toLowerCase() === wanted,
+    );
     return matches.length === 1 ? matches[0] : plate;
   };
 
@@ -287,7 +302,7 @@ export function PlanRow({
               aria-label={t('orders.plan.row.toPrinter')}
               value=""
               onChange={(e) => {
-                const printer = (printers ?? []).find((p) => p.id === Number(e.currentTarget.value));
+                const printer = printers.find((p) => p.id === Number(e.currentTarget.value));
                 if (!printer) return;
                 setPickingPrinter(false);
                 setPrinting({ plate: fileForPrinter(printer.model), printerId: printer.id });
@@ -295,7 +310,7 @@ export function PlanRow({
               className="px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded text-bambu-gray-light focus:border-bambu-green focus:outline-none"
             >
               <option value="">{t('orders.plan.row.toPrinter')}</option>
-              {(printers ?? []).map((printer) => (
+              {printers.map((printer) => (
                 <option key={printer.id} value={printer.id}>
                   {printer.model ? `${printer.name} (${printer.model})` : printer.name}
                 </option>

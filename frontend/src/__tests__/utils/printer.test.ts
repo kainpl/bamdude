@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { getPrinterImage } from '../../utils/printer';
+import { getPrinterImage, normalizeModelName } from '../../utils/printer';
 
 describe('getPrinterImage', () => {
   describe('X2D (#988)', () => {
@@ -82,5 +82,35 @@ describe('getPrinterImage', () => {
     it('unknown model → default.png', () => {
       expect(getPrinterImage('SomeFuturePrinter')).toBe('/img/printers/default.png');
     });
+  });
+});
+
+describe('normalizeModelName', () => {
+  // The frontend mirror of the backend's `normalize_model_name`. Both sides of
+  // any model comparison go through it, or neither: a `Printer.model` column
+  // spells "Bambu Lab X1 Carbon" and a 3MF spells "X1C" for the same machine.
+  it('resolves the long marketing name to the short one', () => {
+    expect(normalizeModelName('Bambu Lab X1 Carbon')).toBe('X1C');
+    expect(normalizeModelName('Bambu Lab P1S')).toBe('P1S');
+    expect(normalizeModelName('Bambu Lab A1 mini')).toBe('A1 Mini');
+  });
+
+  it('resolves an internal code FIRST, or the long-name map would never see it', () => {
+    // ⚠️ Order, not coincidence: "C12" is not a long name, so a long-name-first
+    // chain returns it unchanged — truthy — and the code map is never reached.
+    expect(normalizeModelName('C12')).toBe('P1S');
+    expect(normalizeModelName('N6')).toBe('X2D');
+  });
+
+  it('leaves a short name alone and strips the prefix off one it does not know', () => {
+    expect(normalizeModelName('X1C')).toBe('X1C');
+    expect(normalizeModelName('Bambu Lab Z9')).toBe('Z9');
+    expect(normalizeModelName('SomeFuturePrinter')).toBe('SomeFuturePrinter');
+  });
+
+  it('has nothing to say about nothing', () => {
+    expect(normalizeModelName(null)).toBe('');
+    expect(normalizeModelName(undefined)).toBe('');
+    expect(normalizeModelName('')).toBe('');
   });
 });

@@ -1639,6 +1639,10 @@ export interface OrderCandidate {
   priority: number;
   deadline: string | null;
   created_at: string;
+  /** The line's own material, or null for a line that takes any. One ORDER can
+   *  appear several times — every line whose product holds this plate and whose
+   *  material accepts it is offered — so this is what tells two of them apart. */
+  line_material: string | null;
 }
 
 export interface PlanEnqueueItem {

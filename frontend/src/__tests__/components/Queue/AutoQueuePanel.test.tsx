@@ -29,6 +29,7 @@ const CANDIDATE: OrderCandidate = {
   priority: 2,
   deadline: null,
   created_at: '2026-09-01T10:14:02',
+  line_material: null,
 };
 
 const FILE = {

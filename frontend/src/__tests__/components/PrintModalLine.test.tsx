@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
@@ -147,6 +147,69 @@ describe('PrintModal — order line', () => {
     await waitFor(() =>
       expect(add).toHaveBeenCalledWith(expect.objectContaining({ project_id: 3, project_line_id: 10 })),
     );
+  });
+
+  it('drops the caller’s line when several plates are ticked, and keeps the order', async () => {
+    // ⚠️ The plan block opens this dialog pinned to ITS line, which is an answer
+    // about the plate the block offered — not about the file. Tick a second plate
+    // of that file and every row went out stamped with that line, including the
+    // plates that make another product's parts. The order still travels; the
+    // backend writers resolve the line per row, which is the only place that
+    // knows which plate each row is for.
+    server.use(
+      http.get('/api/v1/library/files/:id/plates', () =>
+        HttpResponse.json({
+          is_multi_plate: true,
+          plates: [
+            { index: 1, name: 'Plate 1', has_thumbnail: false, thumbnail_url: null, objects: ['A'], filaments: [], print_time_seconds: 60, filament_used_grams: 1 },
+            { index: 2, name: 'Plate 2', has_thumbnail: false, thumbnail_url: null, objects: ['B'], filaments: [], print_time_seconds: 60, filament_used_grams: 1 },
+          ],
+        }),
+      ),
+    );
+    const add = vi.spyOn(api, 'addToAutoQueue').mockResolvedValue({ id: 1 } as never);
+    const user = userEvent.setup();
+
+    render(
+      <PrintModal
+        mode="add-to-queue"
+        libraryFileId={5}
+        archiveName="flask.gcode.3mf"
+        projectId={3}
+        projectLineId={10}
+        initialDispatchMode="auto"
+        lockDispatchMode
+        onClose={() => {}}
+      />,
+    );
+
+    // One plate ticked (the auto-select) still carries the caller's own line.
+    await user.click(await screen.findByRole('button', { name: /^add to queue$/i }));
+    await waitFor(() =>
+      expect(add).toHaveBeenCalledWith(expect.objectContaining({ project_id: 3, project_line_id: 10 })),
+    );
+
+    add.mockClear();
+    cleanup();
+
+    render(
+      <PrintModal
+        mode="add-to-queue"
+        libraryFileId={5}
+        archiveName="flask.gcode.3mf"
+        projectId={3}
+        projectLineId={10}
+        initialDispatchMode="auto"
+        lockDispatchMode
+        onClose={() => {}}
+      />,
+    );
+
+    await user.click(await screen.findByText('Select All 2 Plates'));
+    await user.click(screen.getByRole('button', { name: 'Queue 2 Plates' }));
+
+    await waitFor(() => expect(add).toHaveBeenCalled());
+    expect(add.mock.calls[0][0]).toMatchObject({ project_id: 3, project_line_id: null });
   });
 
   it('carries the line into the add-to-queue payload', async () => {

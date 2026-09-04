@@ -26,6 +26,7 @@ const candidate = (over: Partial<OrderCandidate> = {}): OrderCandidate => ({
   priority: 2,
   deadline: null,
   created_at: '2026-09-01T10:14:02',
+  line_material: null,
   ...over,
 });
 
@@ -47,6 +48,32 @@ describe('OrderFilingField', () => {
       'Without an order',
       'Kickstarter batch — Desk Lamp · still needs 5 prints',
       'Spare stock — Desk Lamp · already covered',
+    ]);
+  });
+
+  it('names the material of a line that has one, so two lines of one order read apart', async () => {
+    // ⚠️ One ORDER can be here twice: where two of its lines both accept this
+    // plate the server offers both — it refuses to GUESS between them, which is
+    // not a reason to hide the choice from the person who can answer it. Without
+    // the material the two options are the same words twice.
+    render(
+      <OrderFilingField
+        value={null}
+        onChange={vi.fn()}
+        candidates={[
+          candidate({ line_material: 'PETG' }),
+          candidate({ project_line_id: 11, line_material: null }),
+        ]}
+      />,
+    );
+
+    const options = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(options).toEqual([
+      'Without an order',
+      'Kickstarter batch — Desk Lamp · PETG · still needs 5 prints',
+      // A line with no material takes any plate; the label says nothing extra
+      // rather than the word "none".
+      'Kickstarter batch — Desk Lamp · still needs 5 prints',
     ]);
   });
 

@@ -23,6 +23,14 @@ import type { OrderCandidate } from '../api/client';
  * `staleTime` is 30 s because the number in the picker is the plan block's own
  * number: it moves whenever anything is queued or finishes, and a dialog opened
  * a minute later must not still show the count from before.
+ *
+ * `placeholderData` keeps the previous plate's list on screen while the new
+ * plate's is fetched — but only for the SAME FILE. Without it, ticking another
+ * plate emptied the list for a moment, and the field's own rule ("no candidates
+ * → render nothing") made the whole thing vanish and come back, dropping the
+ * `<select>` to «Without an order» in between. Guarded by `queryKey[1]` exactly
+ * as `OrderPrints` guards its own: another file's orders are not a placeholder
+ * for this file's, they are a different answer.
  */
 export function useOrderCandidates(fileId: number | undefined, plateIndex: number, enabled: boolean) {
   return useQuery<OrderCandidate[]>({
@@ -30,6 +38,7 @@ export function useOrderCandidates(fileId: number | undefined, plateIndex: numbe
     queryFn: () => api.getOrderCandidates(fileId as number, plateIndex),
     enabled: enabled && Number.isFinite(fileId),
     staleTime: 30_000,
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === fileId ? prev : undefined),
     // A file whose candidates cannot be fetched is a file printed without an
     // order, which is what the dialog did before this field existed. Retrying
     // would only delay a dialog the operator is waiting on.

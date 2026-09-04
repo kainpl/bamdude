@@ -32,6 +32,13 @@ const optionValue = (c: OrderCandidate) => `${c.project_id}:${c.project_line_id}
  * ⚠️ A candidate that needs nothing more (`outstanding_prints === 0`) is
  * labelled as covered and stays selectable — printing ahead of an order is
  * legitimate, and the list already arrives with those sorted last.
+ *
+ * ⚠️ **One order can be here twice.** Where two of its lines both accept this
+ * plate the server offers both — it refuses to GUESS between them, which is not
+ * a reason to hide the choice from the person who can answer it. The line's
+ * material is appended when it has one, because otherwise the two options read
+ * identically. It is DATA, not a translated label: there is no i18n key here,
+ * the same way the order and product names beside it have none.
  */
 export function OrderFilingField({ value, onChange, candidates, loading }: OrderFilingFieldProps) {
   const { t } = useTranslation();
@@ -58,7 +65,7 @@ export function OrderFilingField({ value, onChange, candidates, loading }: Order
         <option value="">{t('orderFiling.none')}</option>
         {candidates.map((c) => (
           <option key={optionValue(c)} value={optionValue(c)}>
-            {`${c.project_name} — ${c.product_name} · ${
+            {`${c.project_name} — ${c.product_name}${c.line_material ? ` · ${c.line_material}` : ''} · ${
               c.outstanding_prints > 0
                 ? t('orderFiling.stillNeeds', { count: c.outstanding_prints })
                 : t('orderFiling.satisfied')

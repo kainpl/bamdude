@@ -87,6 +87,58 @@ export function mapModelCode(ssdpModel: string | null | undefined): string {
   return MODEL_DISPLAY_MAP[ssdpModel] || ssdpModel;
 }
 
+// The OTHER spelling a printer model arrives in: the long marketing name a
+// `Printer.model` column or a 3MF's `printer_model` carries. Mirrors the
+// backend's `PRINTER_MODEL_MAP` (backend/app/utils/printer_models.py) — keep
+// the two in step.
+const MODEL_LONG_NAME_MAP: Record<string, string> = {
+  'Bambu Lab X1 Carbon': 'X1C',
+  'Bambu Lab X1': 'X1',
+  'Bambu Lab X1E': 'X1E',
+  'Bambu Lab P1S': 'P1S',
+  'Bambu Lab P1P': 'P1P',
+  'Bambu Lab P2S': 'P2S',
+  'Bambu Lab A1': 'A1',
+  'Bambu Lab A1 Mini': 'A1 Mini',
+  'Bambu Lab A1 mini': 'A1 Mini',
+  // Bambu cloud rolled out a terse model-code rename mid-2026 (#1649).
+  'Bambu Lab A1M': 'A1 Mini',
+  'Bambu Lab H2D': 'H2D',
+  'Bambu Lab H2D Pro': 'H2D Pro',
+  'Bambu Lab H2C': 'H2C',
+  'Bambu Lab H2S': 'H2S',
+  'Bambu Lab X2D': 'X2D',
+  'Bambu Lab A2L': 'A2L',
+};
+
+/**
+ * Any spelling of a printer model → the short name everything else compares.
+ *
+ * The frontend mirror of the backend's `normalize_model_name`, and it must
+ * resolve the two maps in the SAME order: internal codes FIRST (`mapModelCode`
+ * returns unknown input unchanged, so a "C12" that reached the long-name map
+ * first would come back as "C12" and never be recognised), then the long
+ * marketing names, then the "Bambu Lab " prefix stripped off a model neither
+ * map knows.
+ *
+ * ⚠️ **Both sides of a comparison go through this, or neither.** A printer row
+ * says "Bambu Lab X1 Carbon" and a 3MF says "X1C" for the same machine — the
+ * plan block matched a row's alternative files against the chosen printer with
+ * `mapModelCode` alone, which passes the long name straight through, so the
+ * printer-first menu silently kept the row's own file for every printer whose
+ * `model` column carries the long spelling.
+ *
+ * Unknown input comes back as itself rather than empty: a model we have never
+ * seen is not a reason to lose the operator's answer.
+ */
+export function normalizeModelName(model: string | null | undefined): string {
+  const byCode = mapModelCode(model);
+  if (!byCode) return '';
+  const byName = MODEL_LONG_NAME_MAP[byCode];
+  if (byName) return byName;
+  return byCode.replace(/^Bambu Lab\s+/, '').trim() || byCode;
+}
+
 export function getWifiStrength(rssi: number): { labelKey: string; color: string; bars: number } {
   if (rssi >= -50) return { labelKey: 'printers.wifiSignal.excellent', color: 'text-bambu-green', bars: 4 };
   if (rssi >= -60) return { labelKey: 'printers.wifiSignal.good', color: 'text-bambu-green', bars: 3 };

@@ -18,6 +18,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { delay, http, HttpResponse } from 'msw';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { server } from '../mocks/server';
 import { render } from '../utils';
 import { PrintModal } from '../../components/PrintModal';
@@ -47,6 +48,18 @@ vi.mock('../../utils/queryInvalidation', async (importOriginal) => {
   };
 });
 
+/** What the mocked `useAuth` grants. Reset in `beforeEach`, narrowed in the one
+ *  test that asks what a caller without `projects:read` sees. */
+const auth = vi.hoisted(() => ({ granted: new Set<string>() }));
+
+vi.mock('../../contexts/AuthContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../contexts/AuthContext')>();
+  return {
+    ...actual,
+    useAuth: () => ({ ...actual.useAuth(), hasPermission: (p: string) => auth.granted.has(p) }),
+  };
+});
+
 const mockPrinters = [
   { id: 1, name: 'X1 Carbon', model: 'X1C', ip_address: '192.168.1.100', enabled: true, is_active: true },
   { id: 2, name: 'P1S', model: 'P1S', ip_address: '192.168.1.101', enabled: true, is_active: true },
@@ -62,6 +75,7 @@ const candidate = (over: Partial<OrderCandidate> = {}): OrderCandidate => ({
   priority: 2,
   deadline: null,
   created_at: '2026-09-01T10:14:02',
+  line_material: null,
   ...over,
 });
 
@@ -89,6 +103,7 @@ function serveCandidates(byPlate: Record<number, OrderCandidate[]>, seen?: numbe
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  auth.granted = new Set(['projects:read', 'printers:control']);
   invalidatedCandidates.mockClear();
   server.use(
     http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),
@@ -418,6 +433,138 @@ describe('PrintModal — the order this print is filed under', () => {
 
     await waitFor(() => expect(submit).toBeEnabled());
     expect(submit).not.toHaveAttribute('title');
+  });
+
+  it('holds a silent member back while the plate list it waits on is still loading', async () => {
+    // ⚠️ The guard used to be `asksAboutOrder && orderCandidatesLoading`, and
+    // `isLoading` is FALSE for a query that is not enabled yet. The candidates
+    // query waits for the plates list to settle, so for the whole of that wait
+    // the dialog reported "nothing pending" — and a silent member, which submits
+    // the moment nothing is pending, sent its payload with no order on it. It
+    // passed every interactive test there is, because a person cannot click
+    // faster than a plates fetch.
+    let releasePlates: (() => void) | null = null;
+    server.use(
+      http.get('/api/v1/library/files/:id/plates', async () => {
+        await new Promise<void>((resolve) => {
+          releasePlates = resolve;
+        });
+        return HttpResponse.json({ is_multi_plate: false, plates: [] });
+      }),
+    );
+    serveCandidates({ 0: [candidate()] });
+    const add = vi.spyOn(api, 'addToAutoQueue').mockResolvedValue({ id: 1 } as never);
+
+    render(
+      <PrintModal
+        mode="add-to-queue"
+        libraryFileId={5}
+        archiveName="lamp.gcode.3mf"
+        initialDispatchMode="auto"
+        lockDispatchMode
+        autoSubmitWhenUnambiguous
+        onClose={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(releasePlates).not.toBeNull());
+    // Long enough for the member to have done the wrong thing: nothing else it
+    // waits on is slow, so with the hole open the submit lands here.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(add).not.toHaveBeenCalled();
+
+    releasePlates!();
+
+    await waitFor(() =>
+      expect(add).toHaveBeenCalledWith(expect.objectContaining({ project_id: 4, project_line_id: 9 })),
+    );
+  });
+
+  it('keeps the submit button disabled while the plate list the question waits on loads', async () => {
+    // The visible half of the same window — the button and the silent member
+    // are gated on one flag, so a hole in it opens both at once.
+    let releasePlates: (() => void) | null = null;
+    server.use(
+      http.get('/api/v1/library/files/:id/plates', async () => {
+        await new Promise<void>((resolve) => {
+          releasePlates = resolve;
+        });
+        return HttpResponse.json({ is_multi_plate: false, plates: [] });
+      }),
+    );
+    serveCandidates({ 0: [candidate()] });
+
+    render(
+      <PrintModal
+        mode="add-to-queue"
+        libraryFileId={5}
+        archiveName="lamp.gcode.3mf"
+        initialDispatchMode="auto"
+        lockDispatchMode
+        onClose={() => {}}
+      />,
+    );
+
+    const submit = await screen.findByRole('button', { name: /^add to queue$/i });
+    await waitFor(() => expect(releasePlates).not.toBeNull());
+    expect(submit).toBeDisabled();
+    expect(submit).toHaveAttribute('title', 'Checking which order needs this…');
+
+    releasePlates!();
+
+    await waitFor(() => expect(submit).toBeEnabled());
+  });
+
+  it('does not ask at all without permission to read orders', async () => {
+    // ⚠️ The candidates endpoint needs `projects:read` beside the library read —
+    // it names orders and how much of each is left. Asking anyway is a
+    // guaranteed 403 whose only visible effect is a submit button disabled while
+    // it happens and a field that never appears.
+    auth.granted = new Set(['printers:control']);
+    const seen: number[] = [];
+    serveCandidates({ 0: [candidate()] }, seen);
+    const add = vi.spyOn(api, 'addToAutoQueue').mockResolvedValue({ id: 1 } as never);
+    const user = userEvent.setup();
+
+    render(
+      <PrintModal
+        mode="add-to-queue"
+        libraryFileId={5}
+        archiveName="lamp.gcode.3mf"
+        initialDispatchMode="auto"
+        lockDispatchMode
+        onClose={() => {}}
+      />,
+    );
+
+    const submit = await screen.findByRole('button', { name: /^add to queue$/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+    expect(screen.queryByLabelText('Order')).not.toBeInTheDocument();
+    expect(seen).toEqual([]);
+
+    await user.click(submit);
+
+    await waitFor(() => expect(add).toHaveBeenCalled());
+    expect(add.mock.calls[0][0]).toMatchObject({ project_id: undefined, project_line_id: null });
+  });
+
+  it('pins the plate list against retrying, whatever the client default is', async () => {
+    // The Order question WAITS on this query settling, so three silent backoffs
+    // before a permanent failure is admitted is a field that never appears and
+    // a submit button disabled for the length of them.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: 3, gcTime: 0 } } });
+    serveCandidates({ 0: [] });
+
+    render(
+      <QueryClientProvider client={client}>
+        <PrintModal mode="add-to-queue" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() =>
+      expect(client.getQueryCache().find({ queryKey: ['library-file-plates', 5] })).toBeDefined(),
+    );
+    expect(client.getQueryCache().find({ queryKey: ['library-file-plates', 5] })?.options.retry).toBe(false);
   });
 
   it('carries both ids into a direct print of a library file', async () => {

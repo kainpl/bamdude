@@ -58,10 +58,11 @@ import {
 } from './types';
 
 /**
- * Unified PrintModal component that handles three modes:
+ * Unified PrintModal component that handles four modes:
  * - 'reprint': Immediate print from archive or library file (supports multi-printer)
  * - 'add-to-queue': Schedule print to queue from archive or library file (supports multi-printer)
- * - 'edit-queue-item': Edit existing queue item (supports multi-printer)
+ * - 'edit-queue-item': Edit an existing per-printer queue item (supports multi-printer)
+ * - 'edit-auto-item': Edit an existing auto-queue row (no printer; the auto-queue routes it later)
  *
  * Both archiveId and libraryFileId are supported. Library files can be printed immediately
  * or added to queue (archive is created at print start time, not when queued).
@@ -853,10 +854,17 @@ export function PrintModal({
   // plates — which legitimately re-asks the server — would quietly overwrite a
   // deliberate "Without an order" with whatever the next plate needs.
   const [orderFilingTouched, setOrderFilingTouched] = useState(false);
+  // ⚠️ `projects:read` is part of ASKING, not just of answering. The candidates
+  // endpoint requires it beside the library read (it names orders and how much
+  // of them is left), so without it the request is a guaranteed 403 — a round
+  // trip whose only visible effect is a submit button disabled while it happens
+  // and a field that never appears. A viewer who may print but not read orders
+  // gets exactly the dialog they had before this feature existed.
   const asksAboutOrder =
     isLibraryFile &&
     projectId == null &&
     projectLineId == null &&
+    hasPermission('projects:read') &&
     (mode === 'reprint' || mode === 'add-to-queue');
   // The plate the dialog asks about: the FIRST ticked one, else the plate the
   // auto-select effect is about to tick (the same rule that effect uses), else
@@ -876,10 +884,18 @@ export function PrintModal({
   // dialog depends on that list. A settled failure is an answer: ask about plate
   // 0, the whole file, which is exactly what a file with no plates is.
   const orderPlateIndex = selectedPlateIds[0] ?? platesData?.plates?.[0]?.index ?? 0;
+  // ⚠️ **A ticked plate is already an answer about which plate this is.** The
+  // silent members of a grouped run are mounted with `preselectedPlateIds`, so
+  // `selectedPlateIds[0]` is right from the FIRST render — waiting on the plates
+  // list there would hold the question open for a fetch whose answer this
+  // dialog is not going to use, and the member submits the moment its filament
+  // requirements land, which can be sooner.
+  const candidatesEnabled =
+    asksAboutOrder && (selectedPlateIds.length > 0 || platesData !== undefined || libraryPlatesError);
   const { data: orderCandidates, isLoading: orderCandidatesLoading } = useOrderCandidates(
     libraryFileId,
     orderPlateIndex,
-    asksAboutOrder && (platesData !== undefined || libraryPlatesError),
+    candidatesEnabled,
   );
 
   // ⚠️ **The proposal is DERIVED, never synced into state by an effect.** The
@@ -916,23 +932,49 @@ export function PrintModal({
   }, [orderFilingTouched, chosenOrderFiling, orderCandidates, proposedOrderFiling]);
 
   // While the answer is in flight there is nothing to file yet, and nothing to
-  // show either. Bounded: the query does not retry, and `isLoading` is false
-  // for a disabled or failed query as well as for a finished one.
-  const orderAnswerPending = asksAboutOrder && orderCandidatesLoading;
+  // show either.
+  //
+  // ⚠️ **"Not yet" includes the window BEFORE the query is even enabled.**
+  // `isLoading` is false for a DISABLED query, so a dialog that asks about an
+  // order while it waits for the plates list reported "nothing pending" for the
+  // whole of that wait — and a silent grouped member, which submits as soon as
+  // nothing is pending, sent its payload with no order on it. It looked right
+  // in every interactive test, because a person cannot click faster than a
+  // plates fetch. The gate is the same expression the hook's `enabled` is, so
+  // the two cannot drift apart.
+  //
+  // Bounded, still: the candidates query does not retry, neither does the
+  // plates query it waits on, and `isLoading` is false for a settled failure as
+  // well as for a finished fetch — so every path out of `candidatesEnabled`
+  // being false ends in it becoming true or in the dialog having nothing to ask.
+  const orderAnswerPending = asksAboutOrder && (!candidatesEnabled || orderCandidatesLoading);
 
   // What the payloads carry. When the dialog asked, its answer is the whole
   // truth — including "no order", which must not fall back to a prop.
   const filedProjectId = asksAboutOrder ? orderFiling?.projectId : projectId;
-  // ⚠️ **Several plates ticked: the ORDER travels, the LINE does not.** The
-  // candidates were asked about one plate, and the rows this submit creates are
-  // one per plate — a line resolved for plate 1 is simply wrong on plate 3's
-  // row, and can belong to another product. The backend writers resolve the
-  // line per row (`auto_queue_add` inside its plate fan-out, `queue_add` and
-  // the batch writer per request), which is the only place that knows which
-  // plate each row is for, and they refuse to guess where two lines are alike.
-  const filedProjectLineId = asksAboutOrder
-    ? (isMultiPlateSelection ? null : (orderFiling?.projectLineId ?? null))
+  // The line as answered: by the dialog's own field, or by the caller.
+  const answeredProjectLineId = asksAboutOrder
+    ? (orderFiling?.projectLineId ?? null)
     : (projectLineId ?? null);
+  // ⚠️ **Several plates ticked: the ORDER travels, the LINE does not.** The
+  // answer is about ONE plate, and the rows this submit creates are one per
+  // plate — a line right for plate 1 is simply wrong on plate 3's row, and can
+  // belong to another product. The backend writers resolve the line per row
+  // (`auto_queue_add` inside its plate fan-out, `queue_add` and the batch writer
+  // per request), which is the only place that knows which plate each row is
+  // for, and they refuse to guess where two lines are alike.
+  //
+  // ⚠️ **And it applies to a line the CALLER named too.** The plan block opens
+  // this dialog pinned to its own line; tick a second plate of that file there
+  // and every row went out stamped with the line the block was standing on,
+  // including the plates that make another product's parts. The block's line is
+  // an answer about the plate it offered, not about the file.
+  //
+  // Only ever dropped when the ORDER survives it: a caller that named a line and
+  // no order would otherwise have its filing thrown away entirely, and one row
+  // on a slightly wrong line beats every row on nothing.
+  const filedProjectLineId =
+    isMultiPlateSelection && filedProjectId != null ? null : answeredProjectLineId;
 
   // Auto-select first printer when only one available
   useEffect(() => {
