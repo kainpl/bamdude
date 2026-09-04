@@ -90,3 +90,26 @@ def test_parent_directory_is_created(tmp_path):
 
     assert lock.acquire() is True
     lock.release()
+
+
+def test_a_live_pid_is_asked_about_rather_than_signalled(monkeypatch, tmp_path):
+    """⚠️ ``os.kill(pid, 0)`` is the existence check on POSIX only.
+
+    On Windows ``signal.CTRL_C_EVENT`` IS 0, so the same call generates a
+    console interrupt in that PID's process group — the lock probe would be
+    sending Ctrl+C to whoever holds the radio. Nothing here may signal.
+    """
+    import backend.app.services.zigbee.radio_lock as radio_lock
+
+    def _explode(*_args, **_kwargs):
+        raise AssertionError("the liveness probe sent a signal")
+
+    monkeypatch.setattr(radio_lock.os, "kill", _explode)
+    monkeypatch.setattr(radio_lock.psutil, "pid_exists", lambda pid: pid == 4242)
+
+    lock_file = tmp_path / "radio.lock"
+    lock_file.write_text("4242", encoding="utf-8")
+    assert radio_lock.RadioLock(lock_file).acquire() is False, "a live owner keeps the radio"
+
+    lock_file.write_text("4243", encoding="utf-8")
+    assert radio_lock.RadioLock(lock_file).acquire() is True, "a dead owner's lock is reclaimed"

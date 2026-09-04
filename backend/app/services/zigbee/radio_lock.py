@@ -19,6 +19,8 @@ import logging
 import os
 from pathlib import Path
 
+import psutil
+
 logger = logging.getLogger(__name__)
 
 # Paths held by a live RadioLock in THIS process. The lock file alone cannot
@@ -32,21 +34,15 @@ _held_in_process: set[Path] = set()
 def _pid_alive(pid: int) -> bool:
     """Whether *pid* is a live process.
 
-    ``os.kill(pid, 0)`` delivers no signal — it is the existence check. On
-    Windows a dead PID surfaces as a plain ``OSError`` rather than
-    ``ProcessLookupError``, which is why the broad branch is here and treats it
-    as dead: erring toward "reclaimable" keeps a crashed instance from locking
-    the feature out forever.
+    ⚠️ NOT ``os.kill(pid, 0)``. Signal 0 is the existence check on POSIX and
+    delivers nothing — but on Windows ``signal.CTRL_C_EVENT`` IS 0, so the same
+    call there generates a console interrupt in that PID's process group. A
+    lock probe would be sending Ctrl+C to whoever holds the radio.
+    ``psutil.pid_exists`` asks on both platforms, and answers True for a
+    process this user may not signal, which is what the old ``PermissionError``
+    branch was for.
     """
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists, owned by another user
-    except OSError:
-        return False
-    return True
+    return psutil.pid_exists(pid)
 
 
 class RadioLock:

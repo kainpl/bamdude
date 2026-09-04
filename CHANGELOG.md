@@ -56,7 +56,7 @@
 
 - **An order's cover picture stops going stale.** Replacing a cover keeps the same address, so a browser could go on showing the old picture until the tab was reloaded — the page worked around it with a changing address, which is now unnecessary: the server tells the browser to check. And a cover whose file has vanished from disk is forgotten on the first request that notices, instead of being re-discovered and re-logged for ever.
 
-- **The camera janitor could kill a running stream on Windows.** Its "is this process still alive?" check is written as a signal that delivers nothing on Linux — but the same call on Windows sends a console interrupt to the process group. It asks properly now.
+- **A liveness check could kill what it was checking on, on Windows.** "Is this process still alive?" was asked with a signal that delivers nothing on Linux — but the same call on Windows sends a console interrupt to that process's group. The camera janitor asked it of every ffmpeg it had started, and the Zigbee radio lock of whoever held the radio. Both ask properly now.
 
 - **`scripts/prune_orphan_archive_files.py` no longer counts your attachments as rubbish.** Order and product attachments live under the archive folder but are named by no archive row, so the sweep saw every one of them as an orphan and `--apply` would have deleted them. Those two folders are now swept by identity instead: an attachment folder is removed only when the order or product it belongs to is gone — which is the leftover the script never cleaned — and never when the database cannot say which rows exist.
 
