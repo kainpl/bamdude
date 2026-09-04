@@ -61,7 +61,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import func, select, update
@@ -93,6 +93,11 @@ class BackfillSummary:
     ``products_synced`` counts DISTINCT products reconciled, not sync calls: one
     file can belong to several, and several files to one. It is always 0 when
     the caller passed ``sync_products=False``.
+
+    ``filled_ids`` names the rows THIS run wrote — the scope a caller that has
+    to do its own follow-up work must confine itself to. ``m158.seed()`` derives
+    printed parts from it: walking every product plate instead would re-create an
+    ``auto`` part an operator deleted on a product this run never touched.
     """
 
     scanned: int = 0
@@ -100,6 +105,7 @@ class BackfillSummary:
     skipped_unreachable: int = 0
     skipped_unparseable: int = 0
     products_synced: int = 0
+    filled_ids: list[int] = field(default_factory=list)
 
 
 def _objects_recorded(meta: dict | None) -> bool:
@@ -252,14 +258,15 @@ def _merged_metadata(meta: dict | None, parsed: dict) -> dict | None:
     return out if changed else None
 
 
-async def _write_chunk(session_factory, chunk: list[tuple[int, dict]], *, sync_products: bool) -> tuple[int, set[int]]:
+async def _write_chunk(
+    session_factory, chunk: list[tuple[int, dict]], *, sync_products: bool
+) -> tuple[list[int], set[int]]:
     """One short transaction: write the objects, then reconcile the products.
 
-    Returns ``(files written, product ids reconciled)``. The sync rides inside
+    Returns ``(file ids written, product ids reconciled)``. The sync rides inside
     the same transaction — it reads ``file_metadata`` back, and it must read the
     value this chunk just wrote.
     """
-    written = 0
     synced: set[int] = set()
     async with session_factory() as session:
         ids = [file_id for file_id, _ in chunk]
@@ -288,7 +295,6 @@ async def _write_chunk(session_factory, chunk: list[tuple[int, dict]], *, sync_p
                 )
             )
             filled_ids.append(file_id)
-            written += 1
 
         if sync_products:
             for file_id in filled_ids:
@@ -307,7 +313,7 @@ async def _write_chunk(session_factory, chunk: list[tuple[int, dict]], *, sync_p
                 synced.update(product_ids)
 
         await session.commit()
-    return written, synced
+    return filled_ids, synced
 
 
 async def backfill_library_objects(
@@ -356,13 +362,14 @@ async def backfill_library_objects(
         if not chunk:
             continue
         try:
-            written, chunk_synced = await _write_chunk(session_factory, chunk, sync_products=sync_products)
+            written_ids, chunk_synced = await _write_chunk(session_factory, chunk, sync_products=sync_products)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 — a failed chunk may not sink the rest
             logger.warning("library object backfill: chunk of %d file(s) failed", len(chunk), exc_info=True)
             continue
-        summary.filled += written
+        summary.filled += len(written_ids)
+        summary.filled_ids.extend(written_ids)
         synced.update(chunk_synced)
 
     summary.products_synced = len(synced)

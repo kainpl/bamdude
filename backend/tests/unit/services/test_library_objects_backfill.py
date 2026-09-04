@@ -273,6 +273,10 @@ async def test_the_objects_are_written_and_the_others_left_alone(library, db_ses
     assert isinstance(summary, BackfillSummary)
     assert (summary.scanned, summary.filled) == (1, 1)
     assert (summary.skipped_unreachable, summary.skipped_unparseable) == (0, 0)
+    # ⚠️ Names the rows THIS run wrote. ``m158.seed()`` scopes its parts step to
+    # them — "something was filled" would let a re-run walk the plates of a
+    # product it never touched and put back an ``auto`` part somebody deleted.
+    assert summary.filled_ids == [library["empty"]]
 
     db_session.expire_all()
     filled = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == library["empty"]))).scalar_one()
@@ -424,6 +428,7 @@ async def test_a_corrupt_container_is_counted_and_never_raises(db_session, test_
     summary = await backfill_library_objects(_factory(test_engine))
 
     assert (summary.scanned, summary.filled, summary.skipped_unparseable) == (2, 1, 1)
+    assert summary.filled_ids == [good_id]
     db_session.expire_all()
     row = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == good_id))).scalar_one()
     assert row.file_metadata["printable_objects"]
@@ -470,6 +475,9 @@ async def test_a_chunk_that_will_not_write_does_not_take_the_others_down(
     summary = await backfill_library_objects(_factory(test_engine), batch_size=1)
 
     assert (summary.scanned, summary.filled) == (2, 1)
+    # The failed chunk's file is not claimed as filled — the caller's follow-up
+    # work must not be told about a row that was rolled back.
+    assert summary.filled_ids == [ids[1]]
     db_session.expire_all()
     first = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == ids[0]))).scalar_one()
     second = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == ids[1]))).scalar_one()

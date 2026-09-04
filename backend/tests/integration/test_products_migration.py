@@ -1248,3 +1248,192 @@ async def test_the_seed_survives_a_library_file_whose_mount_is_down(db_session, 
     db_session.expire_all()
     row = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == file_id))).scalar_one()
     assert row.file_metadata == {"print_time_seconds": 900}
+
+
+_KNOWN_OBJECTS = {"101": "bracket.stl", "102": "bracket.stl", "103": "lid.stl"}
+
+
+async def _legacy_order_for(db, tmp_path, label: str, *, metadata: dict | None, copies: int) -> int:
+    """One legacy project + plan row against its own copy of the same 3MF."""
+    target = tmp_path / f"{label}.gcode.3mf"
+    target.write_bytes(_sliced_3mf({1: ["bracket.stl", "bracket.stl", "lid.stl"]}))
+    file = LibraryFile(
+        filename=f"{label}.gcode.3mf",
+        file_path=str(target),
+        file_size=1,
+        file_type="gcode",
+        file_metadata=metadata,
+    )
+    project = Project(name=f"{label} order", status="active")
+    db.add_all([file, project])
+    await db.flush()
+    await db.execute(text("UPDATE projects SET is_template = 0 WHERE id = :id"), {"id": project.id})
+    await db.execute(
+        text("INSERT INTO library_file_projects (file_id, project_id) VALUES (:f, :p)"),
+        {"f": file.id, "p": project.id},
+    )
+    await db.execute(
+        text(
+            "INSERT INTO project_print_plan_items (project_id, library_file_id, copies, order_index, plate_index) "
+            "VALUES (:p, :f, :c, 0, 0)"
+        ),
+        {"p": project.id, "f": file.id, "c": copies},
+    )
+    return project.id
+
+
+@pytest.mark.asyncio
+async def test_the_seeded_parts_keep_the_legacy_plans_copies(db_session, test_engine, tmp_path):
+    """⚠️ A converted part's ``qty_per_unit`` is Σ(copies × instances) — what the
+    conversion writes for a derived part, and what rule B divides its targets by.
+
+    ``copies`` is gone by the time ``seed()`` runs: ``_drop_legacy`` drops
+    ``project_print_plan_items`` inside the same ``upgrade()`` transaction that
+    read it. So the conversion hands the factor forward for every plate it could
+    not measure, and the parts step applies it. Seeding the bare instance count
+    instead would understate the per-unit need of exactly the population this
+    backfill exists for, by the copies factor, silently.
+
+    **The twin is the assertion**: the same plan against a file that HAD its
+    metadata at conversion time must come out with the same parts.
+    """
+    async with test_engine.begin() as conn:
+        for ddl in _LEGACY_DDL:
+            await conn.execute(text(ddl))
+
+    orders = {
+        "empty": await _legacy_order_for(db_session, tmp_path, "empty", metadata=None, copies=2),
+        "known": await _legacy_order_for(
+            db_session,
+            tmp_path,
+            "known",
+            metadata={
+                "printable_objects": _KNOWN_OBJECTS,
+                "plates": [{"index": 1, "printable_objects": _KNOWN_OBJECTS}],
+            },
+            copies=2,
+        ),
+    }
+    await db_session.commit()
+
+    await _run_upgrade(test_engine)
+    await _run_seed(test_engine)
+    db_session.expire_all()
+
+    async def _qty(order_id: int) -> dict:
+        line = await _line_of(db_session, order_id)
+        return {key: part.qty_per_unit for key, part in (await _parts_of(db_session, line.product_id)).items()}
+
+    known = await _qty(orders["known"])
+    assert known == {"bracket.stl": 4, "lid.stl": 2}  # 2 copies × 2 and × 1
+    assert await _qty(orders["empty"]) == known
+
+    # The hand-over is spent and gone; a re-run finds no table and changes nothing.
+    async with test_engine.begin() as conn:
+        assert not await table_exists(conn, m158._PENDING_COPIES)
+    await _run_seed(test_engine)
+    db_session.expire_all()
+    assert await _qty(orders["empty"]) == known
+
+
+@pytest.mark.asyncio
+async def test_the_parts_step_only_walks_the_files_this_run_filled(db_session, test_engine, tmp_path):
+    """⚠️ A product whose file already knows its objects is not this run's
+    business. Walking every product plate would put back an ``auto`` part the
+    operator deleted — a migration quietly editing a composition somebody
+    curated, on a product it never touched."""
+    curated_file = LibraryFile(
+        filename="curated.gcode.3mf",
+        file_path=str(tmp_path / "curated.gcode.3mf"),
+        file_size=1,
+        file_type="gcode",
+        file_metadata={"printable_objects": _KNOWN_OBJECTS},
+    )
+    (tmp_path / "curated.gcode.3mf").write_bytes(_sliced_3mf({1: ["bracket.stl"]}))
+    empty_file = LibraryFile(
+        filename="empty.gcode.3mf",
+        file_path=str(tmp_path / "empty.gcode.3mf"),
+        file_size=1,
+        file_type="gcode",
+        file_metadata=None,
+    )
+    (tmp_path / "empty.gcode.3mf").write_bytes(_sliced_3mf({1: ["knob.stl"]}))
+    curated = Product(name="Curated")
+    filled = Product(name="Filled")
+    db_session.add_all([curated_file, empty_file, curated, filled])
+    await db_session.flush()
+    db_session.add(ProductPlate(product_id=curated.id, library_file_id=curated_file.id, plate_index=0))
+    db_session.add(ProductPlate(product_id=filled.id, library_file_id=empty_file.id, plate_index=0))
+    await db_session.commit()
+    curated_id, filled_id = curated.id, filled.id
+
+    await _run_seed(test_engine)
+    db_session.expire_all()
+
+    # The file this run filled got its parts; the curated product was not read.
+    assert set(await _parts_of(db_session, filled_id)) == {"knob.stl"}
+    assert await _parts_of(db_session, curated_id) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_file_trashed_between_the_two_steps_seeds_no_parts(db_session, test_engine, tmp_path):
+    """The fill and the parts step are separate transactions. A file the user
+    trashes in between must plant nothing — its plates are not printable any
+    more, the same rule ``recipes_for_products`` holds."""
+    from datetime import datetime, timezone
+
+    file = LibraryFile(
+        filename="trashed.gcode.3mf",
+        file_path=str(tmp_path / "trashed.gcode.3mf"),
+        file_size=1,
+        file_type="gcode",
+        file_metadata={"printable_objects": _KNOWN_OBJECTS},
+        deleted_at=datetime.now(timezone.utc),
+    )
+    product = Product(name="Trashed source")
+    db_session.add_all([file, product])
+    await db_session.flush()
+    db_session.add(ProductPlate(product_id=product.id, library_file_id=file.id, plate_index=0))
+    await db_session.commit()
+    file_id, product_id = file.id, product.id
+
+    maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    async with maker() as session:
+        created = await m158._seed_printed_parts_from_plates(session, [file_id])
+        await session.commit()
+
+    assert created == 0
+    db_session.expire_all()
+    assert await _parts_of(db_session, product_id) == {}
+
+
+@pytest.mark.asyncio
+async def test_the_parts_step_works_after_the_hand_over_table_is_gone(db_session, test_engine, tmp_path):
+    """⚠️ The hand-over table is dropped at the END of ``seed()``, and ``seed()``
+    can be re-entered: a first pass whose mount was down fills nothing and drops
+    it, a later pass fills the files and must still seed their parts. Missing
+    means "no pending copies" — one copy each, what a file linked to a product
+    directly has always meant — never an error."""
+    (tmp_path / "late.gcode.3mf").write_bytes(_sliced_3mf({1: ["knob.stl", "knob.stl"]}))
+    file = LibraryFile(
+        filename="late.gcode.3mf",
+        file_path=str(tmp_path / "late.gcode.3mf"),
+        file_size=1,
+        file_type="gcode",
+        file_metadata=None,
+    )
+    product = Product(name="Late arrival")
+    db_session.add_all([file, product])
+    await db_session.flush()
+    db_session.add(ProductPlate(product_id=product.id, library_file_id=file.id, plate_index=0))
+    await db_session.commit()
+    product_id = product.id
+
+    async with test_engine.begin() as conn:
+        assert not await table_exists(conn, m158._PENDING_COPIES)
+
+    await _run_seed(test_engine)
+    db_session.expire_all()
+
+    parts = await _parts_of(db_session, product_id)
+    assert {key: part.qty_per_unit for key, part in parts.items()} == {"knob.stl": 2}

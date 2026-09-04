@@ -552,6 +552,12 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
     yield_by_key: Counter = Counter()  # Σ copies × instances
     first_count: dict[str, int] = {}
     display: dict[str, str] = {}
+    from backend.app.services.library_objects_backfill import _objects_recorded
+
+    #: (file, plate) → Σ copies, for the plates whose metadata cannot be read yet.
+    #: ⚠️ Summed over EVERY plan row, exactly as ``yield_by_key`` below is: two
+    #: rows for the same plate at 2 and 3 copies are five, not two.
+    pending_copies: Counter = Counter()
     for file_id, plate_index, copies, raw_meta in _expanded_plan_rows(plan_rows, has_plate_index):
         if (file_id, plate_index) not in seen_plates:
             seen_plates.add((file_id, plate_index))
@@ -559,6 +565,13 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
                 text("INSERT INTO product_plates (product_id, library_file_id, plate_index) VALUES (:pid, :f, :pl)"),
                 {"pid": product_id, "f": file_id, "pl": plate_index},
             )
+        # ⚠️ A file whose metadata has never been ASKED what it contains yields
+        # nothing below, and ``seed()`` fills it a moment later — by which time
+        # ``project_print_plan_items`` is dropped and ``copies`` is gone. Hand it
+        # forward. Same predicate the backfill's worklist uses, imported rather
+        # than restated so the two cannot disagree about what "answered" means.
+        if not _objects_recorded(_load_meta(raw_meta)):
+            pending_copies[(file_id, plate_index)] += copies or 1
         try:
             counts, names = _plate_key_counts(_load_meta(raw_meta), plate_index)
         except Exception:  # noqa: BLE001 — one corrupt file_metadata must not abort the upgrade
@@ -570,6 +583,15 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
             yield_by_key[key] += (copies or 1) * n
             first_count.setdefault(key, n)
             display.setdefault(key, names[key])
+
+    for (file_id, plate_index), copies in sorted(pending_copies.items()):
+        await conn.execute(
+            text(
+                f"INSERT INTO {_PENDING_COPIES} (product_id, library_file_id, plate_index, copies) "
+                "VALUES (:pid, :f, :pl, :c)"
+            ),
+            {"pid": product_id, "f": file_id, "pl": plate_index, "c": copies},
+        )
 
     # Shape (i) never had a target ledger — every printed part is then derived.
     targets: dict[str, tuple[str, int | None]] = {}
@@ -778,19 +800,61 @@ async def _drop_legacy(conn) -> None:
         await recreate_table(conn, "projects", _PROJECTS_NEW_DDL, _PROJECTS_KEEP_COLS)
 
 
+#: Scratch table, created in ``upgrade()`` and dropped at the end of ``seed()``.
+#:
+#: ⚠️ It exists because ``copies`` is UNRECOVERABLE by the time ``seed()`` runs:
+#: ``_drop_legacy`` removes ``project_print_plan_items`` inside the same
+#: ``upgrade()`` transaction that read it. A converted part's ``qty_per_unit`` is
+#: ``Σ(copies × instances)`` — so a plan row of ``copies = 2`` whose file's
+#: metadata was empty at conversion time would have its per-unit need understated
+#: by exactly that factor when ``seed()`` derives the part later. This carries
+#: the factor across, one row per plate the conversion could not measure.
+_PENDING_COPIES = "_m158_pending_plate_copies"
+
+
+async def _create_pending_plate_copies(conn) -> None:
+    await conn.exec_driver_sql(
+        f"CREATE TABLE IF NOT EXISTS {_PENDING_COPIES} ("
+        "product_id INTEGER NOT NULL, library_file_id INTEGER NOT NULL, "
+        "plate_index INTEGER NOT NULL, copies INTEGER NOT NULL DEFAULT 1)"
+    )
+
+
 async def upgrade(conn):
     await _create_archive_parts(conn)
     await _create_tables(conn)
+    await _create_pending_plate_copies(conn)
     await _convert_legacy(conn)
     await _drop_legacy(conn)
 
 
-async def _seed_printed_parts_from_plates(session) -> int:
-    """Every product plate's object keys become printed parts it does not have.
+async def _pending_plate_copies(session) -> dict[tuple[int, int, int], int]:
+    """``(product, file, plate) → Σ copies`` handed over by the conversion.
+
+    Empty when the table is gone — which is the normal state on every run after
+    the first, and on a ``seed()`` re-entry after the drop. Missing means "no
+    pending copies", never an error: the factor is a correction to apply when it
+    is there, not a precondition for seeding parts at all.
+    """
+    if not await table_exists(session, _PENDING_COPIES):
+        return {}
+    rows = (
+        await session.execute(text(f"SELECT product_id, library_file_id, plate_index, copies FROM {_PENDING_COPIES}"))
+    ).all()
+    return {(int(p), int(f), int(pl)): int(c or 1) for p, f, pl, c in rows}
+
+
+async def _seed_printed_parts_from_plates(session, library_file_ids: list[int]) -> int:
+    """Every plate of these FILES yields printed parts its products do not have.
 
     The text-SQL twin of ``product_sync.seed_parts_for_product``, run once in
     ``seed()`` after the library object backfill has filled the metadata this
     reads. Returns the number of parts created.
+
+    ⚠️ **Scoped to the files the backfill just filled**, never to every product
+    plate in the database. A hand re-run that walked them all would re-create an
+    ``auto`` part an operator had deleted, on a product this run never touched —
+    a migration silently editing a composition somebody curated.
 
     ⚠️ **Why not ``sync_product_for_file``**, which is the single writer of this
     everywhere else: it emits ``select(ProductPlate)`` and ``select(ProductPart)``
@@ -799,28 +863,42 @@ async def _seed_printed_parts_from_plates(session) -> int:
     emit SQL the database does not have yet, for every user upgrading from an
     older release. Named columns only, here as everywhere in this file.
 
+    ⚠️ **``qty_per_unit`` is ``Σ copies × instances``, not instances.** That is
+    what ``_convert_one_project`` writes for a derived part (``yield_by_key``),
+    and what rule B divides its targets by — a part seeded here at the bare
+    instance count would understate the per-unit need of every converted project
+    whose plan asked for more than one copy. The factor comes from
+    ``_PENDING_COPIES``; a plate nobody recorded is one copy, which is what a
+    file linked to a product directly has always meant.
+
     ⚠️ **Only ADDS.** A key already covered by a part's ``name_key`` or by one of
     its aliases is left alone, so an operator's edits survive and a re-run writes
     nothing. A product with no plate rows is untouched — a plate is what says
     "this file makes parts for this product", and rule D handles the rest.
     """
+    if not library_file_ids:
+        return 0
+    # Server-side ints, straight from ``library_files.id`` — never request input.
+    ids_sql = ",".join(str(int(i)) for i in library_file_ids)
+    copies_by_plate = await _pending_plate_copies(session)
     rows = (
         await session.execute(
             text(
-                "SELECT pp.product_id, pp.plate_index, lf.file_metadata "
+                "SELECT pp.product_id, pp.library_file_id, pp.plate_index, lf.file_metadata "
                 "FROM product_plates pp JOIN library_files lf ON lf.id = pp.library_file_id "
-                "ORDER BY pp.product_id, pp.plate_index"
+                f"WHERE pp.library_file_id IN ({ids_sql}) AND lf.deleted_at IS NULL "
+                "ORDER BY pp.product_id, pp.library_file_id, pp.plate_index"
             )
         )
     ).all()
-    by_product: dict[int, list[tuple[int, dict]]] = {}
-    for product_id, plate_index, raw_meta in rows:
+    by_product: dict[int, list[tuple[int, int, dict]]] = {}
+    for product_id, file_id, plate_index, raw_meta in rows:
         try:
             meta = _load_meta(raw_meta)
         except Exception:  # noqa: BLE001 — one unreadable file_metadata must not abort the upgrade
             logger.warning("m158 seed: unreadable metadata on a plate of product %s", product_id, exc_info=True)
             continue
-        by_product.setdefault(product_id, []).append((plate_index or 0, meta))
+        by_product.setdefault(product_id, []).append((file_id, plate_index or 0, meta))
 
     created = 0
     for product_id, plates in by_product.items():
@@ -845,12 +923,13 @@ async def _seed_printed_parts_from_plates(session) -> int:
             next_sort = max(next_sort, int(sort_order or 0))
         next_sort += 1
 
-        for plate_index, meta in plates:
+        for file_id, plate_index, meta in plates:
             try:
                 counts, display = _plate_key_counts(meta, plate_index)
             except Exception:  # noqa: BLE001 — one corrupt file_metadata must not abort the upgrade
                 logger.warning("m158 seed: skipped plate metadata of product %s", product_id, exc_info=True)
                 continue
+            copies = copies_by_plate.get((product_id, file_id, plate_index), 1)
             for key, instances in counts.items():
                 if key in known:
                     continue
@@ -864,7 +943,7 @@ async def _seed_printed_parts_from_plates(session) -> int:
                         "pid": product_id,
                         "n": display[key],
                         "k": key,
-                        "q": instances,
+                        "q": instances * copies,
                         "al": json.dumps([key]),
                         "auto": 1 if is_sqlite() else True,
                         "so": next_sort,
@@ -916,18 +995,21 @@ async def seed(session_factory):
     # instead. Filling the objects before the conversion is not available to us —
     # ``upgrade`` is one transaction, and unzipping a library inside it is the
     # very lock-holding this codebase forbids (m148).
-    objects = await backfill_library_objects(session_factory, sync_products=False)
-    if objects.filled or objects.skipped_unreachable or objects.skipped_unparseable:
+    library_objects = await backfill_library_objects(session_factory, sync_products=False)
+    if library_objects.filled or library_objects.skipped_unreachable or library_objects.skipped_unparseable:
         logger.info(
             "m158 seed: object metadata filled for %d of %d library 3MF(s) (%d unreachable, %d unparseable)",
-            objects.filled,
-            objects.scanned,
-            objects.skipped_unreachable,
-            objects.skipped_unparseable,
+            library_objects.filled,
+            library_objects.scanned,
+            library_objects.skipped_unreachable,
+            library_objects.skipped_unparseable,
         )
-    if objects.filled:
+    # ⚠️ Scoped to the ids THIS run filled, not to "something was filled". A
+    # re-run must not walk the plates of a product it did not touch and put back
+    # an ``auto`` part somebody deleted on purpose.
+    if library_objects.filled_ids:
         async with session_factory() as session:
-            seeded = await _seed_printed_parts_from_plates(session)
+            seeded = await _seed_printed_parts_from_plates(session, library_objects.filled_ids)
             await session.commit()
         if seeded:
             logger.info("m158 seed: %d printed part(s) derived from the newly filled objects", seeded)
@@ -954,10 +1036,10 @@ async def seed(session_factory):
                     path = _settings.base_dir / file_path
                 if not path.is_file():
                     continue
-                objects = extract_printable_objects_from_3mf(path.read_bytes(), plate_number=plate_index)
-                if not isinstance(objects, dict) or not objects:
+                plate_objects = extract_printable_objects_from_3mf(path.read_bytes(), plate_number=plate_index)
+                if not isinstance(plate_objects, dict) or not plate_objects:
                     continue
-                tallies = tally_objects(objects)
+                tallies = tally_objects(plate_objects)
                 for part in tallies:
                     await session.execute(
                         text(
@@ -996,6 +1078,14 @@ async def seed(session_factory):
     # measure from its own file is not a history-only product. Reordering any of
     # the three leaves a product part-less, silently.
     await seed_history_only_products(session_factory)
+
+    # The hand-over is spent. Dropped LAST, so a ``seed()`` that raises anywhere
+    # above leaves it in place for the re-entry the runner will make — the parts
+    # step is idempotent, so applying the factor twice is not possible, but
+    # losing it before it has been applied once would be.
+    async with session_factory() as session:
+        await session.execute(text(f"DROP TABLE IF EXISTS {_PENDING_COPIES}"))
+        await session.commit()
 
 
 async def _rescale_purchased_parts(session, product_id: int, units: int) -> None:
