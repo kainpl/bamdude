@@ -8,6 +8,7 @@ import type { Order } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
 import { RichTextEditor } from '../RichTextEditor';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface OrderNotesProps {
   order: Order;
@@ -35,7 +36,7 @@ export function OrderNotes({ order, canEdit }: OrderNotesProps) {
   const save = useMutation({
     mutationFn: (notes: string) => api.updateOrder(order.id, { notes }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['project', order.id] });
+      invalidateOrderViews(queryClient, { orderId: order.id });
       setEditing(false);
     },
     onError: (e: Error) => showToast(e.message, 'error'),

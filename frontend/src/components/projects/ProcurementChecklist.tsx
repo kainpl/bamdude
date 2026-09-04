@@ -4,6 +4,7 @@ import { ShoppingCart } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, ProcurementRow } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface ProcurementChecklistProps {
   order: Order;
@@ -35,7 +36,7 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
     mutationFn: ({ partId, acquired }: { partId: number; acquired: number }) =>
       api.updateOrderProcurement(order.id, partId, acquired),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['project', order.id] });
+      invalidateOrderViews(queryClient, { orderId: order.id });
     },
     onError: (e: Error) => showToast(e.message, 'error'),
   });

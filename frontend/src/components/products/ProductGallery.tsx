@@ -6,6 +6,7 @@ import { api } from '../../api/client';
 import type { Product, ProductAttachment } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface ProductGalleryProps {
   product: Product;
@@ -105,9 +106,12 @@ export function ProductGallery({ product, canEdit, testIdSuffix = '' }: ProductG
   // every other renderer of the cover (`ProductCard`, `OrderCard`) does not
   // have. One rule, and it lives on the response.
   const done = () => {
+    // The product keys are not order views and stay here; the order views go
+    // too, because the first picture is the implicit cover an order card
+    // renders.
     queryClient.invalidateQueries({ queryKey: ['product', product.id] });
     queryClient.invalidateQueries({ queryKey: ['products'] });
-    queryClient.invalidateQueries({ queryKey: ['projects'] });
+    invalidateOrderViews(queryClient);
   };
   const fail = (e: Error) => showToast(e.message, 'error');
 

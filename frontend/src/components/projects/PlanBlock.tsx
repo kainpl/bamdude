@@ -12,6 +12,7 @@ import { Button } from '../Button';
 import { PlanLine } from './PlanLine';
 import { MAX_PER_PLATE } from './PlanRow';
 import { projectPlan } from './planMath';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 /**
  * What to print next for this order, per line.
@@ -124,17 +125,12 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
   const canPrint = hasPermission('printers:control');
 
   const invalidate = useCallback(() => {
-    for (const queryKey of [
-      ['project-plan', order.id],
-      ['project', order.id],
-      ['projects'],
-      ['customers'],
-      ['customer'],
-      ['queue'],
-      ['auto-queue'],
-    ]) {
-      queryClient.invalidateQueries({ queryKey });
-    }
+    invalidateOrderViews(queryClient, { orderId: order.id });
+    // ⚠️ The two queue keys are NOT order views and stay here: enqueueing
+    // puts rows in a printer's queue and in the auto-queue distributor, which
+    // no order page reads and the helper therefore knows nothing about.
+    queryClient.invalidateQueries({ queryKey: ['queue'] });
+    queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
   }, [queryClient, order.id]);
 
   const enqueue = useMutation({

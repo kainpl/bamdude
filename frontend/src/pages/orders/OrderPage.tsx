@@ -22,6 +22,7 @@ import { OrderNotes } from '../../components/projects/OrderNotes';
 import { OrderAttachments } from '../../components/projects/OrderAttachments';
 import { DuplicateOrderModal } from '../../components/projects/DuplicateOrderModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
+import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 
 /**
  * One order: who it is for, what it asks for, and how much of it is printed.
@@ -56,18 +57,12 @@ export function OrderPage() {
     enabled: Number.isFinite(id),
   });
 
-  // ⚠️ The customer keys too. The customer page's tiles are computed from this
-  // order and its siblings, so completing or deleting it moves them; with a
-  // 60 s `staleTime` a key left un-invalidated is not refetched on navigation
-  // for a minute, which is long enough to read a fresh grid under stale totals.
-  // `['customer']` is the PREFIX — an order can move between customers, and
-  // then the customer it LEFT is stale too.
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['project', id] });
-    queryClient.invalidateQueries({ queryKey: ['projects'] });
-    queryClient.invalidateQueries({ queryKey: ['customers'] });
-    queryClient.invalidateQueries({ queryKey: ['customer'] });
-  };
+  // The customer keys go too, and as prefixes — their tiles are computed
+  // from this order and its siblings, and with a 60 s `staleTime` a key left
+  // un-invalidated is not refetched on navigation for a minute, which is long
+  // enough to read a fresh grid under stale totals. The set itself is one
+  // decision, in `utils/queryInvalidation.ts`.
+  const invalidate = () => invalidateOrderViews(queryClient, { orderId: id });
 
   const setStatus = useMutation({
     mutationFn: (status: ProjectStatus) => api.updateOrder(id, { status }),
@@ -77,8 +72,11 @@ export function OrderPage() {
 
   const remove = useMutation({
     mutationFn: () => api.deleteOrder(id),
+    // ⚠️ The LISTS only. Marking `['project', id]` stale asks TanStack to
+    // refetch an order that no longer exists while this page is still
+    // mounted, which lands a 404 in the query on the way out.
     onSuccess: () => {
-      invalidate();
+      invalidateAfterDelete(queryClient, 'order');
       showToast(t('orders.toast.deleted'));
       navigate('/projects');
     },

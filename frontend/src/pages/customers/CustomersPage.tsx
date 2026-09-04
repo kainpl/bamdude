@@ -11,6 +11,7 @@ import { CustomersTable } from '../../components/customers/CustomersTable';
 import { CustomerModal } from '../../components/customers/CustomerModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
+import { invalidateAfterDelete } from '../../utils/queryInvalidation';
 
 /**
  * Who the orders are for. A flat list — customers have no status of their own,
@@ -32,10 +33,10 @@ export function CustomersPage() {
 
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteCustomer(id),
+    // Orders keep their history and lose the customer, so their rows move too
+    // — the lists, never the deleted customer's own key.
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      // Orders keep their history and lose the customer, so their rows move too.
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      invalidateAfterDelete(queryClient, 'customer');
       showToast(t('customers.toast.deleted'));
       setDeleting(null);
     },

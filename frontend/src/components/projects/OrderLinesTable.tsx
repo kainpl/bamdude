@@ -10,6 +10,7 @@ import { ConfirmModal } from '../ConfirmModal';
 import { ProgressBar } from './ProgressBar';
 import { LinePartsTable } from './LinePartsTable';
 import { AddLineRow } from './AddLineRow';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 const FIELD_CLASS =
   'px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
@@ -100,8 +101,9 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
   const lines = [...order.lines].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['project', order.id] });
-    queryClient.invalidateQueries({ queryKey: ['projects'] });
+    // ⚠️ The whole set: a line's quantity, material or colour is what the
+    // plan block plans, so an edit here restates it.
+    invalidateOrderViews(queryClient, { orderId: order.id });
   };
 
   const save = useMutation({

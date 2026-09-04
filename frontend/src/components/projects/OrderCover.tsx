@@ -6,6 +6,7 @@ import { api } from '../../api/client';
 import type { Order } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface OrderCoverProps {
   order: Order;
@@ -35,8 +36,7 @@ export function OrderCover({ order, canEdit }: OrderCoverProps) {
 
   const refresh = () => {
     setVersion((v) => v + 1);
-    queryClient.invalidateQueries({ queryKey: ['project', order.id] });
-    queryClient.invalidateQueries({ queryKey: ['projects'] });
+    invalidateOrderViews(queryClient, { orderId: order.id });
   };
 
   const upload = useMutation({

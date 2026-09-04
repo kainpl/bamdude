@@ -7,6 +7,7 @@ import type { Order, OrderCreate, OrderListItem, OrderUpdate, ProjectPriority, P
 import { Card, CardContent } from '../Card';
 import { Button } from '../Button';
 import { CustomerPicker } from '../pickers/CustomerPicker';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { useToast } from '../../contexts/ToastContext';
 
 /** Same nine presets as the old project colour picker — deliberately the only
@@ -147,14 +148,10 @@ export function OrderModal({ order, defaultCustomerId, onClose, onSaved }: Order
       return api.createOrder(data);
     },
     onSuccess: (saved) => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      if (order) queryClient.invalidateQueries({ queryKey: ['project', order.id] });
-      // ⚠️ The customer tiles are computed from these orders, so a price, a
-      // status or a re-assignment moves them. `['customer']` is the PREFIX and
-      // not `['customer', id]`: an order can move between customers, which
-      // leaves the OLD customer's page stale as well as the new one's.
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      queryClient.invalidateQueries({ queryKey: ['customer'] });
+      // ⚠️ Prefixes throughout, which is why this is one call and not a list
+      // per call site: an order can move between customers, so the customer it
+      // LEFT is stale as well as the one it landed on.
+      invalidateOrderViews(queryClient, { orderId: order?.id ?? saved.id });
       showToast(t('orders.toast.saved'));
       onSaved?.(saved);
       onClose();

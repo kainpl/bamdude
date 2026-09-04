@@ -8,6 +8,7 @@ import type { Order } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Card, CardContent } from '../Card';
 import { Button } from '../Button';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface DuplicateOrderModalProps {
   order: Order;
@@ -44,7 +45,7 @@ export function DuplicateOrderModal({ order, onClose }: DuplicateOrderModalProps
   const duplicate = useMutation({
     mutationFn: () => api.duplicateOrder(order.id, name.trim() || undefined),
     onSuccess: (created) => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      invalidateOrderViews(queryClient, { orderId: created.id });
       showToast(t('orders.toast.duplicated'));
       onClose();
       navigate(`/projects/${created.id}`);

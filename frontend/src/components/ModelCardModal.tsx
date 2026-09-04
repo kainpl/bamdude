@@ -21,6 +21,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { api, getAuthToken, withStreamToken } from '../api/client';
+import { invalidateOrderViews } from '../utils/queryInvalidation';
 import type { CardAux } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -632,9 +633,10 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['product', result.product.id] });
       queryClient.invalidateQueries({ queryKey: ['products'] });
-      // ⚠️ `['projects']` too — the re-read can give the product its first
-      // cover, and an order card renders that cover off the projects query.
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      // ⚠️ The product keys are NOT order views and stay above. The order
+      // views go too: the re-read can give the product its FIRST cover, and an
+      // order card renders that cover off the projects query.
+      invalidateOrderViews(queryClient);
       setRereadOpen(false);
       showToast(cardNotesText(t, result.notes));
     },

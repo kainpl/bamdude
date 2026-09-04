@@ -8,6 +8,7 @@ import { Button } from '../Button';
 import { useToast } from '../../contexts/ToastContext';
 import { OrderPicker } from '../pickers/OrderPicker';
 import { OrderLinePicker } from '../pickers/OrderLinePicker';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface BatchAssignOrderModalProps {
   archiveIds: number[];
@@ -43,18 +44,10 @@ export function BatchAssignOrderModal({ archiveIds, onClose, onDone }: BatchAssi
     mutationFn: (target: number) => api.addArchivesToOrder(target, archiveIds, lineId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
-      // The prefix, not the picked order alone — a selection can be pulled
-      // out of several other orders in one go, and each of those pages is now
-      // showing figures and a prints list that no longer hold.
-      queryClient.invalidateQueries({ queryKey: ['project'] });
-      queryClient.invalidateQueries({ queryKey: ['project-archives'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      // ⚠️ And the customer keys: the customer tiles are computed from these
-      // orders, so a print moving in or out of one moves its printed totals.
-      // The PREFIX both times — the archive may have just left another
-      // customer's order, and that customer's page is stale too.
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      queryClient.invalidateQueries({ queryKey: ['customer'] });
+      // Prefixes, not the picked order alone — a selection can be pulled out
+      // of several other orders, and several customers, in one go. The set
+      // itself is decided in `utils/queryInvalidation.ts`.
+      invalidateOrderViews(queryClient);
       showToast(t('archives.toast.orderUpdated'));
       onDone?.();
       onClose();

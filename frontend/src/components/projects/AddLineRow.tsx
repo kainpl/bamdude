@@ -6,6 +6,7 @@ import { api } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { ProductPicker } from '../pickers/ProductPicker';
 import { Button } from '../Button';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 const FIELD_CLASS =
   'w-full px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
@@ -54,8 +55,9 @@ export function AddLineRow({ orderId }: { orderId: number }) {
         note: note.trim() || null,
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['project', orderId] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      // ⚠️ The whole set, not the order alone: a new line is new work, so the
+      // plan block has a part to plan that it does not know about yet.
+      invalidateOrderViews(queryClient, { orderId });
       setProductId(null);
       setQuantity(1);
       setMaterial('');

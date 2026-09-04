@@ -7,6 +7,7 @@ import type { Customer, CustomerCreate, CustomerUpdate } from '../../api/client'
 import { Card, CardContent } from '../Card';
 import { Button } from '../Button';
 import { useToast } from '../../contexts/ToastContext';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
@@ -54,11 +55,10 @@ export function CustomerModal({ customer, onClose, onSaved }: CustomerModalProps
       return customer ? api.updateCustomer(customer.id, data) : api.createCustomer(data);
     },
     onSuccess: (saved) => {
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      if (customer) queryClient.invalidateQueries({ queryKey: ['customer', customer.id] });
-      // Symmetric to the order side: `OrderListItem.customer_name` is
-      // denormalised, so renaming a customer restates every order card.
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      // `OrderListItem.customer_name` is denormalised, so renaming a customer
+      // restates every order card — which is why a customer save goes through
+      // the same one decision as an order save.
+      invalidateOrderViews(queryClient, { customerId: customer?.id ?? saved.id });
       showToast(t('customers.toast.saved'));
       onSaved?.(saved);
       onClose();

@@ -14,6 +14,7 @@ import { CustomerModal } from '../../components/customers/CustomerModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
 import { formatMoney } from '../../utils/currency';
+import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 
 /** One figure, as the server counted it — this page never adds anything up. */
 function Tile({ label, value }: { label: string; value: string | number }) {
@@ -80,10 +81,11 @@ export function CustomerPage() {
 
   const removeCustomer = useMutation({
     mutationFn: () => api.deleteCustomer(id),
+    // ⚠️ The LISTS only. The orders survive without a customer, so their
+    // rows are stale — but `['customer', id]` is the row that just went, and
+    // refetching it while this page is still mounted lands a 404 on the way out.
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      // The orders survive without a customer, so their cached rows are stale too.
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      invalidateAfterDelete(queryClient, 'customer');
       showToast(t('customers.toast.deleted'));
       navigate('/customers');
     },
@@ -93,17 +95,13 @@ export function CustomerPage() {
   const setOrderStatus = useMutation({
     mutationFn: ({ orderId, status }: { orderId: number; status: ProjectStatus }) =>
       api.updateOrder(orderId, { status }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      queryClient.invalidateQueries({ queryKey: ['customer', id] });
-    },
+    onSuccess: () => invalidateOrderViews(queryClient, { customerId: id }),
     onError: (e: Error) => showToast(e.message, 'error'),
   });
   const removeOrder = useMutation({
     mutationFn: (orderId: number) => api.deleteOrder(orderId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      queryClient.invalidateQueries({ queryKey: ['customer', id] });
+      invalidateAfterDelete(queryClient, 'order');
       showToast(t('orders.toast.deleted'));
       setDeletingOrder(null);
     },
@@ -112,8 +110,7 @@ export function CustomerPage() {
   const duplicateOrder = useMutation({
     mutationFn: (orderId: number) => api.duplicateOrder(orderId),
     onSuccess: (saved) => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      queryClient.invalidateQueries({ queryKey: ['customer', id] });
+      invalidateOrderViews(queryClient, { orderId: saved.id, customerId: id });
       showToast(t('orders.toast.duplicated'));
       navigate(`/projects/${saved.id}`);
     },

@@ -9,6 +9,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
 import { cardNotesText } from './cardNotes';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface ProductHeaderProps {
   product: Product;
@@ -92,11 +93,11 @@ export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggle
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['product', product.id] });
       queryClient.invalidateQueries({ queryKey: ['products'] });
-      // ⚠️ `['projects']` too: a re-read imports the 3MF's Model Pictures, which
-      // can hand the product its FIRST cover — and an order card renders that
-      // cover off the projects query. Without this the card keeps its
+      // ⚠️ The order views too: a re-read imports the 3MF's Model Pictures,
+      // which can hand the product its FIRST cover — and an order card renders
+      // that cover off the projects query. Without this the card keeps its
       // placeholder until something else happens to refetch orders.
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      invalidateOrderViews(queryClient);
       setRereadOpen(false);
       // One toast, every note in it: they are one answer to one question, and
       // five stacked toasts would push the first off screen before it is read.

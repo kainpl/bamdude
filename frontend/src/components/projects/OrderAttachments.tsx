@@ -9,6 +9,7 @@ import { useToast } from '../../contexts/ToastContext';
 // ladder — the File Manager and the library both read sizes through this one.
 import { formatFileSize } from '../../utils/file';
 import { Button } from '../Button';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface OrderAttachmentsProps {
   order: Order;
@@ -34,7 +35,7 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
 
   const attachments = order.attachments ?? [];
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['project', order.id] });
+  const refresh = () => invalidateOrderViews(queryClient, { orderId: order.id });
 
   const upload = useMutation({
     mutationFn: (file: File) => api.uploadProjectAttachment(order.id, file),

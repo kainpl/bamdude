@@ -7,6 +7,7 @@ import type { Archive } from '../api/client';
 import { Button } from './Button';
 import { OrderPicker } from './pickers/OrderPicker';
 import { OrderLinePicker } from './pickers/OrderLinePicker';
+import { invalidateOrderViews } from '../utils/queryInvalidation';
 
 // Keys for failure reasons - translated at render time
 const FAILURE_REASON_KEYS = [
@@ -181,15 +182,10 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       api.updateArchive(archive.id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      // Re-filing a print moves it between orders, so both order pages the
-      // edit could have touched have to reload their figures and prints.
-      queryClient.invalidateQueries({ queryKey: ['project'] });
-      queryClient.invalidateQueries({ queryKey: ['project-archives'] });
-      // ⚠️ And the customer keys — the customer tiles count these prints.
-      // The PREFIX: the archive may have just left another customer's order.
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      queryClient.invalidateQueries({ queryKey: ['customer'] });
+      // Re-filing a print moves it between orders and between customers, so
+      // both pages the edit could have touched are stale — hence prefixes,
+      // decided once in `utils/queryInvalidation.ts`.
+      invalidateOrderViews(queryClient);
       onClose();
     },
   });

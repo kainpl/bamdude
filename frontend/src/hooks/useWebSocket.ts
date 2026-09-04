@@ -5,6 +5,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useConnection } from '../contexts/ConnectionContext';
 import { useTranslation } from 'react-i18next';
 import { inventoryLocationsQueryKey } from '../utils/inventoryQueries';
+import { ORDER_VIEW_KEYS } from '../utils/queryInvalidation';
 
 // The only auth-failure close code /api/v1/ws emits (backend websocket.py
 // _WS_CLOSE_UNAUTHORIZED). A 4401 means the ws-token was missing / invalid /
@@ -345,14 +346,17 @@ export function useWebSocket() {
    * below all answer the same question, and three copies drift. Reported as
    * "I start prints from a project and its Prints section stays empty" — it
    * was, until the page was left and re-entered.
+   *
+   * ⚠️ **The keys come from `ORDER_VIEW_KEYS`, the calls do not.** Every
+   * other order mutation calls `invalidateOrderViews`; this one cannot, because
+   * its invalidations are debounced and staggered through one shared timer. So
+   * it walks the same list instead — which is the point: one list, no second
+   * copy to drift. `project-timeline` is NOT an order view (nothing but this
+   * page reads it) and is asked for separately.
    */
   const invalidateProjectViews = useCallback(() => {
-    debouncedInvalidate('project');           // stats: total / in-progress / progress
-    debouncedInvalidate('project-archives');  // the Prints grid
+    for (const key of ORDER_VIEW_KEYS) debouncedInvalidate(key);
     debouncedInvalidate('project-timeline');  // a print is a timeline event
-    debouncedInvalidate('project-plan');      // a finished print is work the plan must stop planning
-    debouncedInvalidate('customer');          // the customer's printed figure
-    debouncedInvalidate('projects');          // roll-up on the order cards
   }, [debouncedInvalidate]);
 
   const handleMessage = useCallback((message: WebSocketMessage) => {

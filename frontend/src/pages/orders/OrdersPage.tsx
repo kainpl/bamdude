@@ -12,6 +12,7 @@ import { OrderCard } from '../../components/projects/OrderCard';
 import { OrderModal } from '../../components/projects/OrderModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
+import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 
 const GROUP_STORAGE_KEY = 'projects.groupByCustomer';
 
@@ -74,15 +75,11 @@ export function OrdersPage() {
   const visible = tab === 'all' ? orders : orders.filter((o) => o.status === tab);
   const groups = groupByCustomer ? groupBy(visible, (o) => o.customer_name ?? t('orders.list.noCustomer')) : null;
 
-  // ⚠️ The customer keys too. `CustomerListFigures` and `CustomerFigures` are
-  // computed from these very orders, so every status change, deletion and
-  // duplicate moves a customer tile. `['customer']` is the PREFIX, not
-  // `['customer', id]` — this page does not know whose order it just touched.
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['projects'] });
-    queryClient.invalidateQueries({ queryKey: ['customers'] });
-    queryClient.invalidateQueries({ queryKey: ['customer'] });
-  };
+  // `CustomerListFigures` and `CustomerFigures` are computed from these very
+  // orders, so every status change moves a customer tile — and this page
+  // does not know whose order it just touched, which is why every key in the
+  // set is a prefix. See `utils/queryInvalidation.ts`.
+  const invalidate = () => invalidateOrderViews(queryClient);
 
   const setStatus = useMutation({
     mutationFn: ({ id, status }: { id: number; status: ProjectStatus }) => api.updateOrder(id, { status }),
@@ -92,7 +89,7 @@ export function OrdersPage() {
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteOrder(id),
     onSuccess: () => {
-      invalidate();
+      invalidateAfterDelete(queryClient, 'order');
       showToast(t('orders.toast.deleted'));
       setDeleting(null);
     },

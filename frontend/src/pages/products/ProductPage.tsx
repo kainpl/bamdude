@@ -15,6 +15,7 @@ import { LinkedFiles } from '../../components/products/LinkedFiles';
 import { ProductOrders } from '../../components/products/ProductOrders';
 import { ProductCardDialog } from '../../components/products/ProductCardDialog';
 import { ConfirmModal } from '../../components/ConfirmModal';
+import { invalidateAfterDelete } from '../../utils/queryInvalidation';
 
 /**
  * One product: what it is, what it is made of, what prints it, and who wants it.
@@ -79,12 +80,13 @@ export function ProductPage() {
 
   const remove = useMutation({
     mutationFn: () => api.deleteProduct(id),
-    // ⚠️ The LIST only — not `invalidate()`. Marking `['product', id]` stale
+    // ⚠️ The LISTS only — not `invalidate()`. Marking `['product', id]` stale
     // asks TanStack to refetch a product that no longer exists while this page
     // is still mounted, which lands a 404 in the query and can flash the error
-    // state over a page that is on its way out. The list is what changed.
+    // state over a page that is on its way out. `['projects']` goes with it:
+    // an order card renders this product's cover.
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      invalidateAfterDelete(queryClient, 'product');
       showToast(t('products.toast.deleted'));
       navigate('/products');
     },

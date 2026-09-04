@@ -6,6 +6,7 @@ import { api } from '../../api/client';
 import type { Archive } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { selectableProjects } from '../../utils/projects';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface AddToOrderMenuProps {
   archive: Archive;
@@ -54,18 +55,12 @@ export function AddToOrderMenu({ archive, onDone }: AddToOrderMenuProps) {
       api.addArchivesToOrder(orderId, [archive.id], lineId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
-      // The PREFIX, not the one order that was picked: the archive may have
-      // just left another order, whose figures are now wrong too — and every
-      // order page reads its prints from its own `project-archives` key.
-      queryClient.invalidateQueries({ queryKey: ['project'] });
-      queryClient.invalidateQueries({ queryKey: ['project-archives'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      // ⚠️ And the customer keys: the customer tiles are computed from these
-      // orders, so a print moving in or out of one moves its printed totals.
-      // The PREFIX both times — the archive may have just left another
-      // customer's order, and that customer's page is stale too.
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      queryClient.invalidateQueries({ queryKey: ['customer'] });
+      // ⚠️ `['archives']` is NOT an order view — it stays here, beside the
+      // helper. The order views themselves are one decision for every call
+      // site (see `utils/queryInvalidation.ts`), and the archive may have just
+      // left ANOTHER order and another customer, which is why they are all
+      // invalidated as prefixes rather than by the id that was picked.
+      invalidateOrderViews(queryClient);
       showToast(t('archives.toast.orderUpdated'));
       onDone();
     },
@@ -79,15 +74,7 @@ export function AddToOrderMenu({ archive, onDone }: AddToOrderMenuProps) {
     mutationFn: () => api.updateArchive(archive.id, { project_id: null, project_line_id: null }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
-      queryClient.invalidateQueries({ queryKey: ['project'] });
-      queryClient.invalidateQueries({ queryKey: ['project-archives'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      // ⚠️ And the customer keys: the customer tiles are computed from these
-      // orders, so a print moving in or out of one moves its printed totals.
-      // The PREFIX both times — the archive may have just left another
-      // customer's order, and that customer's page is stale too.
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      queryClient.invalidateQueries({ queryKey: ['customer'] });
+      invalidateOrderViews(queryClient);
       showToast(t('archives.toast.orderUpdated'));
       onDone();
     },

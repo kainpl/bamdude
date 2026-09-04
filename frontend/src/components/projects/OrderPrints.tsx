@@ -10,6 +10,7 @@ import { formatDateOnly } from '../../utils/date';
 import { getArchiveStatusBadge } from '../../utils/archiveStatus';
 import { LoadingBlock } from '../LoadingBlock';
 import { OrderLinePicker } from '../pickers/OrderLinePicker';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface OrderPrintsProps {
   order: Order;
@@ -161,21 +162,11 @@ function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [pickingLine, setPickingLine] = useState(false);
 
-  // ⚠️ `['projects']` too: filing a print under a line, or taking it off the
-  // order, moves the printed roll-up the ORDER CARDS show. Refreshing only
-  // this page leaves the list behind a stale number until something else
-  // happens to invalidate it.
-  // ⚠️ And the customer keys: the customer tiles are computed from these
-  // orders, so a print filed or removed here moves them. The PREFIX, not
-  // `['customer', order.customer_id]` — the print may have just left another
-  // customer's order, whose page is stale too.
-  const refresh = () => {
-    queryClient.invalidateQueries({ queryKey: ['project', order.id] });
-    queryClient.invalidateQueries({ queryKey: ['project-archives', order.id] });
-    queryClient.invalidateQueries({ queryKey: ['projects'] });
-    queryClient.invalidateQueries({ queryKey: ['customers'] });
-    queryClient.invalidateQueries({ queryKey: ['customer'] });
-  };
+  // Filing a print under a line, or taking it off the order, moves the order
+  // cards' roll-up and the customer tiles as well as this page — and the
+  // print may have just left ANOTHER order and another customer, which is why
+  // every key is a prefix. One decision, in `utils/queryInvalidation.ts`.
+  const refresh = () => invalidateOrderViews(queryClient, { orderId: order.id });
 
   // ⚠️ `project_id` travels with the line: the server rejects (400) a line
   // that belongs to another order, and a bare line change on an archive whose
