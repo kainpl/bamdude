@@ -10,6 +10,7 @@ Modes:
     seed     build a SQLite database at DATA_DIR and put a row in a few tables
     fresh    run init_db() against an empty PostgreSQL, report the schema
     migrate  run init_db() with a SQLite alongside, triggering auto-migration
+    product_roundtrip  export a product to a ZIP and import it back
 
 Usage: python -m backend.tests.integration.postgres_scenario_runner <mode>
 """
@@ -117,6 +118,142 @@ async def _seed() -> dict:
     return written
 
 
+async def _product_roundtrip() -> dict:
+    """Export a product and import it back — against PostgreSQL, not a mock.
+
+    The round trip is covered on SQLite by
+    ``test_product_export_import.py``; this exists because the two back ends
+    disagree about exactly the things this path leans on — JSON columns, a
+    ``NOT NULL`` a Python-side default fills, and an ``id`` that comes from a
+    sequence rather than a rowid. A 3MF is built by the SQLite test's own
+    builder so the two can never drift about what a sliced file looks like.
+    """
+    import hashlib
+
+    from sqlalchemy import func, select
+
+    from backend.app.core.config import settings
+    from backend.app.core.database import async_session
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.product import Product
+    from backend.app.services.product_card import export_zip, import_zip
+    from backend.app.services.product_files import product_attachments_dir
+    from backend.app.services.product_sync import sync_product_for_file
+    from backend.tests.integration.test_product_export_import import sliced_3mf
+
+    def _meta(objects_by_plate: dict[int, list[str]]) -> dict:
+        return {
+            "plates": [
+                {
+                    "index": index,
+                    "printable_objects": {str(100 * index + n): name for n, name in enumerate(names, start=1)},
+                    "print_time_seconds": 600,
+                }
+                for index, names in sorted(objects_by_plate.items())
+            ]
+        }
+
+    kept_objects = {1: ["shade.stl"]}
+    gone_objects = {1: ["hook.stl", "hook.stl"], 2: ["clip.stl"]}
+    library = settings.base_dir / "library"
+    library.mkdir(parents=True, exist_ok=True)
+
+    async with async_session() as db:
+        rows = {}
+        for name, objects, marker in (
+            ("kept.gcode.3mf", kept_objects, b"kept"),
+            ("gone.gcode.3mf", gone_objects, b"gone"),
+        ):
+            payload = sliced_3mf(objects, marker=marker)
+            (library / name).write_bytes(payload)
+            row = LibraryFile(
+                filename=name,
+                file_path=f"library/{name}",
+                file_size=len(payload),
+                file_type="gcode",
+                file_metadata=_meta(objects),
+                # ⚠️ The hash is the WHOLE POINT of this scenario. ``store_library_upload``
+                # sets it on every real arrival; a hand-built row that omits it is
+                # invisible to ``find_reusable_row`` (which matches on
+                # ``LibraryFile.file_hash``), so the survivor would be re-ingested as a
+                # second row and the "matched by hash" assertion would fail while the
+                # feature it names works perfectly.
+                file_hash=hashlib.sha256(payload).hexdigest(),
+            )
+            db.add(row)
+            rows[name] = row
+        product = Product(name="Desk Lamp", designer="Chef&koch", design_id="1234567")
+        db.add(product)
+        await db.flush()
+
+        for row in rows.values():
+            await sync_product_for_file(db, library_file_id=row.id, product_ids=[product.id])
+
+        directory = product_attachments_dir(product.id)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\nshot")
+        product.attachments = [
+            {
+                "category": "pictures",
+                "filename": "shot.png",
+                "original_name": "shot.png",
+                "size": 12,
+                "sort_order": 0,
+                "source": "manual",
+            }
+        ]
+        product.cover_image_filename = "shot.png"
+        await db.commit()
+        await db.refresh(product, ["parts", "plates", "library_files", "library_folders"])
+
+        archive = await export_zip(db, product)
+        before = (await db.execute(select(func.count()).select_from(LibraryFile))).scalar()
+
+        # Destroy the source: the product goes, and ONE of the two files goes
+        # with it. The survivor must be matched by hash; the other re-ingested.
+        #
+        # The pivots go through the COLLECTIONS, exactly as ``delete_product``
+        # does: a core DELETE racing the ORM's own secondary DELETE leaves it
+        # expecting two rows and finding one, which surfaces as a StaleDataError
+        # from the flush rather than from the line that caused it.
+        gone_id = rows["gone.gcode.3mf"].id
+        product.library_files = []
+        product.library_folders = []
+        await db.flush()
+        await db.delete(product)
+        await db.flush()
+        await db.delete(await db.get(LibraryFile, gone_id))
+        await db.commit()
+
+        try:
+            imported, warnings = await import_zip(db, archive.path, folder_id=None, user=None)
+        finally:
+            archive.path.unlink(missing_ok=True)
+        await db.commit()
+        await db.refresh(imported, ["parts", "plates", "library_files"])
+
+        plates = []
+        for plate in imported.plates:
+            row = await db.get(LibraryFile, plate.library_file_id)
+            plates.append([row.filename, plate.plate_index])
+        plates.sort()
+        return {
+            "filename": archive.ascii_filename,
+            "display_filename": archive.filename,
+            "name": imported.name,
+            "designer": imported.designer,
+            "design_id": imported.design_id,
+            "parts": {p.name_key: p.qty_per_unit for p in imported.parts},
+            "plates": plates,
+            "attachments": [(a["category"], a["original_name"], a["source"]) for a in imported.attachments or []],
+            "cover_is_the_picture": bool(imported.cover_image_filename)
+            and imported.cover_image_filename == (imported.attachments or [{}])[0].get("filename"),
+            "warnings": [w.model_dump() for w in warnings],
+            "library_rows_before": before,
+            "library_rows_after": (await db.execute(select(func.count()).select_from(LibraryFile))).scalar(),
+        }
+
+
 async def _main(mode: str) -> dict:
     # One event loop for the whole run. The engine is a module-level singleton
     # holding connections bound to whichever loop created them, so a second
@@ -125,6 +262,8 @@ async def _main(mode: str) -> dict:
     await _init()
     if mode == "seed":
         return {"seeded": await _seed()}
+    if mode == "product_roundtrip":
+        return await _product_roundtrip()
     return await _report()
 
 

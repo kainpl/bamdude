@@ -44,7 +44,8 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
   const { hasPermission } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const overdue = isOverdue(order);
-  const placeholders = order.product_cover_filenames.slice(0, 3);
+  // Three at most: the strip is a hint at what is in the order, not its contents.
+  const lineProducts = (order.line_products ?? []).slice(0, 3);
 
   return (
     <Link
@@ -62,17 +63,30 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
             className="w-20 h-20 @max-[22rem]:w-full @max-[22rem]:h-24 flex-shrink-0 rounded-lg object-cover bg-bambu-dark"
           />
         ) : (
-          placeholders.length > 0 && (
+          lineProducts.length > 0 && (
             <div className="flex gap-1 flex-shrink-0">
-              {placeholders.map((_, i) => (
-                <div
-                  key={i}
-                  data-testid="product-cover-placeholder"
-                  className="w-9 h-9 rounded-lg bg-bambu-dark flex items-center justify-center"
-                >
-                  <Package className="w-4 h-4 text-bambu-gray" />
-                </div>
-              ))}
+              {lineProducts.map((line, i) =>
+                line.has_cover ? (
+                  <img
+                    key={`${line.product_id}-${i}`}
+                    data-testid="product-cover"
+                    src={api.getProductCoverImageUrl(line.product_id)}
+                    alt=""
+                    className="w-9 h-9 rounded-lg object-cover bg-bambu-dark"
+                  />
+                ) : (
+                  // A line whose product has no cover still keeps its tile: the
+                  // strip's length is how many lines the order has, and dropping
+                  // the coverless ones would quietly misreport that.
+                  <div
+                    key={`${line.product_id}-${i}`}
+                    data-testid="product-cover-placeholder"
+                    className="w-9 h-9 rounded-lg bg-bambu-dark flex items-center justify-center"
+                  >
+                    <Package className="w-4 h-4 text-bambu-gray" />
+                  </div>
+                ),
+              )}
             </div>
           )
         )}

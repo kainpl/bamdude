@@ -191,3 +191,40 @@ class TestSqliteMigration:
             f"sequences behind MAX(id): {migrated['lagging_sequences']} — "
             "the next insert into these tables would collide on the primary key"
         )
+
+
+class TestProductExportImport:
+    """A product ZIP must round-trip on PostgreSQL, not only on SQLite.
+
+    The same round trip is covered in full by
+    ``test_product_export_import.py``; this run exists for what the two back
+    ends disagree about — JSON columns, sequences behind ``id``, and a NOT NULL
+    a Python-side default fills. Skipped with everything else here when
+    ``TEST_POSTGRES_URL`` is unset.
+    """
+
+    @pytest.fixture(scope="class")
+    def result(self, tmp_path_factory) -> dict:
+        url = _pg_url()
+        _wipe(url)
+        return _run("product_roundtrip", tmp_path_factory.mktemp("pg_product"), url)
+
+    def test_the_card_and_the_composition_come_back(self, result):
+        assert result["name"] == "Desk Lamp"
+        assert result["designer"] == "Chef&koch" and result["design_id"] == "1234567"
+        assert result["parts"] == {"shade.stl": 1, "hook.stl": 2, "clip.stl": 1}
+        assert result["warnings"] == []
+        assert result["filename"].startswith("desk-lamp_") and result["filename"].endswith(".zip")
+
+    def test_the_plates_are_derived_from_the_files_themselves(self, result):
+        assert sorted(result["plates"]) == [["gone.gcode.3mf", 1], ["gone.gcode.3mf", 2], ["kept.gcode.3mf", 0]]
+
+    def test_the_surviving_file_is_matched_by_hash_and_only_the_other_is_ingested(self, result):
+        assert result["library_rows_after"] == result["library_rows_before"], (
+            "one file was deleted before the import and one survived — the survivor must be matched by "
+            "hash and the deleted one re-ingested, so the row count must come back to where it started"
+        )
+
+    def test_the_attachments_and_the_cover_come_back(self, result):
+        assert result["attachments"] == [["pictures", "shot.png", "import"]]
+        assert result["cover_is_the_picture"] is True

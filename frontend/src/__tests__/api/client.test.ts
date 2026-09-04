@@ -174,6 +174,40 @@ describe('FormData requests include auth header', () => {
     }
   });
 
+  it('sendForm sends the client timezone, exactly as request() does', async () => {
+    // "Every request carries it" is the only version of this rule that cannot
+    // be forgotten on the next new endpoint — and a multipart call is a call
+    // like any other: an import answers with dated notes, an upload's response
+    // carries `uploaded_at`. `request()` has sent the header from the start;
+    // `sendForm` was the one door it was missing.
+    const originalFetch = global.fetch;
+    let capturedHeaders: Headers | null = null;
+
+    global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes('/products/7/attachments')) {
+        capturedHeaders = new Headers(init?.headers);
+        return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+      }
+      return originalFetch(url, init);
+    });
+
+    try {
+      const file = new File(['x'], 'bom.csv', { type: 'text/csv' });
+      await api.uploadProductAttachment(7, file, 'bom_docs');
+
+      expect(capturedHeaders).not.toBeNull();
+      // The zone is whatever the runtime reports; the point is that it is sent
+      // and that it matches what `request()` would have sent.
+      expect(capturedHeaders!.get('X-Client-Timezone')).toBe(
+        Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+      );
+      // The browser owns `Content-Type` for multipart — it carries the boundary.
+      expect(capturedHeaders!.get('Content-Type')).toBeNull();
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it('a blob download includes the Authorization header', async () => {
     // The blob paths build their own `fetch` rather than going through
     // `request()`, so the header is attached by hand in each one — which is
@@ -212,6 +246,198 @@ describe('FormData requests include auth header', () => {
       window.URL.createObjectURL = originalCreate;
       window.URL.revokeObjectURL = originalRevoke;
       click.mockRestore();
+    }
+  });
+});
+
+/**
+ * ⚠️ A multipart upload recovers from an expired access token exactly like a
+ * JSON call does.
+ *
+ * `sendForm()` cannot go through `request()` — `request()` sets
+ * `Content-Type: application/json` on every call, which would replace the
+ * boundary header the browser writes for a `FormData` body and turn a perfectly
+ * good file into a 422. What it CAN share is everything else, and for one
+ * release it shared none of it: an upload started on a tab idle past the access
+ * token's hour died with a bare "Not authenticated" and lost the file the
+ * operator had picked, while every JSON call beside it refreshed and retried.
+ *
+ * The `FormData` survives the retry because `fetch` serialises it per call — it
+ * is not a consumed stream.
+ */
+/**
+ * ⚠️ **The export's filename is the operator's, and operators do not type
+ * ASCII.** A product called «Лампа» exports as `Лампа_<date>.zip`; the server
+ * sends that in `filename*=UTF-8''…` and a transliterated `filename=` beside
+ * it for clients that cannot read the first. Reading the ASCII half first would
+ * silently save every non-Latin product under the fallback name, which looks
+ * like nothing went wrong.
+ *
+ * Both halves of the blob pair are spied on: a `createObjectURL` without its
+ * `revokeObjectURL` leaks the whole archive for as long as the tab lives.
+ */
+describe('downloadProductExport', () => {
+  /** jsdom has no object-URL implementation and answers a real anchor click
+   *  with "Not implemented: navigation", so the saving plumbing is stubbed and
+   *  the anchor is read at the moment it is clicked. */
+  function stubSaving() {
+    const created: Blob[] = [];
+    const revoked: string[] = [];
+    const downloads: string[] = [];
+    const originalCreate = window.URL.createObjectURL;
+    const originalRevoke = window.URL.revokeObjectURL;
+    window.URL.createObjectURL = vi.fn((blob: Blob) => {
+      created.push(blob);
+      return 'blob:export-stub';
+    }) as unknown as typeof window.URL.createObjectURL;
+    window.URL.revokeObjectURL = vi.fn((url: string) => {
+      revoked.push(url);
+    }) as unknown as typeof window.URL.revokeObjectURL;
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        downloads.push(this.download);
+      });
+    return {
+      created,
+      revoked,
+      downloads,
+      restore: () => {
+        window.URL.createObjectURL = originalCreate;
+        window.URL.revokeObjectURL = originalRevoke;
+        click.mockRestore();
+      },
+    };
+  }
+
+  const answerWith = (disposition: string) =>
+    server.use(
+      http.get('/api/v1/products/:productId/export', () =>
+        new HttpResponse(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/zip', 'Content-Disposition': disposition },
+        }),
+      ),
+    );
+
+  it('saves under the UTF-8 name, not the ASCII fallback beside it', async () => {
+    const saving = stubSaving();
+    answerWith(
+      'attachment; filename="fallback.zip"; ' +
+        "filename*=UTF-8''%D0%9B%D0%B0%D0%BC%D0%BF%D0%B0_2026-09-04.zip",
+    );
+
+    try {
+      setAuthToken('test-token');
+      await api.downloadProductExport(9);
+
+      expect(saving.downloads).toEqual(['Лампа_2026-09-04.zip']);
+      expect(saving.created).toHaveLength(1);
+      expect(saving.revoked).toEqual(['blob:export-stub']);
+    } finally {
+      saving.restore();
+    }
+  });
+
+  it('falls back to the plain filename when that is all the server sent', async () => {
+    const saving = stubSaving();
+    answerWith('attachment; filename="plain.zip"');
+
+    try {
+      setAuthToken('test-token');
+      await api.downloadProductExport(9);
+
+      expect(saving.downloads).toEqual(['plain.zip']);
+    } finally {
+      saving.restore();
+    }
+  });
+
+  it('throws an ApiError on a refusal instead of saving the error body', async () => {
+    const saving = stubSaving();
+    server.use(
+      http.get('/api/v1/products/:productId/export', () =>
+        HttpResponse.json({ detail: 'Not permitted' }, { status: 403 }),
+      ),
+    );
+
+    try {
+      setAuthToken('test-token');
+      await expect(api.downloadProductExport(9)).rejects.toMatchObject({
+        name: 'ApiError',
+        status: 403,
+        message: 'Not permitted',
+      });
+      expect(saving.created).toHaveLength(0);
+      expect(saving.downloads).toEqual([]);
+    } finally {
+      saving.restore();
+    }
+  });
+});
+
+describe('sendForm recovers from an expired access token', () => {
+  it('refreshes once and re-sends the multipart body', async () => {
+    const originalFetch = global.fetch;
+    const seen: string[] = [];
+    let refreshes = 0;
+
+    global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes('/auth/refresh')) {
+        refreshes += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: 'fresh-token' }), { status: 200 }),
+        );
+      }
+      if (href.includes('/products/import')) {
+        seen.push(new Headers(init?.headers).get('Authorization') ?? '');
+        if (seen.length === 1) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ detail: 'Could not validate credentials' }), { status: 401 }),
+          );
+        }
+        // The retry must still carry the body, not an empty request.
+        expect(init?.body).toBeInstanceOf(FormData);
+        return Promise.resolve(
+          new Response(JSON.stringify({ product: { id: 3 }, warnings: [] }), { status: 200 }),
+        );
+      }
+      return originalFetch(url, init);
+    });
+
+    try {
+      setAuthToken('stale-token');
+      const result = await api.importProduct(new File(['PK'], 'p.zip'), null);
+
+      expect(refreshes).toBe(1);
+      expect(seen).toEqual(['Bearer stale-token', 'Bearer fresh-token']);
+      expect(result.product.id).toBe(3);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('throws an ApiError a caller can branch on, not a bare Error', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/products/import')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ detail: 'An import may be at most 1 bytes' }), { status: 413 }),
+        );
+      }
+      return originalFetch(url, init);
+    });
+
+    try {
+      setAuthToken('test-token');
+      await expect(api.importProduct(new File(['PK'], 'p.zip'), null)).rejects.toMatchObject({
+        name: 'ApiError',
+        status: 413,
+        message: 'An import may be at most 1 bytes',
+      });
+    } finally {
+      global.fetch = originalFetch;
     }
   });
 });

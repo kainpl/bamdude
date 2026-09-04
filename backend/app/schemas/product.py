@@ -6,6 +6,7 @@ every read from the linked file's ``file_metadata``.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -197,11 +198,62 @@ class FolderLinkRequest(BaseModel):
     library_folder_ids: list[int]
 
 
+class ProductAttachmentOut(BaseModel):
+    """One typed attachment (spec §Decisions 3) — the shape m158 already wrote
+    for the project templates it converted.
+
+    ``size`` and ``uploaded_at`` are tolerant on purpose: m158 carried over
+    legacy project attachments whose entries held neither, so an upgraded farm
+    has rows a strict model would 500 the product page over.
+
+    ``source`` is one of the closed set ``product_files.SOURCE_VALUES`` —
+    ``manual`` (the upload route), ``3mf`` (``fill_from_file``) or ``import``
+    (``import_zip``) — and every writer uses those constants. The WIRE type is
+    still a plain ``str`` for the same reason as the two above: a hand-edited
+    column or a restored backup carrying a fourth value must render the page,
+    not 500 it. The closed set is enforced where it can be enforced — at the
+    writers, by ``test_product_files.py`` — not at the reader, where the only
+    thing a rejection can do is take the page down.
+    """
+
+    # ⚠️ ``category`` and ``original_name`` are DEFAULTED for the same reason
+    # ``size`` is: the docstring above promises tolerance of what m158 carried
+    # over, and a legacy row missing either would 500 the whole product page
+    # rather than render one unlabelled attachment. ``filename`` has no default
+    # on purpose — an entry that names no file is not an attachment, and
+    # ``_rows`` drops it before this model ever sees it.
+    category: str = "other"
+    filename: str
+    original_name: str = ""
+    size: int = 0
+    sort_order: int = 0
+    source: str = "manual"
+    source_file_id: int | None = None
+    uploaded_at: str | None = None
+
+    @field_validator("size", "sort_order", mode="before")
+    @classmethod
+    def _missing_number_is_zero(cls, v: int | None) -> int:
+        return 0 if v is None else v
+
+
+class AttachmentOrderRequest(BaseModel):
+    category: str
+    filenames: list[str]
+
+
+class CoverPickRequest(BaseModel):
+    filename: str = Field(min_length=1)
+
+
 class ProductListItem(BaseModel):
     id: int
     name: str
     is_active: bool
     cover_image_filename: str | None = None
+    # The EFFECTIVE cover — the explicit column or the first picture. The card
+    # renders ``GET /products/{id}/cover-image`` on this, never on the column.
+    has_cover: bool = False
     parts_count: int = 0
     plates_count: int = 0
     lines_count: int = 0
@@ -214,9 +266,86 @@ class ProductResponse(ProductListItem):
     license: str | None = None
     source_url: str | None = None
     design_id: str | None = None
-    attachments: list | None = None
+    attachments: list[ProductAttachmentOut] = []
     parts: list[ProductPartResponse] = []
     library_file_ids: list[int] = []
     library_folder_ids: list[int] = []
+    # All-time units printed across EVERY order of this product (spec §Decisions
+    # 7). Computed per request from the order figures, never stored — the number
+    # on the product page and the one on the order must not be able to disagree.
+    units_printed_total: int = 0
     created_at: datetime
     updated_at: datetime
+
+
+class CardNote(BaseModel):
+    """One thing a card fill did, or refused to do — as a CODE, never prose.
+
+    ⚠️ No English on the wire. The operator reads these in their own language,
+    and the frontend owns the translation: it switches on ``code`` and formats
+    ``params``. A sentence built here would be untranslatable by the only layer
+    that knows the user's locale (i18n rule: en + uk, keys in both).
+    """
+
+    code: Literal[
+        "file_missing",  # the row outlived its bytes
+        "unreadable",  # params: error
+        "filled_field",  # params: field
+        "replaced_files",  # params: count
+        "imported_files",  # params: category, count
+        # Shared by the 3MF fill and the ZIP import — the same three questions
+        # ("wrong type", "too big", "could not write it") get the same three
+        # answers whichever container the file arrived in. The import's cover
+        # variants add ``category = "cover"``, which no fill ever produces.
+        "skipped_extension",  # params: name, ext, category
+        # params: name, size, limit, category — where category is one of
+        # ATTACHMENT_CATEGORIES, "cover" (the dedicated cover), or "files" (a
+        # library member over the per-member cap). A card FILL emits it without
+        # a category at all; the frontend must not require one.
+        "skipped_too_large",
+        "skipped_unreadable",  # params: name
+        "skipped_unsaved",  # params: name (+ category on the cover)
+        "nothing_to_fill",
+        # Import-only (spec §Decisions 6).
+        "import_file_missing",  # params: name
+        "import_file_refused",  # params: name, detail — detail is the LIBRARY's own words
+        "import_part_duplicate_key",  # params: name, key
+        "import_plate_missing",  # params: filename, plate_index
+        "import_bad_category",  # params: name, category
+        "import_attachment_missing",  # params: name
+        "import_bad_name",  # params: name
+        "import_cover_missing",
+    ]
+    params: dict[str, str | int] = {}
+
+
+class ProductImportResponse(BaseModel):
+    """``POST /products/import``.
+
+    ⚠️ ``warnings`` are :class:`CardNote` codes, exactly like a card fill's —
+    no English on the wire. The first version of this shipped prose, on the
+    argument that an import warning is mostly untranslatable data (a filename,
+    a category BamDude does not have) with only a short fixed half around it.
+    That argument is wrong twice: the fixed half is the sentence the operator
+    actually reads, and a locale that gets half its product page translated and
+    half not is worse than either. The one string that survives as a string is
+    ``import_file_refused``'s ``detail`` — the library's own rejection message,
+    passed through verbatim rather than re-invented as a second vocabulary for
+    the same refusals (``store_library_upload``'s docstring makes the same
+    point about the Telegram bot showing ``e.detail``).
+    """
+
+    product: ProductResponse
+    warnings: list[CardNote] = []
+
+
+class RereadResponse(BaseModel):
+    """``POST /products/{id}/card/reread``.
+
+    The notes ride beside the product rather than in a header: they are the only
+    place the operator learns that a field was left alone because it was theirs,
+    or that a file was skipped because its category does not carry that type.
+    """
+
+    product: ProductResponse
+    notes: list[CardNote] = []

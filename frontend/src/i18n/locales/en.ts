@@ -1000,7 +1000,7 @@ export default {
       qrCode: 'QR Code',
       viewPhotos: 'View Photos',
       viewPhotosCount: 'View Photos ({{count}})',
-      projectPage: 'Project Page',
+      modelCard: 'Model card',
       addToFavorites: 'Add to Favorites',
       removeFromFavorites: 'Remove from Favorites',
       edit: 'Edit',
@@ -4470,6 +4470,7 @@ export default {
     plate: 'Plate',
     plateSlot: 'Slot',
     plateGallery: 'Plate gallery',
+    modelCard: 'Model card',
     source: {
       openOriginal: 'Open on MakerWorld',
     },
@@ -4973,18 +4974,55 @@ export default {
     },
   },
 
+  // The model card of a 3MF — what the file says about itself. Two sources
+  // (an archive, which is editable, and a library file, which is read-only)
+  // share one modal; only the file half's strings live here, the archive half
+  // still carries its own pre-existing English.
+  modelCard: {
+    title: 'Model card',
+    loadFailed: 'Could not read this file.',
+    unreadable: 'This 3MF could not be parsed: {{error}}',
+    empty: 'This file carries no model card.',
+    description: 'Description',
+    printProfile: 'Print profile',
+    designerProfile: 'Designer profile',
+    pictures_one: 'Pictures ({{count}})',
+    pictures_other: 'Pictures ({{count}})',
+    documents: 'Files in the card',
+    downloadFailed: 'Could not download {{name}} (HTTP {{status}}).',
+    createProduct: 'Create product from this file',
+    rereadInto: 'Re-read into…',
+    viewOnMakerWorld: 'View on MakerWorld',
+    previous: 'Previous picture',
+    next: 'Next picture',
+  },
+
   // Projects section, products face. A product is what an order line orders:
   // a composition of printed parts and purchased items, with the library files
-  // it is printed from. Covers arrive in pass 4 — until then every card shows
-  // the same neutral tile.
+  // it is printed from.
   products: {
     list: {
       title: 'Products',
       newProduct: 'New product',
       fromFile: 'From file…',
+      import: 'Import…',
       search: 'Search products…',
       inCatalog: 'In catalog',
       empty: 'No products yet',
+    },
+    import: {
+      title: 'Import a product',
+      hint: 'A ZIP exported from BamDude: the card, the composition, the files and the documents.',
+      file: 'Archive',
+      choose: 'Choose a ZIP…',
+      folder: 'Put new files in',
+      // Not a link: the destination is where files NOBODY ALREADY HAS land, and
+      // linking the folder would claim every other file in it for this product.
+      folderHint: 'Files the library already has are reused; only the rest are stored here.',
+      newFolder: 'A new folder named after the product',
+      submit: 'Import',
+      tooLarge: 'This archive is too large to import.',
+      failed: 'The archive could not be imported: {{detail}}',
     },
     card: {
       inactive: 'not in catalog',
@@ -4994,9 +5032,44 @@ export default {
       plates_other: '{{count}} plates',
       inOrders_one: 'in {{count}} order',
       inOrders_other: 'in {{count}} orders',
+      reread: 'Re-read from file…',
+      rereadNoFiles: 'Link a file to this product first, then re-read its card.',
+      unitsPrintedTotal: 'Printed for orders',
+      fields: {
+        name: 'Name',
+        description: 'Description',
+        designer: 'Designer',
+        license: 'Licence',
+        design_id: 'Design ID',
+      },
+      notes: {
+        file_missing: 'The file is no longer on disk.',
+        unreadable: 'The file could not be read: {{error}}',
+        filled_field: 'Filled in {{field}}.',
+        replaced_files_one: 'Replaced {{count}} file that came from this file earlier.',
+        replaced_files_other: 'Replaced {{count}} files that came from this file earlier.',
+        imported_files_one: 'Imported {{count}} file into {{category}}.',
+        imported_files_other: 'Imported {{count}} files into {{category}}.',
+        skipped_extension: 'Skipped {{name}} — {{ext}} is not allowed in {{category}}.',
+        skipped_too_large: 'Skipped {{name}} — {{size}} is over the {{limit}} limit.',
+        skipped_unreadable: 'Skipped {{name}} — it could not be read.',
+        skipped_unsaved: 'Skipped {{name}} — it could not be saved.',
+        nothing_to_fill: 'Nothing to fill — every field already has a value.',
+        // Import-only. The archive is somebody else's export, so every one of
+        // these is a thing THEIR farm had and this one could not take.
+        import_file_missing: '{{name}} is listed in the archive but not in it.',
+        import_file_refused: 'The library refused {{name}}: {{detail}}',
+        import_part_duplicate_key: 'Skipped a second part under the same key: {{name}} ({{key}}).',
+        import_plate_missing: '{{filename}} no longer carries plate {{plate_index}}.',
+        import_bad_category: 'Skipped {{name}} — “{{category}}” is not a category here.',
+        import_attachment_missing: 'The attachment {{name}} is listed in the archive but not in it.',
+        import_bad_name: 'Skipped {{name}} — the name cannot be stored.',
+        import_cover_missing: 'The cover picture is listed in the archive but not in it.',
+      },
       menu: {
         edit: 'Edit',
         duplicate: 'Duplicate',
+        export: 'Export',
         hide: 'Hide from catalog',
         show: 'Show in catalog',
         delete: 'Delete',
@@ -5027,6 +5100,8 @@ export default {
       duplicated: 'Product duplicated',
       hidden: 'Product hidden from the catalog',
       shown: 'Product is back in the catalog',
+      imported: 'Product imported',
+      exportFailed: 'The export failed (HTTP {{status}}).',
     },
     confirm: {
       deleteTitle: 'Delete product?',
@@ -5046,6 +5121,7 @@ export default {
       designId: 'Design ID',
       edit: 'Edit',
       duplicate: 'Duplicate',
+      export: 'Export',
       delete: 'Delete',
     },
     composition: {
@@ -5084,6 +5160,47 @@ export default {
       time: 'Print time',
       grams: 'Filament',
       empty: 'No plates yet — link a file to this product and slice it.',
+    },
+    gallery: {
+      title: 'Pictures',
+      coverHint: 'The first picture is the cover, unless you pick or upload another one.',
+      cover: 'Cover',
+      empty: 'No pictures yet.',
+      uploadPicture: 'Upload picture',
+      uploadCover: 'Upload cover',
+      clearCover: 'Clear cover',
+      setCover: 'Set as cover',
+      isCover: 'This is the cover',
+      moveUp: 'Move up',
+      moveDown: 'Move down',
+      removePicture: 'Remove picture',
+      previous: 'Previous picture',
+      next: 'Next picture',
+      close: 'Close',
+    },
+    attachments: {
+      title: 'Documents',
+      upload: 'Upload',
+      empty: 'Nothing here yet.',
+      fromFile: 'from the 3MF',
+      // The `3mf` label keeps its old key; this one is new beside it.
+      source: {
+        import: 'Imported',
+      },
+      downloadFailed: 'Could not download this file (HTTP {{status}}).',
+      category: {
+        pictures: 'Pictures',
+        bom_docs: 'Bill of materials',
+        assembly: 'Assembly guide',
+        other: 'Other',
+        // Neither of these is an attachment category. The import's notes name
+        // the dedicated cover with `cover` and the ZIP's `files/` root with
+        // `files` (the per-member size cap fires `skipped_too_large` there), and
+        // a note that says "cover" beats one that says
+        // `products.attachments.category.cover`.
+        cover: 'Cover',
+        files: 'Model files',
+      },
     },
     files: {
       title: 'Files',

@@ -1,5 +1,6 @@
 """API routes for File Manager (Library) functionality."""
 
+import asyncio
 import base64
 import binascii
 import contextlib
@@ -13,6 +14,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse, JSONResponse
@@ -22,6 +24,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import (
+    RequireCameraStreamToken,
     require_ownership_permission,
     require_permission,
 )
@@ -42,6 +45,8 @@ from backend.app.schemas.library import (
     BatchThumbnailResult,
     BulkDeleteRequest,
     BulkDeleteResponse,
+    CardAuxOut,
+    CardResponse,
     ExternalFolderCreate,
     FileDuplicate,
     FileListResponse,
@@ -83,6 +88,7 @@ from backend.app.services.library_ingest import IngestResult, find_reusable_row
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.process_overrides import apply_process_overrides
+from backend.app.services.product_files import attachment_limit, exceeds_attachment_limit
 from backend.app.services.product_sync import (
     apply_folder_products,
     inherit_folder_products,
@@ -92,6 +98,7 @@ from backend.app.services.product_sync import (
 from backend.app.services.slice_output_check import missing_start_gcode_message, start_gcode_is_missing
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
+from backend.app.services.threemf_card import CARD_PICTURE_CATEGORIES, ThreeMFCardParser, content_type_for
 from backend.app.utils.filename import (
     MAX_FILENAME_BYTES,
     InvalidFilenameError,
@@ -99,6 +106,7 @@ from backend.app.utils.filename import (
     safe_path_component,
     validate_print_filename,
 )
+from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 from backend.app.utils.threemf_tools import (
     expand_to_project_slots,
@@ -4322,6 +4330,225 @@ async def get_library_file_plate_objects(
         raise HTTPException(status_code=404, detail="File not found on disk")
 
     return build_plate_objects_payload(file_path.read_bytes(), plate)
+
+
+# ============ Model card (spec §Decisions 5) ============
+#
+# The card is READ-ONLY here. ``ThreeMFCardParser.update_metadata`` writes into
+# a 3MF and belongs to the archive, which owns its copy of the file; a library
+# file is the operator's original and is never written into (spec §Risks).
+#
+# Two serving routes, split by what a browser would DO with the bytes:
+#
+# * ``card-file`` is the ``<img src>`` surface. It takes a camera stream token —
+#   which is long-lived and also reaches a TV or a Home Assistant card — so it
+#   hands out PICTURES and nothing else. A bill of materials is a document about
+#   somebody's business and has no reason to sit behind a kiosk credential.
+# * ``card-download`` is the bearer surface for everything else, under the same
+#   ownership permission as ``/card`` itself.
+#
+# Both parse OFF THE EVENT LOOP and use ``list_auxiliaries``, which walks the
+# ZIP's central directory only: the membership check must not inflate and
+# regex-scan a megabyte of ``3D/3dmodel.model`` once per picture on the page.
+
+
+def _card_route(file_id: int, category: str, name: str, zip_path: str) -> str:
+    """The route that can actually serve this member.
+
+    Both halves of the serving rule, so the url never promises what the route
+    would refuse: a picture CATEGORY, and a member we can name as an image (a
+    designer's stray ``.txt`` in ``Model Pictures/`` is a download like any
+    other document).
+    """
+    renderable = category in CARD_PICTURE_CATEGORIES and content_type_for(name).startswith("image/")
+    leaf = "card-file" if renderable else "card-download"
+    return f"/api/v1/library/files/{file_id}/{leaf}/{quote(zip_path)}"
+
+
+def _card_payload(card, file_id: int) -> CardResponse:
+    """``CardData`` on the wire, each auxiliary carrying the url that serves it.
+
+    The url is built here rather than on the frontend for two reasons: the ZIP
+    path needs percent-encoding (folder names carry spaces — ``Model Pictures``
+    — and the filenames are the designer's, not ours), and WHICH of the two
+    routes serves a member is a server-side rule the frontend should not have to
+    re-derive from the category.
+    """
+    return CardResponse(
+        **{key: getattr(card, key) for key in CardResponse.model_fields if key not in ("auxiliaries", "error")},
+        auxiliaries={
+            category: [
+                CardAuxOut(
+                    name=entry.name,
+                    zip_path=entry.zip_path,
+                    size=entry.size,
+                    url=_card_route(file_id, category, entry.name, entry.zip_path),
+                )
+                for entry in entries
+            ]
+            for category, entries in card.auxiliaries.items()
+        },
+        error=card.error,
+    )
+
+
+async def _card_member(
+    db: AsyncSession,
+    file_id: int,
+    zip_path: str,
+    *,
+    categories: tuple[str, ...] | None,
+    lib_file: LibraryFile | None = None,
+) -> tuple[bytes, str, str]:
+    """``(bytes, media type, the designer's own filename)`` for one listed member.
+
+    ⚠️ **Only a member the card LISTED is ever served, and only from a category
+    the caller's surface is allowed to hand out.** The client names the ZIP path,
+    so without this the route is an arbitrary read of every file an operator ever
+    uploaded — ``3D/3dmodel.model``, the sliced G-code, anything a crafted 3MF
+    hides beside them. Membership of the card's own listing is also what makes
+    traversal moot: a name that is not in the list is a 404 whatever it looks like.
+
+    ``categories=None`` means every category the card knows.
+    """
+    if lib_file is None:
+        lib_file = (await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))).scalar_one_or_none()
+        if lib_file is None:
+            raise HTTPException(status_code=404, detail="File not found")
+
+    file_path = to_absolute_path(lib_file.file_path)
+    if file_path is None or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    parser = ThreeMFCardParser(file_path)
+    auxiliaries = await asyncio.to_thread(parser.list_auxiliaries)
+    wanted = auxiliaries.keys() if categories is None else categories
+    entry = next(
+        (e for category in wanted for e in auxiliaries.get(category, []) if e.zip_path == zip_path),
+        None,
+    )
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Not a file of this model card")
+    # The ZIP's declared UNCOMPRESSED size, checked before a byte is inflated —
+    # every one of these paths buffers the whole member in memory.
+    if exceeds_attachment_limit(entry.size):
+        raise HTTPException(status_code=413, detail=f"That file is larger than {attachment_limit()} bytes")
+
+    payload = await asyncio.to_thread(parser.read, zip_path)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Not a file of this model card")
+    return payload[0], payload[1], entry.name
+
+
+@router.get("/files/{file_id}/card", response_model=CardResponse)
+async def get_library_file_card(
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
+):
+    """The model card of a library file, parsed from the file itself.
+
+    Not from ``file_metadata``: that carries only ``designer`` and
+    ``print_name``, and the card is the designer's whole description of the
+    thing. One user-initiated request per opened dialog, not a list render — and
+    even so the parse runs in a thread, because it inflates and scans the model.
+    """
+    user, can_read_all = auth_result
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    lib_file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all)
+
+    file_path = to_absolute_path(lib_file.file_path)
+    if file_path is None or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    card = await asyncio.to_thread(ThreeMFCardParser(file_path).parse)
+    return _card_payload(card, file_id)
+
+
+@router.get("/files/{file_id}/card-file/{zip_path:path}")
+async def get_library_file_card_file(
+    file_id: int,
+    zip_path: str,
+    db: AsyncSession = Depends(get_db),
+    _=RequireCameraStreamToken,
+):
+    """A PICTURE out of the card's auxiliaries, for an ``<img src>``.
+
+    Pictures only (``CARD_PICTURE_CATEGORIES``): a camera stream token is
+    long-lived and also lives in a kiosk or a Home Assistant card, so a bill of
+    materials or an assembly PDF is not served here just because it happens to
+    be in the same ZIP — those go through ``card-download`` and a bearer token.
+    The products route makes the same split for the same reason.
+
+    Token-gated because an ``<img>`` cannot carry an Authorization header — and
+    ``/card-file/`` is in ``main.py``'s ``PUBLIC_API_PATTERNS`` so the request
+    reaches this gate at all.
+
+    ⚠️ **Stream-token-ONLY by design, exactly like the plate-thumbnail route.**
+    It carries no ownership check, and that is not an oversight: the same is
+    true of every ``<img>`` surface in BamDude, because the credential a browser
+    can put in a URL is the only one it has. ``/card`` and ``card-download``
+    beside it ARE ownership-scoped — the split is deliberate, and the price of
+    it is that pictures, and nothing but pictures, sit behind the kiosk
+    credential.
+    """
+    data, media_type, _name = await _card_member(db, file_id, zip_path, categories=CARD_PICTURE_CATEGORIES)
+    if not media_type.startswith("image/"):
+        # A picture folder is a folder, not a promise. Whatever a designer put in
+        # it that we cannot name as an image is a download, not something this
+        # surface renders from our own origin.
+        raise HTTPException(status_code=404, detail="Not a file of this model card")
+    # ``private``: one operator's file behind a token, never a shared cache's to
+    # keep. An hour is safe — these bytes change only when the file does.
+    return Response(content=data, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.get("/files/{file_id}/card-download/{zip_path:path}")
+async def get_library_file_card_download(
+    file_id: int,
+    zip_path: str,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
+):
+    """The bill of materials, the assembly guide, anything else the card lists.
+
+    Bearer-authenticated under the same ownership permission as ``/card``, and
+    it gives the designer's own filename back. Pictures are reachable here too —
+    a download of one is a legitimate thing to want.
+
+    ⚠️ Fail-closed by its own dependency, and that is load-bearing: ``zip_path``
+    is client text, and ``auth_middleware`` matches ``PUBLIC_API_PATTERNS`` as a
+    SUBSTRING of the whole path, so a member named ``.../thumbnail.png`` makes
+    the middleware wave the request through. ``require_ownership_permission``
+    answers 401 with no credentials, so nothing is served regardless.
+    """
+    user, can_read_all = auth_result
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    lib_file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all)
+
+    data, media_type, name = await _card_member(db, file_id, zip_path, categories=None, lib_file=lib_file)
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={
+            # ⚠️ Never an f-string here. ``name`` is a filename a STRANGER chose
+            # inside a 3MF somebody downloaded: Starlette encodes headers as
+            # latin-1, so a Cyrillic name is a 500, and a quote in the name
+            # breaks out of the quoted parameter. ``build_content_disposition``
+            # is the RFC 6266 form the rest of the codebase already uses.
+            "Content-Disposition": build_content_disposition(name),
+            "Cache-Control": "private",
+        },
+    )
 
 
 @router.get("/files/{file_id}/plate-thumbnail/{plate_index}")

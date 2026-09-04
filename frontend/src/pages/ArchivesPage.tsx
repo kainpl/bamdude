@@ -92,7 +92,7 @@ import { QRCodeModal } from '../components/QRCodeModal';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
 import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { PhotoGalleryModal } from '../components/PhotoGalleryModal';
-import { ProjectPageModal } from '../components/ProjectPageModal';
+import { ModelCardModal } from '../components/ModelCardModal';
 import { TimelapseViewer } from '../components/TimelapseViewer';
 import { CompareArchivesModal } from '../components/CompareArchivesModal';
 import { TagManagementModal } from '../components/TagManagementModal';
@@ -634,7 +634,7 @@ function ArchiveCard({
       disabled: !archive.photos?.length,
     },
     {
-      label: t('archives.menu.projectPage'),
+      label: t('archives.menu.modelCard'),
       icon: <FileText className="w-4 h-4" />,
       onClick: () => setShowProjectPage(true),
     },
@@ -1512,11 +1512,10 @@ function ArchiveCard({
         />
       )}
 
-      {/* Project Page Modal */}
+      {/* Model card — the archive half: its own copy of the metadata, editable. */}
       {showProjectPage && (
-        <ProjectPageModal
-          archiveId={archive.id}
-          archiveName={archive.print_name || archive.filename}
+        <ModelCardModal
+          source={{ kind: 'archive', id: archive.id, name: archive.print_name || archive.filename }}
           onClose={() => setShowProjectPage(false)}
         />
       )}
@@ -2024,7 +2023,7 @@ function ArchiveListRow({
       disabled: !archive.photos?.length,
     },
     {
-      label: t('archives.menu.projectPage'),
+      label: t('archives.menu.modelCard'),
       icon: <FileText className="w-4 h-4" />,
       onClick: () => setShowProjectPage(true),
     },
@@ -2635,11 +2634,10 @@ function ArchiveListRow({
         />
       )}
 
-      {/* Project Page Modal */}
+      {/* Model card — the archive half: its own copy of the metadata, editable. */}
       {showProjectPage && (
-        <ProjectPageModal
-          archiveId={archive.id}
-          archiveName={archive.print_name || archive.filename}
+        <ModelCardModal
+          source={{ kind: 'archive', id: archive.id, name: archive.print_name || archive.filename }}
           onClose={() => setShowProjectPage(false)}
         />
       )}

@@ -38,6 +38,7 @@ from backend.app.schemas.project import (
     BatchAddArchives,
     BatchAddQueueItems,
     LinePlanOut,
+    LineProductOut,
     OrderPlanResponse,
     PartFiguresOut,
     PlanEnqueueCreated,
@@ -63,6 +64,12 @@ from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.order_metrics import attribute, load_order_context, procurement_figures, project_figures
 from backend.app.services.plan_engine import OrderPlan, plan_for_order
 from backend.app.services.product_composition import PlateRecipe, recipes_for_product
+from backend.app.services.product_files import (
+    ALLOWED_ATTACHMENT_EXTENSIONS,
+    COVER_EXTENSIONS,
+    IMAGE_CONTENT_TYPES,
+    effective_cover,
+)
 from backend.app.services.queue_batch import enqueue_batch_copies
 
 logger = logging.getLogger(__name__)
@@ -192,14 +199,17 @@ async def list_projects(
         query = query.where(Project.id.in_(select(ProjectLine.project_id).where(ProjectLine.product_id == product_id)))
     projects = (await db.execute(query)).scalars().all()
     product_ids = {line.product_id for p in projects for line in p.lines}
-    covers = (
-        dict(
-            (
-                await db.execute(select(Product.id, Product.cover_image_filename).where(Product.id.in_(product_ids)))
-            ).all()
-        )
+    # The order card draws a cover strip per line, and the EFFECTIVE cover may be
+    # the first picture attachment rather than the column — hence a flag per
+    # line, not a filename. One grouped lookup rather than a query per row.
+    covered = (
+        {
+            product.id
+            for product in (await db.execute(select(Product).where(Product.id.in_(product_ids)))).scalars()
+            if effective_cover(product) is not None
+        }
         if product_ids
-        else {}
+        else set()
     )
     out: list[ProjectListResponse] = []
     for project in projects:
@@ -228,7 +238,10 @@ async def list_projects(
                 ordered=pf.ordered,
                 printed=pf.printed,
                 progress=pf.progress,
-                product_cover_filenames=[covers.get(line.product_id) for line in project.lines],
+                line_products=[
+                    LineProductOut(product_id=line.product_id, has_cover=line.product_id in covered)
+                    for line in project.lines
+                ],
             )
         )
     return out
@@ -516,63 +529,6 @@ def get_project_attachments_dir(project_id: int) -> Path:
     return base_dir / "projects" / str(project_id) / "attachments"
 
 
-# Allowed file extensions for attachments
-ALLOWED_ATTACHMENT_EXTENSIONS = {
-    # Images
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".gif",
-    ".webp",
-    ".svg",
-    ".bmp",
-    ".ico",
-    # Documents
-    ".pdf",
-    ".doc",
-    ".docx",
-    ".xls",
-    ".xlsx",
-    ".ppt",
-    ".pptx",
-    ".odt",
-    ".ods",
-    ".odp",
-    ".txt",
-    ".rtf",
-    ".csv",
-    ".md",
-    # 3D/CAD files
-    ".stl",
-    ".obj",
-    ".3mf",
-    ".step",
-    ".stp",
-    ".iges",
-    ".igs",
-    ".f3d",
-    ".scad",
-    # Archives
-    ".zip",
-    ".rar",
-    ".7z",
-    ".tar",
-    ".gz",
-    # Code/scripts (for Klipper macros, scripts, etc.)
-    ".py",
-    ".sh",
-    ".cfg",
-    ".conf",
-    ".gcode",
-    ".ini",
-    # Other common formats
-    ".json",
-    ".xml",
-    ".yaml",
-    ".yml",
-}
-
-
 @router.post("/{project_id}/attachments")
 async def upload_attachment(
     project_id: int,
@@ -741,18 +697,6 @@ async def delete_attachment(
 
 # ============ B.2 (#1155) — Project cover image ============
 
-# Cover-image upload accepts only common web-renderable image types.
-# Subset of ALLOWED_ATTACHMENT_EXTENSIONS minus .svg/.ico because those
-# don't render well as a card thumbnail.
-COVER_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-COVER_IMAGE_CONTENT_TYPES = {
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-}
-
 
 @router.post("/{project_id}/cover-image")
 async def upload_project_cover_image(
@@ -776,10 +720,10 @@ async def upload_project_cover_image(
 
     original_name = file.filename or "cover"
     ext = os.path.splitext(original_name)[1].lower()
-    if ext not in COVER_IMAGE_EXTENSIONS:
+    if ext not in COVER_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Cover image must be one of {sorted(COVER_IMAGE_EXTENSIONS)}",
+            detail=f"Cover image must be one of {sorted(COVER_EXTENSIONS)}",
         )
 
     attachments_dir = get_project_attachments_dir(project_id)
@@ -850,7 +794,7 @@ async def get_project_cover_image(
         raise HTTPException(status_code=404, detail="Cover image file not found")
 
     ext = os.path.splitext(project.cover_image_filename)[1].lower()
-    media_type = COVER_IMAGE_CONTENT_TYPES.get(ext, "application/octet-stream")
+    media_type = IMAGE_CONTENT_TYPES.get(ext, "application/octet-stream")
     return FileResponse(file_path, media_type=media_type)
 
 

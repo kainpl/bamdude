@@ -1,9 +1,14 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Copy, ExternalLink, Pencil, Trash2 } from 'lucide-react';
+import { ChevronRight, Copy, Download, ExternalLink, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
+import { api, ApiError } from '../../api/client';
 import type { Product } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
+import { cardNotesText } from './cardNotes';
 
 interface ProductHeaderProps {
   product: Product;
@@ -34,14 +39,71 @@ function Fact({ label, value }: { label: string; value: string }) {
  * (422), so the toggle always sends a boolean; there is no "clear it" state to
  * reach from here.
  *
- * There is no cover image this pass (design decision 3): the field is read and
- * ignored until a route exists to serve it, and no linked file's thumbnail is
- * borrowed to stand in for one.
+ * ⚠️ **"Re-read from file…" is a PICKER, not a button.** A product can hold
+ * several linked files and the server fills from exactly one of them, so there
+ * is no "the" file to guess; and linking a file deliberately does not fill
+ * anything on its own, which makes this the only way a re-read ever happens.
+ * The fill never overwrites a value somebody typed — the notes say what it
+ * left alone, and they arrive as CODES because only this layer knows which
+ * language the operator reads.
  */
 export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggleActive }: ProductHeaderProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
+  const { showToast } = useToast();
+  const queryClient = useQueryClient();
   const canEdit = hasPermission('projects:update');
+  const [rereadOpen, setRereadOpen] = useState(false);
+
+  // ⚠️ Not `product.library_file_ids`, which carries only the DIRECT half:
+  // `GET /library/files?product_id=` unions in the files of linked folders,
+  // and the server re-reads happily from either. Same query key as
+  // `LinkedFiles`, so opening the picker costs nothing on a page that already
+  // listed them. Fetched only once the menu is opened — a header that is on
+  // every product page should not pull a file list nobody asked for.
+  const { data: files = [] } = useQuery({
+    queryKey: ['product-files', product.id],
+    queryFn: () => api.getLibraryFiles(undefined, true, undefined, [], false, product.id),
+    enabled: rereadOpen && Number.isFinite(product.id),
+  });
+
+  // ⚠️ A menu that only closes on a click is a menu an operator using the
+  // keyboard cannot get out of. Same handler shape as `FolderTreeSelect`'s.
+  useEffect(() => {
+    if (!rereadOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setRereadOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [rereadOpen]);
+
+  const exportProduct = useMutation({
+    mutationFn: () => api.downloadProductExport(product.id),
+    onError: (e: Error) =>
+      showToast(
+        e instanceof ApiError ? t('products.toast.exportFailed', { status: e.status }) : e.message,
+        'error',
+      ),
+  });
+
+  const reread = useMutation({
+    mutationFn: (fileId: number) => api.rereadProductCard(product.id, fileId),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['product', product.id] });
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      // ⚠️ `['projects']` too: a re-read imports the 3MF's Model Pictures, which
+      // can hand the product its FIRST cover — and an order card renders that
+      // cover off the projects query. Without this the card keeps its
+      // placeholder until something else happens to refetch orders.
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      setRereadOpen(false);
+      // One toast, every note in it: they are one answer to one question, and
+      // five stacked toasts would push the first off screen before it is read.
+      showToast(cardNotesText(t, result.notes));
+    },
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
 
   return (
     <header className="space-y-3">
@@ -113,8 +175,77 @@ export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggle
               {t('products.header.duplicate')}
             </Button>
           )}
+          {/* Reading a product is enough to take one away — the export carries
+              nothing the page does not already show. */}
+          <Button variant="secondary" onClick={() => exportProduct.mutate()} disabled={exportProduct.isPending}>
+            {exportProduct.isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+            {t('products.header.export')}
+          </Button>
+          {canEdit && (
+            <div className="relative">
+              {/* ⚠️ `haspopup` + `expanded` on the TRIGGER: the popup below
+                  carries `role="menu"`, but a screen reader meets the button
+                  first and without these announces an ordinary button — nothing
+                  says a menu opens, or that one is open. */}
+              <Button
+                type="button"
+                variant="secondary"
+                aria-haspopup="menu"
+                aria-expanded={rereadOpen}
+                onClick={() => setRereadOpen((v) => !v)}
+                disabled={reread.isPending}
+              >
+                {reread.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-4 h-4" />
+                )}
+                {t('products.card.reread')}
+              </Button>
+              {rereadOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setRereadOpen(false)} />
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-full mt-1 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[220px] max-h-64 overflow-y-auto"
+                  >
+                    {files.length === 0 ? (
+                      // ⚠️ A disabled `menuitem`, not a `<p>`: a menu whose only
+                      // row is not a row at all is a menu a screen reader reads
+                      // as empty, and "there is nothing to re-read from" is the
+                      // answer the operator came for.
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled
+                        className="w-full px-3 py-2 text-left text-sm text-bambu-gray cursor-not-allowed"
+                      >
+                        {t('products.card.rereadNoFiles')}
+                      </button>
+                    ) : (
+                      files.map((file) => (
+                        <button
+                          key={file.id}
+                          type="button"
+                          role="menuitem"
+                          className="w-full px-3 py-2 text-left text-sm text-white hover:bg-bambu-dark truncate"
+                          onClick={() => reread.mutate(file.id)}
+                        >
+                          {file.filename}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           {hasPermission('projects:delete') && (
-            <Button variant="secondary" onClick={onDelete}>
+            <Button type="button" variant="secondary" onClick={onDelete}>
               <Trash2 className="w-4 h-4" />
               {t('products.header.delete')}
             </Button>

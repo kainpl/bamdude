@@ -8984,6 +8984,18 @@ PUBLIC_API_PATTERNS = [
     # Images and media
     "/photos/",  # /archives/{id}/photos/{filename}
     "/project-image/",  # /archives/{id}/project-image/{path}
+    # /library/files/{id}/card-file/{zip_path} — the model card's pictures, loaded
+    # by <img> from the card dialog. Narrow like /overlay-status above: the two
+    # slashes mean this substring can only ever match that one endpoint, and the
+    # route's own RequireCameraStreamToken is what authenticates it — this entry
+    # only lets the request reach that gate.
+    "/card-file/",
+    # /products/{id}/attachment-image/{filename} — a product's gallery pictures,
+    # loaded by <img> from the product page. Same reasoning and same narrowness:
+    # the segment exists on exactly one route (the bearer-only attachment
+    # download deliberately lives under /attachments/ instead, so no pattern can
+    # reach both), and the route's own RequireCameraStreamToken authenticates it.
+    "/attachment-image/",
     "/qrcode",  # /archives/{id}/qrcode
     "/timelapse",  # /archives/{id}/timelapse (video)
     "/cover",  # /printers/{id}/cover

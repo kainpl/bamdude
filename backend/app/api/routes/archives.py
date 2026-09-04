@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import logging
@@ -3655,7 +3656,7 @@ async def get_project_page(
 ):
     """Get the project page data from the 3MF file."""
     from backend.app.schemas.archive import ProjectPageResponse
-    from backend.app.services.archive import ProjectPageParser
+    from backend.app.services.threemf_card import ThreeMFCardParser, to_project_page_dict
 
     user, can_read_all = auth_result
     service = ArchiveService(db)
@@ -3665,8 +3666,12 @@ async def get_project_page(
     if not file_path.is_file():
         raise HTTPException(404, "Archive file not found")
 
-    parser = ProjectPageParser(file_path)
-    data = parser.parse(archive_id)
+    # Off the event loop: ``parse`` inflates ``3D/3dmodel.model`` and regex-scans
+    # it, which for a real model is megabytes of CPU. Same reason the library
+    # card routes thread theirs — a long walk holds neither the transaction nor
+    # the loop.
+    parser = ThreeMFCardParser(file_path)
+    data = to_project_page_dict(await asyncio.to_thread(parser.parse), archive_id)
 
     return ProjectPageResponse(**data)
 
@@ -3684,7 +3689,7 @@ async def update_project_page(
     ),
 ):
     """Update project page metadata in the 3MF file."""
-    from backend.app.services.archive import ProjectPageParser
+    from backend.app.services.threemf_card import ThreeMFCardParser, to_project_page_dict
 
     user, can_modify_all = auth_result
     service = ArchiveService(db)
@@ -3694,15 +3699,17 @@ async def update_project_page(
     if not file_path.is_file():
         raise HTTPException(404, "Archive file not found")
 
-    parser = ProjectPageParser(file_path)
-    success = parser.update_metadata(update_data)
+    # ``update_metadata`` REWRITES the whole 3MF — every member copied through a
+    # temp file and moved back over the original. That is the heaviest thing any
+    # of these three handlers does, and it must not run on the loop.
+    parser = ThreeMFCardParser(file_path)
+    success = await asyncio.to_thread(parser.update_metadata, update_data)
 
     if not success:
         raise HTTPException(500, "Failed to update project page")
 
     # Return updated data
-    data = parser.parse(archive_id)
-    return data
+    return to_project_page_dict(await asyncio.to_thread(parser.parse), archive_id)
 
 
 @router.get("/{archive_id}/project-image/{image_path:path}")
@@ -3715,7 +3722,7 @@ async def get_project_image(
 
     Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
     """
-    from backend.app.services.archive import ProjectPageParser
+    from backend.app.services.threemf_card import ThreeMFCardParser
 
     service = ArchiveService(db)
     archive = await service.get_archive(archive_id)
@@ -3726,8 +3733,8 @@ async def get_project_image(
     if not file_path.is_file():
         raise HTTPException(404, "Archive file not found")
 
-    parser = ProjectPageParser(file_path)
-    result = parser.get_image(image_path)
+    parser = ThreeMFCardParser(file_path)
+    result = await asyncio.to_thread(parser.read, image_path)
 
     if not result:
         raise HTTPException(404, "Image not found in 3MF file")

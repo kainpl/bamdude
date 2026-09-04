@@ -11,8 +11,8 @@ import { api } from '../../../api/client';
 import { ProductsPage } from '../../../pages/products/ProductsPage';
 
 const rows = [
-  { id: 1, name: 'Flask', is_active: true, cover_image_filename: null, parts_count: 2, plates_count: 1, lines_count: 3 },
-  { id: 2, name: 'Old lid', is_active: false, cover_image_filename: null, parts_count: 1, plates_count: 1, lines_count: 0 },
+  { id: 1, name: 'Flask', is_active: true, cover_image_filename: null, has_cover: true, parts_count: 2, plates_count: 1, lines_count: 3 },
+  { id: 2, name: 'Old lid', is_active: false, cover_image_filename: null, has_cover: false, parts_count: 1, plates_count: 1, lines_count: 0 },
 ];
 
 afterEach(() => {
@@ -45,8 +45,9 @@ describe('ProductsPage', () => {
     vi.spyOn(api, 'getProducts').mockResolvedValue(rows as never);
     render(<ProductsPage />);
     await screen.findByText('Flask');
-    // No cover exists before pass 4 — every card gets the neutral tile.
-    expect(screen.getAllByTestId('product-cover-placeholder')).toHaveLength(2);
+    // `has_cover` decides per card: the effective cover for one, the neutral tile for the other.
+    expect(screen.getAllByTestId('product-cover')).toHaveLength(1);
+    expect(screen.getAllByTestId('product-cover-placeholder')).toHaveLength(1);
     expect(screen.getByText(/in 3 orders/i)).toBeInTheDocument();
     // `lines_count: 0` must not leak a bare "in 0 orders" row.
     expect(screen.queryByText(/in 0 orders/i)).not.toBeInTheDocument();

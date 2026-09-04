@@ -139,6 +139,64 @@ export function withStreamToken(url: string): string {
 }
 
 /**
+ * A multipart upload, which `request()` cannot carry.
+ *
+ * `request()` sets `Content-Type: application/json` on every call; with a
+ * `FormData` body that header would replace the one the browser writes, and the
+ * multipart boundary would be lost — the server then sees a body it cannot
+ * parse and answers 422 on a perfectly good file. So the headers are built by
+ * hand here and the content type is deliberately left to `fetch`.
+ *
+ * ⚠️ **Everything else about the call is `request()`'s, deliberately.** The
+ * proactive pre-expiry refresh, the reactive 401 → refresh → retry, the
+ * session-invalidated broadcast and the `ApiError` (not a bare `Error`, which
+ * no caller can branch on) all come from the same two helpers `request()` uses.
+ * They were missing here for one release, and the cost was specific: an upload
+ * started on a tab that had been idle past the access token's hour died with a
+ * bare "Not authenticated" toast and lost the file the operator had picked,
+ * while every JSON call beside it recovered silently.
+ *
+ * A `FormData` body survives the retry: `fetch` serialises it per call, it is
+ * not a consumed stream.
+ */
+async function sendForm<T>(
+  endpoint: string,
+  formData: FormData,
+  method: 'POST' | 'PUT' = 'POST',
+  __isRetry = false,
+): Promise<T> {
+  if (authToken && !__isRetry && isTokenNearExpiry()) {
+    await refreshAccessToken();
+  }
+  // ⚠️ The same timezone header `request()` sends. A multipart call is a call
+  // like any other — a product import answers with dated notes, an upload's
+  // response carries `uploaded_at` — and "every request carries it" is the only
+  // version of this rule that cannot be forgotten on the next new endpoint.
+  // No `Content-Type`: the browser sets it, boundary and all.
+  const headers: Record<string, string> = {
+    ...(clientTimeZone ? { 'X-Client-Timezone': clientTimeZone } : {}),
+  };
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    method,
+    headers,
+    body: formData,
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    // Either throws, or says "refreshed — send it again".
+    await handleErrorResponse(response, __isRetry);
+    return sendForm<T>(endpoint, formData, method, true);
+  }
+  const contentLength = response.headers.get('content-length');
+  if (response.status === 204 || contentLength === '0') {
+    return undefined as T;
+  }
+  return response.json();
+}
+
+/**
  * Sanitize + extension-normalise a filename intended to be served as the
  * tail segment of a slicer-token download URL (``…/dl/<token>/<filename>``).
  *
@@ -334,6 +392,51 @@ function formatErrorDetail(detail: unknown, status: number): string {
   return `HTTP ${status}`;
 }
 
+/**
+ * The refusal path shared by `request()` and `sendForm()`.
+ *
+ * Returns only when the caller should RE-SEND the same call with `__isRetry`
+ * set — the access token has just been refreshed. Every other outcome throws.
+ * There is deliberately no boolean to check: a caller that forgot to branch on
+ * it would swallow the failure and return `undefined` as if the request had
+ * succeeded.
+ *
+ * ⚠️ `ApiError`, never a bare `Error`, so callers can branch on the HTTP status
+ * — `useWebSocket` / `AuthContext` / `StreamOverlayPage` classify a 401/403 as
+ * a definitive AUTH decision (stop) against a transient 5xx/network blip
+ * (retry), and `InventoryPage` keys 404/503 handling off `err.status`.
+ */
+async function handleErrorResponse(response: Response, __isRetry: boolean): Promise<void> {
+  const error = await response.json().catch(() => ({}));
+  const message = formatErrorDetail(error.detail, response.status);
+
+  if (response.status === 401) {
+    const refreshable = !__isRetry && REFRESH_ERROR_MESSAGES.some(m => message.includes(m));
+    if (refreshable) {
+      // Try to refresh once. Coalesced across concurrent 401s.
+      const ok = await refreshAccessToken();
+      if (ok) return;
+      // Refresh failed (no cookie, replay detected, refresh expired, etc.)
+      // — fall through to the invalidated-session path below.
+    }
+    const terminal =
+      REFRESH_ERROR_MESSAGES.some(m => message.includes(m)) ||
+      NON_REFRESHABLE_401_MESSAGES.some(m => message.includes(m));
+    if (terminal) {
+      setAuthToken(null);
+      // Broadcast so AuthContext can clear React state and redirect to
+      // /login. Before sliding-session (§18.14) this was the first line
+      // of defence; after sliding-session it's the last resort — refresh
+      // was already attempted and failed.
+      window.dispatchEvent(
+        new CustomEvent('bamdude:auth-invalidated', { detail: { reason: 'token-expired', message } }),
+      );
+    }
+  }
+
+  throw new ApiError(message, response.status);
+}
+
 // Resolved once: it cannot change without the page being reloaded, and calling
 // into Intl on every request would be noise. Empty string when the runtime has
 // no zone to report, in which case the header is omitted and the server answers
@@ -395,43 +498,9 @@ async function request<T>(
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    const detail = error.detail;
-    const message = formatErrorDetail(detail, response.status);
-
-    if (response.status === 401) {
-      const refreshable =
-        !__isRetry &&
-        REFRESH_ERROR_MESSAGES.some(m => message.includes(m));
-      if (refreshable) {
-        // Try to refresh once. Coalesced across concurrent 401s.
-        const ok = await refreshAccessToken();
-        if (ok) {
-          return request<T>(endpoint, options, true);
-        }
-        // Refresh failed (no cookie, replay detected, refresh expired, etc.)
-        // — fall through to the invalidated-session path below.
-      }
-      const terminal =
-        REFRESH_ERROR_MESSAGES.some(m => message.includes(m)) ||
-        NON_REFRESHABLE_401_MESSAGES.some(m => message.includes(m));
-      if (terminal) {
-        setAuthToken(null);
-        // Broadcast so AuthContext can clear React state and redirect to
-        // /login. Before sliding-session (§18.14) this was the first line
-        // of defence; after sliding-session it's the last resort — refresh
-        // was already attempted and failed.
-        window.dispatchEvent(
-          new CustomEvent('bamdude:auth-invalidated', { detail: { reason: 'token-expired', message } }),
-        );
-      }
-    }
-
-    // Throw ApiError (not a bare Error) so callers can branch on the HTTP
-    // status — e.g. useWebSocket / AuthContext / StreamOverlayPage classify a
-    // 401/403 as a definitive AUTH decision (stop) vs a transient 5xx/network
-    // blip (retry), and InventoryPage keys 404/503 handling off ``err.status``.
-    throw new ApiError(message, response.status);
+    // Either throws, or says "refreshed — send it again".
+    await handleErrorResponse(response, __isRetry);
+    return request<T>(endpoint, options, true);
   }
 
   // Handle empty responses (204 No Content, etc.)
@@ -1373,8 +1442,16 @@ export interface OrderListItem {
   ordered: number;
   printed: number;
   progress: number;
-  /** One entry per line, in line order; null where that product has no cover. */
-  product_cover_filenames: (string | null)[];
+  /** One entry per line, in line order. The id is what the card's cover URL is
+   *  built from, so a line whose product HAS a cover shows it and one that has
+   *  none keeps its place as a placeholder. */
+  line_products: LineProduct[];
+}
+
+/** An order line's product, reduced to what a card strip needs. */
+export interface LineProduct {
+  product_id: number;
+  has_cover: boolean;
 }
 
 export interface OrderCreate {
@@ -1636,11 +1713,38 @@ export interface PlateRecipe {
   filament_used_grams: number | null;
 }
 
+/** The four buckets a product attachment sits in. `pictures` IS the gallery;
+ *  the other three are the attachments section, and nothing is ever in both. */
+export type AttachmentCategory = 'pictures' | 'bom_docs' | 'assembly' | 'other';
+
+/**
+ * One typed attachment — the JSON entry on the product row, its bytes on disk.
+ *
+ * `source` says whose it is: a `3mf` entry was read out of `source_file_id` and
+ * is REPLACED wholesale when that file is re-read, while `manual` (uploaded
+ * here) and `import` (restored from an export ZIP) entries are the operator's
+ * and are never touched by a fill.
+ */
+export interface ProductAttachment {
+  category: AttachmentCategory;
+  filename: string;
+  original_name: string;
+  size: number;
+  sort_order: number;
+  source: 'manual' | '3mf' | 'import';
+  source_file_id: number | null;
+  uploaded_at: string | null;
+}
+
 export interface ProductListItem {
   id: number;
   name: string;
   is_active: boolean;
   cover_image_filename: string | null;
+  /** The EFFECTIVE cover — the explicit column OR the first picture. A card
+   *  renders `GET /products/{id}/cover-image` on this and never on the column,
+   *  which is null for every product whose cover is the implicit default. */
+  has_cover: boolean;
   parts_count: number;
   plates_count: number;
   lines_count: number;
@@ -1653,12 +1757,95 @@ export interface Product extends ProductListItem {
   license: string | null;
   source_url: string | null;
   design_id: string | null;
-  attachments: unknown[] | null;
+  attachments: ProductAttachment[];
   parts: ProductPart[];
   library_file_ids: number[];
   library_folder_ids: number[];
+  /** Units delivered against orders — every order status, capped at each
+   *  line's need. NOT "units ever printed": a print nobody ordered is not in
+   *  it, and neither is the eleventh of ten. */
+  units_printed_total: number;
   created_at: string;
   updated_at: string;
+}
+
+/** One member of an `Auxiliaries/` folder inside a 3MF. `url` is built by the
+ *  server, which decides whether the picture route or the download route can
+ *  serve it — that split is a server rule, not one to re-derive here. */
+export interface CardAux {
+  name: string;
+  zip_path: string;
+  size: number;
+  url: string;
+}
+
+/** What a 3MF says about itself. `error` set means the file could not be read;
+ *  the card screen degrades and the request still succeeded. */
+export interface CardData {
+  title: string | null;
+  description: string | null;
+  designer: string | null;
+  designer_user_id: string | null;
+  license: string | null;
+  copyright: string | null;
+  creation_date: string | null;
+  modification_date: string | null;
+  origin: string | null;
+  profile_title: string | null;
+  profile_description: string | null;
+  profile_cover: string | null;
+  profile_user_id: string | null;
+  profile_user_name: string | null;
+  design_model_id: string | null;
+  design_profile_id: string | null;
+  design_region: string | null;
+  auxiliaries: Record<string, CardAux[]>;
+  error: string | null;
+}
+
+/**
+ * What a card fill did, or refused to do — a CODE plus params, never prose.
+ *
+ * ⚠️ The phrasing lives in `products.card.notes.*` in BOTH locales, because the
+ * server has no idea which language the operator reads. A new code on the wire
+ * with no key here renders as its own key; that is the trade for never
+ * shipping an untranslatable English sentence out of the backend.
+ */
+export interface CardNote {
+  code:
+    | 'file_missing'
+    | 'unreadable'
+    | 'filled_field'
+    | 'replaced_files'
+    | 'imported_files'
+    | 'skipped_extension'
+    | 'skipped_too_large'
+    | 'skipped_unreadable'
+    | 'skipped_unsaved'
+    | 'nothing_to_fill'
+    // Import-only. Everything a ZIP claimed that this farm could not take.
+    | 'import_file_missing'
+    | 'import_file_refused'
+    | 'import_part_duplicate_key'
+    | 'import_plate_missing'
+    | 'import_bad_category'
+    | 'import_attachment_missing'
+    | 'import_bad_name'
+    | 'import_cover_missing';
+  params: Record<string, string | number>;
+}
+
+export interface RereadResponse {
+  product: Product;
+  notes: CardNote[];
+}
+
+/** `POST /products/import`. ⚠️ `warnings` are `CardNote` CODES like every other
+ *  card answer — the phrasing lives in `products.card.notes.*`, in both
+ *  locales, because the server has no idea which language the operator reads. */
+export interface ProductImportResponse {
+  product: Product;
+  warnings: CardNote[];
 }
 
 export interface ProductCreate {
@@ -9341,6 +9528,108 @@ export const api = {
     request<Product>(`/products/${productId}/folders/${folderId}`, { method: 'DELETE' }),
   getFoldersByProduct: (productId: number) =>
     request<LibraryFolder[]>(`/library/folders/by-product/${productId}`),
+
+  // ---- Product attachments, cover and card (pass 4) ----
+  getProductAttachments: (productId: number) =>
+    request<ProductAttachment[]>(`/products/${productId}/attachments`),
+  /** The category travels as a form field beside the file: it decides which
+   *  extension allowlist the server checks, which is the only thing standing
+   *  between this route and an executable in the attachments directory. */
+  uploadProductAttachment: (productId: number, file: File, category: AttachmentCategory) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('category', category);
+    return sendForm<ProductAttachment>(`/products/${productId}/attachments`, formData);
+  },
+  /** Bearer-authenticated download — fetch it and save the blob; an `<a href>`
+   *  cannot carry the token and would 401 into a file that looks corrupt. */
+  getProductAttachmentUrl: (productId: number, filename: string) =>
+    `${API_BASE}/products/${productId}/attachments/${encodeURIComponent(filename)}`,
+  /** ⚠️ The segment is `attachment-image`, NOT `attachments/…/image`. It is a
+   *  unique path so `main.py`'s whitelist can let an `<img>` request REACH the
+   *  route's own stream-token gate without also opening the bearer-only
+   *  download that lives under `/attachments/`. */
+  getProductAttachmentImageUrl: (productId: number, filename: string) =>
+    withStreamToken(`${API_BASE}/products/${productId}/attachment-image/${encodeURIComponent(filename)}`),
+  deleteProductAttachment: (productId: number, filename: string) =>
+    request<ProductAttachment[]>(`/products/${productId}/attachments/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+    }),
+  /** Rewrites ONE category's order; the others keep theirs. */
+  reorderProductAttachments: (productId: number, category: AttachmentCategory, filenames: string[]) =>
+    request<ProductAttachment[]>(`/products/${productId}/attachments/order`, {
+      method: 'PATCH',
+      body: JSON.stringify({ category, filenames }),
+    }),
+  /** Picks a picture that is already in the gallery as the explicit cover. */
+  setProductCover: (productId: number, filename: string) =>
+    request<{ status: string; filename: string }>(`/products/${productId}/cover-image`, {
+      method: 'PUT',
+      body: JSON.stringify({ filename }),
+    }),
+  /** Uploads a DEDICATED cover — stored beside the gallery and deliberately not
+   *  listed in it. Same route as the pick; the server branches on the body. */
+  uploadProductCover: (productId: number, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return sendForm<{ status: string; filename: string; size: number }>(
+      `/products/${productId}/cover-image`,
+      formData,
+      'PUT',
+    );
+  },
+  getProductCoverImageUrl: (productId: number) =>
+    withStreamToken(`${API_BASE}/products/${productId}/cover-image`),
+  /** Clears the explicit choice; the first-picture default resumes. */
+  deleteProductCover: (productId: number) =>
+    request<{ status: string }>(`/products/${productId}/cover-image`, { method: 'DELETE' }),
+  /** Fills the product's BLANK card fields from a linked file again and
+   *  replaces that file's `3mf` attachments. Never overwrites a value somebody
+   *  typed — the notes say what was left alone. */
+  rereadProductCard: (productId: number, fileId: number) =>
+    request<RereadResponse>(`/products/${productId}/card/reread?file_id=${fileId}`, { method: 'POST' }),
+  getLibraryFileCard: (fileId: number) => request<CardData>(`/library/files/${fileId}/card`),
+  /**
+   * The whole product as a ZIP, saved through the blob dance.
+   *
+   * The route is behind `PROJECTS_READ` and this app authenticates with a
+   * bearer token, which an `<a href>` cannot carry — the link would 401 and the
+   * browser would save the error body under the operator's filename.
+   *
+   * The name comes off `Content-Disposition`, `filename*=UTF-8''…` first: the
+   * product name is the operator's and is routinely not ASCII, and the ASCII
+   * `filename=` beside it is the server's transliterated fallback.
+   */
+  downloadProductExport: async (productId: number): Promise<void> => {
+    const headers: Record<string, string> = {};
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/products/${productId}/export`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new ApiError(formatErrorDetail(error.detail, response.status), response.status);
+    }
+    const name =
+      parseContentDispositionFilename(response.headers.get('Content-Disposition')) || `product_${productId}.zip`;
+    const url = window.URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  },
+  /** ⚠️ `folder_id` is a DESTINATION for files nobody already has, not a link:
+   *  the server never joins that folder to the product, because "every file in
+   *  here belongs to this product" is not what an operator said by importing
+   *  into their Downloads folder. Omitted entirely when nothing was picked —
+   *  the server then reuses or makes a root folder named after the product. */
+  importProduct: (file: File, folderId?: number | null) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (folderId != null) formData.append('folder_id', String(folderId));
+    return sendForm<ProductImportResponse>('/products/import', formData);
+  },
 
   // Project Attachments
   uploadProjectAttachment: async (projectId: number, file: File): Promise<{

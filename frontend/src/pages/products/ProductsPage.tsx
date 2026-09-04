@@ -2,15 +2,16 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { FileBox, Plus, Search } from 'lucide-react';
+import { FileBox, Plus, Search, Upload } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Product, ProductListItem, ProductListParams } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ProjectsTabs } from '../../components/projects/ProjectsTabs';
 import { ProductCard } from '../../components/products/ProductCard';
-import { ProductModal } from '../../components/products/ProductModal';
+import { ProductCardDialog } from '../../components/products/ProductCardDialog';
 import { FromFileDialog } from '../../components/products/FromFileDialog';
+import { ImportProductDialog } from '../../components/products/ImportProductDialog';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
 
@@ -38,6 +39,7 @@ export function ProductsPage() {
   const [inCatalog, setInCatalog] = useState(true);
   const [editing, setEditing] = useState<ProductListItem | null | 'new'>(null);
   const [fromFile, setFromFile] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [deleting, setDeleting] = useState<ProductListItem | null>(null);
 
   useEffect(() => {
@@ -105,6 +107,14 @@ export function ProductsPage() {
               <FileBox className="w-4 h-4" />
               {t('products.list.fromFile')}
             </Button>
+            {/* An import INGESTS FILES INTO THE LIBRARY, so the server asks for
+                the upload permission beside `projects:create`. The button is
+                shown to anyone who may create a product — the refusal, when it
+                comes, is the server's own sentence in the dialog. */}
+            <Button variant="secondary" onClick={() => setImporting(true)}>
+              <Upload className="w-4 h-4" />
+              {t('products.list.import')}
+            </Button>
             <Button onClick={() => setEditing('new')}>
               <Plus className="w-4 h-4" />
               {t('products.list.newProduct')}
@@ -153,9 +163,11 @@ export function ProductsPage() {
         ))}
       </div>
 
-      {editing && <ProductModal product={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
+      {editing && <ProductCardDialog product={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
 
       {fromFile && <FromFileDialog onClose={() => setFromFile(false)} onCreated={openCreated} />}
+
+      {importing && <ImportProductDialog onClose={() => setImporting(false)} />}
 
       {deleting && (
         <ConfirmModal

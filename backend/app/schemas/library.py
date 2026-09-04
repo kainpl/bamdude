@@ -524,3 +524,56 @@ class LibraryGroupingMetadata(BaseModel):
     # Empty for a file that was never parsed (raw STL, unsliced 3MF). The caller
     # must treat that as "cannot be grouped", never as "matches anything".
     plates: list[LibraryGroupingPlate] = []
+
+
+# ============ Model card of a library file (spec §Decisions 5) ============
+
+
+class CardAuxOut(BaseModel):
+    """One file inside an ``Auxiliaries/`` folder, plus the url that serves it.
+
+    ``url`` names WHICH of the two card routes can serve this member, and the
+    server decides: ``card-file`` for a picture the browser will render (append
+    a camera stream token — an ``<img src>`` cannot carry an Authorization
+    header), ``card-download`` for everything else (an ordinary bearer read, so
+    a customer's bill of materials never sits behind a long-lived kiosk token).
+    Built server-side because the ZIP path needs percent-encoding and because
+    that split is a server rule the frontend should not re-derive.
+    """
+
+    name: str
+    zip_path: str
+    size: int = 0
+    url: str
+
+
+class CardResponse(BaseModel):
+    """What a 3MF says about itself — the ``CardData`` dataclass on the wire.
+
+    Read from the file on disk on every request, NOT from ``file_metadata``,
+    which carries only ``designer`` and ``print_name``. ``error`` is set when the
+    file could not be parsed; the card screen degrades, the request still
+    succeeds (``ThreeMFCardParser.parse`` never raises).
+    """
+
+    title: str | None = None
+    description: str | None = None
+    designer: str | None = None
+    designer_user_id: str | None = None
+    license: str | None = None
+    copyright: str | None = None
+    creation_date: str | None = None
+    modification_date: str | None = None
+    origin: str | None = None
+    profile_title: str | None = None
+    profile_description: str | None = None
+    profile_cover: str | None = None
+    profile_user_id: str | None = None
+    profile_user_name: str | None = None
+    design_model_id: str | None = None
+    design_profile_id: str | None = None
+    design_region: str | None = None
+    # Every category the parser knows is always present, empty when the 3MF has
+    # no such folder, so the frontend can index without guarding.
+    auxiliaries: dict[str, list[CardAuxOut]] = {}
+    error: str | None = None

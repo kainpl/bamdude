@@ -150,6 +150,16 @@ export function isSliceable(file: { file_tags?: string[] | null }): boolean {
   return hasTag(file.file_tags, 'project') || hasTag(file.file_tags, 'geometry');
 }
 
+// A .3mf CONTAINER, sliced or not. ⚠️ Not `file_type === '3mf'` — m035
+// collapsed a sliced `.gcode.3mf` to `file_type: 'gcode'`, so that check
+// answers "unsliced 3MF" and hides the model card from most of a farm's
+// library. The `3mf` tag is emitted for both (see TAG_STYLES above: "Sliced
+// 3MFs carry both `gcode` + `3mf`"), and it is the only thing that answers the
+// question the extension asks.
+export function is3mf(file: { file_tags?: string[] | null }): boolean {
+  return hasTag(file.file_tags, '3mf');
+}
+
 // Multi-plate 3MF (sliced or unsliced). Replaces the standalone
 // ``is_multi_plate`` column read at call sites where the tag list is
 // already in scope — saves carrying the boolean separately.

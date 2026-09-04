@@ -6,13 +6,15 @@ import { api } from '../../api/client';
 import type { Product, ProductCreate, ProductListItem, ProductUpdate } from '../../api/client';
 import { Card, CardContent } from '../Card';
 import { Button } from '../Button';
+import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
+import { ProductGallery } from './ProductGallery';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
 const LABEL_CLASS = 'block text-sm font-medium text-white mb-1';
 
-interface ProductModalProps {
+interface ProductCardDialogProps {
   product?: Product | ProductListItem | null;
   onClose: () => void;
   onSaved?: (saved: Product) => void;
@@ -26,7 +28,7 @@ function isFullProduct(product: Product | ProductListItem | null | undefined): p
 function Shell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <Card className="w-full max-w-lg max-h-[90vh] overflow-y-auto">
+      <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <CardContent className="p-0">
           <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
             <h2 className="text-xl font-semibold text-white">{title}</h2>
@@ -42,7 +44,7 @@ function Shell({ title, onClose, children }: { title: string; onClose: () => voi
 }
 
 /**
- * Create/edit dialog for one product.
+ * The product card in one dialog: the fields somebody types, and the gallery.
  *
  * Opened from a card, it is handed a `ProductListItem`, which carries only the
  * counts — so the full product is fetched first and the form is not mounted
@@ -51,8 +53,13 @@ function Shell({ title, onClose, children }: { title: string; onClose: () => voi
  * box, so the record is fetched instead. Either way the rule holds: no input
  * ever shows blank over text the user was not shown, because whatever is typed
  * into it REPLACES that text.
+ *
+ * ⚠️ **The gallery half exists only in edit mode**, and that is not a layout
+ * preference: an upload needs a product id to hang the file on, and a product
+ * being created does not have one yet. The create flow is the pass-2 one,
+ * untouched.
  */
-export function ProductModal({ product, onClose, onSaved }: ProductModalProps) {
+export function ProductCardDialog({ product, onClose, onSaved }: ProductCardDialogProps) {
   const { t } = useTranslation();
   const needsFetch = !!product && !isFullProduct(product);
   const { data: fetched, error } = useQuery({
@@ -102,6 +109,7 @@ function ProductForm({ product, onClose, onSaved }: ProductFormProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
   const isEdit = !!product;
 
   const initial = {
@@ -237,6 +245,22 @@ function ProductForm({ product, onClose, onSaved }: ProductFormProps) {
               disabled={mutation.isPending}
             />
           </div>
+
+          {/* The gallery writes through its own routes, immediately — it is not
+              part of this form's submit, and a picture uploaded here stays
+              uploaded whether or not the fields are saved. */}
+          {product && (
+            <div className="pt-4 border-t border-bambu-dark-tertiary">
+              {/* ⚠️ `testIdSuffix` — the product page renders its own gallery
+                  and this dialog opens OVER it, so without the suffix every
+                  `getByTestId` in a page test would find two. */}
+              <ProductGallery
+                product={product}
+                canEdit={hasPermission('projects:update')}
+                testIdSuffix="-dialog"
+              />
+            </div>
+          )}
         </div>
 
         <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary">
