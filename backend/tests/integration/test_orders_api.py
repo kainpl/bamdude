@@ -1412,6 +1412,133 @@ async def test_queued_yield_counts_nothing_for_a_file_the_product_does_not_have(
     assert await _queued_yield(db_session, pid) == {line_id: {}}
 
 
+# ---------- the implicit branch: rows filed under the ORDER and no line ----------
+#
+# The writers file the line for every NEW row they can (spec pass 7, Decision
+# 4a). These rows are the other half: legacy, Telegram, hand-written — an order
+# id and no line. ``queued_yield_by_line`` resolves them the same way, plate →
+# product → material, on every read. Both halves are needed; neither argues the
+# other away.
+
+
+async def _unfiled_rows(db, project_id, file_id, plate_id=None):
+    """One row in each queue table carrying the ORDER and no line."""
+    queue = PrinterQueue(id=1, printer_id=1)
+    db.add(queue)
+    await db.flush()
+    db.add_all(
+        [
+            PrintQueueItem(
+                queue_id=queue.id, project_id=project_id, library_file_id=file_id, plate_id=plate_id, status="pending"
+            ),
+            AutoQueueItem(project_id=project_id, library_file_id=file_id, plate_id=plate_id, status="pending"),
+        ]
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_queued_yield_counts_a_line_less_row_of_this_order(committing_client, db_session, catalog):
+    """The live incident, as a test: rows carrying ``project_id`` and no
+    ``project_line_id`` used to count nowhere, so the plan block kept asking for
+    plates the operator had already queued."""
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+    parts = await _parts_of(db_session, catalog["product"].id)
+    await _unfiled_rows(db_session, pid, catalog["file"].id)
+
+    # One print-queue row and one auto-queue row, both resolved to the only line.
+    assert await _queued_yield(db_session, pid) == {line_id: {parts["shade"]: 2, parts["arm"]: 4}}
+
+
+@pytest.mark.asyncio
+async def test_queued_yield_ignores_a_line_less_row_of_another_order(committing_client, db_session, catalog):
+    """The implicit branch names THIS order and only it. A row filed under
+    somebody else's order is somebody else's incoming work, whatever plate it
+    carries."""
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+    other, _other_line = await _order_with_line(committing_client, catalog["product"].id, 4)
+    await _unfiled_rows(db_session, other, catalog["file"].id)
+
+    assert await _queued_yield(db_session, pid) == {line_id: {}}
+
+
+@pytest.mark.asyncio
+async def test_queued_yield_ignores_a_line_less_row_whose_plate_belongs_to_no_line(
+    committing_client, db_session, catalog
+):
+    """A file none of the order's products holds resolves to no line, and there
+    is no yield to invent — the same answer a row filed under a line gets when
+    its file was unlinked."""
+    stray = LibraryFile(filename="stray.gcode.3mf", file_path="stray", file_size=1, file_type="gcode")
+    db_session.add(stray)
+    await db_session.flush()
+    stray_id = stray.id
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+    await _unfiled_rows(db_session, pid, stray_id)
+
+    assert await _queued_yield(db_session, pid) == {line_id: {}}
+
+
+@pytest.mark.asyncio
+async def test_queued_yield_refuses_to_guess_between_two_alike_lines(committing_client, db_session, catalog):
+    """Two lines of the same product and the same material: the plate cannot
+    tell them apart, so a line-less row counts NOWHERE rather than being dealt
+    to whichever line sorts first. The material rule is what makes the ordinary
+    two-line order answerable — the second half of this test."""
+    body = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Twins",
+                "lines": [
+                    {"product_id": catalog["product"].id, "quantity": 4, "material": "PETG"},
+                    {"product_id": catalog["product"].id, "quantity": 4, "material": "PETG"},
+                ],
+            },
+        )
+    ).json()
+    pid, first, second = body["id"], body["lines"][0]["id"], body["lines"][1]["id"]
+    await _unfiled_rows(db_session, pid, catalog["file"].id)
+
+    assert await _queued_yield(db_session, pid) == {first: {}, second: {}}
+
+    narrowed = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Narrowed",
+                "lines": [
+                    {"product_id": catalog["product"].id, "quantity": 4, "material": "PLA"},
+                    {"product_id": catalog["product"].id, "quantity": 4, "material": "PETG"},
+                ],
+            },
+        )
+    ).json()
+    parts = await _parts_of(db_session, catalog["product"].id)
+    auto = AutoQueueItem(project_id=narrowed["id"], library_file_id=catalog["file"].id, status="pending")
+    db_session.add(auto)
+    await db_session.commit()
+
+    yielded = await _queued_yield(db_session, narrowed["id"])
+    assert yielded[narrowed["lines"][0]["id"]] == {}
+    assert yielded[narrowed["lines"][1]["id"]] == {parts["shade"]: 1, parts["arm"]: 2}
+
+
+@pytest.mark.asyncio
+async def test_a_row_is_never_counted_twice_by_the_two_branches(committing_client, db_session, catalog):
+    """The branches are disjoint by construction — ``project_line_id IN lines``
+    against ``IS NULL`` — so a row carrying BOTH ids is counted once, by the
+    line branch, and the implicit one never sees it."""
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+    parts = await _parts_of(db_session, catalog["product"].id)
+    db_session.add(
+        AutoQueueItem(project_id=pid, project_line_id=line_id, library_file_id=catalog["file"].id, status="pending")
+    )
+    await db_session.commit()
+
+    assert await _queued_yield(db_session, pid) == {line_id: {parts["shade"]: 1, parts["arm"]: 2}}
+
+
 @pytest.mark.asyncio
 async def test_line_products_carries_a_cover_flag_per_line_in_line_order(committing_client, db_session, catalog):
     """The order card draws a cover strip from ``line_products`` — one entry per

@@ -63,6 +63,7 @@ from backend.app.schemas.library import (
     LibraryFileListPage,
     LibraryGroupingMetadata,
     LibraryGroupingPlate,
+    OrderCandidateOut,
     ProductRef,
     TagSummary,
     ZipExtractError,
@@ -86,6 +87,7 @@ from backend.app.services.library_helpers import (
 )
 from backend.app.services.library_ingest import IngestResult, find_reusable_row
 from backend.app.services.library_trash import library_trash_service
+from backend.app.services.order_filing import order_candidates
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.process_overrides import apply_process_overrides
 from backend.app.services.product_files import attachment_limit, exceeds_attachment_limit
@@ -4465,6 +4467,54 @@ async def _card_member(
     if payload is None:
         raise HTTPException(status_code=404, detail="Not a file of this model card")
     return payload[0], payload[1], entry.name
+
+
+@router.get("/files/{file_id}/order-candidates", response_model=list[OrderCandidateOut])
+async def get_library_file_order_candidates(
+    file_id: int,
+    plate_index: int = Query(0, ge=0, description="Slicer plate index; 0 = the whole file"),
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
+    _: User | None = Depends(require_permission(Permission.PROJECTS_READ)),
+):
+    """Which orders this plate could be filed under, best first (spec pass 7).
+
+    The Print and auto-queue dialogs default to the first candidate that still
+    needs the plate and let the operator change it; the plan block passes its
+    own line and shows no picker, because it IS the line.
+
+    Two permissions, both required: the ownership-scoped LIBRARY read decides
+    whether the caller may see this FILE at all (404 otherwise, exactly as
+    ``/card`` answers), and ``PROJECTS_READ`` because the answer names orders,
+    their customers' work and how much of it is left. A caller who may read the
+    library but not the orders gets 403 and learns nothing about either.
+
+    Reads only, and reads nothing about any printer — choosing whose order a
+    print belongs to is a question about parts.
+    """
+    user, can_read_all = auth_result
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    lib_file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all)
+
+    return [
+        OrderCandidateOut(
+            project_id=c.project_id,
+            project_name=c.project_name,
+            project_line_id=c.project_line_id,
+            product_id=c.product_id,
+            product_name=c.product_name,
+            outstanding_prints=c.outstanding_prints,
+            priority=c.priority,
+            deadline=c.deadline,
+            created_at=c.created_at,
+        )
+        for c in await order_candidates(db, lib_file.id, plate_index)
+    ]
 
 
 @router.get("/files/{file_id}/card", response_model=CardResponse)

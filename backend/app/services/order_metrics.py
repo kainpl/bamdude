@@ -231,7 +231,22 @@ def _finish(figs: LineFigures) -> None:
     figs.progress = min(1.0, round(figs.units_printed / figs.quantity, 4)) if figs.quantity else 0.0
 
 
-def _line_accepts(line: ProjectLine, materials: set[str]) -> bool:
+def line_accepts_materials(line: ProjectLine, materials: set[str]) -> bool:
+    """Does this line's material take a plate carrying ``materials``?
+
+    A line with no material takes every plate; a line with one takes only plates
+    that carry it. A plate whose materials are UNKNOWN (an empty set — an
+    unsliced file, an archive with no filament type) therefore matches no
+    constrained line: "we do not know" is not "it matches".
+
+    ⚠️ **Public because it is the one material rule of the whole order half**,
+    asked in three places that must agree: attribution (which line a finished
+    archive belongs to), the plan engine (which plates a line may print) and
+    ``order_filing.line_for_plate`` (which line a queued print is filed under).
+    It used to exist as two private mirrors — ``_line_accepts`` here and
+    ``plan_engine._material_ok`` — which is exactly one copy too many for a rule
+    a fourth caller was about to need.
+    """
     return line.material is None or line.material.strip().upper() in materials
 
 
@@ -293,7 +308,7 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         return [
             ln
             for ln in ctx.lines
-            if ln.product_id in product_ids and ln is not exclude and _line_accepts(ln, materials)
+            if ln.product_id in product_ids and ln is not exclude and line_accepts_materials(ln, materials)
         ]
 
     def hand_out(archive: PrintArchive, rows: list[PrintArchivePart], lines: list[ProjectLine]) -> set[int]:
@@ -716,6 +731,7 @@ __all__ = [
     "attribute",
     "customer_figures",
     "grouped_figures",
+    "line_accepts_materials",
     "load_order_context",
     "procurement_figures",
     "project_figures",

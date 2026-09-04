@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.schemas.calibration_mode import normalize_mode
+from backend.app.services.order_filing import resolve_line_id
 from backend.app.services.queue_counters import set_queue_printing, update_queue_counters
 
 
@@ -188,6 +189,16 @@ async def enqueue_batch_copies(
         .where(PrintQueueItem.status == "pending")
     )
     max_pos = result.scalar() or 0
+
+    # The order named without its line — file the line when this plate points at
+    # exactly one (spec pass 7, Decision 4a). Every copy of a batch is the same
+    # plate, so this is asked once for all of them. An explicit line is never
+    # overridden; an ambiguous plate stays ``NULL`` and the plan's implicit
+    # branch re-asks on every read.
+    if project_id is not None and project_line_id is None:
+        project_line_id = await resolve_line_id(
+            db, project_id=project_id, library_file_id=library_file_id, plate_index=plate_id
+        )
 
     if batch_id is None:
         batch_id = str(uuid.uuid4())

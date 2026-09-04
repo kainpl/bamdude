@@ -2,6 +2,7 @@
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 
 
 async def _create_printer_with_queue(db_session, **printer_kwargs):
@@ -1945,3 +1946,165 @@ class TestAbortedStatusNormalisation:
         from backend.app.main import _bump_library_file_usage
 
         await _bump_library_file_usage(db_session, 999_999)
+
+
+# ======================================================================
+# Filing a queued print under its order line (spec pass 7, Decision 4a)
+# ======================================================================
+#
+# The caller names the ORDER (the Print dialog's picker sends both ids, but the
+# API, the Telegram bot and every older client send only the order — and a row
+# with no ``project_line_id`` is counted by no line of the plan block, which is
+# how "still needed: 5" survived four of them being queued). The writer
+# therefore resolves the line itself when the plate points at exactly one, and
+# leaves it NULL when it does not: guessing between two lines files somebody's
+# print against work nobody ordered.
+
+
+async def _order_catalog(db_session, *, materials):
+    """A product with one sliced whole-file plate, and an order whose lines carry
+    ``materials`` (one line per entry). Returns (library file, project, lines)."""
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.product import Product, ProductPart, ProductPlate
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+
+    lib_file = LibraryFile(
+        filename="lamp.gcode.3mf",
+        file_path="lamp.gcode.3mf",
+        file_type="gcode",
+        file_size=1,
+        file_metadata={
+            "plates": [
+                {
+                    "index": 1,
+                    "printable_objects": {"1": "shade"},
+                    "print_time_seconds": 100,
+                    "filaments": [{"slot_id": 1, "type": "PETG"}],
+                }
+            ]
+        },
+    )
+    product = Product(name="Lamp")
+    db_session.add_all([lib_file, product])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            ProductPart(
+                product_id=product.id,
+                kind="printed",
+                name="shade",
+                name_key="shade",
+                qty_per_unit=1,
+                aliases=["shade"],
+            ),
+            ProductPlate(product_id=product.id, library_file_id=lib_file.id, plate_index=0),
+        ]
+    )
+    order = Project(name="O", status="active", priority="normal")
+    db_session.add(order)
+    await db_session.flush()
+    lines = [
+        ProjectLine(project_id=order.id, product_id=product.id, quantity=2, material=material, sort_order=i)
+        for i, material in enumerate(materials)
+    ]
+    db_session.add_all(lines)
+    await db_session.commit()
+    return lib_file, order, lines
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_queueing_with_only_an_order_files_the_unambiguous_line(async_client: AsyncClient, db_session):
+    from backend.app.models.print_queue import PrintQueueItem
+
+    _printer, queue = await _create_printer_with_queue(
+        db_session, name="Filing", ip_address="192.168.9.1", serial_number="FILING0001", access_code="12345678"
+    )
+    lib_file, order, lines = await _order_catalog(db_session, materials=["PLA", "PETG"])
+
+    r = await async_client.post(
+        "/api/v1/queue/",
+        json={"queue_id": queue.id, "library_file_id": lib_file.id, "project_id": order.id, "plate_id": 1},
+    )
+    assert r.status_code == 200, r.text
+
+    item = (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id == r.json()["id"]))).scalar_one()
+    assert item.project_id == order.id
+    # The plate is PETG, so the PLA line is out and the PETG line is the answer.
+    assert item.project_line_id == lines[1].id
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_queueing_leaves_the_line_null_when_two_lines_are_alike(async_client: AsyncClient, db_session):
+    from backend.app.models.print_queue import PrintQueueItem
+
+    _printer, queue = await _create_printer_with_queue(
+        db_session, name="Twins", ip_address="192.168.9.2", serial_number="FILING0002", access_code="12345678"
+    )
+    lib_file, order, _lines = await _order_catalog(db_session, materials=["PETG", "PETG"])
+
+    r = await async_client.post(
+        "/api/v1/queue/",
+        json={"queue_id": queue.id, "library_file_id": lib_file.id, "project_id": order.id, "plate_id": 1},
+    )
+    assert r.status_code == 200, r.text
+
+    item = (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id == r.json()["id"]))).scalar_one()
+    assert item.project_id == order.id
+    assert item.project_line_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_an_explicit_line_is_never_overridden(async_client: AsyncClient, db_session):
+    """The operator's own answer outranks anything derived here — even when the
+    material rule would have chosen the other line."""
+    from backend.app.models.print_queue import PrintQueueItem
+
+    _printer, queue = await _create_printer_with_queue(
+        db_session, name="Explicit", ip_address="192.168.9.3", serial_number="FILING0003", access_code="12345678"
+    )
+    lib_file, order, lines = await _order_catalog(db_session, materials=["PLA", "PETG"])
+
+    r = await async_client.post(
+        "/api/v1/queue/",
+        json={
+            "queue_id": queue.id,
+            "library_file_id": lib_file.id,
+            "project_id": order.id,
+            "project_line_id": lines[0].id,
+            "plate_id": 1,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    item = (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id == r.json()["id"]))).scalar_one()
+    assert item.project_line_id == lines[0].id
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_batch_writer_files_the_line_too(db_session):
+    """``enqueue_batch_copies`` is the third door — the extra copies a
+    quantity>1 direct print leaves behind — and it must file the same line the
+    first copy went out under, or half a batch is counted and half is not."""
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.services.queue_batch import enqueue_batch_copies
+
+    printer, _queue = await _create_printer_with_queue(
+        db_session, name="Batch", ip_address="192.168.9.4", serial_number="FILING0004", access_code="12345678"
+    )
+    lib_file, order, lines = await _order_catalog(db_session, materials=["PLA", "PETG"])
+
+    items, _batch = await enqueue_batch_copies(
+        db_session, printer_id=printer.id, count=2, library_file_id=lib_file.id, plate_id=1, project_id=order.id
+    )
+    assert len(items) == 2
+    rows = (
+        (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id.in_([i.id for i in items]))))
+        .scalars()
+        .all()
+    )
+    assert {row.project_line_id for row in rows} == {lines[1].id}

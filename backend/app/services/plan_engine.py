@@ -37,7 +37,14 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.product import ProductPlate
 from backend.app.models.project_line import ProjectLine
 from backend.app.services.filament_cost import default_rate_per_kg
-from backend.app.services.order_metrics import LineFigures, OrderContext, attribute, load_order_context
+from backend.app.services.order_filing import line_for_plate
+from backend.app.services.order_metrics import (
+    LineFigures,
+    OrderContext,
+    attribute,
+    line_accepts_materials,
+    load_order_context,
+)
 from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
 
 # A defence, not a feature: a plate whose yield somehow never shrinks the
@@ -125,15 +132,6 @@ def line_yield(recipe: PlateRecipe, counted_part_ids: set[int]) -> dict[int, int
     surplus — the pass-1 shared-plate rule, applied to planning.
     """
     return {pid: n for pid, n in recipe.yield_by_part.items() if pid in counted_part_ids and n > 0}
-
-
-def _material_ok(material: str | None, materials: set[str]) -> bool:
-    """Mirror of ``order_metrics._line_accepts``: a line with no material takes
-    every plate, and a line with one takes only plates that carry it. A plate
-    whose materials are unknown (empty set) therefore matches no constrained
-    line — the same reading attribution gives an archive with no filament type.
-    """
-    return material is None or material.strip().upper() in materials
 
 
 def _pick_key(useful: int, waste: int, secs: int | None, plate_id: int) -> tuple:
@@ -307,7 +305,7 @@ def plan_lines(
         # An unsliced plate has no filaments to match a material against, so it
         # is listed whole — the operator slices it and it becomes a candidate.
         not_sliced = [plate.id for plate, _file, recipe in recipes if not recipe.sliced]
-        candidates = [row for row in recipes if row[2].sliced and _material_ok(line.material, row[2].materials)]
+        candidates = [row for row in recipes if row[2].sliced and line_accepts_materials(line, row[2].materials)]
         rows, surplus, line_truncated = cover(outstanding, candidates, counted, price_per_gram)
         truncated = truncated or line_truncated
         yielded: set[int] = set()
@@ -371,28 +369,56 @@ async def queued_yield_by_line(
     rather than a library file (``library_file_id IS NULL``): every writer the
     plan itself uses stamps the file, so the plan's own work always round-trips.
 
-    ⚠️ **The order is never named here, on purpose.** The filter is on the LINE
-    ids, which already scope it, and a queue row may carry ``project_line_id``
-    without ``project_id`` and must still count — so an order filter would drop
-    real work. The parameter that used to say so was passed and never read;
-    naming it in this docstring is the whole of it.
+    ⚠️ **Two branches, and only the second one names the order.** The LINE
+    branch filters on ``project_line_id`` alone, because a queue row may carry a
+    line without an order id and must still count — naming the order THERE would
+    drop real work. The IMPLICIT branch is its opposite and exists for the rows
+    the other one cannot see: ``project_id == this order AND project_line_id IS
+    NULL`` (spec pass 7, Decision 4b — the legacy, Telegram and hand-written
+    rows the writers' own filing does not reach). It resolves the line itself,
+    plate → product → material, through the same ``order_filing.line_for_plate``
+    the writers call, and a row that resolves to no line of its order counts
+    NOWHERE: an ambiguous product is not a licence to guess. The two branches
+    are disjoint by construction (``project_line_id IN lines`` vs ``IS NULL``)
+    and add into the same buckets, so a row is counted once or not at all.
 
     ⚠️ Both reads select THREE COLUMNS, never the entity. Loading an
     ``AutoQueueItem`` drags its ``target_location`` in on ``lazy="selectin"``,
     and a ``printer_locations`` SELECT inside the plan path is a lie about what
     this code does: a reader grepping the planner for "printer" must find
-    nothing, because routing is not dispatching. The three columns are also all
-    the yield lookup needs.
+    nothing, because routing is not dispatching. The columns are also all the
+    yield lookup needs — the implicit branch's material test reads
+    ``PlateRecipe.materials``, which the recipes already carry, so naming the
+    order costs no query and no file read.
     """
     out: dict[int, dict[int, int]] = {line.id: {} for line in lines}
     if not out:
         return out
     product_by_line = {line.id: line.product_id for line in lines}
-    exact: dict[int, dict[tuple[int, int], PlateRecipe]] = {}
-    whole_file: dict[int, dict[int, PlateRecipe]] = {}
+    lines_by_project: dict[int, list[ProjectLine]] = {}
+    for line in lines:
+        lines_by_project.setdefault(line.project_id, []).append(line)
+    # Keyed by PLATE, not by product: the line branch asks "this product's
+    # recipe for this plate" and the implicit branch asks "whose plate is this",
+    # and one pair of maps answers both. ``by_plate`` is the exact index,
+    # ``by_file`` the whole-file (index 0) plate that claims every plate of its
+    # file; exact wins wherever both exist for the same product.
+    by_plate: dict[tuple[int, int], dict[int, PlateRecipe]] = {}
+    by_file: dict[int, dict[int, PlateRecipe]] = {}
     for product_id, rows in recipes_by_product.items():
-        exact[product_id] = {(p.library_file_id, p.plate_index): r for p, _f, r in rows}
-        whole_file[product_id] = {p.library_file_id: r for p, _f, r in rows if p.plate_index == 0}
+        for plate, _file, recipe in rows:
+            by_plate.setdefault((plate.library_file_id, plate.plate_index), {})[product_id] = recipe
+            if plate.plate_index == 0:
+                by_file.setdefault(plate.library_file_id, {})[product_id] = recipe
+
+    def _recipes_for(library_file_id: int, plate_index: int) -> dict[int, PlateRecipe]:
+        return {**by_file.get(library_file_id, {}), **by_plate.get((library_file_id, plate_index), {})}
+
+    def _count(line_id: int, recipe: PlateRecipe) -> None:
+        bucket = out[line_id]
+        for part_id, n in line_yield(recipe, counted_by_line.get(line_id) or set()).items():
+            bucket[part_id] = bucket.get(part_id, 0) + n
+
     line_ids = list(out)
     waiting = list(
         (
@@ -419,14 +445,50 @@ async def queued_yield_by_line(
         product_id = product_by_line.get(line_id)
         if product_id is None:
             continue
-        recipe = exact.get(product_id, {}).get((library_file_id, plate_id or 0)) or whole_file.get(product_id, {}).get(
-            library_file_id
-        )
+        recipe = _recipes_for(library_file_id, plate_id or 0).get(product_id)
         if recipe is None:
             continue
-        bucket = out[line_id]
-        for part_id, n in line_yield(recipe, counted_by_line.get(line_id) or set()).items():
-            bucket[part_id] = bucket.get(part_id, 0) + n
+        _count(line_id, recipe)
+
+    project_ids = list(lines_by_project)
+    unfiled = list(
+        (
+            await db.execute(
+                select(PrintQueueItem.project_id, PrintQueueItem.library_file_id, PrintQueueItem.plate_id).where(
+                    PrintQueueItem.project_id.in_(project_ids),
+                    PrintQueueItem.project_line_id.is_(None),
+                    PrintQueueItem.status == "pending",
+                )
+            )
+        ).all()
+    ) + list(
+        (
+            await db.execute(
+                select(AutoQueueItem.project_id, AutoQueueItem.library_file_id, AutoQueueItem.plate_id).where(
+                    AutoQueueItem.project_id.in_(project_ids),
+                    AutoQueueItem.project_line_id.is_(None),
+                    AutoQueueItem.status == "pending",
+                    AutoQueueItem.assigned_to_item_id.is_(None),
+                )
+            )
+        ).all()
+    )
+    for project_id, library_file_id, plate_id in unfiled:
+        if library_file_id is None:
+            continue
+        order_lines = lines_by_project.get(project_id) or []
+        hits: dict[int, PlateRecipe] = {}
+        for product_id, recipe in _recipes_for(library_file_id, plate_id or 0).items():
+            line = line_for_plate(order_lines, product_id, recipe.materials)
+            if line is not None:
+                hits[line.id] = recipe
+        # Two products of the same order each claiming a line of their own is as
+        # unanswerable as two lines of one product; both end here, counting
+        # nowhere.
+        if len(hits) != 1:
+            continue
+        ((line_id, recipe),) = hits.items()
+        _count(line_id, recipe)
     return out
 
 

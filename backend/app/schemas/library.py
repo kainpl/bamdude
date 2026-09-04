@@ -577,3 +577,30 @@ class CardResponse(BaseModel):
     # no such folder, so the frontend can index without guarding.
     auxiliaries: dict[str, list[CardAuxOut]] = {}
     error: str | None = None
+
+
+# ============ Order candidates for a plate (spec pass 7, Decision 1) ============
+
+
+class OrderCandidateOut(BaseModel):
+    """One order this plate could be filed under, and the line it would land on.
+
+    ``outstanding_prints`` is how many prints of THIS plate that line still
+    needs — the order plan's own number, so the picker and the plan block never
+    disagree. ``0`` means the line is satisfied; it stays in the list because
+    printing ahead is legitimate, and it simply sorts after the needy ones.
+
+    ``priority`` is the RANK of the order's priority (higher is more urgent),
+    not the stored word — the list arrives already sorted, and this is here so a
+    client can re-sort without a second vocabulary to learn.
+    """
+
+    project_id: int
+    project_name: str
+    project_line_id: int
+    product_id: int
+    product_name: str
+    outstanding_prints: int
+    priority: int
+    deadline: datetime | None = None
+    created_at: datetime

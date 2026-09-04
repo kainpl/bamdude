@@ -39,6 +39,7 @@ from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.calibration_mode import mode_to_bool
 from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
 from backend.app.services.filament_requirements import overrides_for_plate
+from backend.app.services.order_filing import resolve_line_id
 from backend.app.utils.printer_models import normalize_model_name
 
 
@@ -148,6 +149,20 @@ async def add_items_to_auto_queue(
     items: list[AutoQueueItem] = []
     pos_offset = 0
     for plate_id in plate_ids:
+        # The order without the line — file it ourselves when this plate points
+        # at exactly one (spec pass 7, Decision 4a). ⚠️ **Per plate, inside the
+        # fan-out**, not once for the request: a multi-plate 3MF can hold two
+        # products' plates, so plate 1 and plate 2 of one call legitimately land
+        # on two different lines. An explicit line is never overridden, and an
+        # ambiguous plate is left ``NULL`` for the plan's implicit branch.
+        plate_line_id = data.project_line_id
+        if plate_line_id is None and effective_project_id is not None:
+            plate_line_id = await resolve_line_id(
+                db,
+                project_id=effective_project_id,
+                library_file_id=data.library_file_id,
+                plate_index=plate_id,
+            )
         # Per-plate 3MF auto-extraction (fall back to provided values when given)
         # Normalised on the way in so the stored value is the short name the
         # rest of the app compares and displays. Routing normalises again when
@@ -178,7 +193,7 @@ async def add_items_to_auto_queue(
                     archive_id=data.archive_id,
                     library_file_id=data.library_file_id,
                     project_id=effective_project_id,
-                    project_line_id=data.project_line_id,
+                    project_line_id=plate_line_id,
                     target_model=target_model,
                     target_location_id=data.target_location_id,
                     required_filament_types=required_types_json,

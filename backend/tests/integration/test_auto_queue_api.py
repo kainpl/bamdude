@@ -246,3 +246,123 @@ async def test_cancelling_a_batch_deletes_its_unrouted_rows(async_client: AsyncC
 
     rows = (await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.batch_id == batch_id))).scalars().all()
     assert list(rows) == [], "batch cancel must delete un-routed rows"
+
+
+# ======================================================================
+# Filing an auto-queue row under its order line (spec pass 7, Decision 4a)
+# ======================================================================
+
+
+async def _order_catalog(db_session, *, materials, plates=((1, "PETG", "shade"),)):
+    """A product whose plates come from ``plates`` (index, filament, object),
+    and an order carrying one line per entry of ``materials``.
+
+    Returns (library file, order, lines). Each plate gets its own
+    ``ProductPlate`` at that exact index, so a multi-plate file can be asked
+    about plate by plate.
+    """
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.product import Product, ProductPart, ProductPlate
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+
+    lib_file = LibraryFile(
+        filename="lamp.gcode.3mf",
+        file_path="lamp.gcode.3mf",
+        file_type="gcode",
+        file_size=1,
+        file_metadata={
+            "plates": [
+                {
+                    "index": index,
+                    "printable_objects": {"1": obj},
+                    "print_time_seconds": 100,
+                    "filaments": [{"slot_id": 1, "type": filament}],
+                }
+                for index, filament, obj in plates
+            ]
+        },
+    )
+    product = Product(name="Lamp")
+    db_session.add_all([lib_file, product])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            ProductPart(product_id=product.id, kind="printed", name=obj, name_key=obj, qty_per_unit=1, aliases=[obj])
+            for _index, _filament, obj in plates
+        ]
+        + [
+            ProductPlate(product_id=product.id, library_file_id=lib_file.id, plate_index=index)
+            for index, _f, _o in plates
+        ]
+    )
+    order = Project(name="O", status="active", priority="normal")
+    db_session.add(order)
+    await db_session.flush()
+    lines = [
+        ProjectLine(project_id=order.id, product_id=product.id, quantity=2, material=material, sort_order=i)
+        for i, material in enumerate(materials)
+    ]
+    db_session.add_all(lines)
+    await db_session.commit()
+    return lib_file, order, lines
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_auto_queueing_with_only_an_order_files_the_unambiguous_line(async_client: AsyncClient, db_session):
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    lib_file, order, lines = await _order_catalog(db_session, materials=["PLA", "PETG"])
+
+    r = await async_client.post(
+        "/api/v1/auto-queue/",
+        json={"library_file_id": lib_file.id, "project_id": order.id, "plate_id": 1},
+    )
+    assert r.status_code == 200, r.text
+
+    row = (await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.id == r.json()["id"]))).scalar_one()
+    assert (row.project_id, row.project_line_id) == (order.id, lines[1].id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_auto_queueing_leaves_the_line_null_when_two_lines_are_alike(async_client: AsyncClient, db_session):
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    lib_file, order, _lines = await _order_catalog(db_session, materials=["PETG", "PETG"])
+
+    r = await async_client.post(
+        "/api/v1/auto-queue/",
+        json={"library_file_id": lib_file.id, "project_id": order.id, "plate_id": 1},
+    )
+    assert r.status_code == 200, r.text
+
+    row = (await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.id == r.json()["id"]))).scalar_one()
+    assert row.project_id == order.id and row.project_line_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_line_is_resolved_per_plate_inside_the_fan_out(async_client: AsyncClient, db_session):
+    """⚠️ One request, two plates, two different lines.
+
+    ``plate_ids`` fans out to a row per plate, and the plates of one 3MF can
+    carry different filaments — so the line is resolved INSIDE the loop. Asking
+    once for the whole request would file both rows under whichever plate was
+    read first, and half the order would count the other half's work.
+    """
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    lib_file, order, lines = await _order_catalog(
+        db_session, materials=["PLA", "PETG"], plates=((1, "PLA", "base"), (2, "PETG", "shade"))
+    )
+
+    r = await async_client.post(
+        "/api/v1/auto-queue/",
+        json={"library_file_id": lib_file.id, "project_id": order.id, "plate_ids": [1, 2]},
+    )
+    assert r.status_code == 200, r.text
+
+    rows = (await db_session.execute(select(AutoQueueItem).order_by(AutoQueueItem.plate_id))).scalars().all()
+    assert [(row.plate_id, row.project_line_id) for row in rows] == [(1, lines[0].id), (2, lines[1].id)]
