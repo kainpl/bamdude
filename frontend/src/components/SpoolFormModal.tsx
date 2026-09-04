@@ -496,7 +496,10 @@ export function SpoolFormModal({
       if (error instanceof ApiError && error.status === 503) {
         showToast(t('inventory.spoolmanUnreachable'), 'error');
       } else {
-        showToast(t('inventory.saveFailed'), 'error');
+        // The server names the reason (a refused family id, a bad colour
+        // value); a bare "save failed" hid `unknown filament family` for a
+        // whole release (2026-09-04).
+        showToast(error.message || t('inventory.saveFailed'), 'error');
       }
     },
   });
@@ -544,7 +547,10 @@ export function SpoolFormModal({
       if (error instanceof ApiError && error.status === 503) {
         showToast(t('inventory.spoolmanUnreachable'), 'error');
       } else {
-        showToast(t('inventory.saveFailed'), 'error');
+        // The server names the reason (a refused family id, a bad colour
+        // value); a bare "save failed" hid `unknown filament family` for a
+        // whole release (2026-09-04).
+        showToast(error.message || t('inventory.saveFailed'), 'error');
       }
     },
   });
@@ -567,7 +573,10 @@ export function SpoolFormModal({
       if (error instanceof ApiError && error.status === 503) {
         showToast(t('inventory.spoolmanUnreachable'), 'error');
       } else {
-        showToast(t('inventory.saveFailed'), 'error');
+        // The server names the reason (a refused family id, a bad colour
+        // value); a bare "save failed" hid `unknown filament family` for a
+        // whole release (2026-09-04).
+        showToast(error.message || t('inventory.saveFailed'), 'error');
       }
     },
   });

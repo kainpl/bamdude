@@ -5361,6 +5361,7 @@ export default {
     spoolsCreated: '{{count}} spools created',
     spoolCreated: 'Spool created',
     spoolUpdated: 'Spool updated',
+    saveFailed: 'Could not save the spool',
     spoolDeleted: 'Spool deleted',
     spoolArchived: 'Spool archived',
     spoolRestored: 'Spool restored',

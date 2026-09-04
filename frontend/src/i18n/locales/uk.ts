@@ -5396,6 +5396,7 @@ export default {
     spoolsCreated: '{{count}} котушок створено',
     spoolCreated: 'Котушку створено',
     spoolUpdated: 'Котушку оновлено',
+    saveFailed: 'Не вдалося зберегти котушку',
     spoolDeleted: 'Котушку видалено',
     spoolArchived: 'Котушку архівовано',
     spoolRestored: 'Котушку відновлено',

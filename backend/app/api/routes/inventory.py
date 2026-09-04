@@ -77,6 +77,27 @@ async def _validate_family_id(db: AsyncSession, family_id: str | None) -> None:
         raise HTTPException(status_code=422, detail="unknown filament family")
 
 
+async def _derive_family_from_slicer(db: AsyncSession, data: dict) -> None:
+    """Fill ``filament_family_id`` from ``slicer_filament`` when the payload
+    names a slicer code but no family — through the one resolver that still
+    understands every legacy format (``filament_identity.resolve_raw``).
+
+    The spool form used to derive the link itself, client-side, with a
+    "strip the S off GFS" rule — which for the support families (``GFS00``
+    Support W, ``GFS04`` PVA …) produced an id that exists nowhere, and the
+    route then refused its own client's edit with ``unknown filament family``
+    (2026-09-04). Resolution is the server's; the client sends what it has.
+    Nothing resolvable leaves an honest NULL, and an id sent explicitly is
+    still validated by :func:`_validate_family_id` after this."""
+    if data.get("filament_family_id") or not data.get("slicer_filament"):
+        return
+    from backend.app.services.filament_identity import resolve_raw
+
+    resolved = await resolve_raw(db, data["slicer_filament"])
+    if resolved.family:
+        data["filament_family_id"] = resolved.family.filament_id
+
+
 async def _safe_autolink(db: AsyncSession, spool: Spool) -> None:
     """Auto-link K-profiles for a spool, fail-silent so a link error never
     fails the spool write (mirrors printer_manager's sync wrapper)."""
@@ -1164,11 +1185,12 @@ async def create_spool(
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Create a new spool."""
-    await _validate_family_id(db, spool_data.filament_family_id)
     try:
         payload = await prepare_internal_spool_payload(db, spool_data.model_dump(), set(spool_data.model_fields_set))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _derive_family_from_slicer(db, payload)
+    await _validate_family_id(db, payload.get("filament_family_id"))
     spool = Spool(**payload)
     db.add(spool)
     await db.commit()
@@ -1197,6 +1219,8 @@ async def bulk_create_spools(
         template = await prepare_internal_spool_payload(db, data.spool.model_dump(), set(data.spool.model_fields_set))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _derive_family_from_slicer(db, template)
+    await _validate_family_id(db, template.get("filament_family_id"))
     base_lot = template.get("lot")
     start_lot = base_lot if isinstance(base_lot, int) and base_lot > 0 else 1
     for i in range(data.quantity):
@@ -1246,6 +1270,7 @@ async def bulk_update_spools(
     if not spools:
         raise HTTPException(404, "No spools found")
 
+    await _derive_family_from_slicer(db, update_data)
     await _validate_family_id(db, update_data.get("filament_family_id"))
     for spool in spools:
         for field, value in update_data.items():
@@ -1372,6 +1397,7 @@ async def update_spool(
     if "weight_used" in update_data and "weight_locked" not in update_data:
         update_data["weight_locked"] = True
 
+    await _derive_family_from_slicer(db, update_data)
     await _validate_family_id(db, update_data.get("filament_family_id"))
     for field, value in update_data.items():
         setattr(spool, field, value)

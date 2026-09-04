@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed
+
+- **A support spool sitting in an AMS could not be saved — not even its weight.** `GFS` is not only the prefix Bambu Cloud puts on a preset id, it is also how the support families themselves are spelled (`GFS00` Support W, `GFS01` Support G, `GFS04` PVA …), and the spool form stripped the S off both, sending a family id that exists nowhere; the server refused it as `unknown filament family`, and the toast hid the reason behind a bare "save failed". Now: the form recognises a family by its shape instead of its prefix; the server fills a missing family link itself from the slicer code, so the form never has to guess; a spool born from an RFID tag is linked at birth instead of waiting for the next restart; the startup backfill repairs links the catalog cannot resolve (an older migration had stripped them the same way) and clears the ones nothing can re-derive; and the error toast names the server's reason.
+
 ## [0.5.5] - 2026-08-28
 
 Image: `ghcr.io/kainpl/bamdude:0.5.5` / `kainpl/bamdude:0.5.5` (`:latest` tracks this).
