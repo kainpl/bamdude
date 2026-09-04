@@ -14,6 +14,7 @@ import {
   ChevronRight,
   FolderPlus,
   FileBox,
+  FileText,
   Clock,
   HardDrive,
   Package,
@@ -66,6 +67,7 @@ import { LibraryPlateGalleryModal } from '../components/LibraryPlateGallery';
 import { PrintModal } from '../components/PrintModal';
 import { SliceModal } from '../components/SliceModal';
 import { ModelViewerModal } from '../components/ModelViewerModal';
+import { ModelCardModal } from '../components/ModelCardModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { FolderReadmePanel } from '../components/FolderReadmePanel';
 import { FolderTreePicker } from '../components/FolderTreePicker';
@@ -81,7 +83,7 @@ import { fileActivityAt, formatFileSize } from '../utils/file';
 import { FileTagBadges } from '../components/FileTagBadges';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
 import { SkipObjectsIcon } from '../components/SkipObjectsModal';
-import { getTagStyle, isPrintable, isSliceable, isMultiPlate } from '../lib/fileTags';
+import { getTagStyle, is3mf, isPrintable, isSliceable, isMultiPlate } from '../lib/fileTags';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
@@ -635,6 +637,10 @@ interface FileCardProps {
   onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
   onPlateGallery?: (file: LibraryFileListItem) => void;
+  /** Open the model card — what the 3MF says about itself. ⚠️ `.3mf` only:
+   *  there is no card to read in an STL, and an entry that always answers
+   *  "nothing here" is worse than no entry. */
+  onModelCard?: (file: LibraryFileListItem) => void;
   /** Move this one file — the toolbar's Move, without the checkbox dance. */
   onMove?: (file: LibraryFileListItem) => void;
   /** Per-file tag popover; the anchor is where the entry was clicked. */
@@ -679,7 +685,7 @@ function anchorFrom(
   };
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, onOpenInSlicer, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, onOpenInSlicer, useSlicerApi, onPreview3d, onModelCard, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -690,6 +696,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onOpenInSlicer?: (f: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
   onPreview3d: (f: LibraryFileListItem) => void;
+  onModelCard?: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
   onRename: (f: LibraryFileListItem) => void;
   onGenerateThumbnail: (f: LibraryFileListItem) => void;
@@ -803,6 +810,20 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 {t('fileManagerModal.threeView')}
               </button>
             )}
+            {/* ⚠️ `.3mf` only — the card lives in the 3MF's `Metadata/` and
+                `Auxiliaries/`, and an STL has neither. `is3mf`, not
+                `file_type === '3mf'`: a sliced `.gcode.3mf` is a 3MF and its
+                `file_type` says `gcode`. */}
+            {onModelCard && is3mf(file) && (
+              <button
+                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
+                onClick={() => { if (hasPermission('library:read')) { onModelCard(file); setOpen(false); } }}
+                disabled={!hasPermission('library:read')}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                {t('fileManager.modelCard')}
+              </button>
+            )}
             {file.source_type === 'makerworld' && file.source_url && (
               <a
                 href={file.source_url}
@@ -888,7 +909,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, onPreview3d, onModelCard, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1204,6 +1225,22 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
                   {t('fileManagerModal.threeView')}
                 </button>
               )}
+              {/* ⚠️ `.3mf` only — the card lives in the 3MF's `Metadata/` and
+                  `Auxiliaries/`, and an STL has neither. `is3mf`, not
+                  `file_type === '3mf'`: a sliced `.gcode.3mf` is a 3MF and its
+                  `file_type` says `gcode`. */}
+              {onModelCard && is3mf(file) && (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  }`}
+                  onClick={() => { if (hasPermission('library:read')) { onModelCard(file); setShowActions(false); } }}
+                  disabled={!hasPermission('library:read')}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  {t('fileManager.modelCard')}
+                </button>
+              )}
               {file.source_type === 'makerworld' && file.source_url && (
                 <a
                   href={file.source_url}
@@ -1386,6 +1423,10 @@ export function FileManagerPage() {
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
   // Per-plate gallery modal — opened from list-mode "plates" button. Null when closed.
   const [galleryFile, setGalleryFile] = useState<LibraryFileListItem | null>(null);
+  // Model card of one library 3MF — what the file says about itself. Read-only:
+  // a library file is somebody's source of truth and BamDude never writes into
+  // one; the card leads to a PRODUCT instead, which is database data.
+  const [modelCardFile, setModelCardFile] = useState<LibraryFileListItem | null>(null);
 
   // #1268 — user-authored tags (SYSTEM C). Completely separate from the
   // computed-tag chip-row `filterTags` (SYSTEM B) above: this drives a
@@ -3087,6 +3128,7 @@ export function FileManagerPage() {
                     onOpenInSlicer={handleOpenInSlicer}
                     useSlicerApi={settings?.use_slicer_api ?? false}
                     onPreview3d={setViewerFile}
+                    onModelCard={setModelCardFile}
                     onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                     onLink={setLinkFile}
                     onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
@@ -3392,6 +3434,7 @@ export function FileManagerPage() {
                         onOpenInSlicer={handleOpenInSlicer}
                         useSlicerApi={settings?.use_slicer_api ?? false}
                         onPreview3d={setViewerFile}
+                        onModelCard={setModelCardFile}
                             onDownload={handleDownload}
                         onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                         onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
@@ -3642,6 +3685,18 @@ export function FileManagerPage() {
             queryClient.invalidateQueries({ queryKey: ['queue'] });
             queryClient.invalidateQueries({ queryKey: ['archives'] });
           }}
+        />
+      )}
+
+      {modelCardFile && (
+        <ModelCardModal
+          source={{
+            kind: 'file',
+            id: modelCardFile.id,
+            name: modelCardFile.print_name || modelCardFile.filename,
+            linkedProductIds: modelCardFile.product_ids ?? [],
+          }}
+          onClose={() => setModelCardFile(null)}
         />
       )}
 

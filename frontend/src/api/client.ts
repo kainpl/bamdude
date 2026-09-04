@@ -147,16 +147,44 @@ export function withStreamToken(url: string): string {
  * parse and answers 422 on a perfectly good file. So the headers are built by
  * hand here and the content type is deliberately left to `fetch`.
  *
- * The error path is `request()`'s, via `formatErrorDetail`, so a 413 from an
- * oversized attachment reads the same as any other refusal.
+ * ⚠️ **Everything else about the call is `request()`'s, deliberately.** The
+ * proactive pre-expiry refresh, the reactive 401 → refresh → retry, the
+ * session-invalidated broadcast and the `ApiError` (not a bare `Error`, which
+ * no caller can branch on) all come from the same two helpers `request()` uses.
+ * They were missing here for one release, and the cost was specific: an upload
+ * started on a tab that had been idle past the access token's hour died with a
+ * bare "Not authenticated" toast and lost the file the operator had picked,
+ * while every JSON call beside it recovered silently.
+ *
+ * A `FormData` body survives the retry: `fetch` serialises it per call, it is
+ * not a consumed stream.
  */
-async function sendForm<T>(endpoint: string, formData: FormData, method: 'POST' | 'PUT' = 'POST'): Promise<T> {
+async function sendForm<T>(
+  endpoint: string,
+  formData: FormData,
+  method: 'POST' | 'PUT' = 'POST',
+  __isRetry = false,
+): Promise<T> {
+  if (authToken && !__isRetry && isTokenNearExpiry()) {
+    await refreshAccessToken();
+  }
   const headers: Record<string, string> = {};
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-  const response = await fetch(`${API_BASE}${endpoint}`, { method, headers, body: formData });
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    method,
+    headers,
+    body: formData,
+    cache: 'no-store',
+    credentials: 'include',
+  });
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(formatErrorDetail(error.detail, response.status));
+    // Either throws, or says "refreshed — send it again".
+    await handleErrorResponse(response, __isRetry);
+    return sendForm<T>(endpoint, formData, method, true);
+  }
+  const contentLength = response.headers.get('content-length');
+  if (response.status === 204 || contentLength === '0') {
+    return undefined as T;
   }
   return response.json();
 }
@@ -357,6 +385,51 @@ function formatErrorDetail(detail: unknown, status: number): string {
   return `HTTP ${status}`;
 }
 
+/**
+ * The refusal path shared by `request()` and `sendForm()`.
+ *
+ * Returns only when the caller should RE-SEND the same call with `__isRetry`
+ * set — the access token has just been refreshed. Every other outcome throws.
+ * There is deliberately no boolean to check: a caller that forgot to branch on
+ * it would swallow the failure and return `undefined` as if the request had
+ * succeeded.
+ *
+ * ⚠️ `ApiError`, never a bare `Error`, so callers can branch on the HTTP status
+ * — `useWebSocket` / `AuthContext` / `StreamOverlayPage` classify a 401/403 as
+ * a definitive AUTH decision (stop) against a transient 5xx/network blip
+ * (retry), and `InventoryPage` keys 404/503 handling off `err.status`.
+ */
+async function handleErrorResponse(response: Response, __isRetry: boolean): Promise<void> {
+  const error = await response.json().catch(() => ({}));
+  const message = formatErrorDetail(error.detail, response.status);
+
+  if (response.status === 401) {
+    const refreshable = !__isRetry && REFRESH_ERROR_MESSAGES.some(m => message.includes(m));
+    if (refreshable) {
+      // Try to refresh once. Coalesced across concurrent 401s.
+      const ok = await refreshAccessToken();
+      if (ok) return;
+      // Refresh failed (no cookie, replay detected, refresh expired, etc.)
+      // — fall through to the invalidated-session path below.
+    }
+    const terminal =
+      REFRESH_ERROR_MESSAGES.some(m => message.includes(m)) ||
+      NON_REFRESHABLE_401_MESSAGES.some(m => message.includes(m));
+    if (terminal) {
+      setAuthToken(null);
+      // Broadcast so AuthContext can clear React state and redirect to
+      // /login. Before sliding-session (§18.14) this was the first line
+      // of defence; after sliding-session it's the last resort — refresh
+      // was already attempted and failed.
+      window.dispatchEvent(
+        new CustomEvent('bamdude:auth-invalidated', { detail: { reason: 'token-expired', message } }),
+      );
+    }
+  }
+
+  throw new ApiError(message, response.status);
+}
+
 // Resolved once: it cannot change without the page being reloaded, and calling
 // into Intl on every request would be noise. Empty string when the runtime has
 // no zone to report, in which case the header is omitted and the server answers
@@ -418,43 +491,9 @@ async function request<T>(
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    const detail = error.detail;
-    const message = formatErrorDetail(detail, response.status);
-
-    if (response.status === 401) {
-      const refreshable =
-        !__isRetry &&
-        REFRESH_ERROR_MESSAGES.some(m => message.includes(m));
-      if (refreshable) {
-        // Try to refresh once. Coalesced across concurrent 401s.
-        const ok = await refreshAccessToken();
-        if (ok) {
-          return request<T>(endpoint, options, true);
-        }
-        // Refresh failed (no cookie, replay detected, refresh expired, etc.)
-        // — fall through to the invalidated-session path below.
-      }
-      const terminal =
-        REFRESH_ERROR_MESSAGES.some(m => message.includes(m)) ||
-        NON_REFRESHABLE_401_MESSAGES.some(m => message.includes(m));
-      if (terminal) {
-        setAuthToken(null);
-        // Broadcast so AuthContext can clear React state and redirect to
-        // /login. Before sliding-session (§18.14) this was the first line
-        // of defence; after sliding-session it's the last resort — refresh
-        // was already attempted and failed.
-        window.dispatchEvent(
-          new CustomEvent('bamdude:auth-invalidated', { detail: { reason: 'token-expired', message } }),
-        );
-      }
-    }
-
-    // Throw ApiError (not a bare Error) so callers can branch on the HTTP
-    // status — e.g. useWebSocket / AuthContext / StreamOverlayPage classify a
-    // 401/403 as a definitive AUTH decision (stop) vs a transient 5xx/network
-    // blip (retry), and InventoryPage keys 404/503 handling off ``err.status``.
-    throw new ApiError(message, response.status);
+    // Either throws, or says "refreshed — send it again".
+    await handleErrorResponse(response, __isRetry);
+    return request<T>(endpoint, options, true);
   }
 
   // Handle empty responses (204 No Content, etc.)
@@ -1671,13 +1710,30 @@ export interface CardNote {
     | 'skipped_too_large'
     | 'skipped_unreadable'
     | 'skipped_unsaved'
-    | 'nothing_to_fill';
+    | 'nothing_to_fill'
+    // Import-only. Everything a ZIP claimed that this farm could not take.
+    | 'import_file_missing'
+    | 'import_file_refused'
+    | 'import_part_duplicate_key'
+    | 'import_plate_missing'
+    | 'import_bad_category'
+    | 'import_attachment_missing'
+    | 'import_bad_name'
+    | 'import_cover_missing';
   params: Record<string, string | number>;
 }
 
 export interface RereadResponse {
   product: Product;
   notes: CardNote[];
+}
+
+/** `POST /products/import`. ⚠️ `warnings` are `CardNote` CODES like every other
+ *  card answer — the phrasing lives in `products.card.notes.*`, in both
+ *  locales, because the server has no idea which language the operator reads. */
+export interface ProductImportResponse {
+  product: Product;
+  warnings: CardNote[];
 }
 
 export interface ProductCreate {
@@ -9411,6 +9467,47 @@ export const api = {
   rereadProductCard: (productId: number, fileId: number) =>
     request<RereadResponse>(`/products/${productId}/card/reread?file_id=${fileId}`, { method: 'POST' }),
   getLibraryFileCard: (fileId: number) => request<CardData>(`/library/files/${fileId}/card`),
+  /**
+   * The whole product as a ZIP, saved through the blob dance.
+   *
+   * The route is behind `PROJECTS_READ` and this app authenticates with a
+   * bearer token, which an `<a href>` cannot carry — the link would 401 and the
+   * browser would save the error body under the operator's filename.
+   *
+   * The name comes off `Content-Disposition`, `filename*=UTF-8''…` first: the
+   * product name is the operator's and is routinely not ASCII, and the ASCII
+   * `filename=` beside it is the server's transliterated fallback.
+   */
+  downloadProductExport: async (productId: number): Promise<void> => {
+    const headers: Record<string, string> = {};
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/products/${productId}/export`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new ApiError(formatErrorDetail(error.detail, response.status), response.status);
+    }
+    const name =
+      parseContentDispositionFilename(response.headers.get('Content-Disposition')) || `product_${productId}.zip`;
+    const url = window.URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  },
+  /** ⚠️ `folder_id` is a DESTINATION for files nobody already has, not a link:
+   *  the server never joins that folder to the product, because "every file in
+   *  here belongs to this product" is not what an operator said by importing
+   *  into their Downloads folder. Omitted entirely when nothing was picked —
+   *  the server then reuses or makes a root folder named after the product. */
+  importProduct: (file: File, folderId?: number | null) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (folderId != null) formData.append('folder_id', String(folderId));
+    return sendForm<ProductImportResponse>('/products/import', formData);
+  },
 
   // Project Attachments
   uploadProjectAttachment: async (projectId: number, file: File): Promise<{

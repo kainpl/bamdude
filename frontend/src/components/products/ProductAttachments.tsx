@@ -77,7 +77,14 @@ export function ProductAttachments({ product, canEdit }: ProductAttachmentsProps
       const response = await fetch(api.getProductAttachmentUrl(product.id, attachment.filename), {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      // ⚠️ Translated, not a bare `HTTP 404`. Every other refusal on this page
+      // is the server's own sentence, which is already in the operator's
+      // language; a status code with nothing around it is the one message here
+      // that would have read as English to everybody.
+      if (!response.ok) {
+        showToast(t('products.attachments.downloadFailed', { status: response.status }), 'error');
+        return;
+      }
       const url = window.URL.createObjectURL(await response.blob());
       const link = document.createElement('a');
       link.href = url;

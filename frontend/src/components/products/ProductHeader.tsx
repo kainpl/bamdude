@@ -1,14 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Copy, ExternalLink, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
-import { api } from '../../api/client';
-import type { CardNote, Product } from '../../api/client';
+import { ChevronRight, Copy, Download, ExternalLink, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
+import { api, ApiError } from '../../api/client';
+import type { Product } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import { formatFileSize } from '../../utils/file';
 import { Button } from '../Button';
+import { cardNotesText } from './cardNotes';
 
 interface ProductHeaderProps {
   product: Product;
@@ -67,19 +67,25 @@ export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggle
     enabled: rereadOpen && Number.isFinite(product.id),
   });
 
-  /** One note, in the operator's language. `field` and `category` are raw
-   *  server vocabulary (`design_id`, `bom_docs`) and are translated before they
-   *  reach the sentence; `size` and `limit` are bytes and are formatted. */
-  const noteText = (note: CardNote): string => {
-    const params: Record<string, string | number> = { ...note.params };
-    if (typeof params.field === 'string') params.field = t(`products.card.fields.${params.field}`);
-    if (typeof params.category === 'string') {
-      params.category = t(`products.attachments.category.${params.category}`);
-    }
-    if (typeof params.size === 'number') params.size = formatFileSize(params.size);
-    if (typeof params.limit === 'number') params.limit = formatFileSize(params.limit);
-    return t(`products.card.notes.${note.code}`, params);
-  };
+  // ⚠️ A menu that only closes on a click is a menu an operator using the
+  // keyboard cannot get out of. Same handler shape as `FolderTreeSelect`'s.
+  useEffect(() => {
+    if (!rereadOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setRereadOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [rereadOpen]);
+
+  const exportProduct = useMutation({
+    mutationFn: () => api.downloadProductExport(product.id),
+    onError: (e: Error) =>
+      showToast(
+        e instanceof ApiError ? t('products.toast.exportFailed', { status: e.status }) : e.message,
+        'error',
+      ),
+  });
 
   const reread = useMutation({
     mutationFn: (fileId: number) => api.rereadProductCard(product.id, fileId),
@@ -89,7 +95,7 @@ export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggle
       setRereadOpen(false);
       // One toast, every note in it: they are one answer to one question, and
       // five stacked toasts would push the first off screen before it is read.
-      showToast(result.notes.map(noteText).join(' · '));
+      showToast(cardNotesText(t, result.notes));
     },
     onError: (e: Error) => showToast(e.message, 'error'),
   });
@@ -164,6 +170,16 @@ export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggle
               {t('products.header.duplicate')}
             </Button>
           )}
+          {/* Reading a product is enough to take one away — the export carries
+              nothing the page does not already show. */}
+          <Button variant="secondary" onClick={() => exportProduct.mutate()} disabled={exportProduct.isPending}>
+            {exportProduct.isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+            {t('products.header.export')}
+          </Button>
           {canEdit && (
             <div className="relative">
               <Button
@@ -187,7 +203,18 @@ export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggle
                     className="absolute right-0 top-full mt-1 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[220px] max-h-64 overflow-y-auto"
                   >
                     {files.length === 0 ? (
-                      <p className="px-3 py-2 text-sm text-bambu-gray">{t('products.card.rereadNoFiles')}</p>
+                      // ⚠️ A disabled `menuitem`, not a `<p>`: a menu whose only
+                      // row is not a row at all is a menu a screen reader reads
+                      // as empty, and "there is nothing to re-read from" is the
+                      // answer the operator came for.
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled
+                        className="w-full px-3 py-2 text-left text-sm text-bambu-gray cursor-not-allowed"
+                      >
+                        {t('products.card.rereadNoFiles')}
+                      </button>
                     ) : (
                       files.map((file) => (
                         <button

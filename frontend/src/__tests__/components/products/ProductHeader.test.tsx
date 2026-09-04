@@ -10,9 +10,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { http, HttpResponse } from 'msw';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { render } from '../../utils';
-import { api } from '../../../api/client';
+import { server } from '../../mocks/server';
+import { api, ApiError } from '../../../api/client';
 import type { Product } from '../../../api/client';
 import { ProductHeader } from '../../../components/products/ProductHeader';
 
@@ -100,6 +102,90 @@ describe('ProductHeader — re-read from file', () => {
     // asynchronously, and until it has, `hasPermission` is false and every
     // edit control — this button included — is still absent.
     fireEvent.click(await screen.findByRole('button', { name: /re-read/i }));
-    expect(await screen.findByText(/link a file/i)).toBeInTheDocument();
+    // A disabled `menuitem`, not a `<p>`: a menu whose only row is not a row is
+    // a menu a screen reader reads as empty, and "there is nothing to re-read
+    // from" is the answer the operator opened it for.
+    const empty = await screen.findByRole('menuitem', { name: /link a file/i });
+    expect(empty).toBeDisabled();
+  });
+
+  it('closes the picker on Escape — a click is not the only way out', async () => {
+    mount();
+
+    fireEvent.click(await screen.findByRole('button', { name: /re-read/i }));
+    expect(await screen.findByRole('menu')).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+
+  it('hides the picker from somebody who may not change the product', async () => {
+    // Gating is a claim, and a claim has to be tested: the re-read WRITES the
+    // product's card, so a viewer must not be offered it.
+    server.use(
+      http.get('/api/v1/auth/me', () =>
+        HttpResponse.json({
+          id: 2,
+          username: 'viewer',
+          role: 'user',
+          is_active: true,
+          is_admin: false,
+          groups: [{ id: 2, name: 'Viewers' }],
+          permissions: ['projects:read'],
+          created_at: '2024-01-01T00:00:00Z',
+        }),
+      ),
+    );
+    const me = vi.spyOn(api, 'getCurrentUser');
+    mount();
+
+    await waitFor(() => expect(me).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: /re-read/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
+  });
+});
+
+describe('ProductHeader — export', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(api, 'getLibraryFiles').mockResolvedValue([] as never);
+  });
+
+  it('downloads the product as a ZIP', async () => {
+    const save = vi.spyOn(api, 'downloadProductExport').mockResolvedValue(undefined);
+    mount();
+
+    fireEvent.click(await screen.findByRole('button', { name: /export/i }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(7));
+  });
+
+  it('says the export failed instead of leaving the button spinning', async () => {
+    vi.spyOn(api, 'downloadProductExport').mockRejectedValue(new ApiError('nope', 500));
+    mount();
+
+    fireEvent.click(await screen.findByRole('button', { name: /export/i }));
+    expect(await screen.findByText(/export failed \(HTTP 500\)/i)).toBeInTheDocument();
+  });
+
+  it('is offered to a reader — the export carries nothing the page does not show', async () => {
+    server.use(
+      http.get('/api/v1/auth/me', () =>
+        HttpResponse.json({
+          id: 2,
+          username: 'viewer',
+          role: 'user',
+          is_active: true,
+          is_admin: false,
+          groups: [{ id: 2, name: 'Viewers' }],
+          permissions: ['projects:read'],
+          created_at: '2024-01-01T00:00:00Z',
+        }),
+      ),
+    );
+    const me = vi.spyOn(api, 'getCurrentUser');
+    mount();
+
+    await waitFor(() => expect(me).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: /export/i })).toBeInTheDocument();
   });
 });

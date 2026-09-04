@@ -10,16 +10,27 @@ import { Button } from '../Button';
 interface ProductGalleryProps {
   product: Product;
   canEdit: boolean;
+  /** Appended to every `data-testid` here. The product PAGE renders this
+   *  gallery and so does the card DIALOG opened over it, and two live galleries
+   *  with the same testids make every `getByTestId` in a page test ambiguous —
+   *  the page passes nothing, the dialog passes `-dialog`. */
+  testIdSuffix?: string;
 }
 
 /**
- * Cache-bust an image URL after a mutation.
+ * Cache-bust the COVER url after a mutation.
  *
  * `GET /products/{id}/cover-image` is a STABLE url whose bytes change whenever
  * the cover does, so without this the browser keeps showing the old picture
  * after an upload — the request never leaves. The separator is computed rather
  * than assumed: `withStreamToken` adds `?token=` only when a token exists, so
  * a hardcoded `&` would produce `…/cover-image&v=1` for a logged-out render.
+ *
+ * ⚠️ **Only the cover.** An `attachment-image` url carries a uuid filename
+ * generated per upload and never rewritten, so its bytes cannot change under a
+ * url that stays the same. Versioning those too made every unrelated mutation —
+ * a delete, a reorder, a cover pick — re-download every thumbnail in the
+ * gallery for nothing.
  */
 function versioned(url: string, version: number): string {
   if (version === 0) return url;
@@ -49,18 +60,44 @@ const ICON_BUTTON_CLASS =
  * The lightbox is a plain fixed overlay: prev / next / Escape, no new
  * dependency for what is three keyboard handlers and an `<img>`.
  */
-export function ProductGallery({ product, canEdit }: ProductGalleryProps) {
+export function ProductGallery({ product, canEdit, testIdSuffix = '' }: ProductGalleryProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const pictureInput = useRef<HTMLInputElement>(null);
   const coverInput = useRef<HTMLInputElement>(null);
+  const overlay = useRef<HTMLDivElement>(null);
+  const returnFocusTo = useRef<HTMLElement | null>(null);
   const [version, setVersion] = useState(0);
   const [lightbox, setLightbox] = useState<number | null>(null);
+
+  const testId = (name: string) => `${name}${testIdSuffix}`;
 
   const pictures: ProductAttachment[] = (product.attachments ?? [])
     .filter((attachment) => attachment.category === 'pictures')
     .sort((a, b) => a.sort_order - b.sort_order);
+
+  // ⚠️ The EFFECTIVE cover, by the same rule the server's `effective_cover`
+  // uses: the explicit column, else the first picture by `sort_order`. Null
+  // here means no picture in this gallery is the cover — either the product has
+  // none, or the explicit cover is a DEDICATED upload that deliberately never
+  // joined the gallery.
+  const coverFilename = product.cover_image_filename ?? pictures[0]?.filename ?? null;
+
+  // ⚠️ Focus moves INTO the overlay and comes back out. Without it the Escape
+  // handler below is the only way out for a keyboard user who opened the
+  // lightbox — Tab would walk the page BEHIND it — and on close the focus ring
+  // would be left on `<body>`, which is nowhere.
+  const lightboxOpen = lightbox !== null;
+  useEffect(() => {
+    if (!lightboxOpen) return;
+    returnFocusTo.current = document.activeElement as HTMLElement | null;
+    overlay.current?.focus();
+    return () => {
+      returnFocusTo.current?.focus?.();
+      returnFocusTo.current = null;
+    };
+  }, [lightboxOpen]);
 
   useEffect(() => {
     if (lightbox === null || pictures.length === 0) return;
@@ -137,7 +174,7 @@ export function ProductGallery({ product, canEdit }: ProductGalleryProps) {
     reorder.isPending;
 
   return (
-    <section className="space-y-3" data-testid="product-gallery">
+    <section className="space-y-3" data-testid={testId('product-gallery')}>
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h2 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -151,7 +188,7 @@ export function ProductGallery({ product, canEdit }: ProductGalleryProps) {
           <div className="flex items-center gap-2 flex-wrap">
             <input
               ref={pictureInput}
-              data-testid="gallery-upload-input"
+              data-testid={testId('gallery-upload-input')}
               type="file"
               accept="image/*"
               className="hidden"
@@ -163,7 +200,7 @@ export function ProductGallery({ product, canEdit }: ProductGalleryProps) {
             />
             <input
               ref={coverInput}
-              data-testid="gallery-cover-input"
+              data-testid={testId('gallery-cover-input')}
               type="file"
               accept="image/*"
               className="hidden"
@@ -194,14 +231,14 @@ export function ProductGallery({ product, canEdit }: ProductGalleryProps) {
       <div className="flex gap-4 flex-wrap items-start">
         {product.has_cover ? (
           <img
-            data-testid="product-gallery-cover"
+            data-testid={testId('product-gallery-cover')}
             src={versioned(api.getProductCoverImageUrl(product.id), version)}
             alt={t('products.gallery.cover')}
             className={TILE_CLASS}
           />
         ) : (
           <div
-            data-testid="product-cover-placeholder"
+            data-testid={testId('product-cover-placeholder')}
             className={`${TILE_CLASS} flex items-center justify-center`}
           >
             <Package className="w-8 h-8 text-bambu-gray" />
@@ -217,29 +254,43 @@ export function ProductGallery({ product, canEdit }: ProductGalleryProps) {
               >
                 <button
                   type="button"
-                  data-testid={`gallery-picture-${picture.filename}`}
+                  data-testid={testId(`gallery-picture-${picture.filename}`)}
                   onClick={() => setLightbox(index)}
                   className="block w-full"
                 >
                   <img
-                    src={versioned(api.getProductAttachmentImageUrl(product.id, picture.filename), version)}
+                    src={api.getProductAttachmentImageUrl(product.id, picture.filename)}
                     alt={picture.original_name}
                     className="w-full h-24 rounded object-cover bg-bambu-dark"
                   />
                 </button>
                 {canEdit && (
                   <div className="flex items-center justify-between">
+                    {/* ⚠️ The picture that IS the cover cannot be set as the
+                        cover: the PUT would succeed and change nothing, which
+                        is a button that reports success having done no work. It
+                        is the EFFECTIVE cover that is marked, so the implicit
+                        first picture is starred exactly like a picked one —
+                        they are the same thing on screen and in the response. */}
                     <button
                       type="button"
                       className={ICON_BUTTON_CLASS}
-                      disabled={busy}
-                      aria-label={`${t('products.gallery.setCover')}: ${picture.original_name}`}
-                      title={t('products.gallery.setCover')}
+                      disabled={busy || coverFilename === picture.filename}
+                      aria-label={
+                        coverFilename === picture.filename
+                          ? `${t('products.gallery.isCover')}: ${picture.original_name}`
+                          : `${t('products.gallery.setCover')}: ${picture.original_name}`
+                      }
+                      title={
+                        coverFilename === picture.filename
+                          ? t('products.gallery.isCover')
+                          : t('products.gallery.setCover')
+                      }
                       onClick={() => pickCover.mutate(picture.filename)}
                     >
                       <Star
                         className={`w-3.5 h-3.5 ${
-                          product.cover_image_filename === picture.filename ? 'text-bambu-green' : ''
+                          coverFilename === picture.filename ? 'text-bambu-green fill-bambu-green' : ''
                         }`}
                       />
                     </button>
@@ -286,8 +337,10 @@ export function ProductGallery({ product, canEdit }: ProductGalleryProps) {
 
       {lightbox !== null && pictures[lightbox] && (
         <div
-          data-testid="gallery-lightbox"
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          ref={overlay}
+          tabIndex={-1}
+          data-testid={testId('gallery-lightbox')}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 outline-none"
           onClick={() => setLightbox(null)}
         >
           <button
@@ -312,8 +365,8 @@ export function ProductGallery({ product, canEdit }: ProductGalleryProps) {
             </button>
           )}
           <img
-            data-testid="gallery-lightbox-image"
-            src={versioned(api.getProductAttachmentImageUrl(product.id, pictures[lightbox].filename), version)}
+            data-testid={testId('gallery-lightbox-image')}
+            src={api.getProductAttachmentImageUrl(product.id, pictures[lightbox].filename)}
             alt={pictures[lightbox].original_name}
             className="max-h-[85vh] max-w-full rounded-lg"
             onClick={(e) => e.stopPropagation()}

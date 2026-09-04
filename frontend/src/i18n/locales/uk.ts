@@ -1005,7 +1005,7 @@ export default {
       qrCode: 'QR-код',
       viewPhotos: 'Переглянути фото',
       viewPhotosCount: 'Переглянути фото ({{count}})',
-      projectPage: 'Сторінка проєкту',
+      modelCard: 'Картка моделі',
       addToFavorites: 'Додати до обраного',
       removeFromFavorites: 'Видалити з обраного',
       edit: 'Редагувати',
@@ -4505,6 +4505,7 @@ export default {
     plate: 'Плита',
     plateSlot: 'Слот',
     plateGallery: 'Галерея плит',
+    modelCard: 'Картка моделі',
     source: {
       openOriginal: 'Відкрити на MakerWorld',
     },
@@ -4981,18 +4982,57 @@ export default {
     },
   },
 
+  // The model card of a 3MF — what the file says about itself. Two sources
+  // (an archive, which is editable, and a library file, which is read-only)
+  // share one modal; only the file half's strings live here, the archive half
+  // still carries its own pre-existing English.
+  modelCard: {
+    title: 'Картка моделі',
+    loadFailed: 'Не вдалося прочитати цей файл.',
+    unreadable: 'Не вдалося розібрати цей 3MF: {{error}}',
+    empty: 'У цьому файлі немає картки моделі.',
+    description: 'Опис',
+    printProfile: 'Профіль друку',
+    designerProfile: 'Профіль дизайнера',
+    pictures_one: 'Зображення ({{count}})',
+    pictures_few: 'Зображення ({{count}})',
+    pictures_many: 'Зображення ({{count}})',
+    pictures_other: 'Зображення ({{count}})',
+    documents: 'Файли в картці',
+    downloadFailed: 'Не вдалося завантажити {{name}} (HTTP {{status}}).',
+    createProduct: 'Створити виріб із цього файлу',
+    rereadInto: 'Перечитати у…',
+    viewOnMakerWorld: 'Відкрити на MakerWorld',
+    previous: 'Попереднє зображення',
+    next: 'Наступне зображення',
+  },
+
   // Projects section, products face. A product is what an order line orders:
   // a composition of printed parts and purchased items, with the library files
-  // it is printed from. Covers arrive in pass 4 — until then every card shows
-  // the same neutral tile.
+  // it is printed from.
   products: {
     list: {
       title: 'Вироби',
       newProduct: 'Новий виріб',
       fromFile: 'З файлу…',
+      import: 'Імпорт…',
       search: 'Пошук виробів…',
       inCatalog: 'У каталозі',
       empty: 'Виробів ще немає',
+    },
+    import: {
+      title: 'Імпорт виробу',
+      hint: 'ZIP, експортований із BamDude: картка, склад, файли та документи.',
+      file: 'Архів',
+      choose: 'Вибрати ZIP…',
+      folder: 'Нові файли покласти в',
+      // Not a link: the destination is where files NOBODY ALREADY HAS land, and
+      // linking the folder would claim every other file in it for this product.
+      folderHint: 'Файли, які вже є в бібліотеці, буде перевикористано — сюди потраплять лише решта.',
+      newFolder: 'Нова тека з назвою виробу',
+      submit: 'Імпортувати',
+      tooLarge: 'Цей архів завеликий для імпорту.',
+      failed: 'Не вдалося імпортувати архів: {{detail}}',
     },
     card: {
       inactive: 'не в каталозі',
@@ -5035,10 +5075,21 @@ export default {
         skipped_unreadable: 'Пропущено {{name}} — не вдалося прочитати.',
         skipped_unsaved: 'Пропущено {{name}} — не вдалося зберегти.',
         nothing_to_fill: 'Нічого заповнювати — усі поля вже мають значення.',
+        // Import-only. The archive is somebody else's export, so every one of
+        // these is a thing THEIR farm had and this one could not take.
+        import_file_missing: '{{name}} згадано в архіві, але самого файлу там немає.',
+        import_file_refused: 'Бібліотека відхилила {{name}}: {{detail}}',
+        import_part_duplicate_key: 'Пропущено ще одну деталь із тим самим ключем: {{name}} ({{key}}).',
+        import_plate_missing: '{{filename}} більше не містить платформу {{plate_index}}.',
+        import_bad_category: 'Пропущено {{name}} — «{{category}}» тут не є категорією.',
+        import_attachment_missing: 'Вкладення {{name}} згадано в архіві, але самого файлу там немає.',
+        import_bad_name: 'Пропущено {{name}} — таку назву неможливо зберегти.',
+        import_cover_missing: 'Обкладинку згадано в архіві, але самого файлу там немає.',
       },
       menu: {
         edit: 'Редагувати',
         duplicate: 'Дублювати',
+        export: 'Експорт',
         hide: 'Прибрати з каталогу',
         show: 'Повернути до каталогу',
         delete: 'Видалити',
@@ -5069,6 +5120,8 @@ export default {
       duplicated: 'Виріб дубльовано',
       hidden: 'Виріб прибрано з каталогу',
       shown: 'Виріб повернуто до каталогу',
+      imported: 'Виріб імпортовано',
+      exportFailed: 'Експорт не вдався (HTTP {{status}}).',
     },
     confirm: {
       deleteTitle: 'Видалити виріб?',
@@ -5088,6 +5141,7 @@ export default {
       designId: 'Ідентифікатор моделі',
       edit: 'Редагувати',
       duplicate: 'Дублювати',
+      export: 'Експорт',
       delete: 'Видалити',
     },
     composition: {
@@ -5136,6 +5190,7 @@ export default {
       uploadCover: 'Завантажити обкладинку',
       clearCover: 'Прибрати обкладинку',
       setCover: 'Зробити обкладинкою',
+      isCover: 'Це обкладинка',
       moveUp: 'Вище',
       moveDown: 'Нижче',
       removePicture: 'Видалити зображення',
@@ -5148,11 +5203,16 @@ export default {
       upload: 'Завантажити',
       empty: 'Тут поки порожньо.',
       fromFile: 'із 3MF',
+      downloadFailed: 'Не вдалося завантажити цей файл (HTTP {{status}}).',
       category: {
         pictures: 'Зображення',
         bom_docs: 'Специфікація',
         assembly: 'Інструкція зі складання',
         other: 'Інше',
+        // Not an attachment category — the import's notes name the dedicated
+        // cover with it, and a note that says "cover" beats one that says
+        // `products.attachments.category.cover`.
+        cover: 'Обкладинка',
       },
     },
     files: {

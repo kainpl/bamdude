@@ -5,9 +5,10 @@
  * implicit first picture, which is most of them.
  */
 
-import { describe, it, expect } from 'vitest';
-import { screen } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { render } from '../../utils';
+import { api, ApiError } from '../../../api/client';
 import type { ProductListItem } from '../../../api/client';
 import { ProductCard } from '../../../components/products/ProductCard';
 
@@ -57,5 +58,31 @@ describe('ProductCard cover', () => {
   it('does not read the explicit column — an implicit cover is still a cover', () => {
     mount({ has_cover: true, cover_image_filename: null });
     expect(screen.getByTestId('product-cover')).toBeInTheDocument();
+  });
+});
+
+describe('ProductCard export', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('downloads the product as a ZIP from the card menu', async () => {
+    const save = vi.spyOn(api, 'downloadProductExport').mockResolvedValue(undefined);
+    mount();
+
+    fireEvent.click(await screen.findByTestId('product-menu'));
+    fireEvent.click(screen.getByRole('menuitem', { name: /export/i }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledWith(4));
+  });
+
+  it('says so when the export is refused, and stays on the list', async () => {
+    vi.spyOn(api, 'downloadProductExport').mockRejectedValue(new ApiError('nope', 500));
+    mount();
+
+    fireEvent.click(await screen.findByTestId('product-menu'));
+    fireEvent.click(screen.getByRole('menuitem', { name: /export/i }));
+
+    expect(await screen.findByText(/export failed \(HTTP 500\)/i)).toBeInTheDocument();
   });
 });

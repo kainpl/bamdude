@@ -100,11 +100,15 @@ describe('ProductAttachments', () => {
   });
 
   it('says so when a download is refused instead of saving an error page', async () => {
+    // ⚠️ A SENTENCE with the status in it, not a bare `HTTP 404`. Every other
+    // refusal on this page is the server's own words, already in the operator's
+    // language; this was the one message that would have read as English to
+    // everybody.
     onlyAttachmentFetch({ ok: false, status: 404, blob: async () => new Blob([]) });
     render(<ProductAttachments product={product} canEdit />);
 
     fireEvent.click(screen.getByRole('button', { name: /download: bill-of-materials\.xlsx/i }));
-    expect(await screen.findByText(/404/)).toBeInTheDocument();
+    expect(await screen.findByText(/could not download this file \(HTTP 404\)/i)).toBeInTheDocument();
   });
 
   it('deletes an attachment', async () => {

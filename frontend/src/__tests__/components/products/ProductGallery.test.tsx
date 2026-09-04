@@ -159,6 +159,70 @@ describe('ProductGallery', () => {
     expect(screen.queryByTestId('gallery-lightbox')).not.toBeInTheDocument();
   });
 
+  it('marks the EFFECTIVE cover and refuses to set it again', () => {
+    // No explicit column here, so the cover is the first picture by
+    // `sort_order` — the same rule the server's `effective_cover` uses. A star
+    // that only lit for the explicit column would be dark on most products.
+    render(<ProductGallery product={product} canEdit />);
+
+    expect(screen.getByRole('button', { name: /this is the cover: front\.png/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /set as cover: back\.png/i })).toBeEnabled();
+  });
+
+  it('marks the explicitly picked picture instead of the first one', () => {
+    render(<ProductGallery product={{ ...product, cover_image_filename: 'b.png' }} canEdit />);
+
+    expect(screen.getByRole('button', { name: /this is the cover: back\.png/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /set as cover: front\.png/i })).toBeEnabled();
+  });
+
+  it('marks no picture when the cover is a dedicated upload outside the gallery', () => {
+    render(<ProductGallery product={{ ...product, cover_image_filename: 'cover_abc.png' }} canEdit />);
+
+    expect(screen.queryByRole('button', { name: /this is the cover/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /set as cover: front\.png/i })).toBeEnabled();
+  });
+
+  it('versions the stable cover url after a mutation and leaves the uuid-named pictures alone', async () => {
+    // The cover url never changes while its bytes do, so it needs the buster.
+    // An `attachment-image` url carries a per-upload uuid and its bytes cannot
+    // change under it — busting those too made every unrelated mutation
+    // re-download every thumbnail in the gallery.
+    vi.spyOn(api, 'setProductCover').mockResolvedValue({ status: 'success', filename: 'b.png' } as never);
+    render(<ProductGallery product={product} canEdit />);
+
+    const pictureSrc = screen.getByTestId('gallery-picture-a.png').querySelector('img')?.getAttribute('src');
+
+    fireEvent.click(screen.getByRole('button', { name: /set as cover: back\.png/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('product-gallery-cover').getAttribute('src')).toContain('v=1'),
+    );
+    expect(screen.getByTestId('gallery-picture-a.png').querySelector('img')?.getAttribute('src')).toBe(pictureSrc);
+    expect(pictureSrc).not.toContain('v=');
+  });
+
+  it('suffixes every testid so a page and the dialog over it never collide', () => {
+    render(<ProductGallery product={product} canEdit testIdSuffix="-dialog" />);
+
+    expect(screen.getByTestId('product-gallery-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('gallery-picture-a.png-dialog')).toBeInTheDocument();
+    expect(screen.queryByTestId('product-gallery')).not.toBeInTheDocument();
+  });
+
+  it('moves focus into the lightbox and gives it back on close', () => {
+    render(<ProductGallery product={product} canEdit />);
+
+    const opener = screen.getByTestId('gallery-picture-a.png');
+    opener.focus();
+    fireEvent.click(opener);
+
+    expect(screen.getByTestId('gallery-lightbox')).toHaveFocus();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByTestId('gallery-lightbox')).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+  });
+
   it('offers no edit control at all without the permission', () => {
     render(<ProductGallery product={product} canEdit={false} />);
 

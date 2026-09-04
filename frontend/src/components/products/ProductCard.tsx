@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Copy, Eye, EyeOff, MoreVertical, Package, Pencil, Trash2 } from 'lucide-react';
-import { api } from '../../api/client';
+import { Copy, Download, Eye, EyeOff, MoreVertical, Package, Pencil, Trash2 } from 'lucide-react';
+import { api, ApiError } from '../../api/client';
 import type { ProductListItem } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { useToast } from '../../contexts/ToastContext';
 
 interface ProductCardProps {
   product: ProductListItem;
@@ -40,7 +41,22 @@ const MENU_ITEM_CLASS = 'w-full px-3 py-2 text-left text-sm flex items-center ga
 export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDelete }: ProductCardProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
+  const { showToast } = useToast();
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // Not a mutation: nothing on this page changes, and the card is inside a
+  // `<Link>` — a failed download must say so where the operator clicked rather
+  // than navigate anywhere.
+  const exportProduct = async () => {
+    try {
+      await api.downloadProductExport(product.id);
+    } catch (e) {
+      showToast(
+        e instanceof ApiError ? t('products.toast.exportFailed', { status: e.status }) : (e as Error).message,
+        'error',
+      );
+    }
+  };
 
   return (
     <Link
@@ -124,6 +140,19 @@ export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDe
                         {t('products.card.menu.duplicate')}
                       </button>
                     )}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={`${MENU_ITEM_CLASS} text-white`}
+                      onClick={(e) => {
+                        stopCardNavigation(e);
+                        exportProduct();
+                        setMenuOpen(false);
+                      }}
+                    >
+                      <Download className="w-4 h-4" />
+                      {t('products.card.menu.export')}
+                    </button>
                     {hasPermission('projects:update') && (
                       <button
                         type="button"

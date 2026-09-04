@@ -216,6 +216,87 @@ describe('FormData requests include auth header', () => {
   });
 });
 
+/**
+ * ⚠️ A multipart upload recovers from an expired access token exactly like a
+ * JSON call does.
+ *
+ * `sendForm()` cannot go through `request()` — `request()` sets
+ * `Content-Type: application/json` on every call, which would replace the
+ * boundary header the browser writes for a `FormData` body and turn a perfectly
+ * good file into a 422. What it CAN share is everything else, and for one
+ * release it shared none of it: an upload started on a tab idle past the access
+ * token's hour died with a bare "Not authenticated" and lost the file the
+ * operator had picked, while every JSON call beside it refreshed and retried.
+ *
+ * The `FormData` survives the retry because `fetch` serialises it per call — it
+ * is not a consumed stream.
+ */
+describe('sendForm recovers from an expired access token', () => {
+  it('refreshes once and re-sends the multipart body', async () => {
+    const originalFetch = global.fetch;
+    const seen: string[] = [];
+    let refreshes = 0;
+
+    global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes('/auth/refresh')) {
+        refreshes += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: 'fresh-token' }), { status: 200 }),
+        );
+      }
+      if (href.includes('/products/import')) {
+        seen.push(new Headers(init?.headers).get('Authorization') ?? '');
+        if (seen.length === 1) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ detail: 'Could not validate credentials' }), { status: 401 }),
+          );
+        }
+        // The retry must still carry the body, not an empty request.
+        expect(init?.body).toBeInstanceOf(FormData);
+        return Promise.resolve(
+          new Response(JSON.stringify({ product: { id: 3 }, warnings: [] }), { status: 200 }),
+        );
+      }
+      return originalFetch(url, init);
+    });
+
+    try {
+      setAuthToken('stale-token');
+      const result = await api.importProduct(new File(['PK'], 'p.zip'), null);
+
+      expect(refreshes).toBe(1);
+      expect(seen).toEqual(['Bearer stale-token', 'Bearer fresh-token']);
+      expect(result.product.id).toBe(3);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('throws an ApiError a caller can branch on, not a bare Error', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/products/import')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ detail: 'An import may be at most 1 bytes' }), { status: 413 }),
+        );
+      }
+      return originalFetch(url, init);
+    });
+
+    try {
+      setAuthToken('test-token');
+      await expect(api.importProduct(new File(['PK'], 'p.zip'), null)).rejects.toMatchObject({
+        name: 'ApiError',
+        status: 413,
+        message: 'An import may be at most 1 bytes',
+      });
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
 describe('getLibraryFilesPaged (task 2, 2026-08-29 server-driven-lists)', () => {
   const emptyPage = { items: [], meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 } };
 

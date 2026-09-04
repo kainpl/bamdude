@@ -77,11 +77,14 @@ describe('ProductCardDialog', () => {
   });
 
   it('carries the gallery in edit mode and not in create mode', () => {
+    // ⚠️ `-dialog`: the product page renders its own gallery and this dialog
+    // opens OVER it, so the two would otherwise answer the same testid.
     const { unmount } = render(<ProductCardDialog product={product} onClose={noop} />);
-    expect(screen.getByTestId('product-gallery')).toBeInTheDocument();
+    expect(screen.getByTestId('product-gallery-dialog')).toBeInTheDocument();
+    expect(screen.queryByTestId('product-gallery')).not.toBeInTheDocument();
     unmount();
 
     render(<ProductCardDialog product={null} onClose={noop} />);
-    expect(screen.queryByTestId('product-gallery')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('product-gallery-dialog')).not.toBeInTheDocument();
   });
 });

@@ -251,7 +251,14 @@ function ProductForm({ product, onClose, onSaved }: ProductFormProps) {
               uploaded whether or not the fields are saved. */}
           {product && (
             <div className="pt-4 border-t border-bambu-dark-tertiary">
-              <ProductGallery product={product} canEdit={hasPermission('projects:update')} />
+              {/* ⚠️ `testIdSuffix` — the product page renders its own gallery
+                  and this dialog opens OVER it, so without the suffix every
+                  `getByTestId` in a page test would find two. */}
+              <ProductGallery
+                product={product}
+                canEdit={hasPermission('projects:update')}
+                testIdSuffix="-dialog"
+              />
             </div>
           )}
         </div>
