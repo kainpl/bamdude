@@ -17,7 +17,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
+import { delay, http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 import { render } from '../utils';
 import { PrintModal } from '../../components/PrintModal';
@@ -235,6 +235,164 @@ describe('PrintModal — the order this print is filed under', () => {
 
     await waitFor(() => expect(screen.getByRole('option', { name: /Spare stock/ })).toBeInTheDocument());
     expect((screen.getByLabelText('Order') as HTMLSelectElement).value).toBe('');
+  });
+
+  it('drops a chosen order the new plate does not offer, and takes the new default', async () => {
+    // ⚠️ The stale half of the same rule that keeps a deliberate answer. A
+    // choice the current plate's candidates no longer contain is not an
+    // answer about THIS plate — the native select shows «Without an order»
+    // for it while the payload would still carry the old order and line, and
+    // nothing on screen says so.
+    serveCandidates({
+      1: [spareStock({ outstanding_prints: 2 }), candidate()],
+      2: [spareStock({ outstanding_prints: 2 })],
+    });
+    server.use(http.get('/api/v1/library/files/:id/plates', () => HttpResponse.json(MULTI_PLATE)));
+    const print = vi.spyOn(api, 'printLibraryFile').mockResolvedValue({ status: 'dispatched' } as never);
+    const user = userEvent.setup();
+
+    render(<PrintModal mode="reprint" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />);
+
+    const field = (await screen.findByLabelText('Order')) as HTMLSelectElement;
+    await waitFor(() => expect(field.value).toBe('6:12'));
+    await user.selectOptions(field, '4:9');
+    expect(field.value).toBe('4:9');
+
+    await user.click(screen.getByTitle('Plate 2'));
+    await user.click(screen.getByText('Plate 2'));
+
+    await waitFor(() =>
+      expect((screen.getByLabelText('Order') as HTMLSelectElement).value).toBe('6:12'),
+    );
+
+    await user.click(screen.getByText('X1 Carbon'));
+    await user.click(screen.getByRole('button', { name: /^print$/i }));
+
+    await waitFor(() =>
+      expect(print).toHaveBeenCalledWith(5, 1, expect.objectContaining({ project_id: 6, project_line_id: 12 })),
+    );
+  });
+
+  it('files nothing when the plate switched to wants no order at all', async () => {
+    // The same staleness with the field GONE: no list, nothing to show the
+    // operator, and the old plate's ids would ship unseen.
+    serveCandidates({ 1: [candidate()], 2: [] });
+    server.use(http.get('/api/v1/library/files/:id/plates', () => HttpResponse.json(MULTI_PLATE)));
+    const print = vi.spyOn(api, 'printLibraryFile').mockResolvedValue({ status: 'dispatched' } as never);
+    const user = userEvent.setup();
+
+    render(<PrintModal mode="reprint" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />);
+
+    const field = (await screen.findByLabelText('Order')) as HTMLSelectElement;
+    await waitFor(() => expect(field.value).toBe('4:9'));
+    // Touch it, so the choice is the operator's and not merely a proposal.
+    await user.selectOptions(field, '');
+    await user.selectOptions(screen.getByLabelText('Order'), '4:9');
+
+    await user.click(screen.getByTitle('Plate 2'));
+    await user.click(screen.getByText('Plate 2'));
+
+    await waitFor(() => expect(screen.queryByLabelText('Order')).not.toBeInTheDocument());
+
+    await user.click(screen.getByText('X1 Carbon'));
+    await user.click(screen.getByRole('button', { name: /^print$/i }));
+
+    await waitFor(() => expect(print).toHaveBeenCalled());
+    expect(print.mock.calls[0][2]).toMatchObject({ project_id: undefined, project_line_id: null });
+  });
+
+  it('asks about the first ticked plate and files only the ORDER when several are ticked', async () => {
+    // ⚠️ The candidates were asked about ONE plate; another plate of the same
+    // file can belong to another line, or another product entirely. So the
+    // order travels and the line does not — the backend writers resolve the
+    // line per row, which is the only place that knows which plate each row is
+    // for. `plate_index=0` would have been wrong in the other direction: a
+    // product registered per plate index has no whole-file plate, the list
+    // comes back empty, the field hides, and both rows file under nothing.
+    const seen: number[] = [];
+    serveCandidates({ 1: [candidate()], 2: [spareStock({ outstanding_prints: 2 })] }, seen);
+    server.use(http.get('/api/v1/library/files/:id/plates', () => HttpResponse.json(MULTI_PLATE)));
+    const add = vi.spyOn(api, 'addToAutoQueue').mockResolvedValue({ id: 1 } as never);
+    const user = userEvent.setup();
+
+    render(
+      <PrintModal
+        mode="add-to-queue"
+        libraryFileId={5}
+        archiveName="lamp.gcode.3mf"
+        initialDispatchMode="auto"
+        lockDispatchMode
+        onClose={() => {}}
+      />,
+    );
+
+    await user.click(await screen.findByText('Select All 2 Plates'));
+
+    const field = (await screen.findByLabelText('Order')) as HTMLSelectElement;
+    await waitFor(() => expect(field.value).toBe('4:9'));
+    expect(seen).not.toContain(0);
+
+    await user.click(screen.getByRole('button', { name: 'Queue 2 Plates' }));
+
+    await waitFor(() => expect(add).toHaveBeenCalled());
+    expect(add.mock.calls[0][0]).toMatchObject({ project_id: 4, project_line_id: null });
+  });
+
+  it('files the line as well when exactly one plate is ticked', async () => {
+    serveCandidates({ 1: [candidate()], 2: [spareStock({ outstanding_prints: 2 })] });
+    server.use(http.get('/api/v1/library/files/:id/plates', () => HttpResponse.json(MULTI_PLATE)));
+    const add = vi.spyOn(api, 'addToAutoQueue').mockResolvedValue({ id: 1 } as never);
+    const user = userEvent.setup();
+
+    render(
+      <PrintModal
+        mode="add-to-queue"
+        libraryFileId={5}
+        archiveName="lamp.gcode.3mf"
+        initialDispatchMode="auto"
+        lockDispatchMode
+        onClose={() => {}}
+      />,
+    );
+
+    const field = (await screen.findByLabelText('Order')) as HTMLSelectElement;
+    await waitFor(() => expect(field.value).toBe('4:9'));
+
+    await user.click(screen.getByRole('button', { name: /^add to queue$/i }));
+
+    await waitFor(() =>
+      expect(add).toHaveBeenCalledWith(expect.objectContaining({ project_id: 4, project_line_id: 9 })),
+    );
+  });
+
+  it('will not let the operator submit before the order question has answered', async () => {
+    // The manual half of the guard the silent members already had. The window
+    // is bounded by the query itself, which does not retry — a failed or
+    // disabled query never blocks the button.
+    server.use(
+      http.get('/api/v1/library/files/:id/order-candidates', async () => {
+        await delay(60);
+        return HttpResponse.json([candidate()]);
+      }),
+    );
+
+    render(
+      <PrintModal
+        mode="add-to-queue"
+        libraryFileId={5}
+        archiveName="lamp.gcode.3mf"
+        initialDispatchMode="auto"
+        lockDispatchMode
+        onClose={() => {}}
+      />,
+    );
+
+    const submit = await screen.findByRole('button', { name: /^add to queue$/i });
+    expect(submit).toBeDisabled();
+    expect(submit).toHaveAttribute('title', 'Checking which order needs this…');
+
+    await waitFor(() => expect(submit).toBeEnabled());
+    expect(submit).not.toHaveAttribute('title');
   });
 
   it('carries both ids into a direct print of a library file', async () => {

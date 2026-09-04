@@ -853,13 +853,23 @@ export function PrintModal({
     projectId == null &&
     projectLineId == null &&
     (mode === 'reprint' || mode === 'add-to-queue');
-  // The plate the dialog is about. `null` — nothing picked, or several — asks
-  // about the whole file, which is what index 0 means on the wire.
-  const orderPlateIndex = selectedPlate ?? 0;
+  // The plate the dialog asks about: the FIRST ticked one, else the plate the
+  // auto-select effect is about to tick (the same rule that effect uses), else
+  // 0 — the whole file, which is what a file with no plates at all is.
+  // ⚠️ **Not `selectedPlate ?? 0`.** That reads a multi-plate selection as "the
+  // whole file", and a product whose plates are registered per plate index has
+  // no whole-file plate: the list comes back empty, the field hides, and every
+  // row of that selection files under nothing. Asking about one of the ticked
+  // plates still proposes the order; the LINE is then left to the backend to
+  // resolve per row (see `filedProjectLineId`).
+  // ⚠️ And the question waits for the plates to arrive at all, or the first
+  // render asks about plate 0 for a file that has plates — a list replaced a
+  // moment later, and for a per-plate product a field that appears and vanishes.
+  const orderPlateIndex = selectedPlateIds[0] ?? platesData?.plates?.[0]?.index ?? 0;
   const { data: orderCandidates, isLoading: orderCandidatesLoading } = useOrderCandidates(
     libraryFileId,
     orderPlateIndex,
-    asksAboutOrder,
+    asksAboutOrder && platesData !== undefined,
   );
 
   // ⚠️ **The proposal is DERIVED, never synced into state by an effect.** The
@@ -875,12 +885,44 @@ export function PrintModal({
     const needy = orderCandidates?.find((c) => c.outstanding_prints > 0);
     return needy ? { projectId: needy.project_id, projectLineId: needy.project_line_id } : null;
   }, [orderCandidates]);
-  const orderFiling = orderFilingTouched ? chosenOrderFiling : proposedOrderFiling;
+
+  // ⚠️ **A choice the current plate does not offer is not an answer about this
+  // plate.** Switching plates re-asks, and the new list need not contain the
+  // order the operator picked for the old one — the `<select>` then falls back
+  // to showing «Without an order» while the payload would still carry the old
+  // order and line, and when the new plate has no candidates at all the field
+  // is not even on screen to be doubted. So a stale choice is dropped and the
+  // untouched rule takes over. A deliberate «Without an order» (touched, null)
+  // is not stale — it is an answer about every plate, and it survives.
+  const orderFiling = useMemo<OrderFilingValue | null>(() => {
+    if (!orderFilingTouched) return proposedOrderFiling;
+    if (chosenOrderFiling === null) return null;
+    const stillOffered = orderCandidates?.some(
+      (c) =>
+        c.project_id === chosenOrderFiling.projectId &&
+        c.project_line_id === chosenOrderFiling.projectLineId,
+    );
+    return stillOffered ? chosenOrderFiling : proposedOrderFiling;
+  }, [orderFilingTouched, chosenOrderFiling, orderCandidates, proposedOrderFiling]);
+
+  // While the answer is in flight there is nothing to file yet, and nothing to
+  // show either. Bounded: the query does not retry, and `isLoading` is false
+  // for a disabled or failed query as well as for a finished one.
+  const orderAnswerPending = asksAboutOrder && orderCandidatesLoading;
 
   // What the payloads carry. When the dialog asked, its answer is the whole
   // truth — including "no order", which must not fall back to a prop.
   const filedProjectId = asksAboutOrder ? orderFiling?.projectId : projectId;
-  const filedProjectLineId = asksAboutOrder ? (orderFiling?.projectLineId ?? null) : (projectLineId ?? null);
+  // ⚠️ **Several plates ticked: the ORDER travels, the LINE does not.** The
+  // candidates were asked about one plate, and the rows this submit creates are
+  // one per plate — a line resolved for plate 1 is simply wrong on plate 3's
+  // row, and can belong to another product. The backend writers resolve the
+  // line per row (`auto_queue_add` inside its plate fan-out, `queue_add` and
+  // the batch writer per request), which is the only place that knows which
+  // plate each row is for, and they refuse to guess where two lines are alike.
+  const filedProjectLineId = asksAboutOrder
+    ? (isMultiPlateSelection ? null : (orderFiling?.projectLineId ?? null))
+    : (projectLineId ?? null);
 
   // Auto-select first printer when only one available
   useEffect(() => {
@@ -1501,12 +1543,9 @@ export function PrintModal({
     // member files itself under the order that needs its plate exactly as the
     // visible one does, and it cannot do that before the answer arrives —
     // it would queue 59 of a 60-plate run under no order at all while the one
-    // dialog the operator saw filed correctly.
-    // ⚠️ Bounded, and therefore not a new way to stall: the query does not
-    // retry, so it either answers or fails, and `isLoading` is false for a
-    // disabled query as well as for a failed one. A failure simply files no
-    // order, which is what this dialog did before the field existed.
-    if (asksAboutOrder && orderCandidatesLoading) return;
+    // dialog the operator saw filed correctly. The submit BUTTON is gated on
+    // the same flag, so both halves wait for the same thing.
+    if (orderAnswerPending) return;
 
     // Only a run at exactly one specific printer consults filaments at all:
     // `canQueueWithoutAsking` short-circuits on any other printer count. An
@@ -1589,8 +1628,7 @@ export function PrintModal({
     perPlateReqsFailed,
     printersFetched,
     soleActivePrinterId,
-    asksAboutOrder,
-    orderCandidatesLoading,
+    orderAnswerPending,
   ]);
 
   // Tell the run it had to ask after all. Once only, and by ref rather than by
@@ -2085,9 +2123,14 @@ export function PrintModal({
               <Button type="button" variant="secondary" onClick={onClose} className="flex-1" disabled={isSubmitting}>
                 {t('printModal.cancel')}
               </Button>
+              {/* ⚠️ `orderAnswerPending` is the same bounded "not yet" the
+                  self-submit waits on. Without it the operator can beat their
+                  own dialog: the field is not on screen yet, so the print goes
+                  out under no order and nothing says it could have had one. */}
               <Button
                 type="submit"
-                disabled={!canSubmit}
+                disabled={!canSubmit || orderAnswerPending}
+                title={orderAnswerPending ? t('orderFiling.loading') : undefined}
                 className="flex-1"
               >
                 {isPending ? (

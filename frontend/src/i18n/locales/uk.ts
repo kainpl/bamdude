@@ -4991,6 +4991,7 @@ export default {
     stillNeeds_many: 'потрібно ще {{count}} друків',
     stillNeeds_other: 'потрібно ще {{count}} друку',
     satisfied: 'вже покрито',
+    loading: 'Перевіряю, якому замовленню це потрібно…',
   },
 
   // Projects section, customers face. The customer page borrows the order

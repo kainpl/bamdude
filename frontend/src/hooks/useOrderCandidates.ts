@@ -11,10 +11,14 @@ import type { OrderCandidate } from '../api/client';
  * would serve plate 1's orders to plate 2's picker, silently, and the operator
  * would file a print under a line that never wanted it.
  *
- * `enabled` is not a nicety either: PrintModal mounts once per member of a
- * grouped run, and all but one of those members never render. A list nobody
- * looks at is not worth a request per file, so the dialog says when it is
- * actually asking.
+ * `enabled` is the GATE, not a performance hint: it is false wherever the
+ * dialog must not ask at all — the order page's plan block (which named its
+ * line already), a reprint from an archive (which carries the original print's
+ * binding), and the edit modes (whose update payloads have no project fields).
+ * Those fire no request, and the answer could only mislead them if they did.
+ * ⚠️ The silent members of a grouped run are NOT in that set: they never
+ * render, but they do ask, and they wait for the answer before submitting —
+ * each files itself under its own file's order.
  *
  * `staleTime` is 30 s because the number in the picker is the plan block's own
  * number: it moves whenever anything is queued or finishes, and a dialog opened

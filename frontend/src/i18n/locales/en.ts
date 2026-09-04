@@ -4941,6 +4941,7 @@ export default {
     stillNeeds_one: 'still needs {{count}} print',
     stillNeeds_other: 'still needs {{count}} prints',
     satisfied: 'already covered',
+    loading: 'Checking which order needs this…',
   },
 
   // Projects section, customers face. The customer page borrows the order
