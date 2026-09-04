@@ -29,6 +29,7 @@ from backend.app.services.part_stock import (
     movements,
     repoint,
     reverse_unfiled_print,
+    unfiled_credit_net,
 )
 
 
@@ -383,7 +384,9 @@ async def test_a_finished_print_with_no_order_lands_on_the_shelf(db_session, she
 
 async def test_a_second_completion_event_for_the_same_print_credits_nothing(db_session, shelf):
     """An MQTT replay or a reconnect flap re-runs the completion handler. The
-    ledger already names this archive, which is the whole idempotency check."""
+    check is the archive's NET (`unfiled_credit_net`), which is still positive
+    — not "a row exists", which would also refuse the legitimate re-credit of a
+    print somebody un-filed."""
     product, parts, archive = shelf
     await credit_unfiled_print(db_session, archive)
 
@@ -568,3 +571,83 @@ async def test_delete_for_parts_asked_for_nothing_touches_nothing(db_session):
 
     assert await delete_for_parts(db_session, []) == 0
     assert await _row_count(db_session, parts["lid"].id) == 1
+
+
+# ---------- Ruling 11: un-filing puts the parts back, and the net is the key ----------
+
+
+async def test_the_net_is_zero_before_anything_and_the_credit_after(db_session, shelf):
+    """The one function both the writer's idempotency check and the archive
+    route's 409 read, so "is this print already on the shelf" has one answer."""
+    _product, _parts, archive = shelf
+    assert await unfiled_credit_net(db_session, archive.id) == 0
+
+    await credit_unfiled_print(db_session, archive)
+
+    assert await unfiled_credit_net(db_session, archive.id) == 7  # 3 lids + 4 bases
+
+
+async def test_a_filed_print_holds_nothing_even_though_its_rows_remain(db_session, shelf):
+    """Why the key is the net and not a row existing: after the reversal this
+    archive still names four movements and holds none of the stock."""
+    _product, _parts, archive = shelf
+    await credit_unfiled_print(db_session, archive)
+    await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+
+    assert await unfiled_credit_net(db_session, archive.id) == 0
+    assert len([m for m in await movements(db_session, _product.id) if m.archive_id == archive.id]) == 4
+
+
+async def test_un_filing_a_print_puts_its_parts_back_on_the_shelf(db_session, shelf):
+    """Ruling 11. Once the order stops counting these parts, nothing does —
+    without the re-credit a plate would quietly vanish every time somebody
+    corrected a filing."""
+    product, parts, archive = shelf
+    await credit_unfiled_print(db_session, archive)
+    await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+    assert await balances(db_session, product.id) == {parts["lid"].id: 0, parts["base"].id: 0}
+
+    # …and the operator takes it back out of the order.
+    written = await credit_unfiled_print(db_session, archive)
+
+    assert {m.reason for m in written} == {"unfiled_print"}
+    assert await balances(db_session, product.id) == {parts["lid"].id: 3, parts["base"].id: 4}
+    assert await unfiled_credit_net(db_session, archive.id) == 7
+
+
+async def test_the_credit_records_the_operator_who_asked_for_it(db_session, shelf):
+    """``created_by`` is the archive page's "count this into stock" button. The
+    completion handler passes nothing and writes with no user (Decision 7)."""
+    _product, _parts, archive = shelf
+
+    written = await credit_unfiled_print(db_session, archive, created_by=42)
+
+    assert {m.created_by for m in written} == {42}
+
+
+async def test_the_completion_handlers_credit_names_no_user(db_session, shelf):
+    _product, _parts, archive = shelf
+
+    written = await credit_unfiled_print(db_session, archive)
+
+    assert {m.created_by for m in written} == {None}
+
+
+async def test_the_reversal_finishes_every_part_it_can_before_it_complains(db_session, shelf):
+    """Ruling 12a. One part's stock having been spent says nothing about the
+    others — stopping at the first refusal would leave the rest of the plate
+    double-counted for no reason. The reversals that worked stay written and
+    ONE error names what was refused."""
+    product, parts, archive = shelf
+    await credit_unfiled_print(db_session, archive)
+    await move(db_session, part_id=parts["lid"].id, delta=-3, reason="reserved_for_order")
+
+    with pytest.raises(PartStockError) as refusal:
+        await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+
+    # The whole id list, so a second refused part would fail this rather than
+    # hide inside a message that happens to contain the digit.
+    assert f"part(s) {parts['lid'].id} had already spent" in str(refusal.value)
+    # The base came back off the shelf even though the lid could not.
+    assert await balances(db_session, product.id) == {parts["lid"].id: 0, parts["base"].id: 0}
+    assert await unfiled_credit_net(db_session, archive.id) == 3, "the lids the order now double-counts"

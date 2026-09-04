@@ -467,11 +467,15 @@ async def bank_surplus(
                 raise HTTPException(status_code=409, detail=str(e)) from e
             if movement is None:
                 continue
+            # ``movement.delta``, not the ``delta`` asked for: the operator is
+            # told what the LEDGER wrote. The two agree for a surplus today,
+            # and the day they stop agreeing (a clamp, a rule added to ``move``)
+            # the toast must follow the shelf, not the request.
             entry = moved.get(pf.part_id)
             if entry is None:
-                moved[pf.part_id] = StockMovedOut(part_id=pf.part_id, name=pf.name, delta=delta)
+                moved[pf.part_id] = StockMovedOut(part_id=pf.part_id, name=pf.name, delta=movement.delta)
             else:
-                entry.delta += delta
+                entry.delta += movement.delta
     await db.commit()
     return BankSurplusResponse(moved=list(moved.values()), nothing_to_bank=not moved)
 
@@ -597,7 +601,7 @@ async def remove_archives_from_project(
     project_id: int,
     data: BatchAddArchives,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     """Unfile prints from this order — the line goes with the order, never alone."""
     updated = 0
@@ -610,6 +614,12 @@ async def remove_archives_from_project(
         if archive:
             archive.project_id = None
             archive.project_line_id = None
+            # Out of the order is back onto the shelf (pass 8, Ruling 11): once
+            # the order stops counting these parts, nothing does. Safe
+            # unconditionally — ``credit_unfiled_print`` checks the status, the
+            # (now NULL) project and the archive's own net, so a print that was
+            # never free stock or is still holding some writes nothing.
+            await part_stock.credit_unfiled_print(db, archive, created_by=current_user.id if current_user else None)
             updated += 1
     return {"message": f"Removed {updated} archives from project"}
 

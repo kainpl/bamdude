@@ -22,7 +22,6 @@ from backend.app.core.permissions import Permission
 from backend.app.core.timezones import client_timezone, day_bounds
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
-from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import ProductPart
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
@@ -1557,6 +1556,15 @@ async def update_archive(
         and archive.project_id is None
         and update_data.project_id is not None
     )
+    # And the mirror image: taking a print back OUT of an order puts its parts
+    # back on the shelf. Nothing counts them once the order stops — leaving
+    # them uncredited would quietly lose a plate every time somebody corrected
+    # a filing (Ruling 11).
+    unfiled_from_order = (
+        "project_id" in update_data.model_fields_set
+        and archive.project_id is not None
+        and update_data.project_id is None
+    )
 
     # An order line has to belong to the order the archive is filed under, or
     # the order's progress would count a print it never asked for. The target is
@@ -1615,6 +1623,12 @@ async def update_archive(
                 update_data.project_id,
                 e,
             )
+    elif unfiled_from_order:
+        # Safe unconditionally: ``credit_unfiled_print`` checks the status, the
+        # (now NULL) project and the archive's own net, so a print that was
+        # never free stock, never finished, or is still holding some, writes
+        # nothing.
+        await part_stock.credit_unfiled_print(db, archive, created_by=user.id if user else None)
 
     await db.commit()
 
@@ -1633,7 +1647,7 @@ async def update_archive(
 async def count_archive_into_stock(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     """Count an old order-less print into the product's free stock by hand.
 
@@ -1643,8 +1657,14 @@ async def count_archive_into_stock(
     for one of them — the only way a pre-pass-8 print reaches the shelf.
 
     Refused (409) for a print that is filed under an order (its parts are
-    counted there) or one already counted (the ledger names the archive). An
-    empty list is a legitimate answer, not a failure: the print may have
+    counted there) or one whose parts are already standing on the shelf. That
+    second question is the archive's NET (``part_stock.unfiled_credit_net``) and
+    not "has it ever been credited": a print that was counted, filed under an
+    order and later un-filed holds nothing, and counting it again is right.
+    Deliberately the same function the writer's own idempotency check reads — a
+    private copy of the query here would be a second answer to one question.
+
+    An empty list is a legitimate answer, not a failure: the print may have
     finished nothing good, or its plate may belong to no product.
     """
     archive = (await db.execute(PrintArchive.active().where(PrintArchive.id == archive_id))).scalar_one_or_none()
@@ -1652,18 +1672,13 @@ async def count_archive_into_stock(
         raise HTTPException(404, "Archive not found")
     if archive.project_id is not None:
         raise HTTPException(409, "This print is filed under an order — its parts are counted there")
-    if await db.scalar(
-        select(func.count())
-        .select_from(ProductPartStockMovement)
-        .where(
-            ProductPartStockMovement.archive_id == archive.id,
-            ProductPartStockMovement.reason == "unfiled_print",
-        )
-    ):
+    if await part_stock.unfiled_credit_net(db, archive.id) > 0:
         raise HTTPException(409, "This print has already been counted into stock")
 
     try:
-        written = await part_stock.credit_unfiled_print(db, archive)
+        written = await part_stock.credit_unfiled_print(
+            db, archive, created_by=current_user.id if current_user else None
+        )
     except part_stock.PartStockError as e:
         raise HTTPException(409, str(e)) from e
     names = {

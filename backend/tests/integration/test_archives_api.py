@@ -1307,3 +1307,142 @@ async def test_hard_deleting_an_archive_leaves_the_parts_on_the_shelf(
     assert await ArchiveService(db_session).delete_archive(archive_id) is True
 
     assert await _stock_rows(db_session) == [(lid_id, "unfiled_print", 4, None, None)]
+
+
+async def _admin_id(db_session) -> int:
+    """The user the test client is authenticated as (seeded in ``_build_client``)."""
+    from sqlalchemy import select
+
+    from backend.app.models.user import User
+
+    return await db_session.scalar(select(User.id).where(User.username == "test_admin"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_counting_a_print_into_stock_records_who_asked(
+    async_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """The button has an operator behind it, unlike the completion handler,
+    which writes with no user (Decision 7). The product page's movements table
+    shows who."""
+    from sqlalchemy import select
+
+    from backend.app.models.part_stock import ProductPartStockMovement
+
+    await _stocked_product(db_session)
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    admin_id = await _admin_id(db_session)
+
+    assert (await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")).status_code == 200
+
+    db_session.expire_all()
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    assert [r.created_by for r in rows] == [admin_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_taking_a_print_back_out_of_an_order_puts_its_parts_back(
+    async_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """Ruling 11. Filing reversed the credit because the order counted the
+    parts; un-filing has to undo that, or a plate quietly disappears every time
+    somebody corrects a filing."""
+    from backend.app.models.project import Project
+
+    _product_id, lid_id = await _stocked_product(db_session)
+    project = Project(name="Lamps")
+    db_session.add(project)
+    await db_session.flush()
+    project_id = project.id
+    await db_session.commit()
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+
+    r = await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": None})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["project_id"] is None
+    rows = await _stock_rows(db_session)
+    assert [row[1:3] for row in rows] == [("unfiled_print", 4), ("manual", -4), ("unfiled_print", 4)]
+    assert sum(row[2] for row in rows) == 4, "the parts are back on the shelf"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_re_credited_print_cannot_be_counted_into_stock_again(
+    async_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """The 409 reads the archive's NET, the same function the writer's
+    idempotency check reads — so it says "already counted" exactly while the
+    parts are actually standing on the shelf, whatever the row history is."""
+    from backend.app.models.project import Project
+
+    await _stocked_product(db_session)
+    project = Project(name="Lamps")
+    db_session.add(project)
+    await db_session.flush()
+    project_id = project.id
+    await db_session.commit()
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+    await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": None})
+
+    r = await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+
+    assert r.status_code == 409
+    assert "already been counted" in r.json()["detail"]
+    assert len(await _stock_rows(db_session)) == 3, "the refused call wrote nothing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_filing_reverses_every_part_it_can_even_when_one_is_spent(
+    async_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """Ruling 12a end to end: the lid's stock has gone out to another order and
+    the base's has not. The base comes back off the shelf, the archive is
+    filed, and only the lid is left for the operator to correct."""
+    from backend.app.models.archive_part import PrintArchivePart
+    from backend.app.models.product import Product, ProductPart, ProductPlate
+    from backend.app.models.project import Project
+    from backend.app.services.part_stock import move
+
+    product = Product(name="Lamp")
+    project = Project(name="Lamps")
+    db_session.add_all([product, project])
+    await db_session.flush()
+    lid = ProductPart(product_id=product.id, kind="printed", name="lid", name_key="lid", qty_per_unit=1)
+    base = ProductPart(product_id=product.id, kind="printed", name="base", name_key="base", qty_per_unit=1)
+    db_session.add_all([lid, base, ProductPlate(product_id=product.id, library_file_id=901, plate_index=0)])
+    await db_session.flush()
+    lid_id, base_id, project_id = lid.id, base.id, project.id
+    archive = await archive_factory(
+        (await printer_factory()).id, library_file_id=901, plate_index=1, status="completed"
+    )
+    archive_id = archive.id
+    db_session.add_all(
+        [
+            PrintArchivePart(archive_id=archive_id, name="lid", name_key="lid", quantity=4),
+            PrintArchivePart(archive_id=archive_id, name="base", name_key="base", quantity=2),
+        ]
+    )
+    await db_session.commit()
+    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await move(db_session, part_id=lid_id, delta=-4, reason="reserved_for_order")
+    await db_session.commit()
+
+    r = await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["project_id"] == project_id, "a refused reversal must never block the filing"
+    per_part = {}
+    for part_id, _reason, delta, _archive_id, _note in await _stock_rows(db_session):
+        per_part[part_id] = per_part.get(part_id, 0) + delta
+    assert per_part == {lid_id: 0, base_id: 0}, "the base was reversed; the lid's stock was already spent"

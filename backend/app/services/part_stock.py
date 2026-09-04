@@ -338,7 +338,33 @@ async def detach_archive(db: AsyncSession, archive_id: int) -> int:
     return result.rowcount or 0
 
 
-async def credit_unfiled_print(db: AsyncSession, archive: PrintArchive) -> list[ProductPartStockMovement]:
+async def unfiled_credit_net(db: AsyncSession, archive_id: int) -> int:
+    """How much free stock this archive is currently holding on the shelf.
+
+    ``Σ delta`` over EVERY movement carrying this ``archive_id`` — the credit,
+    its reversal when the print was filed under an order, and the re-credit
+    when it was un-filed again. That sum, not the existence of a row, is what
+    "already counted" means: an archive that was credited and then filed has
+    rows but holds nothing, and crediting it again after un-filing is right.
+
+    One function, two readers (the writer's own idempotency check and the
+    archive route's 409) — a second copy of the query is a second answer to
+    "is this print already on the shelf", and they would disagree the first
+    time somebody un-filed a print.
+    """
+    return int(
+        await db.scalar(
+            select(func.coalesce(func.sum(ProductPartStockMovement.delta), 0)).where(
+                ProductPartStockMovement.archive_id == archive_id
+            )
+        )
+        or 0
+    )
+
+
+async def credit_unfiled_print(
+    db: AsyncSession, archive: PrintArchive, *, created_by: int | None = None
+) -> list[ProductPartStockMovement]:
     """Put a print that belongs to no order onto the shelf (Decision 3).
 
     One movement per product part, ``printed − defective`` summed over the
@@ -350,28 +376,32 @@ async def credit_unfiled_print(db: AsyncSession, archive: PrintArchive) -> list[
     part gets from attribution, because it is the same statement: the product
     does not measure this object.
 
-    **Idempotent by ``archive_id``.** A second completion event for the same
-    print (an MQTT replay, a reconnect flap) finds an ``unfiled_print``
-    movement already naming this archive and writes nothing. That check is why
-    ``archive_id`` carries an index of its own.
+    **Idempotent by the archive's NET** (:func:`unfiled_credit_net`), not by a
+    row existing. A second completion event for the same print (an MQTT replay,
+    a reconnect flap) finds stock already standing against this archive and
+    writes nothing — and a print that was credited, FILED under an order (net
+    back to zero) and then un-filed again is credited afresh, which is the
+    whole point of Ruling 11. That check is why ``archive_id`` carries an index
+    of its own.
 
     Silent (an empty list, not an exception) for a print this does not apply
     to: one filed under an order, one that did not finish, one whose file no
     product claims. The caller is the completion handler, where a raise would
     be noise about a print that is simply not stock.
 
+    ``created_by`` is the operator who asked, when one did — the archive page's
+    "count this into stock". The completion handler passes nothing: it writes
+    with no user (Decision 7).
+
     Flushes through :func:`move`; the caller commits.
     """
     if archive.project_id is not None or archive.status != _COMPLETED or archive.library_file_id is None:
         return []
-    if await db.scalar(
-        select(func.count())
-        .select_from(ProductPartStockMovement)
-        .where(
-            ProductPartStockMovement.archive_id == archive.id,
-            ProductPartStockMovement.reason == "unfiled_print",
-        )
-    ):
+    # ⚠️ Assumes completion events for ONE archive are handled sequentially (one
+    # process, one handler). A partial unique index is NOT the alternative: this
+    # writes one row per PART per archive, and an un-file/re-credit cycle adds
+    # another set on top — there is no column combination that is unique here.
+    if await unfiled_credit_net(db, archive.id) > 0:
         return []
 
     rows = (
@@ -428,7 +458,14 @@ async def credit_unfiled_print(db: AsyncSession, archive: PrintArchive) -> list[
 
     written: list[ProductPartStockMovement] = []
     for part_id, quantity in wanted.items():
-        movement = await move(db, part_id=part_id, delta=quantity, reason="unfiled_print", archive_id=archive.id)
+        movement = await move(
+            db,
+            part_id=part_id,
+            delta=quantity,
+            reason="unfiled_print",
+            archive_id=archive.id,
+            created_by=created_by,
+        )
         if movement is not None:
             written.append(movement)
     return written
@@ -450,10 +487,20 @@ async def reverse_unfiled_print(db: AsyncSession, archive: PrintArchive, note: s
 
     A part that has since stopped counting (turned purchased, zeroed) is
     skipped: it has no balance to take back, and ``move`` would refuse it as a
-    caller error. Raises :class:`PartStockError` when the stock has already
-    been spent — see the archive editor, which logs that and files the archive
-    anyway.
+    caller error.
+
+    **Every part is attempted.** One part's stock having been spent says
+    nothing about the others, and stopping at the first refusal would leave the
+    rest of the plate double-counted for no reason. The reversals that worked
+    are written (flushed — the caller commits them), and one
+    :class:`PartStockError` naming the refused part ids is raised at the end.
+    Both callers log that and file the archive anyway; the operator corrects
+    the named parts by hand from the product page.
     """
+    # ⚠️ This negates EVERY row carrying this ``archive_id``, whatever its
+    # reason. Only ``unfiled_print`` and its own reversals ever set that column
+    # — do not set it on movements of another reason without revisiting this
+    # sum, which would otherwise take back stock that came from somewhere else.
     totals = (
         await db.execute(
             select(
@@ -474,14 +521,24 @@ async def reverse_unfiled_print(db: AsyncSession, archive: PrintArchive, note: s
     }
 
     written: list[ProductPartStockMovement] = []
+    refused: list[int] = []
     for part_id, net in outstanding.items():
         part = parts.get(part_id)
         if part is None or not is_counted(part):
             logger.info("part_stock: part %s no longer holds stock; archive %s not reversed on it", part_id, archive.id)
             continue
-        movement = await move(db, part_id=part_id, delta=-net, reason="manual", archive_id=archive.id, note=note)
+        try:
+            movement = await move(db, part_id=part_id, delta=-net, reason="manual", archive_id=archive.id, note=note)
+        except PartStockError:
+            refused.append(part_id)
+            continue
         if movement is not None:
             written.append(movement)
+    if refused:
+        raise PartStockError(
+            f"archive {archive.id}: part(s) {', '.join(str(p) for p in refused)} had already spent the stock this "
+            f"print put on the shelf; {len(written)} of {len(written) + len(refused)} reversal(s) were written"
+        )
     return written
 
 

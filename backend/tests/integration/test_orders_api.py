@@ -2382,3 +2382,35 @@ async def test_filing_an_order_less_print_under_an_order_takes_its_stock_back(co
     rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
     assert sum(row.delta for row in rows) == 0
     assert {row.note for row in rows if row.reason == "manual"} == {"filed under order Lamps"}
+
+
+@pytest.mark.asyncio
+async def test_removing_an_archive_from_an_order_puts_its_parts_back_on_the_shelf(
+    committing_client, db_session, catalog
+):
+    """The order page's «Прибрати архіви» is the other un-filing path (Ruling
+    11), and it has to mirror «Додати архіви» exactly: what filing took off the
+    shelf, un-filing puts back. Otherwise a correction quietly loses a plate."""
+    archive = await _completed_print(db_session, None, catalog["file"].id)
+    archive_id = archive.id  # read before the first expire_all: an expired attribute is a greenlet-less lazy load
+    await part_stock.credit_unfiled_print(db_session, archive)
+    await db_session.commit()
+    project_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Lamps", "lines": [{"product_id": catalog["product"].id, "quantity": 1}]},
+        )
+    ).json()["id"]
+    await committing_client.post(f"/api/v1/projects/{project_id}/add-archives", json={"archive_ids": [archive_id]})
+    db_session.expire_all()
+    assert await part_stock.unfiled_credit_net(db_session, archive_id) == 0, "filing took the parts back"
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{project_id}/remove-archives", json={"archive_ids": [archive_id]}
+    )
+
+    assert r.status_code == 200, r.text
+    db_session.expire_all()
+    assert await part_stock.unfiled_credit_net(db_session, archive_id) == 3, "one shade and two arms are back"
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    assert Counter(row.reason for row in rows) == {"unfiled_print": 4, "manual": 2}
