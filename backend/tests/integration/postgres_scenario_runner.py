@@ -128,12 +128,14 @@ async def _product_roundtrip() -> dict:
     sequence rather than a rowid. A 3MF is built by the SQLite test's own
     builder so the two can never drift about what a sliced file looks like.
     """
+    import hashlib
+
     from sqlalchemy import func, select
 
     from backend.app.core.config import settings
     from backend.app.core.database import async_session
     from backend.app.models.library import LibraryFile
-    from backend.app.models.product import Product, ProductPlate
+    from backend.app.models.product import Product
     from backend.app.services.product_card import export_zip, import_zip
     from backend.app.services.product_files import product_attachments_dir
     from backend.app.services.product_sync import sync_product_for_file
@@ -162,13 +164,21 @@ async def _product_roundtrip() -> dict:
             ("kept.gcode.3mf", kept_objects, b"kept"),
             ("gone.gcode.3mf", gone_objects, b"gone"),
         ):
-            (library / name).write_bytes(sliced_3mf(objects, marker=marker))
+            payload = sliced_3mf(objects, marker=marker)
+            (library / name).write_bytes(payload)
             row = LibraryFile(
                 filename=name,
                 file_path=f"library/{name}",
-                file_size=(library / name).stat().st_size,
+                file_size=len(payload),
                 file_type="gcode",
                 file_metadata=_meta(objects),
+                # ⚠️ The hash is the WHOLE POINT of this scenario. ``store_library_upload``
+                # sets it on every real arrival; a hand-built row that omits it is
+                # invisible to ``find_reusable_row`` (which matches on
+                # ``LibraryFile.file_hash``), so the survivor would be re-ingested as a
+                # second row and the "matched by hash" assertion would fail while the
+                # feature it names works perfectly.
+                file_hash=hashlib.sha256(payload).hexdigest(),
             )
             db.add(row)
             rows[name] = row
@@ -196,42 +206,49 @@ async def _product_roundtrip() -> dict:
         await db.commit()
         await db.refresh(product, ["parts", "plates", "library_files", "library_folders"])
 
-        data, filename = await export_zip(db, product)
+        archive = await export_zip(db, product)
         before = (await db.execute(select(func.count()).select_from(LibraryFile))).scalar()
 
         # Destroy the source: the product goes, and ONE of the two files goes
         # with it. The survivor must be matched by hash; the other re-ingested.
+        #
+        # The pivots go through the COLLECTIONS, exactly as ``delete_product``
+        # does: a core DELETE racing the ORM's own secondary DELETE leaves it
+        # expecting two rows and finding one, which surfaces as a StaleDataError
+        # from the flush rather than from the line that caused it.
         gone_id = rows["gone.gcode.3mf"].id
-        await db.execute(ProductPlate.__table__.delete().where(ProductPlate.library_file_id == gone_id))
-        await db.execute(
-            Product.metadata.tables["product_files"]
-            .delete()
-            .where(Product.metadata.tables["product_files"].c.library_file_id == gone_id)
-        )
+        product.library_files = []
+        product.library_folders = []
+        await db.flush()
+        await db.delete(product)
+        await db.flush()
         await db.delete(await db.get(LibraryFile, gone_id))
-        await db.delete(await db.get(Product, product.id))
         await db.commit()
 
-        imported, warnings = await import_zip(db, data, folder_id=None, user=None)
+        try:
+            imported, warnings = await import_zip(db, archive.path, folder_id=None, user=None)
+        finally:
+            archive.path.unlink(missing_ok=True)
         await db.commit()
         await db.refresh(imported, ["parts", "plates", "library_files"])
 
-        plates = sorted(
-            (row.filename, plate.plate_index)
-            for plate in imported.plates
-            for row in [await db.get(LibraryFile, plate.library_file_id)]
-        )
+        plates = []
+        for plate in imported.plates:
+            row = await db.get(LibraryFile, plate.library_file_id)
+            plates.append([row.filename, plate.plate_index])
+        plates.sort()
         return {
-            "filename": filename,
+            "filename": archive.ascii_filename,
+            "display_filename": archive.filename,
             "name": imported.name,
             "designer": imported.designer,
             "design_id": imported.design_id,
             "parts": {p.name_key: p.qty_per_unit for p in imported.parts},
-            "plates": [list(p) for p in plates],
+            "plates": plates,
             "attachments": [(a["category"], a["original_name"], a["source"]) for a in imported.attachments or []],
             "cover_is_the_picture": bool(imported.cover_image_filename)
             and imported.cover_image_filename == (imported.attachments or [{}])[0].get("filename"),
-            "warnings": warnings,
+            "warnings": [w.model_dump() for w in warnings],
             "library_rows_before": before,
             "library_rows_after": (await db.execute(select(func.count()).select_from(LibraryFile))).scalar(),
         }

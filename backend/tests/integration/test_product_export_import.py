@@ -19,7 +19,9 @@ production's ``get_db`` does it after the response.
 import hashlib
 import io
 import json
+import tempfile
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -28,8 +30,32 @@ from sqlalchemy import func, select
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import ProductPlate
 from backend.app.services.product_files import product_attachments_dir
+from backend.app.utils.http import build_content_disposition
 
 pytestmark = pytest.mark.integration
+
+
+def _codes(warnings: list[dict]) -> list[str]:
+    return [w["code"] for w in warnings]
+
+
+def _params(warnings: list[dict], code: str) -> list[dict]:
+    """The params of every note with this code.
+
+    Warnings are ``CardNote`` codes, never prose, so a test asserts on the code
+    and its data — never on a sentence the frontend is going to replace with a
+    translation.
+    """
+    return [w["params"] for w in warnings if w["code"] == code]
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _temp_exports() -> set[Path]:
+    return set(Path(tempfile.gettempdir()).glob("bamdude-product-export-*.zip"))
+
 
 PNG = b"\x89PNG\r\n\x1a\nshot"
 BOM = b"part,qty\nhook,1\n"
@@ -216,13 +242,33 @@ async def test_the_export_filename_is_a_slug_and_a_date(committing_client):
     pid = (await committing_client.post("/api/v1/products/", json={"name": "Desk Lamp / Mk II"})).json()["id"]
     r = await committing_client.get(f"/api/v1/products/{pid}/export")
     assert r.status_code == 200
-    assert 'filename="desk-lamp-mk-ii_' in r.headers["content-disposition"]
-    assert r.headers["content-disposition"].endswith('.zip"')
+    assert f'filename="desk-lamp-mk-ii_{_today()}.zip"' in r.headers["content-disposition"]
 
-    # A name with nothing ASCII-alphanumeric in it still has to produce a name.
-    pid = (await committing_client.post("/api/v1/products/", json={"name": "Настільна лампа"})).json()["id"]
+    # A name with nothing ASCII-alphanumeric in it: the slug fills the legacy
+    # parameter and the real name still reaches the browser through
+    # ``filename*``. Stripping the non-ASCII out of it names the file after the
+    # date and nothing else, which is the bug the fallback exists to avoid.
+    name = "Настільна лампа"
+    pid = (await committing_client.post("/api/v1/products/", json={"name": name})).json()["id"]
     r = await committing_client.get(f"/api/v1/products/{pid}/export")
-    assert f'filename="product-{pid}_' in r.headers["content-disposition"]
+    assert r.headers["content-disposition"] == build_content_disposition(
+        f"{name}_{_today()}.zip", ascii_fallback=f"product-{pid}_{_today()}.zip"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_export_streams_from_a_temp_file_that_is_then_removed(committing_client, exported):
+    """The archive is never held in memory, and it does not outlive the response."""
+    data, _, _ = exported
+    body = (await _import(committing_client, data)).json()
+    before = _temp_exports()
+    r = await committing_client.get(f"/api/v1/products/{body['product']['id']}/export")
+    assert r.status_code == 200 and len(r.content) > 0
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        names = zf.namelist()
+    assert len(names) == len(set(names)), names
+    assert len([n for n in names if n.startswith("files/")]) == 2, names
+    assert _temp_exports() == before, "the export left its temp file behind"
 
 
 @pytest.mark.asyncio
@@ -324,15 +370,26 @@ async def test_without_a_folder_the_import_makes_one_named_after_the_product(com
     # file dropped in it later would silently become part of the recipe.
     assert body["product"]["library_folder_ids"] == []
 
+    # Importing the same export again — how an operator retries — must not leave
+    # a second "Desk Lamp" folder beside the first.
+    await _import(committing_client, data)
+    again = (await db_session.execute(select(LibraryFolder).where(LibraryFolder.name == "Desk Lamp"))).scalars().all()
+    assert len(again) == 1, "a second import invented a second folder of the same name"
+
 
 @pytest.mark.asyncio
 async def test_a_manifest_plate_the_file_no_longer_carries_is_one_warning(committing_client, exported):
     data, manifest, _ = exported
     manifest["plates"].append({**manifest["plates"][0], "plate_index": 7})
+    manifest["plates"].append({**manifest["plates"][0], "plate_index": "nonsense"})
     r = await _import(committing_client, _rebuild(data, manifest=manifest))
     assert r.status_code == 200, r.text
-    assert len(r.json()["warnings"]) == 1, r.json()["warnings"]
-    assert "7" in r.json()["warnings"][0]
+    warnings = r.json()["warnings"]
+    assert _codes(warnings) == ["import_plate_missing", "import_plate_missing"], warnings
+    # An index that is not a number cannot be checked against anything, so it is
+    # reported rather than silently dropped.
+    assert [w["plate_index"] for w in _params(warnings, "import_plate_missing")] == [7, "nonsense"]
+    assert {w["filename"] for w in _params(warnings, "import_plate_missing")} == {"shade.gcode.3mf"}
 
 
 @pytest.mark.asyncio
@@ -382,7 +439,9 @@ async def test_an_attachment_its_category_does_not_carry_is_skipped_with_a_warni
     )
     assert r.status_code == 200, r.text
     product = r.json()["product"]
-    assert any("run.exe" in w for w in r.json()["warnings"]), r.json()["warnings"]
+    assert _params(r.json()["warnings"], "skipped_extension") == [
+        {"name": "run.exe", "ext": ".exe", "category": "pictures"}
+    ], r.json()["warnings"]
     assert "run.exe" not in [a["original_name"] for a in product["attachments"]]
     assert not list(product_attachments_dir(product["id"]).glob("*.exe"))
 
@@ -411,11 +470,65 @@ async def test_a_dedicated_cover_survives_the_round_trip(committing_client):
 
 
 @pytest.mark.asyncio
-async def test_an_archive_larger_than_the_import_ceiling_is_refused(committing_client, monkeypatch, exported):
+async def test_a_declared_length_over_the_ceiling_is_refused_before_anything_is_read(
+    committing_client, db_session, monkeypatch, exported
+):
     data, _, _ = exported
-    monkeypatch.setattr("backend.app.services.product_files.MAX_ATTACHMENT_BYTES", 8)
+    monkeypatch.setattr("backend.app.services.product_files.MAX_IMPORT_BYTES", 8)
+    products = len((await committing_client.get("/api/v1/products/")).json())
+    files = await _active_files(db_session)
     r = await _import(committing_client, data)
     assert r.status_code == 413, r.text
+    assert len((await committing_client.get("/api/v1/products/")).json()) == products
+    assert await _active_files(db_session) == files
+
+
+@pytest.mark.asyncio
+async def test_a_body_over_the_ceiling_stops_mid_stream(monkeypatch):
+    """The declared length is the client's word; the count as the bytes land is
+    the fact, and it must stop the write rather than report it afterwards."""
+    from fastapi import HTTPException, UploadFile
+
+    from backend.app.api.routes.products import _spool_import_upload
+
+    monkeypatch.setattr("backend.app.services.product_files.MAX_IMPORT_BYTES", 16)
+    before = set(Path(tempfile.gettempdir()).glob("bamdude-product-import-*.zip"))
+    with pytest.raises(HTTPException) as exc:
+        await _spool_import_upload(UploadFile(filename="p.zip", file=io.BytesIO(b"x" * 4096)))
+    assert exc.value.status_code == 413
+    assert set(Path(tempfile.gettempdir()).glob("bamdude-product-import-*.zip")) == before
+
+
+@pytest.mark.asyncio
+async def test_a_file_the_library_refuses_costs_that_file_and_nothing_else(committing_client, exported):
+    """A 400 from the library is about ONE member. The product is still built —
+    an operator with one unprintable part and a warning on screen is better off
+    than one with a 400 and nothing."""
+    data, manifest, _ = exported
+    manifest["files"].append({"hash": "0" * 64, "filename": "broken.3mf", "size": 9, "member": "files/broken.3mf"})
+    r = await _import(committing_client, _rebuild(data, manifest=manifest, extra={"files/broken.3mf": b"not a zip"}))
+    assert r.status_code == 200, r.text
+    refused = _params(r.json()["warnings"], "import_file_refused")
+    assert len(refused) == 1 and refused[0]["name"] == "broken.3mf"
+    # The library's own words, passed through rather than re-invented here.
+    assert "3mf" in refused[0]["detail"].lower()
+    assert len(r.json()["product"]["library_file_ids"]) == 2
+    assert r.json()["product"]["name"] == "Desk Lamp"
+
+
+@pytest.mark.asyncio
+async def test_a_part_that_is_deliberately_not_counted_round_trips_as_zero(committing_client):
+    """``qty_per_unit = 0`` is the model's "on a plate but not part of the
+    product" rule. A round trip that raised it to 1 would invent a requirement
+    the operator deliberately removed."""
+    pid = (await committing_client.post("/api/v1/products/", json={"name": "Zeroed"})).json()["id"]
+    r = await committing_client.post(
+        f"/api/v1/products/{pid}/parts", json={"kind": "purchased", "name": "Spacer", "qty_per_unit": 0}
+    )
+    assert r.status_code == 200, r.text
+    data = (await committing_client.get(f"/api/v1/products/{pid}/export")).content
+    imported = (await _import(committing_client, data)).json()["product"]
+    assert [(p["name"], p["qty_per_unit"]) for p in imported["parts"]] == [("Spacer", 0)]
 
 
 @pytest.mark.asyncio
@@ -441,7 +554,7 @@ async def test_a_product_with_nothing_on_it_still_exports_and_imports(committing
 
 
 @pytest.mark.asyncio
-async def test_a_file_whose_bytes_are_gone_is_left_out_of_the_export(committing_client, db_session, tmp_path: Path):
+async def test_a_file_whose_bytes_are_gone_is_left_out_of_the_export(committing_client, db_session):
     """A row can outlive its bytes. The export skips it rather than failing."""
     pid = (await committing_client.post("/api/v1/products/", json={"name": "Ghost"})).json()["id"]
     row = LibraryFile(filename="gone.3mf", file_path="library/gone.3mf", file_size=1, file_type="3mf")

@@ -101,6 +101,14 @@ IMAGE_CONTENT_TYPES = {
 # comfortably clears a photo, a slicer PDF and a spreadsheet.
 MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 
+# A product export's ceiling — a different question from an attachment's, and a
+# much larger answer: the archive carries every 3MF the product prints from, and
+# a plated multi-material 3MF is routinely hundreds of megabytes. This is a
+# TRANSPORT bound, not a policy: the upload is streamed to a temp file with this
+# as a running stop, so the number is "what a farm's disk can absorb from one
+# request" and nothing about it is buffered in memory.
+MAX_IMPORT_BYTES = 2 * 1024**3
+
 
 def attachment_limit() -> int:
     """The ceiling, read at call time.
@@ -118,6 +126,17 @@ def attachment_limit() -> int:
 def exceeds_attachment_limit(size: int | None) -> bool:
     """``True`` when a member is too big to move."""
     return size is not None and size > attachment_limit()
+
+
+def import_limit() -> int:
+    """The product-import ceiling, read at call time.
+
+    Same rule as :func:`attachment_limit`, for the same reason: a module that
+    binds the name at import time keeps the value it saw, so the number a 413
+    REPORTS would drift from the number the gate ENFORCED. It is also what lets
+    a test lower the ceiling instead of producing two gigabytes.
+    """
+    return MAX_IMPORT_BYTES
 
 
 # Order matters: it is the order the product page renders the sections in, and

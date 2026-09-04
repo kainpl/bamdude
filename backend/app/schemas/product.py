@@ -212,7 +212,10 @@ class ProductAttachmentOut(BaseModel):
     original_name: str
     size: int = 0
     sort_order: int = 0
-    source: str = "manual"
+    # The three writers, and there are no others: the upload route
+    # (``manual``), ``fill_from_file`` (``3mf``) and ``import_zip``
+    # (``import``). m158's converted project attachments are ``manual`` too.
+    source: Literal["manual", "3mf", "import"] = "manual"
     source_file_id: int | None = None
     uploaded_at: str | None = None
 
@@ -278,11 +281,24 @@ class CardNote(BaseModel):
         "filled_field",  # params: field
         "replaced_files",  # params: count
         "imported_files",  # params: category, count
+        # Shared by the 3MF fill and the ZIP import — the same three questions
+        # ("wrong type", "too big", "could not write it") get the same three
+        # answers whichever container the file arrived in. The import's cover
+        # variants add ``category = "cover"``, which no fill ever produces.
         "skipped_extension",  # params: name, ext, category
-        "skipped_too_large",  # params: name, size, limit
+        "skipped_too_large",  # params: name, size, limit (+ category on the cover)
         "skipped_unreadable",  # params: name
-        "skipped_unsaved",  # params: name
+        "skipped_unsaved",  # params: name (+ category on the cover)
         "nothing_to_fill",
+        # Import-only (spec §Decisions 6).
+        "import_file_missing",  # params: name
+        "import_file_refused",  # params: name, detail — detail is the LIBRARY's own words
+        "import_part_duplicate_key",  # params: name, key
+        "import_plate_missing",  # params: filename, plate_index
+        "import_bad_category",  # params: name, category
+        "import_attachment_missing",  # params: name
+        "import_bad_name",  # params: name
+        "import_cover_missing",
     ]
     params: dict[str, str | int] = {}
 
@@ -290,17 +306,21 @@ class CardNote(BaseModel):
 class ProductImportResponse(BaseModel):
     """``POST /products/import``.
 
-    ⚠️ ``warnings`` is prose, not codes — unlike :class:`CardNote`. An import
-    warning names something from a STRANGER's archive (a category BamDude does
-    not have, a plate a file no longer carries, a filename the library refused),
-    so the interesting half of every message is untranslatable data anyway, and
-    the fixed half reads like the HTTPException details beside it. A code
-    vocabulary here would have to grow a member for every way somebody else's
-    file can be wrong.
+    ⚠️ ``warnings`` are :class:`CardNote` codes, exactly like a card fill's —
+    no English on the wire. The first version of this shipped prose, on the
+    argument that an import warning is mostly untranslatable data (a filename,
+    a category BamDude does not have) with only a short fixed half around it.
+    That argument is wrong twice: the fixed half is the sentence the operator
+    actually reads, and a locale that gets half its product page translated and
+    half not is worse than either. The one string that survives as a string is
+    ``import_file_refused``'s ``detail`` — the library's own rejection message,
+    passed through verbatim rather than re-invented as a second vocabulary for
+    the same refusals (``store_library_upload``'s docstring makes the same
+    point about the Telegram bot showing ``e.detail``).
     """
 
     product: ProductResponse
-    warnings: list[str] = []
+    warnings: list[CardNote] = []
 
 
 class RereadResponse(BaseModel):

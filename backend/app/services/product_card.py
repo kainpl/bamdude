@@ -39,6 +39,11 @@ The rules :func:`export_zip` / :func:`import_zip` exist to enforce (spec
 * **The pivots belong to the sync.** Files join the product through
   ``sync_product_for_file``, never by inserting ``product_files``, and always as
   a UNION with whatever products the reused row already belongs to.
+* **Neither direction is held in memory.** The export builds its ZIP on a temp
+  file with ``ZipFile.write``, the import reads members out of a temp file the
+  route streamed the upload into. A product linked to a folder of
+  hundred-megabyte 3MFs is a normal product, and buffering one would put the
+  farm's whole recipe on the heap of a Raspberry Pi.
 
 ⚠️ **Nothing here writes into the 3MF.** A library file is the operator's
 original; the card lives in the database (spec §Risks). ``update_metadata`` is
@@ -47,14 +52,15 @@ the archive's method and is not called from this module.
 
 import asyncio
 import hashlib
-import io
 import json
 import logging
 import os
 import posixpath
 import re
+import tempfile
 import uuid
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -68,7 +74,7 @@ from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import Product, ProductPart, ProductPlate, product_files
 from backend.app.models.project_line import ProjectLine
 from backend.app.schemas.product import CardNote
-from backend.app.services.library_ingest import find_reusable_row
+from backend.app.services.library_ingest import external_hash_is_stale, find_reusable_row
 from backend.app.services.order_metrics import attribute, load_order_context
 from backend.app.services.part_names import canonicalize, name_key
 from backend.app.services.product_composition import purchased_name_key
@@ -76,9 +82,9 @@ from backend.app.services.product_files import (
     ATTACHMENT_CATEGORIES,
     CATEGORY_EXTENSIONS,
     COVER_EXTENSIONS,
-    attachment_entry,
     attachment_limit,
     exceeds_attachment_limit,
+    import_limit,
     product_attachments_dir,
     safe_attachment_name,
     sorted_attachments,
@@ -370,21 +376,54 @@ _ATTACHMENTS_ROOT = "attachments"
 _COVER_ROOT = "cover"
 
 _SLUG_MAX = 40
+_HASH_CHUNK = 1024 * 1024
 
-# The import buffers the whole archive AND every member it copies, so the
-# ceiling is a memory bound before it is a policy. Four attachments' worth of
-# ceiling comfortably clears a product with a couple of 3MFs and a photo set;
-# an archive above it is refused before a single member is inflated.
-_IMPORT_SIZE_FACTOR = 4
+
+@dataclass(slots=True)
+class ExportArchive:
+    """A finished export: the file on disk and the two names it goes out under.
+
+    ``filename`` is the product's own name and travels in ``filename*``;
+    ``ascii_filename`` is the slug and fills the legacy ``filename=`` parameter,
+    because dropping the non-ASCII characters out of a Ukrainian product name
+    leaves the date and nothing else.
+
+    ⚠️ ``path`` is a TEMP FILE and the caller owns deleting it. The route hands
+    that to a ``BackgroundTask`` so it happens once the bytes are on the wire.
+    """
+
+    path: Path
+    filename: str
+    ascii_filename: str
+
+
+@dataclass(slots=True)
+class _FileSpec:
+    """One library file, flattened for the worker thread.
+
+    ⚠️ Plain scalars, never the ORM row. The whole archive is built inside one
+    ``to_thread``, and touching an unloaded or expired attribute off the event
+    loop is a ``MissingGreenlet``, not a lazy SELECT — so everything the thread
+    needs is read here, on the loop, first. The three names are the ones
+    ``external_hash_is_stale`` asks for, so this duck-types as its ``row``.
+    """
+
+    library_file_id: int
+    path: Path
+    filename: str
+    file_hash: str | None
+    is_external: bool
+    file_size: int | None
+    fs_modified_at: Any
 
 
 def export_slug(product: Any) -> str:
-    """The filename stem: the product's name, ASCII, lower-case, hyphenated.
+    """The ASCII fallback stem: the product's name, lower-case, hyphenated.
 
-    ASCII only on purpose — the stem lands in a ``Content-Disposition`` header,
-    where anything else needs RFC 5987 encoding that not every client reads. A
-    name written entirely in another script therefore collapses to nothing, and
-    the id names the file instead of a header nobody can parse.
+    ASCII only on purpose — this fills the legacy ``filename="..."`` parameter,
+    which Starlette encodes as latin-1. A name written entirely in another
+    script therefore collapses to nothing and the id names the file instead;
+    the real name still reaches the browser through ``filename*``.
     """
     slug = re.sub(r"[^a-z0-9]+", "-", (product.name or "").lower()).strip("-")[:_SLUG_MAX].strip("-")
     return slug or f"product-{product.id}"
@@ -406,6 +445,35 @@ def _member(directory: str, name: str, taken: set[str]) -> str:
         n += 1
     taken.add(candidate)
     return candidate
+
+
+def _digest_of(spec: _FileSpec) -> str:
+    """The file's SHA-256 — from the row when the row can be believed.
+
+    A MANAGED file lives under BamDude's own directory: nothing outside changes
+    it, so the hash written at ingest still describes it. An EXTERNAL file lives
+    on somebody's mount and may have been replaced since the last scan, so its
+    stored hash is trusted only while ``external_hash_is_stale`` says size and
+    mtime still match. Everything else is read, in chunks — a 3MF is not a thing
+    to hold in memory to hash it.
+    """
+    from backend.app.api.routes.library import _mtime_to_utc
+
+    if spec.file_hash:
+        if not spec.is_external:
+            return spec.file_hash
+        try:
+            stat = spec.path.stat()
+        except OSError:
+            stat = None
+        if stat is not None and not external_hash_is_stale(spec, size=stat.st_size, mtime=_mtime_to_utc(stat.st_mtime)):
+            return spec.file_hash
+
+    digest = hashlib.sha256()
+    with spec.path.open("rb") as handle:
+        while chunk := handle.read(_HASH_CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 async def _files_to_export(db: AsyncSession, product: Any) -> list[LibraryFile]:
@@ -442,100 +510,171 @@ def _part_manifest(part: Any) -> dict:
     }
 
 
-async def export_zip(db: AsyncSession, product: Any) -> tuple[bytes, str]:
-    """The product as a ZIP, and the filename to offer it under.
+def _write_export(
+    specs: list[_FileSpec],
+    plate_rows: list[tuple[int, int]],
+    attachment_sources: list[tuple[dict, Path]],
+    cover_source: tuple[str, Path] | None,
+    card: dict,
+    parts: list[dict],
+) -> tuple[str, dict]:
+    """Build the archive on disk and return ``(temp path, manifest)``.
 
-    ⚠️ The whole archive is built in memory, so the export is bounded by what
-    the product's files weigh. That is the same trade the attachment routes
-    already make, and the alternative — a temp file the route streams and then
-    has to delete on every exit path, cancellation included — buys nothing until
-    somebody exports a gigabyte.
+    ⚠️ **Nothing is read into memory.** Every member goes in through
+    ``ZipFile.write``, which streams the file straight through the compressor,
+    so the export of a product linked to a folder of hundred-megabyte 3MFs costs
+    a temp file and not the farm's RAM. That is also why ``product.json`` is
+    written LAST: it names the hashes, and the hashes are only known once every
+    file has been read once.
+
+    One thread hop for the whole job — hashing, compressing and writing are all
+    blocking, and splitting them would only multiply the hops.
+    """
+    handle, name = tempfile.mkstemp(prefix="bamdude-product-export-", suffix=".zip")
+    os.close(handle)
+    path = Path(name)
+    taken: set[str] = set()
+    hash_by_file: dict[int, str] = {}
+    name_by_file: dict[int, str] = {}
+    files: list[dict] = []
+    members: dict[str, Path] = {}
+
+    try:
+        for spec in specs:
+            digest = _digest_of(spec)
+            hash_by_file[spec.library_file_id] = digest
+            name_by_file[spec.library_file_id] = spec.filename
+            if digest in {f["hash"] for f in files}:
+                continue  # two rows, one content: the archive carries the bytes once
+            member = _member(_FILES_ROOT, f"{digest}_{spec.filename}", taken)
+            members[member] = spec.path
+            files.append(
+                {
+                    "hash": digest,
+                    "filename": spec.filename,
+                    "size": spec.path.stat().st_size,
+                    "member": member,
+                }
+            )
+
+        attachments: list[dict] = []
+        exported_name: dict[str, str] = {}
+        for entry, source in attachment_sources:
+            member = _member(
+                f"{_ATTACHMENTS_ROOT}/{entry['category']}", os.path.basename(str(entry["original_name"])), taken
+            )
+            members[member] = source
+            exported_name[entry["filename"]] = posixpath.basename(member)
+            attachments.append(
+                {
+                    "category": entry["category"],
+                    "original_name": posixpath.basename(member),
+                    "sort_order": entry.get("sort_order") or 0,
+                    "source": entry.get("source") or "manual",
+                    "member": member,
+                }
+            )
+
+        cover: str | None = None
+        if cover_source is not None:
+            stored, source = cover_source
+            if stored in exported_name:
+                cover = exported_name[stored]
+            else:
+                cover = f"{_COVER_ROOT}{os.path.splitext(stored)[1].lower()}"
+                members[f"{_ATTACHMENTS_ROOT}/{_COVER_ROOT}/{cover}"] = source
+
+        manifest = {
+            "format": EXPORT_FORMAT,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "card": card,
+            "parts": parts,
+            "files": files,
+            "plates": [
+                {
+                    "file_hash": hash_by_file[library_file_id],
+                    "filename": name_by_file[library_file_id],
+                    "plate_index": plate_index,
+                }
+                for library_file_id, plate_index in plate_rows
+                if library_file_id in hash_by_file
+            ],
+            "attachments": attachments,
+            "cover": cover,
+        }
+
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for member, source in members.items():
+                zf.write(source, arcname=member)
+            zf.writestr(_MANIFEST, json.dumps(manifest, indent=2, ensure_ascii=False))
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return name, manifest
+
+
+async def export_zip(db: AsyncSession, product: Any) -> ExportArchive:
+    """The product as a ZIP on disk, and the names to offer it under.
+
+    The archive is a temp file the CALLER deletes — see :class:`ExportArchive`.
+    Nothing about it is buffered, so the export has no size ceiling of its own;
+    the round trip is bounded on the other side instead, by
+    ``product_files.import_limit()``, which is what a farm will accept back.
 
     A file whose row outlived its bytes is left out rather than failing the
     export: the operator asked for what this product IS, and one unreachable
     mount is not a reason to hand them nothing. Its plates drop out with it, so
     the manifest never promises a plate whose file it did not carry.
     """
-    payload: dict[str, bytes] = {}
-    taken: set[str] = set()
-    hash_by_file: dict[int, str] = {}
-    name_by_file: dict[int, str] = {}
-    files: list[dict] = []
-    seen_hashes: set[str] = set()
-
+    specs: list[_FileSpec] = []
     for row in await _files_to_export(db, product):
         path = resolve_disk_path(row)
         if path is None:
             logger.info("Export of product %s skips file %s: its bytes are gone", product.id, row.id)
             continue
-        data = await asyncio.to_thread(path.read_bytes)
-        digest = hashlib.sha256(data).hexdigest()
-        filename = os.path.basename(row.filename or f"{digest[:12]}.3mf")
-        hash_by_file[row.id] = digest
-        name_by_file[row.id] = filename
-        if digest in seen_hashes:
-            continue  # two rows, one content: the archive carries the bytes once
-        seen_hashes.add(digest)
-        member = _member(_FILES_ROOT, f"{digest}_{filename}", taken)
-        payload[member] = data
-        files.append({"hash": digest, "filename": filename, "size": len(data), "member": member})
-
-    plates = [
-        {
-            "file_hash": hash_by_file[plate.library_file_id],
-            "filename": name_by_file[plate.library_file_id],
-            "plate_index": plate.plate_index,
-        }
-        for plate in sorted(product.plates, key=lambda p: (p.library_file_id, p.plate_index))
-        if plate.library_file_id in hash_by_file
-    ]
+        specs.append(
+            _FileSpec(
+                library_file_id=row.id,
+                path=path,
+                filename=os.path.basename(row.filename or f"file-{row.id}.3mf"),
+                file_hash=row.file_hash,
+                is_external=bool(row.is_external),
+                file_size=row.file_size,
+                fs_modified_at=row.fs_modified_at,
+            )
+        )
 
     directory = product_attachments_dir(product.id)
-    attachments: list[dict] = []
-    exported_name: dict[str, str] = {}
+    attachment_sources: list[tuple[dict, Path]] = []
     for entry in sorted_attachments(product):
         stored = _safe_stored_name(entry.get("filename"))
-        category = entry.get("category")
-        if stored is None or category not in ATTACHMENT_CATEGORIES:
+        if stored is None or entry.get("category") not in ATTACHMENT_CATEGORIES:
             continue
         source = directory / stored  # SEC-PATH-OK: guarded by _safe_stored_name just above
-        if not source.is_file():
-            continue
-        member = _member(
-            f"{_ATTACHMENTS_ROOT}/{category}", os.path.basename(str(entry.get("original_name") or stored)), taken
-        )
-        payload[member] = await asyncio.to_thread(source.read_bytes)
-        original = posixpath.basename(member)
-        exported_name[stored] = original
-        attachments.append(
-            {
-                "category": category,
-                "original_name": original,
-                "sort_order": entry.get("sort_order") or 0,
-                "source": entry.get("source") or "manual",
-                "member": member,
-            }
-        )
+        if source.is_file():
+            attachment_sources.append(({**entry, "original_name": entry.get("original_name") or stored}, source))
 
     # The cover, in its two shapes. A picked gallery picture travels as the name
     # its own entry travelled under; a dedicated upload has no original name to
-    # keep (the column is all there ever was), so it is given a readable one and
-    # a directory of its own so the import can tell the two apart.
-    cover: str | None = None
+    # keep (the column is all there ever was), so the worker gives it a readable
+    # one and a directory of its own so the import can tell the two apart.
+    cover_source: tuple[str, Path] | None = None
     explicit = _safe_stored_name(product.cover_image_filename)
     if explicit is not None:
-        if explicit in exported_name:
-            cover = exported_name[explicit]
-        elif attachment_entry(product, explicit) is None:
-            source = directory / explicit  # SEC-PATH-OK: guarded by _safe_stored_name just above
-            if source.is_file():
-                cover = f"{_COVER_ROOT}{os.path.splitext(explicit)[1].lower()}"
-                payload[f"{_ATTACHMENTS_ROOT}/{_COVER_ROOT}/{cover}"] = await asyncio.to_thread(source.read_bytes)
+        source = directory / explicit  # SEC-PATH-OK: guarded by _safe_stored_name just above
+        if source.is_file():
+            cover_source = (explicit, source)
 
-    manifest = {
-        "format": EXPORT_FORMAT,
-        "exported_at": datetime.now(timezone.utc).isoformat(),
-        "card": {
+    path, _manifest_written = await asyncio.to_thread(
+        _write_export,
+        specs,
+        [
+            (plate.library_file_id, plate.plate_index)
+            for plate in sorted(product.plates, key=lambda p: (p.library_file_id, p.plate_index))
+        ],
+        attachment_sources,
+        cover_source,
+        {
             "name": product.name,
             "description": product.description,
             "notes": product.notes,
@@ -544,23 +683,13 @@ async def export_zip(db: AsyncSession, product: Any) -> tuple[bytes, str]:
             "source_url": product.source_url,
             "design_id": product.design_id,
         },
-        "parts": [_part_manifest(p) for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))],
-        "files": files,
-        "plates": plates,
-        "attachments": attachments,
-        "cover": cover,
-    }
-
-    def _build() -> bytes:
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(_MANIFEST, json.dumps(manifest, indent=2, ensure_ascii=False))
-            for name, data in payload.items():
-                zf.writestr(name, data)
-        return buf.getvalue()
-
-    return await asyncio.to_thread(_build), (
-        f"{export_slug(product)}_{datetime.now(timezone.utc).date().isoformat()}.zip"
+        [_part_manifest(p) for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))],
+    )
+    date = datetime.now(timezone.utc).date().isoformat()
+    return ExportArchive(
+        path=Path(path),
+        filename=f"{product.name}_{date}.zip",
+        ascii_filename=f"{export_slug(product)}_{date}.zip",
     )
 
 
@@ -574,9 +703,12 @@ def _reject_hostile_members(zf: zipfile.ZipFile) -> None:
     is not already a normalised relative path under one of them is refused
     rather than repaired, because a name that needs repairing is a name whose
     author meant something by it.
+
+    There is deliberately no total-inflation ceiling here any more. The upload is
+    streamed to disk against ``import_limit()`` before this runs, and the members
+    are read one at a time against their own caps — a single number covering the
+    sum of everything only ever refused legitimate exports of large products.
     """
-    total = 0
-    ceiling = attachment_limit() * _IMPORT_SIZE_FACTOR
     for info in zf.infolist():
         name = info.filename
         if name.endswith("/"):
@@ -590,9 +722,6 @@ def _reject_hostile_members(zf: zipfile.ZipFile) -> None:
             or not (name == _MANIFEST or root in (_FILES_ROOT, _ATTACHMENTS_ROOT))
         ):
             raise HTTPException(status_code=400, detail=f"The archive carries an illegal member name: {name!r}")
-        total += info.file_size
-        if total > ceiling:
-            raise HTTPException(status_code=413, detail=f"An import may unpack to at most {ceiling} bytes")
 
 
 def _validated_manifest(zf: zipfile.ZipFile) -> dict:
@@ -644,6 +773,18 @@ def _whole(value: Any, fallback: int = 0) -> int:
         return fallback
 
 
+def _price(value: Any) -> float | None:
+    """A unit price, or nothing.
+
+    ⚠️ ``bool`` is checked FIRST and rejected: it is a subclass of ``int``, so
+    ``isinstance(True, (int, float))`` is True and a manifest carrying
+    ``"unit_price": true`` would price the part at 1.00.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 async def _products_of_file(db: AsyncSession, library_file_id: int) -> set[int]:
     """Who else owns this file, read off the pivot.
 
@@ -666,18 +807,30 @@ async def _import_destination(db: AsyncSession, folder_id: int | None, product_n
     an operator who imports into their existing Downloads folder did not say
     that about the two hundred files already in it.
 
+    Without a ``folder_id`` an existing ROOT folder of the same name is REUSED
+    before a new one is made. Importing the same export twice — the ordinary way
+    an operator retries — otherwise leaves two "Desk Lamp" folders side by side,
+    and a third on the next attempt, with nothing to say which is which.
+
     ``selectinload``: ``store_library_upload`` runs ``inherit_folder_products``,
     which reads ``folder.products`` — a lazy load inside an async session is a
     ``MissingGreenlet``, not a SELECT.
     """
+    query = select(LibraryFolder).options(selectinload(LibraryFolder.products))
     if folder_id is not None:
-        folder = (
-            await db.execute(
-                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.products))
-            )
-        ).scalar_one_or_none()
+        folder = (await db.execute(query.where(LibraryFolder.id == folder_id))).scalar_one_or_none()
         if folder is None:
             raise HTTPException(status_code=404, detail="Folder not found")
+        return folder
+    existing = (
+        await db.execute(
+            query.where(LibraryFolder.name == product_name, LibraryFolder.parent_id.is_(None)).order_by(
+                LibraryFolder.id
+            )
+        )
+    ).scalars()
+    folder = next(iter(existing), None)
+    if folder is not None:
         return folder
     folder = LibraryFolder(name=product_name[:255])
     db.add(folder)
@@ -687,25 +840,33 @@ async def _import_destination(db: AsyncSession, folder_id: int | None, product_n
 
 
 async def import_zip(
-    db: AsyncSession, zip_bytes: bytes, *, folder_id: int | None, user: Any
-) -> tuple[Product, list[str]]:
-    """Rebuild a product from an export. Returns it and everything it could not do.
+    db: AsyncSession, zip_path: Path, *, folder_id: int | None, user: Any
+) -> tuple[Product, list[CardNote]]:
+    """Rebuild a product from an export on disk. Returns it and every note.
 
-    ⚠️ **The files go in first, on purpose.** ``store_library_upload`` commits —
-    it is the library's own write path and always has been — so anything created
-    before it is durable whether or not the rest of this function succeeds.
-    Ingesting first means a failure half-way leaves library rows (which is
-    exactly what an upload leaves) and NO half-built product, instead of a
-    committed product with no files that nothing can tell apart from a real one.
+    ``zip_path`` is a file, not bytes: the route streams the upload to disk
+    against ``import_limit()`` and this reads members out of it one at a time,
+    so a two-gigabyte archive costs a temp file rather than the farm's memory.
+    The caller owns deleting it.
 
-    ⚠️ Warnings are not errors. A skipped attachment, or a plate the file no
-    longer carries, must not cost the operator the other 95% of the import, so
-    they ride back beside the product and the page shows them.
+    **The order, and the rule it buys.** The manifest and every member NAME are
+    validated before a single write happens, so a hostile or unreadable archive
+    creates nothing at all. After that, files are ingested BEFORE the product
+    row exists — ``store_library_upload`` commits, so anything created before it
+    is durable regardless of what follows, and library rows are exactly what an
+    upload leaves behind anyway.
+
+    ⚠️ **A file the library refuses is skipped, not fatal.** It comes back as
+    ``import_file_refused`` carrying the library's own words, the product is
+    still created, and the parts that file would have bound to simply stay
+    unbound — a product with one unprintable member and a warning on screen is
+    worth more to an operator than a 400 and nothing. Same for a skipped
+    attachment or a plate the file no longer carries.
     """
-    warnings: list[str] = []
+    notes: list[CardNote] = []
     try:
-        archive = zipfile.ZipFile(io.BytesIO(zip_bytes))
-    except zipfile.BadZipFile as e:
+        archive = zipfile.ZipFile(zip_path)
+    except (zipfile.BadZipFile, OSError) as e:
         raise HTTPException(status_code=400, detail="The uploaded file is not a ZIP archive") from e
 
     with archive as zf:
@@ -732,7 +893,14 @@ async def import_zip(
             member = str(entry.get("member") or f"{_FILES_ROOT}/{entry.get('hash')}_{entry.get('filename')}")
             filename = os.path.basename(_text(entry.get("filename")) or "")
             if member not in names:
-                warnings.append(f"{filename or member}: the archive carries no bytes for this file")
+                notes.append(_note("import_file_missing", name=filename or member))
+                continue
+            # A member claiming to be larger than the whole archive may be is a
+            # zip bomb, and ``store_library_upload`` takes bytes — so the size is
+            # read off the directory before anything is inflated.
+            declared = zf.getinfo(member).file_size
+            if declared > import_limit():
+                notes.append(_note("skipped_too_large", name=filename or member, size=declared, limit=import_limit()))
                 continue
             data = zf.read(member)
             digest = hashlib.sha256(data).hexdigest()
@@ -763,7 +931,7 @@ async def import_zip(
                     # the request, not the file, and belongs to the caller.
                     if e.status_code != 400:
                         raise
-                    warnings.append(f"{filename or member}: the library refused this file ({e.detail})")
+                    notes.append(_note("import_file_refused", name=filename or member, detail=str(e.detail)))
                     continue
             file_ids.append(row.id)
             hash_by_file[row.id] = digest
@@ -799,7 +967,7 @@ async def import_zip(
             )
             if key in seen:
                 # ``uq_product_parts_key`` would raise at flush time, far from here.
-                warnings.append(f"{name}: another part of this product already answers to '{key}'")
+                notes.append(_note("import_part_duplicate_key", name=name, key=key))
                 continue
             seen.add(key)
             aliases = [a for a in (raw.get("aliases") or []) if isinstance(a, str) and a] if kind == "printed" else None
@@ -809,10 +977,15 @@ async def import_zip(
                     kind=kind,
                     name=name,
                     name_key=key,
+                    # ⚠️ Floors at 0, not at 1. ``qty_per_unit = 0`` is the
+                    # "present on a plate but not part of the product" rule the
+                    # model documents; raising it to 1 here would invent a
+                    # requirement the operator deliberately removed, on a round
+                    # trip whose whole job is to change nothing.
                     qty_per_unit=max(0, _whole(raw.get("qty_per_unit"), 1)),
                     aliases=aliases,
                     auto=bool(raw.get("auto", False)),
-                    unit_price=raw.get("unit_price") if isinstance(raw.get("unit_price"), (int, float)) else None,
+                    unit_price=_price(raw.get("unit_price")),
                     sourcing_url=_text(raw.get("sourcing_url"), 512),
                     remarks=_text(raw.get("remarks")),
                     sort_order=_whole(raw.get("sort_order"), position),
@@ -829,38 +1002,59 @@ async def import_zip(
             )
 
         # ---- attachments and the cover ----
-        rows, cover_stored = await _import_attachments(zf, names, product, manifest, warnings)
-        product.attachments = rows
-        if cover_stored:
-            product.cover_image_filename = cover_stored
-        await db.flush()
+        rows, cover_stored = await _import_attachments(zf, names, product, manifest, notes)
+        directory = product_attachments_dir(product.id)
+        try:
+            product.attachments = rows
+            if cover_stored:
+                product.cover_image_filename = cover_stored
+            await db.flush()
 
-        # ---- what the manifest promised and the files no longer carry ----
-        carried = set(hash_by_file.values())
-        have = {
-            (hash_by_file.get(library_file_id), plate_index)
-            for library_file_id, plate_index in (
-                await db.execute(
-                    select(ProductPlate.library_file_id, ProductPlate.plate_index).where(
-                        ProductPlate.product_id == product.id
+            # ---- what the manifest promised and the files no longer carry ----
+            carried = set(hash_by_file.values())
+            have = {
+                (hash_by_file.get(library_file_id), plate_index)
+                for library_file_id, plate_index in (
+                    await db.execute(
+                        select(ProductPlate.library_file_id, ProductPlate.plate_index).where(
+                            ProductPlate.product_id == product.id
+                        )
                     )
-                )
-            ).all()
-        }
-        for raw in manifest.get("plates") or []:
-            if not isinstance(raw, dict) or raw.get("file_hash") not in carried:
-                continue  # its file never made it in, and that was already reported
-            if (raw.get("file_hash"), raw.get("plate_index")) not in have:
-                warnings.append(f"{raw.get('filename')}: plate {raw.get('plate_index')} is not in the file any more")
+                ).all()
+            }
+            for raw in manifest.get("plates") or []:
+                if not isinstance(raw, dict) or raw.get("file_hash") not in carried:
+                    continue  # its file never made it in, and that was already reported
+                filename = _text(raw.get("filename")) or "?"
+                try:
+                    plate_index = int(raw.get("plate_index"))
+                except (TypeError, ValueError):
+                    # An unreadable index cannot be checked against anything, so
+                    # it is reported as missing rather than silently dropped.
+                    notes.append(
+                        _note("import_plate_missing", filename=filename, plate_index=str(raw.get("plate_index")))
+                    )
+                    continue
+                if (raw.get("file_hash"), plate_index) not in have:
+                    notes.append(_note("import_plate_missing", filename=filename, plate_index=plate_index))
+        except BaseException:
+            # The rows are on disk and the column that names them is about to be
+            # rolled back, which would leave files nothing references and nothing
+            # sweeps. Undo the writes, then let the failure through unchanged.
+            for entry in rows:
+                _unlink_quietly(directory / entry["filename"])  # SEC-PATH-OK: uuid4().hex + a checked extension
+            if cover_stored:
+                _unlink_quietly(directory / cover_stored)  # SEC-PATH-OK: 'cover_' + uuid4().hex + a checked extension
+            raise
 
-    return product, warnings
+    return product, notes
 
 
 async def _ingest_into_library(db: AsyncSession, *, filename: str, content: bytes, target_folder: Any, user: Any):
     """The library's own upload path, called with the import's bytes.
 
-    The import function-local ``store_library_upload`` import is the same
-    concession :func:`resolve_disk_path` makes above: the helper still lives in
+    The function-local ``store_library_upload`` import is the same concession
+    :func:`resolve_disk_path` makes above: the helper still lives in
     ``routes/library.py`` because it leans on a dozen module-private helpers of
     that route, and a service importing a route module is the smaller wrong
     until they move. Calling anything else here would be a SECOND answer to
@@ -879,7 +1073,7 @@ async def _ingest_into_library(db: AsyncSession, *, filename: str, content: byte
 
 
 async def _import_attachments(
-    zf: zipfile.ZipFile, names: set[str], product: Product, manifest: dict, warnings: list[str]
+    zf: zipfile.ZipFile, names: set[str], product: Product, manifest: dict, notes: list[CardNote]
 ) -> tuple[list[dict], str | None]:
     """Copy the archive's attachments onto the product. Returns the JSON rows and
     the stored name of the cover, when one was restored.
@@ -903,22 +1097,23 @@ async def _import_attachments(
         member = str(raw.get("member") or f"{_ATTACHMENTS_ROOT}/{category}/{raw.get('original_name')}")
         original = _text(raw.get("original_name")) or posixpath.basename(member)
         if category not in ATTACHMENT_CATEGORIES:
-            warnings.append(f"{original}: '{category}' is not an attachment category")
+            notes.append(_note("import_bad_category", name=original, category=str(category)))
             continue
         if member not in names:
-            warnings.append(f"{original}: the archive carries no bytes for this attachment")
+            notes.append(_note("import_attachment_missing", name=original))
             continue
         try:
             safe_attachment_name(original)
         except HTTPException:
-            warnings.append(f"{original}: not a name a file can be stored under")
+            notes.append(_note("import_bad_name", name=original))
             continue
         ext = os.path.splitext(original)[1].lower()
         if ext not in CATEGORY_EXTENSIONS[category]:
-            warnings.append(f"{original}: '{ext or original}' is not allowed in {category}")
+            notes.append(_note("skipped_extension", name=original, ext=ext, category=category))
             continue
-        if exceeds_attachment_limit(zf.getinfo(member).file_size):
-            warnings.append(f"{original}: larger than the {attachment_limit()}-byte attachment ceiling")
+        declared = zf.getinfo(member).file_size
+        if exceeds_attachment_limit(declared):
+            notes.append(_note("skipped_too_large", name=original, size=declared, limit=attachment_limit()))
             continue
         data = zf.read(member)
         stored = f"{uuid.uuid4().hex}{ext}"
@@ -929,7 +1124,7 @@ async def _import_attachments(
             await asyncio.to_thread(_write_member, target, data)
         except OSError as e:
             logger.error("Failed to write an imported attachment %s: %s", target, e)
-            warnings.append(f"{original}: could not be saved")
+            notes.append(_note("skipped_unsaved", name=original))
             continue
         rows.append(
             {
@@ -955,14 +1150,17 @@ async def _import_attachments(
     if cover_stored is not None or member is None:
         return rows, cover_stored
     if member not in names:
-        warnings.append(f"{cover_name}: the cover image was not in the archive")
+        notes.append(_note("import_cover_missing"))
         return rows, None
     ext = os.path.splitext(cover_name)[1].lower()
     if ext not in COVER_EXTENSIONS:
-        warnings.append(f"{cover_name}: '{ext or cover_name}' is not a cover image")
+        notes.append(_note("skipped_extension", name=cover_name, ext=ext, category=_COVER_ROOT))
         return rows, None
-    if exceeds_attachment_limit(zf.getinfo(member).file_size):
-        warnings.append(f"{cover_name}: larger than the {attachment_limit()}-byte attachment ceiling")
+    declared = zf.getinfo(member).file_size
+    if exceeds_attachment_limit(declared):
+        notes.append(
+            _note("skipped_too_large", name=cover_name, size=declared, limit=attachment_limit(), category=_COVER_ROOT)
+        )
         return rows, None
     stored = f"cover_{uuid.uuid4().hex}{ext}"
     target = (
@@ -972,6 +1170,6 @@ async def _import_attachments(
         await asyncio.to_thread(_write_member, target, zf.read(member))
     except OSError as e:
         logger.error("Failed to write an imported cover %s: %s", target, e)
-        warnings.append(f"{cover_name}: could not be saved")
+        notes.append(_note("skipped_unsaved", name=cover_name, category=_COVER_ROOT))
         return rows, None
     return rows, stored

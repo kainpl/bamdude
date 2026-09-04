@@ -14,18 +14,19 @@ SQLite honours no ``ON DELETE CASCADE``, and there is no desired set left to
 reconcile once the product itself is going away.
 """
 
-import io
 import logging
 import os
+import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import delete, func, inspect as sqla_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
@@ -83,16 +84,22 @@ from backend.app.services.product_files import (
     effective_cover,
     exceeds_attachment_limit,
     image_media_type,
+    import_limit,
     next_sort_order,
     product_attachments_dir,
     safe_attachment_name,
     sorted_attachments,
 )
 from backend.app.services.product_sync import apply_folder_products, sync_product_for_file
+from backend.app.utils.http import build_content_disposition
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/products", tags=["products"])
+
+# One megabyte at a time off the wire — big enough that a 2 GB archive is two
+# thousand writes, small enough that no single chunk is a memory event.
+_UPLOAD_CHUNK = 1024 * 1024
 
 _LOAD = (
     selectinload(Product.parts),
@@ -289,10 +296,47 @@ async def create_product_from_file(
 # a second segment — but the day somebody adds ``POST /products/{product_id}``
 # the literal has to already be in front of it, or FastAPI hands "import" to an
 # ``int`` path parameter and answers 422 to a working request.
+#
+# ⚠️ **Neither route ever holds an archive in memory.** A product's export
+# carries every 3MF it prints from; on the farm this was built for that is
+# already hundreds of megabytes, and the machine serving it is routinely a Pi.
+# The export builds a temp file and streams it; the import streams the upload
+# into a temp file and reads members out of it.
+
+
+async def _spool_import_upload(file: UploadFile) -> Path:
+    """The uploaded archive, on disk, with a running ceiling.
+
+    ⚠️ Never ``await file.read()`` — that is the whole point. A single read
+    materialises the entire upload before anything has looked at it, so the
+    413 for an over-sized archive would arrive only after the farm had already
+    paid for it in RAM. The count is kept as the chunks land and the write stops
+    the moment it crosses ``import_limit()``.
+
+    The declared ``Content-Length`` is checked by the caller first — it is the
+    client's word rather than a fact, so it can refuse early but can never be
+    the only gate.
+    """
+    limit = import_limit()
+    handle, name = tempfile.mkstemp(prefix="bamdude-product-import-", suffix=".zip")
+    path = Path(name)
+    total = 0
+    try:
+        with os.fdopen(handle, "wb") as target:
+            while chunk := await file.read(_UPLOAD_CHUNK):
+                total += len(chunk)
+                if total > limit:
+                    raise HTTPException(status_code=413, detail=f"An import may be at most {limit} bytes")
+                target.write(chunk)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return path
 
 
 @router.post("/import", response_model=ProductImportResponse)
 async def import_product(
+    request: Request,
     file: UploadFile = File(...),
     folder_id: int | None = Form(default=None),
     db: AsyncSession = Depends(get_db),
@@ -302,20 +346,36 @@ async def import_product(
     # product archive.
     current_user: User | None = RequirePermission(Permission.PROJECTS_CREATE, Permission.LIBRARY_UPLOAD),
 ):
-    product, warnings = await import_zip(db, await file.read(), folder_id=folder_id, user=current_user)
-    return ProductImportResponse(product=await _response(db, product, reload_links=True), warnings=warnings)
+    declared = request.headers.get("content-length") or ""
+    if declared.isdigit() and int(declared) > import_limit():
+        raise HTTPException(status_code=413, detail=f"An import may be at most {import_limit()} bytes")
+    path = await _spool_import_upload(file)
+    try:
+        product, warnings = await import_zip(db, path, folder_id=folder_id, user=current_user)
+        return ProductImportResponse(product=await _response(db, product, reload_links=True), warnings=warnings)
+    finally:
+        path.unlink(missing_ok=True)
 
 
 @router.get("/{product_id}/export")
 async def export_product(
     product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
 ):
-    """The product as a ZIP: ``product.json``, its files, its attachments."""
-    data, filename = await export_zip(db, await _get(db, product_id))
-    return StreamingResponse(
-        io.BytesIO(data),
+    """The product as a ZIP: ``product.json``, its files, its attachments.
+
+    ``BackgroundTask``, not a ``finally``: the archive is a temp file and
+    ``FileResponse`` has not read a byte of it when this handler returns, so
+    deleting it here would serve an empty download. Starlette runs the task once
+    the response has been sent.
+    """
+    archive = await export_zip(db, await _get(db, product_id))
+    return FileResponse(
+        archive.path,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": build_content_disposition(archive.filename, ascii_fallback=archive.ascii_filename)
+        },
+        background=BackgroundTask(os.unlink, archive.path),
     )
 
 
