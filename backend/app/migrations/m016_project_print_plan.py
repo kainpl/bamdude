@@ -14,13 +14,17 @@ empty table.
 
 from sqlalchemy import text
 
+from backend.app.core.db_dialect import is_postgres
 from backend.app.migrations.helpers import table_exists
 
 version = 16
 name = "project_print_plan"
 
 
-_CREATE_TABLE = """
+# ⚠️ Frozen: this is what every released SQLite install got, byte for byte
+# (pinned by ``tests/unit/test_migration_ddl_dialects.py``). Only the
+# PostgreSQL sibling below is new.
+_CREATE_TABLE_SQLITE = """
 CREATE TABLE IF NOT EXISTS project_print_plan_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -33,20 +37,45 @@ CREATE TABLE IF NOT EXISTS project_print_plan_items (
 )
 """
 
+# The same table said in PostgreSQL: ``SERIAL`` for SQLite's implicit rowid
+# alias, ``TIMESTAMP`` for a type PostgreSQL does not have under the name
+# ``DATETIME``. Same columns in the same order, same defaults, same constraint
+# NAME — m044 later drops ``uq_plan_library_file`` by that name to widen it.
+_CREATE_TABLE_POSTGRES = """
+CREATE TABLE IF NOT EXISTS project_print_plan_items (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    library_file_id INTEGER NOT NULL REFERENCES library_files(id) ON DELETE CASCADE,
+    copies INTEGER NOT NULL DEFAULT 1,
+    order_index INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_plan_library_file UNIQUE (library_file_id)
+)
+"""
+
 _CREATE_INDEX = (
     "CREATE INDEX IF NOT EXISTS ix_project_print_plan_items_project_id ON project_print_plan_items(project_id)"
 )
 
 
+def _create_table_ddl() -> str:
+    if is_postgres():
+        return _CREATE_TABLE_POSTGRES
+    return _CREATE_TABLE_SQLITE
+
+
 async def upgrade(conn):
-    # ``_CREATE_TABLE`` is SQLite-only DDL (AUTOINCREMENT, DATETIME). PostgreSQL
-    # fails to *parse* it, and IF NOT EXISTS does not help — the statement is
-    # parsed before the existence check. On PostgreSQL the table already exists
-    # from ``metadata.create_all``, which runs ahead of the migration chain, so
-    # skipping is correct rather than translating. On SQLite this is the same
-    # no-op IF NOT EXISTS already gave us.
+    # ⚠️ This branch used to be dead on PostgreSQL, and the DDL was written as
+    # if it always would be. ``init_db()`` is ``create_all()`` + the chain, so
+    # while ``project_print_plan_items`` was still a model the table existed
+    # before m016 ran and the SQLite-only text (AUTOINCREMENT, DATETIME) never
+    # reached the server. m158 retires the model — on a FRESH PostgreSQL install
+    # nothing pre-creates the table any more and this statement is what builds
+    # it, so it has to exist in both dialects. ``IF NOT EXISTS`` would not have
+    # saved it either: PostgreSQL parses the statement before the check.
     if not await table_exists(conn, "project_print_plan_items"):
-        await conn.execute(text(_CREATE_TABLE))
+        await conn.execute(text(_create_table_ddl()))
     await conn.execute(text(_CREATE_INDEX))
 
 
