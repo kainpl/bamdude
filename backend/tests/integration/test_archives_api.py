@@ -1083,3 +1083,227 @@ class TestArchiveSortByPrinter:
             "on-mike",
             "sliced-for-x1",
         ]
+
+
+# ============================================================================
+# Free stock (pass 8, Decision 3): an order-less print's parts
+# ============================================================================
+#
+# ⚠️ Ids are carried as plain ints, never as ORM instances. The ``get_db``
+# override hands the handler THIS test's session, so the handler's commit
+# expires every object the test is holding — and reading an expired attribute
+# back on an async session is a lazy load with no greenlet under it.
+
+
+async def _stocked_product(db_session, *, file_id: int = 900) -> tuple[int, int]:
+    """A product whose whole-file plate yields lids. Returns ``(product_id, lid_id)``."""
+    from backend.app.models.product import Product, ProductPart, ProductPlate
+
+    product = Product(name="Lamp")
+    db_session.add(product)
+    await db_session.flush()
+    lid = ProductPart(product_id=product.id, kind="printed", name="lid", name_key="lid", qty_per_unit=1)
+    db_session.add_all([lid, ProductPlate(product_id=product.id, library_file_id=file_id, plate_index=0)])
+    await db_session.flush()
+    ids = (product.id, lid.id)
+    await db_session.commit()
+    return ids
+
+
+async def _print_of(
+    db_session, printer_id, archive_factory, *, file_id: int = 900, project_id=None, lids: int = 4
+) -> int:
+    """One completed print of that plate. Returns the archive id."""
+    from backend.app.models.archive_part import PrintArchivePart
+
+    archive = await archive_factory(
+        printer_id,
+        print_name="Lids",
+        library_file_id=file_id,
+        plate_index=1,
+        project_id=project_id,
+        status="completed",
+    )
+    archive_id = archive.id
+    db_session.add(PrintArchivePart(archive_id=archive_id, name="lid", name_key="lid", quantity=lids, defective=0))
+    await db_session.commit()
+    return archive_id
+
+
+async def _stock_rows(db_session) -> list[tuple]:
+    """``(part_id, reason, delta, archive_id, note)`` per movement, oldest first."""
+    from sqlalchemy import select
+
+    from backend.app.models.part_stock import ProductPartStockMovement
+
+    db_session.expire_all()
+    rows = (
+        (await db_session.execute(select(ProductPartStockMovement).order_by(ProductPartStockMovement.id)))
+        .scalars()
+        .all()
+    )
+    return [(r.product_part_id, r.reason, r.delta, r.archive_id, r.note) for r in rows]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_counting_an_old_order_less_print_into_stock(
+    async_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """History is deliberately NOT backfilled — nobody knows which of last
+    year's order-less prints were shipped. This is the operator vouching for
+    one of them, and the only way such a print reaches the shelf."""
+    _product_id, lid_id = await _stocked_product(db_session)
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+
+    r = await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+
+    assert r.status_code == 200, r.text
+    assert r.json() == [{"part_id": lid_id, "name": "lid", "delta": 4}]
+    assert await _stock_rows(db_session) == [(lid_id, "unfiled_print", 4, archive_id, None)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_counting_the_same_print_into_stock_twice_is_refused(
+    async_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """409, not a silent no-op: the operator pressed a button and is entitled to
+    be told the parts are already counted rather than left to wonder."""
+    await _stocked_product(db_session)
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    assert (await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")).status_code == 200
+
+    r = await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+
+    assert r.status_code == 409
+    assert len(await _stock_rows(db_session)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_print_filed_under_an_order_cannot_be_counted_into_stock(
+    async_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """Its parts are counted by the order's own figures; counting them here too
+    is the double count Decision 3 exists to prevent."""
+    from backend.app.models.project import Project
+
+    await _stocked_product(db_session)
+    project = Project(name="O")
+    db_session.add(project)
+    await db_session.flush()
+    project_id = project.id
+    await db_session.commit()
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory, project_id=project_id)
+
+    r = await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+
+    assert r.status_code == 409
+    assert await _stock_rows(db_session) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_filing_a_counted_print_under_an_order_takes_its_stock_back(
+    async_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """The archive editor's project change. Without the reversal the same parts
+    would sit on the shelf AND count towards the order they were just filed
+    under."""
+    from backend.app.models.project import Project
+
+    _product_id, lid_id = await _stocked_product(db_session)
+    project = Project(name="Lamps")
+    db_session.add(project)
+    await db_session.flush()
+    project_id = project.id
+    await db_session.commit()
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+
+    r = await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+
+    assert r.status_code == 200, r.text
+    assert await _stock_rows(db_session) == [
+        (lid_id, "unfiled_print", 4, archive_id, None),
+        (lid_id, "manual", -4, archive_id, "filed under order Lamps"),
+    ], "the parts are counted by the order now, not by the shelf"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_filing_a_print_a_second_time_reverses_nothing_more(
+    async_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """Moving the print on to another order must not take the parts back twice —
+    the first filing already zeroed what this archive put on the shelf."""
+    from backend.app.models.project import Project
+
+    _product_id, lid_id = await _stocked_product(db_session)
+    db_session.add_all([Project(name="Lamps"), Project(name="Sconces")])
+    await db_session.commit()
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": 1})
+
+    r = await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": 2})
+
+    assert r.status_code == 200, r.text
+    assert [row[1] for row in await _stock_rows(db_session)] == ["unfiled_print", "manual"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_filing_a_print_whose_stock_is_already_spent_still_files_it(
+    async_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """The stock went out to another order between the print and the filing, so
+    the credit cannot be taken back. Re-filing a print corrects the print
+    HISTORY and must not be refused over bookkeeping — the ledger keeps the
+    truth of what is on the shelf and the operator corrects it by hand."""
+    from backend.app.models.project import Project
+    from backend.app.services.part_stock import move
+
+    _product_id, lid_id = await _stocked_product(db_session)
+    project = Project(name="Lamps")
+    db_session.add(project)
+    await db_session.flush()
+    project_id = project.id
+    await db_session.commit()
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await move(db_session, part_id=lid_id, delta=-4, reason="reserved_for_order")
+    await db_session.commit()
+
+    r = await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["project_id"] == project_id
+    # 4 in, 4 reserved out, nothing reversed — and the balance never went below zero.
+    assert [row[1:3] for row in await _stock_rows(db_session)] == [("unfiled_print", 4), ("reserved_for_order", -4)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_hard_deleting_an_archive_leaves_the_parts_on_the_shelf(
+    async_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """``archive_id`` is ON DELETE SET NULL and SQLite honours no such clause.
+    The print history goes; the parts it made are still in a drawer."""
+    from backend.app.services.archive import ArchiveService
+
+    _product_id, lid_id = await _stocked_product(db_session)
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+
+    assert await ArchiveService(db_session).delete_archive(archive_id) is True
+
+    assert await _stock_rows(db_session) == [(lid_id, "unfiled_print", 4, None, None)]

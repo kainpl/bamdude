@@ -1152,3 +1152,26 @@ async def test_units_printed_total_matches_the_order_pages_on_a_shared_plate(com
 
     assert (await committing_client.get(f"/api/v1/products/{ids['lamp']}")).json()["units_printed_total"] == 3
     assert (await committing_client.get(f"/api/v1/products/{ids['hook_product']}")).json()["units_printed_total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_product_takes_every_parts_stock_movements_with_it(committing_client, db_session, sliced_file):
+    """The whole product goes, so its whole ledger goes — the same cascade
+    ``delete_part`` does by hand one part at a time, for the same reason: it
+    fires on PostgreSQL only. Left behind on SQLite the rows would not merely
+    linger, because a fresh install REUSES rowids and they would eventually
+    attach themselves to whichever part inherited the id."""
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    parts = {p["name_key"]: p for p in (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"]}
+    for key in ("bracket.stl", "lid.stl"):
+        await move(db_session, part_id=parts[key]["id"], delta=2, reason="unfiled_print")
+    survivor = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()
+    kept = [p for p in survivor["parts"] if p["name_key"] == "clip.stl"][0]["id"]
+    await move(db_session, part_id=kept, delta=7, reason="unfiled_print")
+    await db_session.commit()
+
+    assert (await committing_client.delete(f"/api/v1/products/{pid}")).status_code == 200
+
+    db_session.expire_all()
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    assert [(r.product_part_id, r.delta) for r in rows] == [(kept, 7)], "the deleted product's ledger outlived it"

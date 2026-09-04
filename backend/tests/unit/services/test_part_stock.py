@@ -11,18 +11,24 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects import postgresql, sqlite
 
+from backend.app.models.archive import PrintArchive
+from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.part_stock import ProductPartStockMovement
-from backend.app.models.product import Product, ProductPart
+from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.services.part_stock import (
     REASONS,
     PartStockError,
     balances,
+    credit_unfiled_print,
     delete_for_part,
+    delete_for_parts,
+    detach_archive,
     kits_available,
     lock_part_stmt,
     move,
     movements,
     repoint,
+    reverse_unfiled_print,
 )
 
 
@@ -318,3 +324,247 @@ async def test_repoint_of_a_part_with_no_stock_is_allowed_anywhere(db_session):
     neither has a balance would break it for nothing."""
     _p, parts = await _make_product(db_session, ("screw", "purchased", 4), ("bolt", "purchased", 2))
     assert await repoint(db_session, from_part_id=parts["bolt"].id, to_part_id=parts["screw"].id) == 0
+
+
+# ---------- Decision 3: a print that belongs to no order ----------
+
+
+async def _archive(db_session, *, file_id: int, plate_index: int = 1, status: str = "completed", project_id=None):
+    archive = PrintArchive(
+        project_id=project_id,
+        library_file_id=file_id,
+        plate_index=plate_index,
+        filename="plate.gcode.3mf",
+        file_path="",
+        file_size=0,
+        status=status,
+    )
+    db_session.add(archive)
+    await db_session.flush()
+    return archive
+
+
+async def _rows(db_session, archive, *rows: tuple[str, int, int]) -> None:
+    """``("lid", printed, defective)`` part rows for an archive."""
+    db_session.add_all(
+        [
+            PrintArchivePart(archive_id=archive.id, name=key, name_key=key, quantity=quantity, defective=defective)
+            for key, quantity, defective in rows
+        ]
+    )
+    await db_session.flush()
+
+
+@pytest.fixture
+async def shelf(db_session):
+    """A product whose single-plate file yields lids and bases, and one finished
+    print of it that nobody filed under an order."""
+    product, parts = await _make_product(db_session, ("lid", "printed", 1), ("base", "printed", 1))
+    # ``plate_index = 0`` on the product plate is "the whole file", which is what
+    # a single-plate 3MF gets from the sync; the PRINT carries the slicer's own
+    # index, 1. Production produces exactly this mismatch.
+    db_session.add(ProductPlate(product_id=product.id, library_file_id=77, plate_index=0))
+    archive = await _archive(db_session, file_id=77)
+    await _rows(db_session, archive, ("lid", 4, 1), ("base", 4, 0))
+    return product, parts, archive
+
+
+async def test_a_finished_print_with_no_order_lands_on_the_shelf(db_session, shelf):
+    """Decision 3: one movement per part, ``printed - defective`` — the same
+    arithmetic ``order_metrics.row_quantity`` does for a line."""
+    product, parts, archive = shelf
+
+    written = await credit_unfiled_print(db_session, archive)
+
+    assert {m.reason for m in written} == {"unfiled_print"}
+    assert {m.archive_id for m in written} == {archive.id}
+    assert await balances(db_session, product.id) == {parts["lid"].id: 3, parts["base"].id: 4}
+
+
+async def test_a_second_completion_event_for_the_same_print_credits_nothing(db_session, shelf):
+    """An MQTT replay or a reconnect flap re-runs the completion handler. The
+    ledger already names this archive, which is the whole idempotency check."""
+    product, parts, archive = shelf
+    await credit_unfiled_print(db_session, archive)
+
+    assert await credit_unfiled_print(db_session, archive) == []
+    assert await balances(db_session, product.id) == {parts["lid"].id: 3, parts["base"].id: 4}
+
+
+async def test_a_print_filed_under_an_order_is_not_free_stock(db_session, shelf):
+    """The order's own figures count those parts; crediting them here too would
+    count every part of every order twice."""
+    product, parts, archive = shelf
+    archive.project_id = 5
+    await db_session.flush()
+
+    assert await credit_unfiled_print(db_session, archive) == []
+    assert await balances(db_session, product.id) == {parts["lid"].id: 0, parts["base"].id: 0}
+
+
+@pytest.mark.parametrize("status", ["printing", "failed", "cancelled"])
+async def test_only_a_finished_print_reaches_the_shelf(db_session, shelf, status):
+    """A running print's parts are not on a shelf yet and a failed one's never
+    will be — ``attribute`` makes the same split with ``_DONE``."""
+    product, parts, archive = shelf
+    archive.status = status
+    await db_session.flush()
+
+    assert await credit_unfiled_print(db_session, archive) == []
+    assert await balances(db_session, product.id) == {parts["lid"].id: 0, parts["base"].id: 0}
+
+
+async def test_an_object_no_product_counts_is_skipped_not_refused(db_session):
+    """A raft, a test cube, a part the product zeroed: attribution ignores it
+    and so does stock. Silence, because it is a statement the product made."""
+    product, parts = await _make_product(db_session, ("lid", "printed", 1), ("jig", "printed", 0))
+    db_session.add(ProductPlate(product_id=product.id, library_file_id=77, plate_index=0))
+    archive = await _archive(db_session, file_id=77)
+    await _rows(db_session, archive, ("lid", 2, 0), ("jig", 9, 0), ("calibration_cube", 3, 0))
+
+    written = await credit_unfiled_print(db_session, archive)
+
+    assert [m.product_part_id for m in written] == [parts["lid"].id]
+    assert await balances(db_session, product.id) == {parts["lid"].id: 2}
+
+
+async def test_a_plate_no_product_claims_credits_nothing(db_session):
+    """The ordinary case for most of a farm's prints — and the reason this
+    returns an empty list rather than raising at the completion handler."""
+    archive = await _archive(db_session, file_id=404)
+    await _rows(db_session, archive, ("lid", 2, 0))
+
+    assert await credit_unfiled_print(db_session, archive) == []
+
+
+async def test_a_shared_file_credits_the_product_that_owns_each_object(db_session):
+    """Two products on one bed: the lid rows are the lamp's, the base rows the
+    stand's. The rule is attribution's own — a row goes where its KEY is
+    counted, not wholesale to whichever product loaded first."""
+    lamp, lamp_parts = await _make_product(db_session, ("lid", "printed", 1))
+    stand, stand_parts = await _make_product(db_session, ("base", "printed", 1))
+    db_session.add_all(
+        [
+            ProductPlate(product_id=lamp.id, library_file_id=77, plate_index=0),
+            ProductPlate(product_id=stand.id, library_file_id=77, plate_index=0),
+        ]
+    )
+    archive = await _archive(db_session, file_id=77)
+    await _rows(db_session, archive, ("lid", 2, 0), ("base", 3, 0))
+
+    await credit_unfiled_print(db_session, archive)
+
+    assert await balances(db_session, lamp.id) == {lamp_parts["lid"].id: 2}
+    assert await balances(db_session, stand.id) == {stand_parts["base"].id: 3}
+
+
+async def test_an_exact_plate_link_beats_the_whole_file_wildcard(db_session):
+    """``products_for_print`` is not a union: a product that named THIS plate
+    takes the print, and the one that claimed the whole file does not also get
+    it. Otherwise a shared file would put the same physical parts on two
+    shelves."""
+    exact, exact_parts = await _make_product(db_session, ("lid", "printed", 1))
+    wildcard, wildcard_parts = await _make_product(db_session, ("lid", "printed", 1))
+    db_session.add_all(
+        [
+            ProductPlate(product_id=exact.id, library_file_id=77, plate_index=2),
+            ProductPlate(product_id=wildcard.id, library_file_id=77, plate_index=0),
+        ]
+    )
+    archive = await _archive(db_session, file_id=77, plate_index=2)
+    await _rows(db_session, archive, ("lid", 6, 0))
+
+    await credit_unfiled_print(db_session, archive)
+
+    assert await balances(db_session, exact.id) == {exact_parts["lid"].id: 6}
+    assert await balances(db_session, wildcard.id) == {wildcard_parts["lid"].id: 0}
+
+
+async def test_filing_the_print_under_an_order_takes_the_credit_back(db_session, shelf):
+    """Decision 3's other half. The reversal is a ``manual`` movement carrying
+    the same ``archive_id``, so the product's history reads as a pair rather
+    than as a balance that changed by itself."""
+    product, parts, archive = shelf
+    await credit_unfiled_print(db_session, archive)
+
+    written = await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+
+    assert {m.reason for m in written} == {"manual"}
+    assert {m.note for m in written} == {"filed under order Lamps"}
+    assert {m.archive_id for m in written} == {archive.id}
+    assert await balances(db_session, product.id) == {parts["lid"].id: 0, parts["base"].id: 0}
+
+
+async def test_filing_the_same_print_twice_reverses_it_once(db_session, shelf):
+    """Idempotent by arithmetic: the sum of everything naming this archive is
+    already zero, so there is nothing left to negate."""
+    product, parts, archive = shelf
+    await credit_unfiled_print(db_session, archive)
+    await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+
+    assert await reverse_unfiled_print(db_session, archive, note="filed under order Lamps again") == []
+    assert await balances(db_session, product.id) == {parts["lid"].id: 0, parts["base"].id: 0}
+
+
+async def test_reversing_a_credit_that_has_already_been_spent_is_refused(db_session, shelf):
+    """The parts went out to another order between the print and the filing.
+    The ledger will not go below zero for it — the archive route catches this,
+    logs it and files the archive anyway, because the print history must still
+    be correctable."""
+    _product, parts, archive = shelf
+    await credit_unfiled_print(db_session, archive)
+    await move(db_session, part_id=parts["lid"].id, delta=-3, reason="reserved_for_order")
+
+    with pytest.raises(PartStockError):
+        await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+
+
+async def test_a_part_that_stopped_counting_is_skipped_by_the_reversal(db_session, shelf):
+    """It has no balance left to take back (``balances`` filters it out), and
+    ``move`` would refuse it as a caller error — which would turn a routine
+    re-filing into a 500."""
+    _product, parts, archive = shelf
+    await credit_unfiled_print(db_session, archive)
+    parts["lid"].qty_per_unit = 0
+    await db_session.flush()
+
+    written = await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+
+    assert [m.product_part_id for m in written] == [parts["base"].id]
+
+
+async def test_detaching_an_archive_keeps_the_parts_on_the_shelf(db_session, shelf):
+    """Spec §Invariants touched: deleting a print does not un-print it. The link
+    is cut, the balance stands."""
+    product, parts, archive = shelf
+    await credit_unfiled_print(db_session, archive)
+
+    assert await detach_archive(db_session, archive.id) == 2
+
+    assert await balances(db_session, product.id) == {parts["lid"].id: 3, parts["base"].id: 4}
+    assert {m.archive_id for m in await movements(db_session, product.id)} == {None}
+
+
+async def test_delete_for_parts_takes_several_ledgers_in_one_statement(db_session):
+    """What the product-delete route needs; ``delete_for_part`` one at a time
+    would be one statement per part of a product that is going away entirely."""
+    product, parts = await _make_product(db_session, ("lid", "printed", 1), ("base", "printed", 1))
+    other, other_parts = await _make_product(db_session, ("lid", "printed", 1))
+    await move(db_session, part_id=parts["lid"].id, delta=5, reason="unfiled_print")
+    await move(db_session, part_id=parts["base"].id, delta=2, reason="unfiled_print")
+    kept = await move(db_session, part_id=other_parts["lid"].id, delta=1, reason="unfiled_print")
+
+    assert await delete_for_parts(db_session, [parts["lid"].id, parts["base"].id]) == 2
+
+    assert await movements(db_session, product.id) == []
+    assert [m.id for m in await movements(db_session, other.id)] == [kept.id]
+
+
+async def test_delete_for_parts_asked_for_nothing_touches_nothing(db_session):
+    """An empty ``IN ()`` is a statement SQLAlchemy warns about and PostgreSQL
+    plans badly; a product with no parts is an ordinary product."""
+    _product, parts = await _make_product(db_session, ("lid", "printed", 1))
+    await move(db_session, part_id=parts["lid"].id, delta=5, reason="unfiled_print")
+
+    assert await delete_for_parts(db_session, []) == 0
+    assert await _row_count(db_session, parts["lid"].id) == 1

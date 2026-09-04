@@ -35,6 +35,15 @@ to it because there was nothing left to reserve — writes no row and returns
 ``None``. A ledger of no-ops is a ledger nobody reads to the end, and Decision
 6 puts this table in front of the operator.
 
+**An archive's credit and its reversal are one pair, kept together.**
+:func:`credit_unfiled_print` and :func:`reverse_unfiled_print` live here rather
+than in the completion handler or the archive route because the two only make
+sense read against each other: the first is idempotent on "an ``unfiled_print``
+movement already names this archive", the second on "the sum of everything
+naming it is already zero". Split across two modules, one of them would
+eventually be changed without the other and a print filed after the fact would
+count twice — which is the exact bug Decision 3 exists to prevent.
+
 **The writer also follows a part that stops existing.** ``product_part_id`` is
 ON DELETE CASCADE, which PostgreSQL honours and SQLite does not (this codebase
 never sets ``PRAGMA foreign_keys = ON``), so :func:`delete_for_part` and
@@ -44,14 +53,25 @@ nothing can name any more.
 """
 
 import logging
+from collections import defaultdict
+from collections.abc import Sequence
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.archive import PrintArchive
+from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.part_stock import ProductPartStockMovement
-from backend.app.models.product import ProductPart
+from backend.app.models.product import ProductPart, ProductPlate
+from backend.app.services.order_metrics import index_plates, products_for_print, row_quantity
+from backend.app.services.product_composition import part_index
 
 logger = logging.getLogger(__name__)
+
+#: The one archive status a print may be credited from. Spelled here rather
+#: than imported from ``order_metrics._DONE`` because that name is private;
+#: the two are pinned together by ``credit_unfiled_print``'s tests.
+_COMPLETED = "completed"
 
 #: The closed set of reasons a movement may carry. Order is the reading order
 #: of the spec, not a priority.
@@ -142,8 +162,16 @@ def lock_part_stmt(part_id: int):
     already serialised by a single write lock over the whole database. So this
     is a no-op on the small backend and the fix on the large one, which is why
     the test compiles it against both dialects rather than trusting either.
+
+    ``populate_existing`` because the identity map would otherwise hand back a
+    part loaded earlier in the same transaction, ``kind`` and ``qty_per_unit``
+    as they were then — and those two ARE :func:`is_counted`, the question this
+    SELECT is taken for. A route that edits a part and then moves stock on it
+    would decide against the pre-edit row.
     """
-    return select(ProductPart).where(ProductPart.id == part_id).with_for_update()
+    return (
+        select(ProductPart).where(ProductPart.id == part_id).with_for_update().execution_options(populate_existing=True)
+    )
 
 
 async def _balance_of(db: AsyncSession, part_id: int) -> int:
@@ -272,6 +300,189 @@ async def delete_for_part(db: AsyncSession, part_id: int) -> int:
         delete(ProductPartStockMovement).where(ProductPartStockMovement.product_part_id == part_id)
     )
     return result.rowcount or 0
+
+
+async def delete_for_parts(db: AsyncSession, part_ids: Sequence[int]) -> int:
+    """:func:`delete_for_part` for a whole product's parts at once.
+
+    The product-delete route drops every part in one go and would otherwise
+    loop this table once per part. Same reason as its single sibling: the FK
+    cascade is PostgreSQL's, and on SQLite a fresh install REUSES rowids — the
+    orphaned ledger would not merely linger, it would eventually attach itself
+    to whatever part inherited the id.
+    """
+    if not part_ids:
+        return 0
+    result = await db.execute(
+        delete(ProductPartStockMovement).where(ProductPartStockMovement.product_part_id.in_(part_ids))
+    )
+    return result.rowcount or 0
+
+
+async def detach_archive(db: AsyncSession, archive_id: int) -> int:
+    """Cut an archive out of the ledger without touching the stock it made.
+
+    For the hard-delete path. ``archive_id`` is ON DELETE SET NULL — the parts
+    are on the shelf whatever happened to the print history (spec §Invariants
+    touched: "deleting an archive does not delete its movements") — and that
+    clause fires on PostgreSQL only. On SQLite the movements would keep an id
+    that names nothing: a dead link in the product's history table, and worse,
+    an idempotency key that could be reused by the next archive to take that
+    rowid, which would silently suppress ITS credit.
+    """
+    result = await db.execute(
+        update(ProductPartStockMovement)
+        .where(ProductPartStockMovement.archive_id == archive_id)
+        .values(archive_id=None)
+    )
+    return result.rowcount or 0
+
+
+async def credit_unfiled_print(db: AsyncSession, archive: PrintArchive) -> list[ProductPartStockMovement]:
+    """Put a print that belongs to no order onto the shelf (Decision 3).
+
+    One movement per product part, ``printed − defective`` summed over the
+    archive's rows that resolve to it. The mapping is order attribution's own,
+    borrowed rather than restated: :func:`order_metrics.products_for_print` for
+    plate → product, ``product_composition.part_index`` for object name → part,
+    :func:`order_metrics.row_quantity` for what a finished row handed over. A
+    row no product counts is skipped — the same silence a ``qty_per_unit = 0``
+    part gets from attribution, because it is the same statement: the product
+    does not measure this object.
+
+    **Idempotent by ``archive_id``.** A second completion event for the same
+    print (an MQTT replay, a reconnect flap) finds an ``unfiled_print``
+    movement already naming this archive and writes nothing. That check is why
+    ``archive_id`` carries an index of its own.
+
+    Silent (an empty list, not an exception) for a print this does not apply
+    to: one filed under an order, one that did not finish, one whose file no
+    product claims. The caller is the completion handler, where a raise would
+    be noise about a print that is simply not stock.
+
+    Flushes through :func:`move`; the caller commits.
+    """
+    if archive.project_id is not None or archive.status != _COMPLETED or archive.library_file_id is None:
+        return []
+    if await db.scalar(
+        select(func.count())
+        .select_from(ProductPartStockMovement)
+        .where(
+            ProductPartStockMovement.archive_id == archive.id,
+            ProductPartStockMovement.reason == "unfiled_print",
+        )
+    ):
+        return []
+
+    rows = (
+        (
+            await db.execute(
+                select(PrintArchivePart).where(PrintArchivePart.archive_id == archive.id).order_by(PrintArchivePart.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return []
+
+    plates = (
+        (await db.execute(select(ProductPlate).where(ProductPlate.library_file_id == archive.library_file_id)))
+        .scalars()
+        .all()
+    )
+    plate_product, whole_file_product = index_plates(plates)
+    product_ids = products_for_print(
+        plate_product,
+        whole_file_product,
+        library_file_id=archive.library_file_id,
+        plate_index=archive.plate_index,
+    )
+    if not product_ids:
+        logger.debug("part_stock: archive %s prints a plate no product claims; nothing to credit", archive.id)
+        return []
+
+    parts = (await db.execute(select(ProductPart).where(ProductPart.product_id.in_(product_ids)))).scalars().all()
+    by_product: dict[int, list[ProductPart]] = defaultdict(list)
+    for part in parts:
+        by_product[part.product_id].append(part)
+    # ``product_ids`` comes back sorted from ``index_plates``, so a shared file
+    # whose object key sits in two products always credits the same one of them
+    # — the spec's "a shared file's rows go to the product that owns each part
+    # key", made deterministic. Crediting both would double physical parts that
+    # only exist once.
+    indexes = [part_index(by_product.get(product_id, [])) for product_id in product_ids]
+
+    wanted: dict[int, int] = defaultdict(int)
+    for row in rows:
+        owner: ProductPart | None = None
+        for index in indexes:
+            candidate = index.get(row.name_key)
+            if candidate is not None and is_counted(candidate):
+                owner = candidate
+                break
+        if owner is None:
+            logger.debug("part_stock: archive %s object %r resolves to no counted part", archive.id, row.name_key)
+            continue
+        wanted[owner.id] += row_quantity(row, archive.status)
+
+    written: list[ProductPartStockMovement] = []
+    for part_id, quantity in wanted.items():
+        movement = await move(db, part_id=part_id, delta=quantity, reason="unfiled_print", archive_id=archive.id)
+        if movement is not None:
+            written.append(movement)
+    return written
+
+
+async def reverse_unfiled_print(db: AsyncSession, archive: PrintArchive, note: str) -> list[ProductPartStockMovement]:
+    """Take back what an archive put on the shelf, once (Decision 3).
+
+    Filing a print under an order after the fact means the order's own figures
+    now count those parts; leaving the free-stock credit standing would count
+    them twice. The reversal is a ``manual`` movement with the negated balance
+    and the same ``archive_id``, so the product's history reads as a pair
+    rather than as a number that changed by itself.
+
+    **Idempotent by arithmetic, not by a flag**: the sum of everything carrying
+    this ``archive_id`` is what gets negated, so a second filing finds zero and
+    writes nothing — and a partly-corrected ledger is finished off rather than
+    reversed twice.
+
+    A part that has since stopped counting (turned purchased, zeroed) is
+    skipped: it has no balance to take back, and ``move`` would refuse it as a
+    caller error. Raises :class:`PartStockError` when the stock has already
+    been spent — see the archive editor, which logs that and files the archive
+    anyway.
+    """
+    totals = (
+        await db.execute(
+            select(
+                ProductPartStockMovement.product_part_id,
+                func.coalesce(func.sum(ProductPartStockMovement.delta), 0),
+            )
+            .where(ProductPartStockMovement.archive_id == archive.id)
+            .group_by(ProductPartStockMovement.product_part_id)
+            .order_by(ProductPartStockMovement.product_part_id)
+        )
+    ).all()
+    outstanding = {part_id: int(net or 0) for part_id, net in totals if int(net or 0) > 0}
+    if not outstanding:
+        return []
+    parts = {
+        part.id: part
+        for part in (await db.execute(select(ProductPart).where(ProductPart.id.in_(outstanding)))).scalars()
+    }
+
+    written: list[ProductPartStockMovement] = []
+    for part_id, net in outstanding.items():
+        part = parts.get(part_id)
+        if part is None or not is_counted(part):
+            logger.info("part_stock: part %s no longer holds stock; archive %s not reversed on it", part_id, archive.id)
+            continue
+        movement = await move(db, part_id=part_id, delta=-net, reason="manual", archive_id=archive.id, note=note)
+        if movement is not None:
+            written.append(movement)
+    return written
 
 
 async def repoint(db: AsyncSession, *, from_part_id: int, to_part_id: int) -> int:

@@ -782,3 +782,68 @@ class TestNoImportShadowing:
             e for e in errors if "import" in str(e.message).lower() or "local variable" in str(e.message).lower()
         ]
         assert not import_errors, f"Import errors found: {import_errors}"
+
+
+class TestFreeStockOnCompletion:
+    """A print filed under no order puts its parts on the product's shelf
+    (projects redesign pass 8, Decision 3).
+
+    Two properties, and the second is the load-bearing one: the credit runs at
+    completion, and NOTHING it can do stops the print from finishing. The
+    ledger is a consequence of the print; a print is never a consequence of the
+    ledger.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_finished_print_is_offered_to_the_free_stock_ledger(self):
+        """Placement: inside ``on_print_complete``, for the archive it resolved
+        — not in a background task, where a failure would be invisible, and not
+        before the status update, where the archive is not ``completed`` yet."""
+        from backend.app import main as main_mod
+
+        with patch("backend.app.main._credit_free_stock", new_callable=AsyncMock) as credit:
+            await TestPlateClearGate._drive_completion(printer_id=1, status="completed", mock_pm=MagicMock())
+
+        credit.assert_awaited_once_with(999)
+        assert main_mod._credit_free_stock is not credit  # the patch is gone again
+
+    @pytest.mark.asyncio
+    async def test_a_ledger_that_blows_up_does_not_fail_the_print(self, capture_logs):
+        """The archive is already written, the notification is on its way and
+        the plate is finished. Whatever the ledger objects to — a product edited
+        under it, a locked database — is logged and swallowed."""
+        from backend.app import main as main_mod
+
+        session = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        # ⚠️ ``return_value=False`` matters here and nowhere else in this file: a
+        # bare ``AsyncMock`` answers ``__aexit__`` with a truthy mock, which is
+        # the protocol's "I have handled this exception" — the session would
+        # swallow the very failure this test raises, and the assertion below
+        # would fail while the code under test was blameless.
+        session.__aexit__ = AsyncMock(return_value=False)
+        session.get = AsyncMock(return_value=MagicMock())
+
+        with (
+            patch("backend.app.main.async_session", return_value=session),
+            patch(
+                "backend.app.services.part_stock.credit_unfiled_print",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("ledger is on fire"),
+            ),
+        ):
+            await main_mod._credit_free_stock(999)
+
+        assert any("free-stock credit failed" in str(r.message) for r in capture_logs.get_warnings())
+
+    @pytest.mark.asyncio
+    async def test_a_print_with_no_archive_asks_the_ledger_nothing(self):
+        """External prints that never got an archive reach the end of
+        ``on_print_complete`` with ``archive_id`` unset; opening a session for
+        them would be a query per print for nothing."""
+        from backend.app import main as main_mod
+
+        with patch("backend.app.main.async_session") as session_maker:
+            await main_mod._credit_free_stock(None)
+
+        session_maker.assert_not_called()

@@ -13,6 +13,7 @@ from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.customer import Customer
 from backend.app.models.library import LibraryFile
 from backend.app.models.macro import Macro
+from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.print_options_preference import PrintOptionsPreference
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
@@ -22,7 +23,7 @@ from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.schemas.print_options_preference import PrintOptionsPreferenceData
-from backend.app.services import plan_engine
+from backend.app.services import part_stock, plan_engine
 from backend.app.services.order_metrics import attribute, load_order_context
 from backend.app.services.plan_engine import queued_yield_by_line
 from backend.app.services.product_composition import recipes_for_product
@@ -2233,3 +2234,151 @@ async def test_plan_enqueue_mutes_a_baked_in_file_even_with_no_preference(commit
     assert row.execute_swap_macros is False and row.swap_macro_events is None
     # Nothing else moved: the writer's other defaults still stand.
     assert row.bed_levelling is True and row.mesh_mode_fast_check is True
+
+
+# ---------- pass 8, Decision 2: banking an order's surplus ----------
+
+
+async def _two_lines(client, catalog, quantity: int = 1) -> tuple[int, dict, dict]:
+    """An order with two lines of the same product. The greedy pass fills each
+    line's need in ``sort_order`` and drops the leftover on the FIRST — so line
+    one is the overprinted one and line two comes out exact, which is the pair
+    Decision 2 is about."""
+    r = await client.post(
+        "/api/v1/projects/",
+        json={
+            "name": "Lamps",
+            "lines": [
+                {"product_id": catalog["product"].id, "quantity": quantity, "material": "PETG"},
+                {"product_id": catalog["product"].id, "quantity": quantity, "material": "PETG"},
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    return body["id"], body["lines"][0], body["lines"][1]
+
+
+async def _banked(db) -> list[ProductPartStockMovement]:
+    db.expire_all()
+    rows = await db.execute(select(ProductPartStockMovement).where(ProductPartStockMovement.reason == "surplus_banked"))
+    return list(rows.scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_banking_an_overprinted_line_moves_the_surplus_to_free_stock(committing_client, db_session, catalog):
+    """Seven prints against two lines of one each: two prints cover the need and
+    five are surplus — 5 shades and 10 arms (the arm is wanted twice per unit).
+    Nothing is banked until the button is pressed, because a surplus is
+    sometimes shipped and sometimes scrapped and only the operator knows."""
+    project_id, first, second = await _two_lines(committing_client, catalog)
+    for _ in range(7):
+        await _completed_print(db_session, project_id, catalog["file"].id)
+
+    assert await _banked(db_session) == []
+
+    r = await committing_client.post(f"/api/v1/projects/{project_id}/bank-surplus")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["nothing_to_bank"] is False
+    assert {m["name"]: m["delta"] for m in body["moved"]} == {"shade": 5, "arm": 10}
+    rows = await _banked(db_session)
+    # Every movement names the LINE it came from — that is what "already banked"
+    # is counted by on the next press, and it is the only trail back to the order.
+    assert {row.project_line_id for row in rows} == {first["id"]}
+    assert second["units_printed"] == 0  # the fixture's lines start empty
+
+
+@pytest.mark.asyncio
+async def test_pressing_bank_again_moves_nothing(committing_client, db_session, catalog):
+    """A second press is a success, not an error: the surplus is already on the
+    shelf. Without the ``already banked`` subtraction it would be banked twice."""
+    project_id, _first, _second = await _two_lines(committing_client, catalog)
+    for _ in range(7):
+        await _completed_print(db_session, project_id, catalog["file"].id)
+    await committing_client.post(f"/api/v1/projects/{project_id}/bank-surplus")
+
+    r = await committing_client.post(f"/api/v1/projects/{project_id}/bank-surplus")
+
+    assert r.status_code == 200, r.text
+    assert r.json() == {"moved": [], "nothing_to_bank": True}
+    assert len(await _banked(db_session)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_surplus_that_grows_later_banks_only_the_difference(committing_client, db_session, catalog):
+    """The button can be pressed whenever, so what it moves is the surplus MINUS
+    what this line has already banked — never the whole surplus again."""
+    project_id, first, _second = await _two_lines(committing_client, catalog)
+    for _ in range(7):
+        await _completed_print(db_session, project_id, catalog["file"].id)
+    await committing_client.post(f"/api/v1/projects/{project_id}/bank-surplus")
+
+    await _completed_print(db_session, project_id, catalog["file"].id)
+    r = await committing_client.post(f"/api/v1/projects/{project_id}/bank-surplus")
+
+    assert r.status_code == 200, r.text
+    assert {m["name"]: m["delta"] for m in r.json()["moved"]} == {"shade": 1, "arm": 2}
+    totals = Counter()
+    for row in await _banked(db_session):
+        assert row.project_line_id == first["id"]
+        totals[row.product_part_id] += row.delta
+    assert sorted(totals.values()) == [6, 12]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_order_can_still_bank_its_surplus(committing_client, db_session, catalog):
+    """The parts came off a bed regardless of what happened to the order, and
+    the ones from an order nobody will ship are the most worth keeping."""
+    project_id, _first, _second = await _two_lines(committing_client, catalog)
+    for _ in range(7):
+        await _completed_print(db_session, project_id, catalog["file"].id)
+    assert (await committing_client.patch(f"/api/v1/projects/{project_id}", json={"status": "cancelled"})).status_code
+    r = await committing_client.post(f"/api/v1/projects/{project_id}/bank-surplus")
+
+    assert r.status_code == 200, r.text
+    assert {m["name"]: m["delta"] for m in r.json()["moved"]} == {"shade": 5, "arm": 10}
+
+
+@pytest.mark.asyncio
+async def test_an_order_printed_exactly_has_nothing_to_bank(committing_client, db_session, catalog):
+    """The ordinary case, and the one that must not write a ledger of zeroes."""
+    project_id, _first, _second = await _two_lines(committing_client, catalog)
+    for _ in range(2):
+        await _completed_print(db_session, project_id, catalog["file"].id)
+
+    r = await committing_client.post(f"/api/v1/projects/{project_id}/bank-surplus")
+
+    assert r.json() == {"moved": [], "nothing_to_bank": True}
+    assert await _banked(db_session) == []
+
+
+@pytest.mark.asyncio
+async def test_banking_an_order_that_does_not_exist_is_404(committing_client):
+    assert (await committing_client.post("/api/v1/projects/9999/bank-surplus")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_filing_an_order_less_print_under_an_order_takes_its_stock_back(committing_client, db_session, catalog):
+    """«Додати архіви» is the order page's own filing button, and filing is
+    filing: the same reversal the archive editor does (pass 8, Decision 3).
+    Without it the parts would sit on the shelf AND count towards the order."""
+    archive = await _completed_print(db_session, None, catalog["file"].id)
+    credited = await part_stock.credit_unfiled_print(db_session, archive)
+    await db_session.commit()
+    assert [m.delta for m in credited] == [1, 2], "one shade and two arms went to free stock"
+
+    project_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Lamps", "lines": [{"product_id": catalog["product"].id, "quantity": 1}]},
+        )
+    ).json()["id"]
+    r = await committing_client.post(f"/api/v1/projects/{project_id}/add-archives", json={"archive_ids": [archive.id]})
+
+    assert r.status_code == 200, r.text
+    db_session.expire_all()
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    assert sum(row.delta for row in rows) == 0
+    assert {row.note for row in rows if row.reason == "manual"} == {"filed under order Lamps"}

@@ -446,6 +446,13 @@ async def delete_product(
             ProjectProcurement.product_part_id.in_(select(ProductPart.id).where(ProductPart.product_id == product_id))
         )
     )
+    # The stock ledger of every part going with the product, for the same
+    # reason and through its own writer — ``delete_part`` does this one part at
+    # a time and the whole product is no different. Worse, in fact: SQLite
+    # REUSES rowids, so an orphaned ledger does not just linger, it eventually
+    # attaches itself to whichever part inherits the id.
+    part_ids = (await db.execute(select(ProductPart.id).where(ProductPart.product_id == product_id))).scalars().all()
+    await part_stock.delete_for_parts(db, list(part_ids))
     await db.flush()
     await db.delete(product)
     return {"message": "Product deleted"}

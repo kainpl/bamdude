@@ -5288,6 +5288,41 @@ async def _auto_clean_completed_item(db, queue_item, *, queue_status: str, plate
     return await clean_up_finished_row(db, queue_item, queue_status=queue_status, plate_auto_cleared=plate_auto_cleared)
 
 
+async def _credit_free_stock(archive_id: int | None) -> None:
+    """Put a just-finished order-less print onto the product's shelf.
+
+    Module-level, like ``_record_print_energy``, so the completion hook can be
+    tested without driving the whole of ``on_print_complete``.
+
+    ⚠️ **This can never fail a print.** Everything the ledger might object to —
+    a product whose parts changed under it, a balance that will not go where it
+    is asked, a database that is briefly locked — is caught here and logged.
+    The print happened; the bookkeeping is a consequence of it, never a
+    condition on it. ``credit_unfiled_print`` is itself idempotent and silent
+    for a print this does not apply to (filed under an order, not completed, a
+    plate no product claims), so this is one call and no preconditions.
+    """
+    logger = logging.getLogger(__name__)
+    if not archive_id:
+        return
+    try:
+        from backend.app.models.archive import PrintArchive
+        from backend.app.services import part_stock
+
+        async with async_session() as db:
+            archive = await db.get(PrintArchive, archive_id)
+            if archive is None:
+                return
+            written = await part_stock.credit_unfiled_print(db, archive)
+            if written:
+                await db.commit()
+                logger.info(
+                    "[STOCK] archive %s had no order: credited %d part(s) to free stock", archive_id, len(written)
+                )
+    except Exception as e:
+        logger.warning("[STOCK] free-stock credit failed for archive %s: %s", archive_id, e, exc_info=True)
+
+
 async def on_print_complete(printer_id: int, data: dict):
     """Handle print completion - update the archive status."""
     import time
@@ -6767,6 +6802,15 @@ async def on_print_complete(printer_id: int, data: dict):
         # Continue with other operations even if archive update fails
 
     log_timing("Archive status update")
+
+    # A print that belongs to no order puts its parts on the product's shelf
+    # (pass 8, Decision 3). Here and not earlier: the archive is ``completed``
+    # only after the block above, and its ``print_archive_parts`` rows are final
+    # by now — seeded when the 3MF was attached, their ``defective`` counts
+    # written by the skip-object callbacks during the print.
+    await _credit_free_stock(archive_id)
+
+    log_timing("Free stock credit")
 
     # Track filament consumption from AMS remain% deltas (skip if Spoolman handles usage)
     usage_results: list[dict] = []

@@ -2903,6 +2903,17 @@ class ArchiveService:
 
         await delete_for_archive(self.db, archive_id)
 
+        # Free-stock movements go the OTHER way: the parts this print made are
+        # on a shelf and stay there (pass 8, §Invariants touched — "deleting an
+        # archive does not delete its movements"), so the link is cut and the
+        # rows are kept. ``ON DELETE SET NULL`` says the same thing and fires on
+        # PostgreSQL only; on SQLite the movements would keep an id naming
+        # nothing, which is both a dead link in the product's history and an
+        # idempotency key the next archive to take that rowid would trip over.
+        from backend.app.services.part_stock import detach_archive
+
+        await detach_archive(self.db, archive_id)
+
         # Resolve the directory to delete BEFORE committing the DB change
         dir_to_delete: Path | None = None
 

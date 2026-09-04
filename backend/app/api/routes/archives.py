@@ -22,6 +22,9 @@ from backend.app.core.permissions import Permission
 from backend.app.core.timezones import client_timezone, day_bounds
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
+from backend.app.models.part_stock import ProductPartStockMovement
+from backend.app.models.product import ProductPart
+from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.models.user import User
@@ -36,6 +39,8 @@ from backend.app.schemas.archive import (
     ReprintRequest,
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
+from backend.app.schemas.project import StockMovedOut
+from backend.app.services import part_stock
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.design_settings import overrides_from_config
 from backend.app.services.filament_cost import default_rate_per_kg
@@ -1543,6 +1548,16 @@ async def update_archive(
         if archive.created_by_id != user.id:
             raise HTTPException(403, "You can only update your own archives")
 
+    # Filed under an order for the first time: whatever this print put on the
+    # free-stock shelf has to come back off it, because the order's own figures
+    # now count those parts (pass 8, Decision 3). Read BEFORE the setattr loop
+    # below, which is where ``archive.project_id`` stops being what it was.
+    filed_under_order = (
+        "project_id" in update_data.model_fields_set
+        and archive.project_id is None
+        and update_data.project_id is not None
+    )
+
     # An order line has to belong to the order the archive is filed under, or
     # the order's progress would count a print it never asked for. The target is
     # the project_id being SET in this same request when there is one, so moving
@@ -1580,6 +1595,27 @@ async def update_archive(
                 row.defective = min(item.defective, row.quantity)
         archive.defective_count = sum(r.defective or 0 for r in rows)
 
+    if filed_under_order:
+        order = await db.get(Project, update_data.project_id)
+        try:
+            await part_stock.reverse_unfiled_print(
+                db, archive, note=f"filed under order {order.name if order else update_data.project_id}"
+            )
+        except part_stock.PartStockError as e:
+            # The stock has already been reserved or consumed, so there is
+            # nothing left to take back. Refusing the FILING over that would be
+            # the wrong trade: re-filing a print is a routine correction, and
+            # the archive is the print history — it must be allowed to say
+            # where the print belongs. The ledger keeps the truth of what is on
+            # the shelf, and the operator corrects it by hand from the product
+            # page. Logged loudly because it is a real double count until they do.
+            logger.warning(
+                "Archive %s filed under order %s but its free-stock credit could not be reversed: %s",
+                archive.id,
+                update_data.project_id,
+                e,
+            )
+
     await db.commit()
 
     # Re-fetch with relationships loaded after commit
@@ -1591,6 +1627,59 @@ async def update_archive(
     archive = result.scalar_one_or_none()
 
     return archive_to_response(archive)
+
+
+@router.post("/{archive_id}/count-into-stock", response_model=list[StockMovedOut])
+async def count_archive_into_stock(
+    archive_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Count an old order-less print into the product's free stock by hand.
+
+    Decision 3 credits new prints automatically and deliberately does NOT
+    backfill history: nobody knows which of last year's order-less prints were
+    shipped, scrapped or are still in a drawer. This is the operator vouching
+    for one of them — the only way a pre-pass-8 print reaches the shelf.
+
+    Refused (409) for a print that is filed under an order (its parts are
+    counted there) or one already counted (the ledger names the archive). An
+    empty list is a legitimate answer, not a failure: the print may have
+    finished nothing good, or its plate may belong to no product.
+    """
+    archive = (await db.execute(PrintArchive.active().where(PrintArchive.id == archive_id))).scalar_one_or_none()
+    if archive is None:
+        raise HTTPException(404, "Archive not found")
+    if archive.project_id is not None:
+        raise HTTPException(409, "This print is filed under an order — its parts are counted there")
+    if await db.scalar(
+        select(func.count())
+        .select_from(ProductPartStockMovement)
+        .where(
+            ProductPartStockMovement.archive_id == archive.id,
+            ProductPartStockMovement.reason == "unfiled_print",
+        )
+    ):
+        raise HTTPException(409, "This print has already been counted into stock")
+
+    try:
+        written = await part_stock.credit_unfiled_print(db, archive)
+    except part_stock.PartStockError as e:
+        raise HTTPException(409, str(e)) from e
+    names = {
+        part.id: part.name
+        for part in (
+            await db.execute(select(ProductPart).where(ProductPart.id.in_([m.product_part_id for m in written])))
+        ).scalars()
+    }
+    # Built before the commit: a committed ORM object is expired, and reading an
+    # expired attribute back on the async session is a lazy load with no
+    # greenlet under it.
+    moved = [
+        StockMovedOut(part_id=m.product_part_id, name=names.get(m.product_part_id, "?"), delta=m.delta) for m in written
+    ]
+    await db.commit()
+    return moved
 
 
 @router.post("/{archive_id}/favorite", response_model=ArchiveResponse)

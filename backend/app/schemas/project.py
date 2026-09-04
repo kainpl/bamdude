@@ -428,6 +428,35 @@ class PlanEnqueueResponse(BaseModel):
     created: list[PlanEnqueueCreated] = []
 
 
+class StockMovedOut(BaseModel):
+    """One part's change of free stock, as the operator is told about it.
+
+    The «5 кришок, 5 колб → у залишок» line of Decision 2, and the same shape
+    the archive's "count this print into stock" answers with — one movement is
+    one movement whichever button wrote it. ``delta`` is signed for the same
+    reason the ledger's is: a reversal is a movement too.
+    """
+
+    part_id: int
+    name: str
+    delta: int
+
+
+class BankSurplusResponse(BaseModel):
+    """What «Списати надлишок у залишок» did (Decision 2).
+
+    ``moved`` is aggregated per PART, not per line: two lines of the same
+    product bank onto the same shelf, and the operator is told what landed
+    there, not the bookkeeping that got it there (the ``project_line_id`` on
+    each movement keeps that). ``nothing_to_bank`` is not "``moved`` is empty"
+    restated — it is the answer to a second press, which is a success and not
+    an error: the surplus was already banked.
+    """
+
+    moved: list[StockMovedOut] = []
+    nothing_to_bank: bool = False
+
+
 class LineProductOut(BaseModel):
     """What the order card's cover strip needs about one line's product.
 

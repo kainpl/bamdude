@@ -26,6 +26,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.customer import Customer
+from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.product import Product, ProductPart, ProductPlate
@@ -36,6 +37,7 @@ from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
     PROJECT_STATUSES,
+    BankSurplusResponse,
     BatchAddArchives,
     BatchAddQueueItems,
     LinePlanOut,
@@ -60,8 +62,10 @@ from backend.app.schemas.project import (
     ProjectListResponse,
     ProjectResponse,
     ProjectUpdate,
+    StockMovedOut,
     TimelineEvent,
 )
+from backend.app.services import part_stock
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.order_metrics import (
     attribute,
@@ -395,6 +399,83 @@ async def delete_line(
     return await _response(db, project_id)
 
 
+# ---------- free stock ----------
+
+
+@router.post("/{project_id}/bank-surplus", response_model=BankSurplusResponse)
+async def bank_surplus(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Move this order's overprint onto the product's shelf (pass 8, Decision 2).
+
+    Never automatic, and that is the whole point of the button: a surplus is
+    sometimes shipped with the order and sometimes scrapped, and only the
+    operator knows which. Pressing it a second time moves only what has
+    appeared since — ``surplus`` as ``order_metrics`` computes it (``usable −
+    need`` per counted part, defective already excluded by ``row_quantity``)
+    minus what this line has already banked. So the ledger holds the line's
+    surplus once however many times the button is pressed, and a later print
+    that grows the surplus is still bankable.
+
+    A CANCELLED order banks too: the parts came off a bed regardless of what
+    happened to the order afterwards, and they are exactly the ones most worth
+    keeping.
+    """
+    ctx = await load_order_context(db, project_id)
+    if ctx is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    figures, _other = attribute(ctx)
+
+    banked = {
+        (line_id, part_id): int(total or 0)
+        for line_id, part_id, total in (
+            await db.execute(
+                select(
+                    ProductPartStockMovement.project_line_id,
+                    ProductPartStockMovement.product_part_id,
+                    func.coalesce(func.sum(ProductPartStockMovement.delta), 0),
+                )
+                .where(
+                    ProductPartStockMovement.project_line_id.in_([line.id for line in ctx.lines]),
+                    ProductPartStockMovement.reason == "surplus_banked",
+                )
+                .group_by(ProductPartStockMovement.project_line_id, ProductPartStockMovement.product_part_id)
+            )
+        ).all()
+    }
+
+    # Per part, not per line: two lines of the same product feed one shelf, and
+    # the toast says what landed on it.
+    moved: dict[int, StockMovedOut] = {}
+    for line in ctx.lines:
+        for pf in figures[line.id].parts:
+            delta = pf.surplus - banked.get((line.id, pf.part_id), 0)
+            if delta <= 0:
+                continue
+            try:
+                movement = await part_stock.move(
+                    db,
+                    part_id=pf.part_id,
+                    delta=delta,
+                    reason="surplus_banked",
+                    project_line_id=line.id,
+                    created_by=current_user.id if current_user else None,
+                )
+            except part_stock.PartStockError as e:
+                raise HTTPException(status_code=409, detail=str(e)) from e
+            if movement is None:
+                continue
+            entry = moved.get(pf.part_id)
+            if entry is None:
+                moved[pf.part_id] = StockMovedOut(part_id=pf.part_id, name=pf.name, delta=delta)
+            else:
+                entry.delta += delta
+    await db.commit()
+    return BankSurplusResponse(moved=list(moved.values()), nothing_to_bank=not moved)
+
+
 # ---------- procurement ----------
 
 
@@ -480,15 +561,33 @@ async def add_archives_to_project(
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     """File existing prints under this order, optionally under one of its lines."""
-    await _get_project(db, project_id)
+    project = await _get_project(db, project_id)
     if data.project_line_id is not None:
         await _get_line(db, project_id, data.project_line_id)
     updated = 0
     for archive_id in data.archive_ids:
         archive = await db.get(PrintArchive, archive_id)
         if archive:
+            # Same rule as the archive editor's project change (pass 8,
+            # Decision 3): a print that was free stock stops being free stock
+            # the moment an order counts it. Read before the assignment, which
+            # is where ``project_id`` stops being what it was.
+            was_unfiled = archive.project_id is None
             archive.project_id = project_id
             archive.project_line_id = data.project_line_id
+            if was_unfiled:
+                try:
+                    await part_stock.reverse_unfiled_print(db, archive, note=f"filed under order {project.name}")
+                except part_stock.PartStockError as e:
+                    # The stock has already gone out to someone. Filing the
+                    # print is still right — the ledger keeps the truth and the
+                    # operator corrects it by hand from the product page.
+                    logger.warning(
+                        "Archive %s filed under order %s but its free-stock credit could not be reversed: %s",
+                        archive.id,
+                        project_id,
+                        e,
+                    )
             updated += 1
     return {"message": f"Added {updated} archives to project"}
 

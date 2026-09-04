@@ -23,7 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
-from backend.app.models.product import Product, ProductPart
+from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.services.product_composition import part_index
@@ -40,6 +40,48 @@ _IN_CHUNK = 500
 def archive_material_set(filament_type: str | None) -> set[str]:
     """``PrintArchive.filament_type`` is a joined string ("PLA, PETG")."""
     return {tok.strip().upper() for tok in (filament_type or "").split(",") if tok.strip()}
+
+
+def index_plates(plates: Iterable[ProductPlate]) -> tuple[dict[tuple[int, int], list[int]], dict[int, list[int]]]:
+    """``(file, plate) → product ids`` and ``file → product ids`` for the 0-rows.
+
+    The two halves of :attr:`OrderContext.plate_product` /
+    :attr:`OrderContext.whole_file_product`, built once so the per-order loader,
+    the batch loader and ``part_stock``'s order-less credit cannot drift about
+    what a plate belongs to. Ids come back sorted, which is what makes "the
+    first product that counts this part" a stable answer rather than whatever
+    the set iterated to.
+    """
+    exact: dict[tuple[int, int], set[int]] = defaultdict(set)
+    whole_file: dict[int, set[int]] = defaultdict(set)
+    for plate in plates:
+        exact[(plate.library_file_id, plate.plate_index)].add(plate.product_id)
+        if plate.plate_index == 0:
+            whole_file[plate.library_file_id].add(plate.product_id)
+    return (
+        {key: sorted(pids) for key, pids in exact.items()},
+        {file_id: sorted(pids) for file_id, pids in whole_file.items()},
+    )
+
+
+def products_for_print(
+    plate_product: dict[tuple[int, int], list[int]],
+    whole_file_product: dict[int, list[int]],
+    *,
+    library_file_id: int | None,
+    plate_index: int | None,
+) -> list[int]:
+    """Which products a printed plate belongs to: exact plate first, then the
+    whole-file wildcard.
+
+    A product plate with ``plate_index = 0`` claims EVERY plate of that file,
+    which is how a single-plate file (one 0-row from the sync) meets its prints,
+    which carry the slicer's index, 1. Without the second lookup those two
+    numbers never meet. **Not a union**: a file whose plate 2 belongs to one
+    product and whose 0-row belongs to another answers with the plate's owner
+    only, because the exact link is the more specific statement.
+    """
+    return plate_product.get((library_file_id, plate_index or 0)) or whole_file_product.get(library_file_id) or []
 
 
 @dataclass
@@ -136,13 +178,7 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         if product_ids
         else []
     )
-    plate_products: dict[tuple[int, int], set[int]] = defaultdict(set)
-    whole_file_products: dict[int, set[int]] = defaultdict(set)
-    for product in products:
-        for plate in product.plates:
-            plate_products[(plate.library_file_id, plate.plate_index)].add(product.id)
-            if plate.plate_index == 0:
-                whole_file_products[plate.library_file_id].add(product.id)
+    plate_products, whole_file_products = index_plates(plate for product in products for plate in product.plates)
     archives = (
         (
             await db.execute(
@@ -187,11 +223,11 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         lines=lines,
         products_by_id={p.id: p for p in products},
         parts_by_product={p.id: list(p.parts) for p in products},
-        plate_product={key: sorted(pids) for key, pids in plate_products.items()},
+        plate_product=plate_products,
         archives=list(archives),
         archive_parts_by_archive=dict(by_archive),
         procurement_by_part=procurement,
-        whole_file_product={file_id: sorted(pids) for file_id, pids in whole_file_products.items()},
+        whole_file_product=whole_file_products,
     )
 
 
@@ -250,8 +286,13 @@ def line_accepts_materials(line: ProjectLine, materials: set[str]) -> bool:
     return line.material is None or line.material.strip().upper() in materials
 
 
-def _row_quantity(row: PrintArchivePart, status: str) -> int:
-    """A completed row hands over what came out good; a running one its full count."""
+def row_quantity(row: PrintArchivePart, status: str) -> int:
+    """A completed row hands over what came out good; a running one its full count.
+
+    Public because the order-less credit in ``part_stock`` asks the same
+    question of the same rows: what a finished plate actually put on a shelf is
+    what a finished plate would have put against a line.
+    """
     if status == _DONE:
         return max(0, (row.quantity or 0) - (row.defective or 0))
     return row.quantity or 0
@@ -293,16 +334,15 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
     def candidates(archive: PrintArchive, exclude: ProjectLine | None = None) -> list[ProjectLine]:
         """The lines this print may feed, in ``sort_order``.
 
-        The exact plate first, then the whole-file wildcard: a product plate with
-        ``plate_index = 0`` claims EVERY plate of that file, which is how a
-        single-plate file (one 0-row from the sync) meets its prints, which carry
-        the slicer's index, 1. Without the second lookup those two numbers never
-        meet and every such print lands in "other".
+        The exact plate first, then the whole-file wildcard — see
+        :func:`products_for_print`, which is that rule; without its second
+        lookup every single-plate print lands in "other".
         """
-        product_ids = (
-            ctx.plate_product.get((archive.library_file_id, archive.plate_index or 0))
-            or ctx.whole_file_product.get(archive.library_file_id)
-            or []
+        product_ids = products_for_print(
+            ctx.plate_product,
+            ctx.whole_file_product,
+            library_file_id=archive.library_file_id,
+            plate_index=archive.plate_index,
         )
         materials = archive_material_set(archive.filament_type)
         return [
@@ -327,7 +367,7 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
             takers = [(ln, pf) for ln in lines if (pf := counted(ln, row.name_key)) is not None]
             if not takers:
                 continue
-            quantity = _row_quantity(row, archive.status)
+            quantity = row_quantity(row, archive.status)
             for line, pf in takers:
                 give = min(quantity, _room(pf, archive.status))
                 if not give:
@@ -597,13 +637,9 @@ async def _batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[
         # (``candidates`` filters on the order's own lines) but it would be a
         # different object than the one parity is claimed against.
         own_products = [products_by_id[pid] for pid in {line.product_id for line in lines} if pid in products_by_id]
-        plate_products: dict[tuple[int, int], set[int]] = defaultdict(set)
-        whole_file_products: dict[int, set[int]] = defaultdict(set)
-        for product in own_products:
-            for plate in product.plates:
-                plate_products[(plate.library_file_id, plate.plate_index)].add(product.id)
-                if plate.plate_index == 0:
-                    whole_file_products[plate.library_file_id].add(product.id)
+        plate_products, whole_file_products = index_plates(
+            plate for product in own_products for plate in product.plates
+        )
         archives = archives_by_project.get(project.id, [])
         out.append(
             OrderContext(
@@ -611,11 +647,11 @@ async def _batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[
                 lines=lines,
                 products_by_id={p.id: p for p in own_products},
                 parts_by_product={p.id: list(p.parts) for p in own_products},
-                plate_product={key: sorted(pids) for key, pids in plate_products.items()},
+                plate_product=plate_products,
                 archives=list(archives),
                 archive_parts_by_archive={a.id: parts_by_archive[a.id] for a in archives if a.id in parts_by_archive},
                 procurement_by_part=procurement_by_project.get(project.id, {}),
-                whole_file_product={file_id: sorted(pids) for file_id, pids in whole_file_products.items()},
+                whole_file_product=whole_file_products,
             )
         )
     return out
