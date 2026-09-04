@@ -15,10 +15,12 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.app.services import plan_engine
 from backend.app.services.order_metrics import load_order_context
 from backend.app.services.plan_engine import queued_yield_by_line
 from backend.app.services.product_composition import recipes_for_product
 from backend.tests.unit.services.test_order_metrics import build_parity_fixture
+from backend.tests.unit.services.test_product_composition import counting_statements
 
 pytestmark = pytest.mark.integration
 
@@ -1215,3 +1217,129 @@ async def test_the_orders_list_reports_what_each_order_page_reports(committing_c
             figures["printed"],
             figures["progress"],
         )
+
+
+@pytest.fixture
+async def three_product_order(committing_client, db_session):
+    """An order with three lines, each on its own product and its own sliced file."""
+    files = [
+        LibraryFile(
+            filename=f"p{i}.gcode.3mf",
+            file_path=f"p{i}",
+            file_size=1,
+            file_type="gcode",
+            file_metadata={
+                "plates": [
+                    {
+                        "index": 1,
+                        "printable_objects": {"1": f"body{i}"},
+                        "print_time_seconds": 100,
+                        "filaments": [{"slot_id": 1, "type": "PETG"}],
+                    }
+                ]
+            },
+        )
+        for i in range(3)
+    ]
+    products = [Product(name=f"Widget {i}") for i in range(3)]
+    db_session.add_all([*files, *products])
+    await db_session.flush()
+    for i, (product, file) in enumerate(zip(products, files, strict=True)):
+        db_session.add_all(
+            [
+                ProductPart(
+                    product_id=product.id,
+                    kind="printed",
+                    name=f"body{i}",
+                    name_key=f"body{i}",
+                    qty_per_unit=1,
+                    aliases=[f"body{i}"],
+                ),
+                ProductPlate(product_id=product.id, library_file_id=file.id, plate_index=0),
+            ]
+        )
+    await db_session.commit()
+    body = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Three",
+                "lines": [{"product_id": p.id, "quantity": 2, "material": "PETG"} for p in products],
+            },
+        )
+    ).json()
+    return body["id"], [line["id"] for line in body["lines"]], [p.id for p in products]
+
+
+@pytest.mark.asyncio
+async def test_the_plan_loads_every_products_recipes_in_one_batch(
+    committing_client, test_engine, monkeypatch, three_product_order
+):
+    """One order, three products, ONE recipe load — not one per product.
+
+    The plan is computed on every read of the order page, so the per-product
+    loop was a round trip per line on a page nobody thinks of as expensive.
+    """
+    pid, _lines, _products = three_product_order
+    calls = {"batched": 0}
+    real = plan_engine.recipes_for_products
+
+    async def counting(db, products):
+        calls["batched"] += 1
+        return await real(db, products)
+
+    monkeypatch.setattr(plan_engine, "recipes_for_products", counting)
+    assert not hasattr(plan_engine, "recipes_for_product"), (
+        "the engine holds the batch only — a per-product name here is the N+1 growing back"
+    )
+
+    with counting_statements(test_engine, match="library_files") as seen:
+        r = await committing_client.get(f"/api/v1/projects/{pid}/plan")
+
+    assert r.status_code == 200, r.text
+    assert len(r.json()["lines"]) == 3
+    assert all(line["rows"] for line in r.json()["lines"]), "each line still gets its own plate to print"
+    assert calls["batched"] == 1
+    assert len(seen) == 1, seen
+
+
+@pytest.mark.asyncio
+async def test_enqueue_loads_the_products_and_their_recipes_once_for_the_whole_call(
+    committing_client, db_session, test_engine, monkeypatch, three_product_order
+):
+    """The handler used to load a product AND build its recipes per distinct
+    product of the request — two round trips per line, on the write path."""
+    pid, lines, _products = three_product_order
+    plan = (await committing_client.get(f"/api/v1/projects/{pid}/plan")).json()
+    items = [
+        {"plate_id": line["rows"][0]["plate_id"], "count": 1, "line_id": line["line_id"]} for line in plan["lines"]
+    ]
+    assert len({item["plate_id"] for item in items}) == 3
+
+    calls = {"batched": 0}
+    real = projects_routes.recipes_for_products
+
+    async def counting(db, products):
+        calls["batched"] += 1
+        return await real(db, products)
+
+    monkeypatch.setattr(projects_routes, "recipes_for_products", counting)
+    assert not hasattr(projects_routes, "recipes_for_product"), (
+        "the handler holds the batch only — a per-product name here is the N+1 growing back"
+    )
+
+    with counting_statements(test_engine, match="FROM products") as products_seen:
+        r = await committing_client.post(
+            f"/api/v1/projects/{pid}/plan/enqueue", json={"items": items, "target": {"kind": "auto"}}
+        )
+
+    assert r.status_code == 200, r.text
+    assert [c["line_id"] for c in r.json()["created"]] == lines
+    # One product load and one recipe load for the whole request. The queue
+    # writers below still read their own file per item — that is their business,
+    # and it is why only the handler's own two loads are counted here.
+    assert calls["batched"] == 1
+    assert len(products_seen) == 1, products_seen
+
+    rows = (await db_session.execute(select(AutoQueueItem))).scalars().all()
+    assert sorted(row.project_line_id for row in rows) == sorted(lines)

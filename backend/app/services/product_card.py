@@ -86,6 +86,7 @@ from backend.app.services.product_files import (
     SOURCE_MANUAL,
     attachment_limit,
     exceeds_attachment_limit,
+    import_manifest_limit,
     import_member_limit,
     product_attachments_dir,
     safe_attachment_name,
@@ -269,6 +270,13 @@ async def fill_from_file(
     rows = [dict(a) for a in (product.attachments or []) if isinstance(a, dict) and a.get("filename")]
     directory = product_attachments_dir(product.id)
     stale: list[Path] = []
+    # ⚠️ What this file's previous import left behind, and the reason the write
+    # below is CONDITIONAL. ``rows`` is a rebuilt list, so assigning it back
+    # unconditionally prunes every entry the loader skipped — a row with no
+    # filename from a hand-edited column or a restored backup — as a side effect
+    # of an operation that reported nothing. A re-read that fills nothing and
+    # replaces nothing must leave the column exactly as it found it.
+    mine: dict[str, dict] = {}
 
     if replace_3mf_attachments:
         # Keyed on the stored name, which is a uuid and therefore unique — two
@@ -354,7 +362,9 @@ async def fill_from_file(
             cursor[category] += 1
             imported[category] = imported.get(category, 0) + 1
 
-    if fresh or replace_3mf_attachments:
+    # Something arrived, or something of this file's was taken away. Neither
+    # means the column is not ours to rewrite — see ``mine`` above.
+    if fresh or mine:
         product.attachments = rows + fresh
     for category, count in imported.items():
         notes.append(_note("imported_files", category=category, count=count))
@@ -804,7 +814,23 @@ def _reject_hostile_members(zf: zipfile.ZipFile) -> None:
 
 
 def _validated_manifest(zf: zipfile.ZipFile) -> dict:
-    """``product.json``, or a 400 saying which way it is wrong."""
+    """``product.json``, or a 400 saying which way it is wrong — or a 413.
+
+    ⚠️ **The size gate comes first, and it reads the ZIP directory rather than
+    the member.** This is the one member inflated and parsed ON THE EVENT LOOP,
+    and it was the one member with no ceiling: a few kilobytes of deflate that
+    expand to gigabytes stalls the whole farm inside a request that has already
+    passed the transport gate (:func:`import_limit`, checked in the route). The
+    DECLARED uncompressed size refuses that before ``read`` allocates anything.
+    A missing manifest raises out of ``getinfo`` and is handed straight back to
+    the 400 below — "there is no manifest" must not become "it is too big".
+    """
+    try:
+        declared = zf.getinfo(_MANIFEST).file_size
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"The archive carries no {_MANIFEST}") from e
+    if declared > import_manifest_limit():
+        raise HTTPException(status_code=413, detail=f"{_MANIFEST} may be at most {import_manifest_limit()} bytes")
     try:
         raw = zf.read(_MANIFEST)
     except KeyError as e:

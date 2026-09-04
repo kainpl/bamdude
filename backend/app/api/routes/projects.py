@@ -69,7 +69,7 @@ from backend.app.services.order_metrics import (
     project_figures,
 )
 from backend.app.services.plan_engine import OrderPlan, plan_for_order
-from backend.app.services.product_composition import PlateRecipe, recipes_for_product
+from backend.app.services.product_composition import PlateRecipe, recipes_for_products
 from backend.app.services.product_files import (
     ALLOWED_ATTACHMENT_EXTENSIONS,
     COVER_EXTENSIONS,
@@ -1247,26 +1247,38 @@ async def enqueue_order_plan(
             raise HTTPException(status_code=404, detail="Printer not found")
         printer_id = printer.id
 
-    plates_by_product: dict[int, dict[int, tuple[ProductPlate, PlateRecipe]]] = {}
+    # ⚠️ ONE load for the whole request, before the loop — this used to fetch a
+    # product AND build its recipes inside it, per distinct product of the
+    # items, i.e. two round trips per line on the write path. A line naming a
+    # product that is gone simply has no plates, which the loop below answers
+    # with the same 404 the missing-plate case gets.
+    for item in data.items:
+        if item.line_id not in lines_by_id:
+            raise HTTPException(status_code=404, detail="Order line not found in this project")
+    wanted = {lines_by_id[item.line_id].product_id for item in data.items}
+    products = (
+        (
+            await db.execute(
+                select(Product)
+                .options(selectinload(Product.parts), selectinload(Product.plates))
+                .where(Product.id.in_(wanted))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    recipes_by_product = await recipes_for_products(db, products)
+    plates_by_product: dict[int, dict[int, tuple[ProductPlate, PlateRecipe]]] = {
+        product_id: {plate.id: (plate, recipe) for plate, _file, recipe in rows}
+        for product_id, rows in recipes_by_product.items()
+    }
     # (line_id, ProductPlate.id, library_file_id, queue plate number, count) —
     # plain scalars, read BEFORE the first writer commits, because a commit may
     # expire every instance loaded above it.
     resolved: list[tuple[int, int, int, int | None, int]] = []
     for item in data.items:
-        line = lines_by_id.get(item.line_id)
-        if line is None:
-            raise HTTPException(status_code=404, detail="Order line not found in this project")
-        plates = plates_by_product.get(line.product_id)
-        if plates is None:
-            product = (
-                await db.execute(
-                    select(Product)
-                    .options(selectinload(Product.parts), selectinload(Product.plates))
-                    .where(Product.id == line.product_id)
-                )
-            ).scalar_one_or_none()
-            rows = await recipes_for_product(db, product) if product is not None else []
-            plates = plates_by_product[line.product_id] = {plate.id: (plate, r) for plate, _file, r in rows}
+        line = lines_by_id[item.line_id]
+        plates = plates_by_product.get(line.product_id, {})
         entry = plates.get(item.plate_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="Plate not found in this line's product")

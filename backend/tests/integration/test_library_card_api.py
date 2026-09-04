@@ -394,3 +394,35 @@ async def test_a_download_header_survives_the_name_a_stranger_chose(committing_c
     assert 'filename="v2.csv"' in header
     assert "filename*=UTF-8''" in header and "%22v2%22" in header
     assert header.isascii(), "a latin-1 header encoder gets nothing but ASCII from us"
+
+
+def test_the_card_dataclass_and_its_wire_model_carry_the_same_fields():
+    """``_card_payload`` used to build the response by REFLECTING
+    ``CardResponse.model_fields`` over the dataclass, so a field added on one
+    side only was either a silent drop (schema-only, answered with the default)
+    or an ``AttributeError`` 500 (dataclass-only, never noticed). It is written
+    out field by field now, and this is what keeps the two sides in step: the
+    sets are equal, with no deliberate extra on either.
+    """
+    import dataclasses
+
+    from backend.app.schemas.library import CardResponse
+    from backend.app.services.threemf_card import CardData
+
+    assert set(CardResponse.model_fields) == {f.name for f in dataclasses.fields(CardData)}
+
+
+def test_the_payload_carries_only_what_the_dataclass_declares():
+    """A dataclass is not sealed — anything can set an attribute on an instance,
+    and a reflecting constructor would have put it on the wire the moment the
+    schema grew a field of the same name. Explicit construction cannot."""
+    from backend.app.api.routes.library import _card_payload
+    from backend.app.services.threemf_card import CardData
+
+    card = CardData(title="Desk lamp")
+    card.smuggled = "not a card field"  # type: ignore[attr-defined]
+
+    payload = _card_payload(card, 3)
+
+    assert payload.title == "Desk lamp"
+    assert "smuggled" not in payload.model_dump()

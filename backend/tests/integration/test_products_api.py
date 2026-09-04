@@ -5,6 +5,8 @@ production's ``get_db`` does it after the response. See the fixture docstrings
 in ``backend/tests/conftest.py``.
 """
 
+import json
+import logging
 from datetime import datetime, timezone
 
 import pytest
@@ -13,7 +15,7 @@ from sqlalchemy import select
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.models.product import ProductPlate, product_files, product_folders
+from backend.app.models.product import Product, ProductPlate, product_files, product_folders
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.services.product_files import product_attachments_dir
@@ -637,6 +639,68 @@ async def test_reread_keeps_the_operators_values_and_replaces_only_this_files_im
         assert not (product_attachments_dir(pid) / gone).exists()
     for kept in [manual, *from_other]:
         assert (product_attachments_dir(pid) / kept).exists()
+
+
+@pytest.mark.asyncio
+async def test_from_file_logs_the_notes_it_has_nowhere_to_return(committing_client, db_session, tmp_path, caplog):
+    """``from-file`` answers a bare ``ProductResponse`` — there is no ``notes``
+    field on it, and adding one would change the wire for every caller. So the
+    notes go to the log: what got filled, and what got skipped and why, is the
+    only record an operator has when a designer's file arrives half-empty."""
+    file = await make_card_file(
+        db_session,
+        tmp_path,
+        members={"Auxiliaries/Model Pictures/a.png": PNG_A, "Auxiliaries/Others/run.exe": EVIL_EXE},
+    )
+    with caplog.at_level(logging.INFO, logger="backend.app.api.routes.products"):
+        r = await committing_client.post(f"/api/v1/products/from-file/{file.id}")
+    assert r.status_code == 200, r.text
+    # The response is untouched — this is a log line, not a wire change. (The
+    # `notes` key it does carry is the product's own free-text column, not the
+    # card's; a plain `ProductResponse` is exactly what the detail GET answers.)
+    body = r.json()
+    detail = (await committing_client.get(f"/api/v1/products/{body['id']}")).json()
+    assert set(body) == set(detail) and body["notes"] is None
+    assert [a["original_name"] for a in body["attachments"]] == ["a.png"]
+
+    lines = [rec.getMessage() for rec in caplog.records if rec.name == "backend.app.api.routes.products"]
+    assert any("code=filled_field" in line and "'field': 'license'" in line for line in lines), lines
+    assert any("code=imported_files" in line and "'category': 'pictures'" in line for line in lines), lines
+    assert any("code=skipped_extension" in line and "run.exe" in line for line in lines), lines
+
+
+@pytest.mark.asyncio
+async def test_a_reread_that_fills_nothing_leaves_the_attachments_column_alone(committing_client, db_session, tmp_path):
+    """A no-op re-read used to rewrite the column anyway — ``rows`` is a
+    REBUILT list, so entries the loader skips (a legacy row with no filename,
+    from a hand-edited column or a restored backup) were silently pruned by an
+    operation that reported nothing. Nothing filled and nothing replaced means
+    nothing written, byte for byte."""
+    file = await make_card_file(db_session, tmp_path, name="bare.3mf", members={})
+    file_id = file.id
+    pid = (
+        await committing_client.post(
+            "/api/v1/products/",
+            json={"name": "Lamp", "designer": "Me", "license": "mine", "description": "d", "design_id": "1"},
+        )
+    ).json()["id"]
+    assert (
+        await committing_client.put(f"/api/v1/products/{pid}/files", json={"library_file_ids": [file_id]})
+    ).status_code == 200
+
+    # A row the loader would drop, planted the way a restored backup would.
+    legacy = [{"category": "pictures", "original_name": "old.png"}, {"category": "other", "filename": "keep.txt"}]
+    product = await db_session.get(Product, pid)
+    product.attachments = legacy
+    await db_session.commit()
+    before = json.dumps((await db_session.get(Product, pid)).attachments)
+
+    r = await committing_client.post(f"/api/v1/products/{pid}/card/reread", params={"file_id": file_id})
+    assert r.status_code == 200, r.text
+    assert _codes(r.json()["notes"]) == ["nothing_to_fill"]
+
+    db_session.expire_all()
+    assert json.dumps((await db_session.get(Product, pid)).attachments) == before
 
 
 @pytest.mark.asyncio

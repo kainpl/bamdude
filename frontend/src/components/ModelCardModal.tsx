@@ -510,12 +510,15 @@ interface FileCardProps {
  *  (a designer's stray `.txt` inside `Model Pictures/` is a download), and a
  *  second copy of that rule here would be the copy that goes stale.
  *
- *  ⚠️ Anchored to the ROUTE's position — `/files/<id>/card-file/` — not a bare
- *  `includes`. The tail of the url is the member's own path INSIDE the 3MF,
- *  percent-encoded, and a designer who put their bill of materials in a folder
- *  called `card-file` would have had it rendered as a broken `<img>` on a
- *  token surface it is deliberately not served from. */
-const isPicture = (member: CardAux) => /\/files\/\d+\/card-file\//.test(member.url);
+ *  ⚠️ Anchored to the WHOLE route — `^/api/v1/library/files/<id>/card-file/` —
+ *  not a bare `includes`, and not the tail of it either. The rest of the url is
+ *  the member's own path INSIDE the 3MF, percent-encoded, so a designer who put
+ *  their bill of materials in a folder called `card-file` would have had it
+ *  rendered as a broken `<img>` on a token surface it is deliberately not
+ *  served from — and a folder called `files/9/card-file` still satisfied the
+ *  un-anchored form. `_card_route` in `routes/library.py` builds exactly this
+ *  prefix and nothing else can produce it. */
+const isPicture = (member: CardAux) => /^\/api\/v1\/library\/files\/\d+\/card-file\//.test(member.url);
 
 /**
  * What a LIBRARY 3MF says about itself — read-only, and a way out to a product.

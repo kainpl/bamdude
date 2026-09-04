@@ -1,12 +1,13 @@
 """Pure composition logic for products: what a plate yields, which part an
 object name is, how parts merge (spec §Composition sync, §Data model).
 
-Everything above :func:`recipes_for_product` is pure — no session, no I/O.
-That one helper is the exception, and deliberately so: reading a product's
-plate files is the single step both ``routes/products.py::list_plates`` and
-``services/plan_engine.py`` need, and two copies of it would drift on the one
-question that matters (a trashed file's plates are NOT printable). Plate yield
-is derived from ``LibraryFile.file_metadata`` every time — never cached.
+Everything above :func:`recipes_for_products` is pure — no session, no I/O.
+That helper (and the single-product wrapper beside it) is the exception, and
+deliberately so: reading a product's plate files is the single step both
+``routes/products.py::list_plates`` and ``services/plan_engine.py`` need, and
+two copies of it would drift on the one question that matters (a trashed file's
+plates are NOT printable). Plate yield is derived from
+``LibraryFile.file_metadata`` every time — never cached.
 
 ⚠️ ``plates[].objects`` is a NAME-DEDUPLICATED list (ten cloned clips collapse
 to one entry). Instances live in ``plates[].printable_objects`` (identify_id →
@@ -161,10 +162,17 @@ def recipe_for(
     return recipe
 
 
-async def recipes_for_product(
-    db: AsyncSession, product: Product
-) -> list[tuple[ProductPlate, LibraryFile, PlateRecipe]]:
-    """Every plate of ``product`` whose file is still in the library, with its recipe.
+async def recipes_for_products(
+    db: AsyncSession, products: Iterable[Product]
+) -> dict[int, list[tuple[ProductPlate, LibraryFile, PlateRecipe]]]:
+    """Every product's plates and recipes, in ONE round of queries.
+
+    ⚠️ **This is the batch, and the single-product helper is a wrapper over
+    it** — not the other way round. Both real callers work on a whole order:
+    ``plan_engine.plan_for_order`` planned every line of it and the plan-enqueue
+    handler validated every item of a request, and each of them asked per
+    PRODUCT, so an order of five lines cost five identical-shaped SELECTs
+    against ``library_files`` on a page that is recomputed on every read.
 
     ⚠️ ``LibraryFile.active()``: a trashed file is restorable, so its links and
     its ``product_plates`` rows stay — but its plates must not be offered as
@@ -172,31 +180,47 @@ async def recipes_for_product(
     candidates. A plate whose file is gone (or trashed) is simply absent from
     the result; there is no placeholder to render or reason about.
 
-    Ordered by ``ProductPlate.id`` — a stable sequence both callers see, so a
-    plan row and a plate list can be compared by id. The route sorts the result
-    for display itself.
+    Every product asked about gets a key, empty list included, so a caller can
+    index without guarding. Each list is ordered by ``ProductPlate.id`` — a
+    stable sequence both callers see, so a plan row and a plate list can be
+    compared by id. The route sorts the result for display itself.
 
     ``product.plates`` and ``product.parts`` must already be loaded (a lazy load
     inside an async session is a ``MissingGreenlet``, not a SELECT); both
     ``routes/products.py::_get`` and the engine's loader ``selectinload`` them.
     """
-    plates = list(product.plates or [])
-    if not plates:
-        return []
-    files = {
-        f.id: f
-        for f in (
-            await db.execute(LibraryFile.active().where(LibraryFile.id.in_({p.library_file_id for p in plates})))
-        ).scalars()
-    }
-    parts = list(product.parts or [])
-    out: list[tuple[ProductPlate, LibraryFile, PlateRecipe]] = []
-    for plate in sorted(plates, key=lambda p: p.id):
-        file = files.get(plate.library_file_id)
-        if file is None:
-            continue
-        out.append((plate, file, recipe_for(plate, file.file_metadata, file.file_type, parts)))
+    products = list(products)
+    plates_by_product = {product.id: list(product.plates or []) for product in products}
+    file_ids = {plate.library_file_id for plates in plates_by_product.values() for plate in plates}
+    files: dict[int, LibraryFile] = {}
+    if file_ids:
+        files = {
+            f.id: f for f in (await db.execute(LibraryFile.active().where(LibraryFile.id.in_(file_ids)))).scalars()
+        }
+    out: dict[int, list[tuple[ProductPlate, LibraryFile, PlateRecipe]]] = {}
+    for product in products:
+        parts = list(product.parts or [])
+        rows: list[tuple[ProductPlate, LibraryFile, PlateRecipe]] = []
+        for plate in sorted(plates_by_product[product.id], key=lambda p: p.id):
+            file = files.get(plate.library_file_id)
+            if file is None:
+                continue
+            rows.append((plate, file, recipe_for(plate, file.file_metadata, file.file_type, parts)))
+        out[product.id] = rows
     return out
+
+
+async def recipes_for_product(
+    db: AsyncSession, product: Product
+) -> list[tuple[ProductPlate, LibraryFile, PlateRecipe]]:
+    """One product's plates and recipes — :func:`recipes_for_products` for one.
+
+    Kept for the single-product callers (``routes/products.py::list_plates`` and
+    the plate routes beside it), which really do answer about one product. A
+    caller holding SEVERAL must use the batch: calling this in a loop is the
+    N+1 it exists to have removed.
+    """
+    return (await recipes_for_products(db, [product]))[product.id]
 
 
 def merge_parts(target: ProductPart, source: ProductPart) -> None:

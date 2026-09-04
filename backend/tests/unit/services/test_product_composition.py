@@ -1,8 +1,9 @@
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import selectinload
 
 from backend.app.models.library import LibraryFile
@@ -16,8 +17,31 @@ from backend.app.services.product_composition import (
     purchased_name_key,
     recipe_for,
     recipes_for_product,
+    recipes_for_products,
     remove_alias,
 )
+
+
+@contextmanager
+def counting_statements(engine, *, match: str | None = None):
+    """Every SQL statement an engine runs inside the block.
+
+    The N+1 these tests exist to pin is invisible to a functional assertion —
+    the answers are identical either way — so the number of round trips IS the
+    behaviour under test.
+    """
+    seen: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if match is None or match in statement:
+            seen.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record)
+    try:
+        yield seen
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", record)
+
 
 META = {
     "plates": [
@@ -207,3 +231,76 @@ async def test_recipes_for_product_asks_nothing_of_the_database_for_a_plateless_
         )
     ).scalar_one()
     assert await recipes_for_product(db_session, loaded) == []
+
+
+async def _loaded(db, product_id: int) -> Product:
+    return (
+        await db.execute(
+            select(Product)
+            .options(selectinload(Product.parts), selectinload(Product.plates))
+            .where(Product.id == product_id)
+        )
+    ).scalar_one()
+
+
+async def test_recipes_for_products_reads_every_products_files_in_one_query(db_session, test_engine):
+    """The batch is the whole point: an order of N products used to cost N
+    SELECTs against ``library_files``, one per product, from the plan engine and
+    again from the enqueue handler. The answers were never wrong — only the
+    number of round trips — so the count IS the assertion.
+    """
+    files = [
+        LibraryFile(filename=f"f{i}.gcode.3mf", file_path=f"f{i}", file_size=1, file_type="gcode", file_metadata=META)
+        for i in range(3)
+    ]
+    products = [Product(name=f"P{i}") for i in range(3)]
+    db_session.add_all([*files, *products])
+    await db_session.commit()
+    for product, file in zip(products, files, strict=True):
+        db_session.add_all(
+            [
+                ProductPart(
+                    product_id=product.id,
+                    kind="printed",
+                    name="bracket",
+                    name_key="bracket",
+                    qty_per_unit=1,
+                    aliases=["bracket", "bracket.stl"],
+                ),
+                ProductPlate(product_id=product.id, library_file_id=file.id, plate_index=1),
+                ProductPlate(product_id=product.id, library_file_id=file.id, plate_index=2),
+            ]
+        )
+    await db_session.commit()
+    loaded = [await _loaded(db_session, p.id) for p in products]
+
+    with counting_statements(test_engine, match="library_files") as batched:
+        by_product = await recipes_for_products(db_session, loaded)
+    assert len(batched) == 1, batched
+
+    # Every product answered, and answered exactly as the single-product helper
+    # would have — that one is now a wrapper over this.
+    assert set(by_product) == {p.id for p in products}
+    with counting_statements(test_engine, match="library_files") as singly:
+        for product in loaded:
+            assert [(plate.id, file.id, recipe.yield_by_part) for plate, file, recipe in by_product[product.id]] == [
+                (plate.id, file.id, recipe.yield_by_part)
+                for plate, file, recipe in await recipes_for_product(db_session, product)
+            ]
+    assert len(singly) == 3, "one per product — that is the shape the batch replaces"
+
+
+async def test_recipes_for_products_answers_a_plateless_product_without_a_query(db_session, test_engine):
+    """A dict entry for every product asked about, so a caller can index without
+    guarding — and no query at all when none of them has a plate."""
+    products = [Product(name="Empty A"), Product(name="Empty B")]
+    db_session.add_all(products)
+    await db_session.commit()
+    loaded = [await _loaded(db_session, p.id) for p in products]
+
+    with counting_statements(test_engine, match="library_files") as seen:
+        by_product = await recipes_for_products(db_session, loaded)
+
+    assert by_product == {p.id: [] for p in products}
+    assert seen == []
+    assert await recipes_for_products(db_session, []) == {}

@@ -11,6 +11,7 @@ from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import plan_engine
+from backend.app.services.filament_cost import cost_of
 from backend.app.services.order_metrics import LineFigures, OrderContext, PartFigures
 from backend.app.services.plan_engine import plan_lines
 from backend.app.services.product_composition import PlateRecipe
@@ -378,3 +379,38 @@ def test_a_zero_print_time_is_no_estimate_and_never_wins_a_tie():
     assert row.print_time_seconds is None
     assert row.time_unknown is True
     assert alone.totals.print_time_seconds is None
+
+
+def test_a_rows_cost_is_the_farms_own_arithmetic():
+    """The engine prices a row itself — it is handed a price per GRAM, while
+    ``filament_cost.cost_of`` is handed the farm rate per KILOGRAM — so the two
+    could drift apart on rounding and nobody would see it: one number is on the
+    plan block, the other on every archive.
+
+    Reusing ``cost_of`` here would mean threading the per-kilogram rate through
+    ``plan_lines`` / ``cover`` / ``_totals`` in place of the per-gram price the
+    whole engine is written against, so the two are PINNED instead. If this
+    fails, the plan and the archive have started disagreeing about what a print
+    costs and one of them has to move.
+    """
+    part = _part(1, 10, "a", 1)
+    line = _line(100, 10, 1)
+    ctx = _ctx([line], [part])
+    for grams, rate_per_kg in ((10.0, 20.0), (7.3, 24.99), (0.5, 1.0), (123.456, 18.75), (1000.0, 25.0)):
+        plan = plan_lines(
+            ctx,
+            {line.id: _figs(line, [part], {1: 1})},
+            {10: [_cand(1, 10, {1: 1}, grams=grams)]},
+            {},
+            rate_per_kg / 1000.0,
+        )
+        assert plan.lines[0].rows[0].cost == cost_of(grams, rate_per_kg), (grams, rate_per_kg)
+
+    # And both spell "unanswerable" the same way: None, never 0.0 — a zero cost
+    # is a claim that the print was free.
+    no_rate = plan_lines(ctx, {line.id: _figs(line, [part], {1: 1})}, {10: [_cand(1, 10, {1: 1})]}, {}, None)
+    assert no_rate.lines[0].rows[0].cost is None and cost_of(10.0, 0.0) is None
+    no_grams = plan_lines(
+        ctx, {line.id: _figs(line, [part], {1: 1})}, {10: [_cand(1, 10, {1: 1}, grams=None)]}, {}, 0.02
+    )
+    assert no_grams.lines[0].rows[0].cost is None and cost_of(None, 20.0) is None

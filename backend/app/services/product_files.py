@@ -125,6 +125,19 @@ MAX_IMPORT_BYTES = 2 * 1024**3
 # multi-material 3MF with room to spare.
 MAX_IMPORT_MEMBER_BYTES = 200 * 1024 * 1024
 
+# The MANIFEST's own ceiling, and it is neither of the two above.
+# ⚠️ ``product.json`` is the one member ``import_zip`` inflates and parses ON THE
+# EVENT LOOP — everything else goes through ``to_thread`` — because it has to be
+# read before the coroutine knows whether the archive is worth threading for.
+# That makes it the cheapest deflate bomb in the product: a few kilobytes on the
+# wire that inflate to gigabytes inside a request that has already passed the
+# transport gate. The check is against the ZIP's DECLARED uncompressed size, so
+# it refuses the bomb instead of reporting it afterwards. 2 MB is orders of
+# magnitude above a real manifest (a product with a hundred parts and a hundred
+# files is tens of kilobytes) and small enough that parsing it on the loop is
+# not a stall.
+MAX_IMPORT_MANIFEST_BYTES = 2 * 1024 * 1024
+
 
 def attachment_limit() -> int:
     """The ceiling, read at call time.
@@ -158,6 +171,11 @@ def import_limit() -> int:
 def import_member_limit() -> int:
     """The per-member ceiling of an import, read at call time. Same rule again."""
     return MAX_IMPORT_MEMBER_BYTES
+
+
+def import_manifest_limit() -> int:
+    """The ceiling on ``product.json`` alone, read at call time. Same rule again."""
+    return MAX_IMPORT_MANIFEST_BYTES
 
 
 # Order matters: it is the order the product page renders the sections in, and

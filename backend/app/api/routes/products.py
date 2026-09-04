@@ -290,6 +290,15 @@ async def create_product_from_file(
     when it is one of BambuStudio's placeholders, in which case the stem stands
     (spec §Risks, "``Title`` ≠ name"). The parse is handed on to
     :func:`fill_from_file` so the ZIP is opened once, not twice.
+
+    ⚠️ **The fill's notes go to the LOG, not the wire.** ``ProductResponse`` has
+    no ``notes`` field and giving it one would change the shape every product
+    endpoint answers with, for the benefit of this one route — the re-read
+    endpoint has ``RereadResponse`` for exactly that. But the notes are the only
+    record of what a designer's file did not give up (a picture over the size
+    cap, an ``.exe`` in ``Others/``), so throwing them away left an operator
+    with a half-filled product and nothing to read. Codes and params, never
+    prose: nothing here knows the operator's language.
     """
     file = (await db.execute(LibraryFile.active().where(LibraryFile.id == library_file_id))).scalar_one_or_none()
     if file is None:
@@ -305,7 +314,8 @@ async def create_product_from_file(
     await db.flush()
     desired = await _file_product_ids(db, file.id) | {product.id}
     await sync_product_for_file(db, library_file_id=file.id, product_ids=sorted(desired))
-    await fill_from_file(db, product, file, replace_3mf_attachments=False, card=card)
+    for note in await fill_from_file(db, product, file, replace_3mf_attachments=False, card=card):
+        logger.info("Product %s from library file %s: code=%s params=%s", product.id, file.id, note.code, note.params)
     return await _response(db, product, reload_links=True)
 
 

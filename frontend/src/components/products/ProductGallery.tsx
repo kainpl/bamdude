@@ -7,6 +7,7 @@ import type { Product, ProductAttachment } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { byAttachmentOrder } from './attachmentOrder';
 
 interface ProductGalleryProps {
   product: Product;
@@ -58,10 +59,12 @@ export function ProductGallery({ product, canEdit, testIdSuffix = '' }: ProductG
   // pictures at the same `sort_order` are ordinary — every upload into an empty
   // category starts at 0, and a reorder that names only some of them leaves the
   // rest sharing a rank. Without the second key the star could sit on a
-  // different picture than the one `/cover-image` actually serves.
+  // different picture than the one `/cover-image` actually serves. The rule is
+  // `byAttachmentOrder`, shared with `ProductAttachments` — two components
+  // ordering the same column by different rules is the drift it removes.
   const pictures: ProductAttachment[] = (product.attachments ?? [])
     .filter((attachment) => attachment.category === 'pictures')
-    .sort((a, b) => a.sort_order - b.sort_order || a.filename.localeCompare(b.filename));
+    .sort(byAttachmentOrder);
 
   // ⚠️ The EFFECTIVE cover, by the same rule the server's `effective_cover`
   // uses: the explicit column, else the first picture by `sort_order`. Null

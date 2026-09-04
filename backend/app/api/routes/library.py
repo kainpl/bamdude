@@ -4373,9 +4373,36 @@ def _card_payload(card, file_id: int) -> CardResponse:
     — and the filenames are the designer's, not ours), and WHICH of the two
     routes serves a member is a server-side rule the frontend should not have to
     re-derive from the category.
+
+    ⚠️ **Field by field, never by reflecting ``model_fields`` over the
+    dataclass.** That form read whatever name the SCHEMA happened to carry off
+    whatever the parser happened to hold, so the two sides could drift in either
+    direction unnoticed: a schema-only field answered with its default (a silent
+    drop), a dataclass-only field never reached the wire at all, and an
+    attribute set on the instance by anything else would have ridden along the
+    moment the schema grew a matching name. Spelled out, this list IS the
+    contract, and the parity test in ``test_library_card_api.py`` fails the
+    moment either side grows a field the other does not have — instead of an
+    operator meeting a silently empty column or a 500.
     """
     return CardResponse(
-        **{key: getattr(card, key) for key in CardResponse.model_fields if key not in ("auxiliaries", "error")},
+        title=card.title,
+        description=card.description,
+        designer=card.designer,
+        designer_user_id=card.designer_user_id,
+        license=card.license,
+        copyright=card.copyright,
+        creation_date=card.creation_date,
+        modification_date=card.modification_date,
+        origin=card.origin,
+        profile_title=card.profile_title,
+        profile_description=card.profile_description,
+        profile_cover=card.profile_cover,
+        profile_user_id=card.profile_user_id,
+        profile_user_name=card.profile_user_name,
+        design_model_id=card.design_model_id,
+        design_profile_id=card.design_profile_id,
+        design_region=card.design_region,
         auxiliaries={
             category: [
                 CardAuxOut(

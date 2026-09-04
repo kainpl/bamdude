@@ -595,6 +595,43 @@ async def test_a_library_member_over_the_per_member_cap_is_skipped(committing_cl
 
 
 @pytest.mark.asyncio
+async def test_a_manifest_over_its_own_cap_is_refused_before_it_is_inflated(
+    committing_client, db_session, monkeypatch, exported
+):
+    """``product.json`` is the one member read on the event loop, and it used to
+    be the one member with no ceiling — a deflate-bombed manifest inside an
+    authenticated import inflated to whatever it wanted before anything looked
+    at it. The gate reads the ZIP's DECLARED size, so it refuses the bomb
+    instead of reporting it."""
+    data, manifest, _ids = exported
+    declared = zipfile.ZipFile(io.BytesIO(data)).getinfo("product.json").file_size
+    monkeypatch.setattr("backend.app.services.product_files.MAX_IMPORT_MANIFEST_BYTES", declared - 1)
+    products = len((await committing_client.get("/api/v1/products/")).json())
+    files = await _active_files(db_session)
+
+    r = await _import(committing_client, data)
+
+    assert r.status_code == 413, r.text
+    assert str(declared - 1) in r.json()["detail"]
+    # Nothing at all was created — the gate runs before the first write.
+    assert len((await committing_client.get("/api/v1/products/")).json()) == products
+    assert await _active_files(db_session) == files
+
+
+@pytest.mark.asyncio
+async def test_an_archive_with_no_manifest_is_still_a_400_not_a_413(committing_client):
+    """The size gate reads ``getinfo`` and a missing member raises there, so it
+    has to hand the answer back to the manifest validator rather than turning
+    "there is no manifest" into "the manifest is too big"."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("files/nothing.txt", b"x")
+    r = await _import(committing_client, buf.getvalue())
+    assert r.status_code == 400, r.text
+    assert "product.json" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_an_external_folder_of_the_same_name_never_receives_the_import(
     committing_client, db_session, tmp_path, exported
 ):

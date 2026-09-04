@@ -212,6 +212,9 @@ describe('ProductGallery', () => {
     // leaves the rest sharing a rank. The server's `sorted_attachments` orders
     // by `(sort_order, filename)`, so a gallery that stopped at `sort_order`
     // could star a different picture than `/cover-image` actually serves.
+    //
+    // The rule now lives in `byAttachmentOrder`, shared with
+    // `ProductAttachments` — the same case is pinned there, on the same data.
     render(
       <ProductGallery
         product={

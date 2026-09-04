@@ -209,4 +209,23 @@ describe('ProductAttachments', () => {
     expect(screen.queryByRole('button', { name: /delete: assembly\.pdf/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /download: bill-of-materials\.xlsx/i })).toBeInTheDocument();
   });
+
+  it('breaks a sort_order tie on the filename, exactly as the gallery does', () => {
+    // This list sorted by `sort_order` alone while the gallery and the server
+    // both broke the tie on `filename` — and a tie is ordinary, since every
+    // upload into an empty category starts at 0. Both components go through
+    // `byAttachmentOrder` now, so the same two entries come out in the same
+    // order wherever they are shown.
+    const tied = {
+      ...product,
+      attachments: [entry('bom_docs', 'z.pdf', 'zebra.pdf'), entry('bom_docs', 'a.pdf', 'alpha.pdf')],
+    } as unknown as Product;
+    render(<ProductAttachments product={tied} canEdit />);
+
+    const shown = within(screen.getByTestId('attachment-section-bom_docs'))
+      .getAllByRole('listitem')
+      .map((li) => li.textContent);
+    expect(shown[0]).toContain('alpha.pdf');
+    expect(shown[1]).toContain('zebra.pdf');
+  });
 });

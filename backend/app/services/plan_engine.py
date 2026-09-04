@@ -38,7 +38,7 @@ from backend.app.models.product import ProductPlate
 from backend.app.models.project_line import ProjectLine
 from backend.app.services.filament_cost import default_rate_per_kg
 from backend.app.services.order_metrics import LineFigures, OrderContext, attribute, load_order_context
-from backend.app.services.product_composition import PlateRecipe, recipes_for_product
+from backend.app.services.product_composition import PlateRecipe, recipes_for_products
 
 # A defence, not a feature: a plate whose yield somehow never shrinks the
 # outstanding map would otherwise spin forever inside a request.
@@ -418,9 +418,10 @@ async def plan_for_order(db: AsyncSession, project_id: int) -> OrderPlan | None:
     if ctx is None:
         return None
     figures, _other = attribute(ctx)
-    recipes_by_product = {
-        product_id: await recipes_for_product(db, product) for product_id, product in ctx.products_by_id.items()
-    }
+    # ⚠️ ONE load for the whole order. This was a comprehension calling the
+    # single-product helper per product — a SELECT per line of a page that
+    # recomputes its plan on every read.
+    recipes_by_product = await recipes_for_products(db, ctx.products_by_id.values())
     queued = await queued_yield_by_line(db, recipes_by_product, ctx.lines)
     rate_per_kg = await default_rate_per_kg(db)
     price_per_gram = rate_per_kg / 1000.0 if rate_per_kg > 0 else None

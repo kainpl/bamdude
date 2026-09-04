@@ -7,6 +7,7 @@ import type { AttachmentCategory, Product, ProductAttachment } from '../../api/c
 import { useToast } from '../../contexts/ToastContext';
 import { formatFileSize } from '../../utils/file';
 import { Button } from '../Button';
+import { byAttachmentOrder } from './attachmentOrder';
 
 interface ProductAttachmentsProps {
   product: Product;
@@ -111,9 +112,12 @@ export function ProductAttachments({ product, canEdit }: ProductAttachmentsProps
         <CategorySection
           key={category}
           category={category}
-          entries={attachments
-            .filter((a) => a.category === category)
-            .sort((a, b) => a.sort_order - b.sort_order)}
+          // ⚠️ `byAttachmentOrder`, the gallery's comparator and the server's
+          // rule — `sort_order` alone left a tie (which every upload into an
+          // empty category makes) to whatever order the array arrived in, so
+          // the same two documents could be listed one way here and another way
+          // wherever else they are shown.
+          entries={attachments.filter((a) => a.category === category).sort(byAttachmentOrder)}
           canEdit={canEdit}
           // ⚠️ Per CATEGORY, not per component. One mutation serves all three
           // sections, so a bare `upload.isPending` greyed out the Upload button

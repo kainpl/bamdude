@@ -246,7 +246,10 @@ describe('ModelCardModal — a library file', () => {
     // designer's folder called `card-file` used to make `includes('/card-file/')`
     // true for a bill of materials — rendered as a broken `<img>` on a token
     // surface it is deliberately not served from. The predicate is anchored to
-    // the ROUTE's position instead.
+    // the ROUTE's WHOLE shape instead: `/api/v1/library/files/<id>/card-file/`
+    // from the start of the url, which is the only thing `_card_route` builds.
+    // Anchoring on the tail alone (`/files/<id>/card-file/`) still matched a
+    // designer who nested `files/9/card-file/` inside their own folders.
     vi.spyOn(api, 'getLibraryFileCard').mockResolvedValue({
       ...fileCard,
       auxiliaries: {
@@ -257,6 +260,12 @@ describe('ModelCardModal — a library file', () => {
             size: 2048,
             url: '/api/v1/library/files/3/card-download/Auxiliaries/Bill%20of%20Materials/card-file/bom.xlsx',
           },
+          {
+            name: 'parts.pdf',
+            zip_path: 'Auxiliaries/Bill of Materials/files/9/card-file/parts.pdf',
+            size: 1024,
+            url: '/api/v1/library/files/3/card-download/Auxiliaries/Bill%20of%20Materials/files/9/card-file/parts.pdf',
+          },
         ],
       },
     } as never);
@@ -264,6 +273,31 @@ describe('ModelCardModal — a library file', () => {
 
     expect(await screen.findByRole('button', { name: /bom\.xlsx/i })).toBeInTheDocument();
     expect(screen.queryByAltText('bom.xlsx')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /parts\.pdf/i })).toBeInTheDocument();
+    expect(screen.queryByAltText('parts.pdf')).not.toBeInTheDocument();
+  });
+
+  it('renders a real card-file url as a picture whatever the member is called', async () => {
+    // The other half of the anchor: a picture the server DID put on the token
+    // surface must still be an `<img>`, however deep the designer's own folders
+    // go and however the name is percent-encoded.
+    vi.spyOn(api, 'getLibraryFileCard').mockResolvedValue({
+      ...fileCard,
+      auxiliaries: {
+        pictures: [
+          {
+            name: 'a.png',
+            zip_path: 'Auxiliaries/Model Pictures/a.png',
+            size: 512,
+            url: '/api/v1/library/files/12/card-file/Auxiliaries/Model%20Pictures/a.png',
+          },
+        ],
+      },
+    } as never);
+    render(<ModelCardModal source={{ kind: 'file', id: 3 }} onClose={() => {}} />);
+
+    const picture = await screen.findByAltText('a.png');
+    expect(picture).toHaveAttribute('src', expect.stringContaining('/card-file/'));
   });
 
   it('shows the MakerWorld link rather than "no card" for a file that carries only an id', async () => {
