@@ -7,12 +7,14 @@
  * that does not exist yet has no id to hang an upload on.
  */
 
+import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { Product } from '../../../api/client';
 import { ProductCardDialog } from '../../../components/products/ProductCardDialog';
+import { ProductGallery } from '../../../components/products/ProductGallery';
 
 const product = {
   id: 7,
@@ -39,6 +41,21 @@ const product = {
 } as unknown as Product;
 
 const noop = () => {};
+
+/** The dialog the way a page opens it — a control that mounts it and takes it
+ *  away again, which is the only shape in which "the focus comes back" can be
+ *  observed at all. */
+function Openable() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        open card
+      </button>
+      {open && <ProductCardDialog product={product} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
 
 describe('ProductCardDialog', () => {
   beforeEach(() => {
@@ -86,5 +103,43 @@ describe('ProductCardDialog', () => {
 
     render(<ProductCardDialog product={null} onClose={noop} />);
     expect(screen.queryByTestId('product-gallery-dialog')).not.toBeInTheDocument();
+  });
+
+  it('is a modal dialog named by its heading, and hands the focus back on Escape', async () => {
+    render(<Openable />);
+    const opener = screen.getByRole('button', { name: 'open card' });
+    opener.focus();
+    fireEvent.click(opener);
+
+    // The gallery inside carries no dialog role, so there is exactly one.
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveAccessibleName('Edit product');
+    expect(dialog).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+  });
+
+  it('names its own gallery apart from the page gallery underneath it', () => {
+    // ⚠️ Two live galleries with the same accessible name is what a screen
+    // reader hears when the card dialog opens over the product page: two
+    // regions called "Pictures", one of which is the one being edited. The
+    // testid suffix solved this for the tests; the heading solves it for the
+    // people the page is for.
+    render(
+      <>
+        <ProductGallery product={product} canEdit />
+        <ProductCardDialog product={product} onClose={noop} />
+      </>,
+    );
+
+    const page = screen.getByTestId('product-gallery');
+    const dialog = screen.getByTestId('product-gallery-dialog');
+    expect(within(page).getByRole('heading', { name: 'Pictures' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('heading', { name: 'Pictures of this product' })).toBeInTheDocument();
+    expect(page).toHaveAccessibleName('Pictures');
+    expect(dialog).toHaveAccessibleName('Pictures of this product');
   });
 });

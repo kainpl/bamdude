@@ -1576,7 +1576,15 @@ export interface PlanEnqueueItem {
  *
  *  ⚠️ A union, not one shape with an optional id: the server's own validator
  *  422s a `printer` target with no `printer_id` and an `auto` target that names
- *  one, and a type that admits both pairings only lets the mistake reach it. */
+ *  one, and a type that admits both pairings only lets the mistake reach it.
+ *
+ *  ⚠️ **`printer` is served by the API and by nothing in the UI**, and that is
+ *  the ruling, not an omission. `PlanBlock` always sends `kind: 'auto'`: the
+ *  block plans a whole ORDER, and a picker on its "whole plan to queue" button
+ *  would pin every line of it to one machine — the question the auto-queue
+ *  distributor exists to answer. A single plate does have a per-row way to a
+ *  named printer ("to printer…", which opens `PrintModal` on its printer leg),
+ *  so the arm here is for API clients driving the plan endpoint directly. */
 export type PlanEnqueueTarget = { kind: 'auto' } | { kind: 'printer'; printer_id: number };
 
 export interface PlanEnqueueRequest {

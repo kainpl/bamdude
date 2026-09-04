@@ -71,6 +71,7 @@ from backend.app.services.product_card import (
 )
 from backend.app.services.product_composition import (
     add_alias,
+    estimate_seconds,
     merge_parts,
     purchased_name_key,
     recipes_for_product,
@@ -781,7 +782,11 @@ async def list_plates(
                 unassigned=[PlateUnassignedEntry(name_key=k, count=n) for k, n in sorted(r.unassigned.items())],
                 materials=sorted(r.materials),
                 colors=sorted(r.colors),
-                print_time_seconds=r.print_time_seconds,
+                # ⚠️ `estimate_seconds`, not the raw column: a 0 is a file that
+                # carries no estimate, and the plan engine has always read it
+                # that way. Emitting the 0 here made the same plate say "0s" in
+                # the "+ plate" menu and "unknown" once the plan held it.
+                print_time_seconds=estimate_seconds(r),
                 filament_used_grams=r.filament_used_grams,
             )
         )

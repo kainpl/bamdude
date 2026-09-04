@@ -97,6 +97,41 @@ async def test_from_file_creates_a_ready_product(committing_client, sliced_file)
 
 
 @pytest.mark.asyncio
+async def test_a_plate_with_no_estimate_reports_no_time_rather_than_zero(committing_client, db_session):
+    """``print_time_seconds`` of 0 (or below) is a file with NO estimate.
+
+    The plan engine has always read it that way (``estimate_seconds``), but this
+    route emitted the raw number — so the same plate said "unknown" inside a
+    plan and "0s" in the "+ plate" menu that adds it to one, and a plate added
+    by hand then showed ``0s`` on a row the plan would have left blank. The two
+    now share one rule; the null is what the frontend maps to ``time_unknown``.
+    """
+    f = LibraryFile(
+        filename="untimed.gcode.3mf",
+        file_path="untimed",
+        file_size=1,
+        file_type="gcode",
+        file_metadata={
+            "plates": [
+                {"index": 1, "printable_objects": {"1": "hook.stl"}, "print_time_seconds": 0},
+                # Nothing produces a negative estimate on purpose; it is here
+                # because "not a positive number" is the rule, not "not zero".
+                {"index": 2, "printable_objects": {"1": "hook.stl"}, "print_time_seconds": -1},
+            ]
+        },
+    )
+    db_session.add(f)
+    await db_session.commit()
+    await db_session.refresh(f)
+
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{f.id}")).json()["id"]
+    plates = (await committing_client.get(f"/api/v1/products/{pid}/plates")).json()
+
+    assert [p["plate_index"] for p in plates] == [1, 2]
+    assert [p["print_time_seconds"] for p in plates] == [None, None]
+
+
+@pytest.mark.asyncio
 async def test_parts_can_be_edited_merged_and_aliased(committing_client, sliced_file):
     pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
     parts = {p["name_key"]: p for p in (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"]}

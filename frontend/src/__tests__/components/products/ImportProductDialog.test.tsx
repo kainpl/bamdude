@@ -12,6 +12,7 @@
  * nothing was picked, and the server makes a folder named after the product.
  */
 
+import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { render } from '../../utils';
@@ -28,6 +29,21 @@ const zip = () => new File(['PK'], 'desk-lamp.zip', { type: 'application/zip' })
 
 function mount() {
   render(<ImportProductDialog onClose={() => {}} />);
+}
+
+/** The dialog the way a page opens it — a control that mounts it and takes it
+ *  away again, which is the only shape in which "the focus comes back" can be
+ *  observed at all. */
+function Openable() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        open import
+      </button>
+      {open && <ImportProductDialog onClose={() => setOpen(false)} />}
+    </>
+  );
 }
 
 describe('ImportProductDialog', () => {
@@ -174,5 +190,28 @@ describe('ImportProductDialog', () => {
   it('cannot be submitted before an archive is chosen', async () => {
     mount();
     expect(await screen.findByRole('button', { name: /^import$/i })).toBeDisabled();
+  });
+
+  it('is a modal dialog named by its heading, and hands the focus back on Escape', async () => {
+    // ⚠️ The overlay is opened from a page that stays in the tree behind it, so
+    // without the role and the focus move a screen reader announces nothing at
+    // all and a keyboard user starts at the top of the PAGE — every control
+    // behind the dialog comes before anything in it. `useDialogFocus` is not a
+    // trap and does not claim to be: Tab still walks out. What it fixes is the
+    // two ends, and the return end is only observable if the dialog actually
+    // unmounts — hence the opener rather than a bare mount.
+    render(<Openable />);
+    const opener = screen.getByRole('button', { name: 'open import' });
+    opener.focus();
+    fireEvent.click(opener);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveAccessibleName('Import a product');
+    expect(dialog).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
   });
 });

@@ -231,7 +231,7 @@ function ArchiveCard({
   const [availableTimelapses, setAvailableTimelapses] = useState<Array<{ name: string; path: string; size: number; mtime: string | null }>>([]);
   const [showQRCode, setShowQRCode] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
-  const [showProjectPage, setShowProjectPage] = useState(false);
+  const [showModelCard, setShowModelCard] = useState(false);
   const [showAddToOrder, setShowAddToOrder] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showDeleteSource3mfConfirm, setShowDeleteSource3mfConfirm] = useState(false);
@@ -636,7 +636,7 @@ function ArchiveCard({
     {
       label: t('archives.menu.modelCard'),
       icon: <FileText className="w-4 h-4" />,
-      onClick: () => setShowProjectPage(true),
+      onClick: () => setShowModelCard(true),
     },
     { label: '', divider: true, onClick: () => {} },
     {
@@ -1513,10 +1513,10 @@ function ArchiveCard({
       )}
 
       {/* Model card — the archive half: its own copy of the metadata, editable. */}
-      {showProjectPage && (
+      {showModelCard && (
         <ModelCardModal
           source={{ kind: 'archive', id: archive.id, name: archive.print_name || archive.filename }}
-          onClose={() => setShowProjectPage(false)}
+          onClose={() => setShowModelCard(false)}
         />
       )}
 
@@ -1666,7 +1666,7 @@ function ArchiveListRow({
   const [availableTimelapses, setAvailableTimelapses] = useState<Array<{ name: string; path: string; size: number; mtime: string | null }>>([]);
   const [showQRCode, setShowQRCode] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
-  const [showProjectPage, setShowProjectPage] = useState(false);
+  const [showModelCard, setShowModelCard] = useState(false);
   const [showAddToOrder, setShowAddToOrder] = useState(false);
   const [showDeleteSource3mfConfirm, setShowDeleteSource3mfConfirm] = useState(false);
   const [showDeleteF3dConfirm, setShowDeleteF3dConfirm] = useState(false);
@@ -2025,7 +2025,7 @@ function ArchiveListRow({
     {
       label: t('archives.menu.modelCard'),
       icon: <FileText className="w-4 h-4" />,
-      onClick: () => setShowProjectPage(true),
+      onClick: () => setShowModelCard(true),
     },
     { label: '', divider: true, onClick: () => {} },
     {
@@ -2635,10 +2635,10 @@ function ArchiveListRow({
       )}
 
       {/* Model card — the archive half: its own copy of the metadata, editable. */}
-      {showProjectPage && (
+      {showModelCard && (
         <ModelCardModal
           source={{ kind: 'archive', id: archive.id, name: archive.print_name || archive.filename }}
-          onClose={() => setShowProjectPage(false)}
+          onClose={() => setShowModelCard(false)}
         />
       )}
 

@@ -85,6 +85,20 @@ describe('ProductPage', () => {
     expect(screen.getByTestId('attachment-section-bom_docs')).toBeInTheDocument();
   });
 
+  it('opens its heading outline with the product’s own h1, before any h2', async () => {
+    // ⚠️ The gallery is FIRST on screen by design (parent spec: what the thing
+    // looks like, then what it is) and its `<h2>` used to be first in the
+    // document too — so the page's outline began at level 2 and the product's
+    // name, the `<h1>`, arrived after it. A screen reader reads the outline,
+    // not the layout. The fix is DOM order plus `order-first`, not a demoted
+    // title and not a second, hidden `<h1>`.
+    mountAt();
+
+    const first = (await screen.findAllByRole('heading'))[0];
+    expect(first.tagName).toBe('H1');
+    expect(first).toHaveTextContent('Flask');
+  });
+
   it('names the all-time figure for what it is — units delivered against orders', async () => {
     mountAt();
 

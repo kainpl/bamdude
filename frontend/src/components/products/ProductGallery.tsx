@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Image, Loader2, Package, Star, Trash2, Upload, X } from 'lucide-react';
@@ -8,6 +8,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { byAttachmentOrder } from './attachmentOrder';
+import { useDialogFocus } from '../../hooks/useDialogFocus';
 
 interface ProductGalleryProps {
   product: Product;
@@ -17,6 +18,11 @@ interface ProductGalleryProps {
    *  with the same testids make every `getByTestId` in a page test ambiguous —
    *  the page passes nothing, the dialog passes `-dialog`. */
   testIdSuffix?: string;
+  /** The catalogue key of this gallery's own heading, which is also the section's
+   *  accessible name. Same collision as `testIdSuffix`, for the people rather
+   *  than the tests: while the card dialog is open two galleries are live, and
+   *  "Pictures" names both of them. */
+  headingKey?: string;
 }
 
 const TILE_CLASS = 'w-40 h-40 rounded-xl object-cover bg-bambu-dark border border-bambu-dark-tertiary';
@@ -42,15 +48,19 @@ const ICON_BUTTON_CLASS =
  * The lightbox is a plain fixed overlay: prev / next / Escape, no new
  * dependency for what is three keyboard handlers and an `<img>`.
  */
-export function ProductGallery({ product, canEdit, testIdSuffix = '' }: ProductGalleryProps) {
+export function ProductGallery({
+  product,
+  canEdit,
+  testIdSuffix = '',
+  headingKey = 'products.gallery.title',
+}: ProductGalleryProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const pictureInput = useRef<HTMLInputElement>(null);
   const coverInput = useRef<HTMLInputElement>(null);
-  const overlay = useRef<HTMLDivElement>(null);
-  const returnFocusTo = useRef<HTMLElement | null>(null);
   const [lightbox, setLightbox] = useState<number | null>(null);
+  const headingId = useId();
 
   const testId = (name: string) => `${name}${testIdSuffix}`;
 
@@ -73,20 +83,15 @@ export function ProductGallery({ product, canEdit, testIdSuffix = '' }: ProductG
   // joined the gallery.
   const coverFilename = product.cover_image_filename ?? pictures[0]?.filename ?? null;
 
-  // ⚠️ Focus moves INTO the overlay and comes back out. Without it the Escape
-  // handler below is the only way out for a keyboard user who opened the
-  // lightbox — Tab would walk the page BEHIND it — and on close the focus ring
-  // would be left on `<body>`, which is nowhere.
-  const lightboxOpen = lightbox !== null;
-  useEffect(() => {
-    if (!lightboxOpen) return;
-    returnFocusTo.current = document.activeElement as HTMLElement | null;
-    overlay.current?.focus();
-    return () => {
-      returnFocusTo.current?.focus?.();
-      returnFocusTo.current = null;
-    };
-  }, [lightboxOpen]);
+  // ⚠️ Focus moves INTO the overlay when it opens and back to the thumbnail
+  // when it closes — and that is ALL it does. **Tab is not trapped**: it walks
+  // out of the overlay and into the page behind, exactly as it does anywhere
+  // else in this app. What the move fixes is the two ends: a keyboard user who
+  // opened the lightbox would otherwise start at the top of the document, and
+  // on close the focus ring would be left on `<body>`, which is nowhere.
+  // Trapping means inert-ing the rest of the page; it is deliberately not done
+  // here, and this comment is not to grow a claim that it is.
+  const overlay = useDialogFocus<HTMLDivElement>(lightbox !== null);
 
   useEffect(() => {
     if (lightbox === null || pictures.length === 0) return;
@@ -171,12 +176,16 @@ export function ProductGallery({ product, canEdit, testIdSuffix = '' }: ProductG
     reorder.isPending;
 
   return (
-    <section className="space-y-3" data-testid={testId('product-gallery')}>
+    <section
+      className="space-y-3"
+      aria-labelledby={headingId}
+      data-testid={testId('product-gallery')}
+    >
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+          <h2 id={headingId} className="text-lg font-semibold text-white flex items-center gap-2">
             <Image className="w-5 h-5" />
-            {t('products.gallery.title')}
+            {t(headingKey)}
           </h2>
           <p className="text-xs text-bambu-gray">{t('products.gallery.coverHint')}</p>
         </div>
@@ -335,6 +344,9 @@ export function ProductGallery({ product, canEdit, testIdSuffix = '' }: ProductG
       {lightbox !== null && pictures[lightbox] && (
         <div
           ref={overlay}
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('products.gallery.lightbox')}
           tabIndex={-1}
           data-testid={testId('gallery-lightbox')}
           className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 outline-none"

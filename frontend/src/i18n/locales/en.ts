@@ -4998,6 +4998,29 @@ export default {
     viewOnMakerWorld: 'View on MakerWorld',
     previous: 'Previous picture',
     next: 'Next picture',
+    pictureViewer: 'Picture viewer',
+    // The ARCHIVE half of the same modal — BamDude's own copy of a print, and
+    // the one model card in the app that can be edited. It shipped with these
+    // strings written into the JSX; `description`, `printProfile` and
+    // `viewOnMakerWorld` above are shared with the file half rather than
+    // repeated here.
+    edit: 'Edit',
+    save: 'Save',
+    cancel: 'Cancel',
+    archiveLoadFailed: 'Could not load the model card of this print.',
+    archiveEmpty: 'This print carries no model card.',
+    archiveEmptyHint: 'Model cards come with files downloaded from MakerWorld.',
+    images_one: 'Images ({{count}})',
+    images_other: 'Images ({{count}})',
+    byAuthor: 'by {{name}}',
+    field: {
+      title: 'Title',
+      designer: 'Designer',
+      license: 'License',
+      description: 'Enter description…',
+      profileTitle: 'Profile title',
+      profileDescription: 'Profile description…',
+    },
   },
 
   // Projects section, products face. A product is what an order line orders:
@@ -5166,6 +5189,10 @@ export default {
     },
     gallery: {
       title: 'Pictures',
+      // The card dialog opens OVER the product page, so for as long as it is
+      // open two galleries are live and a plain "Pictures" names both.
+      titleInDialog: 'Pictures of this product',
+      lightbox: 'Picture viewer',
       coverHint: 'The first picture is the cover, unless you pick or upload another one.',
       cover: 'Cover',
       empty: 'No pictures yet.',

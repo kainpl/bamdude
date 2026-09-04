@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -9,6 +9,7 @@ import { Button } from '../Button';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ProductGallery } from './ProductGallery';
+import { useDialogFocus } from '../../hooks/useDialogFocus';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
@@ -26,19 +27,49 @@ function isFullProduct(product: Product | ProductListItem | null | undefined): p
 }
 
 function Shell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  const { t } = useTranslation();
+  const titleId = useId();
+  // Mounted only while it is open, so "open" is simply `true`.
+  const dialog = useDialogFocus<HTMLDivElement>(true);
+
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        <CardContent className="p-0">
-          <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-            <h2 className="text-xl font-semibold text-white">{title}</h2>
-            <button type="button" onClick={onClose} className="text-bambu-gray hover:text-white transition-colors">
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-          {children}
-        </CardContent>
-      </Card>
+      {/* ⚠️ The role, the name and the focus, as one unit — see
+          `useDialogFocus`, which the five overlays this app opens over a page
+          all use. Without them the overlay is an anonymous `<div>` a screen
+          reader never announces, and a keyboard user opening it starts at the
+          top of the PAGE behind. It is deliberately not a focus TRAP.
+          They sit on a wrapper rather than on the `Card`, whose props are
+          `HTMLAttributes` and so admit no `ref`; giving the shared component
+          one would hand a `ref` to `CardHeader` and `CardContent` too, which
+          spread nothing — a prop that type-checks and does nothing. */}
+      <div
+        ref={dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="w-full max-w-2xl outline-none"
+      >
+        <Card className="w-full max-h-[90vh] overflow-y-auto">
+          <CardContent className="p-0">
+            <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
+              <h2 id={titleId} className="text-xl font-semibold text-white">
+                {title}
+              </h2>
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label={t('common.close')}
+                className="text-bambu-gray hover:text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            {children}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -253,11 +284,15 @@ function ProductForm({ product, onClose, onSaved }: ProductFormProps) {
             <div className="pt-4 border-t border-bambu-dark-tertiary">
               {/* ⚠️ `testIdSuffix` — the product page renders its own gallery
                   and this dialog opens OVER it, so without the suffix every
-                  `getByTestId` in a page test would find two. */}
+                  `getByTestId` in a page test would find two. `headingKey` is
+                  the same problem for the people the page is for: two live
+                  regions both called "Pictures" is what a screen reader hears
+                  while this dialog is open. */}
               <ProductGallery
                 product={product}
                 canEdit={hasPermission('projects:update')}
                 testIdSuffix="-dialog"
+                headingKey="products.gallery.titleInDialog"
               />
             </div>
           )}

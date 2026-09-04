@@ -125,6 +125,19 @@ describe('File Manager — model card entry', () => {
     expect(await screen.findByRole('button', { name: /^Model card$/i })).toBeInTheDocument();
   });
 
+  it('offers it ENABLED — being able to list the files is being able to read them', async () => {
+    // ⚠️ The entry used to carry a `library:read` branch that greyed it out.
+    // That branch could not be reached: `GET /library/files` needs the same
+    // permission, so a user without it never sees a file to open a menu on.
+    // A disabled control that cannot be enabled is a promise the page cannot
+    // keep; the file type is the only thing that decides this entry.
+    render(<FileManagerPage />);
+    await screen.findByText('Lamp');
+
+    await openMenuOf('Lamp');
+    expect(await screen.findByRole('button', { name: /^Model card$/i })).toBeEnabled();
+  });
+
   it('offers it on a SLICED 3MF too — the container is the same file', async () => {
     render(<FileManagerPage />);
     await screen.findByText('Benchy');

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ClipboardList, Loader2, Send } from 'lucide-react';
@@ -30,8 +30,9 @@ import { invalidateOrderViews } from '../../utils/queryInvalidation';
  * invalidated by every `print_complete` / `archive_created` on the FARM —
  * archive events carry no `project_id`, so the whole prefix goes — and clearing
  * on the clock meant a print finishing on an unrelated printer wiped the
- * operator's half-made plan mid-edit. Hence the signature below: the same
- * payload back is not a change.
+ * operator's half-made plan mid-edit. Hence the per-line signatures below: the
+ * same payload back is not a change, and a change to one line is not a change
+ * to the next.
  *
  * ⚠️ **Nothing here asks whether a printer is ready.** Sending a row to a
  * queue is a routing decision; readiness — plate clear, drying, stagger,
@@ -65,33 +66,61 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
   const [added, setAdded] = useState<Record<number, PlanRowData[]>>({});
 
   /**
-   * Everything about the plan the operator's edits are an answer TO.
+   * `line_id → everything about THAT line's plan the operator's edits answer.`
    *
    * ⚠️ **Content, never the clock.** Anything not in here — the product's name,
    * the totals, the order of two identical reads — leaves the edits alone,
    * which is the whole point: the block is refetched by farm-wide print events
    * that have nothing to do with this order. Anything that IS in here means the
    * plan the operator was editing no longer exists.
+   *
+   * ⚠️ **Per LINE, not per plan**, so the reseed matches the `added`
+   * reconciliation below, which always was. One signature over the whole
+   * response meant a count edited on line A reverted the moment line B moved —
+   * and with `project-plan` invalidated by every print event on the farm, line
+   * B moving is an ordinary event nobody on this page caused.
    */
-  const signature = useMemo(
-    () =>
-      JSON.stringify(
-        (plan?.lines ?? []).map((line) => [
-          line.line_id,
-          line.rows.map((row) => [row.plate_id, row.count]),
-          line.outstanding_before.map((p) => [p.part_id, p.count]),
-          line.surplus_after.map((p) => [p.part_id, p.count]),
-          line.unsatisfiable.map((p) => [p.part_id, p.count]),
-          line.candidates,
-          line.not_sliced,
-        ]),
-      ),
-    [plan],
-  );
+  const signatures = useMemo(() => {
+    const out: Record<number, string> = {};
+    for (const line of plan?.lines ?? []) {
+      out[line.line_id] = JSON.stringify([
+        line.rows.map((row) => [row.plate_id, row.count]),
+        line.outstanding_before.map((p) => [p.part_id, p.count]),
+        line.surplus_after.map((p) => [p.part_id, p.count]),
+        line.unsatisfiable.map((p) => [p.part_id, p.count]),
+        line.candidates,
+        line.not_sliced,
+      ]);
+    }
+    return out;
+  }, [plan]);
+
+  // What each line's plan looked like the last time this ran. A ref, because
+  // the comparison is by VALUE: TanStack's structural sharing hands the same
+  // object back for an identical payload, but a response that moved one field
+  // outside the signature is a new object whose lines have not changed at all.
+  const seenSignatures = useRef<Record<number, string>>({});
 
   useEffect(() => {
-    setCounts({});
-  }, [signature]);
+    const before = seenSignatures.current;
+    seenSignatures.current = signatures;
+    setCounts((prev) => {
+      let dropped = false;
+      const next: Record<number, Record<number, number>> = {};
+      for (const [key, edits] of Object.entries(prev)) {
+        const lineId = Number(key);
+        // The line is gone from the plan, or it is planning something else:
+        // either way the edit has nothing left to mean (decision 9). A line
+        // whose signature came back identical keeps every count untouched.
+        if (before[lineId] !== signatures[lineId]) {
+          dropped = true;
+          continue;
+        }
+        next[lineId] = edits;
+      }
+      return dropped ? next : prev;
+    });
+  }, [signatures]);
 
   // ⚠️ A hand-added plate is not seeded from anything, so a reseed cannot
   // restore it — it survives every refetch instead, and is dropped only when it
@@ -117,7 +146,7 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
         Object.entries(next).every(([lineId, rows]) => prev[Number(lineId)] === rows);
       return same ? prev : next;
     });
-  }, [signature, plan]);
+  }, [plan]);
 
   // The endpoint demands `projects:update` AND `queue:create`; a user missing
   // either never sees the button rather than being handed a 403 on click.
@@ -216,7 +245,7 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
   // be asked of the page just before the plan resolved, and answered no.
   if (!active) {
     return (
-      <section className="space-y-3" data-testid="plan-block">
+      <section id="order-plan" className="space-y-3" data-testid="plan-block">
         {heading}
         <p className="text-sm text-bambu-gray" data-testid="plan-closed">
           {t('orders.plan.closed')}
@@ -227,7 +256,7 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
 
   if (isLoading) {
     return (
-      <section className="space-y-3" data-testid="plan-block">
+      <section id="order-plan" className="space-y-3" data-testid="plan-block">
         {heading}
         <div className="flex items-center gap-2 text-bambu-gray text-sm">
           <Loader2 className="w-4 h-4 animate-spin" />
@@ -247,7 +276,7 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
   // screen with an error.
   if (isError && !plan) {
     return (
-      <section className="space-y-3" data-testid="plan-block">
+      <section id="order-plan" className="space-y-3" data-testid="plan-block">
         {heading}
         <div className="flex items-center gap-3 flex-wrap text-sm">
           <p className="text-red-400" data-testid="plan-error">
@@ -264,7 +293,7 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
   if (!plan) return null;
 
   return (
-    <section className="space-y-3" data-testid="plan-block">
+    <section id="order-plan" className="space-y-3" data-testid="plan-block">
       {heading}
 
       {lines.length === 0 ? (

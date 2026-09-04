@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useId } from 'react';
 import DOMPurify from 'dompurify';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -29,6 +29,7 @@ import { cardNotesText } from './products/cardNotes';
 import { formatFileSize } from '../utils/file';
 import { Button } from './Button';
 import { RichTextEditor } from './RichTextEditor';
+import { useDialogFocus } from '../hooks/useDialogFocus';
 
 /**
  * Which 3MF the card is read from.
@@ -80,8 +81,14 @@ interface ArchiveCardProps {
 function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const titleId = useId();
+  // Mounted only while it is open, so "open" is simply `true`.
+  const dialog = useDialogFocus<HTMLDivElement>(true);
   const [isEditing, setIsEditing] = useState(false);
   const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
+  // The picture overlay over this one, same treatment: focus in on open, back
+  // to the thumbnail on close. Not a trap — see `useDialogFocus`.
+  const lightbox = useDialogFocus<HTMLDivElement>(selectedImageIndex !== null);
   const [editData, setEditData] = useState<{
     title?: string;
     description?: string;
@@ -178,19 +185,30 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
       className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
       onClick={handleBackdropClick}
     >
-      <div className="bg-bambu-dark-secondary rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+      {/* ⚠️ The role, the name and the focus, as one unit — see
+          `useDialogFocus`, which the five overlays this app opens over a page
+          all use. Without them the overlay is an anonymous `<div>` a screen
+          reader never announces, and a keyboard user opening it starts at the
+          top of the PAGE behind. It is deliberately not a focus TRAP. */}
+      <div
+        ref={dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="bg-bambu-dark-secondary rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col outline-none"
+      >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
           <div className="flex items-center gap-3">
             <FileText className="w-5 h-5 text-bambu-green" />
-            {/* ⚠️ The TITLE is the only thing this half of the modal changed in
-                pass 4. Everything below it — the load, the edit form, the PATCH
-                — is the project-page dialog byte for byte, and is pinned by
-                `__tests__/components/ModelCardModal.test.tsx`. The rest of its
-                strings are pre-existing hardcoded English and stay that way
-                here; translating them is a change to a screen this task was
-                told not to move. */}
-            <h2 className="text-lg font-semibold text-white">
+            {/* ⚠️ The load, the edit form and the PATCH below are the
+                project-page dialog byte for byte and are pinned by
+                `__tests__/components/ModelCardModal.test.tsx`. Pass 6 moved the
+                STRINGS and nothing else: they were written into this JSX in
+                English, on a screen whose other half has been translatable
+                since the day it was written. */}
+            <h2 id={titleId} className="text-lg font-semibold text-white">
               {t('modelCard.title')}
               {archiveName && <span className="text-bambu-gray ml-2">- {archiveName}</span>}
             </h2>
@@ -199,13 +217,13 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
             {!isEditing && hasContent && (
               <Button variant="ghost" size="sm" onClick={handleStartEdit}>
                 <Edit3 className="w-4 h-4 mr-1" />
-                Edit
+                {t('modelCard.edit')}
               </Button>
             )}
             {isEditing && (
               <>
                 <Button variant="ghost" size="sm" onClick={handleCancelEdit}>
-                  Cancel
+                  {t('modelCard.cancel')}
                 </Button>
                 <Button
                   variant="primary"
@@ -214,12 +232,13 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
                   disabled={updateMutation.isPending}
                 >
                   <Save className="w-4 h-4 mr-1" />
-                  Save
+                  {t('modelCard.save')}
                 </Button>
               </>
             )}
             <button
               onClick={onClose}
+              aria-label={t('common.close')}
               className="p-2 hover:bg-bambu-dark-tertiary rounded-lg transition-colors"
             >
               <X className="w-5 h-5 text-bambu-gray" />
@@ -237,17 +256,15 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
 
           {error && (
             <div className="text-red-700 dark:text-red-400 text-center py-12">
-              Failed to load project page data
+              {t('modelCard.archiveLoadFailed')}
             </div>
           )}
 
           {projectPage && !hasContent && (
             <div className="text-bambu-gray text-center py-12">
               <FileText className="w-12 h-12 mx-auto mb-4 opacity-50" />
-              <p>No project page data found in this 3MF file.</p>
-              <p className="text-sm mt-2">
-                Project pages are typically included in files downloaded from MakerWorld.
-              </p>
+              <p>{t('modelCard.archiveEmpty')}</p>
+              <p className="text-sm mt-2">{t('modelCard.archiveEmptyHint')}</p>
             </div>
           )}
 
@@ -260,7 +277,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
                     type="text"
                     value={editData.title || ''}
                     onChange={(e) => setEditData({ ...editData, title: e.target.value })}
-                    placeholder="Title"
+                    placeholder={t('modelCard.field.title')}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-4 py-2 text-white text-xl font-semibold"
                   />
                 ) : (
@@ -277,7 +294,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
                         type="text"
                         value={editData.designer || ''}
                         onChange={(e) => setEditData({ ...editData, designer: e.target.value })}
-                        placeholder="Designer"
+                        placeholder={t('modelCard.field.designer')}
                         className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 text-white"
                       />
                     </div>
@@ -314,7 +331,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
                         type="text"
                         value={editData.license || ''}
                         onChange={(e) => setEditData({ ...editData, license: e.target.value })}
-                        placeholder="License"
+                        placeholder={t('modelCard.field.license')}
                         className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 text-white"
                       />
                     </div>
@@ -339,13 +356,13 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
               {(projectPage.description || isEditing) && (
                 <div className="space-y-2">
                   <h4 className="text-sm font-medium text-bambu-gray uppercase tracking-wide">
-                    Description
+                    {t('modelCard.description')}
                   </h4>
                   {isEditing ? (
                     <RichTextEditor
                       content={editData.description || ''}
                       onChange={(html) => setEditData({ ...editData, description: html })}
-                      placeholder="Enter description..."
+                      placeholder={t('modelCard.field.description')}
                     />
                   ) : (
                     <div
@@ -362,7 +379,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
               {(projectPage.profile_title || projectPage.profile_description || isEditing) && (
                 <div className="space-y-2 p-4 bg-bambu-dark rounded-lg">
                   <h4 className="text-sm font-medium text-bambu-gray uppercase tracking-wide">
-                    Print Profile
+                    {t('modelCard.printProfile')}
                   </h4>
                   {isEditing ? (
                     <div className="space-y-2">
@@ -370,13 +387,13 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
                         type="text"
                         value={editData.profile_title || ''}
                         onChange={(e) => setEditData({ ...editData, profile_title: e.target.value })}
-                        placeholder="Profile Title"
+                        placeholder={t('modelCard.field.profileTitle')}
                         className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded px-3 py-2 text-white"
                       />
                       <RichTextEditor
                         content={editData.profile_description || ''}
                         onChange={(html) => setEditData({ ...editData, profile_description: html })}
-                        placeholder="Profile description..."
+                        placeholder={t('modelCard.field.profileDescription')}
                       />
                     </div>
                   ) : (
@@ -394,7 +411,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
                       )}
                       {projectPage.profile_user_name && (
                         <p className="text-sm text-bambu-gray">
-                          by {projectPage.profile_user_name}
+                          {t('modelCard.byAuthor', { name: projectPage.profile_user_name })}
                         </p>
                       )}
                     </>
@@ -407,7 +424,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
                 <div className="space-y-2">
                   <h4 className="text-sm font-medium text-bambu-gray uppercase tracking-wide flex items-center gap-2">
                     <Image className="w-4 h-4" />
-                    Images ({allImages.length})
+                    {t('modelCard.images', { count: allImages.length })}
                   </h4>
                   <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
                     {allImages.map((img, index) => (
@@ -437,7 +454,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
                     className="inline-flex items-center gap-2 text-bambu-green hover:underline"
                   >
                     <ExternalLink className="w-4 h-4" />
-                    View on MakerWorld
+                    {t('modelCard.viewOnMakerWorld')}
                   </a>
                 </div>
               )}
@@ -449,7 +466,13 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
       {/* Image Lightbox */}
       {selectedImageIndex !== null && allImages[selectedImageIndex] && (
         <div
-          className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-60"
+          ref={lightbox}
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('modelCard.pictureViewer')}
+          tabIndex={-1}
+          data-testid="archive-lightbox"
+          className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-60 outline-none"
           onClick={() => setSelectedImageIndex(null)}
         >
           <button
@@ -458,6 +481,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
               setSelectedImageIndex(Math.max(0, selectedImageIndex - 1));
             }}
             disabled={selectedImageIndex === 0}
+            aria-label={t('modelCard.previous')}
             className="absolute left-4 p-2 bg-bambu-dark-secondary rounded-full hover:bg-bambu-dark-tertiary disabled:opacity-30"
           >
             <ChevronLeft className="w-6 h-6 text-white" />
@@ -476,6 +500,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
               setSelectedImageIndex(Math.min(allImages.length - 1, selectedImageIndex + 1));
             }}
             disabled={selectedImageIndex === allImages.length - 1}
+            aria-label={t('modelCard.next')}
             className="absolute right-4 p-2 bg-bambu-dark-secondary rounded-full hover:bg-bambu-dark-tertiary disabled:opacity-30"
           >
             <ChevronRight className="w-6 h-6 text-white" />
@@ -483,6 +508,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
 
           <button
             onClick={() => setSelectedImageIndex(null)}
+            aria-label={t('common.close')}
             className="absolute top-4 right-4 p-2 bg-bambu-dark-secondary rounded-full hover:bg-bambu-dark-tertiary"
           >
             <X className="w-6 h-6 text-white" />
@@ -544,8 +570,9 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
   const [lightbox, setLightbox] = useState<number | null>(null);
   const [rereadOpen, setRereadOpen] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
-  const overlay = useRef<HTMLDivElement>(null);
-  const returnFocusTo = useRef<HTMLElement | null>(null);
+  const titleId = useId();
+  // Mounted only while it is open, so "open" is simply `true`.
+  const dialog = useDialogFocus<HTMLDivElement>(true);
 
   const { data: card, isLoading, error } = useQuery({
     queryKey: ['library-file-card', fileId],
@@ -598,20 +625,12 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
     return () => document.removeEventListener('keydown', onKey);
   }, [lightbox, rereadOpen, onClose]);
 
-  // ⚠️ Focus moves INTO the overlay and comes back out, exactly as the product
-  // gallery's lightbox does. Without it the Escape handler above is the only
-  // way out for a keyboard user — Tab would walk the modal BEHIND the overlay —
-  // and on close the focus ring is left on `<body>`, which is nowhere.
-  const lightboxOpen = lightbox !== null;
-  useEffect(() => {
-    if (!lightboxOpen) return;
-    returnFocusTo.current = document.activeElement as HTMLElement | null;
-    overlay.current?.focus();
-    return () => {
-      returnFocusTo.current?.focus?.();
-      returnFocusTo.current = null;
-    };
-  }, [lightboxOpen]);
+  // ⚠️ Focus moves INTO the overlay when it opens and back to the thumbnail
+  // when it closes — and that is ALL it does. **Tab is not trapped**: it walks
+  // out of the overlay and into the modal behind it. What the move fixes is the
+  // two ends, which without it leave a keyboard user starting at the top of the
+  // document and, on close, with the focus ring on `<body>` — nowhere.
+  const overlay = useDialogFocus<HTMLDivElement>(lightbox !== null);
 
   const sanitizeHtml = (html: string) =>
     DOMPurify.sanitize(html, {
@@ -681,11 +700,23 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
       className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
       onClick={handleBackdropClick}
     >
-      <div className="bg-bambu-dark-secondary rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+      {/* ⚠️ The role, the name and the focus, as one unit — see
+          `useDialogFocus`, which the five overlays this app opens over a page
+          all use. Without them the overlay is an anonymous `<div>` a screen
+          reader never announces, and a keyboard user opening it starts at the
+          top of the PAGE behind. It is deliberately not a focus TRAP. */}
+      <div
+        ref={dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="bg-bambu-dark-secondary rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col outline-none"
+      >
         <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
           <div className="flex items-center gap-3 min-w-0">
             <FileText className="w-5 h-5 text-bambu-green shrink-0" />
-            <h2 className="text-lg font-semibold text-white truncate">
+            <h2 id={titleId} className="text-lg font-semibold text-white truncate">
               {t('modelCard.title')}
               {fileName && <span className="text-bambu-gray ml-2">- {fileName}</span>}
             </h2>
@@ -931,6 +962,9 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
       {lightbox !== null && pictures[lightbox] && (
         <div
           ref={overlay}
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('modelCard.pictureViewer')}
           tabIndex={-1}
           data-testid="card-lightbox"
           className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-60 outline-none"

@@ -813,12 +813,16 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
             {/* ⚠️ `.3mf` only — the card lives in the 3MF's `Metadata/` and
                 `Auxiliaries/`, and an STL has neither. `is3mf`, not
                 `file_type === '3mf'`: a sliced `.gcode.3mf` is a 3MF and its
-                `file_type` says `gcode`. */}
+                `file_type` says `gcode`.
+                ⚠️ **No `library:read` branch.** Reading the card needs exactly
+                what LISTING the files needs, so a user without it never reaches
+                a menu to grey out — the entry was disabled on a branch this
+                page cannot produce, which is a control promising a state it can
+                never leave. The file type is the only question here. */}
             {onModelCard && is3mf(file) && (
               <button
-                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
-                onClick={() => { if (hasPermission('library:read')) { onModelCard(file); setOpen(false); } }}
-                disabled={!hasPermission('library:read')}
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                onClick={() => { onModelCard(file); setOpen(false); }}
               >
                 <FileText className="w-3.5 h-3.5" />
                 {t('fileManager.modelCard')}
@@ -1228,14 +1232,16 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
               {/* ⚠️ `.3mf` only — the card lives in the 3MF's `Metadata/` and
                   `Auxiliaries/`, and an STL has neither. `is3mf`, not
                   `file_type === '3mf'`: a sliced `.gcode.3mf` is a 3MF and its
-                  `file_type` says `gcode`. */}
+                  `file_type` says `gcode`.
+                  ⚠️ **No `library:read` branch.** Reading the card needs exactly
+                  what LISTING the files needs, so a user without it never reaches
+                  a menu to grey out — the entry was disabled on a branch this
+                  page cannot produce, which is a control promising a state it can
+                  never leave. The file type is the only question here. */}
               {onModelCard && is3mf(file) && (
                 <button
-                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                  }`}
-                  onClick={() => { if (hasPermission('library:read')) { onModelCard(file); setShowActions(false); } }}
-                  disabled={!hasPermission('library:read')}
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onModelCard(file); setShowActions(false); }}
                 >
                   <FileText className="w-3.5 h-3.5" />
                   {t('fileManager.modelCard')}

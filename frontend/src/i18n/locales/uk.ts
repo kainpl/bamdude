@@ -5048,6 +5048,31 @@ export default {
     viewOnMakerWorld: 'Відкрити на MakerWorld',
     previous: 'Попереднє зображення',
     next: 'Наступне зображення',
+    pictureViewer: 'Перегляд зображення',
+    // The ARCHIVE half of the same modal — BamDude's own copy of a print, and
+    // the one model card in the app that can be edited. It shipped with these
+    // strings written into the JSX; `description`, `printProfile` and
+    // `viewOnMakerWorld` above are shared with the file half rather than
+    // repeated here.
+    edit: 'Редагувати',
+    save: 'Зберегти',
+    cancel: 'Скасувати',
+    archiveLoadFailed: 'Не вдалося завантажити картку моделі цього друку.',
+    archiveEmpty: 'Цей друк не має картки моделі.',
+    archiveEmptyHint: 'Картки моделі є у файлах, завантажених із MakerWorld.',
+    images_one: 'Зображення ({{count}})',
+    images_few: 'Зображення ({{count}})',
+    images_many: 'Зображення ({{count}})',
+    images_other: 'Зображення ({{count}})',
+    byAuthor: 'від {{name}}',
+    field: {
+      title: 'Назва',
+      designer: 'Автор моделі',
+      license: 'Ліцензія',
+      description: 'Введіть опис…',
+      profileTitle: 'Назва профілю',
+      profileDescription: 'Опис профілю…',
+    },
   },
 
   // Projects section, products face. A product is what an order line orders:
@@ -5226,6 +5251,10 @@ export default {
     },
     gallery: {
       title: 'Зображення',
+      // The card dialog opens OVER the product page, so for as long as it is
+      // open two galleries are live and a plain "Pictures" names both.
+      titleInDialog: 'Зображення цього виробу',
+      lightbox: 'Перегляд зображення',
       coverHint: 'Перше зображення стає обкладинкою, доки ви не оберете або не завантажите інше.',
       cover: 'Обкладинка',
       empty: 'Зображень ще немає.',

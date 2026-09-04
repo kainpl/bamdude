@@ -20,12 +20,14 @@
  * `Model Pictures/` is a download like any other document.
  */
 
+import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { QueryClient } from '@tanstack/react-query';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { render } from '../utils';
 import { api } from '../../api/client';
 import { ModelCardModal } from '../../components/ModelCardModal';
+import type { ModelCardSource } from '../../components/ModelCardModal';
 
 const navigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -95,6 +97,21 @@ const fileCard = {
   error: null,
 };
 
+/** The modal the way a page opens it — a control that mounts it and takes it
+ *  away again, which is the only shape in which "the focus comes back" can be
+ *  observed at all. */
+function Openable({ source }: { source: ModelCardSource }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        open card
+      </button>
+      {open && <ModelCardModal source={source} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
 describe('ModelCardModal — an archive (pinned behaviour)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -123,6 +140,59 @@ describe('ModelCardModal — an archive (pinned behaviour)', () => {
     await waitFor(() =>
       expect(save).toHaveBeenCalledWith(12, expect.objectContaining({ designer: 'Grace' })),
     );
+  });
+
+  it('says every one of its own words through the catalogue, not in hardcoded English', async () => {
+    // ⚠️ This half predates the modal and shipped with its labels written into
+    // the JSX — Edit / Save / Cancel, the field placeholders, the two empty
+    // states, "Images (n)". Nothing about it was translatable, on a screen
+    // whose other half always was. Only the STRINGS moved: the load, the edit
+    // form and the PATCH are pinned by the three tests around this one.
+    vi.spyOn(api, 'getArchiveProjectPage').mockResolvedValue(archiveCard as never);
+    render(<ModelCardModal source={{ kind: 'archive', id: 12 }} onClose={() => {}} />);
+
+    // The count is a plural, so it comes from the catalogue with its own forms.
+    expect(await screen.findByRole('heading', { name: 'Images (1)' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /edit/i }));
+    expect(screen.getByPlaceholderText('Profile title')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Description' })).toBeInTheDocument();
+  });
+
+  it('says a load failure and an empty card in the catalogue’s words too', async () => {
+    vi.spyOn(api, 'getArchiveProjectPage').mockRejectedValue(new Error('nope'));
+    const { unmount } = render(<ModelCardModal source={{ kind: 'archive', id: 12 }} onClose={() => {}} />);
+    expect(await screen.findByText('Could not load the model card of this print.')).toBeInTheDocument();
+    unmount();
+
+    vi.spyOn(api, 'getArchiveProjectPage').mockResolvedValue({
+      ...archiveCard,
+      title: null,
+      description: null,
+      designer: null,
+      profile_title: null,
+      model_pictures: [],
+      profile_pictures: [],
+    } as never);
+    render(<ModelCardModal source={{ kind: 'archive', id: 13 }} onClose={() => {}} />);
+    expect(await screen.findByText('This print carries no model card.')).toBeInTheDocument();
+  });
+
+  it('is a modal dialog named by its heading, and hands the focus back on Escape', async () => {
+    vi.spyOn(api, 'getArchiveProjectPage').mockResolvedValue(archiveCard as never);
+    render(<Openable source={{ kind: 'archive', id: 12 }} />);
+
+    const opener = screen.getByRole('button', { name: 'open card' });
+    opener.focus();
+    fireEvent.click(opener);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveAccessibleName(/model card/i);
+    expect(dialog).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
   });
 
   it('never asks the library card route for an archive', async () => {
@@ -367,5 +437,35 @@ describe('ModelCardModal — a library file', () => {
     expect(await screen.findByText('Desk lamp')).toBeInTheDocument();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('is a modal dialog named by its heading, and hands the focus back on Escape', async () => {
+    vi.spyOn(api, 'getLibraryFileCard').mockResolvedValue(fileCard as never);
+    render(<Openable source={{ kind: 'file', id: 3 }} />);
+
+    const opener = screen.getByRole('button', { name: 'open card' });
+    opener.focus();
+    fireEvent.click(opener);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveAccessibleName(/model card/i);
+    expect(dialog).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+  });
+
+  it('announces the lightbox as a modal dialog of its own', async () => {
+    vi.spyOn(api, 'getLibraryFileCard').mockResolvedValue(fileCard as never);
+    render(<ModelCardModal source={{ kind: 'file', id: 3 }} onClose={() => {}} />);
+
+    fireEvent.click((await screen.findByAltText('front.png')).closest('button') as HTMLButtonElement);
+
+    const lightbox = screen.getByTestId('card-lightbox');
+    expect(lightbox).toHaveAttribute('role', 'dialog');
+    expect(lightbox).toHaveAttribute('aria-modal', 'true');
+    expect(lightbox).toHaveAccessibleName('Picture viewer');
   });
 });

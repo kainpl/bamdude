@@ -256,6 +256,28 @@ describe('ProductGallery', () => {
     expect(opener).toHaveFocus();
   });
 
+  it('announces the lightbox as a modal dialog', () => {
+    // The overlay covers the page and takes the focus; without the role it is
+    // an anonymous `<div>` and a screen reader keeps reading the gallery
+    // underneath as though nothing had opened. There is no heading in it, so
+    // the name is a label rather than a `labelledby`.
+    render(<ProductGallery product={product} canEdit />);
+
+    fireEvent.click(screen.getByTestId('gallery-picture-a.png'));
+
+    const lightbox = screen.getByTestId('gallery-lightbox');
+    expect(lightbox).toHaveAttribute('role', 'dialog');
+    expect(lightbox).toHaveAttribute('aria-modal', 'true');
+    expect(lightbox).toHaveAccessibleName('Picture viewer');
+  });
+
+  it('names the gallery section after its own heading', () => {
+    // Two galleries are live at once whenever the card dialog opens over the
+    // product page, so each has to say which one it is.
+    render(<ProductGallery product={product} canEdit />);
+    expect(screen.getByTestId('product-gallery')).toHaveAccessibleName('Pictures');
+  });
+
   it('offers no edit control at all without the permission', () => {
     render(<ProductGallery product={product} canEdit={false} />);
 

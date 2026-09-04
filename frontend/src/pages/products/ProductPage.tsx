@@ -146,13 +146,21 @@ export function ProductPage() {
 
   const canEdit = hasPermission('projects:update');
 
+  // ⚠️ **A flex column with `gap`, not `space-y`** — because the gallery below
+  // is moved by `order`, and `space-y-*` hangs its margins on DOM siblings,
+  // which after a reorder are not the visual ones.
   return (
-    <div className="p-4 md:p-6 space-y-6">
+    <div className="p-4 md:p-6 flex flex-col gap-6">
       {/* Top-down, per the parent spec: what the thing LOOKS like, then what it
           is, then what it is made of, then what prints it, then its papers,
-          then its files, then who wants it. */}
-      <ProductGallery product={product} canEdit={canEdit} />
-
+          then its files, then who wants it.
+          ⚠️ **The header comes FIRST in the document and the gallery is put
+          above it with `order-first`.** The visual order is the spec's; the
+          document order is the heading outline's, and the gallery's `<h2>`
+          standing before the product's `<h1>` opened that outline at level 2.
+          The alternative — a visually-hidden `<h1>` at the top with the visible
+          title demoted — gives a screen reader two names for the same thing and
+          leaves the one people can see outranked by one they cannot. */}
       <ProductHeader
         product={product}
         onEdit={() => setEditing(true)}
@@ -160,6 +168,10 @@ export function ProductPage() {
         onDelete={() => setDeleting(true)}
         onToggleActive={(next) => toggleActive.mutate(next)}
       />
+
+      <div className="order-first">
+        <ProductGallery product={product} canEdit={canEdit} />
+      </div>
 
       <CompositionTable product={product} canEdit={canEdit} />
 

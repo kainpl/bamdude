@@ -108,6 +108,27 @@ class PlateRecipe:
     filament_used_grams: float | None = None
 
 
+def estimate_seconds(recipe: PlateRecipe) -> int | None:
+    """The plate's print time, normalised to "an estimate or nothing".
+
+    ⚠️ **A zero is not an instant plate — it is a file that carries no estimate**,
+    and everything that reads a recipe's time must read it that way or the
+    answers disagree with each other. They did, twice. Inside the plan engine
+    :func:`_pick_key` scored a 0 as unknown (``secs or 1``) while its own
+    tie-break read the same 0 as a real, unbeatable 0 s, and the row then
+    reported ``time_unknown=False``, claiming an estimate it did not have. And
+    ``routes/products.py::list_plates`` emitted the raw number, so a plate the
+    plan called timeless showed ``0s`` in the "+ plate" menu that adds it to
+    that same plan.
+
+    It lives HERE, beside :class:`PlateRecipe`, for the reason the module
+    docstring gives: the route and the engine read the same recipes, and a
+    second copy of this rule is the copy that goes stale.
+    """
+    secs = recipe.print_time_seconds
+    return secs if secs is not None and secs > 0 else None
+
+
 def _plate_number(meta: dict | None, plate_index: int, key: str) -> int | float | None:
     plates = _plates(meta, plate_index)
     if plate_index > 0:

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -8,6 +8,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { FolderTreePicker } from '../FolderTreePicker';
 import { Button } from '../Button';
 import { cardNotesText } from './cardNotes';
+import { useDialogFocus } from '../../hooks/useDialogFocus';
 
 interface ImportProductDialogProps {
   onClose: () => void;
@@ -41,6 +42,9 @@ export function ImportProductDialog({ onClose }: ImportProductDialogProps) {
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const input = useRef<HTMLInputElement>(null);
+  const titleId = useId();
+  // Mounted only while it is open, so "open" is simply `true`.
+  const dialog = useDialogFocus<HTMLDivElement>(true);
   const [file, setFile] = useState<File | null>(null);
   const [folderId, setFolderId] = useState<number | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -84,9 +88,23 @@ export function ImportProductDialog({ onClose }: ImportProductDialogProps) {
 
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-lg max-h-[85vh] flex flex-col">
+      {/* ⚠️ The role, the name and the focus, as one unit — see
+          `useDialogFocus`, which the five overlays this app opens over a page
+          all use. Without them the overlay is an anonymous `<div>` a screen
+          reader never announces, and a keyboard user opening it starts at the
+          top of the PAGE behind. It is deliberately not a focus TRAP. */}
+      <div
+        ref={dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="bg-bambu-dark-secondary rounded-lg w-full max-w-lg max-h-[85vh] flex flex-col outline-none"
+      >
         <div className="flex items-center justify-between gap-3 p-4 border-b border-bambu-dark shrink-0">
-          <h2 className="text-lg font-semibold text-white truncate">{t('products.import.title')}</h2>
+          <h2 id={titleId} className="text-lg font-semibold text-white truncate">
+            {t('products.import.title')}
+          </h2>
           <button onClick={onClose} className="p-1 hover:bg-bambu-dark rounded" aria-label={t('common.close')}>
             <X className="w-5 h-5 text-bambu-gray" />
           </button>

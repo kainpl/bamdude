@@ -214,6 +214,18 @@ const spareRow: PlanRowData = {
   time_unknown: false,
 };
 
+/** Two lines of the SAME product, so one `getProductPlates` mock serves both
+ *  and the only difference between them is which line the operator edited. */
+const twoLineOrder = {
+  ...order,
+  lines: [order.lines[0], { ...order.lines[0], id: 20, sort_order: 1 }],
+} as unknown as Order;
+
+const twoLinePlan: OrderPlan = {
+  ...plan,
+  lines: [plan.lines[0], { ...plan.lines[0], line_id: 20 }],
+};
+
 describe('PlanBlock', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -663,5 +675,105 @@ describe('PlanBlock', () => {
     for (const key of ORDER_VIEW_KEYS) {
       expect(invalidate).toHaveBeenCalledWith({ queryKey: [key] });
     }
+  });
+
+  // ---- the block as a landmark ----
+
+  it('marks itself on every branch and keeps an anchor to link to', async () => {
+    // ⚠️ `plan-block` answers "is the plan on this page", not "has the plan
+    // arrived" — a marker carried only by the loaded branch turns "the page
+    // mounts the block" into a question that can be asked one tick early and
+    // answered no. `order-plan` is the id a link into the plan needs; the old
+    // anchor went with the printer picker and nothing replaced it.
+    const branch = async () => {
+      const section = await screen.findByTestId('plan-block');
+      expect(section).toHaveAttribute('id', 'order-plan');
+    };
+
+    render(<PlanBlock order={{ ...order, status: 'completed' }} canEdit />);
+    expect(await screen.findByTestId('plan-closed')).toBeInTheDocument();
+    await branch();
+    cleanup();
+
+    // A plan that never answers: the loading branch, held open.
+    vi.spyOn(api, 'getOrderPlan').mockReturnValue(new Promise(() => {}));
+    render(<PlanBlock order={order} canEdit />);
+    await branch();
+    cleanup();
+
+    vi.spyOn(api, 'getOrderPlan').mockRejectedValue(new Error('Gateway timeout'));
+    render(<PlanBlock order={order} canEdit />);
+    expect(await screen.findByTestId('plan-error')).toBeInTheDocument();
+    await branch();
+    cleanup();
+
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(plan);
+    render(<PlanBlock order={order} canEdit />);
+    expect(await screen.findByTestId('plan-row-10-100')).toBeInTheDocument();
+    await branch();
+  });
+
+  // ---- a plate with no estimate ----
+
+  it('shows no time for a hand-added plate whose file gives no estimate, and voids the total', async () => {
+    // ⚠️ The wire says `null`, never `0`: `list_plates` normalises through the
+    // same `estimate_seconds` the plan engine ranks with, so "0 seconds" and
+    // "no estimate" cannot mean two things on one screen. `rowFromRecipe` maps
+    // that null to `time_unknown`, and one unknown row voids the footer's time
+    // rather than letting a partial sum read as a promise.
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithSpare);
+    vi.spyOn(api, 'getProductPlates').mockResolvedValue([
+      ...plates,
+      { ...spare, print_time_seconds: null },
+    ]);
+
+    render(<PlanBlock order={order} canEdit />);
+
+    expect(await screen.findByTestId('plan-totals-time')).toHaveTextContent('1h 30m');
+
+    fireEvent.change(await screen.findByTestId('plan-line-10-add'), { target: { value: '300' } });
+
+    const row = screen.getByTestId('plan-row-10-300');
+    expect(within(row).getAllByText('—').length).toBeGreaterThan(0);
+    expect(row).not.toHaveTextContent(/\b0s\b/);
+    expect(screen.getByTestId('plan-totals-time')).toHaveTextContent('—');
+    // The grams the plate DOES carry are still summed: one missing figure voids
+    // its own column, never the row.
+    expect(screen.getByTestId('plan-totals-grams')).toHaveTextContent('170.0');
+  });
+
+  // ---- the reseed is per line ----
+
+  it('reseeds only the line whose plan changed, and leaves the other line alone', async () => {
+    // ⚠️ The signature is per LINE because the `added` reconciliation beside it
+    // always was. A whole-plan signature meant an edited count on one line
+    // reverted whenever ANOTHER line moved — and `project-plan` is invalidated
+    // by every print event on the farm, so "another line moved" is an ordinary
+    // event nobody on this page caused.
+    const get = vi.spyOn(api, 'getOrderPlan').mockResolvedValue(twoLinePlan);
+
+    render(
+      <>
+        <PlanBlock order={twoLineOrder} canEdit />
+        <Refetcher id={1} />
+      </>,
+    );
+
+    fireEvent.change(await screen.findByTestId('plan-row-10-100-count'), { target: { value: '5' } });
+    fireEvent.change(screen.getByTestId('plan-row-20-100-count'), { target: { value: '7' } });
+
+    // Only line 10's outstanding moves. Line 20's plan comes back byte for byte.
+    get.mockResolvedValue({
+      ...twoLinePlan,
+      lines: [
+        { ...twoLinePlan.lines[0], outstanding_before: [{ part_id: 1, name: 'Body', count: 6 }] },
+        twoLinePlan.lines[1],
+      ],
+    });
+    fireEvent.click(screen.getByTestId('force-refetch'));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+
+    await waitFor(() => expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(1));
+    expect(screen.getByTestId('plan-row-20-100-count')).toHaveValue(7);
   });
 });

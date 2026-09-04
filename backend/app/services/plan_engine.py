@@ -38,7 +38,7 @@ from backend.app.models.product import ProductPlate
 from backend.app.models.project_line import ProjectLine
 from backend.app.services.filament_cost import default_rate_per_kg
 from backend.app.services.order_metrics import LineFigures, OrderContext, attribute, load_order_context
-from backend.app.services.product_composition import PlateRecipe, recipes_for_products
+from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
 
 # A defence, not a feature: a plate whose yield somehow never shrinks the
 # outstanding map would otherwise spin forever inside a request.
@@ -131,22 +131,6 @@ def _material_ok(material: str | None, materials: set[str]) -> bool:
     return material is None or material.strip().upper() in materials
 
 
-def _estimate(recipe: PlateRecipe) -> int | None:
-    """The plate's print time, normalised to "an estimate or nothing".
-
-    ⚠️ **A zero is not an instant plate — it is a file that carries no estimate**,
-    and the whole engine must read it that way or the two halves of the ranking
-    disagree with each other. They did: :func:`_pick_key` scored a 0 as unknown
-    (``secs or 1``) while its own tie-break read the same 0 as a real,
-    unbeatable 0 s, and the row then reported ``time_unknown=False``, claiming
-    an estimate it did not have. Normalising HERE — the one place the recipe's
-    time is read — is what keeps the flag, the score and the tie-break saying
-    the same thing.
-    """
-    secs = recipe.print_time_seconds
-    return secs if secs is not None and secs > 0 else None
-
-
 def _pick_key(useful: int, waste: int, secs: int | None, plate_id: int) -> tuple:
     """Spec decision 4, as a sort key (lower is better).
 
@@ -156,7 +140,7 @@ def _pick_key(useful: int, waste: int, secs: int | None, plate_id: int) -> tuple
     timeless plate never wins a tie it did not earn on score), then to the lower
     plate id so the same order comes back on every read.
 
-    ``secs`` arrives already normalised by :func:`_estimate`, so ``None`` is the
+    ``secs`` arrives already normalised by :func:`estimate_seconds`, so ``None`` is the
     only spelling of "no estimate" this key ever sees.
     """
     return (-(useful / (secs or 1)), waste, (secs is None, secs or 0), plate_id)
@@ -164,7 +148,7 @@ def _pick_key(useful: int, waste: int, secs: int | None, plate_id: int) -> tuple
 
 def _row_for(plate: ProductPlate, file: LibraryFile, recipe: PlateRecipe, price_per_gram: float | None) -> PlanRow:
     grams = recipe.filament_used_grams
-    secs = _estimate(recipe)
+    secs = estimate_seconds(recipe)
     return PlanRow(
         plate_id=plate.id,
         library_file_id=plate.library_file_id,
@@ -203,7 +187,7 @@ def cover(
             if useful <= 0:
                 continue
             waste = sum(max(0, n - remaining.get(pid, 0)) for pid, n in yields[plate.id].items())
-            key = _pick_key(useful, waste, _estimate(recipe), plate.id)
+            key = _pick_key(useful, waste, estimate_seconds(recipe), plate.id)
             if best is None or key < best[0]:
                 best = (key, plate, file, recipe, gain)
         if best is None:
