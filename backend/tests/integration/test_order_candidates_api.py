@@ -11,8 +11,11 @@ separately they start disagreeing, and the operator is told "still needs 5" in
 one place and "3" in the other about the same plate.
 """
 
+from datetime import datetime
+
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import update
 
 from backend.app.core.auth import create_access_token
 from backend.app.models.archive import PrintArchive
@@ -75,17 +78,17 @@ async def lamp(db_session):
     return {"file": file, "product": product}
 
 
-async def _order(client, product_id, quantity, *, name="O", priority="normal", material="PETG", lines=None):
-    body = (
-        await client.post(
-            "/api/v1/projects/",
-            json={
-                "name": name,
-                "priority": priority,
-                "lines": lines or [{"product_id": product_id, "quantity": quantity, "material": material}],
-            },
-        )
-    ).json()
+async def _order(
+    client, product_id, quantity, *, name="O", priority="normal", material="PETG", lines=None, due_date=None
+):
+    payload = {
+        "name": name,
+        "priority": priority,
+        "lines": lines or [{"product_id": product_id, "quantity": quantity, "material": material}],
+    }
+    if due_date is not None:
+        payload["due_date"] = due_date
+    body = (await client.post("/api/v1/projects/", json=payload)).json()
     return body["id"], [line["id"] for line in body["lines"]]
 
 
@@ -120,30 +123,47 @@ async def _candidates(client, file_id, plate_index=1):
 
 
 @pytest.mark.asyncio
-async def test_candidates_are_ranked_needy_first_then_by_priority(committing_client, db_session, lamp):
-    """Four orders, three answers.
+async def test_candidates_are_ranked_by_every_key_in_turn(committing_client, db_session, lamp):
+    """Six orders, and each ranking key decides exactly one neighbouring pair.
 
-    A needs five of this plate, D needs two but is more urgent, B is already
-    satisfied and C is closed. The list is ``[D, A, B]``: needing the plate
-    comes first, then priority — and the AMOUNT needed never ranks, or the big
-    order would starve the small one (or the other way round, which is no
-    better).
+    ``[D, E, F, A, B]``, with C absent:
+
+    * **D before E** — priority. D needs two, E needs four, and the AMOUNT never
+      ranks, or the big order would starve the small one (or the other way
+      round, which is no better).
+    * **E before F** — deadline. Both are ``normal`` and both need the plate;
+      only E carries a due date, and no deadline sorts LAST rather than as
+      "infinitely far away and therefore urgent".
+    * **F before A** — ``created_at``, ascending. Neither has a deadline and
+      nothing above it separates them; F was backdated, so the older order goes
+      first.
+    * **A before B** — needing the plate. B is satisfied and is still OFFERED,
+      because printing ahead is legitimate; it just ranks below everything that
+      needs something.
+    * **C nowhere** — a completed order takes no more work.
     """
     product_id, file_id = lamp["product"].id, lamp["file"].id
     a_id, (a_line,) = await _order(committing_client, product_id, 5, name="A")
     b_id, (b_line,) = await _order(committing_client, product_id, 1, name="B")
     c_id, _ = await _order(committing_client, product_id, 3, name="C")
     d_id, (d_line,) = await _order(committing_client, product_id, 2, name="D", priority="high")
+    e_id, (e_line,) = await _order(committing_client, product_id, 4, name="E", due_date="2026-10-01T00:00:00")
+    f_id, (f_line,) = await _order(committing_client, product_id, 4, name="F")
 
+    # F is made the OLDER of the two deadline-less orders by hand: SQLite's
+    # ``CURRENT_TIMESTAMP`` has second resolution, so six orders created in one
+    # test share a ``created_at`` and the tiebreak below it (the id) would decide
+    # instead — with A winning, which is the opposite of what this pins.
+    await db_session.execute(update(Project).where(Project.id == f_id).values(created_at=datetime(2020, 1, 1, 0, 0, 0)))
     await _finish_one_unit(db_session, b_id, file_id)
     closed = await committing_client.patch(f"/api/v1/projects/{c_id}", json={"status": "completed"})
     assert closed.status_code == 200, closed.text
 
     rows = await _candidates(committing_client, file_id)
-    assert [r["project_name"] for r in rows] == ["D", "A", "B"]
-    assert [r["project_id"] for r in rows] == [d_id, a_id, b_id]
-    assert [r["project_line_id"] for r in rows] == [d_line, a_line, b_line]
-    assert [r["outstanding_prints"] for r in rows] == [2, 5, 0]
+    assert [r["project_name"] for r in rows] == ["D", "E", "F", "A", "B"]
+    assert [r["project_id"] for r in rows] == [d_id, e_id, f_id, a_id, b_id]
+    assert [r["project_line_id"] for r in rows] == [d_line, e_line, f_line, a_line, b_line]
+    assert [r["outstanding_prints"] for r in rows] == [2, 4, 4, 5, 0]
     # A closed order takes no more work and is not offered at all.
     assert c_id not in {r["project_id"] for r in rows}
     # Every candidate names the product the line is for, so the dialog can say

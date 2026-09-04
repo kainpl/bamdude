@@ -39,7 +39,7 @@ from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.calibration_mode import mode_to_bool
 from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
 from backend.app.services.filament_requirements import overrides_for_plate
-from backend.app.services.order_filing import resolve_line_id
+from backend.app.services.order_filing import line_filer
 from backend.app.utils.printer_models import normalize_model_name
 
 
@@ -146,6 +146,17 @@ async def add_items_to_auto_queue(
     swap_events_json = json.dumps(data.swap_macro_events) if data.swap_macro_events else None
     selected_macros_json = json.dumps(data.selected_macro_ids) if data.selected_macro_ids is not None else None
 
+    # What filing this file under this order needs, loaded ONCE for the request:
+    # the order's lines, the library file and its product plates depend on the
+    # order and the file, never on the plate index. The question below is per
+    # plate, but the rows it reads are not, and asking ``resolve_line_id`` inside
+    # the fan-out repeated all three SELECTs per plate of a multi-plate call.
+    filer = (
+        await line_filer(db, project_id=effective_project_id, library_file_id=data.library_file_id)
+        if effective_project_id is not None and data.project_line_id is None
+        else None
+    )
+
     items: list[AutoQueueItem] = []
     pos_offset = 0
     for plate_id in plate_ids:
@@ -156,13 +167,8 @@ async def add_items_to_auto_queue(
         # on two different lines. An explicit line is never overridden, and an
         # ambiguous plate is left ``NULL`` for the plan's implicit branch.
         plate_line_id = data.project_line_id
-        if plate_line_id is None and effective_project_id is not None:
-            plate_line_id = await resolve_line_id(
-                db,
-                project_id=effective_project_id,
-                library_file_id=data.library_file_id,
-                plate_index=plate_id,
-            )
+        if plate_line_id is None and filer is not None:
+            plate_line_id = filer.for_plate(plate_id)
         # Per-plate 3MF auto-extraction (fall back to provided values when given)
         # Normalised on the way in so the stored value is the short name the
         # rest of the app compares and displays. Routing normalises again when

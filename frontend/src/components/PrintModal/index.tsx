@@ -656,10 +656,14 @@ export function PrintModal({
   });
 
   // Fetch plates for library files
-  const { data: libraryPlatesData } = useQuery({
+  const { data: libraryPlatesData, isError: libraryPlatesError } = useQuery({
     queryKey: ['library-file-plates', libraryFileId],
     queryFn: () => api.getLibraryFilePlates(libraryFileId!),
     enabled: isLibraryFile && !!libraryFileId,
+    // Same policy as its `archive-plates` twin above. Things downstream WAIT on
+    // this query settling — the Order field does — and three silent backoffs
+    // before a permanent failure is admitted is a field that never appears.
+    retry: false,
   });
 
   // Combine plates data from either source
@@ -866,11 +870,16 @@ export function PrintModal({
   // ⚠️ And the question waits for the plates to arrive at all, or the first
   // render asks about plate 0 for a file that has plates — a list replaced a
   // moment later, and for a per-plate product a field that appears and vanishes.
+  // ⚠️ **SETTLED, not "arrived".** A plates fetch that fails permanently never
+  // produces data, and waiting on data alone left the Order field missing for
+  // ever on a file whose plate list 500s — silently, since nothing else on the
+  // dialog depends on that list. A settled failure is an answer: ask about plate
+  // 0, the whole file, which is exactly what a file with no plates is.
   const orderPlateIndex = selectedPlateIds[0] ?? platesData?.plates?.[0]?.index ?? 0;
   const { data: orderCandidates, isLoading: orderCandidatesLoading } = useOrderCandidates(
     libraryFileId,
     orderPlateIndex,
-    asksAboutOrder && platesData !== undefined,
+    asksAboutOrder && (platesData !== undefined || libraryPlatesError),
   );
 
   // ⚠️ **The proposal is DERIVED, never synced into state by an effect.** The

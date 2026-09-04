@@ -11,7 +11,7 @@ import { formatDuration } from '../../utils/date';
 import { Button } from '../Button';
 import { PlanLine } from './PlanLine';
 import { MAX_PER_PLATE } from './PlanRow';
-import { projectPlan, rowDistribution, splitTotal, type ChosenByRow, type SplitByRow } from './planMath';
+import { projectPlan, rowDistribution, splitIsOff, type ChosenByRow, type SplitByRow } from './planMath';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 /**
@@ -265,13 +265,12 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
   // row: sending everything else and silently skipping the row being edited
   // would be the one outcome the operator cannot see coming.
   const splitOff = lines.some((line) =>
-    line.rows.some((row) => {
-      const rowSplit = split[line.line_id]?.[row.plate_id];
-      return (
-        rowSplit != null &&
-        splitTotal(rowSplit) !== Math.max(0, Math.trunc(counts[line.line_id]?.[row.plate_id] ?? row.count))
-      );
-    }),
+    line.rows.some((row) =>
+      splitIsOff(
+        split[line.line_id]?.[row.plate_id],
+        Math.max(0, Math.trunc(counts[line.line_id]?.[row.plate_id] ?? row.count)),
+      ),
+    ),
   );
 
   const setCount = (lineId: number, plateId: number, next: number) =>
@@ -341,14 +340,6 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
     );
   }
 
-  // ⚠️ **The fifth branch renders too.** `isLoading` is only TRUE on a query
-  // that has never resolved AND is fetching; a paused one — the tab was
-  // backgrounded, the network dropped, the query was disabled and re-enabled —
-  // is `isPending && !isFetching`, which falls through every branch above with
-  // no data and used to return `null`. That takes the whole section off the
-  // page, which reads as "this order has nothing to print" — the same lie the
-  // error branch above exists to avoid, from a state that is not even a
-  // failure. The block stays, wearing its own testid and the loading text.
   // ⚠️ **The fifth branch renders too.** `isLoading` is only TRUE on a query
   // that has never resolved AND is fetching; a paused one — the tab was
   // backgrounded, the network dropped, the query was disabled and re-enabled —
@@ -448,7 +439,16 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
               <Button
                 data-testid="plan-enqueue-all"
                 disabled={enqueue.isPending || overCap || splitOff}
-                title={overCap ? t('orders.plan.row.tooMany') : undefined}
+                // A disabled button with no reason on it is a dead end. `overCap`
+                // is checked first because it names a row's number, which is the
+                // more specific of the two complaints.
+                title={
+                  overCap
+                    ? t('orders.plan.row.tooMany')
+                    : splitOff
+                      ? t('orders.plan.split.off')
+                      : undefined
+                }
                 onClick={() =>
                   items.length === 0
                     ? showToast(t('orders.plan.toast.nothingToEnqueue'), 'info')

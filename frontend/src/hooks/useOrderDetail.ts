@@ -14,9 +14,14 @@ import type { Order } from '../api/client';
  * refetch went unreported on exactly the page the flag was added for.
  * Measured, not assumed.
  *
- * So the options live here and no caller gets to write them out again. A
- * grep-gate test fails the build if a `queryKey: ['project', …]` literal
- * appears anywhere but this file and `utils/queryInvalidation.ts`.
+ * So the options live here and no caller gets to write them out again, and
+ * `__tests__/hooks/detailQueryKeys.test.ts` greps the source for that. ⚠️ What
+ * it actually matches is narrow, and worth knowing before trusting it: ONE LINE
+ * containing `queryKey:` followed by `['project',` in SINGLE quotes, outside
+ * `src/__tests__`, on a line that does not read as an invalidation call. A key
+ * spelled with double quotes, built from a constant, or wrapped onto a second
+ * line goes unseen. It catches the copy-paste that caused the bug, not every way
+ * of writing the same declaration.
  *
  * `id` accepts `null` for the callers that watch an order the user has not
  * chosen yet: the query simply stays disabled, which is the same thing those

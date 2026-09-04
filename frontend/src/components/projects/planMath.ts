@@ -67,7 +67,8 @@ export type ChosenPlate = PlanAlternative;
  * print.
  */
 export function chosenPlate(row: PlanRow, chosen?: number): ChosenPlate {
-  const alternative = chosen == null || chosen === row.plate_id ? undefined : row.alternatives.find((a) => a.plate_id === chosen);
+  const alternative =
+    chosen == null || chosen === row.plate_id ? undefined : row.alternatives.find((a) => a.plate_id === chosen);
   if (alternative) return alternative;
   return {
     plate_id: row.plate_id,
@@ -115,6 +116,24 @@ export function rowDistribution(
  *  count before it can be queued. */
 export function splitTotal(split: Record<number, number> | undefined): number {
   return Object.values(split ?? {}).reduce((sum, n) => sum + Math.max(0, Math.trunc(n)), 0);
+}
+
+/**
+ * Is this row's split half-made? A split that does not add up to the row's count
+ * is not a distribution — it is an edit in progress, and sending it would queue
+ * a number nobody asked for.
+ *
+ * ⚠️ **One spelling, because two places ask it and they must never diverge.**
+ * The row disables its own send button on this, and the block disables the
+ * whole-plan button on it too — a half-made split blocks EVERYTHING, since
+ * sending the other rows and silently skipping the one being edited is the one
+ * outcome the operator cannot see coming. Written twice, the two would sooner or
+ * later answer differently and the block would send the row the row refused.
+ *
+ * A row with no split (`undefined`) is never off: it is simply not split.
+ */
+export function splitIsOff(split: Record<number, number> | undefined, count: number): boolean {
+  return split != null && splitTotal(split) !== count;
 }
 
 /**

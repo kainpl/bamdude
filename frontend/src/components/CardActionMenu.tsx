@@ -46,9 +46,14 @@ export function CardActionMenu({ label, testId, width = 180, children }: CardAct
 
   /** The items, in DOM order, as the roving keys see them. Read on every press
    *  rather than kept in state: what a card offers depends on permissions and
-   *  on the row, and a stale list would move focus to an item that is gone. */
+   *  on the row, and a stale list would move focus to an item that is gone.
+   *
+   *  ⚠️ **Disabled items are not in the ring.** A disabled `<button>` cannot
+   *  take focus at all, so leaving it in would make Down stop dead on it and the
+   *  opening focus land nowhere when the first entry happens to be the busy
+   *  one. */
   const items = useCallback(
-    () => Array.from(panelRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []),
+    () => Array.from(panelRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? []),
     [],
   );
 
@@ -157,14 +162,21 @@ export function CardActionMenu({ label, testId, width = 180, children }: CardAct
 }
 
 /** One row of a card menu. Shared so the two cards cannot drift apart on
- *  padding, and so `role="menuitem"` is not something a new entry can forget. */
+ *  padding, and so `role="menuitem"` is not something a new entry can forget.
+ *
+ *  `disabled` is the native attribute, deliberately: it stops the click AND
+ *  takes the row out of the roving ring above, which is what an item that is
+ *  mid-request should do. A hand-rolled menu row that only dimmed itself still
+ *  fired on a second click. */
 export function CardActionMenuItem({
   onSelect,
   danger,
+  disabled,
   children,
 }: {
   onSelect: () => void;
   danger?: boolean;
+  disabled?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -172,7 +184,8 @@ export function CardActionMenuItem({
       type="button"
       role="menuitem"
       onClick={onSelect}
-      className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-bambu-dark ${
+      disabled={disabled}
+      className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-bambu-dark disabled:opacity-50 disabled:hover:bg-transparent ${
         danger ? 'text-red-500' : 'text-white'
       }`}
     >

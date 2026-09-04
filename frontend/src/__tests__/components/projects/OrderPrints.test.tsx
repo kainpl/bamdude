@@ -266,6 +266,54 @@ describe('OrderPrints', () => {
     await waitFor(() => expect(remove).toHaveBeenCalledWith(1, [1]));
   });
 
+  it('will not unlink the same print twice while the first request is in flight', async () => {
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
+      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10 },
+    ] as never);
+    // Never settles, so the menu item stays in its pending state for the assertion.
+    const remove = vi.spyOn(api, 'removeArchivesFromProject').mockReturnValue(new Promise(() => {}) as never);
+    const order = {
+      id: 1,
+      other_archive_ids: [],
+      lines: [{ id: 10, product_name: 'Flask', quantity: 1, archive_ids: [1] }],
+    } as unknown as Order;
+
+    render(<OrderPrints order={order} canEdit />);
+    await screen.findByTestId('prints-line-10');
+    fireEvent.click(screen.getByTestId('print-menu-1'));
+
+    const item = await screen.findByRole('menuitem', { name: /remove from/i });
+    fireEvent.click(item);
+    await waitFor(() => expect(item).toBeDisabled());
+
+    // The second click is the one the hand-rolled button used to refuse and the
+    // ported menu item did not.
+    fireEvent.click(item);
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a different order at the first page rather than at the cap bought on the last one', async () => {
+    // A full page, so the walk always reports `truncated` and the button shows.
+    const page = rows(Array.from({ length: 500 }, (_, i) => i + 1));
+    const get = vi.spyOn(api, 'getProjectArchives').mockResolvedValue(page as never);
+    const order = (id: number) =>
+      ({ id, other_archive_ids: [], lines: [{ id: 10, product_name: 'F', quantity: 1, archive_ids: [] }] }) as
+        unknown as Order;
+
+    const { rerender } = render(<OrderPrints order={order(1)} canEdit={false} />);
+    fireEvent.click(await screen.findByTestId('prints-load-older'));
+    await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(20));
+
+    // ⚠️ The cap is per order. Reset in an effect it would survive one render of
+    // the NEW order — long enough to issue a 21-page walk of somebody else's
+    // history before the reset landed.
+    get.mockClear();
+    rerender(<OrderPrints order={order(2)} canEdit={false} />);
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    await waitFor(() => expect(get.mock.calls.length).toBe(20));
+    expect(get.mock.calls.every((call) => call[0] === 2)).toBe(true);
+  });
+
   it('offers no menu at all without the permission', async () => {
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
       { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10 },

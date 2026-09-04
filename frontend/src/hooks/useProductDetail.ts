@@ -13,9 +13,13 @@ import type { Product } from '../api/client';
  * unreported for as long as the dialog stayed open — the same bug the order
  * side had, on the key nobody had checked.
  *
- * A grep-gate test fails the build if a `queryKey: ['product', …]` literal
- * appears in an observer outside this file. (Invalidation call sites name the
- * key too; the test only guards `queryKey:` declarations.)
+ * `__tests__/hooks/detailQueryKeys.test.ts` greps the source for that, on the
+ * same terms as the order side. ⚠️ ONE LINE containing `queryKey:` followed by
+ * `['product',` in SINGLE quotes, outside `src/__tests__`, on a line that does
+ * not read as an invalidation call — those name the key without observing it and
+ * are allowed everywhere. A declaration spelled some other way (double quotes, a
+ * constant, a line break after `queryKey:`) is not seen: the gate catches the
+ * copy-paste that caused the bug, not every possible spelling.
  *
  * `id` accepts `null` so a caller that already HAS the record — the dialog
  * opened on a full product rather than on a list row — disables the query by

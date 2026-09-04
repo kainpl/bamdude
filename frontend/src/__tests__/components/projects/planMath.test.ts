@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LinePlan, PlanPartCount } from '../../../api/client';
-import { chosenPlate, parseCount, projectPlan, rowDistribution } from '../../../components/projects/planMath';
+import { chosenPlate, parseCount, projectPlan, rowDistribution, splitIsOff } from '../../../components/projects/planMath';
 
 /**
  * Two plates against 120 bodies and 10 caps — the parent spec's worked case,
@@ -227,6 +227,29 @@ describe('rowDistribution', () => {
 
   it('sends nothing for a row at zero', () => {
     expect(rowDistribution(line.rows[0], 0, undefined, undefined)).toEqual([]);
+  });
+});
+
+describe('splitIsOff', () => {
+  it('is false for a row nobody split, whatever its count', () => {
+    expect(splitIsOff(undefined, 0)).toBe(false);
+    expect(splitIsOff(undefined, 9)).toBe(false);
+  });
+
+  it('is true only while the parts do not add up to the row', () => {
+    expect(splitIsOff({ 100: 3, 400: 2 }, 5)).toBe(false);
+    expect(splitIsOff({ 100: 3, 400: 2 }, 4)).toBe(true);
+    // An emptied split against a row that still wants prints is half an edit
+    // too — the total is zero, the row is not.
+    expect(splitIsOff({ 100: 0, 400: 0 }, 2)).toBe(true);
+    expect(splitIsOff({ 100: 0, 400: 0 }, 0)).toBe(false);
+  });
+
+  it('counts the parts the way the payload will, so the two cannot disagree', () => {
+    // `splitTotal` floors at zero and truncates; a predicate that summed the raw
+    // values would call a split valid that `rowDistribution` then sends short.
+    expect(splitIsOff({ 100: -3, 400: 5 }, 2)).toBe(true);
+    expect(splitIsOff({ 100: 1.9, 400: 1 }, 2)).toBe(false);
   });
 });
 

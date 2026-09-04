@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
@@ -99,6 +99,17 @@ async function loadOrderArchives(orderId: number, named: Set<number>, maxPages: 
  * job is to account for it.
  */
 export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
+  // ⚠️ **Keyed by the order, so a different order is a different component.**
+  // Everything below that is per-order state — the `extraPages` cap — then
+  // starts at zero BEFORE the first render of the new order, not after it. An
+  // effect could only reset it afterwards, and by then the render in between had
+  // already asked for `['project-archives', the new order, the OLD cap]`: one
+  // twenty-page walk of somebody else's history, fired for nothing, and a second
+  // fetch behind it once the effect landed.
+  return <OrderPrintsOf key={order.id} order={order} canEdit={canEdit} />;
+}
+
+function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
   const { t } = useTranslation();
 
   // Every archive the order NAMES — the walk's own finish line, and the same
@@ -123,13 +134,10 @@ export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
   // last walk stopped would skip whatever moved across the boundary — and the
   // id-keyed map makes re-reading the pages already in hand cost nothing but
   // the requests.
+  //
+  // ⚠️ The cap belongs to ONE order, and the `key` on the wrapper above is what
+  // enforces that — see the note there before replacing it with an effect.
   const [extraPages, setExtraPages] = useState(0);
-
-  // ⚠️ The `extraPages` cap belongs to ONE order. Navigating between orders
-  // keeps this component mounted, so a cap bought on a busy order would follow
-  // the operator to the next one and make its first read walk twenty pages of
-  // somebody else's history for nothing.
-  useEffect(() => setExtraPages(0), [order.id]);
 
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['project-archives', order.id, extraPages],
@@ -308,7 +316,11 @@ function ArchivePrintMenu({
   return (
     <>
       <CardActionMenuItem onSelect={() => setPickingLine(true)}>{t('orders.prints.fileUnderLine')}</CardActionMenuItem>
-      <CardActionMenuItem danger onSelect={() => remove.mutate()}>
+      {/* ⚠️ `disabled` while the unlink is in flight. The hand-rolled button
+          this menu item replaced had it, and the port lost it — leaving a second
+          click able to fire the same DELETE against an archive the first one had
+          already unfiled. */}
+      <CardActionMenuItem danger disabled={remove.isPending} onSelect={() => remove.mutate()}>
         <Unlink className="w-4 h-4" />
         {t('orders.prints.removeFromOrder')}
       </CardActionMenuItem>

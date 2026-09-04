@@ -11,8 +11,12 @@ macros printed without them, and without ever saying so (reported 2026-09-04).
 :class:`SharedQueueOptions` is what both accept; :class:`PrinterOnlyQueueOptions`
 is the two more ``enqueue_batch_copies`` takes and ``AutoQueueItemCreate`` has no
 field for. They are separate ``TypedDict``s rather than one dict filtered at the
-call site so a key that one writer cannot take is a static error here, not a
-``TypeError`` raised inside somebody's per-item write loop.
+call site so that adding a key to the wrong one is visible where it is written.
+⚠️ Nothing in CI checks that: this repo runs ruff and pytest, and no type
+checker, so the split is read by an IDE and by the next person — not enforced.
+A key the writer cannot take still reaches production as a ``TypeError`` inside
+somebody's per-item write loop; the tests around ``preference_options`` are what
+actually catch it.
 
 ⚠️ **Two fields of the saved profile reach no writer at all**:
 ``preheat_override`` and ``preheat_chamber_target_override``. Neither
@@ -50,6 +54,7 @@ from backend.app.schemas.calibration_mode import CalibrationModeStr
 from backend.app.schemas.print_options_preference import PrintOptionsPreferenceData
 from backend.app.schemas.timelapse import TimelapseStorage
 from backend.app.services.macro_matcher import macro_targets_model
+from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -168,25 +173,44 @@ async def _saved_preference(
     per model precisely because the answers differ by machine, and borrowing one
     would be a guess dressed as a setting.
 
-    ⚠️ ``printer_model=None`` means nothing named a model at all — a file that
-    carries no ``sliced_for_model``, queued to the auto-queue. There the row is
-    picked by recency instead, because the operator's most recent answer to
-    exactly these questions is what the dialog would have shown them, and the
-    alternative is applying nothing, which is the bug this helper exists to fix.
+    ⚠️ **The models are compared NORMALISED, in Python, not by SQL equality.**
+    The two sides are spelled by different writers: the dialog stores whatever
+    the printer row calls itself ("Bambu Lab X1 Carbon", or an internal code like
+    "C12"), while the plan's per-file lookup passes the 3MF's ``sliced_for_model``
+    already through ``normalize_model_name`` ("X1C"). A ``WHERE printer_model =
+    :model`` therefore missed a preference that plainly exists, and missing it is
+    silent — the writers' defaults apply and nobody is told. The rows are read
+    ordered and the first NORMALISED match wins, so the recency tiebreak below is
+    the same one an exact match would have got. The table holds one row per
+    (user, model), so reading a user's rows to compare them is a handful.
+
+    ⚠️ ``printer_model=None`` means nothing named a model at all — either a file
+    that carries no ``sliced_for_model`` queued to the auto-queue, or a PRINTER
+    whose ``model`` column is empty, which the plan's enqueue passes on as-is.
+    There the row is picked by recency instead, because the operator's most
+    recent answer to exactly these questions is what the dialog would have shown
+    them, and the alternative is applying nothing, which is the bug this helper
+    exists to fix.
     """
+    wanted = normalize_model_name(printer_model)
     query = select(PrintOptionsPreference).order_by(
         PrintOptionsPreference.updated_at.desc(),
         # SQLite's CURRENT_TIMESTAMP has second resolution, so two rows saved in
         # the same second would otherwise come back in an arbitrary order.
         PrintOptionsPreference.id.desc(),
     )
-    if printer_model:
-        query = query.where(PrintOptionsPreference.printer_model == printer_model)
+
+    async def _pick(scoped) -> PrintOptionsPreference | None:
+        rows = (await db.execute(scoped)).scalars().all()
+        if wanted is None:
+            return rows[0] if rows else None
+        return next((row for row in rows if normalize_model_name(row.printer_model) == wanted), None)
+
     if user is not None:
-        mine = (await db.execute(query.where(PrintOptionsPreference.user_id == user.id).limit(1))).scalar_one_or_none()
+        mine = await _pick(query.where(PrintOptionsPreference.user_id == user.id))
         if mine is not None:
             return mine
-    return (await db.execute(query.where(PrintOptionsPreference.user_id.is_(None)).limit(1))).scalar_one_or_none()
+    return await _pick(query.where(PrintOptionsPreference.user_id.is_(None)))
 
 
 async def _selected_macro_ids(db: AsyncSession, printer_model: str | None, deselected: set[int]) -> list[int]:

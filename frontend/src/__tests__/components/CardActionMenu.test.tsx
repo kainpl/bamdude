@@ -72,6 +72,39 @@ describe('CardActionMenu keyboard', () => {
     expect(focused()).toBe('Edit');
   });
 
+  it('leaves a disabled item out of the ring rather than stopping on it', () => {
+    // ⚠️ A disabled `<button>` cannot take focus at all, so a roving handler
+    // that still counted it would move focus NOWHERE and the arrows would look
+    // dead. An item mid-request is exactly when this happens.
+    const onSelect = vi.fn();
+    render(
+      <CardActionMenu label="Actions" testId="card-menu">
+        {() => (
+          <>
+            <CardActionMenuItem onSelect={() => onSelect('edit')}>Edit</CardActionMenuItem>
+            <CardActionMenuItem disabled onSelect={() => onSelect('busy')}>
+              Busy
+            </CardActionMenuItem>
+            <CardActionMenuItem onSelect={() => onSelect('delete')} danger>
+              Delete
+            </CardActionMenuItem>
+          </>
+        )}
+      </CardActionMenu>,
+    );
+
+    fireEvent.click(screen.getByTestId('card-menu'));
+    expect(focused()).toBe('Edit');
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    expect(focused()).toBe('Delete');
+    fireEvent.keyDown(window, { key: 'End' });
+    expect(focused()).toBe('Delete');
+
+    // And it refuses the click as well, which is the half the roving cannot do.
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Busy' }));
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
   it('closes on Escape and gives the focus back to the trigger', () => {
     const { trigger } = mount();
     fireEvent.click(trigger);

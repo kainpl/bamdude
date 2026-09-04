@@ -586,6 +586,18 @@ async def queued_yield_by_line(
             continue
         order_lines = lines_by_project.get(project_id) or []
         hits: dict[int, PlateRecipe] = {}
+        # ⚠️ **The material test here can be WIDER than the writers'.** They ask
+        # ``plate_materials(meta, the row's own plate index)``; this asks
+        # ``PlateRecipe.materials``, which is built from the PRODUCT PLATE's
+        # index — and for a whole-file plate (index 0) on a multi-plate 3MF that
+        # is the union of every plate's filaments. So a PETG-only line can accept
+        # a row here whose actual plate prints PLA, where ``resolve_line_id``
+        # would have left it unfiled. The divergence is deliberate and one-way:
+        # this branch exists for rows nobody filed, and a whole-file plate is the
+        # product saying "this file makes my parts" without saying which plate
+        # does — narrowing it per row would drop the legacy rows this branch was
+        # added to count. A row the writers DID file never reaches here at all;
+        # the two branches are disjoint.
         for product_id, recipe in _recipes_for(library_file_id, plate_id or 0).items():
             line = line_for_plate(order_lines, product_id, recipe.materials)
             if line is not None:

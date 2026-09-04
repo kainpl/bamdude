@@ -8,7 +8,7 @@ import { formatDuration } from '../../utils/date';
 import { mapModelCode } from '../../utils/printer';
 import { Button } from '../Button';
 import { PrintModal } from '../PrintModal';
-import { chosenPlate, parseCount, splitTotal, type ChosenPlate } from './planMath';
+import { chosenPlate, parseCount, splitIsOff, type ChosenPlate } from './planMath';
 
 /** The server's own ceiling on one enqueue item (`PlanEnqueueItem.count`). */
 export const MAX_PER_PLATE = 999;
@@ -119,8 +119,9 @@ export function PlanRow({
   const tooMany = count > MAX_PER_PLATE;
   const atZero = count === 0;
   // A split that does not add up is not a distribution — it is half an edit,
-  // and sending it would queue a number nobody asked for.
-  const splitOff = split != null && splitTotal(split) !== count;
+  // and sending it would queue a number nobody asked for. Same predicate the
+  // block uses on its whole-plan button (`splitIsOff`), so the two cannot drift.
+  const splitOff = splitIsOff(split, count);
   const step =
     'px-2 py-1 rounded border border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary disabled:opacity-40 disabled:hover:bg-transparent';
 

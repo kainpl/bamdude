@@ -114,9 +114,18 @@ export function ProductGallery({
   // callback in the dependency list an inline arrow from the parent would
   // re-run this on every render — and since the callback sets the parent's
   // state, that is a render loop rather than a wasted call.
+  //
+  // ⚠️ And the ref is refreshed in an EFFECT, never in the render body. Writing
+  // to a ref while rendering is a side effect in a function React is allowed to
+  // call twice and throw one result away (StrictMode does exactly that, and so
+  // does a render it abandons for a higher-priority update) — the rule this
+  // codebase follows everywhere else. Declared BEFORE the effect below, so on
+  // the commit where `open` flips the callback is already the current one.
   const open = lightbox !== null;
   const notify = useRef(onLightboxOpenChange);
-  notify.current = onLightboxOpenChange;
+  useEffect(() => {
+    notify.current = onLightboxOpenChange;
+  });
   useEffect(() => {
     notify.current?.(open);
     return () => notify.current?.(false);

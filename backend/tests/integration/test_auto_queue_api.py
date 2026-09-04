@@ -18,6 +18,8 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from backend.tests.unit.services.test_product_composition import counting_statements
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration
@@ -344,13 +346,19 @@ async def test_auto_queueing_leaves_the_line_null_when_two_lines_are_alike(async
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_the_line_is_resolved_per_plate_inside_the_fan_out(async_client: AsyncClient, db_session):
-    """⚠️ One request, two plates, two different lines.
+async def test_the_line_is_resolved_per_plate_inside_the_fan_out(async_client: AsyncClient, db_session, test_engine):
+    """⚠️ One request, two plates, two different lines — read once.
 
     ``plate_ids`` fans out to a row per plate, and the plates of one 3MF can
-    carry different filaments — so the line is resolved INSIDE the loop. Asking
+    carry different filaments — so the QUESTION is asked inside the loop. Asking
     once for the whole request would file both rows under whichever plate was
     read first, and half the order would count the other half's work.
+
+    The rows the question READS are another matter: the order's lines and the
+    library file depend on the order and the file, never on the plate index, so
+    they are loaded once before the loop (``order_filing.line_filer``). Calling
+    ``resolve_line_id`` per plate repeated both SELECTs per plate of a
+    multi-plate request, which is why the count is part of this test.
     """
     from backend.app.models.auto_queue import AutoQueueItem
 
@@ -358,11 +366,13 @@ async def test_the_line_is_resolved_per_plate_inside_the_fan_out(async_client: A
         db_session, materials=["PLA", "PETG"], plates=((1, "PLA", "base"), (2, "PETG", "shade"))
     )
 
-    r = await async_client.post(
-        "/api/v1/auto-queue/",
-        json={"library_file_id": lib_file.id, "project_id": order.id, "plate_ids": [1, 2]},
-    )
+    with counting_statements(test_engine, match="FROM project_lines") as lines_read:
+        r = await async_client.post(
+            "/api/v1/auto-queue/",
+            json={"library_file_id": lib_file.id, "project_id": order.id, "plate_ids": [1, 2]},
+        )
     assert r.status_code == 200, r.text
 
     rows = (await db_session.execute(select(AutoQueueItem).order_by(AutoQueueItem.plate_id))).scalars().all()
     assert [(row.plate_id, row.project_line_id) for row in rows] == [(1, lines[0].id), (2, lines[1].id)]
+    assert len(lines_read) == 1, lines_read

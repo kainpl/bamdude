@@ -4844,6 +4844,7 @@ export default {
         sum_one: 'Counts must add up to {{count}}',
         sum_other: 'Counts must add up to {{count}}',
         apply: 'Queue split',
+        off: 'A split does not add up to its row',
       },
       col: {
         plate: 'Plate',

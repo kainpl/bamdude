@@ -23,6 +23,30 @@ import { render } from '../utils';
 import { PrintModal } from '../../components/PrintModal';
 import { api, type OrderCandidate } from '../../api/client';
 
+/**
+ * Every path that queues from this dialog must mark the proposal stale.
+ *
+ * The hook caches `outstanding_prints` for 30 s, so a second print of the same
+ * file inside that window is offered the count from BEFORE the first one — the
+ * dialog says "still needs 5" about work it has already sent. There are three
+ * places that can end a submit, and a spy is the only way to hold all three:
+ * two of them are success paths and the third is the PARTIAL failure, which is
+ * exactly the one somebody adding a fourth would forget.
+ *
+ * The real helper still runs — this records the call rather than replacing it.
+ */
+const invalidatedCandidates = vi.hoisted(() => vi.fn());
+vi.mock('../../utils/queryInvalidation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../utils/queryInvalidation')>();
+  return {
+    ...actual,
+    invalidateOrderCandidates: (qc: Parameters<typeof actual.invalidateOrderCandidates>[0]) => {
+      invalidatedCandidates(qc);
+      return actual.invalidateOrderCandidates(qc);
+    },
+  };
+});
+
 const mockPrinters = [
   { id: 1, name: 'X1 Carbon', model: 'X1C', ip_address: '192.168.1.100', enabled: true, is_active: true },
   { id: 2, name: 'P1S', model: 'P1S', ip_address: '192.168.1.101', enabled: true, is_active: true },
@@ -65,6 +89,7 @@ function serveCandidates(byPlate: Record<number, OrderCandidate[]>, seen?: numbe
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  invalidatedCandidates.mockClear();
   server.use(
     http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),
     http.get('/api/v1/printers/:id/status', () =>
@@ -465,5 +490,93 @@ describe('PrintModal — the order this print is filed under', () => {
     await waitFor(() =>
       expect(add).toHaveBeenCalledWith(expect.objectContaining({ project_id: 4, project_line_id: 9 })),
     );
+  });
+
+  it('still asks — about the whole file — when the plate list itself fails', async () => {
+    // ⚠️ The question waits for the plates query to SETTLE, not to produce data.
+    // A plates endpoint that fails permanently never produces any, and waiting
+    // on data alone left the Order field missing for ever on such a file —
+    // silently, because nothing else in the dialog depends on that list. A
+    // settled failure is an answer: ask about plate 0, the whole file.
+    const seen: number[] = [];
+    serveCandidates({ 0: [candidate()] }, seen);
+    server.use(
+      http.get('/api/v1/library/files/:id/plates', () => new HttpResponse(null, { status: 500 })),
+    );
+    const add = vi.spyOn(api, 'addToQueue').mockResolvedValue({ id: 1 } as never);
+    const user = userEvent.setup();
+
+    render(<PrintModal mode="add-to-queue" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />);
+
+    const field = (await screen.findByLabelText('Order')) as HTMLSelectElement;
+    await waitFor(() => expect(field.value).toBe('4:9'));
+    expect(seen).toEqual([0]);
+
+    await user.click(screen.getByText('X1 Carbon'));
+    await user.click(screen.getByRole('button', { name: /^add to queue$/i }));
+
+    await waitFor(() =>
+      expect(add).toHaveBeenCalledWith(expect.objectContaining({ project_id: 4, project_line_id: 9 })),
+    );
+  });
+
+  describe('the "still needs N" counts are marked stale by every path that queues', () => {
+    it('after a printer-queue submit', async () => {
+      serveCandidates({ 0: [candidate()] });
+      vi.spyOn(api, 'addToQueue').mockResolvedValue({ id: 1 } as never);
+      const user = userEvent.setup();
+
+      render(<PrintModal mode="add-to-queue" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />);
+      await waitFor(() => expect((screen.getByLabelText('Order') as HTMLSelectElement).value).toBe('4:9'));
+
+      await user.click(screen.getByText('X1 Carbon'));
+      await user.click(screen.getByRole('button', { name: /^add to queue$/i }));
+
+      await waitFor(() => expect(invalidatedCandidates).toHaveBeenCalled());
+    });
+
+    it('after an auto-queue submit', async () => {
+      serveCandidates({ 0: [candidate()] });
+      vi.spyOn(api, 'addToAutoQueue').mockResolvedValue({ id: 1 } as never);
+      const user = userEvent.setup();
+
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          libraryFileId={5}
+          archiveName="lamp.gcode.3mf"
+          initialDispatchMode="auto"
+          lockDispatchMode
+          onClose={() => {}}
+        />,
+      );
+      await waitFor(() => expect((screen.getByLabelText('Order') as HTMLSelectElement).value).toBe('4:9'));
+
+      await user.click(screen.getByRole('button', { name: /^add to queue$/i }));
+
+      await waitFor(() => expect(invalidatedCandidates).toHaveBeenCalled());
+    });
+
+    it('and after a PARTIAL failure, where some of the work did land', async () => {
+      // ⚠️ The path that is easy to miss: two printers, one write succeeded.
+      // The dialog stays open on this branch, so a stale proposal is not merely
+      // cached — it is on screen, above a count that has already moved.
+      serveCandidates({ 0: [candidate()] });
+      const add = vi
+        .spyOn(api, 'addToQueue')
+        .mockResolvedValueOnce({ id: 1 } as never)
+        .mockRejectedValueOnce(new Error('printer busy'));
+      const user = userEvent.setup();
+
+      render(<PrintModal mode="add-to-queue" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />);
+      await waitFor(() => expect((screen.getByLabelText('Order') as HTMLSelectElement).value).toBe('4:9'));
+
+      await user.click(screen.getByText('X1 Carbon'));
+      await user.click(screen.getByText('P1S'));
+      await user.click(screen.getByRole('button', { name: /queue to 2 printers/i }));
+
+      await waitFor(() => expect(add).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(invalidatedCandidates).toHaveBeenCalled());
+    });
   });
 });

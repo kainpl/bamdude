@@ -975,6 +975,13 @@ describe('PlanBlock', () => {
     expect(screen.getByTestId('plan-row-10-100-split-apply')).toBeDisabled();
     expect(screen.getByTestId('plan-row-10-100-queue')).toBeDisabled();
     expect(screen.getByTestId('plan-enqueue-all')).toBeDisabled();
+    // ⚠️ And it SAYS why. A whole-plan button greyed out by an edit made three
+    // rows down is otherwise a dead end — the row's own error is on screen, but
+    // nothing connects the two.
+    expect(screen.getByTestId('plan-enqueue-all')).toHaveAttribute(
+      'title',
+      'A split does not add up to its row',
+    );
 
     fireEvent.click(screen.getByTestId('plan-row-10-100-inc'));
     fireEvent.click(screen.getByTestId('plan-row-10-100-inc'));
@@ -1043,7 +1050,21 @@ describe('PlanBlock', () => {
     // ⚠️ The alternatives join the per-line signature for this reason: a
     // switch made against a plan that has since moved would otherwise survive
     // the reseed and send a plate the line no longer plans.
+    //
+    // ⚠️ **The second plan differs in `alternatives` and in NOTHING else** —
+    // same rows, same counts, same `candidates`. Every other field of the
+    // signature is held identical on purpose: take `alternatives` out of it and
+    // this test goes red, which is the only thing keeping it in.
     const get = vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    const withoutAlternatives: OrderPlan = {
+      ...planWithAlternative,
+      lines: [
+        {
+          ...planWithAlternative.lines[0],
+          rows: [{ ...planWithAlternative.lines[0].rows[0], alternatives: [] }, planWithAlternative.lines[0].rows[1]],
+        },
+      ],
+    };
 
     render(
       <>
@@ -1054,12 +1075,21 @@ describe('PlanBlock', () => {
 
     fireEvent.change(await screen.findByTestId('plan-row-10-100-file'), { target: { value: '400' } });
     expect(screen.getByTestId('plan-row-10-100-file')).toHaveValue('400');
+    // A count edit beside the switch: it is what MAKES the reseed observable
+    // here. `chosenPlate` falls back to the row's own plate when the choice is
+    // no longer offered, so a surviving choice against an empty alternatives
+    // list renders identically to a dropped one — the three maps reseed
+    // together, and this is the one of them that shows.
+    fireEvent.change(screen.getByTestId('plan-row-10-100-count'), { target: { value: '3' } });
+    expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(3);
 
-    get.mockResolvedValue(plan);
+    get.mockResolvedValue(withoutAlternatives);
     fireEvent.click(screen.getByTestId('force-refetch'));
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
 
     await waitFor(() => expect(screen.queryByTestId('plan-row-10-100-file')).not.toBeInTheDocument());
+    // Back to the plan the server sent: one print of the row's own file.
+    expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(1);
     expect(screen.getByTestId('plan-totals-time')).toHaveTextContent('1h 30m');
   });
 });

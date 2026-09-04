@@ -11,7 +11,9 @@ Three answers live here, and they are the same rule asked three ways:
 
 * :func:`line_for_plate` — pure. WHICH line of a set the plate lands on.
 * :func:`resolve_line_id` — what the three queue writers stamp on a row when the
-  caller named an order and no line.
+  caller named an order and no line. :class:`LineFiler` is the same answer with
+  its three reads hoisted, for the writer that asks it once per plate of a
+  request.
 * :func:`order_candidates` — what the dialogs offer, ranked, each candidate
   carrying how many prints of this plate its line still needs.
 
@@ -41,9 +43,11 @@ from backend.app.schemas.project import PROJECT_PRIORITIES
 from backend.app.services.order_metrics import line_accepts_materials
 from backend.app.services.product_composition import PlateRecipe, plate_materials, recipe_for
 
-#: An order in one of these takes no more work. Everything else is "active" —
-#: read off ``PROJECT_STATUSES`` rather than spelled again, so a fourth status
-#: has one place to be classified.
+#: An order in one of these takes no more work; every other status is open. The
+#: two words are spelled here rather than derived from
+#: ``schemas/project.PROJECT_STATUSES`` — that tuple is the VOCABULARY, and
+#: "closed" is a judgement about each word in it that a fourth status would have
+#: to be asked afresh. Keep the two in step by hand when the vocabulary grows.
 CLOSED_STATUSES = ("completed", "cancelled")
 
 
@@ -53,9 +57,14 @@ class OrderCandidate:
 
     ``outstanding_prints`` is how many prints of THIS plate the line still needs
     after everything already finished, running or queued — the plan engine's own
-    number, so the picker and the plan block cannot disagree. ``0`` means the
-    line is satisfied; it is still offered, because printing ahead is
-    legitimate, and it is simply ranked below the lines that need something.
+    ``outstanding_before``, read per plate. ``0`` means the line is satisfied; it
+    is still offered, because printing ahead is legitimate, and it is simply
+    ranked below the lines that need something.
+
+    ⚠️ **The shared thing is the outstanding number, not a row.** The plan block
+    shows the plates its greedy pick chose, so a plate the block never picked is
+    offered here with a number the block displays nowhere — that is not a
+    disagreement, it is a plate the block had no reason to name.
 
     ``priority`` is the RANK of ``Project.priority`` in ``PROJECT_PRIORITIES``
     (higher is more urgent), not the stored word — the wire wants something
@@ -119,6 +128,11 @@ def _prints_for_plate(recipe: PlateRecipe, outstanding: dict[int, int]) -> int:
     THIS plate, and what it cannot make is another row's business (the plan
     calls it ``unsatisfiable``). A part the line does not count is absent from
     ``outstanding`` for the same reason ``line_yield`` drops it.
+
+    ⚠️ What this shares with the plan block is the OUTSTANDING NUMBER, per
+    plate — not a row of the block. The block lists the plates its greedy pick
+    chose; asked about a plate it did not pick, this still answers, and the block
+    shows nothing to compare that answer with.
     """
     per_part = [
         math.ceil(n / recipe.yield_by_part[pid]) for pid, n in outstanding.items() if recipe.yield_by_part.get(pid)
@@ -192,10 +206,12 @@ async def order_candidates(db: AsyncSession, library_file_id: int, plate_index: 
     ⚠️ ``outstanding_prints`` comes from ``plan_for_order`` — the plan block's
     own machinery, run once per candidate ORDER (not per candidate line, and not
     per plate). Deriving the number here from the figures instead would be a
-    second implementation of "outstanding", and the one guarantee this endpoint
-    owes the operator is that the number in the picker is the number in the
-    block. The cost is one plan per active order that holds this product, which
-    is the same computation opening any one of those order pages does.
+    second implementation of "outstanding", and what this endpoint owes the
+    operator is the SAME outstanding number the block works from, asked about
+    this plate. Asked about a plate the block's greedy pick never chose it still
+    answers, and the block names no row to compare it with. The cost is one plan
+    per active order that holds this product, which is the same computation
+    opening any one of those order pages does.
 
     ⚠️ Archived customers are not filtered because there is no such thing:
     ``customers`` has no archived flag, and ``projects.archived`` was retired by
@@ -271,34 +287,67 @@ async def order_candidates(db: AsyncSession, library_file_id: int, plate_index: 
     return out
 
 
-async def resolve_line_id(
-    db: AsyncSession, *, project_id: int, library_file_id: int | None, plate_index: int | None
-) -> int | None:
-    """The unambiguous line of ``project_id`` for this plate, or ``None``.
+@dataclass(frozen=True)
+class LineFiler:
+    """One order's filing question, with everything it reads already loaded.
 
-    What the three queue writers call when the caller named an order and no
-    line. ``None`` is an ordinary answer, not a failure: the row is written with
-    ``project_line_id = NULL`` and the plan's implicit branch will make the same
-    decision about it on every read.
+    The three rows :func:`resolve_line_id` needs — the order's lines, the library
+    file, that file's product plates — depend on the ORDER and the FILE, never on
+    the plate index. A writer that files one plate can happily load them per
+    call; ``auto_queue_add`` fans out over the plates of a single request and
+    would then repeat all three SELECTs per plate, so it builds this once and
+    asks :meth:`for_plate` per plate instead.
 
-    ⚠️ ``plate_index`` is the SLICER's plate index as the queue tables store it
-    (``plate_id``), where ``0``/``None`` means the whole file — NOT a
-    ``ProductPlate.id``.
+    ⚠️ Frozen and read-only on purpose: it is a snapshot taken before a writer
+    starts committing, and a commit may expire the instances it holds. Nothing
+    here re-reads the session.
+    """
 
-    ⚠️ Ambiguity is not only "two lines of one product": two PRODUCTS of this
-    order each resolving a line of their own is equally unanswerable, and both
-    end here as ``None``.
+    lines: list[ProjectLine]
+    file: LibraryFile | None
+    plates: list[ProductPlate]
+
+    def for_plate(self, plate_index: int | None) -> int | None:
+        """The unambiguous line for this plate index, or ``None``.
+
+        ⚠️ ``plate_index`` is the SLICER's plate index as the queue tables store
+        it (``plate_id``), where ``0``/``None`` means the whole file — NOT a
+        ``ProductPlate.id``.
+
+        ⚠️ Ambiguity is not only "two lines of one product": two PRODUCTS of this
+        order each resolving a line of their own is equally unanswerable, and
+        both end here as ``None``.
+        """
+        if self.file is None or not self.lines:
+            return None
+        index = plate_index or 0
+        materials = plate_materials(self.file.file_metadata, index)
+        ordered = sorted(self.lines, key=lambda line: (line.sort_order, line.id))
+        resolved: set[int] = set()
+        for product_id in _plates_by_product(self.plates, index):
+            line = line_for_plate(ordered, product_id, materials)
+            if line is not None:
+                resolved.add(line.id)
+        return next(iter(resolved)) if len(resolved) == 1 else None
+
+
+async def line_filer(db: AsyncSession, *, project_id: int, library_file_id: int | None) -> LineFiler:
+    """Load what filing this file under this order needs, once.
+
+    Every "nothing to file against" case — no file named, an order with no lines,
+    a file that is gone — comes back as an EMPTY filer rather than an exception,
+    so a caller in a per-plate loop has one shape to handle and
+    :meth:`LineFiler.for_plate` answers ``None`` for all of them.
     """
     if library_file_id is None:
-        return None
-    lines = (await db.execute(select(ProjectLine).where(ProjectLine.project_id == project_id))).scalars().all()
+        return LineFiler(lines=[], file=None, plates=[])
+    lines = list((await db.execute(select(ProjectLine).where(ProjectLine.project_id == project_id))).scalars().all())
     if not lines:
-        return None
+        return LineFiler(lines=[], file=None, plates=[])
     file = (await db.execute(select(LibraryFile).where(LibraryFile.id == library_file_id))).scalar_one_or_none()
     if file is None:
-        return None
-    index = plate_index or 0
-    plates = (
+        return LineFiler(lines=lines, file=None, plates=[])
+    plates = list(
         (
             await db.execute(
                 select(ProductPlate).where(
@@ -310,19 +359,31 @@ async def resolve_line_id(
         .scalars()
         .all()
     )
-    materials = plate_materials(file.file_metadata, index)
-    ordered = sorted(lines, key=lambda line: (line.sort_order, line.id))
-    resolved: set[int] = set()
-    for product_id in _plates_by_product(list(plates), index):
-        line = line_for_plate(ordered, product_id, materials)
-        if line is not None:
-            resolved.add(line.id)
-    return next(iter(resolved)) if len(resolved) == 1 else None
+    return LineFiler(lines=lines, file=file, plates=plates)
+
+
+async def resolve_line_id(
+    db: AsyncSession, *, project_id: int, library_file_id: int | None, plate_index: int | None
+) -> int | None:
+    """The unambiguous line of ``project_id`` for this plate, or ``None``.
+
+    What the queue writers call when the caller named an order and no line, for
+    ONE plate. ``None`` is an ordinary answer, not a failure: the row is written
+    with ``project_line_id = NULL`` and the plan's implicit branch will make the
+    same decision about it on every read.
+
+    A caller filing several plates of the same file under the same order wants
+    :func:`line_filer` instead — this is that, with the load per call.
+    """
+    filer = await line_filer(db, project_id=project_id, library_file_id=library_file_id)
+    return filer.for_plate(plate_index)
 
 
 __all__ = [
     "CLOSED_STATUSES",
+    "LineFiler",
     "OrderCandidate",
+    "line_filer",
     "line_for_plate",
     "order_candidates",
     "resolve_line_id",

@@ -4,7 +4,7 @@ import json
 from collections import Counter
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from backend.app.api.routes import projects as projects_routes
 from backend.app.models.archive import PrintArchive
@@ -2057,6 +2057,44 @@ async def test_plan_enqueue_reads_the_profile_for_the_model_the_file_was_sliced_
     # most recent row, which is the P1S one and would have won everywhere.
     assert json.loads(by_file[catalog["file"].id].swap_macro_events) == ["swap_mode_start"]
     assert json.loads(by_file[twin_file.id].swap_macro_events) == ["swap_mode_change_table"]
+
+
+@pytest.mark.asyncio
+async def test_plan_enqueue_finds_a_preference_saved_under_a_longer_model_name(committing_client, db_session, catalog):
+    """The two sides spell the model differently, and the lookup normalises both.
+
+    The dialog saves under whatever the PRINTER row calls itself ("Bambu Lab X1
+    Carbon", or an internal code like "C12"); the plan keys on the 3MF's
+    ``sliced_for_model``, already normalised to "X1C". A ``WHERE printer_model =
+    :model`` missed a preference that plainly existed, and missed it silently —
+    the writers' defaults applied and nobody was told.
+    """
+    await _name_the_catalog_file_a_model(db_session, catalog["file"], "X1C")
+    await _the_dialogs_saved_preference(db_session, printer_model="Bambu Lab X1 Carbon", events=["swap_mode_start"])
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+    item = {"plate_id": plate_id, "count": 1, "line_id": line_id}
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue", json={"items": [item], "target": {"kind": "auto"}}
+    )
+    assert r.status_code == 200, r.text
+    (row,) = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
+    assert json.loads(row.swap_macro_events) == ["swap_mode_start"]
+    # The whole profile arrived, not just the field the match was checked on.
+    assert row.timelapse is True and row.mesh_mode_fast_check is False
+
+    # ⚠️ And matching NORMALISED is still matching: a row saved for another
+    # machine is not borrowed. Widening is exactly what a too-eager comparison
+    # would do, and it would be as silent as the miss it replaced.
+    await db_session.execute(delete(PrintOptionsPreference))
+    await _the_dialogs_saved_preference(db_session, printer_model="Bambu Lab P1S", events=["swap_mode_start"])
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue", json={"items": [item], "target": {"kind": "auto"}}
+    )
+    assert r.status_code == 200, r.text
+    (other,) = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
+    assert other.swap_macro_events is None and other.mesh_mode_fast_check is True
 
 
 @pytest.mark.asyncio
