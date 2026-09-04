@@ -57,8 +57,14 @@ repos:
         # `tsc -b`, NOT `tsc --noEmit`: the root tsconfig is `{"files": [],
         # "references": [...]}`, so a plain --noEmit run has nothing in its
         # program and exits 0 without checking a single file. -b walks the
-        # referenced projects. Matches what `npm run build` does.
-        entry: bash -c 'cd frontend && npx tsc -b --noEmit'
+        # referenced projects.
+        #
+        # Named project, not the root: the root now also references
+        # `tsconfig.test.json`, and type-checking the test suite on every commit
+        # roughly doubles the hook. The app is what ships, so the hook checks the
+        # app (~43 s); `npm run typecheck` — `tsc -b --noEmit` over all three
+        # projects, tests included — is what CI runs and what a release verifies.
+        entry: bash -c 'cd frontend && npx tsc -b tsconfig.app.json --noEmit'
         language: system
         pass_filenames: false
         files: ^frontend/src/

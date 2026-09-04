@@ -43,6 +43,11 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
   // else on the page would ever contradict it — `remaining` is the server's and
   // did not move either. Remounting the input is what puts the truth back, and
   // it is the same remedy the invalid-input branch of `commit` already uses.
+  //
+  // Accepted trade: a refusal that lands while the operator is already typing
+  // the next number throws those keystrokes away with the rest of the DOM value.
+  // Showing a saved number that was never saved is the worse of the two, and the
+  // toast beside it says what happened.
   const [rejections, setRejections] = useState<Record<number, number>>({});
 
   const save = useMutation({

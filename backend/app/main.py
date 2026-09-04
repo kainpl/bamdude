@@ -9058,7 +9058,11 @@ PUBLIC_API_PREFIXES = [
 # take a token in the query string instead, and the middleware has to let the
 # request REACH that gate. Matching here only skips the blanket JWT gate — the
 # route's own ``RequirePermission`` / stream-token / overlay-token / nonce
-# dependency still runs, and a route with none of those does not belong here.
+# dependency still runs, and a route with none of those does not belong here…
+# or the route is deliberately ANONYMOUS — an archive thumbnail, a MakerWorld
+# cover, the OIDC button's icon — and then its entry says so, and the table in
+# ``test_auth_public_patterns.py`` tags it ``anonymous`` so nobody has to guess
+# later whether a missing gate was a decision or an oversight.
 #
 # ⚠️ These used to be plain substrings tested with ``in path``, which matched
 # ANYWHERE in the path. Nothing was exposed (every route kept its own gate) but

@@ -177,10 +177,12 @@ def recipe_for(
     ftype = (file_type or "").lower()
     # ⚠️ The flag is a TRI-STATE and only a bool is inside its domain: yes, no,
     # or "this row has no answer". It comes out of JSON, so anything can be in
-    # there, and ``is not False`` let every one of those through as a yes — a
-    # ``0`` or a ``"false"`` written by some other writer would have read as
-    # "sliced". Out-of-domain is "no answer", which is the state a row written
-    # before m137 is already in.
+    # there — a ``0`` or a ``"false"`` written by some other writer is neither a
+    # yes nor a no. This changes no answer: ``is not False`` / ``is True`` already
+    # read every out-of-domain value the way ``None`` reads, because the identity
+    # tests only ever recognise the two bool singletons. Normalising says so in
+    # the code rather than in a reader's head, and "no answer" is the state a row
+    # written before m137 is already in.
     raw_has_gcode = (meta or {}).get("has_sliced_gcode")
     has_gcode = raw_has_gcode if isinstance(raw_has_gcode, bool) else None
     recipe.sliced = recipe.print_time_seconds is not None or (
@@ -290,9 +292,10 @@ def remove_alias(target: ProductPart, key: str) -> None:
     so a part that HAS a list always carries its own key in it. Removing the
     last other alias used to leave a bare ``[]``: the same fact in the spelling
     nothing else writes, which reads to anyone comparing two parts as "this one
-    lost its key". A part with no list at all keeps not having one — aliases
-    are printed-only (a purchased part has none), and granting one here is not
-    this function's business.
+    lost its key". A part that had no aliases keeps not having any — the column
+    lands on ``[]``, the empty list, and NOT on its own key: aliases are
+    printed-only (a purchased part has none), and granting one here is not this
+    function's business.
     """
     if key == target.name_key:
         raise ValueError("a part cannot drop its own key")

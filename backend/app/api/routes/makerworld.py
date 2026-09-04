@@ -930,9 +930,10 @@ async def get_makerworld_cover(
     """Serve the model-level cover image saved locally during import.
 
     No ``RequirePermission`` here — ``<img src>`` browser fetches can't
-    carry an Authorization header. The auth-middleware whitelist treats
-    URL paths containing ``/cover`` as public (same pattern used by
-    library file thumbnails / printer covers). The data exposed is the
+    carry an Authorization header. ``main.py::PUBLIC_API_PATTERNS`` carries
+    one anchored entry for this exact route
+    (``^/api/v1/makerworld/imports/\\d+/cover$``), tagged ``anonymous`` in
+    ``backend/tests/test_auth_public_patterns.py``: the data served is the
     same image MakerWorld serves publicly on their site, so this isn't a
     privacy regression.
     """
@@ -953,9 +954,11 @@ async def get_makerworld_variant_cover(
 ):
     """Serve the variant (plate-level) cover image saved locally.
 
-    Path intentionally ends with ``cover-variant`` (not ``variant-cover``)
-    so the ``/cover`` substring still matches the auth-middleware public
-    whitelist — same reasoning as :func:`get_makerworld_cover`.
+    Anchored in the whitelist under its own entry
+    (``^/api/v1/makerworld/imports/\\d+/cover-variant$``) — same reasoning as
+    :func:`get_makerworld_cover`. The path's spelling no longer matters to the
+    gate: it once had to END in ``cover`` to satisfy a bare ``"/cover"``
+    substring, which is exactly the matching that was removed.
     """
     meta = (
         await db.execute(

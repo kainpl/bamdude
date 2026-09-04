@@ -376,4 +376,10 @@ async def backfill_library_objects(
     return summary
 
 
-__all__ = ["BackfillSummary", "backfill_library_objects", "files_missing_objects"]
+# ``_objects_recorded`` is exported despite the underscore: ``m158``'s legacy
+# conversion imports it to ask the same question of a plan row's file, so the two
+# cannot drift about what "already answered" means. The conversion asks it of
+# EVERY file a plan row names, which is a superset of this sweep's worklist (that
+# one is scoped to active, undeleted 3MF containers) — the safe direction: a file
+# the sweep will never visit is at worst handed forward once for nothing.
+__all__ = ["BackfillSummary", "_objects_recorded", "backfill_library_objects", "files_missing_objects"]

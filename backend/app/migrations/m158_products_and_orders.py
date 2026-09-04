@@ -570,10 +570,11 @@ async def _convert_one_project(conn, row: dict, *, is_template: bool) -> None:
         # ``project_print_plan_items`` is dropped and ``copies`` is gone. Hand it
         # forward. Same predicate the backfill's worklist uses, imported rather
         # than restated so the two cannot disagree about what "answered" means.
-        if not _objects_recorded(_load_meta(raw_meta)):
+        meta = _load_meta(raw_meta)  # decoded once: both readers below want the same dict
+        if not _objects_recorded(meta):
             pending_copies[(file_id, plate_index)] += copies or 1
         try:
-            counts, names = _plate_key_counts(_load_meta(raw_meta), plate_index)
+            counts, names = _plate_key_counts(meta, plate_index)
         except Exception:  # noqa: BLE001 — one corrupt file_metadata must not abort the upgrade
             logger.warning(
                 "m158: skipped metadata of file %s while converting project %s", file_id, project_id, exc_info=True
@@ -878,19 +879,28 @@ async def _seed_printed_parts_from_plates(session, library_file_ids: list[int]) 
     """
     if not library_file_ids:
         return 0
-    # Server-side ints, straight from ``library_files.id`` — never request input.
-    ids_sql = ",".join(str(int(i)) for i in library_file_ids)
     copies_by_plate = await _pending_plate_copies(session)
-    rows = (
-        await session.execute(
-            text(
-                "SELECT pp.product_id, pp.library_file_id, pp.plate_index, lf.file_metadata "
-                "FROM product_plates pp JOIN library_files lf ON lf.id = pp.library_file_id "
-                f"WHERE pp.library_file_id IN ({ids_sql}) AND lf.deleted_at IS NULL "
-                "ORDER BY pp.product_id, pp.library_file_id, pp.plate_index"
+    # ⚠️ Sliced into batches: a library of thousands of freshly filled files would
+    # otherwise put every id into ONE ``IN (...)`` list, which SQLite refuses past
+    # its host-parameter/expression limits and PostgreSQL merely plans badly. 500
+    # is the same batch size the library scanner writes in (m148).
+    rows: list = []
+    for start in range(0, len(library_file_ids), 500):
+        # Server-side ints, straight from ``library_files.id`` — never request input.
+        ids_sql = ",".join(str(int(i)) for i in library_file_ids[start : start + 500])
+        rows += (
+            await session.execute(
+                text(
+                    "SELECT pp.product_id, pp.library_file_id, pp.plate_index, lf.file_metadata "
+                    "FROM product_plates pp JOIN library_files lf ON lf.id = pp.library_file_id "
+                    f"WHERE pp.library_file_id IN ({ids_sql}) AND lf.deleted_at IS NULL "
+                    "ORDER BY pp.product_id, pp.library_file_id, pp.plate_index"
+                )
             )
-        )
-    ).all()
+        ).all()
+    # Each batch is ordered; the concatenation of two is not. Sorted here so the
+    # ``sort_order`` a part is given does not depend on how the ids were sliced.
+    rows.sort(key=lambda r: (r[0], r[1], r[2] or 0))
     by_product: dict[int, list[tuple[int, int, dict]]] = {}
     for product_id, file_id, plate_index, raw_meta in rows:
         try:
@@ -1083,6 +1093,14 @@ async def seed(session_factory):
     # above leaves it in place for the re-entry the runner will make — the parts
     # step is idempotent, so applying the factor twice is not possible, but
     # losing it before it has been applied once would be.
+    #
+    # ⚠️ Known residual, accepted: a file the backfill above could NOT reach (its
+    # share was offline during the upgrade) gets its objects from the boot sweep
+    # in ``main.py`` at some later start, and by then this table is gone — so the
+    # parts derived there carry the plate's instance count WITHOUT the legacy
+    # plan's ``copies`` factor. It is the narrow case (an unreachable mount at
+    # upgrade time, on an install converting a legacy plan) and the alternative —
+    # keeping a scratch table alive across restarts for ever — is worse.
     async with session_factory() as session:
         await session.execute(text(f"DROP TABLE IF EXISTS {_PENDING_COPIES}"))
         await session.commit()

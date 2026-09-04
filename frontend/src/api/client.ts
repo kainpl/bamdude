@@ -1,3 +1,15 @@
+/**
+ * The wire, typed once for the whole app.
+ *
+ * ⚠️ **A string union here is a claim about the SERVER, not a preference.** Keep
+ * a field narrow only where the server documents a closed set and validates it
+ * (`ProductAttachment.source` / `category` — a Pydantic `Literal` refuses
+ * anything else); where the server emits an open set the union follows the
+ * server and stays wide (`DiagnosticCheck.id`, whose members a backend release
+ * adds to freely — two of them went unnamed here for months while the modal
+ * rendered them regardless). A union narrower than the wire does not prevent
+ * the value arriving; it only makes TypeScript describe a payload nobody sends.
+ */
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateObjectsResponse } from '../types/plates';
 
 export class ApiError extends Error {

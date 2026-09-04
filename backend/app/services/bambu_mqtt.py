@@ -7598,9 +7598,9 @@ class BambuMQTTClient:
 
             logger.info("[%s] Sending print command: %s", self.serial_number, json.dumps(command))
             self._client.publish(self.topic_publish, json.dumps(command), qos=1)
-            # Record what we dispatched so /cover can pick the right plate
-            # thumbnail even when the printer's gcode_file echo is just the
-            # 3MF filename without a plate path (#1166). Match the same
+            # Record what we dispatched so /printers/{id}/camera-cover can pick
+            # the right plate thumbnail even when the printer's gcode_file echo
+            # is just the 3MF filename without a plate path (#1166). Match the same
             # subtask_name shape we send so the comparison in resolve_plate_id
             # works against state.subtask_name reflected back via MQTT.
             self.state.dispatched_plate_id = plate_id

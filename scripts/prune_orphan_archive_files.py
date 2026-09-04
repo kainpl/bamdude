@@ -78,6 +78,7 @@ import os
 import shutil
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 
@@ -126,29 +127,32 @@ def _orphan_entity_dirs(db_path: Path, archive_root: Path) -> list[Path]:
     Returns them deepest-safe (whole directory, attachments and all) — the row
     is what made the directory meaningful, so nothing inside it can be wanted.
     """
-    conn = sqlite3.connect(str(db_path))
     orphans: list[Path] = []
-    for subdir, table in _ENTITY_DIRS:
-        root = archive_root / subdir
-        if not root.exists():
-            continue
-        try:
-            live = {int(row[0]) for row in conn.execute(f"SELECT id FROM {table}")}  # noqa: S608 — fixed table names
-        except (sqlite3.OperationalError, TypeError, ValueError) as e:
-            # No such table (an older database) is "cannot tell", not "nothing
-            # is referenced". Sweeping on that reading would delete every
-            # attachment the install has.
-            print(f"warning: skipping {root}: cannot read {table}: {e}", file=sys.stderr)
-            continue
-        for child in sorted(root.iterdir()):
-            if not child.is_dir():
+    # ``closing``: an unreadable directory (OSError from ``iterdir``) below would
+    # otherwise walk out of this function with the connection still open — and
+    # the caller goes on to delete files, which on Windows a lingering handle can
+    # refuse.
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        for subdir, table in _ENTITY_DIRS:
+            root = archive_root / subdir
+            if not root.exists():
                 continue
-            if not child.name.isdigit():
-                print(f"  not an id, left alone: {child}")
+            try:
+                live = {int(row[0]) for row in conn.execute(f"SELECT id FROM {table}")}  # noqa: S608 — fixed tables
+            except (sqlite3.OperationalError, TypeError, ValueError) as e:
+                # No such table (an older database) is "cannot tell", not "nothing
+                # is referenced". Sweeping on that reading would delete every
+                # attachment the install has.
+                print(f"warning: skipping {root}: cannot read {table}: {e}", file=sys.stderr)
                 continue
-            if int(child.name) not in live:
-                orphans.append(child)
-    conn.close()
+            for child in sorted(root.iterdir()):
+                if not child.is_dir():
+                    continue
+                if not child.name.isdigit():
+                    print(f"  not an id, left alone: {child}")
+                    continue
+                if int(child.name) not in live:
+                    orphans.append(child)
     return orphans
 
 

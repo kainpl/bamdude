@@ -300,7 +300,12 @@ jobs:
 
       - name: Run TypeScript check
         working-directory: frontend
-        run: npx tsc --noEmit
+        # ⚠️ `npm run typecheck` (`tsc -b --noEmit`), never a bare `tsc --noEmit`:
+        # the root tsconfig is `{"files": [], "references": [...]}`, so without
+        # `-b` the compiler enters no file and exits 0 on anything at all. This
+        # step was that no-op. The script walks all three projects, tests
+        # included.
+        run: npm run typecheck
 
   frontend-tests:
     name: Frontend Tests

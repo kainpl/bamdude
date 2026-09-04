@@ -24,6 +24,12 @@ template the whitelist is allowed to open, and the sweep fails in BOTH
 directions — a route that matches and is not in the table, and a table entry
 nothing matches.
 
+Each entry also names the GATE that is left once the middleware steps aside — a
+stream / overlay / camwall token dependency, a credential the handler reads out
+of the path or body, or ``anonymous`` where there is deliberately none. That
+column is checked too, so "this route has no gate" is always a decision on the
+record rather than something to reconstruct later.
+
 ⚠️ The middleware runs BEFORE routing. There is no matched route to consult
 there, only the raw path — which is why the patterns must be anchored and why
 ``.+`` may appear only where the ROUTE ITSELF declares ``{x:path}``.
@@ -37,83 +43,150 @@ from httpx import ASGITransport, AsyncClient
 
 from backend.app.main import PUBLIC_API_PATTERNS, app
 
-# Every route template ``PUBLIC_API_PATTERNS`` is meant to open, and why.
+# How a whitelisted route proves the caller may have what it serves. Skipping
+# the middleware's blanket JWT gate is all a pattern does; this column says what
+# is left standing behind it, per route:
+#
+# * ``stream-token`` / ``overlay-token`` / ``camwall-token`` — a scoped token in
+#   the query string, checked by a route DEPENDENCY (the camera surface);
+# * ``slicer-token`` / ``pre-auth`` / ``nonce`` — an unguessable credential the
+#   HANDLER reads out of the path or the body: a download token for the slicer
+#   protocol handlers, the login flow's pre-auth / bridge tokens, Obico's
+#   one-shot frame nonce;
+# * ``anonymous`` — no gate at all, and that is the decision: the bytes are
+#   public to anyone who can already reach the install. Saying so here is the
+#   point of the tag — a gate-less entry is otherwise indistinguishable from an
+#   oversight.
+#
+# ``setup`` is in the vocabulary and used by no pattern: the setup-gate routes
+# are whitelisted by exact path in ``PUBLIC_API_ROUTES``, not by a pattern.
+_DEPENDENCY_GATES = frozenset({"stream-token", "overlay-token", "camwall-token"})
+_HANDLER_GATES = frozenset({"slicer-token", "pre-auth", "nonce"})
+_GATES = _DEPENDENCY_GATES | _HANDLER_GATES | frozenset({"anonymous", "setup"})
+
+# Every route template ``PUBLIC_API_PATTERNS`` is meant to open — ``(gate, why)``.
 # A path is listed when ANY of its methods needs the gate skipped: the
 # middleware sees a path, not a method, so ``DELETE /archives/1/timelapse``
 # rides in on the ``<video>`` GET beside it and is stopped by its own
-# ownership permission instead.
-PUBLIC_ROUTES: dict[str, str] = {
+# ownership permission instead. The gate describes the route the entry was
+# WRITTEN for — the GET where a path carries several methods.
+PUBLIC_ROUTES: dict[str, tuple[str, str]] = {
     # Images an <img src> loads, which cannot carry an Authorization header.
-    "/api/v1/archives/{archive_id}/thumbnail": "archive card thumbnail",
-    "/api/v1/library/files/{file_id}/thumbnail": "library card thumbnail",
-    "/api/v1/archives/{archive_id}/plate-thumbnail/{plate_index}": "per-plate thumbnail",
-    "/api/v1/library/files/{file_id}/plate-thumbnail/{plate_index}": "per-plate thumbnail",
-    "/api/v1/archives/{archive_id}/plate-preview": "plate preview, loaded like its siblings",
-    "/api/v1/archives/{archive_id}/photos/{filename}": "operator photos of a finished print",
-    "/api/v1/archives/{archive_id}/project-image/{image_path:path}": "pictures inside the 3MF",
-    "/api/v1/archives/{archive_id}/qrcode": "QR image for the print",
-    "/api/v1/archives/{archive_id}/timelapse": "timelapse <video>",
-    "/api/v1/library/files/{file_id}/card-file/{zip_path:path}": "model-card pictures (stream token)",
-    "/api/v1/products/{product_id}/attachment-image/{filename}": "product gallery (stream token)",
-    "/api/v1/products/{product_id}/cover-image": "product cover (stream token)",
-    "/api/v1/projects/{project_id}/cover-image": "order cover (stream token)",
-    "/api/v1/external-links/{link_id}/icon": "external-link favicon",
-    "/api/v1/auth/oidc/providers/{provider_id}/icon": "OIDC button icon on the login page",
-    "/api/v1/makerworld/imports/{library_file_id}/cover": "MakerWorld import cover",
-    "/api/v1/makerworld/imports/{library_file_id}/cover-variant": "MakerWorld variant cover",
-    "/api/v1/makerworld/thumbnail": "MakerWorld CDN proxy for <img>",
+    # ⚠️ The archive and library pictures are ANONYMOUS by design and have been
+    # since long before this table: anyone who can reach the install can read a
+    # thumbnail, a plate preview, an operator photo or a timelapse by guessing an
+    # id. Whether that should stay is a policy question, raised in the pass-6
+    # report — it is written down here so the next reader does not mistake it for
+    # a gate somebody forgot.
+    "/api/v1/archives/{archive_id}/thumbnail": ("anonymous", "archive card thumbnail"),
+    "/api/v1/library/files/{file_id}/thumbnail": ("anonymous", "library card thumbnail"),
+    "/api/v1/archives/{archive_id}/plate-thumbnail/{plate_index}": ("anonymous", "per-plate thumbnail"),
+    "/api/v1/library/files/{file_id}/plate-thumbnail/{plate_index}": ("anonymous", "per-plate thumbnail"),
+    "/api/v1/archives/{archive_id}/plate-preview": ("anonymous", "plate preview, loaded like its siblings"),
+    "/api/v1/archives/{archive_id}/photos/{filename}": ("anonymous", "operator photos of a finished print"),
+    "/api/v1/archives/{archive_id}/project-image/{image_path:path}": ("anonymous", "pictures inside the 3MF"),
+    "/api/v1/archives/{archive_id}/qrcode": ("anonymous", "QR image for the print"),
+    "/api/v1/archives/{archive_id}/timelapse": ("anonymous", "timelapse <video>"),
+    "/api/v1/library/files/{file_id}/card-file/{zip_path:path}": ("stream-token", "model-card pictures"),
+    "/api/v1/products/{product_id}/attachment-image/{filename}": ("stream-token", "product gallery"),
+    "/api/v1/products/{product_id}/cover-image": ("stream-token", "product cover"),
+    "/api/v1/projects/{project_id}/cover-image": ("stream-token", "order cover"),
+    "/api/v1/external-links/{link_id}/icon": ("anonymous", "external-link favicon"),
+    "/api/v1/auth/oidc/providers/{provider_id}/icon": ("anonymous", "OIDC button icon on the login page"),
+    "/api/v1/makerworld/imports/{library_file_id}/cover": ("anonymous", "MakerWorld import cover"),
+    "/api/v1/makerworld/imports/{library_file_id}/cover-variant": ("anonymous", "MakerWorld variant cover"),
+    "/api/v1/makerworld/thumbnail": ("anonymous", "MakerWorld CDN proxy for <img>, SSRF-allowlisted upstream"),
     # Camera surface — long-lived scoped tokens in the URL, no session.
-    "/api/v1/printers/{printer_id}/camera-cover": "current job's cover (stream token)",
-    "/api/v1/printers/{printer_id}/camera/stream": "MJPEG stream (stream token)",
-    "/api/v1/printers/{printer_id}/camera/snapshot": "snapshot (stream token)",
+    "/api/v1/printers/{printer_id}/camera-cover": ("stream-token", "current job's cover"),
+    "/api/v1/printers/{printer_id}/camera/stream": ("stream-token", "MJPEG stream"),
+    "/api/v1/printers/{printer_id}/camera/snapshot": ("stream-token", "snapshot"),
     "/api/v1/printers/{printer_id}/camera/plate-detection/references/{index}/thumbnail": (
-        "calibration reference picture (stream token)"
+        "stream-token",
+        "calibration reference picture",
     ),
-    "/api/v1/printers/{printer_id}/overlay-status": "OBS overlay feed (overlay token)",
-    "/api/v1/camwall/printers": "kiosk wall feed (camwall token)",
+    "/api/v1/printers/{printer_id}/overlay-status": ("overlay-token", "OBS overlay feed"),
+    "/api/v1/camwall/printers": ("camwall-token", "kiosk wall feed"),
     # Token-in-the-path downloads for slicer protocol handlers.
-    "/api/v1/archives/{archive_id}/dl/{token}/{filename}": "bambustudioopen:// download",
-    "/api/v1/library/files/{file_id}/dl/{token}/{filename}": "orcaslicer:// download",
+    "/api/v1/archives/{archive_id}/dl/{token}/{filename}": ("slicer-token", "bambustudioopen:// download"),
+    "/api/v1/library/files/{file_id}/dl/{token}/{filename}": ("slicer-token", "orcaslicer:// download"),
     # The Obico ML service fetches a frame by one-shot nonce.
-    "/api/v1/obico/cached-frame/{nonce}": "Obico frame by nonce",
+    "/api/v1/obico/cached-frame/{nonce}": ("nonce", "Obico frame by 32-byte single-use nonce"),
     # Login-flow routes the browser calls before it has a JWT.
-    "/api/v1/auth/2fa/verify": "second factor trades a pre-auth token for a JWT",
-    "/api/v1/auth/2fa/email/send": "email OTP sender, pre-auth token only",
-    "/api/v1/auth/oidc/providers": "the login page lists enabled providers",
-    "/api/v1/auth/oidc/authorize/{provider_id}": "starts the PKCE flow",
-    "/api/v1/auth/oidc/callback": "lands from the identity provider",
-    "/api/v1/auth/oidc/exchange": "swaps the bridge token for a JWT",
+    "/api/v1/auth/2fa/verify": ("pre-auth", "second factor trades a pre-auth token for a JWT"),
+    "/api/v1/auth/2fa/email/send": ("pre-auth", "email OTP sender, pre-auth token only"),
+    "/api/v1/auth/oidc/providers": ("anonymous", "the login page lists enabled providers"),
+    "/api/v1/auth/oidc/authorize/{provider_id}": ("anonymous", "starts the PKCE flow, before any credential"),
+    "/api/v1/auth/oidc/callback": ("pre-auth", "lands from the identity provider, bound by state + nonce"),
+    "/api/v1/auth/oidc/exchange": ("pre-auth", "swaps the bridge token for a JWT"),
 }
 
 _PARAM = re.compile(r"\{([^}]+)\}")
 
 
-def _is_int_param(route: APIRoute, name: str) -> bool:
-    annotation = getattr(route.endpoint, "__annotations__", {}).get(name)
-    return annotation is int or annotation == "int"
+def _fills(route: APIRoute, *, hostile: bool) -> list[str]:
+    """Every shape of this template the middleware could see, as concrete paths.
 
-
-def _fill(route: APIRoute, *, hostile: bool) -> str:
-    """Turn a route template into a concrete path the middleware could see.
+    Each parameter is substituted TWICE — once as digits, once as a word — and
+    the caller unions what the two match. Reading the handler's annotation to
+    decide which shape a parameter takes was a second model of the router living
+    in this file: ``\\d+`` in a pattern is a claim about what the MIDDLEWARE
+    sees, and the middleware sees whatever the client sent, whatever the handler
+    is annotated with. Both shapes, unioned, is the honest question.
 
     ``hostile`` fills every client-controlled segment with a word the old
     substring whitelist reacted to. The matched set must not change: that is
     the ``card-download/thumbnail.txt`` bug, asked of every route at once.
     """
+    word = "thumbnail" if hostile else "name.png"
+    tail = "x/thumbnail/cover-image" if hostile else "nested/name.png"
 
-    def sub(m: re.Match[str]) -> str:
-        name = m.group(1)
-        if name.endswith(":path"):
-            return "x/thumbnail/cover-image" if hostile else "nested/name.png"
-        if _is_int_param(route, name.split(":")[0]):
-            return "7"
-        return "thumbnail" if hostile else "name.png"
+    def sub(as_digits: bool):
+        def _one(m: re.Match[str]) -> str:
+            if m.group(1).endswith(":path"):
+                return tail
+            return "7" if as_digits else word
 
-    return _PARAM.sub(sub, route.path)
+        return _one
+
+    return [_PARAM.sub(sub(True), route.path), _PARAM.sub(sub(False), route.path)]
 
 
-def _matching(path: str) -> list[str]:
-    return [p.pattern for p in PUBLIC_API_PATTERNS if p.match(path)]
+def _matching(route: APIRoute, *, hostile: bool) -> list[str]:
+    """Patterns that open this route in ANY of the shapes a client could send."""
+    hits: list[str] = []
+    for path in _fills(route, hostile=hostile):
+        for pattern in PUBLIC_API_PATTERNS:
+            if pattern.match(path) and pattern.pattern not in hits:
+                hits.append(pattern.pattern)
+    return hits
+
+
+def _intended(path: str) -> APIRoute:
+    """The route an entry was written for: the GET, or the only method there is.
+
+    A whitelisted path often carries writes too (``DELETE`` on a timelapse, the
+    cover upload beside the cover GET) — they ride in because the middleware
+    sees a path and not a method, and are stopped by their own permission. The
+    gate tag describes the read the entry exists for.
+    """
+    here = [r for r in _api_routes() if r.path == path]
+    assert here, f"the table lists a route that is not registered: {path}"
+    return next((r for r in here if "GET" in r.methods), here[0])
+
+
+def _gate_dependencies(route: APIRoute) -> list[str]:
+    """Sub-dependencies that could BE a gate — ``get_db`` is plumbing, not one.
+
+    ⚠️ "has at least one dependency" is not the question: every handler that
+    touches the database has ``get_db``, so the naive count says every route is
+    gated. What distinguishes them is a dependency that is not the session.
+    """
+    names = []
+    for dependency in route.dependant.dependencies:
+        name = getattr(dependency.call, "__name__", None) or type(dependency.call).__name__
+        if name != "get_db":
+            names.append(name)
+    return names
 
 
 def _api_routes() -> list[APIRoute]:
@@ -133,7 +206,7 @@ def test_the_whitelist_opens_exactly_the_routes_in_the_table(hostile):
     opened: set[str] = set()
     unexpected: dict[str, list[str]] = {}
     for route in _api_routes():
-        hits = _matching(_fill(route, hostile=hostile))
+        hits = _matching(route, hostile=hostile)
         if hits:
             opened.add(route.path)
             if route.path not in PUBLIC_ROUTES:
@@ -144,10 +217,30 @@ def test_the_whitelist_opens_exactly_the_routes_in_the_table(hostile):
     assert not missing, f"table lists routes no pattern opens: {missing}"
 
 
+def test_every_listed_route_carries_the_gate_its_entry_names():
+    """The table's second column is a claim about the code, so it is checked.
+
+    A whitelisted route with no gate of its own is only acceptable when it is
+    MEANT to be anonymous — and then the entry says ``anonymous``. This fails in
+    both directions: a token dependency appearing on a route tagged anonymous is
+    as much a drift as one disappearing from a route tagged ``stream-token``.
+    The handler-gated tags (a download token, a pre-auth token, a nonce) are the
+    routes whose credential is not a dependency at all; they must carry none, or
+    the tag is describing the wrong thing.
+    """
+    for path, (gate, why) in PUBLIC_ROUTES.items():
+        assert gate in _GATES, f"{path}: unknown gate {gate!r}"
+        deps = _gate_dependencies(_intended(path))
+        if gate in _DEPENDENCY_GATES:
+            assert deps, f"{path} ({why}): tagged {gate}, but its dependant carries no gate"
+        else:
+            assert not deps, f"{path} ({why}): tagged {gate}, but {deps} now gates it — retag the entry"
+
+
 def test_every_pattern_earns_its_place():
     """A pattern matching no route at all is rot — that is how
     ``"/auth/2fa/send-code"`` survived beside the route actually called."""
-    live = {_fill(r, hostile=False) for r in _api_routes()} | {_fill(r, hostile=True) for r in _api_routes()}
+    live = {path for r in _api_routes() for hostile in (False, True) for path in _fills(r, hostile=hostile)}
     dead = [p.pattern for p in PUBLIC_API_PATTERNS if not any(p.match(path) for path in live)]
     assert not dead, f"patterns matching no registered route: {dead}"
 

@@ -22,6 +22,14 @@ import type { PrintQueueItem } from '../api/client';
  * folding it into this one at 30 s would have made every other screen a
  * half-minute slower to notice a print was queued. Ten seconds is the
  * compromise the whole app now shares; `printing` was already there.
+ *
+ * What it costs, said plainly: every open tab now asks for the pending list
+ * three times as often as the Queue page's old 30 s — one request per tab per
+ * ten seconds, against a list that is usually short. What it buys is one cache
+ * entry instead of two and one answer instead of two disagreeing ones. The
+ * badge also stopped refetching on window focus with its own query gone, so the
+ * first refresh after coming back to the tab is up to ten seconds away rather
+ * than immediate — the same ten seconds, from the other end.
  */
 const PENDING_POLL_MS = 10_000;
 const PRINTING_POLL_MS = 10_000;

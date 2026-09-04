@@ -146,10 +146,16 @@ describe('OrderLinesTable', () => {
 
     // Opening a row and closing it again is not an edit: `PATCH {}` would bump
     // the order's `updated_at` and refetch two keys to change nothing.
+    //
+    // ⚠️ The editor-closed assertion below is the load-bearing one. TanStack v5
+    // defers `mutationFn` past `onMutate`, so a synchronous "not called" would
+    // hold for a moment even if a PATCH were on its way — awaiting the closed
+    // editor is what puts a turn of the microtask queue between the click and
+    // the question, and `waitFor` says so rather than relying on it.
+    await waitFor(() => expect(screen.queryByTestId('line-10-save')).not.toBeInTheDocument());
     expect(patch).not.toHaveBeenCalled();
     // The editor is closed, so the row offers Edit again rather than Save.
     expect(screen.getByTestId('line-10-edit')).toBeInTheDocument();
-    expect(screen.queryByTestId('line-10-save')).not.toBeInTheDocument();
   });
 
   it('folds the material before comparing it, so a typed " petg " is saved as PETG', async () => {
@@ -186,6 +192,9 @@ describe('OrderLinesTable', () => {
     fireEvent.change(within(row).getByLabelText(/material/i), { target: { value: ' petg ' } });
     fireEvent.click(screen.getByTestId('line-10-save'));
 
+    // Same discriminator as the test above: the closed editor is what proves the
+    // decision was taken, and a deferred `mutationFn` cannot hide behind it.
+    await waitFor(() => expect(screen.queryByTestId('line-10-save')).not.toBeInTheDocument());
     expect(patch).not.toHaveBeenCalled();
     expect(screen.getByTestId('line-10-edit')).toBeInTheDocument();
   });
