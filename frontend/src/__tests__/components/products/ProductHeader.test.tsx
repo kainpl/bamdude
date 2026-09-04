@@ -11,6 +11,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { http, HttpResponse } from 'msw';
+import { QueryClient } from '@tanstack/react-query';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { render } from '../../utils';
 import { server } from '../../mocks/server';
@@ -107,6 +108,37 @@ describe('ProductHeader — re-read from file', () => {
     // from" is the answer the operator opened it for.
     const empty = await screen.findByRole('menuitem', { name: /link a file/i });
     expect(empty).toBeDisabled();
+  });
+
+  it('refreshes the order cards too — a re-read can give the product its first cover', async () => {
+    // The 3MF's Model Pictures land as attachments, and the FIRST picture is
+    // the implicit cover. An order card renders that cover off the `projects`
+    // query, so without this invalidation the card keeps its placeholder until
+    // something unrelated happens to refetch orders.
+    vi.spyOn(api, 'rereadProductCard').mockResolvedValue({ product, notes: [] } as never);
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
+    mount();
+
+    fireEvent.click(await screen.findByRole('button', { name: /re-read/i }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /flask\.3mf/i }));
+
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['product', 7] }));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['products'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['projects'] });
+  });
+
+  it('names the picker as a menu before it is opened', async () => {
+    // The popup carries `role="menu"`, but a screen reader meets the TRIGGER
+    // first; without these it is announced as an ordinary button and nothing
+    // says a menu opens, or that one is open.
+    mount();
+
+    const trigger = await screen.findByRole('button', { name: /re-read/i });
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('closes the picker on Escape — a click is not the only way out', async () => {

@@ -48,7 +48,7 @@ export function ProductAttachments({ product, canEdit }: ProductAttachmentsProps
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const [busy, setBusy] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
   const attachments = product.attachments ?? [];
 
@@ -71,7 +71,7 @@ export function ProductAttachments({ product, canEdit }: ProductAttachmentsProps
   });
 
   const download = async (attachment: ProductAttachment) => {
-    setBusy(true);
+    setDownloading(true);
     try {
       const token = getAuthToken();
       const response = await fetch(api.getProductAttachmentUrl(product.id, attachment.filename), {
@@ -96,7 +96,7 @@ export function ProductAttachments({ product, canEdit }: ProductAttachmentsProps
     } catch (e) {
       showToast((e as Error).message, 'error');
     } finally {
-      setBusy(false);
+      setDownloading(false);
     }
   };
 
@@ -115,7 +115,14 @@ export function ProductAttachments({ product, canEdit }: ProductAttachmentsProps
             .filter((a) => a.category === category)
             .sort((a, b) => a.sort_order - b.sort_order)}
           canEdit={canEdit}
-          busy={busy || upload.isPending}
+          // ⚠️ Per CATEGORY, not per component. One mutation serves all three
+          // sections, so a bare `upload.isPending` greyed out the Upload button
+          // of every section while any one of them was busy — three controls
+          // reporting one section's work. `variables` is what the mutation was
+          // called WITH, so the pending flag can be attributed to its own
+          // section. A download still blocks the uploads: it is the page's own
+          // blob dance and there is no per-section answer to give.
+          busy={downloading || (upload.isPending && upload.variables?.category === category)}
           deleting={remove.isPending}
           onUpload={(file) => upload.mutate({ file, category })}
           onDownload={download}

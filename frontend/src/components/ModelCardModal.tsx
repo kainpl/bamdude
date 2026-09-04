@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import DOMPurify from 'dompurify';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -14,6 +14,7 @@ import {
   ExternalLink,
   ChevronLeft,
   ChevronRight,
+  Copyright,
   Download,
   Loader2,
   Package,
@@ -506,8 +507,14 @@ interface FileCardProps {
  *  `<img>` can render. ⚠️ Read off the URL the server BUILT, never re-derived
  *  from the category: which of the two routes serves a member is a server rule
  *  (a designer's stray `.txt` inside `Model Pictures/` is a download), and a
- *  second copy of that rule here would be the copy that goes stale. */
-const isPicture = (member: CardAux) => member.url.includes('/card-file/');
+ *  second copy of that rule here would be the copy that goes stale.
+ *
+ *  ⚠️ Anchored to the ROUTE's position — `/files/<id>/card-file/` — not a bare
+ *  `includes`. The tail of the url is the member's own path INSIDE the 3MF,
+ *  percent-encoded, and a designer who put their bill of materials in a folder
+ *  called `card-file` would have had it rendered as a broken `<img>` on a
+ *  token surface it is deliberately not served from. */
+const isPicture = (member: CardAux) => /\/files\/\d+\/card-file\//.test(member.url);
 
 /**
  * What a LIBRARY 3MF says about itself — read-only, and a way out to a product.
@@ -533,6 +540,8 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
   const [lightbox, setLightbox] = useState<number | null>(null);
   const [rereadOpen, setRereadOpen] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
+  const overlay = useRef<HTMLDivElement>(null);
+  const returnFocusTo = useRef<HTMLElement | null>(null);
 
   const { data: card, isLoading, error } = useQuery({
     queryKey: ['library-file-card', fileId],
@@ -558,13 +567,19 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
   const pictures = members.filter(isPicture);
   const documents = members.filter((member) => !isPicture(member));
 
+  // Everything the body below can actually RENDER. `design_model_id` and
+  // `copyright` are in here because the body renders both — a file whose card
+  // carries only a MakerWorld id would otherwise be reported as having no model
+  // card at all, with the link to that model sitting right underneath.
   const hasContent = Boolean(
     card &&
       (card.title ||
         card.description ||
         card.designer ||
         card.license ||
+        card.copyright ||
         card.profile_title ||
+        card.design_model_id ||
         members.length > 0),
   );
 
@@ -578,6 +593,21 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [lightbox, rereadOpen, onClose]);
+
+  // ⚠️ Focus moves INTO the overlay and comes back out, exactly as the product
+  // gallery's lightbox does. Without it the Escape handler above is the only
+  // way out for a keyboard user — Tab would walk the modal BEHIND the overlay —
+  // and on close the focus ring is left on `<body>`, which is nowhere.
+  const lightboxOpen = lightbox !== null;
+  useEffect(() => {
+    if (!lightboxOpen) return;
+    returnFocusTo.current = document.activeElement as HTMLElement | null;
+    overlay.current?.focus();
+    return () => {
+      returnFocusTo.current?.focus?.();
+      returnFocusTo.current = null;
+    };
+  }, [lightboxOpen]);
 
   const sanitizeHtml = (html: string) =>
     DOMPurify.sanitize(html, {
@@ -602,6 +632,9 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['product', result.product.id] });
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      // ⚠️ `['projects']` too — the re-read can give the product its first
+      // cover, and an order card renders that cover off the projects query.
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
       setRereadOpen(false);
       showToast(cardNotesText(t, result.notes));
     },
@@ -661,10 +694,17 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
             )}
             {hasPermission('projects:update') && linked.length > 0 && (
               <div className="relative">
+                {/* ⚠️ `haspopup` + `expanded` on the TRIGGER, not on the menu.
+                    The menu below already has `role="menu"`, but a screen reader
+                    reaches the button first and, without these, announces it as
+                    an ordinary button — nothing says a menu is about to open, or
+                    that one is already open. */}
                 <Button
                   type="button"
                   variant="secondary"
                   size="sm"
+                  aria-haspopup="menu"
+                  aria-expanded={rereadOpen}
                   onClick={() => setRereadOpen((v) => !v)}
                   disabled={reread.isPending}
                 >
@@ -766,6 +806,15 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
                     <div className="flex items-center gap-2 text-bambu-gray">
                       <FileText className="w-4 h-4" />
                       <span>{card.license}</span>
+                    </div>
+                  )}
+                  {/* The © glyph is the label — a legal notice is the designer's
+                      own words in the designer's own language, and translating
+                      the word "Copyright" around it would say nothing extra. */}
+                  {card.copyright && (
+                    <div className="flex items-center gap-2 text-bambu-gray">
+                      <Copyright className="w-4 h-4" />
+                      <span>{card.copyright}</span>
                     </div>
                   )}
                   {card.origin && (
@@ -876,7 +925,10 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
 
       {lightbox !== null && pictures[lightbox] && (
         <div
-          className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-60"
+          ref={overlay}
+          tabIndex={-1}
+          data-testid="card-lightbox"
+          className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-60 outline-none"
           onClick={() => setLightbox(null)}
         >
           <button

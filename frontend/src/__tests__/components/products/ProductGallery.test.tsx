@@ -183,22 +183,52 @@ describe('ProductGallery', () => {
     expect(screen.getByRole('button', { name: /set as cover: front\.png/i })).toBeEnabled();
   });
 
-  it('versions the stable cover url after a mutation and leaves the uuid-named pictures alone', async () => {
-    // The cover url never changes while its bytes do, so it needs the buster.
-    // An `attachment-image` url carries a per-upload uuid and its bytes cannot
-    // change under it — busting those too made every unrelated mutation
-    // re-download every thumbnail in the gallery.
-    vi.spyOn(api, 'setProductCover').mockResolvedValue({ status: 'success', filename: 'b.png' } as never);
+  it('never rewrites a src after a mutation — the cover is kept fresh by its own response', async () => {
+    // `GET /products/{id}/cover-image` answers `Cache-Control: private,
+    // no-cache`, so the browser revalidates that stable url on every render. A
+    // version counter here would be a second, weaker answer to the same
+    // question — and one `ProductCard` and `OrderCard`, which render the same
+    // cover from the bare url, would not have. Every src stays plain.
+    const set = vi.spyOn(api, 'setProductCover').mockResolvedValue({ status: 'success', filename: 'b.png' } as never);
     render(<ProductGallery product={product} canEdit />);
 
+    const src = (testId: string) => screen.getByTestId(testId).getAttribute('src');
+    const before = src('product-gallery-cover');
     const pictureSrc = screen.getByTestId('gallery-picture-a.png').querySelector('img')?.getAttribute('src');
 
     fireEvent.click(screen.getByRole('button', { name: /set as cover: back\.png/i }));
-    await waitFor(() =>
-      expect(screen.getByTestId('product-gallery-cover').getAttribute('src')).toContain('v=1'),
-    );
+    await waitFor(() => expect(set).toHaveBeenCalled());
+
+    expect(src('product-gallery-cover')).toBe(before);
+    expect(before).toBe(api.getProductCoverImageUrl(7));
+    expect(before).not.toContain('v=');
     expect(screen.getByTestId('gallery-picture-a.png').querySelector('img')?.getAttribute('src')).toBe(pictureSrc);
     expect(pictureSrc).not.toContain('v=');
+  });
+
+  it('breaks a tie on the filename, exactly as the server does', () => {
+    // Two pictures at `sort_order: 0` is the ordinary case, not a corner one:
+    // every upload into an empty category starts at 0, and a partial reorder
+    // leaves the rest sharing a rank. The server's `sorted_attachments` orders
+    // by `(sort_order, filename)`, so a gallery that stopped at `sort_order`
+    // could star a different picture than `/cover-image` actually serves.
+    render(
+      <ProductGallery
+        product={
+          {
+            ...product,
+            attachments: [picture('z.png', 'zebra.png', 0), picture('a.png', 'apple.png', 0)],
+          } as unknown as Product
+        }
+        canEdit
+      />,
+    );
+
+    expect(screen.getAllByTestId(/^gallery-picture-/).map((el) => el.getAttribute('data-testid'))).toEqual([
+      'gallery-picture-a.png',
+      'gallery-picture-z.png',
+    ]);
+    expect(screen.getByRole('button', { name: /this is the cover: apple\.png/i })).toBeDisabled();
   });
 
   it('suffixes every testid so a page and the dialog over it never collide', () => {

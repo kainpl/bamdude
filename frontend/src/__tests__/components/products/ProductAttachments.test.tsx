@@ -84,6 +84,34 @@ describe('ProductAttachments', () => {
     await waitFor(() => expect(upload).toHaveBeenCalledWith(7, file, 'bom_docs'));
   });
 
+  it('an upload into one section leaves the other sections usable', async () => {
+    // One mutation serves all three sections, so a bare `isPending` greyed out
+    // every Upload button while any one section was busy — three controls
+    // reporting one section's work, and an operator with three documents to
+    // attach waiting for each in turn.
+    let settle: (value: unknown) => void = () => {};
+    vi.spyOn(api, 'uploadProductAttachment').mockReturnValue(
+      new Promise((resolve) => {
+        settle = resolve;
+      }) as never,
+    );
+    render(<ProductAttachments product={product} canEdit />);
+
+    const upload = (category: string) =>
+      within(screen.getByTestId(`attachment-section-${category}`)).getByRole('button', { name: /upload/i });
+
+    fireEvent.change(screen.getByTestId('attachment-input-bom_docs'), {
+      target: { files: [new File(['x'], 'bom.csv', { type: 'text/csv' })] },
+    });
+
+    await waitFor(() => expect(upload('bom_docs')).toBeDisabled());
+    expect(upload('assembly')).toBeEnabled();
+    expect(upload('other')).toBeEnabled();
+
+    settle({});
+    await waitFor(() => expect(upload('bom_docs')).toBeEnabled());
+  });
+
   it('downloads through fetch and revokes the object URL', async () => {
     const create = vi.fn().mockReturnValue('blob:product-attachment');
     const revoke = vi.fn();

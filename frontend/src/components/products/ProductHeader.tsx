@@ -92,6 +92,11 @@ export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggle
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['product', product.id] });
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      // ⚠️ `['projects']` too: a re-read imports the 3MF's Model Pictures, which
+      // can hand the product its FIRST cover — and an order card renders that
+      // cover off the projects query. Without this the card keeps its
+      // placeholder until something else happens to refetch orders.
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
       setRereadOpen(false);
       // One toast, every note in it: they are one answer to one question, and
       // five stacked toasts would push the first off screen before it is read.
@@ -182,9 +187,15 @@ export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggle
           </Button>
           {canEdit && (
             <div className="relative">
+              {/* ⚠️ `haspopup` + `expanded` on the TRIGGER: the popup below
+                  carries `role="menu"`, but a screen reader meets the button
+                  first and without these announces an ordinary button — nothing
+                  says a menu opens, or that one is open. */}
               <Button
                 type="button"
                 variant="secondary"
+                aria-haspopup="menu"
+                aria-expanded={rereadOpen}
                 onClick={() => setRereadOpen((v) => !v)}
                 disabled={reread.isPending}
               >

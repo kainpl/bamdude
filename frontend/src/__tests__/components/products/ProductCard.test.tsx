@@ -76,6 +76,20 @@ describe('ProductCard export', () => {
     await waitFor(() => expect(save).toHaveBeenCalledWith(4));
   });
 
+  it('names the trigger as a menu before it is opened', async () => {
+    // The popup carries `role="menu"`, but a screen reader meets this button
+    // first; without these it is announced as an ordinary button and nothing
+    // says a menu opens, or that one is open.
+    mount();
+
+    const trigger = await screen.findByTestId('product-menu');
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  });
+
   it('says so when the export is refused, and stays on the list', async () => {
     vi.spyOn(api, 'downloadProductExport').mockRejectedValue(new ApiError('nope', 500));
     mount();

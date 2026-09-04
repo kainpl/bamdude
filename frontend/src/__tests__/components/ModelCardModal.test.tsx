@@ -21,6 +21,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { QueryClient } from '@tanstack/react-query';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { render } from '../utils';
 import { api } from '../../api/client';
@@ -206,6 +207,100 @@ describe('ModelCardModal — a library file', () => {
 
     await waitFor(() => expect(reread).toHaveBeenCalledWith(8, 3));
     expect(await screen.findByText(/filled in designer/i)).toBeInTheDocument();
+  });
+
+  it('refreshes the order cards too — a re-read can give the product its first cover', async () => {
+    // Same reason as `ProductHeader`'s twin: the 3MF's Model Pictures land as
+    // attachments and the first picture is the implicit cover, which an order
+    // card renders off the `projects` query.
+    vi.spyOn(api, 'getLibraryFileCard').mockResolvedValue(fileCard as never);
+    vi.spyOn(api, 'getProducts').mockResolvedValue([{ id: 8, name: 'Desk lamp' }] as never);
+    vi.spyOn(api, 'rereadProductCard').mockResolvedValue({ product: { id: 8 }, notes: [] } as never);
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
+
+    render(<ModelCardModal source={{ kind: 'file', id: 3, linkedProductIds: [8] }} onClose={() => {}} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /re-read into/i }));
+    const menu = await screen.findByRole('menu');
+    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Desk lamp' }));
+
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['product', 8] }));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['products'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['projects'] });
+  });
+
+  it('names the re-read picker as a menu before it is opened', async () => {
+    vi.spyOn(api, 'getLibraryFileCard').mockResolvedValue(fileCard as never);
+    render(<ModelCardModal source={{ kind: 'file', id: 3, linkedProductIds: [8] }} onClose={() => {}} />);
+
+    const trigger = await screen.findByRole('button', { name: /re-read into/i });
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('places a document that merely LIVES in a card-file directory as a download', async () => {
+    // The tail of the url is the member's own path inside the 3MF, so a
+    // designer's folder called `card-file` used to make `includes('/card-file/')`
+    // true for a bill of materials — rendered as a broken `<img>` on a token
+    // surface it is deliberately not served from. The predicate is anchored to
+    // the ROUTE's position instead.
+    vi.spyOn(api, 'getLibraryFileCard').mockResolvedValue({
+      ...fileCard,
+      auxiliaries: {
+        bom_docs: [
+          {
+            name: 'bom.xlsx',
+            zip_path: 'Auxiliaries/Bill of Materials/card-file/bom.xlsx',
+            size: 2048,
+            url: '/api/v1/library/files/3/card-download/Auxiliaries/Bill%20of%20Materials/card-file/bom.xlsx',
+          },
+        ],
+      },
+    } as never);
+    render(<ModelCardModal source={{ kind: 'file', id: 3 }} onClose={() => {}} />);
+
+    expect(await screen.findByRole('button', { name: /bom\.xlsx/i })).toBeInTheDocument();
+    expect(screen.queryByAltText('bom.xlsx')).not.toBeInTheDocument();
+  });
+
+  it('shows the MakerWorld link rather than "no card" for a file that carries only an id', async () => {
+    // `hasContent` decides between the body and the empty state, so it has to
+    // count everything the body can render — the id and the copyright notice
+    // included, or the link sits underneath a message saying there is no card.
+    vi.spyOn(api, 'getLibraryFileCard').mockResolvedValue({
+      ...fileCard,
+      title: null,
+      description: null,
+      designer: null,
+      license: null,
+      copyright: '© Ada 2024',
+      profile_title: null,
+      auxiliaries: {},
+      design_model_id: '99',
+    } as never);
+    render(<ModelCardModal source={{ kind: 'file', id: 3 }} onClose={() => {}} />);
+
+    expect(await screen.findByRole('link', { name: /makerworld/i })).toBeInTheDocument();
+    expect(screen.getByText('© Ada 2024')).toBeInTheDocument();
+    expect(screen.queryByText(/carries no model card/i)).not.toBeInTheDocument();
+  });
+
+  it('moves focus into the lightbox and gives it back on close', async () => {
+    vi.spyOn(api, 'getLibraryFileCard').mockResolvedValue(fileCard as never);
+    render(<ModelCardModal source={{ kind: 'file', id: 3 }} onClose={() => {}} />);
+
+    const opener = (await screen.findByAltText('front.png')).closest('button') as HTMLButtonElement;
+    opener.focus();
+    fireEvent.click(opener);
+
+    expect(screen.getByTestId('card-lightbox')).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByTestId('card-lightbox')).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
   });
 
   it('offers no re-read at all when the file is linked to nothing', async () => {

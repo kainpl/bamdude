@@ -174,6 +174,40 @@ describe('FormData requests include auth header', () => {
     }
   });
 
+  it('sendForm sends the client timezone, exactly as request() does', async () => {
+    // "Every request carries it" is the only version of this rule that cannot
+    // be forgotten on the next new endpoint — and a multipart call is a call
+    // like any other: an import answers with dated notes, an upload's response
+    // carries `uploaded_at`. `request()` has sent the header from the start;
+    // `sendForm` was the one door it was missing.
+    const originalFetch = global.fetch;
+    let capturedHeaders: Headers | null = null;
+
+    global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes('/products/7/attachments')) {
+        capturedHeaders = new Headers(init?.headers);
+        return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+      }
+      return originalFetch(url, init);
+    });
+
+    try {
+      const file = new File(['x'], 'bom.csv', { type: 'text/csv' });
+      await api.uploadProductAttachment(7, file, 'bom_docs');
+
+      expect(capturedHeaders).not.toBeNull();
+      // The zone is whatever the runtime reports; the point is that it is sent
+      // and that it matches what `request()` would have sent.
+      expect(capturedHeaders!.get('X-Client-Timezone')).toBe(
+        Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+      );
+      // The browser owns `Content-Type` for multipart — it carries the boundary.
+      expect(capturedHeaders!.get('Content-Type')).toBeNull();
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it('a blob download includes the Authorization header', async () => {
     // The blob paths build their own `fetch` rather than going through
     // `request()`, so the header is attached by hand in each one — which is

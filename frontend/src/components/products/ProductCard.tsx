@@ -85,9 +85,15 @@ export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDe
           <div className="flex items-start justify-between gap-2">
             <h3 className="font-semibold text-white truncate">{product.name}</h3>
             <div className="relative flex-shrink-0" onClick={stopCardNavigation}>
+              {/* ⚠️ `haspopup` + `expanded` on the TRIGGER: the popup below has
+                  `role="menu"`, but a screen reader meets this button first and
+                  without these it is announced as an ordinary button — nothing
+                  says a menu opens, or that one is already open. */}
               <button
                 type="button"
                 data-testid="product-menu"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
                 onClick={(e) => {
                   stopCardNavigation(e);
                   setMenuOpen((v) => !v);

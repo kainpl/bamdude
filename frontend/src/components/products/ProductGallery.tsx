@@ -17,26 +17,6 @@ interface ProductGalleryProps {
   testIdSuffix?: string;
 }
 
-/**
- * Cache-bust the COVER url after a mutation.
- *
- * `GET /products/{id}/cover-image` is a STABLE url whose bytes change whenever
- * the cover does, so without this the browser keeps showing the old picture
- * after an upload — the request never leaves. The separator is computed rather
- * than assumed: `withStreamToken` adds `?token=` only when a token exists, so
- * a hardcoded `&` would produce `…/cover-image&v=1` for a logged-out render.
- *
- * ⚠️ **Only the cover.** An `attachment-image` url carries a uuid filename
- * generated per upload and never rewritten, so its bytes cannot change under a
- * url that stays the same. Versioning those too made every unrelated mutation —
- * a delete, a reorder, a cover pick — re-download every thumbnail in the
- * gallery for nothing.
- */
-function versioned(url: string, version: number): string {
-  if (version === 0) return url;
-  return `${url}${url.includes('?') ? '&' : '?'}v=${version}`;
-}
-
 const TILE_CLASS = 'w-40 h-40 rounded-xl object-cover bg-bambu-dark border border-bambu-dark-tertiary';
 const ICON_BUTTON_CLASS =
   'p-1.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors disabled:opacity-50';
@@ -68,14 +48,19 @@ export function ProductGallery({ product, canEdit, testIdSuffix = '' }: ProductG
   const coverInput = useRef<HTMLInputElement>(null);
   const overlay = useRef<HTMLDivElement>(null);
   const returnFocusTo = useRef<HTMLElement | null>(null);
-  const [version, setVersion] = useState(0);
   const [lightbox, setLightbox] = useState<number | null>(null);
 
   const testId = (name: string) => `${name}${testIdSuffix}`;
 
+  // ⚠️ The tie-break is the server's, not "whatever order the array arrived
+  // in": `sorted_attachments` orders by `(sort_order, filename)`, and two
+  // pictures at the same `sort_order` are ordinary — every upload into an empty
+  // category starts at 0, and a reorder that names only some of them leaves the
+  // rest sharing a rank. Without the second key the star could sit on a
+  // different picture than the one `/cover-image` actually serves.
   const pictures: ProductAttachment[] = (product.attachments ?? [])
     .filter((attachment) => attachment.category === 'pictures')
-    .sort((a, b) => a.sort_order - b.sort_order);
+    .sort((a, b) => a.sort_order - b.sort_order || a.filename.localeCompare(b.filename));
 
   // ⚠️ The EFFECTIVE cover, by the same rule the server's `effective_cover`
   // uses: the explicit column, else the first picture by `sort_order`. Null
@@ -111,13 +96,18 @@ export function ProductGallery({ product, canEdit, testIdSuffix = '' }: ProductG
   }, [lightbox, pictures.length]);
 
   // Every mutation touches the product row, the catalog cards and the order
-  // cards — all three render this cover — and bumps the version so the `<img>`
-  // asks for the new bytes instead of showing the ones it already has.
+  // cards — all three render this cover.
+  //
+  // ⚠️ **No cache-busting query parameter.** `GET /products/{id}/cover-image`
+  // answers `Cache-Control: private, no-cache`, which makes the browser
+  // revalidate that stable url on every render — so a version counter here
+  // would only add a second, weaker answer to the same question, and one that
+  // every other renderer of the cover (`ProductCard`, `OrderCard`) does not
+  // have. One rule, and it lives on the response.
   const done = () => {
     queryClient.invalidateQueries({ queryKey: ['product', product.id] });
     queryClient.invalidateQueries({ queryKey: ['products'] });
     queryClient.invalidateQueries({ queryKey: ['projects'] });
-    setVersion((v) => v + 1);
   };
   const fail = (e: Error) => showToast(e.message, 'error');
 
@@ -232,7 +222,7 @@ export function ProductGallery({ product, canEdit, testIdSuffix = '' }: ProductG
         {product.has_cover ? (
           <img
             data-testid={testId('product-gallery-cover')}
-            src={versioned(api.getProductCoverImageUrl(product.id), version)}
+            src={api.getProductCoverImageUrl(product.id)}
             alt={t('products.gallery.cover')}
             className={TILE_CLASS}
           />

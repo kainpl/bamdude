@@ -168,7 +168,14 @@ async function sendForm<T>(
   if (authToken && !__isRetry && isTokenNearExpiry()) {
     await refreshAccessToken();
   }
-  const headers: Record<string, string> = {};
+  // ⚠️ The same timezone header `request()` sends. A multipart call is a call
+  // like any other — a product import answers with dated notes, an upload's
+  // response carries `uploaded_at` — and "every request carries it" is the only
+  // version of this rule that cannot be forgotten on the next new endpoint.
+  // No `Content-Type`: the browser sets it, boundary and all.
+  const headers: Record<string, string> = {
+    ...(clientTimeZone ? { 'X-Client-Timezone': clientTimeZone } : {}),
+  };
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method,
