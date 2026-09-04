@@ -12,19 +12,19 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { Product } from '../../../api/client';
 import { ProductAttachments } from '../../../components/products/ProductAttachments';
 
-const entry = (category: string, filename: string, original: string) => ({
+const entry = (category: string, filename: string, original: string, source = 'manual') => ({
   category,
   filename,
   original_name: original,
   size: 2048,
   sort_order: 0,
-  source: 'manual',
+  source,
   source_file_id: null,
   uploaded_at: null,
 });
@@ -117,6 +117,46 @@ describe('ProductAttachments', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /delete: assembly\.pdf/i }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith(7, 'guide.pdf'));
+  });
+
+  it('says where a document came from, and says nothing about a plain upload', () => {
+    // ⚠️ Provenance is the thing an operator cannot recover any other way: a
+    // file read out of the 3MF is replaced wholesale by the next re-read, and
+    // one that arrived in an export ZIP belongs to somebody else's farm.
+    // `manual` stays unlabelled on purpose — a badge on every row says nothing.
+    render(
+      <ProductAttachments
+        product={{
+          ...product,
+          attachments: [
+            entry('bom_docs', 'a.pdf', 'from-the-3mf.pdf', '3mf'),
+            entry('bom_docs', 'b.pdf', 'from-an-export.pdf', 'import'),
+            entry('bom_docs', 'c.pdf', 'uploaded-here.pdf', 'manual'),
+          ],
+        }}
+        canEdit
+      />,
+    );
+
+    const row = (name: string) => screen.getByText(name).closest('li') as HTMLElement;
+    expect(within(row('from-the-3mf.pdf')).getByText(/from the 3MF/i)).toBeInTheDocument();
+    expect(within(row('from-an-export.pdf')).getByText(/imported/i)).toBeInTheDocument();
+    expect(within(row('uploaded-here.pdf')).queryByText(/from the 3MF|imported/i)).not.toBeInTheDocument();
+  });
+
+  it('leaves a source it does not know unlabelled rather than mislabelled', () => {
+    // The wire type is a plain `str` (a hand-edited column or a restored backup
+    // can carry a fourth value), so the branches are equalities and there is no
+    // else-arm to guess with.
+    render(
+      <ProductAttachments
+        product={{ ...product, attachments: [entry('bom_docs', 'd.pdf', 'from-the-future.pdf', 'sync')] }}
+        canEdit
+      />,
+    );
+
+    const row = screen.getByText('from-the-future.pdf').closest('li') as HTMLElement;
+    expect(within(row).queryByText(/from the 3MF|imported/i)).not.toBeInTheDocument();
   });
 
   it('never lists a picture — that file belongs to the gallery', () => {

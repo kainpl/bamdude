@@ -231,6 +231,117 @@ describe('FormData requests include auth header', () => {
  * The `FormData` survives the retry because `fetch` serialises it per call — it
  * is not a consumed stream.
  */
+/**
+ * ⚠️ **The export's filename is the operator's, and operators do not type
+ * ASCII.** A product called «Лампа» exports as `Лампа_<date>.zip`; the server
+ * sends that in `filename*=UTF-8''…` and a transliterated `filename=` beside
+ * it for clients that cannot read the first. Reading the ASCII half first would
+ * silently save every non-Latin product under the fallback name, which looks
+ * like nothing went wrong.
+ *
+ * Both halves of the blob pair are spied on: a `createObjectURL` without its
+ * `revokeObjectURL` leaks the whole archive for as long as the tab lives.
+ */
+describe('downloadProductExport', () => {
+  /** jsdom has no object-URL implementation and answers a real anchor click
+   *  with "Not implemented: navigation", so the saving plumbing is stubbed and
+   *  the anchor is read at the moment it is clicked. */
+  function stubSaving() {
+    const created: Blob[] = [];
+    const revoked: string[] = [];
+    const downloads: string[] = [];
+    const originalCreate = window.URL.createObjectURL;
+    const originalRevoke = window.URL.revokeObjectURL;
+    window.URL.createObjectURL = vi.fn((blob: Blob) => {
+      created.push(blob);
+      return 'blob:export-stub';
+    }) as unknown as typeof window.URL.createObjectURL;
+    window.URL.revokeObjectURL = vi.fn((url: string) => {
+      revoked.push(url);
+    }) as unknown as typeof window.URL.revokeObjectURL;
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        downloads.push(this.download);
+      });
+    return {
+      created,
+      revoked,
+      downloads,
+      restore: () => {
+        window.URL.createObjectURL = originalCreate;
+        window.URL.revokeObjectURL = originalRevoke;
+        click.mockRestore();
+      },
+    };
+  }
+
+  const answerWith = (disposition: string) =>
+    server.use(
+      http.get('/api/v1/products/:productId/export', () =>
+        new HttpResponse(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/zip', 'Content-Disposition': disposition },
+        }),
+      ),
+    );
+
+  it('saves under the UTF-8 name, not the ASCII fallback beside it', async () => {
+    const saving = stubSaving();
+    answerWith(
+      'attachment; filename="fallback.zip"; ' +
+        "filename*=UTF-8''%D0%9B%D0%B0%D0%BC%D0%BF%D0%B0_2026-09-04.zip",
+    );
+
+    try {
+      setAuthToken('test-token');
+      await api.downloadProductExport(9);
+
+      expect(saving.downloads).toEqual(['Лампа_2026-09-04.zip']);
+      expect(saving.created).toHaveLength(1);
+      expect(saving.revoked).toEqual(['blob:export-stub']);
+    } finally {
+      saving.restore();
+    }
+  });
+
+  it('falls back to the plain filename when that is all the server sent', async () => {
+    const saving = stubSaving();
+    answerWith('attachment; filename="plain.zip"');
+
+    try {
+      setAuthToken('test-token');
+      await api.downloadProductExport(9);
+
+      expect(saving.downloads).toEqual(['plain.zip']);
+    } finally {
+      saving.restore();
+    }
+  });
+
+  it('throws an ApiError on a refusal instead of saving the error body', async () => {
+    const saving = stubSaving();
+    server.use(
+      http.get('/api/v1/products/:productId/export', () =>
+        HttpResponse.json({ detail: 'Not permitted' }, { status: 403 }),
+      ),
+    );
+
+    try {
+      setAuthToken('test-token');
+      await expect(api.downloadProductExport(9)).rejects.toMatchObject({
+        name: 'ApiError',
+        status: 403,
+        message: 'Not permitted',
+      });
+      expect(saving.created).toHaveLength(0);
+      expect(saving.downloads).toEqual([]);
+    } finally {
+      saving.restore();
+    }
+  });
+});
+
 describe('sendForm recovers from an expired access token', () => {
   it('refreshes once and re-sends the multipart body', async () => {
     const originalFetch = global.fetch;

@@ -5147,16 +5147,23 @@ export default {
       upload: 'Upload',
       empty: 'Nothing here yet.',
       fromFile: 'from the 3MF',
+      // The `3mf` label keeps its old key; this one is new beside it.
+      source: {
+        import: 'Imported',
+      },
       downloadFailed: 'Could not download this file (HTTP {{status}}).',
       category: {
         pictures: 'Pictures',
         bom_docs: 'Bill of materials',
         assembly: 'Assembly guide',
         other: 'Other',
-        // Not an attachment category — the import's notes name the dedicated
-        // cover with it, and a note that says "cover" beats one that says
+        // Neither of these is an attachment category. The import's notes name
+        // the dedicated cover with `cover` and the ZIP's `files/` root with
+        // `files` (the per-member size cap fires `skipped_too_large` there), and
+        // a note that says "cover" beats one that says
         // `products.attachments.category.cover`.
         cover: 'Cover',
+        files: 'Model files',
       },
     },
     files: {

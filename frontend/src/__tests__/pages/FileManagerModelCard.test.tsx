@@ -49,6 +49,9 @@ const mockFiles = [
     print_name: 'Benchy',
   }),
   file({ id: 3, filename: 'bracket.stl', file_type: 'stl', file_tags: ['stl', 'geometry'], print_name: 'Bracket' }),
+  // A raw sliced G-code with no 3MF container around it: printable, and there
+  // is nothing in it to read a card from.
+  file({ id: 4, filename: 'raw.gcode', file_type: 'gcode', file_tags: ['gcode'], print_name: 'Raw' }),
 ];
 
 describe('File Manager — model card entry', () => {
@@ -64,7 +67,7 @@ describe('File Manager — model card entry', () => {
       ),
       http.get('/api/v1/library/stats', () =>
         HttpResponse.json({
-          total_files: 3,
+          total_files: 4,
           total_folders: 0,
           total_size_bytes: 3072,
           disk_free_bytes: 10737418240,
@@ -130,6 +133,15 @@ describe('File Manager — model card entry', () => {
     expect(await screen.findByRole('button', { name: /^Model card$/i })).toBeInTheDocument();
   });
 
+  it('does not offer it on a raw .gcode — there is no 3MF container to read', async () => {
+    render(<FileManagerPage />);
+    await screen.findByText('Raw');
+
+    await openMenuOf('Raw');
+    expect(await screen.findByRole('button', { name: /^Download$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Model card$/i })).not.toBeInTheDocument();
+  });
+
   it('does not offer it on an STL, which has no card to read', async () => {
     render(<FileManagerPage />);
     await screen.findByText('Bracket');
@@ -139,6 +151,52 @@ describe('File Manager — model card entry', () => {
     // only that the menu never opened.
     expect(await screen.findByRole('button', { name: /^Download$/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Model card$/i })).not.toBeInTheDocument();
+  });
+
+  // ⚠️ The list mode is a DIFFERENT menu component (`FileListActions`, portal-
+  // rendered from a row) with its own copy of every entry. A test that drove
+  // only the card grid would have proved nothing about half the surface.
+  describe('list mode', () => {
+    beforeEach(() => {
+      localStorage.setItem('library-view-mode', 'list');
+    });
+
+    /** Open the ⋮ menu of the ROW whose title is `name`. */
+    const openRowMenuOf = async (name: string) => {
+      const row = (await screen.findByText(name)).closest('[data-file-row]') as HTMLElement;
+      const trigger = within(row)
+        .getAllByRole('button')
+        .find((b) => b.querySelector('.lucide-ellipsis-vertical, .lucide-more-vertical'));
+      if (!trigger) throw new Error('no ⋮ trigger found on the row');
+      await userEvent.click(trigger);
+    };
+
+    it('offers the model card on a 3MF row', async () => {
+      render(<FileManagerPage />);
+      await screen.findByText('Lamp');
+
+      await openRowMenuOf('Lamp');
+      expect(await screen.findByRole('button', { name: /^Model card$/i })).toBeInTheDocument();
+    });
+
+    it('does not offer it on an STL row', async () => {
+      render(<FileManagerPage />);
+      await screen.findByText('Bracket');
+
+      await openRowMenuOf('Bracket');
+      expect(await screen.findByRole('button', { name: /^Download$/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^Model card$/i })).not.toBeInTheDocument();
+    });
+
+    it('opens the card of the row whose menu was used', async () => {
+      render(<FileManagerPage />);
+      await screen.findByText('Lamp');
+
+      await openRowMenuOf('Lamp');
+      await userEvent.click(await screen.findByRole('button', { name: /^Model card$/i }));
+
+      expect(await screen.findByText('Desk lamp')).toBeInTheDocument();
+    });
   });
 
   it('opens the card of the file whose menu was used', async () => {

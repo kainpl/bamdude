@@ -13,22 +13,30 @@ import { formatFileSize } from '../../utils/file';
  * its own copy of the switch; two copies is how one of them ends up missing the
  * codes the other has.
  *
- * `field` and `category` are raw server vocabulary (`design_id`, `bom_docs`)
- * and are translated before they reach the sentence; `size` and `limit` are
- * bytes and are formatted. `category` may also be the literal `"cover"`, which
- * only the import produces.
+ * `field` and `category` are raw server vocabulary (`design_id`, `bom_docs`,
+ * plus `cover` and `files`, which only the import produces) and are translated
+ * before they reach the sentence; `size` and `limit` are bytes and are
+ * formatted.
  *
- * ⚠️ **An unknown code renders as the code, not as a key path.** The wire's set
- * of codes is closed today and can grow in a release the frontend was not
- * rebuilt for; `products.card.notes.import_plate_missing` on screen tells an
- * operator nothing, while `import_plate_missing` is at least a thing to search
- * for and a thing to paste into a bug report.
+ * ⚠️ **Nothing here can render a key path — not the code, not a param.** An
+ * unknown CODE is at least a closed set that can grow in a release the frontend
+ * was not rebuilt for. A `category` PARAM is worse than that: `import_bad_category`
+ * is fired precisely when the value is NOT one BamDude has
+ * (`category not in ATTACHMENT_CATEGORIES`), so its category is foreign text by
+ * construction and translating it can only ever miss. The note that came out
+ * read "Skipped foo.exe — “products.attachments.category.exe” is not a category
+ * here." Every lookup below therefore falls back to the raw value, which is the
+ * thing the operator needs to see anyway.
  */
 export function cardNoteText(t: TFunction, note: CardNote): string {
   const params: Record<string, string | number> = { ...note.params };
-  if (typeof params.field === 'string') params.field = t(`products.card.fields.${params.field}`);
+  if (typeof params.field === 'string') {
+    params.field = t(`products.card.fields.${params.field}`, { defaultValue: params.field });
+  }
   if (typeof params.category === 'string') {
-    params.category = t(`products.attachments.category.${params.category}`);
+    params.category = t(`products.attachments.category.${params.category}`, {
+      defaultValue: params.category,
+    });
   }
   if (typeof params.size === 'number') params.size = formatFileSize(params.size);
   if (typeof params.limit === 'number') params.limit = formatFileSize(params.limit);

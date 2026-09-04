@@ -187,9 +187,21 @@ function CategorySection({
             >
               <div className="min-w-0 flex-1">
                 <p className="text-sm text-white truncate">{attachment.original_name || attachment.filename}</p>
+                {/* ⚠️ Where a document CAME FROM is the thing an operator
+                    cannot recover any other way — a file read out of the 3MF is
+                    replaced wholesale by the next re-read, and one that arrived
+                    in an export ZIP belongs to somebody else's farm. `manual`
+                    is deliberately unlabelled: "somebody here uploaded it" is
+                    the default, and a badge on every row says nothing.
+                    Equality, never a fallback branch: the wire type is a plain
+                    `str` so a fourth value could exist, and it must render the
+                    row unlabelled rather than mislabelled. */}
                 <p className="text-xs text-bambu-gray">
                   {formatFileSize(attachment.size)}
                   {attachment.source === '3mf' && <span> · {t('products.attachments.fromFile')}</span>}
+                  {attachment.source === 'import' && (
+                    <span> · {t('products.attachments.source.import')}</span>
+                  )}
                 </p>
               </div>
               <button

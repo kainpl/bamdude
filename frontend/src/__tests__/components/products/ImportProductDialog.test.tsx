@@ -85,6 +85,56 @@ describe('ImportProductDialog', () => {
     expect(screen.getByText(/cover picture is listed/i)).toBeInTheDocument();
   });
 
+  it('repeats a foreign category verbatim rather than a key path', async () => {
+    // ⚠️ `import_bad_category` fires exactly when the category is NOT one
+    // BamDude has, so its value is foreign text by construction and looking it
+    // up can only ever miss. Untranslated, the note read "Skipped foo.exe —
+    // “products.attachments.category.exe” is not a category here."
+    vi.spyOn(api, 'importProduct').mockResolvedValue({
+      product: { id: 21, name: 'Desk lamp' },
+      warnings: [{ code: 'import_bad_category', params: { name: 'foo.exe', category: 'exe' } }],
+    } as never);
+    mount();
+
+    fireEvent.change(await screen.findByTestId('import-file-input'), { target: { files: [zip()] } });
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
+
+    expect(await screen.findByText(/skipped foo\.exe — “exe” is not a category here/i)).toBeInTheDocument();
+    expect(screen.queryByText(/products\.attachments\.category/)).not.toBeInTheDocument();
+  });
+
+  it('names the ZIP’s files root when a member is over the per-member cap', async () => {
+    // The backend's per-member cap fires `skipped_too_large` with
+    // `category: "files"`, which is a ZIP root and not an attachment category —
+    // it still needs a word an operator recognises.
+    vi.spyOn(api, 'importProduct').mockResolvedValue({
+      product: { id: 21, name: 'Desk lamp' },
+      warnings: [
+        { code: 'skipped_too_large', params: { name: 'huge.3mf', size: 2048, limit: 1024, category: 'files' } },
+      ],
+    } as never);
+    mount();
+
+    fireEvent.change(await screen.findByTestId('import-file-input'), { target: { files: [zip()] } });
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
+
+    expect(await screen.findByText(/skipped huge\.3mf/i)).toBeInTheDocument();
+    expect(screen.queryByText(/products\.attachments\.category/)).not.toBeInTheDocument();
+  });
+
+  it('repeats an unknown field name rather than a key path', async () => {
+    vi.spyOn(api, 'importProduct').mockResolvedValue({
+      product: { id: 21, name: 'Desk lamp' },
+      warnings: [{ code: 'filled_field', params: { field: 'some_new_column' } }],
+    } as never);
+    mount();
+
+    fireEvent.change(await screen.findByTestId('import-file-input'), { target: { files: [zip()] } });
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
+
+    expect(await screen.findByText(/filled in some_new_column/i)).toBeInTheDocument();
+  });
+
   it('renders a code it has no phrasing for rather than a key path', async () => {
     vi.spyOn(api, 'importProduct').mockResolvedValue({
       product: { id: 21, name: 'Desk lamp' },

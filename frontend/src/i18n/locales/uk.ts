@@ -5203,16 +5203,23 @@ export default {
       upload: 'Завантажити',
       empty: 'Тут поки порожньо.',
       fromFile: 'із 3MF',
+      // The `3mf` label keeps its old key; this one is new beside it.
+      source: {
+        import: 'Імпортовано',
+      },
       downloadFailed: 'Не вдалося завантажити цей файл (HTTP {{status}}).',
       category: {
         pictures: 'Зображення',
         bom_docs: 'Специфікація',
         assembly: 'Інструкція зі складання',
         other: 'Інше',
-        // Not an attachment category — the import's notes name the dedicated
-        // cover with it, and a note that says "cover" beats one that says
+        // Neither of these is an attachment category. The import's notes name
+        // the dedicated cover with `cover` and the ZIP's `files/` root with
+        // `files` (the per-member size cap fires `skipped_too_large` there), and
+        // a note that says "cover" beats one that says
         // `products.attachments.category.cover`.
         cover: 'Обкладинка',
+        files: 'Файли моделі',
       },
     },
     files: {
