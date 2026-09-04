@@ -4980,6 +4980,19 @@ export default {
     },
   },
 
+  // The "which order is this print for?" field in the print and auto-queue
+  // dialogs. Its own namespace and not `orders.*`: the words are read by an
+  // operator who is starting a print, not by one looking at an order.
+  orderFiling: {
+    label: 'Замовлення',
+    none: 'Без замовлення',
+    stillNeeds_one: 'потрібен ще {{count}} друк',
+    stillNeeds_few: 'потрібно ще {{count}} друки',
+    stillNeeds_many: 'потрібно ще {{count}} друків',
+    stillNeeds_other: 'потрібно ще {{count}} друку',
+    satisfied: 'вже покрито',
+  },
+
   // Projects section, customers face. The customer page borrows the order
   // status words from `orders.status.*` and its own figure-tile labels from
   // `customers.table.*` — the same counts under the same names in both places.

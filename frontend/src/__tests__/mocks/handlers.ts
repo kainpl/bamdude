@@ -420,4 +420,13 @@ export const handlers = [
       total_folders: 0,
     });
   }),
+
+  // "No open order wants this plate" — the ordinary answer, and the one every
+  // print dialog in the suite gets unless a test says otherwise. It has to be
+  // an empty list rather than nothing at all: an unhandled request is bypassed
+  // to a network that is not there, which reads as a failure and hides a real
+  // one behind it.
+  http.get('/api/v1/library/files/:id/order-candidates', () => {
+    return HttpResponse.json([]);
+  }),
 ];

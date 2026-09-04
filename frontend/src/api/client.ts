@@ -1579,6 +1579,33 @@ export interface OrderPlan {
   truncated?: boolean;
 }
 
+/**
+ * One order a plate could be filed under, and the line it would land on.
+ *
+ * The list arrives ranked — the orders that still need the plate first, then by
+ * priority, deadline and age — so a picker renders it in the order given and
+ * does NOT re-sort. `outstanding_prints` is prints of THIS plate, and it is the
+ * order plan's own number, so the dialog and the plan block never disagree; `0`
+ * means the line is already covered and stays choosable, because printing ahead
+ * is legitimate.
+ *
+ * ⚠️ One ORDER can appear twice, on two lines of two different products that
+ * both hold the plate — which is why the label needs `product_name` as well.
+ * `priority` is a rank (0 = low … 3 = urgent), not the stored word; nothing has
+ * to display it.
+ */
+export interface OrderCandidate {
+  project_id: number;
+  project_name: string;
+  project_line_id: number;
+  product_id: number;
+  product_name: string;
+  outstanding_prints: number;
+  priority: number;
+  deadline: string | null;
+  created_at: string;
+}
+
 export interface PlanEnqueueItem {
   /** `ProductPlate.id`. */
   plate_id: number;
@@ -9619,6 +9646,12 @@ export const api = {
    *  typed — the notes say what was left alone. */
   rereadProductCard: (productId: number, fileId: number) =>
     request<RereadResponse>(`/products/${productId}/card/reread?file_id=${fileId}`, { method: 'POST' }),
+  /** The orders this plate could be filed under, ranked; `[]` is ordinary and
+   *  means no open order wants it. `plateIndex` is the SLICER plate index —
+   *  the same number the queue row carries as `plate_id` — and `0` asks about
+   *  the whole file. */
+  getOrderCandidates: (fileId: number, plateIndex: number) =>
+    request<OrderCandidate[]>(`/library/files/${fileId}/order-candidates?plate_index=${plateIndex}`),
   getLibraryFileCard: (fileId: number) => request<CardData>(`/library/files/${fileId}/card`),
   /**
    * The whole product as a ZIP, saved through the blob dance.

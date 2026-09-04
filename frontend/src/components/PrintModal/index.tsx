@@ -22,6 +22,8 @@ import {
   useFilamentMapping,
 } from '../../hooks/useFilamentMapping';
 import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
+import { useOrderCandidates } from '../../hooks/useOrderCandidates';
+import { OrderFilingField, type OrderFilingValue } from '../OrderFilingField';
 import { canQueueWithoutAsking } from '../../utils/bulkQueueEligibility';
 import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
@@ -834,6 +836,52 @@ export function PrintModal({
     }
   }, [platesData, selectedPlates.size]);
 
+  // --- Which ORDER this print is filed under -------------------------------
+  // ⚠️ The dialog asks only when nobody has already answered. A caller that
+  // named an order (the plan block names its line too) has made the decision
+  // already, and re-asking here would let this dialog move the print to a
+  // DIFFERENT order than the one the caller opened it for. An archive carries
+  // the original print's own binding, and `reprintArchive` deliberately sends
+  // neither id — so the question would have nowhere to go.
+  const [chosenOrderFiling, setChosenOrderFiling] = useState<OrderFilingValue | null>(null);
+  // Once the operator has answered, the answer stands. Without this, switching
+  // plates — which legitimately re-asks the server — would quietly overwrite a
+  // deliberate "Without an order" with whatever the next plate needs.
+  const [orderFilingTouched, setOrderFilingTouched] = useState(false);
+  const asksAboutOrder =
+    isLibraryFile &&
+    projectId == null &&
+    projectLineId == null &&
+    (mode === 'reprint' || mode === 'add-to-queue');
+  // The plate the dialog is about. `null` — nothing picked, or several — asks
+  // about the whole file, which is what index 0 means on the wire.
+  const orderPlateIndex = selectedPlate ?? 0;
+  const { data: orderCandidates, isLoading: orderCandidatesLoading } = useOrderCandidates(
+    libraryFileId,
+    orderPlateIndex,
+    asksAboutOrder,
+  );
+
+  // ⚠️ **The proposal is DERIVED, never synced into state by an effect.** The
+  // silent members of a grouped run submit from an effect of their own, and
+  // effects in one commit run in declaration order: a `setState` here would
+  // still be unrendered when that one fires, so the member would send the
+  // filing from BEFORE the candidates arrived — the leader beside it filing
+  // correctly and nothing on screen to say the rest did not.
+  // The first candidate that still NEEDS prints. The list already sorts those
+  // first, but the rule is the dialog's own: an order that is already covered
+  // is never proposed by itself, only chosen.
+  const proposedOrderFiling = useMemo<OrderFilingValue | null>(() => {
+    const needy = orderCandidates?.find((c) => c.outstanding_prints > 0);
+    return needy ? { projectId: needy.project_id, projectLineId: needy.project_line_id } : null;
+  }, [orderCandidates]);
+  const orderFiling = orderFilingTouched ? chosenOrderFiling : proposedOrderFiling;
+
+  // What the payloads carry. When the dialog asked, its answer is the whole
+  // truth — including "no order", which must not fall back to a prop.
+  const filedProjectId = asksAboutOrder ? orderFiling?.projectId : projectId;
+  const filedProjectLineId = asksAboutOrder ? (orderFiling?.projectLineId ?? null) : (projectLineId ?? null);
+
   // Auto-select first printer when only one available
   useEffect(() => {
     // Skip auto-select for edit mode (already initialized from queueItem)
@@ -1054,8 +1102,8 @@ export function PrintModal({
         const payload: AutoQueueItemCreate = {
           archive_id: isLibraryFile ? undefined : archiveId,
           library_file_id: isLibraryFile ? libraryFileId : undefined,
-          project_id: projectId,
-          project_line_id: projectLineId ?? null,
+          project_id: filedProjectId,
+          project_line_id: filedProjectLineId,
           target_model: autoModeOptions.target_model ?? undefined,
           target_location_id: autoModeOptions.target_location_id ?? undefined,
           force_color_match: autoModeOptions.force_color_match,
@@ -1245,8 +1293,8 @@ export function PrintModal({
       ...printOptions,
       ...getSwapPayloadForPrinter(printerId),
       quantity: mode === 'edit-queue-item' ? 1 : quantityForPlate(plateId),
-      project_id: projectId,
-      project_line_id: projectLineId ?? null,
+      project_id: filedProjectId,
+      project_line_id: filedProjectLineId,
       };
     };
 
@@ -1274,8 +1322,8 @@ export function PrintModal({
                 ...swapPayload,
                 selected_macro_ids: selectedMacroIds,
                 quantity,
-                project_id: projectId,
-                project_line_id: projectLineId ?? null,
+                project_id: filedProjectId,
+                project_line_id: filedProjectLineId,
                 cleanup_library_after_dispatch: cleanupLibraryAfterDispatch,
               });
             } else {
@@ -1449,6 +1497,17 @@ export function PrintModal({
       return;
     }
 
+    // Another "not yet": the order question is still in flight. A silent
+    // member files itself under the order that needs its plate exactly as the
+    // visible one does, and it cannot do that before the answer arrives —
+    // it would queue 59 of a 60-plate run under no order at all while the one
+    // dialog the operator saw filed correctly.
+    // ⚠️ Bounded, and therefore not a new way to stall: the query does not
+    // retry, so it either answers or fails, and `isLoading` is false for a
+    // disabled query as well as for a failed one. A failure simply files no
+    // order, which is what this dialog did before the field existed.
+    if (asksAboutOrder && orderCandidatesLoading) return;
+
     // Only a run at exactly one specific printer consults filaments at all:
     // `canQueueWithoutAsking` short-circuits on any other printer count. An
     // auto-queue or fan-out member must therefore not wait for a status that
@@ -1530,6 +1589,8 @@ export function PrintModal({
     perPlateReqsFailed,
     printersFetched,
     soleActivePrinterId,
+    asksAboutOrder,
+    orderCandidatesLoading,
   ]);
 
   // Tell the run it had to ask after all. Once only, and by ref rather than by
@@ -1804,6 +1865,18 @@ export function PrintModal({
                   : undefined
               }
             />}
+
+            {/* Which order this print counts against. Below the plate picker
+                because the answer depends on the plate — a different plate
+                yields different parts and so answers to a different line. */}
+            {asksAboutOrder && (
+              <OrderFilingField
+                value={orderFiling}
+                onChange={(v) => { setOrderFilingTouched(true); setChosenOrderFiling(v); }}
+                candidates={orderCandidates}
+                loading={orderCandidatesLoading}
+              />
+            )}
 
             {/* Auto-distribute mode controls — replaces PrinterSelector */}
             {isAutoMode && (

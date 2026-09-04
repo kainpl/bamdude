@@ -4932,6 +4932,17 @@ export default {
     },
   },
 
+  // The "which order is this print for?" field in the print and auto-queue
+  // dialogs. Its own namespace and not `orders.*`: the words are read by an
+  // operator who is starting a print, not by one looking at an order.
+  orderFiling: {
+    label: 'Order',
+    none: 'Without an order',
+    stillNeeds_one: 'still needs {{count}} print',
+    stillNeeds_other: 'still needs {{count}} prints',
+    satisfied: 'already covered',
+  },
+
   // Projects section, customers face. The customer page borrows the order
   // status words from `orders.status.*` and its own figure-tile labels from
   // `customers.table.*` — the same counts under the same names in both places.
