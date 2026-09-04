@@ -751,6 +751,38 @@ class PrinterManager:
         except Exception as e:  # pragma: no cover — persistence is best-effort
             logger.warning("Failed to persist awaiting_plate_clear for printer %s: %s", printer_id, e)
 
+    # ── Hidden HMS entries (services/hms_mute) ───────────────────────────────
+
+    def apply_hms_mute(self, printer_id: int, full_code: str) -> bool:
+        """Hide a stack entry on the live client now; the route has already
+        persisted it. True when a connected client took it (a disconnected
+        printer picks the mute up from the DB on its next connect)."""
+        client = self._clients.get(printer_id)
+        taken = bool(client and client.mute_hms(full_code))
+        if self._loop and self._loop.is_running():
+            self._schedule_async(self._broadcast_status_change(printer_id))
+        return taken
+
+    def apply_hms_unmute(self, printer_id: int, full_code: str) -> bool:
+        client = self._clients.get(printer_id)
+        taken = bool(client and client.unmute_hms(full_code))
+        if self._loop and self._loop.is_running():
+            self._schedule_async(self._broadcast_status_change(printer_id))
+        return taken
+
+    async def _forget_hms_mutes(self, printer_id: int, gone: set[str]) -> None:
+        """The printer dropped the entries: drop their rows, and tell the UI."""
+        try:
+            from backend.app.core.database import async_session
+            from backend.app.services.hms_mute import forget
+
+            async with async_session() as db:
+                await forget(db, printer_id, set(gone))
+                await db.commit()
+        except Exception as e:  # noqa: BLE001 — best-effort bookkeeping
+            logger.warning("Failed to forget hidden HMS entries for printer %s: %s", printer_id, e)
+        await self._broadcast_status_change(printer_id)
+
     async def load_awaiting_plate_clear_from_db(self) -> None:
         """Rehydrate the in-memory set from Printer.awaiting_plate_clear at startup (#961)."""
         from backend.app.core.database import async_session
@@ -976,6 +1008,21 @@ class PrinterManager:
         # mid-print stale reconnect doesn't lose completion detection.
         if prior_client is not None:
             client.carry_print_lifecycle_from(prior_client)
+
+        # Stack entries the operator chose to hide (services/hms_mute), loaded
+        # before the first push so a hidden entry never flashes on the card.
+        # Best-effort: a DB hiccup here costs a flash, never the connection.
+        try:
+            from backend.app.core.database import async_session as _hms_session
+            from backend.app.services.hms_mute import load_muted_codes
+
+            async with _hms_session() as _db:
+                client.set_muted_hms_codes(await load_muted_codes(_db, printer_id))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not load hidden HMS entries for printer %s: %s", printer_id, e)
+        client.on_hms_mute_expired = lambda gone, pid=printer_id: self._schedule_async(
+            self._forget_hms_mutes(pid, gone)
+        )
 
         client.connect()
         self._clients[printer_id] = client
@@ -1956,6 +2003,20 @@ def printer_state_to_dict(
                 "job_id": e.job_id,
             }
             for e in (state.hms_errors or [])
+        ],
+        # Stack entries the operator hid on this printer (services/hms_mute) —
+        # same shape, kept apart so the modal can list and un-hide them.
+        "hms_muted": [
+            {
+                "code": e.code,
+                "attr": e.attr,
+                "module": e.module,
+                "severity": e.severity,
+                "actions": e.actions,
+                "full_code": e.full_code,
+                "job_id": e.job_id,
+            }
+            for e in (getattr(state, "hms_muted", None) or [])
         ],
         # Pause classification — populated by main._handle_pause_edge, cleared
         # by _handle_resume_edge. ``pause_reason`` is the normalised key

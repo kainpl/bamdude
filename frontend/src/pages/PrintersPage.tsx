@@ -6661,6 +6661,7 @@ function PrinterCard({
         <HMSErrorModal
           printerName={printer.name}
           errors={status?.hms_errors || []}
+          mutedErrors={status?.hms_muted || []}
           onClose={() => setShowHMSModal(false)}
           printerId={printer.id}
           serialNumber={printer.serial_number}

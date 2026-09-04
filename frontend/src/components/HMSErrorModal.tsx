@@ -8,7 +8,7 @@
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { X, AlertTriangle, AlertCircle, Info, ExternalLink, Loader2, Trash2 } from 'lucide-react';
+import { X, AlertTriangle, AlertCircle, Info, ExternalLink, Loader2, Trash2, Eye, EyeOff } from 'lucide-react';
 import type { HMSError, Permission } from '../api/client';
 import { api } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
@@ -23,6 +23,10 @@ interface HMSErrorModalProps {
   // uses for HMS actions.
   serialNumber?: string;
   hasPermission: (permission: Permission) => boolean;
+  // Stack entries the operator hid on this printer (status.hms_muted). Kept
+  // out of `errors` so badges and notifications stay quiet; listed here so
+  // they can be un-hidden. Absent on an older backend.
+  mutedErrors?: HMSError[];
   // Runout guidance for a PAUSED print (upstream #2587). When set, AMS-runout
   // errors are re-described to name the physical slot the firmware now expects,
   // instead of the generic "insert into the same slot" text (which is wrong under
@@ -135,7 +139,7 @@ function getHMSHomeUrl(): string {
   return `https://wiki.bambulab.com/en/hms/home`;
 }
 
-export function HMSErrorModal({ printerName, errors, onClose, printerId, serialNumber, hasPermission, runoutGuidance }: HMSErrorModalProps) {
+export function HMSErrorModal({ printerName, errors, onClose, printerId, serialNumber, hasPermission, runoutGuidance, mutedErrors = [] }: HMSErrorModalProps) {
   const { t, i18n } = useTranslation();
 
   // ⚠️ Static per model and language, and megabytes on the wire — never let
@@ -177,6 +181,28 @@ export function HMSErrorModal({ printerName, errors, onClose, printerId, serialN
       showToast(`${t('hmsErrors.actionFailed', 'Failed to send action')}: ${error.message}`, 'error');
     },
   });
+
+  // Hide / un-hide one stack entry on this printer until the printer drops it.
+  // The firmware owns hms[] — Clear empties the print_error register and
+  // nothing else — so an entry the printer keeps re-sending (a P2S code Bambu
+  // ships with no text, 2026-09-04) could not be answered at all. The mute is
+  // per printer and per FULL code, never per short code or "no description".
+  const muteMutation = useMutation({
+    mutationFn: (fullCode: string) => api.muteHMSError(printerId, fullCode),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['printerStatus', printerId] });
+      showToast(t('hmsErrors.hideSuccess'), 'success');
+    },
+    onError: (error: Error) => showToast(error.message || t('hmsErrors.hideFailed'), 'error'),
+  });
+  const unmuteMutation = useMutation({
+    mutationFn: (fullCode: string) => api.unmuteHMSError(printerId, fullCode),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['printerStatus', printerId] });
+    },
+    onError: (error: Error) => showToast(error.message || t('hmsErrors.unhideFailed'), 'error'),
+  });
+  const canHide = (error: HMSError) => error.full_code?.length === 16 && hasPermission('printers:control');
 
   // Surface cataloged errors and uncataloged-but-actionable errors. Mirrors
   // filterKnownHMSErrors so the modal and the badge counts agree by construction.
@@ -324,20 +350,77 @@ export function HMSErrorModal({ printerName, errors, onClose, printerId, serialN
                             })}
                           </div>
                         )}
-                        <a
-                          href={hmsHomeUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-xs text-bambu-green hover:underline"
-                        >
-                          <ExternalLink className="w-3 h-3" />
-                          {t('hmsErrors.viewOnWiki')}
-                        </a>
+                        <div className="flex items-center justify-between gap-3">
+                          <a
+                            href={hmsHomeUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-bambu-green hover:underline"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            {t('hmsErrors.viewOnWiki')}
+                          </a>
+                          {canHide(error) && (
+                            <button
+                              type="button"
+                              onClick={() => muteMutation.mutate(error.full_code!)}
+                              disabled={muteMutation.isPending}
+                              title={t('hmsErrors.hideHint')}
+                              className="inline-flex items-center gap-1 text-xs text-bambu-gray hover:text-white disabled:opacity-50"
+                            >
+                              <EyeOff className="w-3 h-3" />
+                              {t('hmsErrors.hide')}
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Entries hidden on this printer until the printer drops them. Shown
+              dimmed with their code and text, and a way back — hiding is a
+              decision about one incident, not a filter. */}
+          {mutedErrors.length > 0 && (
+            <div className="mt-4 pt-3 border-t border-bambu-dark-tertiary">
+              <p className="text-xs text-bambu-gray mb-2">
+                {t('hmsErrors.hiddenTitle', { count: mutedErrors.length })}
+              </p>
+              <div className="space-y-2">
+                {mutedErrors.map((error, index) => {
+                  const codeNum = parseInt(error.code.replace('0x', ''), 16) || 0;
+                  const shortCode = getShortCode(error.attr, codeNum);
+                  const displayCode = error.full_code
+                    ? (error.full_code.match(/.{1,4}/g) ?? [shortCode]).join('-')
+                    : shortCode.replace('_', '-');
+                  const text = lookupDescription(descriptions, error.full_code, shortCode);
+                  return (
+                    <div
+                      key={`muted-${error.full_code || error.code}-${index}`}
+                      className="p-3 rounded-lg bg-bambu-dark border border-white/5 opacity-70 flex items-start justify-between gap-3"
+                    >
+                      <div className="min-w-0">
+                        <span className="font-mono text-xs text-bambu-gray">[{displayCode}]</span>
+                        <p className="text-xs text-bambu-gray truncate">{text ?? t('hmsErrors.noDescriptionYet')}</p>
+                      </div>
+                      {hasPermission('printers:control') && (
+                        <button
+                          type="button"
+                          onClick={() => unmuteMutation.mutate(error.full_code!)}
+                          disabled={unmuteMutation.isPending}
+                          className="inline-flex items-center gap-1 text-xs text-bambu-green hover:underline flex-shrink-0"
+                        >
+                          <Eye className="w-3 h-3" />
+                          {t('hmsErrors.unhide')}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>

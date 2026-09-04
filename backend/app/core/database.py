@@ -238,6 +238,7 @@ async def init_db():
         firmware,
         git_backup,
         group,
+        hms_mute,
         kprofile_note,
         label_device,
         label_template,
