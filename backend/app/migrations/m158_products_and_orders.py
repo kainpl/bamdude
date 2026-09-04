@@ -318,7 +318,7 @@ async def _create_tables(conn) -> None:
         )
 
 
-def _load_meta(raw) -> dict:
+def _load_meta(raw: object) -> dict:
     if isinstance(raw, dict):
         return raw
     if not raw:

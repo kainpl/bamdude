@@ -144,7 +144,19 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         .all()
     )
     parts_rows = (
-        (await db.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id.in_([a.id for a in archives]))))
+        (
+            await db.execute(
+                select(PrintArchivePart)
+                .where(PrintArchivePart.archive_id.in_([a.id for a in archives]))
+                # ⚠️ ``hand_out`` deals these rows out one at a time, so their
+                # order decides which line gets a part when two both count it.
+                # An unordered SELECT leaves that to the backend — and the batch
+                # loader below reads the same table with a different filter, so
+                # "the two loaders agree" was a property of the plan, not of the
+                # code. Ordering both by id makes the parity structural.
+                .order_by(PrintArchivePart.id)
+            )
+        )
         .scalars()
         .all()
         if archives
@@ -468,6 +480,12 @@ async def _batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[
     asserts exactly that. The arithmetic afterwards is untouched; nothing here
     re-derives a figure in SQL, because a second implementation of the
     attribution rules is a second answer waiting to disagree with the first.
+
+    "Fixed" is EIGHT statements — projects, their lines, products, their parts,
+    their plates, archives, archive parts, procurement — up to ``selectin``'s
+    500-parent chunking, which splits each of the three eager loads once per
+    further 500 parents. So it is fixed in the number of ORDERS and not quite
+    constant in the size of the farm; nothing here degrades to per-order.
     """
     if not project_ids:
         return []
@@ -509,7 +527,15 @@ async def _batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[
     parts_by_archive: dict[int, list[PrintArchivePart]] = defaultdict(list)
     if archive_ids:
         for row in (
-            (await db.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id.in_(archive_ids))))
+            (
+                await db.execute(
+                    select(PrintArchivePart)
+                    .where(PrintArchivePart.archive_id.in_(archive_ids))
+                    # The per-order loader's ordering, for the reason stated
+                    # there: ``hand_out`` reads these in sequence.
+                    .order_by(PrintArchivePart.id)
+                )
+            )
             .scalars()
             .all()
         ):
@@ -633,6 +659,11 @@ async def customer_figures(db: AsyncSession, customer_id: int) -> dict:
         # A status this build has never heard of is counted under its own key
         # rather than dropped — the same rule the list endpoint follows.
         out[status] = out.get(status, 0) + 1
+        # ⚠️ The price is summed UNCONDITIONALLY now. It used to be added after
+        # a per-project context load, past a ``continue`` that skipped an order
+        # which had vanished between the two reads — so such an order was
+        # counted under its status and then never priced. An ordering quirk of
+        # the old loop, unreachable now that both facts come off one snapshot.
         out["total_price"] += float(price or 0)
     for order in await grouped_figures(db, project_ids=[project_id for project_id, _s, _p in rows]):
         out["ordered"] += order.ordered

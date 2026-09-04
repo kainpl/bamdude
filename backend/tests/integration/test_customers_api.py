@@ -106,6 +106,17 @@ async def test_the_name_is_trimmed_on_create_and_on_update(committing_client):
     assert (await committing_client.post("/api/v1/customers", json={"name": "   "})).status_code == 422
     assert (await committing_client.patch(f"/api/v1/customers/{cid}", json={"name": "   "})).status_code == 422
 
+    # The length limit measures what is STORED. A 255-character name typed with
+    # a trailing space was refused for a length the trim was about to remove —
+    # the constraint ran before the validator, and the operator got a 422 about
+    # a name that fits.
+    fits = "A" * 255
+    r = await committing_client.post("/api/v1/customers", json={"name": f" {fits} "})
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == fits
+    # ...and 256 real characters are still too many.
+    assert (await committing_client.post("/api/v1/customers", json={"name": "A" * 256})).status_code == 422
+
 
 @pytest.mark.asyncio
 async def test_the_detail_figures_survive_the_grouped_query(committing_client, db_session):

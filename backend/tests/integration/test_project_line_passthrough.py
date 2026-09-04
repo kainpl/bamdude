@@ -329,7 +329,7 @@ async def test_auto_queue_refuses_a_line_from_another_order(
 
 @pytest.mark.asyncio
 async def test_refiling_an_archive_drops_a_line_that_belonged_to_the_old_order(
-    async_client: AsyncClient, db_session, order_line, printer_factory
+    async_client: AsyncClient, db_session, order_line
 ):
     """A line must never stay attached to an order it no longer belongs to.
 
@@ -364,9 +364,7 @@ async def test_refiling_an_archive_drops_a_line_that_belonged_to_the_old_order(
 
 
 @pytest.mark.asyncio
-async def test_refiling_an_archive_keeps_a_line_that_still_belongs(
-    async_client: AsyncClient, db_session, order_line, printer_factory
-):
+async def test_refiling_an_archive_keeps_a_line_that_still_belongs(async_client: AsyncClient, db_session, order_line):
     """The other half: a PUT that names the SAME order leaves the line alone."""
     from backend.app.models.archive import PrintArchive
 

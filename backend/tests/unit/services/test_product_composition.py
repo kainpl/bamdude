@@ -119,6 +119,26 @@ def test_alias_must_be_unique_within_the_product():
     assert a.aliases == ["bracket"]
 
 
+def test_removing_the_last_alias_leaves_the_parts_own_key_not_an_empty_list():
+    """One spelling of "no aliases but my own", not two.
+
+    ``add_alias`` and ``merge_parts`` write ``aliases or [name_key]``, so a
+    printed part that has a list always carries its own key in it. Emptying the
+    list writes the same fact in a spelling nothing else produces, and two rows
+    that mean the same thing compare as different. A part with no list at all —
+    a purchased one, whose aliases are ``None`` by the model's contract — is
+    not given one here.
+    """
+    a = _part(1, "bracket", aliases=["bracket.stl"])  # a list without its own key
+    remove_alias(a, "bracket.stl")
+    assert a.aliases == ["bracket"]
+
+    screw = _part(2, purchased_name_key("M3 Screw"), kind="purchased")
+    screw.aliases = None
+    remove_alias(screw, "anything")
+    assert screw.aliases == []
+
+
 def test_part_index_covers_own_key_and_aliases_and_purchased_prefix():
     a = _part(1, "bracket", aliases=["bracket", "bracket.stl"])
     s = _part(2, purchased_name_key("M3 Screw"), kind="purchased")
@@ -156,6 +176,15 @@ def test_sliced_asks_the_content_flag_not_the_filename():
     # One plate of a multi-plate file is decided by its own timing alone.
     one = ProductPlate(product_id=1, library_file_id=5, plate_index=1)
     assert recipe_for(one, meta, "gcode", []).sliced is False
+    # The flag is a TRI-STATE whose domain is bools, and anything else reads as
+    # "no answer" — the state a row written before m137 is in. It comes out of
+    # JSON, so this is not hypothetical; ``is not False`` accepted every value
+    # that is not the ``False`` singleton as a yes, and got the same answer here
+    # only by accident. Both branches now read an out-of-domain value exactly as
+    # they read an absent one.
+    for junk in (0, 1, "true", "false", []):
+        assert recipe_for(whole, {**meta, "has_sliced_gcode": junk}, "gcode", []).sliced is True
+        assert recipe_for(whole, {**meta, "has_sliced_gcode": junk}, "3mf", []).sliced is False
 
 
 async def test_recipes_for_product_drops_a_trashed_files_plates_and_orders_by_plate_id(db_session):
@@ -219,20 +248,6 @@ async def test_recipes_for_product_drops_a_trashed_files_plates_and_orders_by_pl
     assert rows[1][2].yield_by_part == {bracket.id: 2}  # plate 1 of META: two bracket instances
 
 
-async def test_recipes_for_product_asks_nothing_of_the_database_for_a_plateless_product(db_session):
-    product = Product(name="Empty")
-    db_session.add(product)
-    await db_session.commit()
-    loaded = (
-        await db_session.execute(
-            select(Product)
-            .options(selectinload(Product.parts), selectinload(Product.plates))
-            .where(Product.id == product.id)
-        )
-    ).scalar_one()
-    assert await recipes_for_product(db_session, loaded) == []
-
-
 async def _loaded(db, product_id: int) -> Product:
     return (
         await db.execute(
@@ -292,15 +307,35 @@ async def test_recipes_for_products_reads_every_products_files_in_one_query(db_s
 
 async def test_recipes_for_products_answers_a_plateless_product_without_a_query(db_session, test_engine):
     """A dict entry for every product asked about, so a caller can index without
-    guarding — and no query at all when none of them has a plate."""
+    guarding — and NOT ONE statement when none of them has a plate.
+
+    ⚠️ Every statement, not just the ``library_files`` one, and that is the
+    whole assertion: the plateless path must return before ``product.parts`` is
+    read, so a caller that loaded neither parts nor plates is not punished for
+    a question whose answer is empty either way. The single-product wrapper
+    goes through the same path and is asserted here too — the test that used to
+    cover it separately could only see the empty ANSWER, never the query.
+    """
     products = [Product(name="Empty A"), Product(name="Empty B")]
     db_session.add_all(products)
     await db_session.commit()
-    loaded = [await _loaded(db_session, p.id) for p in products]
+    ids = [p.id for p in products]
+    loaded = [await _loaded(db_session, pid) for pid in ids]
 
-    with counting_statements(test_engine, match="library_files") as seen:
+    with counting_statements(test_engine) as seen:
         by_product = await recipes_for_products(db_session, loaded)
+        assert await recipes_for_product(db_session, loaded[0]) == []
 
-    assert by_product == {p.id: [] for p in products}
+    assert by_product == {pid: [] for pid in ids}
     assert seen == []
     assert await recipes_for_products(db_session, []) == {}
+
+    # And the half a statement count cannot see: a caller that loaded PLATES but
+    # not parts. An unloaded collection in an async session is a
+    # ``MissingGreenlet``, not a SELECT, so reading ``product.parts`` on this
+    # path would blow up rather than show up above.
+    db_session.expunge_all()
+    plates_only = (
+        await db_session.execute(select(Product).options(selectinload(Product.plates)).where(Product.id == ids[0]))
+    ).scalar_one()
+    assert await recipes_for_products(db_session, [plates_only]) == {ids[0]: []}

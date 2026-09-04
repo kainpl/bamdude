@@ -66,7 +66,11 @@ async def _light_figures_by_customer(db: AsyncSession) -> dict[int, CustomerList
     )
     out: dict[int, dict] = {}
     for customer_id, status, count, price_sum in rows:
-        figures = out.setdefault(customer_id, _empty_light_figures().model_dump())
+        figures = out.get(customer_id)
+        if figures is None:
+            # Not ``setdefault``: its default is evaluated on EVERY row, so a
+            # customer with six statuses built (and threw away) five models.
+            figures = out[customer_id] = _empty_light_figures().model_dump()
         figures["projects"] += count
         figures[status] = figures.get(status, 0) + count
         figures["total_price"] += float(price_sum or 0)
@@ -97,7 +101,10 @@ async def list_customers(
             notes=c.notes,
             created_at=c.created_at,
             updated_at=c.updated_at,
-            figures=figures.get(c.id) or _empty_light_figures(),
+            # ``.get(default)``, never ``or``: the question is whether the
+            # customer HAS a row in the grouped result, not whether the model it
+            # holds is truthy — two different questions that happen to agree.
+            figures=figures.get(c.id, _empty_light_figures()),
         )
         for c in rows
     ]

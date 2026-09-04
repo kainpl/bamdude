@@ -175,7 +175,14 @@ def recipe_for(
     # its own timing alone — a file-level flag says nothing about which plates
     # carry gcode.
     ftype = (file_type or "").lower()
-    has_gcode = (meta or {}).get("has_sliced_gcode")
+    # ⚠️ The flag is a TRI-STATE and only a bool is inside its domain: yes, no,
+    # or "this row has no answer". It comes out of JSON, so anything can be in
+    # there, and ``is not False`` let every one of those through as a yes — a
+    # ``0`` or a ``"false"`` written by some other writer would have read as
+    # "sliced". Out-of-domain is "no answer", which is the state a row written
+    # before m137 is already in.
+    raw_has_gcode = (meta or {}).get("has_sliced_gcode")
+    has_gcode = raw_has_gcode if isinstance(raw_has_gcode, bool) else None
     recipe.sliced = recipe.print_time_seconds is not None or (
         plate.plate_index == 0
         and ((ftype == "gcode" and has_gcode is not False) or (ftype == "3mf" and has_gcode is True))
@@ -220,9 +227,18 @@ async def recipes_for_products(
         }
     out: dict[int, list[tuple[ProductPlate, LibraryFile, PlateRecipe]]] = {}
     for product in products:
+        plates = plates_by_product[product.id]
+        if not plates:
+            # Nothing to build a recipe from, so ``product.parts`` is never
+            # read — which is the point: the docstring's "must already be
+            # loaded" is a promise about a lazy load being a ``MissingGreenlet``
+            # here, and a product with no plates must not be the one that trips
+            # it for a question whose answer is empty either way.
+            out[product.id] = []
+            continue
         parts = list(product.parts or [])
         rows: list[tuple[ProductPlate, LibraryFile, PlateRecipe]] = []
-        for plate in sorted(plates_by_product[product.id], key=lambda p: p.id):
+        for plate in sorted(plates, key=lambda p: p.id):
             file = files.get(plate.library_file_id)
             if file is None:
                 continue
@@ -268,7 +284,19 @@ def add_alias(parts: Iterable[ProductPart], target: ProductPart, key: str) -> No
 
 
 def remove_alias(target: ProductPart, key: str) -> None:
+    """Drop one alias — and leave the list in the one spelling the writers use.
+
+    ``add_alias`` and ``merge_parts`` both write ``aliases or [target.name_key]``,
+    so a part that HAS a list always carries its own key in it. Removing the
+    last other alias used to leave a bare ``[]``: the same fact in the spelling
+    nothing else writes, which reads to anyone comparing two parts as "this one
+    lost its key". A part with no list at all keeps not having one — aliases
+    are printed-only (a purchased part has none), and granting one here is not
+    this function's business.
+    """
     if key == target.name_key:
         raise ValueError("a part cannot drop its own key")
-    target.aliases = [a for a in (target.aliases or []) if a != key]
+    had_list = bool(target.aliases)
+    remaining = [a for a in (target.aliases or []) if a != key]
+    target.aliases = remaining or ([target.name_key] if had_list else [])
     target.auto = False

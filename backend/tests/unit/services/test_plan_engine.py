@@ -123,6 +123,9 @@ def test_worked_case_from_the_spec():
     # the route never re-reads rows the request already had.
     assert plan.part_names == {1: "c"}
     assert plan.product_names == {10: "P10"}
+    # A plan that ran to the end of its work says so — the flag is only ever
+    # about the iteration guard, never about an unsatisfiable part.
+    assert plan.truncated is False
 
 
 def test_waste_tie_break_then_time():
@@ -329,6 +332,10 @@ def test_iteration_guard(monkeypatch):
     # The guard is a defence, not a verdict: the part IS coverable, so it must
     # not be reported as having no plate.
     assert lp.unsatisfiable == []
+    # ...but the stop is not silent either. Rows, totals and an empty
+    # ``unsatisfiable`` look exactly like a finished plan, so without this flag
+    # the operator prints all of it believing the order is covered.
+    assert plan.truncated is True
 
 
 def test_not_sliced_plates_are_listed_not_planned():

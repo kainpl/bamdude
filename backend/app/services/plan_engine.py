@@ -109,6 +109,11 @@ class OrderPlan:
     totals: PlanTotals = field(default_factory=PlanTotals)
     part_names: dict[int, str] = field(default_factory=dict)  # ProductPart.id → name
     product_names: dict[int, str] = field(default_factory=dict)  # Product.id → name
+    # ``MAX_ITERATIONS`` stopped the covering of at least one line, so the rows
+    # below are a PREFIX of the plan and the totals are a prefix's totals. It
+    # rides on the plan because a silent guard reads as a finished answer — see
+    # :func:`cover`.
+    truncated: bool = False
 
 
 def line_yield(recipe: PlateRecipe, counted_part_ids: set[int]) -> dict[int, int]:
@@ -166,19 +171,29 @@ def cover(
     candidates: list[Candidate],
     counted: set[int],
     price_per_gram: float | None,
-) -> tuple[list[PlanRow], dict[int, int]]:
+) -> tuple[list[PlanRow], dict[int, int], bool]:
     """Greedy covering (spec decision 4): plates for one line, until nothing helps.
 
     Returns the rows in pick order — one row per distinct plate, its ``count``
-    and its ``useful`` aggregated over the prints — and the surplus each counted
-    part ends the plan with. ``outstanding`` may carry zeros (a part already
-    covered): they never attract a pick but they do bound the surplus, because a
-    plate that yields them still over-produces.
+    and its ``useful`` aggregated over the prints — the surplus each counted
+    part ends the plan with, and whether the ``MAX_ITERATIONS`` guard stopped
+    it. ``outstanding`` may carry zeros (a part already covered): they never
+    attract a pick but they do bound the surplus, because a plate that yields
+    them still over-produces.
+
+    ⚠️ The third value is why the guard is not silent. A stopped plan looks
+    exactly like a finished one — rows, totals, an empty ``unsatisfiable`` —
+    and the operator would print it believing it covers the order. Reading it
+    as "the loop ended by exhaustion" also flags the boundary case where the
+    LAST iteration happened to finish the job; telling those two apart costs a
+    scan that buys nothing, and at ten thousand prints "this is more than one
+    plan shows" is not a lie.
     """
     remaining = {pid: n for pid, n in outstanding.items() if n > 0}
     yields = {plate.id: line_yield(recipe, counted) for plate, _file, recipe in candidates}
     rows: dict[int, PlanRow] = {}
     order: list[int] = []
+    truncated = True
     for _ in range(MAX_ITERATIONS):
         best: tuple[tuple, ProductPlate, LibraryFile, PlateRecipe, dict[int, int]] | None = None
         for plate, file, recipe in candidates:
@@ -191,6 +206,7 @@ def cover(
             if best is None or key < best[0]:
                 best = (key, plate, file, recipe, gain)
         if best is None:
+            truncated = False
             break  # nothing left that covers anything: the plan is complete
         _key, plate, file, recipe, gain = best
         row = rows.get(plate.id)
@@ -209,7 +225,7 @@ def cover(
         made = sum(row.count * yields[row.plate_id].get(pid, 0) for row in planned)
         if made > want:
             surplus[pid] = made - want
-    return planned, surplus
+    return planned, surplus, truncated
 
 
 def _totals(lines: list[LinePlan], price_per_gram: float | None) -> PlanTotals:
@@ -262,7 +278,9 @@ def plan_lines(
     plates are reported under ``not_sliced`` and never planned; a part with
     outstanding work that no candidate plate yields at all is ``unsatisfiable``
     — note that a part the iteration guard simply ran out of prints for is NOT,
-    because the guard is a defence and not a verdict about the plate.
+    because the guard is a defence and not a verdict about the plate. That the
+    guard tripped at all is said once, for the whole order, in
+    :attr:`OrderPlan.truncated`.
 
     ⚠️ The ``max(0, …)`` floor is not decoration: more queued than remaining is
     an ordinary state (somebody queued a plate that over-produces), and a
@@ -273,6 +291,7 @@ def plan_lines(
     the context this function was handed, so no caller need re-read them.
     """
     plans: list[LinePlan] = []
+    truncated = False
     for line in ctx.lines:
         figs = figures.get(line.id)
         parts = list(figs.parts) if figs is not None else []
@@ -284,7 +303,8 @@ def plan_lines(
         # is listed whole — the operator slices it and it becomes a candidate.
         not_sliced = [plate.id for plate, _file, recipe in recipes if not recipe.sliced]
         candidates = [row for row in recipes if row[2].sliced and _material_ok(line.material, row[2].materials)]
-        rows, surplus = cover(outstanding, candidates, counted, price_per_gram)
+        rows, surplus, line_truncated = cover(outstanding, candidates, counted, price_per_gram)
+        truncated = truncated or line_truncated
         yielded: set[int] = set()
         for _plate, _file, recipe in candidates:
             yielded |= set(line_yield(recipe, counted))
@@ -306,6 +326,7 @@ def plan_lines(
         totals=_totals(plans, price_per_gram),
         part_names={part.id: part.name for parts in ctx.parts_by_product.values() for part in parts},
         product_names={pid: product.name for pid, product in ctx.products_by_id.items()},
+        truncated=truncated,
     )
 
 
@@ -313,8 +334,20 @@ async def queued_yield_by_line(
     db: AsyncSession,
     recipes_by_product: dict[int, list[Candidate]],
     lines: list[ProjectLine],
+    counted_by_line: dict[int, set[int]],
 ) -> dict[int, dict[int, int]]:
     """How much each line already has coming: ``line_id → part_id → parts queued``.
+
+    ⚠️ **Counted parts only, exactly as :func:`line_yield` counts them.** A
+    queued plate is shared like any other (two products' lids on one bed, a
+    part the product zeroes with ``qty_per_unit = 0``), and the parts of it
+    this line does not count are not this line's incoming work. The map went
+    out keyed on the RAW ``yield_by_part``, so it carried entries no figure of
+    this line ever mentions — harmless in the subtraction below (an uncounted
+    id matches no ``PartFigures``) and wrong for everybody else, because the
+    map is public. ``counted_by_line`` is the line's ``PartFigures`` part ids,
+    from the same ``attribute`` pass the plan is built on; a line missing from
+    it counts nothing.
 
     "Still waiting" is the vault's rule, and it differs per table:
     ``print_queue.status == 'pending'``, and ``auto_queue_items.status ==
@@ -387,7 +420,7 @@ async def queued_yield_by_line(
         if recipe is None:
             continue
         bucket = out[line_id]
-        for part_id, n in recipe.yield_by_part.items():
+        for part_id, n in line_yield(recipe, counted_by_line.get(line_id) or set()).items():
             bucket[part_id] = bucket.get(part_id, 0) + n
     return out
 
@@ -406,7 +439,8 @@ async def plan_for_order(db: AsyncSession, project_id: int) -> OrderPlan | None:
     # single-product helper per product — a SELECT per line of a page that
     # recomputes its plan on every read.
     recipes_by_product = await recipes_for_products(db, ctx.products_by_id.values())
-    queued = await queued_yield_by_line(db, recipes_by_product, ctx.lines)
+    counted_by_line = {line_id: {pf.part_id for pf in figs.parts} for line_id, figs in figures.items()}
+    queued = await queued_yield_by_line(db, recipes_by_product, ctx.lines, counted_by_line)
     rate_per_kg = await default_rate_per_kg(db)
     price_per_gram = rate_per_kg / 1000.0 if rate_per_kg > 0 else None
     return plan_lines(ctx, figures, recipes_by_product, queued, price_per_gram)

@@ -301,7 +301,10 @@ def test_a_print_whose_rows_no_candidate_counts_falls_back_to_the_first():
     archives = [_archive(1, file_id=7, plate=1, status="failed"), _archive(2, file_id=7, plate=1)]
     ap = {2: [_ap(2, "sacrificial_raft", 1)]}
     figs, other = attribute(_ctx(lines, parts, archives, ap, {(7, 1): [10, 20]}))
-    assert figs[100].archive_ids == [1, 2]  # a failed print keeps its rows, and they credit nothing
+    # Archive 1 is the failed print that produced NO rows at all; archive 2's one
+    # row names a key no line's product counts. Neither credits anything, and
+    # both are still the order's work — so both list under the first candidate.
+    assert figs[100].archive_ids == [1, 2]
     assert figs[101].archive_ids == []
     assert other == []
 

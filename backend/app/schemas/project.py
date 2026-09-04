@@ -341,6 +341,12 @@ class PlanTotalsOut(BaseModel):
 class OrderPlanResponse(BaseModel):
     lines: list[LinePlanOut] = []
     totals: PlanTotalsOut
+    # The engine's iteration guard stopped the covering of at least one line, so
+    # the rows are a PREFIX of the plan: printing all of them still leaves work.
+    # It defaults to false because a client that has never heard of the flag
+    # must read "not truncated", and because that is what every finished plan
+    # says — see ``plan_engine.cover``.
+    truncated: bool = False
 
 
 class PlanEnqueueItem(BaseModel):

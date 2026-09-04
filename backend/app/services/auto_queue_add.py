@@ -42,7 +42,7 @@ from backend.app.services.filament_requirements import overrides_for_plate
 from backend.app.utils.printer_models import normalize_model_name
 
 
-def resolve_source_path(archive: PrintArchive | None, library_file: LibraryFile | None):
+def _resolve_source_path(archive: PrintArchive | None, library_file: LibraryFile | None):
     """The 3MF on disk behind the request, or ``None``.
 
     Used at create-time to auto-fill routing inputs (target model, filament
@@ -118,7 +118,7 @@ async def add_items_to_auto_queue(
     # Auto-extract target_model + required_filament_types + print_time from 3MF
     # when not explicitly provided. Done per-plate so multi-plate items get
     # accurate per-plate info.
-    file_path = resolve_source_path(archive, library_file)
+    file_path = _resolve_source_path(archive, library_file)
 
     # Compute next position (auto-queue is global, single ordering)
     max_pos_q = await db.execute(

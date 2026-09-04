@@ -16,7 +16,7 @@ from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import plan_engine
-from backend.app.services.order_metrics import load_order_context
+from backend.app.services.order_metrics import attribute, load_order_context
 from backend.app.services.plan_engine import queued_yield_by_line
 from backend.app.services.product_composition import recipes_for_product
 from backend.tests.unit.services.test_order_metrics import build_parity_fixture
@@ -907,6 +907,9 @@ async def test_plan_subtracts_finished_and_queued_work(committing_client, db_ses
     assert line["surplus_after"] == [] and line["unsatisfiable"] == []
     assert line["candidates"] == [row["plate_id"]] and line["not_sliced"] == []
     assert body["totals"] == {"prints": 1, "print_time_seconds": 100, "filament_used_grams": 0.0, "cost": None}
+    # The plan ran to the end of its work, and says so on the wire — the flag is
+    # what tells a complete plan from one the iteration guard cut short.
+    assert body["truncated"] is False
 
     assert (await committing_client.get("/api/v1/projects/9999/plan")).status_code == 404
 
@@ -1050,6 +1053,25 @@ async def test_plan_enqueue_validates_every_item_before_writing_anything(committ
     r = await committing_client.post(f"/api/v1/projects/{pid}/plan/enqueue", json={"items": [], "target": auto})
     assert r.status_code == 422, r.text
 
+    # Precedence, and a decision rather than an accident of statement order:
+    # EVERY line is checked before ANY plate is looked up, so a request whose
+    # first item names a plate that does not exist and whose second names a line
+    # that does not is refused for the LINE. It has to be that way round — a
+    # plate is looked up inside the line's product, so the plate question cannot
+    # even be asked about an item whose line is unknown.
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue",
+        json={
+            "items": [
+                {"plate_id": 999999, "count": 1, "line_id": line_id},
+                {"plate_id": plate_id, "count": 1, "line_id": 999999},
+            ],
+            "target": auto,
+        },
+    )
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "Order line not found in this project"
+
 
 @pytest.mark.asyncio
 async def test_plan_enqueue_reports_what_landed_when_a_later_item_fails(
@@ -1107,9 +1129,14 @@ async def test_plan_enqueue_reports_what_landed_when_a_later_item_fails(
 
 
 async def _queued_yield(db, project_id):
+    """Exactly what ``plan_for_order`` does — including where the counted parts
+    come from: one ``attribute`` pass over the same context, so the map under
+    test is the map the plan subtracts."""
     ctx = await load_order_context(db, project_id)
     recipes = {pid: await recipes_for_product(db, product) for pid, product in ctx.products_by_id.items()}
-    return await queued_yield_by_line(db, recipes, ctx.lines)
+    figures, _other = attribute(ctx)
+    counted = {line_id: {pf.part_id for pf in figs.parts} for line_id, figs in figures.items()}
+    return await queued_yield_by_line(db, recipes, ctx.lines, counted)
 
 
 async def _parts_of(db, product_id):
@@ -1157,6 +1184,47 @@ async def test_queued_yield_ignores_an_assigned_auto_queue_row(committing_client
     await db_session.commit()
 
     assert await _queued_yield(db_session, pid) == {line_id: {}}
+
+
+@pytest.mark.asyncio
+async def test_queued_yield_counts_only_the_parts_the_line_counts(committing_client, db_session, catalog):
+    """The queued bucket is filtered exactly as a PLANNED plate's yield is.
+
+    A plate is shared (two products' objects on one bed) and a product zeroes a
+    part it does not want counted — ``qty_per_unit = 0``, the modelling
+    convention the shared-plate rule is built on. Those instances are not this
+    line's incoming work, so ``line_yield`` keeps them out of the plan; the
+    queued map used to be keyed on the raw ``yield_by_part`` and named parts no
+    figure of the line ever mentions. It is a public map, so that is wrong even
+    where the subtraction downstream survives it.
+    """
+    product_id = catalog["product"].id
+    db_session.add(
+        ProductPart(
+            product_id=product_id, kind="printed", name="clip", name_key="clip", qty_per_unit=0, aliases=["clip"]
+        )
+    )
+    shared = LibraryFile(
+        filename="shared.gcode.3mf",
+        file_path="shared",
+        file_size=1,
+        file_type="gcode",
+        file_metadata={
+            "plates": [{"index": 1, "printable_objects": {"1": "shade", "2": "clip"}, "print_time_seconds": 100}]
+        },
+    )
+    db_session.add(shared)
+    await db_session.flush()
+    db_session.add(ProductPlate(product_id=product_id, library_file_id=shared.id, plate_index=0))
+    await db_session.commit()
+    shared_id = shared.id
+
+    pid, line_id = await _order_with_line(committing_client, product_id, 4)
+    parts = await _parts_of(db_session, product_id)
+    db_session.add(AutoQueueItem(project_line_id=line_id, library_file_id=shared_id, status="pending"))
+    await db_session.commit()
+
+    assert await _queued_yield(db_session, pid) == {line_id: {parts["shade"]: 1}}
 
 
 @pytest.mark.asyncio

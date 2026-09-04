@@ -1184,6 +1184,7 @@ def _plan_response(plan: OrderPlan) -> OrderPlanResponse:
             filament_used_grams=plan.totals.filament_used_grams,
             cost=plan.totals.cost,
         ),
+        truncated=plan.truncated,
     )
 
 
@@ -1256,6 +1257,13 @@ async def enqueue_order_plan(
         if item.line_id not in lines_by_id:
             raise HTTPException(status_code=404, detail="Order line not found in this project")
     wanted = {lines_by_id[item.line_id].product_id for item in data.items}
+    if not wanted:
+        # No item names a product, so there is nothing to look up and nothing to
+        # write. ``items`` carries ``min_length=1``, which makes this a guard
+        # rather than a branch the API can be talked into — but an empty set
+        # here would render as ``IN ()``, a full-table read that can only match
+        # nothing, and the guard costs one comparison.
+        return PlanEnqueueResponse(created=[])
     products = (
         (
             await db.execute(
