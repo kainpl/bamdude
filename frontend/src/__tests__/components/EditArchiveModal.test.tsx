@@ -11,7 +11,9 @@ import type { Archive } from '../../api/client';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 
-const mockArchive: Archive = {
+// Deliberately partial: the modal reads a dozen of `Archive`'s sixty fields
+// and spelling out the rest would bury them. Cast once, here.
+const mockArchive = {
   id: 1,
   printer_id: 1,
   project_id: null,
@@ -61,7 +63,7 @@ const mockArchive: Archive = {
   created_at: '2024-01-01T00:00:00Z',
   created_by_id: null,
   created_by_username: null,
-};
+} as unknown as Archive;
 
 const mockProjects = [
   { id: 1, name: 'Functional Parts', color: '#00ae42' },
@@ -85,7 +87,7 @@ describe('EditArchiveModal', () => {
         ]);
       }),
       http.patch('/api/v1/archives/:id', async ({ request }) => {
-        const body = await request.json();
+        const body = (await request.json()) as Record<string, unknown>;
         return HttpResponse.json({ ...mockArchive, ...body });
       })
     );

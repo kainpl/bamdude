@@ -47,6 +47,7 @@ describe('SpoolmanSettings', () => {
       spoolman_sync_mode: 'auto',
       spoolman_disable_weight_sync: 'false',
       spoolman_report_partial_usage: 'true',
+      auto_add_unknown_rfid: 'false',
     });
     vi.mocked(api.updateSpoolmanSettings).mockResolvedValue({
       spoolman_enabled: 'false',
@@ -54,6 +55,7 @@ describe('SpoolmanSettings', () => {
       spoolman_sync_mode: 'auto',
       spoolman_disable_weight_sync: 'false',
       spoolman_report_partial_usage: 'true',
+      auto_add_unknown_rfid: 'false',
     });
     vi.mocked(api.getSpoolmanStatus).mockResolvedValue({
       enabled: false,
@@ -136,6 +138,7 @@ describe('SpoolmanSettings', () => {
         spoolman_sync_mode: 'auto',
         spoolman_disable_weight_sync: 'false',
         spoolman_report_partial_usage: 'true',
+        auto_add_unknown_rfid: 'false',
       });
       vi.mocked(api.updateSpoolmanSettings).mockResolvedValue({
         spoolman_enabled: 'true',
@@ -143,6 +146,7 @@ describe('SpoolmanSettings', () => {
         spoolman_sync_mode: 'auto',
         spoolman_disable_weight_sync: 'false',
         spoolman_report_partial_usage: 'true',
+        auto_add_unknown_rfid: 'false',
       });
     });
 
@@ -239,6 +243,7 @@ describe('SpoolmanSettings', () => {
         spoolman_sync_mode: 'auto',
         spoolman_disable_weight_sync: 'false',
         spoolman_report_partial_usage: 'true',
+        auto_add_unknown_rfid: 'false',
       });
 
       render(<SpoolmanSettings />);
@@ -255,6 +260,7 @@ describe('SpoolmanSettings', () => {
         spoolman_sync_mode: 'manual',
         spoolman_disable_weight_sync: 'false',
         spoolman_report_partial_usage: 'true',
+        auto_add_unknown_rfid: 'false',
       });
 
       render(<SpoolmanSettings />);
@@ -275,6 +281,7 @@ describe('SpoolmanSettings', () => {
         spoolman_sync_mode: 'auto',
         spoolman_disable_weight_sync: 'true',
         spoolman_report_partial_usage: 'true',
+        auto_add_unknown_rfid: 'false',
       });
 
       render(<SpoolmanSettings />);
@@ -291,6 +298,7 @@ describe('SpoolmanSettings', () => {
         spoolman_sync_mode: 'auto',
         spoolman_disable_weight_sync: 'false',
         spoolman_report_partial_usage: 'true',
+        auto_add_unknown_rfid: 'false',
       });
 
       render(<SpoolmanSettings />);

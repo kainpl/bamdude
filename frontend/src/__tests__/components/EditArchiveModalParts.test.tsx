@@ -19,6 +19,8 @@ const baseArchive: Archive = {
   printer_id: 1,
   project_id: null,
   project_name: null,
+  project_line_id: null,
+  library_file_id: null,
   filename: 'multi-part.gcode.3mf',
   file_path: '/archives/multi-part.gcode.3mf',
   file_size: 1024,

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { fireEvent, screen } from '@testing-library/react';
 import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
+import type { OrderListItem } from '../../../api/client';
 import { OrderCard } from '../../../components/projects/OrderCard';
 
 // Every entry of the card menu is permission-gated, and the render helper's
@@ -13,7 +14,7 @@ vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
   return { ...actual, useAuth: () => ({ ...actual.useAuth(), hasPermission: () => true }) };
 });
 
-const base = { id: 1, name: 'Ten flasks', customer_id: 2, customer_name: 'ACME', color: '#00ae42', status: 'active', due_date: null, priority: 'normal', price: 120, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z', lines_count: 2, ordered: 10, printed: 4, progress: 0.4, line_products: [{ product_id: 11, has_cover: true }, { product_id: 12, has_cover: false }] } as const;
+const base: OrderListItem = { id: 1, name: 'Ten flasks', customer_id: 2, customer_name: 'ACME', color: '#00ae42', status: 'active', due_date: null, priority: 'normal', price: 120, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z', lines_count: 2, ordered: 10, printed: 4, progress: 0.4, line_products: [{ product_id: 11, has_cover: true }, { product_id: 12, has_cover: false }] };
 const noop = () => {};
 
 describe('OrderCard', () => {

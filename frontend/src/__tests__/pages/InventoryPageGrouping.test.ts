@@ -62,6 +62,15 @@ function computeDisplayItems(
 function makeSpool(overrides: Partial<InventorySpool> & { id: number }): InventorySpool {
   return {
     material: 'PLA',
+    purchase_date: null,
+    filament_diameter: '1.75',
+    lot: null,
+    last_scale_weight: null,
+    last_weighed_at: null,
+    extra_colors: null,
+    effect_type: null,
+    category: null,
+    low_stock_threshold_pct: null,
     subtype: 'Basic',
     brand: 'Polymaker',
     color_name: 'Red',
@@ -192,6 +201,8 @@ describe('computeDisplayItems', () => {
     ];
     const assignmentMap: Record<number, SpoolAssignment> = {
       2: {
+        id: 1,
+        created_at: '2026-01-01T00:00:00Z',
         spool_id: 2,
         printer_id: 1,
         printer_name: 'P1S',

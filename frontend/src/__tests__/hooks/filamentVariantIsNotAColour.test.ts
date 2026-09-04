@@ -18,14 +18,27 @@
 import { describe, it, expect } from 'vitest';
 
 import { buildFilamentComparison } from '../../hooks/useFilamentMapping';
+import type { LoadedFilament } from '../../hooks/useFilamentMapping';
 
 const MATTE = 'GFA01';
 const BASIC = 'GFA00';
 const RED = '#FF0000';
 const GREEN = '#00FF00';
 
-function tray(globalTrayId: number, color: string, trayInfoIdx: string, type = 'PLA') {
-  return { globalTrayId, type, color, trayInfoIdx, label: `AMS${globalTrayId}`, remain: 50 };
+function tray(globalTrayId: number, color: string, trayInfoIdx: string, type = 'PLA'): LoadedFilament {
+  return {
+    globalTrayId,
+    type,
+    color,
+    colorName: '',
+    amsId: 0,
+    trayId: globalTrayId,
+    isHt: false,
+    isExternal: false,
+    trayInfoIdx,
+    label: `AMS${globalTrayId}`,
+    remain: 50,
+  };
 }
 
 function need(color: string, trayInfoIdx: string, type = 'PLA') {

@@ -15,16 +15,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
-import type { Product } from '../../../api/client';
+import type { AttachmentCategory, Product, ProductAttachment } from '../../../api/client';
 import { ProductAttachments } from '../../../components/products/ProductAttachments';
 
-const entry = (category: string, filename: string, original: string, source = 'manual') => ({
+// `source` is a plain `string` here on purpose: the server's own
+// `ProductAttachmentOut.source` is a `str` (a hand-edited column or a restored
+// backup can carry a fourth value), and one test below writes exactly that.
+const entry = (category: AttachmentCategory, filename: string, original: string, source = 'manual') => ({
   category,
   filename,
   original_name: original,
   size: 2048,
   sort_order: 0,
-  source,
+  source: source as ProductAttachment['source'],
   source_file_id: null,
   uploaded_at: null,
 });

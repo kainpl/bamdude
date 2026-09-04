@@ -6,7 +6,6 @@
  * cache values from overwriting usage-tracked weight data on the backend.
  */
 
-import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
 import { render } from '../utils';
@@ -62,6 +61,16 @@ import { api } from '../../api/client';
 const existingSpool: InventorySpool = {
   id: 1,
   material: 'PLA',
+  cost_per_kg: null,
+  purchase_date: null,
+  filament_diameter: '1.75',
+  lot: null,
+  last_scale_weight: null,
+  last_weighed_at: null,
+  extra_colors: null,
+  effect_type: null,
+  category: null,
+  low_stock_threshold_pct: null,
   subtype: 'Basic',
   brand: 'Polymaker',
   color_name: 'Red',
@@ -238,9 +247,9 @@ describe('SpoolFormModal weightTouched', () => {
 
   it('includes core_weight_catalog_id when selecting from catalog', async () => {
     const mockCatalog = [
-      { id: 1, name: 'Generic 250g', weight: 250 },
-      { id: 2, name: 'Bambu Lab 250g', weight: 250 },
-      { id: 3, name: 'Standard 300g', weight: 300 },
+      { id: 1, name: 'Generic 250g', weight: 250, is_default: false },
+      { id: 2, name: 'Bambu Lab 250g', weight: 250, is_default: false },
+      { id: 3, name: 'Standard 300g', weight: 300, is_default: false },
     ];
 
     vi.mocked(api.getSpoolCatalog).mockResolvedValue(mockCatalog);
@@ -362,9 +371,9 @@ describe('SpoolFormModal weightTouched', () => {
     };
 
     const mockCatalog = [
-      { id: 1, name: 'Generic 250g', weight: 250 },
-      { id: 2, name: 'Bambu Lab 250g', weight: 250 },
-      { id: 3, name: 'Standard 300g', weight: 300 },
+      { id: 1, name: 'Generic 250g', weight: 250, is_default: false },
+      { id: 2, name: 'Bambu Lab 250g', weight: 250, is_default: false },
+      { id: 3, name: 'Standard 300g', weight: 300, is_default: false },
     ];
 
     vi.mocked(api.getSpoolCatalog).mockResolvedValue(mockCatalog);
@@ -391,7 +400,8 @@ describe('SpoolFormModal weightTouched', () => {
     await waitFor(() => {
       const weightInputs = screen.getAllByDisplayValue(/250|Bambu/i);
       const bambuFound = weightInputs.some(input =>
-        input.value === 'Bambu Lab 250g' || input.getAttribute('value') === 'Bambu Lab 250g'
+        (input as HTMLInputElement).value === 'Bambu Lab 250g' ||
+        input.getAttribute('value') === 'Bambu Lab 250g'
       );
       expect(bambuFound).toBeTruthy();
     });

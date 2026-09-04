@@ -24,8 +24,20 @@ const mockPrinters = [
 
 const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueueItem => ({
   id: 1,
+  queue_id: 1,
   printer_id: 1,
   archive_id: 1,
+  library_file_id: null,
+  waiting_reason: null,
+  origin: 'queue',
+  nozzle_offset_cali: 'off',
+  mesh_mode_fast_check: true,
+  execute_swap_macros: false,
+  swap_macro_events: null,
+  selected_macro_ids: null,
+  gcode_injection: false,
+  preheat_override: 'inherit',
+  preheat_chamber_target_override: null,
   position: 1,
   scheduled_time: null,
   auto_off_after: false,
@@ -33,8 +45,8 @@ const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueu
   require_previous_success: false,
   ams_mapping: null,
   plate_id: null,
-  bed_levelling: true,
-  flow_cali: true,
+  bed_levelling: 'on',
+  flow_cali: 'on',
   layer_inspect: false,
   timelapse: false,
   use_ams: true,
@@ -200,7 +212,10 @@ describe('PrintModal', () => {
       await user.click(screen.getByRole('button', { name: /^print$/i }));
       await waitFor(() => expect(printBody).not.toBeNull());
       expect(printBody).toHaveProperty('selected_macro_ids');
-      expect(Array.isArray((printBody as Record<string, unknown>).selected_macro_ids)).toBe(true);
+      // Double cast: the only assignment to `printBody` is inside an msw
+      // handler, which TypeScript's flow analysis cannot see, so it still
+      // holds the declared `null` here.
+      expect(Array.isArray((printBody as unknown as Record<string, unknown>).selected_macro_ids)).toBe(true);
     });
   });
 

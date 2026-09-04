@@ -88,6 +88,33 @@ function mockLibrary() {
 
 const bar = () => document.querySelector('[data-pagination]') as HTMLElement;
 
+/**
+ * Generous on purpose.
+ *
+ * Every wait it is passed to is a request/response round trip through msw plus
+ * a React commit. Vitest's default 1 s is the wall a STARVED worker hits — this
+ * file was green alone, green serially and green at 194 files, and red only on
+ * the full parallel run, in two separate passes. The assertions are unchanged;
+ * only the patience is. A real regression still fails, five seconds later.
+ */
+const SETTLE = { timeout: 5000 };
+
+/**
+ * Click the pager's next-page control, once there IS one.
+ *
+ * ⚠️ `bar()` is a live DOM read, and the pagination bar is unmounted while the
+ * list has no rows to page — which is exactly the state between clicking Next
+ * and its response arriving. Reading the button synchronously therefore races
+ * the fetch it follows, and the race is lost only under load: green alone,
+ * green serially, red on the full parallel run where a worker can be starved
+ * for a whole second. The `waitFor` is the load evidence — the bar being back
+ * on screen means the page it belongs to has rendered.
+ */
+async function clickNextPage() {
+  const button = await waitFor(() => within(bar()).getByRole('button', { name: /next page/i }), SETTLE);
+  await userEvent.click(button);
+}
+
 describe('FileManagerPage pagination', () => {
   beforeEach(() => {
     requests = [];
@@ -99,7 +126,7 @@ describe('FileManagerPage pagination', () => {
     render(<FileManagerPage />);
     await waitFor(() => expect(bar()).toBeTruthy());
 
-    await userEvent.click(within(bar()).getByRole('button', { name: /next page/i }));
+    await clickNextPage();
 
     await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('2'));
   });
@@ -110,7 +137,7 @@ describe('FileManagerPage pagination', () => {
 
     // Get onto page 2 for real (the internal `page` state, not just what the
     // mock happens to report) before touching a filter.
-    await userEvent.click(within(bar()).getByRole('button', { name: /next page/i }));
+    await clickNextPage();
     await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('2'));
 
     requests = []; // only the requests caused by the filter click matter below
@@ -140,7 +167,7 @@ describe('FileManagerPage pagination', () => {
     await userEvent.click(within(card).getByLabelText('Select file'));
     expect(await screen.findByText('1 selected')).toBeInTheDocument();
 
-    await userEvent.click(within(bar()).getByRole('button', { name: /next page/i }));
+    await clickNextPage();
 
     await waitFor(() => expect(screen.queryByText('1 selected')).not.toBeInTheDocument());
     // The bulk bar itself is gone, not merely relabelled.
@@ -182,19 +209,19 @@ describe('FileManagerPage pagination', () => {
     render(<FileManagerPage />);
     await waitFor(() => expect(bar()).toBeTruthy());
 
-    await userEvent.click(within(bar()).getByRole('button', { name: /next page/i }));
-    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('2'));
+    await clickNextPage();
+    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('2'), SETTLE);
 
     // The list shrinks: the very response to the page-3 request below is the
     // one that discovers it, same as it would in production.
     responseLastPage = 1;
-    await userEvent.click(within(bar()).getByRole('button', { name: /next page/i }));
-    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('3'));
+    await clickNextPage();
+    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('3'), SETTLE);
 
     // Left unclamped this stays on page 3 showing "No files yet" with the
     // pager reading current_page=3 of last_page=1. The clamp effect must
     // fire a follow-up fetch back onto page 1.
-    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('1'));
+    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('1'), SETTLE);
   });
 
   it('drops the selection too when the clamp fires — the residual IMP2 case the clamp effect itself reopened', async () => {
@@ -241,8 +268,8 @@ describe('FileManagerPage pagination', () => {
     render(<FileManagerPage />);
     await screen.findByText('Benchy');
 
-    await userEvent.click(within(bar()).getByRole('button', { name: /next page/i }));
-    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('2'));
+    await clickNextPage();
+    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('2'), SETTLE);
     await screen.findByText('Benchy'); // page 2's own (still-valid) rows
 
     const card = screen.getByText('Benchy').closest('.group') as HTMLElement;
@@ -253,10 +280,10 @@ describe('FileManagerPage pagination', () => {
     // this refetch is what actually discovers the shrink.
     await userEvent.click(screen.getByText('Generate Thumbnails'));
 
-    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('1'));
+    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('1'), SETTLE);
     // Selection must not survive the clamp any more than it survives a
     // manual page change or a filter-driven reset.
-    await waitFor(() => expect(screen.queryByText('1 selected')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('1 selected')).not.toBeInTheDocument(), SETTLE);
     expect(screen.queryByRole('button', { name: /^Move$/i })).not.toBeInTheDocument();
   });
 });

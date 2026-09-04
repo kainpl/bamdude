@@ -41,7 +41,7 @@ describe('SettingsPage', () => {
         return HttpResponse.json(mockSettings);
       }),
       http.patch('/api/v1/settings/', async ({ request }) => {
-        const body = await request.json();
+        const body = (await request.json()) as Record<string, unknown>;
         return HttpResponse.json({ ...mockSettings, ...body });
       }),
       http.get('/api/v1/printers/', () => {

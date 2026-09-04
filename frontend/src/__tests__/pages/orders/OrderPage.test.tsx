@@ -10,8 +10,31 @@ import { Routes, Route } from 'react-router-dom';
 import { QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
+import type { Permission } from '../../../api/client';
 import { OrderPage } from '../../../pages/orders/OrderPage';
 import { createAppQueryClient } from '../../../utils/appQueryClient';
+
+/**
+ * What the mocked `useAuth` grants.
+ *
+ * `null` is the admin the render helper's real `AuthProvider` resolves — every
+ * test below except the viewer one wants that, so the default costs nothing
+ * and the narrowing is visible where it matters.
+ */
+const auth = vi.hoisted(() => ({ granted: null as Set<string> | null }));
+
+// Only the hook is replaced; the provider itself stays real, so the page mounts
+// the way the app mounts it.
+vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../contexts/AuthContext')>();
+  return {
+    ...actual,
+    useAuth: () => {
+      const real = actual.useAuth();
+      return { ...real, hasPermission: (p: Permission) => auth.granted?.has(p) ?? real.hasPermission(p) };
+    },
+  };
+});
 
 const order = {
   id: 1,
@@ -85,6 +108,7 @@ function CustomerProbe({ onFetch }: { onFetch: () => void }) {
 describe('OrderPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    auth.granted = null;
     // The page mounts `PlanBlock`, which fetches its own plan. These tests are
     // about the page's composition, not the plan — an empty one keeps the block
     // quiet without letting the request escape to the network.
@@ -92,6 +116,38 @@ describe('OrderPage', () => {
       lines: [],
       totals: { prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null },
     });
+  });
+
+  it('offers a read-only viewer no way to change a line', async () => {
+    // The NEGATIVE half of the lines table's permission gate, which nothing
+    // pinned: `projects:read` renders the order, `projects:update` renders the
+    // affordances, and the page is the only place the two are joined
+    // (`canEdit = hasPermission('projects:update')`). A default-true `canEdit`,
+    // a gate dropped from a row's action cell, or the page passing `canEdit`
+    // it never computed all show up here.
+    //
+    // ⚠️ Not "no print button": pass 3 took printing off the row entirely and
+    // the plan block owns it now, so what a viewer must not see is edit,
+    // reorder, delete and add-line.
+    auth.granted = new Set(['projects:read']);
+    vi.spyOn(api, 'getOrder').mockResolvedValue(order as never);
+
+    window.history.pushState({}, '', '/projects/1');
+    render(
+      <Routes>
+        <Route path="/projects/:id" element={<OrderPage />} />
+      </Routes>,
+    );
+
+    // The line is on screen — this is a viewer, not an error page.
+    expect(await screen.findByText('Flask')).toBeInTheDocument();
+    // ...and it can still be opened to see its parts.
+    expect(screen.getByTestId('line-10-expand')).toBeInTheDocument();
+
+    for (const action of ['edit', 'up', 'down', 'delete', 'save']) {
+      expect(screen.queryByTestId(`line-10-${action}`)).not.toBeInTheDocument();
+    }
+    expect(screen.queryByRole('button', { name: /add line/i })).not.toBeInTheDocument();
   });
 
   it('plans what to print next, right under the lines', async () => {

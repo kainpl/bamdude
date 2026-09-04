@@ -320,6 +320,89 @@ async def test_the_response_names_which_archives_fed_each_line_and_which_fed_non
 
 
 @pytest.mark.asyncio
+async def test_a_line_less_order_lists_its_prints_as_other_rather_than_losing_them(
+    committing_client, db_session, catalog
+):
+    """An order with NO lines still accounts for the prints bound to it.
+
+    There is no candidate line to attribute anything to, so the whole set has
+    to come back under ``other_archive_ids`` — the order page renders its
+    prints from that field alone, and an empty one would show a page whose
+    heading says "prints" above nothing at all, for prints the operator can see
+    on the archives page filed under this very order.
+    """
+    file_id = catalog["file"].id
+    pid = (await committing_client.post("/api/v1/projects/", json={"name": "Bare"})).json()["id"]
+    strays = [await _completed_print(db_session, pid, file_id) for _ in range(2)]
+
+    body = (await committing_client.get(f"/api/v1/projects/{pid}")).json()
+    assert body["lines"] == []
+    assert body["other_archive_ids"] == [strays[0].id, strays[1].id]
+    assert body["figures"]["other_prints_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_line_no_print_reached_names_an_empty_list_not_null(committing_client, db_session, catalog):
+    """``archive_ids`` is ALWAYS a list — ``[]`` for a line nothing fed.
+
+    The order page maps over the field directly. ``null`` there is a crash on
+    the page of a perfectly ordinary order (one line printed, the next not
+    started), and the only place the shape is decided is this response.
+    """
+    product_id = catalog["product"].id
+    pid = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "One of two started",
+                "lines": [{"product_id": product_id, "quantity": 1}, {"product_id": product_id, "quantity": 1}],
+            },
+        )
+    ).json()["id"]
+    # ONE print: a Lamp is 1 shade + 2 arms, so it fills the first line exactly
+    # and the second is left untouched.
+    printed = await _completed_print(db_session, pid, catalog["file"].id)
+
+    body = (await committing_client.get(f"/api/v1/projects/{pid}")).json()
+    lines = sorted(body["lines"], key=lambda ln: ln["sort_order"])
+    assert lines[0]["archive_ids"] == [printed.id]
+    assert lines[1]["archive_ids"] == []
+    assert body["other_archive_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_one_archive_answers_to_two_lines_on_the_wire(committing_client, db_session):
+    """A shared plate is named by BOTH lines whose products it carries.
+
+    ``build_parity_fixture``'s shared bed holds a lamp's shade and a hook, and
+    the live order has a line for each. ``lines[].archive_ids`` is therefore not
+    a partition, and the order page's grouping leans on exactly that: rebuilt
+    from the archives instead, the plate would be filed under one line and
+    silently missing from the other. Pinned here at the API, because the unit
+    test can only speak for ``attribute``.
+    """
+    ids = await build_parity_fixture(db_session)
+    shared_file = (
+        await db_session.execute(select(LibraryFile).where(LibraryFile.filename == "shared.gcode.3mf"))
+    ).scalar_one()
+    shared_archive = (
+        await db_session.execute(
+            select(PrintArchive).where(
+                PrintArchive.project_id == ids["live"], PrintArchive.library_file_id == shared_file.id
+            )
+        )
+    ).scalar_one()
+
+    body = (await committing_client.get(f"/api/v1/projects/{ids['live']}")).json()
+    by_id = {line["id"]: line for line in body["lines"]}
+    # The lamp line also holds the bases print; the hook line holds this one alone.
+    assert shared_archive.id in by_id[ids["l1"]]["archive_ids"]
+    assert by_id[ids["l2"]]["archive_ids"] == [shared_archive.id]
+    # Named twice, and claimed by nobody else.
+    assert body["other_archive_ids"] == []
+
+
+@pytest.mark.asyncio
 async def test_an_order_without_lines_is_not_printed(committing_client):
     """``all_printed`` over an empty set of lines is False, not the vacuous True
     ``all()`` would give — an empty order is not a finished one."""

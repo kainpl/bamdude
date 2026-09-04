@@ -651,7 +651,10 @@ describe('PlanBlock', () => {
 
     // ⚠️ `plate_index` 0 is "the whole file", not "plate 0" — the modal must
     // be handed nothing rather than a zero it would pin.
-    expect(printModal.props?.preselectedPlateId).toBeUndefined();
+    // The cast restores what the re-render actually put back: `props` was set
+    // to `null` four lines up, and flow analysis cannot see the modal's own
+    // assignment inside the mock.
+    expect((printModal.props as Record<string, unknown> | null)?.preselectedPlateId).toBeUndefined();
   });
   it('marks the two QUEUE caches stale beside every order view, once a plate is queued', async () => {
     // ⚠️ `['queue']` and `['auto-queue']` are NOT order views and cannot join

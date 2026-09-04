@@ -39,7 +39,18 @@ const file = (over: Partial<LibraryFileListItem> = {}): LibraryFileListItem =>
   }) as LibraryFileListItem;
 
 const folder = (id: number, name: string): LibraryFolderTree =>
-  ({ id, name, children: [], is_external: false, external_readonly: false }) as LibraryFolderTree;
+  ({
+    id,
+    name,
+    products: [],
+    parent_id: null,
+    children: [],
+    is_external: false,
+    external_path: null,
+    external_readonly: false,
+    file_count: 0,
+    latest_activity_at: null,
+  }) as LibraryFolderTree;
 
 function renderPicker(props: Partial<Parameters<typeof LibraryPickerModal>[0]> = {}) {
   const onConfirm = vi.fn();

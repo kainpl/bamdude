@@ -27,6 +27,8 @@ function sensor(over: Partial<ZigbeeSensor> = {}): ZigbeeSensor {
     id: 1,
     name: 'Майстерня',
     location: { id: 2, name: 'Shop 2', parent_id: null, path: 'Shop 2' },
+    printer_id: null,
+    printer_name: null,
     ieee: 'aa:bb:cc:dd:ee:ff:00:11',
     nwk: 123,
     manufacturer: 'SONOFF',
@@ -41,7 +43,19 @@ function sensor(over: Partial<ZigbeeSensor> = {}): ZigbeeSensor {
 }
 
 function renderCard(over: Partial<ZigbeeSensor> = {}) {
-  return render(<SensorCard sensor={sensor(over)} onEdit={() => {}} onUnbind={() => {}} canEdit canDelete />);
+  return render(
+    <SensorCard
+      sensor={sensor(over)}
+      onEdit={() => {}}
+      onUnbind={() => {}}
+      onConfigure={() => {}}
+      onChart={() => {}}
+      onThresholds={() => {}}
+      canEdit
+      canDelete
+      canConfigure
+    />,
+  );
 }
 
 describe('SensorCard', () => {

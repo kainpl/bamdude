@@ -8,7 +8,7 @@
  * throws, and neither shows up in a screenshot.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
@@ -39,14 +39,16 @@ const statusWithPetg = {
 
 describe('PrintModal self-submit', () => {
   let queuePosts: number;
-  let onClose: ReturnType<typeof vi.fn>;
-  let onSuccess: ReturnType<typeof vi.fn>;
+  // Typed: a bare `vi.fn()` is `Mock<Procedure | Constructable>` and the
+  // modal's props want `() => void`.
+  let onClose: Mock<() => void>;
+  let onSuccess: Mock<() => void>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     queuePosts = 0;
-    onClose = vi.fn();
-    onSuccess = vi.fn();
+    onClose = vi.fn<() => void>();
+    onSuccess = vi.fn<() => void>();
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json(printers)),
       http.get('/api/v1/archives/:id/plates', () =>

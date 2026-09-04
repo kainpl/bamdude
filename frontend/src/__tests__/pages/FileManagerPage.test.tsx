@@ -41,7 +41,12 @@ const mockFolders = [
     parent_id: null,
     file_count: 2,
     // m158: folders link to PRODUCTS; the chip row reads `products` only.
-    products: [{ id: 1, name: 'My Art Product', is_active: true }],
+    // ⚠️ TWO of them, so the chip's tooltip has something to join — with one
+    // product `join(', ')` is indistinguishable from `products[0].name`.
+    products: [
+      { id: 1, name: 'My Art Product', is_active: true },
+      { id: 2, name: 'Retired Sculpture', is_active: false },
+    ],
     children: [],
   },
 ];
@@ -313,6 +318,20 @@ describe('FileManagerPage', () => {
         // Art Projects is the one folder linked to a product.
         expect(screen.getByText('Art Projects')).toBeInTheDocument();
       });
+    });
+
+    it('names the products a folder is linked to in the chip tooltip', async () => {
+      // The chip is an icon and a count — the NAMES are only in its `title`,
+      // and they are the whole reason the chip is worth hovering. A product
+      // that has left the catalog is named there too: the link is a fact about
+      // the folder, not an offer to make one.
+      render(<FileManagerPage />);
+
+      const row = (await screen.findByText('Art Projects')).closest('div') as HTMLElement;
+      const chip = within(row).getByTitle('My Art Product, Retired Sculpture');
+      expect(chip).toBeInTheDocument();
+      // ...and the count beside it, because two names do not fit the row.
+      expect(within(chip).getByText('×2')).toBeInTheDocument();
     });
   });
 

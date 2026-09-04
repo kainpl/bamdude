@@ -7,14 +7,16 @@ import { SensorsSection } from '../../components/zigbee/SensorsSection';
 import { api } from '../../api/client';
 import type { ZigbeeSensor, ZigbeeStatus } from '../../api/client';
 
-const UP: ZigbeeStatus = { state: 'up', reason: null, coordinator: null, network: null };
-const DOWN: ZigbeeStatus = { state: 'error', reason: 'no dongle', coordinator: null, network: null };
+const UP: ZigbeeStatus = { state: 'up', reason: null, coordinator: null, network: null, radio_changed: null };
+const DOWN: ZigbeeStatus = { state: 'error', reason: 'no dongle', coordinator: null, network: null, radio_changed: null };
 
 function sensor(over: Partial<ZigbeeSensor> = {}): ZigbeeSensor {
   return {
     id: 1,
     name: 'Майстерня',
     location: null,
+    printer_id: null,
+    printer_name: null,
     ieee: 'aa:bb',
     nwk: 1,
     manufacturer: 'SONOFF',

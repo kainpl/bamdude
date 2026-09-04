@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { useQuery } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
@@ -150,6 +150,44 @@ describe('OrderLinesTable', () => {
     // The editor is closed, so the row offers Edit again rather than Save.
     expect(screen.getByTestId('line-10-edit')).toBeInTheDocument();
     expect(screen.queryByTestId('line-10-save')).not.toBeInTheDocument();
+  });
+
+  it('folds the material before comparing it, so a typed " petg " is saved as PETG', async () => {
+    // The fold is in `changedFields`, NOT only on the field's blur — the plates
+    // spell their material upper-case and the server stores whatever it is
+    // given, so a row saved with a lower-case material would keep failing to
+    // match them. Saving is the repair. Nothing is blurred here on purpose:
+    // clicking Save straight out of the box is the path that used to send the
+    // raw string.
+    const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
+    render(<OrderLinesTable order={order} canEdit />);
+
+    fireEvent.click(screen.getByTestId('line-11-edit'));
+    // Scoped to the row: the add-line row at the bottom carries a material box
+    // of its own, so a page-wide query finds two.
+    const row = screen.getByTestId('line-11-save').closest('tr') as HTMLElement;
+    fireEvent.change(within(row).getByLabelText(/material/i), { target: { value: ' petg ' } });
+    fireEvent.click(screen.getByTestId('line-11-save'));
+
+    // Trimmed, upper-cased, and alone — the untouched fields are not restated.
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 11, { material: 'PETG' }));
+  });
+
+  it('sends nothing when the folded material equals the one already stored', async () => {
+    // The other half of the same rule, and the one a fold applied only to the
+    // OUTGOING value would break: line 10 already holds `PETG`, so typing
+    // " petg " is not an edit. A `PATCH {}` here would bump the order's
+    // `updated_at` and refetch two keys to change nothing.
+    const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
+    render(<OrderLinesTable order={order} canEdit />);
+
+    fireEvent.click(screen.getByTestId('line-10-edit'));
+    const row = screen.getByTestId('line-10-save').closest('tr') as HTMLElement;
+    fireEvent.change(within(row).getByLabelText(/material/i), { target: { value: ' petg ' } });
+    fireEvent.click(screen.getByTestId('line-10-save'));
+
+    expect(patch).not.toHaveBeenCalled();
+    expect(screen.getByTestId('line-10-edit')).toBeInTheDocument();
   });
 
   it('no longer offers a print of its own — the plan block owns that', async () => {

@@ -64,7 +64,12 @@ describe('useFilamentLabels', () => {
     const { result, rerender } = renderHook(
       ({ reqs }: { reqs: undefined | Array<{ type: string; color: string }> }) =>
         useFilamentLabels(reqs),
-      { wrapper: makeWrapper(), initialProps: { reqs: undefined } },
+      {
+        wrapper: makeWrapper(),
+        // Annotated: the rerender below hands it `[]`, and TypeScript would
+        // otherwise pin the props type to the literal `undefined`.
+        initialProps: { reqs: undefined } as { reqs: undefined | Array<{ type: string; color: string }> },
+      },
     );
     expect(result.current).toEqual([]);
 

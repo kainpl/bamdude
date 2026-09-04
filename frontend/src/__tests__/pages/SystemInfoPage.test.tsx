@@ -23,6 +23,7 @@ vi.mock('../../api/client', () => ({
       reason: null,
       coordinator: null,
       network: null,
+      radio_changed: null,
     }),
     getZigbeeDevices: vi.fn().mockResolvedValue({ devices: [] }),
   },
@@ -359,6 +360,7 @@ describe('SystemInfoPage Zigbee diagnostics', () => {
         version: '7.4.5.0',
       },
       network: { channel: 25, pan_id: 30710 },
+      radio_changed: null,
     });
     vi.mocked(api.getZigbeeDevices).mockResolvedValue({ devices: [] });
 
@@ -373,6 +375,7 @@ describe('SystemInfoPage Zigbee diagnostics', () => {
       reason: 'TransientConnectionError',
       coordinator: null,
       network: null,
+      radio_changed: null,
     });
     vi.mocked(api.getZigbeeDevices).mockResolvedValue({ devices: [] });
 
@@ -387,6 +390,7 @@ describe('SystemInfoPage Zigbee diagnostics', () => {
       reason: null,
       coordinator: null,
       network: null,
+      radio_changed: null,
     });
     vi.mocked(api.getZigbeeDevices).mockResolvedValue({ devices: [] });
 

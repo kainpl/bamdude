@@ -16,8 +16,8 @@ import { ZigbeeCoordinatorCard } from '../../components/zigbee/ZigbeeCoordinator
 import { api } from '../../api/client';
 import type { ZigbeeDevice, ZigbeeStatus } from '../../api/client';
 
-const DISABLED: ZigbeeStatus = { state: 'disabled', reason: null, coordinator: null, network: null };
-const UP: ZigbeeStatus = { state: 'up', reason: null, coordinator: null, network: null };
+const DISABLED: ZigbeeStatus = { state: 'disabled', reason: null, coordinator: null, network: null, radio_changed: null };
+const UP: ZigbeeStatus = { state: 'up', reason: null, coordinator: null, network: null, radio_changed: null };
 
 function device(overrides: Partial<ZigbeeDevice> = {}): ZigbeeDevice {
   return {
@@ -57,6 +57,7 @@ describe('ZigbeeCoordinatorCard', () => {
       reason: 'Port busy - Zigbee2MQTT is the most likely owner',
       coordinator: null,
       network: null,
+      radio_changed: null,
     });
 
     render(<ZigbeeCoordinatorCard />);
@@ -76,6 +77,7 @@ describe('ZigbeeCoordinatorCard', () => {
         version: '8.0.2',
       },
       network: { channel: 15, pan_id: 6754 },
+      radio_changed: null,
     });
 
     render(<ZigbeeCoordinatorCard />);
@@ -103,7 +105,7 @@ describe('ZigbeeCoordinatorCard', () => {
     });
     vi.spyOn(api, 'restartZigbeeCoordinator').mockImplementation(async () => {
       calls.push('restart');
-      return { state: 'up', reason: null, coordinator: null, network: null };
+      return { state: 'up', reason: null, coordinator: null, network: null, radio_changed: null };
     });
 
     render(<ZigbeeCoordinatorCard />);
@@ -132,7 +134,7 @@ describe('ZigbeeCoordinatorCard', () => {
   });
 
   it('pairing is refused while the radio is not up', async () => {
-    stub({ state: 'error', reason: 'no dongle', coordinator: null, network: null });
+    stub({ state: 'error', reason: 'no dongle', coordinator: null, network: null, radio_changed: null });
 
     render(<ZigbeeCoordinatorCard />);
 

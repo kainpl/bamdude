@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ShoppingCart } from 'lucide-react';
@@ -25,12 +26,24 @@ interface ProcurementChecklistProps {
  * `acquired` remounts it with the new number, while an in-flight edit keeps
  * what the operator typed. A controlled input would need a draft map that
  * outlives the refetch, which is the same "second copy of the truth" one
- * level down.
+ * level down. ⚠️ A REFUSED patch is therefore the one case the key alone
+ * cannot see — the server's number did not change — so a per-row rejection
+ * counter joins it; see `rejections` below.
  */
 export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+
+  // ⚠️ One bump per row per REFUSAL, and it is part of the input's `key`.
+  //
+  // The box is uncontrolled and keyed on the server's `acquired`, so a rejected
+  // PATCH re-renders nothing at all: the number the operator typed stays on
+  // screen, looking saved, while the server still holds the old one. Nothing
+  // else on the page would ever contradict it — `remaining` is the server's and
+  // did not move either. Remounting the input is what puts the truth back, and
+  // it is the same remedy the invalid-input branch of `commit` already uses.
+  const [rejections, setRejections] = useState<Record<number, number>>({});
 
   const save = useMutation({
     mutationFn: ({ partId, acquired }: { partId: number; acquired: number }) =>
@@ -38,7 +51,10 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
     onSuccess: () => {
       invalidateOrderViews(queryClient, { orderId: order.id });
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: (e: Error, { partId }) => {
+      showToast(e.message, 'error');
+      setRejections((prev) => ({ ...prev, [partId]: (prev[partId] ?? 0) + 1 }));
+    },
   });
 
   // Nothing bought means nothing to check off — an empty table with three
@@ -85,7 +101,7 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
                 <td className="px-3 py-2 text-right text-bambu-gray tabular-nums">{row.need}</td>
                 <td className="px-3 py-2 text-right">
                   <input
-                    key={row.acquired}
+                    key={`${row.acquired}:${rejections[row.part_id] ?? 0}`}
                     data-testid={`procurement-${row.part_id}-acquired`}
                     type="number"
                     min={0}

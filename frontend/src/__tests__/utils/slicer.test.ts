@@ -2,17 +2,19 @@
  * Tests for the slicer utility functions.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { openInSlicer, detectPlatform } from '../../utils/slicer';
 
 describe('slicer utility', () => {
-  let clickSpy: ReturnType<typeof vi.fn>;
+  // Typed: a bare `vi.fn()` is `Mock<Procedure | Constructable>`, which
+  // `mockImplementation` will not take for a `() => void` method.
+  let clickSpy: Mock<() => void>;
   let appendSpy: ReturnType<typeof vi.fn>;
   let removeSpy: ReturnType<typeof vi.fn>;
   let createdLink: HTMLAnchorElement;
 
   beforeEach(() => {
-    clickSpy = vi.fn();
+    clickSpy = vi.fn<() => void>();
     appendSpy = vi.spyOn(document.body, 'appendChild').mockImplementation((node) => {
       createdLink = node as HTMLAnchorElement;
       return node;

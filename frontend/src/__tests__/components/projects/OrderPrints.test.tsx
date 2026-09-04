@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { Order } from '../../../api/client';
@@ -60,6 +60,39 @@ describe('OrderPrints', () => {
     expect(screen.getByTestId('prints-line-11').textContent).toContain('b.3mf');
     expect(screen.getByTestId('prints-other').textContent).toContain('c.3mf');
     expect(screen.getAllByText(/attributed/i).length).toBeGreaterThan(0);
+  });
+
+  it('says which of two prints under the same line was filed by hand', async () => {
+    // The badge reads `archive.project_line_id`, NOT the group the card is
+    // drawn in. Both of these hang under line 10 — one because an operator
+    // filed it there, one because the server's accounting attributed it — and
+    // a badge derived from the grouping would call both of them "Filed",
+    // erasing the only signal that says whose decision it was.
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
+      { id: 1, filename: 'by-hand.3mf', status: 'completed', project_line_id: 10 },
+      { id: 2, filename: 'by-the-server.3mf', status: 'completed', project_line_id: null },
+    ] as never);
+
+    const order = {
+      id: 1,
+      other_archive_ids: [],
+      lines: [{ id: 10, product_name: 'Flask', quantity: 2, archive_ids: [1, 2] }],
+    } as unknown as Order;
+
+    render(<OrderPrints order={order} canEdit />);
+
+    const group = await screen.findByTestId('prints-line-10');
+    const card = (name: string) => screen.getByText(name).closest('div.relative') as HTMLElement;
+
+    expect(within(card('by-hand.3mf')).getByText('Filed')).toBeInTheDocument();
+    expect(within(card('by-the-server.3mf')).getByText('Attributed')).toBeInTheDocument();
+    // The filed one also names the line it was filed under; the attributed one
+    // has nothing to name, because nobody named it.
+    expect(within(card('by-hand.3mf')).getByText('Filed')).toHaveAttribute('title', 'Flask');
+    expect(within(card('by-the-server.3mf')).getByText('Attributed')).not.toHaveAttribute('title');
+    // Both are in the same group — the badge is the only thing that differs.
+    expect(group.textContent).toContain('by-hand.3mf');
+    expect(group.textContent).toContain('by-the-server.3mf');
   });
 
   it('shows an archive no group claimed rather than dropping it', async () => {

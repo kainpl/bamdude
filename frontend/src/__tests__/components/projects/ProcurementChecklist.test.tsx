@@ -50,6 +50,40 @@ describe('ProcurementChecklist', () => {
     expect(screen.getByTestId('procurement-4-remaining').textContent).toBe('7');
   });
 
+  it('puts the number back when the server refuses the commit', async () => {
+    // The input is UNCONTROLLED and keyed on the server's `acquired`, so a
+    // rejected PATCH re-renders nothing: without an explicit restore the box
+    // sits there showing 25 while the server still holds 10, and the row reads
+    // as saved for as long as the page stays open. The same argument the
+    // component already makes for a cleared or negative field — "and the box
+    // has to say so" — is what a 4xx needs too.
+    const patch = vi
+      .spyOn(api, 'updateOrderProcurement')
+      .mockRejectedValue(new Error('Part not found'));
+
+    render(
+      <ProcurementChecklist
+        order={
+          {
+            id: 1,
+            procurement: [{ part_id: 4, name: 'M3 screw', need: 40, acquired: 10, remaining: 30 }],
+          } as unknown as Order
+        }
+        canEdit
+      />,
+    );
+
+    const input = () => screen.getByTestId('procurement-4-acquired') as HTMLInputElement;
+    fireEvent.change(input(), { target: { value: '25' } });
+    fireEvent.blur(input());
+
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 4, 25));
+    // The failure is reported...
+    expect(await screen.findByText('Part not found')).toBeInTheDocument();
+    // ...and the box no longer claims the number the server refused.
+    await waitFor(() => expect(input().value).toBe('10'));
+  });
+
   it('leaves the numbers read-only without the permission', () => {
     render(
       <ProcurementChecklist

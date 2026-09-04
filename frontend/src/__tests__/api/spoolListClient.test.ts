@@ -24,11 +24,16 @@ afterAll(() => server.close());
 
 const emptyPage = { items: [], meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 } };
 
+/** `unknown` on purpose: a handful of callers hand this a deliberately
+ *  malformed page to prove the client survives it, which is exactly what msw's
+ *  `JsonBodyType` refuses. The widening is here, once. */
+type JsonBody = Parameters<typeof HttpResponse.json>[0];
+
 function capture(path: string, body: unknown) {
   server.use(
     http.get(path, ({ request }) => {
       captured.push(new URL(request.url));
-      return HttpResponse.json(body);
+      return HttpResponse.json(body as JsonBody);
     }),
   );
 }

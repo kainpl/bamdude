@@ -41,6 +41,7 @@ const createMockPrinter = (overrides: Partial<VirtualPrinterConfig> = {}): Virtu
   name: 'Test VP',
   enabled: false,
   mode: 'file_manager',
+  save_ams_mapping: false,
   model: 'BL-P001',
   model_name: 'X1C',
   access_code_set: false,

@@ -1988,7 +1988,13 @@ export interface DiagnosticCheck {
     | 'network_mode'
     | 'subnet'
     | 'mqtt_auth'
-    | 'developer_mode';
+    | 'developer_mode'
+    // ⚠️ These two were emitted by ``services/printer_diagnostic.py`` for
+    // months without being named here — the modal renders every check the
+    // same way, so a missing member costs nothing at runtime and shows up
+    // only when a test writes the id out. Grep that file when adding a check.
+    | 'external_storage'
+    | 'printer_publishing';
   status: DiagnosticStatus;
   params: Record<string, string | number>;
 }

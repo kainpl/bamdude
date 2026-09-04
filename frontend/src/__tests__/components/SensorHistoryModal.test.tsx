@@ -37,6 +37,8 @@ const SENSOR: ZigbeeSensor = {
   id: 7,
   name: 'Майстерня',
   location: { id: 1, name: 'Workshop', parent_id: null, path: 'Workshop' },
+  printer_id: null,
+  printer_name: null,
   ieee: 'aa:bb',
   nwk: 1,
   manufacturer: 'SONOFF',

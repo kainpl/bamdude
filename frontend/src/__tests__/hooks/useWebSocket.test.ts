@@ -120,7 +120,9 @@ function createWrapper(queryClient: QueryClient) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return React.createElement(
       ToastProvider,
-      {},
+      // `children` is filled by the variadic argument below; React prefers that
+      // over whatever the props object carries, so the null is never seen.
+      { children: null },
       React.createElement(
         QueryClientProvider,
         { client: queryClient },
@@ -293,7 +295,7 @@ describe('useWebSocket hook', () => {
       queryClient.setQueryData(
         ['printerStatus', 1],
         (old: Record<string, unknown> | undefined) => {
-          const statusData = { state: 'RUNNING', wifi_signal: null };
+          const statusData: Record<string, unknown> = { state: 'RUNNING', wifi_signal: null };
           const merged = { ...old, ...statusData };
           // This is the preservation logic from useWebSocket
           if (merged.wifi_signal == null && old?.wifi_signal != null) {
