@@ -5,7 +5,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { OrdersPage } from '../../../pages/orders/OrdersPage';
@@ -75,5 +76,32 @@ describe('OrdersPage', () => {
     resolve(rows);
     expect(await screen.findByText('A')).toBeInTheDocument();
     expect(screen.queryByTestId('orders-skeleton')).not.toBeInTheDocument();
+  });
+
+  it('drops the deleted order from the cache, so a click on a reused id cannot render it', async () => {
+    // ⚠️ Nothing on THIS page watches `['project', 1]`, so an entry left in the
+    // cache is never refetched and never noticed — and the app's `staleTime` is
+    // a minute, long enough for the next navigation to render the order that
+    // was just deleted straight out of cache. The order PAGE has the opposite
+    // problem and removes its entry on unmount instead; the difference is why
+    // the id is a parameter (`utils/queryInvalidation`).
+    vi.spyOn(api, 'getOrders').mockResolvedValue(rows as never);
+    vi.spyOn(api, 'deleteOrder').mockResolvedValue({} as never);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['project', 1], { id: 1, name: 'A' });
+
+    window.history.pushState({}, '', '/projects');
+    render(
+      <QueryClientProvider client={client}>
+        <OrdersPage />
+      </QueryClientProvider>,
+    );
+    await screen.findByText('A');
+
+    fireEvent.click(screen.getByTestId('order-1-menu'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+
+    await waitFor(() => expect(client.getQueryState(['project', 1])).toBeUndefined());
   });
 });

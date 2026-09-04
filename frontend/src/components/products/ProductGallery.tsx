@@ -23,6 +23,16 @@ interface ProductGalleryProps {
    *  than the tests: while the card dialog is open two galleries are live, and
    *  "Pictures" names both of them. */
   headingKey?: string;
+  /** Told whenever the lightbox opens or closes.
+   *
+   *  ⚠️ It exists so an enclosing DIALOG can stand down from Escape. Both
+   *  listeners sit on `window`, and the dialog's is registered first (its
+   *  effect runs on mount, the gallery's only once a picture is enlarged), so
+   *  one Escape closed the dialog out from under the lightbox — and with it
+   *  everything typed into the form behind. `ModelCardModal` has no such prop
+   *  because its lightbox is its own state and it can order the two branches
+   *  in a single handler; here the state lives one component down. */
+  onLightboxOpenChange?: (open: boolean) => void;
 }
 
 const TILE_CLASS = 'w-40 h-40 rounded-xl object-cover bg-bambu-dark border border-bambu-dark-tertiary';
@@ -53,6 +63,7 @@ export function ProductGallery({
   canEdit,
   testIdSuffix = '',
   headingKey = 'products.gallery.title',
+  onLightboxOpenChange,
 }: ProductGalleryProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -92,6 +103,24 @@ export function ProductGallery({
   // Trapping means inert-ing the rest of the page; it is deliberately not done
   // here, and this comment is not to grow a claim that it is.
   const overlay = useDialogFocus<HTMLDivElement>(lightbox !== null);
+
+  // Announce the overlay to whatever is around us — see `onLightboxOpenChange`.
+  // Reported from an effect rather than from each `setLightbox` call site so
+  // that closing by Escape, by the ✕, by the backdrop and by an unmount all
+  // report the same thing; missing one of those would leave a dialog that has
+  // stood down from Escape permanently.
+  //
+  // ⚠️ Through a ref, so the effect depends on the OPEN FLAG alone. With the
+  // callback in the dependency list an inline arrow from the parent would
+  // re-run this on every render — and since the callback sets the parent's
+  // state, that is a render loop rather than a wasted call.
+  const open = lightbox !== null;
+  const notify = useRef(onLightboxOpenChange);
+  notify.current = onLightboxOpenChange;
+  useEffect(() => {
+    notify.current?.(open);
+    return () => notify.current?.(false);
+  }, [open]);
 
   useEffect(() => {
     if (lightbox === null || pictures.length === 0) return;

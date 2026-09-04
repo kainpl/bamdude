@@ -5,6 +5,7 @@ import { ChevronLeft, FolderKanban, Loader2, Search, X, XCircle } from 'lucide-r
 import { api } from '../../api/client';
 import type { Archive } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { selectableProjects } from '../../utils/projects';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
@@ -44,11 +45,10 @@ export function AddToOrderMenu({ archive, onDone }: AddToOrderMenuProps) {
     return [...matching].sort((a, b) => a.name.localeCompare(b.name));
   }, [orders, archive.project_id, query]);
 
-  const { data: chosenOrder, isLoading: linesLoading } = useQuery({
-    queryKey: ['project', chosenOrderId],
-    queryFn: () => api.getOrder(chosenOrderId as number),
-    enabled: chosenOrderId != null,
-  });
+  // The shared hook, not a second `useQuery` on the same key — see
+  // `useOrderDetail`: whichever observer mounts last owns the options, so this
+  // menu would otherwise strip the order page's refresh toast while it is open.
+  const { data: chosenOrder, isLoading: linesLoading } = useOrderDetail(chosenOrderId);
 
   const assign = useMutation({
     mutationFn: ({ orderId, lineId }: { orderId: number; lineId: number | null }) =>

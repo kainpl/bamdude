@@ -62,8 +62,10 @@ export function invalidateOrderViews(qc: QueryClient, opts: OrderViewScope = {})
   }
 }
 
+type DeletedKind = 'order' | 'product' | 'customer';
+
 /** The list keys each kind of deletion leaves behind. */
-const DELETE_KEYS: Record<'order' | 'product' | 'customer', readonly string[]> = {
+const DELETE_KEYS: Record<DeletedKind, readonly string[]> = {
   // The customer survives the order and their totals move with it; `customer`
   // is the prefix because the page that deleted it need not be the customer's.
   order: ['projects', 'customers', 'customer'],
@@ -73,16 +75,37 @@ const DELETE_KEYS: Record<'order' | 'product' | 'customer', readonly string[]> =
   customer: ['customers', 'projects'],
 };
 
+/** The DETAIL key of one deleted row — an order's page is `['project', id]`. */
+const DETAIL_KEY: Record<DeletedKind, string> = {
+  order: 'project',
+  product: 'product',
+  customer: 'customer',
+};
+
 /**
- * Mark the LISTS stale after a delete — never the deleted row's detail key.
+ * Mark the LISTS stale after a delete, and REMOVE the deleted row's own entry.
  *
- * ⚠️ **Not `invalidateOrderViews`.** Marking the deleted row's own key stale
- * asks TanStack to refetch something that no longer exists while the page is
- * still mounted, which lands a 404 in the query and can flash the error state
- * over a page that is already on its way out. What changed is the list.
+ * ⚠️ **Removed, never invalidated.** Marking the deleted row's key stale asks
+ * TanStack to refetch something that no longer exists while the page is still
+ * mounted, which lands a 404 in the query and can flash the error state over a
+ * page that is already on its way out. `removeQueries` drops the entry instead:
+ * nothing is fetched and nothing is left to be read back.
+ *
+ * ⚠️ **The `id` is for LIST pages, and the three detail pages pass none.** From
+ * a list, the deleted row's detail entry is a stale record sitting in a cache
+ * nobody is watching, and the 60 s `staleTime` means the next click on a REUSED
+ * id — or a Back into a route that no longer exists — renders it from cache
+ * before any request goes out. From the row's OWN page the removal is
+ * `useForgetOnUnmount`'s job instead, run on unmount so the query is not pulled
+ * out from under the component still rendering it. Passing the id there would
+ * blank the page mid-navigation; passing none from a list leaves the ghost.
+ * That is why the parameter is optional rather than always required.
  */
-export function invalidateAfterDelete(qc: QueryClient, kind: 'order' | 'product' | 'customer'): void {
+export function invalidateAfterDelete(qc: QueryClient, kind: DeletedKind, id?: number): void {
   for (const key of DELETE_KEYS[kind]) {
     qc.invalidateQueries({ queryKey: [key] });
+  }
+  if (id !== undefined) {
+    qc.removeQueries({ queryKey: [DETAIL_KEY[kind], id], exact: true });
   }
 }

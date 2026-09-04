@@ -12,6 +12,9 @@ import { describe, it, expect } from 'vitest';
 import type { ProductAttachment } from '../../../api/client';
 import { byAttachmentOrder } from '../../../components/products/attachmentOrder';
 
+/** The cast is deliberate: `byAttachmentOrder` reads `sort_order` and
+ *  `filename` and nothing else, so filling in the eight fields it never touches
+ *  would only hide which two decide the answer. */
 const entry = (filename: string, sort_order: number): ProductAttachment =>
   ({ filename, sort_order, category: 'pictures' }) as ProductAttachment;
 

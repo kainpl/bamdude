@@ -135,8 +135,14 @@ export function OrdersPage() {
   });
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteOrder(id),
-    onSuccess: () => {
-      invalidateAfterDelete(queryClient, 'order');
+    // ⚠️ The id is passed because this is a LIST: the deleted order's own
+    // `['project', id]` entry has no observer here, so nothing would ever
+    // clear it and the next visit to a reused id — or a Back into the route
+    // that just went — would render it out of cache inside the 60 s
+    // `staleTime`. The order PAGE passes no id; it uses `useForgetOnUnmount`
+    // instead, for the reason spelled out in `utils/queryInvalidation`.
+    onSuccess: (_res, id) => {
+      invalidateAfterDelete(queryClient, 'order', id);
       showToast(t('orders.toast.deleted'));
       setDeleting(null);
     },

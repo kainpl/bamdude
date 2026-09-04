@@ -74,9 +74,15 @@ export function CardActionMenu({ label, testId, width = 180, children }: CardAct
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        // The card grids sit on pages whose modals close on a window keydown —
-        // an Escape that shut this menu must not also shut whatever is behind it.
-        e.stopPropagation();
+        // ⚠️ **`stopPropagation` could not do this job.** The overlays this menu
+        // opens inside listen on `window` too, and `stopPropagation` stops an
+        // event travelling to OTHER targets — it says nothing about the other
+        // listeners already registered on the same one. Worse, ours is
+        // registered LAST (on opening, long after the dialog mounted), so by
+        // the time it ran the dialog's had already closed the dialog. Hence
+        // both halves below: the capture phase to be heard FIRST, and
+        // `stopImmediatePropagation` to be heard alone.
+        e.stopImmediatePropagation();
         setOpen(false);
         triggerRef.current?.focus();
         return;
@@ -97,8 +103,11 @@ export function CardActionMenu({ label, testId, width = 180, children }: CardAct
       else if (e.key === 'Home') go(0);
       else if (e.key === 'End') go(rows.length - 1);
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    // Capture, so an open menu is the FIRST thing the page's keys reach — see
+    // the Escape branch. Registered and torn down with the menu, so nothing
+    // outside an open menu is intercepted at all.
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [open, items]);
 
   const close = () => setOpen(false);

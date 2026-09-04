@@ -41,6 +41,20 @@ const product = {
   updated_at: '2026-09-01T00:00:00Z',
 } as unknown as Product;
 
+const picture = (filename: string, original: string, sort: number) => ({
+  category: 'pictures',
+  filename,
+  original_name: original,
+  size: 1024,
+  sort_order: sort,
+  source: 'manual',
+  source_file_id: null,
+  uploaded_at: null,
+});
+
+/** The same product with a picture in it — the gallery's lightbox needs one. */
+const withPictures = { ...product, attachments: [picture('a.png', 'front.png', 0)] } as unknown as Product;
+
 const noop = () => {};
 
 /** The dialog the way a page opens it — a control that mounts it and takes it
@@ -150,6 +164,32 @@ describe('ProductCardDialog', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(opener).toHaveFocus();
+  });
+
+  it('lets Escape close the LIGHTBOX first and the dialog only after it', async () => {
+    // ⚠️ Both Escape handlers sit on `window`, and this dialog's is registered
+    // FIRST — on mount, while the gallery's arrives only when a picture is
+    // enlarged. So one Escape used to close the whole dialog out from under the
+    // lightbox, throwing away everything typed into the form on the way. The
+    // dialog stands down while the gallery reports a lightbox open.
+    const onClose = vi.fn();
+    render(<ProductCardDialog product={withPictures} onClose={onClose} />);
+
+    const name = screen.getByLabelText(/^name$/i) as HTMLInputElement;
+    fireEvent.change(name, { target: { value: 'Beaker' } });
+
+    fireEvent.click(screen.getByTestId('gallery-picture-a.png-dialog'));
+    expect(screen.getByTestId('gallery-lightbox-dialog')).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByTestId('gallery-lightbox-dialog')).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect((screen.getByLabelText(/^name$/i) as HTMLInputElement).value).toBe('Beaker');
+
+    // ...and the next one closes the dialog, now that nothing is over it.
+    await waitFor(() => expect(screen.queryByTestId('gallery-lightbox-dialog')).not.toBeInTheDocument());
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('names its own gallery apart from the page gallery underneath it', () => {

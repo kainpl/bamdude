@@ -175,6 +175,48 @@ describe('ProductPage', () => {
     expect(screen.getAllByText(/could not refresh/i)).toHaveLength(1);
   });
 
+  it('still says it could not refresh while the card dialog is open over it', async () => {
+    // ⚠️ The dialog watches `['product', id]` TOO. TanStack gives a query the
+    // LAST observer's options, so a dialog declaring its own `useQuery` without
+    // `meta` is one mount order away from taking `refreshToast` off this page —
+    // for exactly as long as somebody is editing the product. Both now read
+    // through `useProductDetail`, so the options are the same set whoever wins.
+    //
+    // ⚠️ This test pins the BEHAVIOUR and does not by itself prove the fix:
+    // measured here, React runs the child's option effect before the parent's,
+    // so the page happens to re-set its own `meta` last and this passes with the
+    // duplicate observer too. What forbids the duplicate is the grep gate in
+    // `__tests__/hooks/detailQueryKeys.test.ts`; this one makes sure the toast
+    // still works once there is only one owner.
+    const client = createAppQueryClient();
+    client.setDefaultOptions({ queries: { retry: false, staleTime: 60_000 } });
+
+    vi.spyOn(api, 'getProduct')
+      .mockResolvedValueOnce(product as never)
+      .mockRejectedValue(new Error('Gateway timeout'));
+    vi.spyOn(api, 'updateProduct').mockResolvedValue({ ...product, is_active: false } as never);
+
+    window.history.pushState({}, '', '/products/1');
+    render(
+      <QueryClientProvider client={client}>
+        <Routes>
+          <Route path="/products/:id" element={<ProductPage />} />
+        </Routes>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Flask' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+
+    // A background refetch of the same key, with the dialog mounted over it.
+    await client.invalidateQueries({ queryKey: ['product', 1] });
+
+    expect(await screen.findByText(/could not refresh/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/could not refresh/i)).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'Flask' })).toBeInTheDocument();
+  });
+
   it('forgets the deleted product, so a Back inside staleTime cannot render it', async () => {
     const client = createAppQueryClient();
     const get = vi.spyOn(api, 'getProduct').mockResolvedValue(product as never);

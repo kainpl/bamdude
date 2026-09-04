@@ -77,9 +77,11 @@ export function ProductsPage() {
     mutationFn: (id: number) => api.deleteProduct(id),
     // The LISTS, from the one place that decides which ones — an order card
     // renders the deleted product's cover, so `['projects']` goes with
-    // `['products']` and neither site gets its own opinion about that.
-    onSuccess: () => {
-      invalidateAfterDelete(queryClient, 'product');
+    // `['products']` and neither site gets its own opinion about that. The id
+    // goes too: from a grid, the deleted product's own detail entry is a ghost
+    // nobody is watching — see `utils/queryInvalidation`.
+    onSuccess: (_res, id) => {
+      invalidateAfterDelete(queryClient, 'product', id);
       showToast(t('products.toast.deleted'));
       setDeleting(null);
     },

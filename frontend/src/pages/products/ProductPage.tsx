@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
@@ -17,6 +17,7 @@ import { ProductCardDialog } from '../../components/products/ProductCardDialog';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
+import { useProductDetail } from '../../hooks/useProductDetail';
 
 /**
  * One product: what it is, what it is made of, what prints it, and who wants it.
@@ -43,19 +44,10 @@ export function ProductPage() {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const {
-    data: product,
-    isLoading,
-    isError,
-    error,
-  } = useQuery({
-    queryKey: ['product', id],
-    queryFn: () => api.getProduct(id),
-    enabled: Number.isFinite(id),
-    // This page keeps its data when a REFETCH fails (see the long note below),
-    // so it is the cache's job to say the figures are older than they look.
-    meta: { refreshToast: true },
-  });
+  // The shared hook owns this query's options — including the refresh toast.
+  // A second `useQuery` on the same key anywhere (the card dialog that opens
+  // over this page had one) takes them over: see `useProductDetail`.
+  const { data: product, isLoading, isError, error } = useProductDetail(Number.isFinite(id) ? id : null);
 
   // ⚠️ The order views go too. A product's NAME, its cover and whether it is
   // in the catalog are all rendered on order cards and inside an order's
@@ -80,6 +72,10 @@ export function ProductPage() {
 
   const duplicate = useMutation({
     mutationFn: () => api.duplicateProduct(id),
+    // ⚠️ No order view moves here, deliberately — `ProductsPage`'s twin says
+    // the same: the copy is a brand-new product that no order line names yet.
+    // Invalidating them would refetch every order on the way out of a page
+    // nobody is coming back to.
     onSuccess: (saved) => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
       showToast(t('products.toast.duplicated'));

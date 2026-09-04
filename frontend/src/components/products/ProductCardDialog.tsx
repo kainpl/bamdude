@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
@@ -10,6 +10,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ProductGallery } from './ProductGallery';
 import { useDialogFocus } from '../../hooks/useDialogFocus';
+import { useProductDetail } from '../../hooks/useProductDetail';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 const FIELD_CLASS =
@@ -19,7 +20,6 @@ const LABEL_CLASS = 'block text-sm font-medium text-white mb-1';
 interface ProductCardDialogProps {
   product?: Product | ProductListItem | null;
   onClose: () => void;
-  onSaved?: (saved: Product) => void;
 }
 
 /** A list row carries none of the descriptive fields — not "empty", absent. */
@@ -36,10 +36,10 @@ function Shell({ title, onClose, children }: { title: string; onClose: () => voi
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       {/* ⚠️ The role, the name and the focus, as one unit — see
-          `useDialogFocus`, which the five overlays this app opens over a page
-          all use. Without them the overlay is an anonymous `<div>` a screen
-          reader never announces, and a keyboard user opening it starts at the
-          top of the PAGE behind. It is deliberately not a focus TRAP.
+          `useDialogFocus`, which lists every overlay that uses it and says
+          exactly what it does and does not do. Without them the overlay is an
+          anonymous `<div>` a screen reader never announces, and a keyboard user
+          opening it starts at the top of the PAGE behind.
           They sit on a wrapper rather than on the `Card`, whose props are
           `HTMLAttributes` and so admit no `ref`; giving the shared component
           one would hand a `ref` to `CardHeader` and `CardContent` too, which
@@ -90,23 +90,45 @@ function Shell({ title, onClose, children }: { title: string; onClose: () => voi
  * preference: an upload needs a product id to hang the file on, and a product
  * being created does not have one yet. The create flow is the pass-2 one,
  * untouched.
+ *
+ * There is deliberately no `onSaved` callback — the same decision
+ * `CustomerModal` and `OrderModal` record: both call sites just close the
+ * dialog, and the saved record reaches every list through the invalidations
+ * below. A prop nobody passes is a second way to learn the same fact, and the
+ * one that goes uncalled when somebody adds a third call site.
  */
-export function ProductCardDialog({ product, onClose, onSaved }: ProductCardDialogProps) {
+export function ProductCardDialog({ product, onClose }: ProductCardDialogProps) {
   const { t } = useTranslation();
   const needsFetch = !!product && !isFullProduct(product);
-  const { data: fetched, error } = useQuery({
-    queryKey: ['product', product?.id],
-    queryFn: () => api.getProduct(product!.id),
-    enabled: needsFetch,
-  });
+  // ⚠️ Through the shared hook, and `null` rather than an `enabled` flag of its
+  // own. TanStack gives a query the LAST observer's options, so the dialog's
+  // own `useQuery` took `meta: { refreshToast: true }` off the product page
+  // underneath for as long as it was open — a failed background refetch then
+  // said nothing on the page the flag exists for. See `useProductDetail`.
+  const { data: fetched, error } = useProductDetail(needsFetch ? product!.id : null);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
 
+  // ⚠️ **Escape belongs to the innermost overlay.** The gallery below opens a
+  // lightbox with its own Escape handler, and both listeners sit on `window` —
+  // ours is registered first (on mount; the gallery's only once a picture is
+  // enlarged), so it ran first and closed the whole dialog, discarding
+  // everything typed into the form, while the lightbox the user was actually
+  // dismissing went with it. Standing down while the gallery reports a lightbox
+  // open is the same ordering `ModelCardModal` writes as
+  // `if (lightbox) … else onClose()`; there the state is its own, here it lives
+  // one component down and comes back through `onLightboxOpenChange`.
+  //
+  // Reading `lightboxOpen` from the render closure is correct and not a race:
+  // the gallery's `setLightbox(null)` is queued, not applied, while this handler
+  // runs for the SAME key press — so the first Escape closes the lightbox and
+  // the second, off the next render, closes the dialog.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && !lightboxOpen) onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, lightboxOpen]);
 
   const loaded = needsFetch ? fetched : (product as Product | null | undefined);
   if (needsFetch && !loaded) {
@@ -125,19 +147,20 @@ export function ProductCardDialog({ product, onClose, onSaved }: ProductCardDial
     );
   }
 
-  return <ProductForm product={loaded ?? null} onClose={onClose} onSaved={onSaved} />;
+  return <ProductForm product={loaded ?? null} onClose={onClose} onLightboxOpenChange={setLightboxOpen} />;
 }
 
 interface ProductFormProps {
   product: Product | null;
   onClose: () => void;
-  onSaved?: (saved: Product) => void;
+  /** Passed straight through to the gallery — see the Escape note above. */
+  onLightboxOpenChange: (open: boolean) => void;
 }
 
 /** Split out so every field can be seeded by `useState` from a record that is
  *  already in hand — a form whose initial values arrive later would have to
  *  re-seed itself and could overwrite what the user has already typed. */
-function ProductForm({ product, onClose, onSaved }: ProductFormProps) {
+function ProductForm({ product, onClose, onLightboxOpenChange }: ProductFormProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -195,7 +218,7 @@ function ProductForm({ product, onClose, onSaved }: ProductFormProps) {
       };
       return api.createProduct(data);
     },
-    onSuccess: (saved) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
       if (product) queryClient.invalidateQueries({ queryKey: ['product', product.id] });
       // ⚠️ The order views too, and this is the dialog that actually renames a
@@ -205,7 +228,6 @@ function ProductForm({ product, onClose, onSaved }: ProductFormProps) {
       // save — see `utils/queryInvalidation`.
       invalidateOrderViews(queryClient);
       showToast(t('products.toast.saved'));
-      onSaved?.(saved);
       onClose();
     },
     onError: (e: Error) => showToast(e.message, 'error'),
@@ -300,6 +322,7 @@ function ProductForm({ product, onClose, onSaved }: ProductFormProps) {
                 canEdit={hasPermission('projects:update')}
                 testIdSuffix="-dialog"
                 headingKey="products.gallery.titleInDialog"
+                onLightboxOpenChange={onLightboxOpenChange}
               />
             </div>
           )}

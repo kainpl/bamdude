@@ -112,8 +112,11 @@ export function CustomerPage() {
   });
   const removeOrder = useMutation({
     mutationFn: (orderId: number) => api.deleteOrder(orderId),
-    onSuccess: () => {
-      invalidateAfterDelete(queryClient, 'order');
+    // The order LIST on this page — so the id goes, and the deleted order's own
+    // entry leaves the cache with it. (The customer delete above passes none:
+    // that row's page is this one, and it unmounts.)
+    onSuccess: (_res, orderId) => {
+      invalidateAfterDelete(queryClient, 'order', orderId);
       showToast(t('orders.toast.deleted'));
       setDeletingOrder(null);
     },

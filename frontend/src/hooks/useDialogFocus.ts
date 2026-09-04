@@ -3,12 +3,19 @@ import { useEffect, useRef } from 'react';
 /**
  * Move focus INTO an overlay when it opens, and give it back when it closes.
  *
- * The pattern is the product gallery's lightbox, lifted out of it so the five
- * overlays this app opens over a page — the import dialog, the product card
- * dialog's shell, both halves of the model card modal, and the two lightboxes —
- * answer a keyboard the same way. Attach the returned ref to the element that
- * carries `role="dialog"`, give that element `tabIndex={-1}` so it can hold
- * focus, and pass whether it is open.
+ * The pattern is the product gallery's lightbox, lifted out of it so that every
+ * overlay this app opens over a page answers a keyboard the same way. Attach
+ * the returned ref to the element that carries `role="dialog"`, give that
+ * element `tabIndex={-1}` so it can hold focus, and pass whether it is open.
+ *
+ * The call sites, seven of them — **four dialogs**: the import dialog
+ * (`ImportProductDialog`), the product card dialog's shell
+ * (`ProductCardDialog`) and the shells of BOTH halves of the model card modal
+ * (`ModelCardModal` carries an archive card and a library-file card, each its
+ * own component); and **three lightboxes**: one in each half of the model card
+ * modal and the product gallery's own (`ProductGallery`). Counting them in the
+ * comment at each call site is what made the number wrong; grep this file's
+ * name instead.
  *
  * ⚠️ **This is NOT a focus trap and must not be described as one.** Tab still
  * walks out of the overlay and into the page behind it; what the hook fixes is

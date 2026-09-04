@@ -290,7 +290,33 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
     );
   }
 
-  if (!plan) return null;
+  // ⚠️ **The fifth branch renders too.** `isLoading` is only TRUE on a query
+  // that has never resolved AND is fetching; a paused one — the tab was
+  // backgrounded, the network dropped, the query was disabled and re-enabled —
+  // is `isPending && !isFetching`, which falls through every branch above with
+  // no data and used to return `null`. That takes the whole section off the
+  // page, which reads as "this order has nothing to print" — the same lie the
+  // error branch above exists to avoid, from a state that is not even a
+  // failure. The block stays, wearing its own testid and the loading text.
+  // ⚠️ **The fifth branch renders too.** `isLoading` is only TRUE on a query
+  // that has never resolved AND is fetching; a paused one — the tab was
+  // backgrounded, the network dropped, the query was disabled and re-enabled —
+  // is `isPending && !isFetching`, which falls through every branch above with
+  // no data and used to return `null`. That takes the whole section off the
+  // page, which reads as "this order has nothing to print" — the same lie the
+  // error branch above exists to avoid, from a state that is not even a
+  // failure. The block stays, wearing its own testid and the loading text.
+  if (!plan) {
+    return (
+      <section id="order-plan" className="space-y-3" data-testid="plan-block">
+        {heading}
+        <div className="flex items-center gap-2 text-bambu-gray text-sm" data-testid="plan-idle">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          {t('common.loading')}
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section id="order-plan" className="space-y-3" data-testid="plan-block">

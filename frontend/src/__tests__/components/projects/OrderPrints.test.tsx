@@ -19,6 +19,7 @@ import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { Order } from '../../../api/client';
 import { OrderPrints } from '../../../components/projects/OrderPrints';
+import { strayZeroTextNodes } from '../../domHelpers';
 
 /** `id` → a minimal archive row, the shape `getProjectArchives` answers with. */
 function rows(ids: number[], lineId: number | null = 10) {
@@ -207,5 +208,77 @@ describe('OrderPrints', () => {
 
     expect(await screen.findByTestId('prints-line-10')).toBeInTheDocument();
     expect(screen.queryByTestId('prints-load-older')).not.toBeInTheDocument();
+    // ⚠️ No bare `0` anywhere in the grid. `count && <X/>` renders the number
+    // when the count is zero, and a list is exactly where an empty one is
+    // normal — the digit then sits in the layout looking like data.
+    expect(strayZeroTextNodes(screen.getByTestId('prints-line-10'))).toHaveLength(0);
+  });
+
+  // ⚠️ The card's actions live in the SHARED `CardActionMenu` now, not in a
+  // hand-rolled panel: `role="menu"`, roving arrow keys, Escape, and one z-stack
+  // decided in one place. These two tests are what says the actions still reach
+  // the API through it.
+  it('files a print under a line from its menu', async () => {
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
+      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: null },
+    ] as never);
+    const update = vi.spyOn(api, 'updateArchive').mockResolvedValue({} as never);
+    const order = {
+      id: 1,
+      other_archive_ids: [1],
+      lines: [{ id: 10, product_name: 'Flask', quantity: 1, archive_ids: [] }],
+    } as unknown as Order;
+    vi.spyOn(api, 'getOrder').mockResolvedValue(order as never);
+
+    render(<OrderPrints order={order} canEdit />);
+    await screen.findByTestId('prints-other');
+
+    fireEvent.click(screen.getByTestId('print-menu-1'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /file under/i }));
+    // The picker reads the order through `useOrderDetail`; wait for its lines.
+    await screen.findByRole('option', { name: /Flask/ });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: '10' } });
+
+    // ⚠️ `project_id` travels with the line — a bare line change on an archive
+    // whose order is being re-stated is a 400.
+    await waitFor(() => expect(update).toHaveBeenCalledWith(1, { project_id: 1, project_line_id: 10 }));
+  });
+
+  it('takes a print off the order from its menu', async () => {
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
+      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10 },
+    ] as never);
+    const remove = vi.spyOn(api, 'removeArchivesFromProject').mockResolvedValue({} as never);
+    const order = {
+      id: 1,
+      other_archive_ids: [],
+      lines: [{ id: 10, product_name: 'Flask', quantity: 1, archive_ids: [1] }],
+    } as unknown as Order;
+
+    render(<OrderPrints order={order} canEdit />);
+    await screen.findByTestId('prints-line-10');
+
+    const trigger = screen.getByTestId('print-menu-1');
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole('menuitem', { name: /remove from/i }));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(1, [1]));
+  });
+
+  it('offers no menu at all without the permission', async () => {
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
+      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10 },
+    ] as never);
+    const order = {
+      id: 1,
+      other_archive_ids: [],
+      lines: [{ id: 10, product_name: 'Flask', quantity: 1, archive_ids: [1] }],
+    } as unknown as Order;
+
+    render(<OrderPrints order={order} canEdit={false} />);
+
+    await screen.findByTestId('prints-line-10');
+    expect(screen.queryByTestId('print-menu-1')).not.toBeInTheDocument();
   });
 });

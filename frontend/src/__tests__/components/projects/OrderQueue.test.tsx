@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { OrderQueue } from '../../../components/projects/OrderQueue';
+import { strayZeroTextNodes } from '../../domHelpers';
 
 const order = {
   id: 1,
@@ -80,6 +81,12 @@ describe('OrderQueue', () => {
 
     expect(await screen.findByText('Body')).toBeInTheDocument();
     expect(getQueue).not.toHaveBeenCalled();
+    // ⚠️ No bare `0` in the rendered list. `count && <X/>` renders the NUMBER
+    // when the count is zero, and a queue is exactly where an empty count is
+    // normal — the digit then sits in the layout looking like a figure.
+    // `queryAllByText` cannot see it: the zero is a text node among an
+    // element's other children (`__tests__/domHelpers`).
+    expect(strayZeroTextNodes()).toHaveLength(0);
   });
   it('asks for the order through the same options the page does, meta included', async () => {
     // ⚠️ A query has ONE `meta`, set by whichever observer mounted last. This

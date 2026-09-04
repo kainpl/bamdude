@@ -33,10 +33,11 @@ export function CustomersPage() {
 
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteCustomer(id),
-    // Orders keep their history and lose the customer, so their rows move too
-    // — the lists, never the deleted customer's own key.
-    onSuccess: () => {
-      invalidateAfterDelete(queryClient, 'customer');
+    // Orders keep their history and lose the customer, so their rows move
+    // too. The deleted customer's own entry is REMOVED rather than
+    // invalidated, and the id says which — see `utils/queryInvalidation`.
+    onSuccess: (_res, id) => {
+      invalidateAfterDelete(queryClient, 'customer', id);
       showToast(t('customers.toast.deleted'));
       setDeleting(null);
     },

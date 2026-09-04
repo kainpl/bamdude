@@ -128,4 +128,50 @@ describe('invalidateAfterDelete', () => {
     expect(stale(qc, ['projects'])).toBe(true);
     expect(stale(qc, ['customer', 2])).toBe(false);
   });
+
+  // ⚠️ **Given an id, the row's own entry is REMOVED** — still never
+  // invalidated, which would refetch a 404. A LIST page passes the id because
+  // nothing there is watching the deleted row's detail key, so the stale record
+  // would sit in the cache until its 60 s `staleTime` ran out: click a reused
+  // id, or Back into the route that just went, and the deleted thing renders
+  // out of cache before any request goes out. The three DETAIL pages pass none
+  // — they remove it on unmount instead (`useForgetOnUnmount`), because pulling
+  // a query out from under the component still rendering it blanks the page
+  // mid-navigation.
+  it.each([
+    ['order', ['project', 5]],
+    ['product', ['product', 7]],
+    ['customer', ['customer', 2]],
+  ] as const)('given an id, %s removes the deleted row entry rather than refetching it', (kind, detail) => {
+    const qc = new QueryClient();
+    const key: unknown[] = [...detail];
+    seed(qc, [['projects'], ['products'], ['customers'], key]);
+
+    invalidateAfterDelete(qc, kind, detail[1]);
+
+    expect(qc.getQueryState(key)).toBeUndefined();
+  });
+
+  it('leaves a NEIGHBOUR of the deleted row alone', () => {
+    // `exact: true`: `['project', 5]` must not take `['project-archives', 5]`
+    // or another order's entry with it.
+    const qc = new QueryClient();
+    seed(qc, [['project', 5], ['project', 6], ['project-archives', 5]]);
+
+    invalidateAfterDelete(qc, 'order', 5);
+
+    expect(qc.getQueryState(['project', 5])).toBeUndefined();
+    expect(qc.getQueryState(['project', 6])).toBeDefined();
+    expect(qc.getQueryState(['project-archives', 5])).toBeDefined();
+  });
+
+  it('without an id it leaves the detail entry in place, for the detail pages', () => {
+    const qc = new QueryClient();
+    seed(qc, [['projects'], ['project', 5]]);
+
+    invalidateAfterDelete(qc, 'order');
+
+    expect(qc.getQueryState(['project', 5])).toBeDefined();
+    expect(stale(qc, ['project', 5])).toBe(false);
+  });
 });

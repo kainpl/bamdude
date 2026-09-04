@@ -1,13 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { MoreVertical, Package, Unlink } from 'lucide-react';
+import { Package, Unlink } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Archive, Order, ProjectLine } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { formatDateOnly } from '../../utils/date';
 import { getArchiveStatusBadge } from '../../utils/archiveStatus';
+import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
 import { LoadingBlock } from '../LoadingBlock';
 import { OrderLinePicker } from '../pickers/OrderLinePicker';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
@@ -24,8 +25,13 @@ interface Group {
   archives: Archive[];
 }
 
-/** What one page of `getProjectArchives` asks for. The endpoint declares no
- *  maximum, so this is the page size, not a ceiling somebody else set. */
+/** What one page of `getProjectArchives` asks for.
+ *
+ *  ⚠️ It is also the endpoint's own ceiling: `routes/projects.py::
+ *  list_project_archives` declares `limit: int = Query(default=100, ge=1,
+ *  le=500)`, so asking for more is a 422 and not a bigger page. The two numbers
+ *  move TOGETHER — raise one without the other and every read of this grid
+ *  fails validation, which looks like an empty order rather than a bad request. */
 const ARCHIVE_PAGE = 500;
 
 /** How many pages one read will walk before it stops and asks the operator.
@@ -119,10 +125,22 @@ export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
   // the requests.
   const [extraPages, setExtraPages] = useState(0);
 
+  // ⚠️ The `extraPages` cap belongs to ONE order. Navigating between orders
+  // keeps this component mounted, so a cap bought on a busy order would follow
+  // the operator to the next one and make its first read walk twenty pages of
+  // somebody else's history for nothing.
+  useEffect(() => setExtraPages(0), [order.id]);
+
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['project-archives', order.id, extraPages],
     queryFn: () => loadOrderArchives(order.id, named, MAX_PAGES + extraPages),
-    placeholderData: (prev) => prev,
+    // ⚠️ Placeholder only from the SAME order. `(prev) => prev` keeps the last
+    // data of whatever this observer held, and on a navigation that is the
+    // PREVIOUS order's prints — rendered under the new order's headings, with
+    // its ids resolved against the wrong `named` set, until the fetch lands.
+    // The second argument is the query the placeholder would come from, so the
+    // order id can be read off its key.
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === order.id ? prev : undefined),
   });
   const archives = data?.archives;
   const truncated = data?.truncated ?? false;
@@ -221,12 +239,26 @@ interface ArchiveCardProps {
   canEdit: boolean;
 }
 
-/** One print: what it was, how it ended, and which line it answers to. */
-function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
+/**
+ * The card's "…" menu — a separate component so that CLOSING it resets it.
+ *
+ * `CardActionMenu` unmounts its panel when it closes, so `pickingLine` (and the
+ * two mutations' pending flags) start clean on every opening. Held in the card
+ * instead, a menu dismissed by the backdrop while the line picker was up
+ * re-opened straight into that picker with no way back to the two actions.
+ */
+function ArchivePrintMenu({
+  archive,
+  order,
+  close,
+}: {
+  archive: Archive;
+  order: Order;
+  close: () => void;
+}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const [menuOpen, setMenuOpen] = useState(false);
   const [pickingLine, setPickingLine] = useState(false);
 
   // Filing a print under a line, or taking it off the order, moves the order
@@ -243,8 +275,7 @@ function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
       api.updateArchive(archive.id, { project_id: order.id, project_line_id: lineId }),
     onSuccess: () => {
       refresh();
-      setPickingLine(false);
-      setMenuOpen(false);
+      close();
     },
     onError: (e: Error) => showToast(e.message, 'error'),
   });
@@ -253,10 +284,41 @@ function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
     mutationFn: () => api.removeArchivesFromProject(order.id, [archive.id]),
     onSuccess: () => {
       refresh();
-      setMenuOpen(false);
+      close();
     },
     onError: (e: Error) => showToast(e.message, 'error'),
   });
+
+  if (pickingLine) {
+    // Not a `menuitem`: it is a `<select>`, and the roving-key handler above it
+    // reads `[role="menuitem"]` only, so the arrows belong to the list of lines
+    // while it is open. Escape still closes the whole menu.
+    return (
+      <div className="p-2 space-y-2">
+        <OrderLinePicker
+          orderId={order.id}
+          value={archive.project_line_id}
+          onChange={(lineId) => fileUnder.mutate(lineId)}
+          disabled={fileUnder.isPending}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <CardActionMenuItem onSelect={() => setPickingLine(true)}>{t('orders.prints.fileUnderLine')}</CardActionMenuItem>
+      <CardActionMenuItem danger onSelect={() => remove.mutate()}>
+        <Unlink className="w-4 h-4" />
+        {t('orders.prints.removeFromOrder')}
+      </CardActionMenuItem>
+    </>
+  );
+}
+
+/** One print: what it was, how it ended, and which line it answers to. */
+function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
+  const { t } = useTranslation();
 
   const badge = getArchiveStatusBadge(archive.status);
   const name = archive.print_name || archive.filename;
@@ -310,58 +372,16 @@ function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
       </div>
 
       {canEdit && (
-        <div className="relative flex-shrink-0">
-          <button
-            type="button"
-            onClick={() => setMenuOpen((open) => !open)}
-            aria-label={t('orders.prints.actions')}
-            className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
-          >
-            <MoreVertical className="w-4 h-4" />
-          </button>
-
-          {menuOpen && (
-            <>
-              <div
-                className="fixed inset-0 z-10"
-                onClick={() => {
-                  setMenuOpen(false);
-                  setPickingLine(false);
-                }}
-              />
-              <div className="absolute right-0 top-7 z-20 w-56 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-lg p-1">
-                {pickingLine ? (
-                  <div className="p-2 space-y-2">
-                    <OrderLinePicker
-                      orderId={order.id}
-                      value={archive.project_line_id}
-                      onChange={(lineId) => fileUnder.mutate(lineId)}
-                      disabled={fileUnder.isPending}
-                    />
-                  </div>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setPickingLine(true)}
-                      className="w-full text-left px-3 py-2 text-sm text-white rounded hover:bg-bambu-dark-tertiary"
-                    >
-                      {t('orders.prints.fileUnderLine')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => remove.mutate()}
-                      disabled={remove.isPending}
-                      className="w-full flex items-center gap-2 text-left px-3 py-2 text-sm text-status-error rounded hover:bg-bambu-dark-tertiary disabled:opacity-50"
-                    >
-                      <Unlink className="w-4 h-4" />
-                      {t('orders.prints.removeFromOrder')}
-                    </button>
-                  </>
-                )}
-              </div>
-            </>
-          )}
+        <div className="flex-shrink-0">
+          {/* ⚠️ The shared menu, not a hand-rolled panel. The old one was an
+              absolutely-positioned div with a `fixed inset-0` backdrop: no
+              `role="menu"`, no roving arrow keys, no Escape, and a z-stack of
+              its own that had to be kept in step with every other overlay on
+              the page by hand. `CardActionMenu` portals to `document.body` and
+              answers all four the same way every other card menu does. */}
+          <CardActionMenu label={t('orders.prints.actions')} testId={`print-menu-${archive.id}`} width={224}>
+            {(close) => <ArchivePrintMenu archive={archive} order={order} close={close} />}
+          </CardActionMenu>
         </div>
       )}
     </div>

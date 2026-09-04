@@ -1,6 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api } from '../../api/client';
+import { useOrderDetail } from '../../hooks/useOrderDetail';
 
 const SELECT_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
@@ -20,11 +19,11 @@ interface OrderLinePickerProps {
 export function OrderLinePicker({ orderId, value, onChange, disabled, id }: OrderLinePickerProps) {
   const { t } = useTranslation();
 
-  const { data: order } = useQuery({
-    queryKey: ['project', orderId],
-    queryFn: () => api.getOrder(orderId as number),
-    enabled: orderId != null,
-  });
+  // Through the shared hook, never a second `useQuery` on the same key: the
+  // LAST observer to mount owns a query's options, so a picker that declared
+  // its own would have taken `meta: { refreshToast: true }` off the order page
+  // behind it for as long as the dialog was open. See `useOrderDetail`.
+  const { data: order } = useOrderDetail(orderId);
 
   const lines = order?.lines ?? [];
 

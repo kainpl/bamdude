@@ -89,10 +89,10 @@ export function ImportProductDialog({ onClose }: ImportProductDialogProps) {
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       {/* ⚠️ The role, the name and the focus, as one unit — see
-          `useDialogFocus`, which the five overlays this app opens over a page
-          all use. Without them the overlay is an anonymous `<div>` a screen
-          reader never announces, and a keyboard user opening it starts at the
-          top of the PAGE behind. It is deliberately not a focus TRAP. */}
+          `useDialogFocus`, which lists every overlay that uses it and says
+          exactly what it does and does not do. Without them the overlay is an
+          anonymous `<div>` a screen reader never announces, and a keyboard user
+          opening it starts at the top of the PAGE behind. */}
       <div
         ref={dialog}
         role="dialog"

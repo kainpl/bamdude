@@ -126,11 +126,15 @@ describe('File Manager — model card entry', () => {
   });
 
   it('offers it ENABLED — being able to list the files is being able to read them', async () => {
-    // ⚠️ The entry used to carry a `library:read` branch that greyed it out.
-    // That branch could not be reached: `GET /library/files` needs the same
-    // permission, so a user without it never sees a file to open a menu on.
-    // A disabled control that cannot be enabled is a promise the page cannot
-    // keep; the file type is the only thing that decides this entry.
+    // ⚠️ The entry used to carry a `library:read` branch that greyed it out,
+    // and that branch was a LIVE BUG, not dead code — the component's own
+    // comment says so. Both the listing and `GET /files/{id}/card` enforce
+    // `library:read_all` / `library:read_own`; the legacy `library:read` is a
+    // frontend gate nothing on this path asks for. A user holding only
+    // `library:read_own` therefore listed the files, could read every card the
+    // server would have handed them, and found this entry greyed out. Reading
+    // the card needs exactly what LISTING the files needs, so the file type is
+    // the only question left here.
     render(<FileManagerPage />);
     await screen.findByText('Lamp');
 

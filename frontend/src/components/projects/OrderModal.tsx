@@ -53,7 +53,6 @@ interface OrderModalProps {
   order?: OrderListItem | Order | null;
   defaultCustomerId?: number | null;
   onClose: () => void;
-  onSaved?: (saved: Order) => void;
 }
 
 /**
@@ -65,8 +64,14 @@ interface OrderModalProps {
  * `description`/`url` entirely, so those two fields are hidden rather than
  * shown as blank boxes a user could type into and silently overwrite text
  * they were never shown.
+ *
+ * There is deliberately no `onSaved` callback — the same decision
+ * `CustomerModal` records: every call site here just closes the dialog, and the
+ * saved record reaches every list through `invalidateOrderViews` below. A prop
+ * nobody passes is a second way to learn the same fact, and the one that goes
+ * uncalled when somebody adds another call site.
  */
-export function OrderModal({ order, defaultCustomerId, onClose, onSaved }: OrderModalProps) {
+export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -160,7 +165,6 @@ export function OrderModal({ order, defaultCustomerId, onClose, onSaved }: Order
       // LEFT is stale as well as the one it landed on.
       invalidateOrderViews(queryClient, { orderId: order?.id ?? saved.id });
       showToast(t('orders.toast.saved'));
-      onSaved?.(saved);
       onClose();
     },
     onError: (e: Error) => showToast(e.message, 'error'),

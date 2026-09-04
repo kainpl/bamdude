@@ -13,7 +13,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react';
-import { QueryClient, useQuery, useQueryClient } from '@tanstack/react-query';
+import { QueryClient, onlineManager, useQuery, useQueryClient } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
 import { api } from '../../../api/client';
@@ -729,6 +729,28 @@ describe('PlanBlock', () => {
     render(<PlanBlock order={order} canEdit />);
     expect(await screen.findByTestId('plan-row-10-100')).toBeInTheDocument();
     await branch();
+  });
+
+  it('keeps the block on the FIFTH branch too, when the query is pending but not fetching', async () => {
+    // ⚠️ `isLoading` is `isPending && isFetching`. A query that is pending and
+    // NOT fetching — paused because the browser is offline, which is also what a
+    // backgrounded tab and a dropped network look like — falls through the
+    // closed, loading and error branches with no data at all. Returning `null`
+    // there took the whole section off the page, which reads as "this order has
+    // nothing to print": the same lie the error branch exists to avoid, from a
+    // state that is not even a failure.
+    onlineManager.setOnline(false);
+    try {
+      vi.spyOn(api, 'getOrderPlan').mockResolvedValue(plan);
+      render(<PlanBlock order={order} canEdit />);
+
+      const section = await screen.findByTestId('plan-block');
+      expect(section).toHaveAttribute('id', 'order-plan');
+      expect(within(section).getByTestId('plan-idle')).toHaveTextContent(/loading/i);
+      expect(screen.queryByTestId('plan-row-10-100')).not.toBeInTheDocument();
+    } finally {
+      onlineManager.setOnline(true);
+    }
   });
 
   // ---- a plate with no estimate ----
