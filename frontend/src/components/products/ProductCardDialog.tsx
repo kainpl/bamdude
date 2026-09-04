@@ -10,6 +10,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ProductGallery } from './ProductGallery';
 import { useDialogFocus } from '../../hooks/useDialogFocus';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
@@ -197,6 +198,12 @@ function ProductForm({ product, onClose, onSaved }: ProductFormProps) {
     onSuccess: (saved) => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
       if (product) queryClient.invalidateQueries({ queryKey: ['product', product.id] });
+      // ⚠️ The order views too, and this is the dialog that actually renames a
+      // product: `ProjectLineResponse.product_name` is denormalised, so an
+      // order card and every order line kept the OLD name for as long as their
+      // `staleTime` said the answer was fresh. Same one decision as an order
+      // save — see `utils/queryInvalidation`.
+      invalidateOrderViews(queryClient);
       showToast(t('products.toast.saved'));
       onSaved?.(saved);
       onClose();

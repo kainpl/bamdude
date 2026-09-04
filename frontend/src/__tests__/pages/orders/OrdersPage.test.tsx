@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen } from '@testing-library/react';
+import { fireEvent, screen, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { OrdersPage } from '../../../pages/orders/OrdersPage';
@@ -59,7 +59,15 @@ describe('OrdersPage', () => {
     window.history.pushState({}, '', '/projects');
     render(<OrdersPage />);
 
-    expect(await screen.findByTestId('orders-skeleton')).toBeInTheDocument();
+    const skeleton = await screen.findByTestId('orders-skeleton');
+    expect(skeleton).toBeInTheDocument();
+    // ⚠️ The grey boxes are `aria-hidden`, so without this the wait is SILENCE
+    // to a screen reader and the page reads as having no orders. The status
+    // role carries one visually-hidden sentence; the cards stay hidden so
+    // nobody hears six empty ones.
+    expect(skeleton).toHaveAttribute('role', 'status');
+    expect(skeleton).toHaveAttribute('aria-busy', 'true');
+    expect(within(skeleton).getByText('Loading...')).toBeInTheDocument();
     // The empty-state sentence is not the loading state — it would read as
     // "you have no orders" over a list that is simply still on its way.
     expect(screen.queryByText(/no active orders/i)).not.toBeInTheDocument();

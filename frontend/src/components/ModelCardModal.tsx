@@ -207,7 +207,15 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
                 `__tests__/components/ModelCardModal.test.tsx`. Pass 6 moved the
                 STRINGS and nothing else: they were written into this JSX in
                 English, on a screen whose other half has been translatable
-                since the day it was written. */}
+                since the day it was written.
+
+                FOUR pieces of text changed, and one of them is not a pure
+                move: `Edit`, `Cancel` and `Save` became `modelCard.edit` /
+                `.cancel` / `.save`, while the `Print Profile` heading took the
+                SHARED `modelCard.printProfile` the file half already used — so
+                the English now reads "Print profile", one heading in one
+                spelling on both halves, instead of two capitalisations of the
+                same word depending on which 3MF you opened. */}
             <h2 id={titleId} className="text-lg font-semibold text-white">
               {t('modelCard.title')}
               {archiveName && <span className="text-bambu-gray ml-2">- {archiveName}</span>}

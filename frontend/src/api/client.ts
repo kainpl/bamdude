@@ -1560,6 +1560,11 @@ export interface PlanTotals {
 export interface OrderPlan {
   lines: LinePlan[];
   totals: PlanTotals;
+  /** The engine's iteration guard stopped the covering, so these rows are a
+   *  PREFIX of the plan: printing all of them still leaves work. Optional
+   *  because a server that predates the flag says nothing, which reads the
+   *  same as "not truncated". */
+  truncated?: boolean;
 }
 
 export interface PlanEnqueueItem {
@@ -10951,11 +10956,15 @@ export interface LibraryGroupingMetadata {
 
 // Full query surface of GET /library/files (task 1, 2026-08-29
 // server-driven-lists) — consumed only by ``getLibraryFilesPaged``.
-// ``folder_id`` / ``project_id`` / ``include_root`` / ``scope`` / ``tag_ids``
+// ``folder_id`` / ``product_id`` / ``include_root`` / ``scope`` / ``tag_ids``
 // / ``recursive`` mirror ``getLibraryFiles``'s positional params exactly.
+// ⚠️ ``product_id``, not ``project_id``: the filter is "this PRODUCT's files"
+// (its direct files ∪ the files of its linked folders), and an order has never
+// had files of its own. The name here was the one the server never read.
 export interface LibraryFileListParams {
   folder_id?: number | null;
-  /** The route's own filter — `project_id` was never read by the server. */
+  /** The product filter — the product's direct files ∪ the files of its
+   *  linked folders, exactly as ``getLibraryFiles``' last positional param. */
   product_id?: number;
   include_root?: boolean;
   scope?: 'internal' | 'external';

@@ -16,7 +16,6 @@ const LABEL_CLASS = 'block text-sm font-medium text-white mb-1';
 interface CustomerModalProps {
   customer?: Customer | null;
   onClose: () => void;
-  onSaved?: (saved: Customer) => void;
 }
 
 /**
@@ -26,8 +25,14 @@ interface CustomerModalProps {
  * a diff: a customer carries the same three fields in the list response and in
  * the detail one, so there is no shape here that could blank a field the
  * dialog never showed.
+ *
+ * There is deliberately no `onSaved` callback: both call sites just close the
+ * dialog, and the saved record reaches every list through
+ * `invalidateOrderViews` below. A prop nobody passes is a second way to learn
+ * the same fact, and the one that goes uncalled when somebody adds a third
+ * call site.
  */
-export function CustomerModal({ customer, onClose, onSaved }: CustomerModalProps) {
+export function CustomerModal({ customer, onClose }: CustomerModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -60,7 +65,6 @@ export function CustomerModal({ customer, onClose, onSaved }: CustomerModalProps
       // the same one decision as an order save.
       invalidateOrderViews(queryClient, { customerId: customer?.id ?? saved.id });
       showToast(t('customers.toast.saved'));
-      onSaved?.(saved);
       onClose();
     },
     onError: (e: Error) => showToast(e.message, 'error'),

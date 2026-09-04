@@ -4823,6 +4823,7 @@ export default {
       retry: 'Retry',
       closed: 'This order is closed — nothing is planned for it.',
       nothingOutstanding: 'Everything is printed or already queued.',
+      truncated: 'The plan stopped early — this order needs more prints than one plan shows',
       outstanding: 'Outstanding:',
       row: {
         plate: 'Plate {{n}}',
@@ -5127,6 +5128,7 @@ export default {
       hidden: 'Product hidden from the catalog',
       shown: 'Product is back in the catalog',
       imported: 'Product imported',
+      createdFromFile: 'Product created from the file',
       exportFailed: 'The export failed (HTTP {{status}}).',
     },
     confirm: {

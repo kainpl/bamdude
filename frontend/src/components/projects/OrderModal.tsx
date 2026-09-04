@@ -31,10 +31,17 @@ const LABEL_CLASS = 'block text-sm font-medium text-white mb-1';
 /**
  * The price field as a number, or `fallback` when it cannot be read as one.
  *
- * An empty field means "no price" and is a real `null`; anything the browser's
- * number input let through that `Number()` still cannot parse is NOT a null —
- * `NaN` goes over the wire as `null` and would clear a price nobody meant to
- * clear, so an unparseable value keeps whatever was there before.
+ * An empty field means "no price" and is a real `null`; anything else that
+ * `Number()` cannot parse keeps whatever was there before, because `NaN`
+ * serialises to `null` and would clear a price nobody meant to clear.
+ *
+ * ⚠️ **That middle case cannot be typed.** The field is `type="number"`, and a
+ * browser reports an entry it cannot parse as the EMPTY STRING, never as the
+ * characters on screen — so `12,50` in a comma-decimal locale arrives here as
+ * `''`, which is a real null and does clear the price. The operator sees an
+ * empty field and the answer matches it. The `fallback` is for a value that
+ * never came through that input: autofill, a paste read before the browser
+ * normalises it, or the day this becomes a text field.
  */
 function readPrice(raw: string, fallback: number | null): number | null {
   if (raw.trim() === '') return null;
@@ -124,9 +131,9 @@ export function OrderModal({ order, defaultCustomerId, onClose, onSaved }: Order
         const normDueDate = dueDate === '' ? null : dueDate;
         if (normDueDate !== initialDueDate) data.due_date = normDueDate;
         if (priority !== initialPriority) data.priority = priority;
-        // ⚠️ `Number('12,50')` is NaN, and NaN serialises to `null` — a typo in
-        // the price field would have silently CLEARED the price instead of
-        // being rejected. An unparseable value counts as "no change".
+        // An unparseable value counts as "no change" — it can never serialise
+        // to the `null` that clears a price. See `readPrice` for what can and
+        // cannot reach it through a `type="number"` field.
         const normPrice = readPrice(price, initialPrice);
         if (normPrice !== initialPrice) data.price = normPrice;
         const normUrl = url.trim() === '' ? null : url.trim();

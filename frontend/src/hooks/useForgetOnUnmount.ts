@@ -28,7 +28,14 @@ export function useForgetOnUnmount(queryKey: readonly unknown[]): () => void {
   // The key can change with the route (`['project', id]`); the cleanup must use
   // whatever it was at the moment the page went away, not what it was at mount.
   const keyRef = useRef(queryKey);
-  keyRef.current = queryKey;
+  // ⚠️ Written in an EFFECT, never during render. A render can be thrown away
+  // (StrictMode's double pass, a suspended or aborted concurrent render), and a
+  // ref written on a render that never commits makes the cleanup fire against a
+  // key the page never actually showed. After commit is exactly when "what the
+  // page went away with" becomes a fact.
+  useEffect(() => {
+    keyRef.current = queryKey;
+  });
 
   useEffect(
     () => () => {

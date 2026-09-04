@@ -31,6 +31,10 @@ describe('FromFileDialog', () => {
     fireEvent.click(await screen.findByRole('button', { name: /create product/i }));
     await waitFor(() => expect(create).toHaveBeenCalledWith(7));
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 9 })));
+    // Its own sentence: nothing was SAVED here, a product was created out of a
+    // file — and the toast is the only confirmation of which of the two the
+    // click did. It borrowed `products.toast.saved` from the edit dialog.
+    expect(await screen.findByText('Product created from the file')).toBeInTheDocument();
   });
 
   it('searches the library through the server, debounced', async () => {

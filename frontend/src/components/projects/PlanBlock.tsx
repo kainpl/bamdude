@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ClipboardList, Loader2, Send } from 'lucide-react';
+import { AlertTriangle, ClipboardList, Loader2, Send } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, PlanEnqueueItem, PlanRow as PlanRowData } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -295,6 +295,18 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
   return (
     <section id="order-plan" className="space-y-3" data-testid="plan-block">
       {heading}
+
+      {/* The engine's iteration guard stopped covering, so what follows is a
+          PREFIX of the plan — rows, totals and no unsatisfiable part all look
+          exactly like a finished one. Said once for the whole order, above the
+          lines, because the operator's next move (print all of this, then ask
+          again) is the same whichever line was cut short. */}
+      {plan.truncated && (
+        <div className="flex items-center gap-2 text-sm" data-testid="plan-truncated">
+          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+          <span className="text-amber-300">{t('orders.plan.truncated')}</span>
+        </div>
+      )}
 
       {lines.length === 0 ? (
         <p className="text-sm text-bambu-gray" data-testid="plan-empty">

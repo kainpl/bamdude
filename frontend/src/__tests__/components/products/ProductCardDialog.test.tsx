@@ -10,6 +10,7 @@
 import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { Product } from '../../../api/client';
@@ -91,6 +92,35 @@ describe('ProductCardDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
 
     await waitFor(() => expect(update).toHaveBeenCalledWith(7, { license: 'CC-BY' }));
+  });
+
+  it('a rename reaches the order views, not only the product keys', async () => {
+    // ⚠️ This is the dialog that actually renames a product, and
+    // `ProjectLineResponse.product_name` is denormalised: an order card and
+    // every line of an order page kept the OLD name for as long as their
+    // `staleTime` said the answer was fresh. Invalidating `['products']` alone
+    // cannot reach them — they are `['projects']` / `['project', id]`.
+    vi.spyOn(api, 'updateProduct').mockResolvedValue(product as never);
+    // The default `gcTime` on purpose: a seeded entry nothing observes is
+    // collected at once under `gcTime: 0`, and "was it invalidated" cannot be
+    // asked of a query that is no longer there.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    for (const key of [['projects', {}], ['project', 1], ['customers'], ['products']]) {
+      client.setQueryData(key, { seeded: true });
+    }
+
+    render(
+      <QueryClientProvider client={client}>
+        <ProductCardDialog product={product} onClose={noop} />
+      </QueryClientProvider>,
+    );
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'Beaker' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(client.getQueryState(['projects', {}])?.isInvalidated).toBe(true));
+    expect(client.getQueryState(['project', 1])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(['customers'])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(['products'])?.isInvalidated).toBe(true);
   });
 
   it('carries the gallery in edit mode and not in create mode', () => {

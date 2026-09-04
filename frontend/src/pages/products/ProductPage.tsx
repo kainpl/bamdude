@@ -160,7 +160,14 @@ export function ProductPage() {
           standing before the product's `<h1>` opened that outline at level 2.
           The alternative — a visually-hidden `<h1>` at the top with the visible
           title demoted — gives a screen reader two names for the same thing and
-          leaves the one people can see outranked by one they cannot. */}
+          leaves the one people can see outranked by one they cannot.
+          ⚠️ **This is a trade, not a free win.** CSS `order` moves the PICTURE
+          only: the DOM — and with it the tab order and the reading order of a
+          screen reader — goes header, then gallery, so the first thing a
+          keyboard reaches is the title and its buttons while the first thing an
+          eye lands on is the picture above them. Outline correctness won
+          because a document that opens at `<h2>` misreports the page's own
+          name, which no visual ordering can repair. */}
       <ProductHeader
         product={product}
         onEdit={() => setEditing(true)}

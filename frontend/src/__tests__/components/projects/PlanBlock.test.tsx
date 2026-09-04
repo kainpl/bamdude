@@ -253,6 +253,21 @@ describe('PlanBlock', () => {
     expect(strayZeroTextNodes(screen.getByTestId('plan-block'))).toHaveLength(0);
   });
 
+  it('says when the engine stopped early, and says nothing when it did not', async () => {
+    // ⚠️ A truncated plan looks EXACTLY like a finished one — rows, totals, no
+    // unsatisfiable part — so the only sign the operator can have is this line.
+    // Printing everything on screen still leaves the order short.
+    render(<PlanBlock order={order} canEdit />);
+    expect(await screen.findByTestId('plan-row-10-100')).toBeInTheDocument();
+    expect(screen.queryByTestId('plan-truncated')).not.toBeInTheDocument();
+    cleanup();
+
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue({ ...plan, truncated: true });
+    render(<PlanBlock order={order} canEdit />);
+
+    expect(await screen.findByTestId('plan-truncated')).toHaveTextContent(/stopped early/i);
+  });
+
   it('leaves no bare zero behind when a row is emptied', async () => {
     render(<PlanBlock order={order} canEdit />);
 

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { MoreVertical } from 'lucide-react';
+import { useAnchoredPosition } from '../hooks/useAnchoredPosition';
 
 interface CardActionMenuProps {
   /** Accessible name of the trigger — the cards all say `common.actions`. */
@@ -14,11 +15,6 @@ interface CardActionMenuProps {
   children: (close: () => void) => ReactNode;
 }
 
-/** How tall the panel is ASSUMED to be when deciding to flip it above the
- *  trigger. A guess is enough: being wrong drops the menu a little low on a
- *  short viewport, while measuring would need a second render pass. */
-const ESTIMATED_HEIGHT = 280;
-
 /**
  * The "…" menu of a grid card, rendered in a portal on `document.body`.
  *
@@ -31,55 +27,79 @@ const ESTIMATED_HEIGHT = 280;
  * is nothing to cancel.
  *
  * The panel is `position: fixed` from the trigger's own box and recomputed on
- * scroll and resize, the way `FileListActions` does it in the File Manager.
- * It is rendered hidden until the first measurement so it cannot flash at
- * (0, 0).
+ * scroll and resize — the arithmetic is `useAnchoredPosition`, shared with the
+ * File Manager's row menu, which does the same thing for the same reason. It is
+ * rendered hidden until the first measurement so it cannot flash at (0, 0).
+ *
+ * ⚠️ **A `role="menu"` is a keyboard widget, not a styled div.** Opening moves
+ * focus to the first item, Up/Down walk the items (wrapping), Home/End jump to
+ * the ends, and Escape closes and gives the focus back to the trigger. Without
+ * the move, opening with the keyboard left the focus on the trigger and Tab
+ * walked into the page BEHIND the panel — the menu was announced and then
+ * unreachable.
  */
 export function CardActionMenu({ label, testId, width = 180, children }: CardActionMenuProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const [coords, setCoords] = useState<{ top: number; right: number } | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const coords = useAnchoredPosition(triggerRef, open);
 
+  /** The items, in DOM order, as the roving keys see them. Read on every press
+   *  rather than kept in state: what a card offers depends on permissions and
+   *  on the row, and a stale list would move focus to an item that is gone. */
+  const items = useCallback(
+    () => Array.from(panelRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []),
+    [],
+  );
+
+  // ⚠️ The move waits for the panel to be MEASURED (focusing an element that is
+  // still `visibility: hidden` is a no-op in a browser, and the menu would open
+  // with the focus left behind on the trigger) and happens ONCE per opening:
+  // the coordinates are recomputed on every scroll and resize, so a plain
+  // effect on them would yank the focus back to the first entry while somebody
+  // was arrowing through the menu on a scrolling page.
+  const moved = useRef(false);
   useEffect(() => {
     if (!open) {
-      setCoords(null);
+      moved.current = false;
       return;
     }
-    const update = () => {
-      const btn = triggerRef.current;
-      if (!btn) return;
-      const rect = btn.getBoundingClientRect();
-      const right = Math.max(8, window.innerWidth - rect.right);
-      let top = rect.bottom + 4;
-      if (top + ESTIMATED_HEIGHT > window.innerHeight - 8 && rect.top > ESTIMATED_HEIGHT) {
-        top = rect.top - ESTIMATED_HEIGHT - 4;
-      }
-      setCoords({ top, right });
-    };
-    update();
-    // ⚠️ `capture` on scroll: the card grid scrolls in its own container on
-    // some layouts, and a listener on `window` alone never hears that one.
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [open]);
+    if (coords && !moved.current) {
+      moved.current = true;
+      items()[0]?.focus();
+    }
+  }, [open, coords, items]);
 
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      // The card grids sit on pages whose modals close on a window keydown —
-      // an Escape that shut this menu must not also shut whatever is behind it.
-      e.stopPropagation();
-      setOpen(false);
-      triggerRef.current?.focus();
+      if (e.key === 'Escape') {
+        // The card grids sit on pages whose modals close on a window keydown —
+        // an Escape that shut this menu must not also shut whatever is behind it.
+        e.stopPropagation();
+        setOpen(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      const rows = items();
+      if (rows.length === 0) return;
+      const at = rows.indexOf(document.activeElement as HTMLElement);
+      // Wrapping, because a menu is a ring: Down on the last entry is the first
+      // one, which is what every desktop menu does and what a screen reader's
+      // own menu mode expects.
+      const go = (index: number) => {
+        e.preventDefault();
+        e.stopPropagation();
+        rows[(index + rows.length) % rows.length]?.focus();
+      };
+      if (e.key === 'ArrowDown') go(at + 1);
+      else if (e.key === 'ArrowUp') go(at <= 0 ? rows.length - 1 : at - 1);
+      else if (e.key === 'Home') go(0);
+      else if (e.key === 'End') go(rows.length - 1);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open]);
+  }, [open, items]);
 
   const close = () => setOpen(false);
 
@@ -106,6 +126,7 @@ export function CardActionMenu({ label, testId, width = 180, children }: CardAct
           <>
             <div className="fixed inset-0 z-[55]" onClick={close} />
             <div
+              ref={panelRef}
               role="menu"
               data-testid={testId ? `${testId}-panel` : undefined}
               style={{

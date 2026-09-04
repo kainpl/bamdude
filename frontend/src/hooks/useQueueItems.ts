@@ -15,8 +15,15 @@ import type { PrintQueueItem } from '../api/client';
  * Polling intervals live here rather than at each call site for the same
  * reason: a second opinion about how often the queue changes is how two panels
  * of the same screen end up disagreeing about what is on a printer.
+ *
+ * ⚠️ **Pending polls at the badge's cadence, not the Queue page's.** The
+ * sidebar badge is mounted on EVERY screen and is the only sign of waiting work
+ * a page that shows no queue gives — it used to have its own 5 s query, and
+ * folding it into this one at 30 s would have made every other screen a
+ * half-minute slower to notice a print was queued. Ten seconds is the
+ * compromise the whole app now shares; `printing` was already there.
  */
-const PENDING_POLL_MS = 30_000;
+const PENDING_POLL_MS = 10_000;
 const PRINTING_POLL_MS = 10_000;
 
 /** Everything waiting, farm-wide. */

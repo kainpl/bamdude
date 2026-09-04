@@ -77,6 +77,7 @@ import { TrashSplitButton } from '../components/TrashSplitButton';
 import { MakerWorldIcon } from '../components/BrandIcons';
 import { useToast } from '../contexts/ToastContext';
 import { useIsMobile } from '../hooks/useIsMobile';
+import { useAnchoredPosition } from '../hooks/useAnchoredPosition';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime, formatDuration, type TimeFormat, type DateFormat } from '../utils/date';
 import { fileActivityAt, formatFileSize } from '../utils/file';
@@ -710,35 +711,12 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   // Portal-rendered dropdown escapes the list container's `overflow-hidden`,
-  // so the menu isn't clipped inside the row. Coords are computed from the
-  // trigger button and recalculated on scroll/resize.
-  const [coords, setCoords] = useState<{ top: number; right: number } | null>(null);
+  // so the menu isn't clipped inside the row. The coordinates come from the
+  // trigger's own box and are recomputed on scroll/resize — the same
+  // arithmetic, in the same hook, as the grid cards' `CardActionMenu`, which
+  // portals for a different reason and hangs its panel exactly the same way.
+  const coords = useAnchoredPosition(triggerRef, open);
   const MENU_WIDTH = 240;
-
-  useEffect(() => {
-    if (!open) return;
-    const update = () => {
-      const btn = triggerRef.current;
-      if (!btn) return;
-      const rect = btn.getBoundingClientRect();
-      // Align menu's right edge to the trigger's right edge, hang below.
-      const right = Math.max(8, window.innerWidth - rect.right);
-      let top = rect.bottom + 4;
-      // Flip above when there isn't enough room below.
-      const estimatedHeight = 280;
-      if (top + estimatedHeight > window.innerHeight - 8 && rect.top > estimatedHeight) {
-        top = rect.top - estimatedHeight - 4;
-      }
-      setCoords({ top, right });
-    };
-    update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [open]);
 
   return (
     <div onClick={(e) => e.stopPropagation()}>
@@ -814,11 +792,15 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 `Auxiliaries/`, and an STL has neither. `is3mf`, not
                 `file_type === '3mf'`: a sliced `.gcode.3mf` is a 3MF and its
                 `file_type` says `gcode`.
-                ⚠️ **No `library:read` branch.** Reading the card needs exactly
-                what LISTING the files needs, so a user without it never reaches
-                a menu to grey out — the entry was disabled on a branch this
-                page cannot produce, which is a control promising a state it can
-                never leave. The file type is the only question here. */}
+                ⚠️ **No `library:read` branch — dropping it fixed a LIVE bug,
+                not dead code.** Both the listing and `GET /files/{id}/card`
+                enforce `library:read_all` / `library:read_own`; the legacy
+                `library:read` is a frontend gate nothing on this path asks
+                for. A user holding only `library:read_own` therefore listed
+                the files, could read every card the server would hand them, and
+                found this entry greyed out. Reading the card needs exactly what
+                LISTING the files needs, so the file type is the only question
+                left here. */}
             {onModelCard && is3mf(file) && (
               <button
                 className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
@@ -1233,11 +1215,15 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
                   `Auxiliaries/`, and an STL has neither. `is3mf`, not
                   `file_type === '3mf'`: a sliced `.gcode.3mf` is a 3MF and its
                   `file_type` says `gcode`.
-                  ⚠️ **No `library:read` branch.** Reading the card needs exactly
-                  what LISTING the files needs, so a user without it never reaches
-                  a menu to grey out — the entry was disabled on a branch this
-                  page cannot produce, which is a control promising a state it can
-                  never leave. The file type is the only question here. */}
+                  ⚠️ **No `library:read` branch — dropping it fixed a LIVE bug,
+                  not dead code.** Both the listing and `GET /files/{id}/card`
+                  enforce `library:read_all` / `library:read_own`; the legacy
+                  `library:read` is a frontend gate nothing on this path asks
+                  for. A user holding only `library:read_own` therefore listed
+                  the files, could read every card the server would hand them,
+                  and found this entry greyed out. Reading the card needs exactly
+                  what LISTING the files needs, so the file type is the only
+                  question left here. */}
               {onModelCard && is3mf(file) && (
                 <button
                   className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"

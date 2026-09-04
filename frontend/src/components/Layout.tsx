@@ -15,6 +15,7 @@ import { useQuery, useQueries } from '@tanstack/react-query';
 import { api, supportApi, type Permission } from '../api/client';
 import { getIconByName } from './IconPicker';
 import { useIsSidebarCompact } from '../hooks/useIsSidebarCompact';
+import { usePendingQueueItems } from '../hooks/useQueueItems';
 import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
 import { useUnknownTagPrompt } from '../hooks/useUnknownTagPrompt';
 import { UnknownSpoolModal } from './UnknownSpoolModal';
@@ -315,14 +316,12 @@ export function Layout() {
     refetchOnWindowFocus: true,
   });
 
-  // Fetch pending queue items count for badge
-  const { data: queueItems } = useQuery({
-    queryKey: ['queue', 'pending'],
-    queryFn: () => api.getQueue(undefined, 'pending'),
-    staleTime: 5 * 1000, // 5 seconds
-    refetchInterval: 5 * 1000, // Refresh every 5 seconds
-    refetchOnWindowFocus: true,
-  });
+  // The badge's pending list is the SHARED one (`hooks/useQueueItems`), not a
+  // private query. This component is mounted on every page, so its own
+  // `['queue', 'pending']` entry meant an order page or the Queue page held two
+  // cache entries and two polls for one answer — and the two could disagree for
+  // as long as their intervals differed. The shared hook owns the cadence.
+  const { data: queueItems } = usePendingQueueItems();
   // Auto-queue work not yet routed to a printer. The badge shows the *total*
   // amount of waiting work — the split between "queued on a printer" and
   // "awaiting routing" is what the Queue page's stats bar is for; there is no

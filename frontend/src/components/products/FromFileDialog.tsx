@@ -84,7 +84,10 @@ export function FromFileDialog({ onClose, onCreated }: FromFileDialogProps) {
     mutationFn: (fileId: number) => api.createProductFromFile(fileId),
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
-      showToast(t('products.toast.saved'));
+      // Its own key, not `products.toast.saved`: nothing was saved here — a
+      // product was CREATED, out of a file the operator picked, and the toast
+      // is the only confirmation of which of the two happened.
+      showToast(t('products.toast.createdFromFile'));
       onCreated(created);
     },
     onError: (e: Error) => showToast(e.message, 'error'),

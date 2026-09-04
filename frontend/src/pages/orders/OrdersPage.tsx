@@ -28,31 +28,37 @@ const SKELETON_CARDS = 6;
  * replacing them with grey boxes for a moment is worse than showing figures
  * that are one request old. TanStack's `isLoading` is exactly "pending with no
  * data", which is the only state that has nothing to show.
+ *
+ * ⚠️ **The grey boxes are decoration; the STATUS is the sentence.** A grid of
+ * `aria-hidden` placeholders is silence to a screen reader — the page reads as
+ * having no orders, with nothing said about why. `role="status"` + `aria-busy`
+ * on the wrapper, with one visually-hidden line inside, is what announces the
+ * wait; the cards keep their `aria-hidden` so nobody hears six empty ones.
  */
 function OrdersSkeleton() {
+  const { t } = useTranslation();
   return (
-    <div
-      data-testid="orders-skeleton"
-      aria-hidden="true"
-      className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]"
-    >
-      {Array.from({ length: SKELETON_CARDS }, (_, i) => (
-        <div
-          key={i}
-          className="animate-pulse rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary overflow-hidden"
-        >
-          <div className="h-1.5 bg-bambu-dark-tertiary" />
-          <div className="p-4 flex gap-3">
-            <div className="w-20 h-20 flex-shrink-0 rounded-lg bg-bambu-dark" />
-            <div className="flex-1 space-y-2 py-1">
-              <div className="h-4 w-2/3 rounded bg-bambu-dark" />
-              <div className="h-3 w-1/3 rounded bg-bambu-dark" />
-              <div className="h-2 w-full rounded bg-bambu-dark" />
-              <div className="h-3 w-1/4 rounded bg-bambu-dark" />
+    <div role="status" aria-busy="true" data-testid="orders-skeleton">
+      <span className="sr-only">{t('common.loading')}</span>
+      <div aria-hidden="true" className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
+        {Array.from({ length: SKELETON_CARDS }, (_, i) => (
+          <div
+            key={i}
+            className="animate-pulse rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary overflow-hidden"
+          >
+            <div className="h-1.5 bg-bambu-dark-tertiary" />
+            <div className="p-4 flex gap-3">
+              <div className="w-20 h-20 flex-shrink-0 rounded-lg bg-bambu-dark" />
+              <div className="flex-1 space-y-2 py-1">
+                <div className="h-4 w-2/3 rounded bg-bambu-dark" />
+                <div className="h-3 w-1/3 rounded bg-bambu-dark" />
+                <div className="h-2 w-full rounded bg-bambu-dark" />
+                <div className="h-3 w-1/4 rounded bg-bambu-dark" />
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
