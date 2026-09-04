@@ -778,6 +778,80 @@ async def test_cover_image_upload_stream_and_delete(committing_client):
 
 
 @pytest.mark.asyncio
+async def test_the_cover_route_revalidates_and_heals_a_dangling_reference(committing_client, db_session):
+    """Two rules the product cover route learned in pass 4, now here as well.
+
+    ``Cache-Control: private, no-cache`` — REVALIDATE, not "do not store". The
+    URL is stable across the cover being replaced, so an age-based cache shows
+    the old picture after an upload; that is what a cache-busting query param on
+    the frontend was working around.
+
+    And the self-heal PERSISTS. ``get_db`` rolls the request back on anything
+    that escapes the handler, so clearing the column and then *raising* a 404
+    undid the very heal it had just performed — the next request found the same
+    dangling reference and warned about it again, forever.
+    """
+    from backend.app.api.routes.projects import get_project_attachments_dir
+    from backend.app.core.auth import create_camera_stream_token
+    from backend.app.models.project import Project
+
+    pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
+    name = (
+        await committing_client.post(
+            f"/api/v1/projects/{pid}/cover-image",
+            files={"file": ("cover.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+        )
+    ).json()["filename"]
+    token = await create_camera_stream_token()
+
+    served = await committing_client.get(f"/api/v1/projects/{pid}/cover-image", params={"token": token})
+    assert served.status_code == 200
+    assert served.headers["cache-control"] == "private, no-cache"
+
+    (get_project_attachments_dir(pid) / name).unlink()
+
+    gone = await committing_client.get(f"/api/v1/projects/{pid}/cover-image", params={"token": token})
+    assert gone.status_code == 404
+    assert gone.json()["detail"] == "Cover image file not found"
+
+    db_session.expire_all()
+    assert (await db_session.get(Project, pid)).cover_image_filename is None, "the heal did not survive the response"
+
+
+@pytest.mark.asyncio
+async def test_the_archives_page_is_bounded_and_its_order_is_total(committing_client, db_session, catalog):
+    """``limit`` had no upper bound and the order had no tiebreaker.
+
+    The order page walks this endpoint in pages of 500, so the bound is 500 —
+    an unbounded ``limit`` is a whole farm's print history in one response for
+    the cost of one query param. And ``created_at`` has second resolution on
+    SQLite: two prints of the same second are a TIE, which LIMIT/OFFSET is free
+    to break differently per page, dropping one row from the walk and repeating
+    another. ``id`` desc is the tiebreaker, and it is total.
+    """
+    from datetime import datetime
+
+    pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
+    stamp = datetime(2026, 9, 4, 12, 0, 0)
+    first = await _completed_print(db_session, pid, catalog["file"].id)
+    second = await _completed_print(db_session, pid, catalog["file"].id)
+    first.created_at = second.created_at = stamp
+    await db_session.commit()
+
+    for bad in ({"limit": 501}, {"limit": 0}, {"offset": -1}):
+        r = await committing_client.get(f"/api/v1/projects/{pid}/archives", params=bad)
+        assert r.status_code == 422, f"{bad} was accepted: {r.text}"
+
+    pages = []
+    for offset in (0, 1):
+        page = await committing_client.get(f"/api/v1/projects/{pid}/archives", params={"limit": 1, "offset": offset})
+        assert page.status_code == 200, page.text
+        pages.append([a["id"] for a in page.json()])
+
+    assert sorted(pages[0] + pages[1]) == sorted([first.id, second.id]), "a tied row was dropped or repeated"
+
+
+@pytest.mark.asyncio
 async def test_add_queue_files_a_pending_queue_item_under_the_order(committing_client, db_session, catalog):
     pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
     queue = PrinterQueue(id=1, printer_id=1)

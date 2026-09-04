@@ -267,6 +267,31 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_an_archived_printer_takes_no_new_work(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Archiving retires a printer everywhere (m105) — this door was the
+        last one that still accepted work for one.
+
+        404, and the same wording the plan's enqueue endpoint uses: an archived
+        printer is not "unavailable", it is gone from every list the operator
+        can see, so "not found" is what the answer means. The queue row survives
+        archiving (history), which is exactly why the queue id alone was enough
+        to get past this handler.
+        """
+        printer, queue = await printer_factory()
+        archive = await archive_factory()
+
+        printer.archived = True
+        await db_session.commit()
+
+        response = await async_client.post("/api/v1/queue/", json={"queue_id": queue.id, "archive_id": archive.id})
+
+        assert response.status_code == 404, response.text
+        assert response.json()["detail"] == "Printer not found"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_add_to_queue_with_macro_selection(self, async_client: AsyncClient, printer_factory, archive_factory):
         """The ticked macros ride on the item as JSON text and come back a list."""
         _printer, queue = await printer_factory()

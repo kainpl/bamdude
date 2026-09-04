@@ -52,6 +52,11 @@ _COPY_WITH_DEFAULTS: dict[str, dict[str, Any]] = {
         # Disabled, matching the model default: an imported farm should not
         # arrive with connection recycling switched on. See models/printer.py.
         "mqtt_connection_timeout": 0,
+        # BamDude-only columns, both NOT NULL with a PYTHON-side default — which
+        # a raw INSERT does not run. Upstream has neither, so without a value
+        # here the very first printer aborted the import.
+        "archived": 0,
+        "mqtt_recording": 0,
     },
     "print_archives": {
         "swap_compatible": 0,
@@ -149,8 +154,18 @@ async def _import_table(
     transform: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     rename: dict[str, str] | None = None,
     source_table: str | None = None,
+    extra_source_columns: list[str] | None = None,
 ) -> int:
     """Copy rows from *old_db* ``source_table`` (or ``table``) into *new_conn* ``table``.
+
+    ``extra_source_columns`` names source columns the DESTINATION does not have
+    but a ``transform`` needs to read — ``print_queue.printer_id``, which the
+    queue transform turns into ``queue_id``. Auto-detection selects only columns
+    that exist on both sides, so without this the transform was handed a row
+    that had already lost the very column it keys on and dropped every one of
+    them, silently: an import of a Bambuddy database came back with an empty
+    queue and no error. Nothing leaks — the record is filtered to destination
+    columns AFTER the transform runs.
 
     Returns the number of rows inserted.
     """
@@ -185,6 +200,7 @@ async def _import_table(
     else:
         # Auto-detect: source columns whose (possibly renamed) name exists in dest
         select_cols = [c for c in src_cols if renames.get(c, c) in dst_cols]
+        select_cols += [c for c in (extra_source_columns or []) if c in src_cols and c not in select_cols]
 
     if not select_cols:
         return 0
@@ -327,12 +343,21 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
             # ---------------------------------------------------------------
             # Phase 2: Create printer_queues (one per printer)
             # ---------------------------------------------------------------
+            # ⚠️ Only the LIVE-state counters, and EVERY not-null column of the
+            # destination is named: this is raw SQL, so a python-side model
+            # default never runs (``is_paused``, ``auto_distribute_eligible``).
+            # m019 removed ``completed_count``,
+            # ``failed_count``, ``cancelled_count`` and ``total_count`` from this
+            # table — those roll off the archive table via ``archive.queue_id``
+            # at read time — and naming them here made every import of a
+            # Bambuddy database abort on the first printer with "table
+            # printer_queues has no column named completed_count".
             await conn.execute(
                 text(
                     "INSERT INTO printer_queues "
-                    "(id, printer_id, status, pending_count, completed_count, "
-                    "failed_count, cancelled_count, skipped_count, total_count) "
-                    "SELECT id, id, 'idle', 0, 0, 0, 0, 0, 0 FROM printers"
+                    "(id, printer_id, status, pending_count, skipped_count, "
+                    "is_paused, auto_distribute_eligible) "
+                    "SELECT id, id, 'idle', 0, 0, 0, 1 FROM printers"
                 )
             )
             # Build printer_id -> queue_id mapping (queue_id == printer_id here)
@@ -451,6 +476,13 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
                 conn,
                 old_db,
                 "print_queue",
+                # BamDude-only NOT NULL columns with python-side defaults, same
+                # trap as the printers block above.
+                defaults={"mesh_mode_fast_check": 1, "execute_swap_macros": 1},
+                # ``printer_id`` is not a column here any more — the queue owns
+                # the printer — but it is what the transform reads to find the
+                # queue. It has to be selected explicitly for that reason.
+                extra_source_columns=["printer_id"],
                 transform=_make_queue_transform(printer_queue_map),
             )
             if n:
@@ -486,21 +518,16 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
             # Phase 8: Recount queue counters
             # ---------------------------------------------------------------
             if summary.get("print_queue", 0) > 0:
+                # The same m019 boundary as Phase 2: the terminal counters are
+                # not columns any more, so there is nothing here to recount but
+                # the two live ones.
                 await conn.execute(
                     text(
                         "UPDATE printer_queues SET "
                         "pending_count = (SELECT COUNT(*) FROM print_queue "
                         "  WHERE queue_id = printer_queues.id AND status = 'pending'), "
-                        "completed_count = (SELECT COUNT(*) FROM print_queue "
-                        "  WHERE queue_id = printer_queues.id AND status = 'completed'), "
-                        "failed_count = (SELECT COUNT(*) FROM print_queue "
-                        "  WHERE queue_id = printer_queues.id AND status = 'failed'), "
-                        "cancelled_count = (SELECT COUNT(*) FROM print_queue "
-                        "  WHERE queue_id = printer_queues.id AND status = 'cancelled'), "
                         "skipped_count = (SELECT COUNT(*) FROM print_queue "
-                        "  WHERE queue_id = printer_queues.id AND status = 'skipped'), "
-                        "total_count = (SELECT COUNT(*) FROM print_queue "
-                        "  WHERE queue_id = printer_queues.id)"
+                        "  WHERE queue_id = printer_queues.id AND status = 'skipped')"
                     )
                 )
                 logger.info("Recounted printer queue counters")

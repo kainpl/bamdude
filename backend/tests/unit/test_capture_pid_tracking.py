@@ -206,3 +206,33 @@ class TestCleanupExcludesCapturePids:
         # 42000 should NOT have been killed with SIGKILL
         killed_pids = [call[0][0] for call in mock_kill.call_args_list if call[0][1] == signal.SIGKILL]
         assert 42000 not in killed_pids
+
+
+class TestSpawnedPidReaping:
+    """Layer 2 of the janitor: forget PIDs whose process is gone.
+
+    ⚠️ It asked with ``os.kill(pid, 0)``. Signal 0 is the POSIX existence
+    check and delivers nothing — but on Windows ``signal.CTRL_C_EVENT`` IS 0,
+    so that call sends a console interrupt to the process group instead of
+    asking a question, and a janitor tick could kill the very stream it was
+    checking on. It asks ``psutil.pid_exists`` now.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_dead_pid_is_forgotten_and_a_live_one_is_kept(self):
+        from backend.app.api.routes.camera import cleanup_orphaned_streams
+
+        spawned = {42000: 0.0, 43000: 0.0}
+
+        with (
+            patch("backend.app.api.routes.camera._scan_bambu_ffmpeg_pids", return_value=[]),
+            patch("backend.app.api.routes.camera._active_streams", {}),
+            patch("backend.app.api.routes.camera._spawned_ffmpeg_pids", spawned),
+            patch("psutil.pid_exists", side_effect=lambda pid: pid == 42000) as exists,
+            patch("os.kill") as mock_kill,
+        ):
+            await cleanup_orphaned_streams()
+
+        assert set(spawned) == {42000}, "the live PID was forgotten, or the dead one kept"
+        assert exists.call_count == 2
+        assert mock_kill.call_args_list == [], "no signal is sent to ASK whether a process is alive"

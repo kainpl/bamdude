@@ -12,8 +12,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -419,12 +419,17 @@ async def update_procurement(
 @router.get("/{project_id}/archives")
 async def list_project_archives(
     project_id: int,
-    limit: int = 100,
-    offset: int = 0,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
-    """List archives in a project."""
+    """List archives in a project.
+
+    ``limit`` is bounded at 500 — what the order page walks in — because an
+    unbounded one is a whole farm's print history in a single response for the
+    price of a query param.
+    """
     # Verify project exists
     result = await db.execute(select(Project).where(Project.id == project_id))
     if not result.scalar_one_or_none():
@@ -437,7 +442,11 @@ async def list_project_archives(
         select(PrintArchive)
         .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
         .where(PrintArchive.project_id == project_id)
-        .order_by(PrintArchive.created_at.desc())
+        # ⚠️ ``id`` is the TIEBREAKER, not decoration: ``created_at`` has second
+        # resolution on SQLite, so two prints of the same second are a tie the
+        # database may break differently for each LIMIT/OFFSET page — which
+        # drops one of them from the order page's walk and repeats another.
+        .order_by(PrintArchive.created_at.desc(), PrintArchive.id.desc())
         .limit(limit)
         .offset(offset)
     )
@@ -793,17 +802,27 @@ async def get_project_cover_image(
 
     file_path = get_project_attachments_dir(project_id) / project.cover_image_filename
     if not file_path.exists():
-        # DB references a file that vanished from disk — clear the
-        # dangling reference so future GETs get a clean 404 instead of
-        # repeatedly touching the filesystem.
+        # DB references a file that vanished from disk — clear the dangling
+        # reference so future GETs get a clean 404 instead of repeatedly
+        # touching the filesystem. ⚠️ RETURN the 404, never raise it: ``get_db``
+        # rolls the request back on anything that escapes the handler, so a
+        # raise would undo the very heal just performed and the next request
+        # would find the same dangling name. (The product cover route's twin
+        # learned this first.)
         logger.warning("Cover image file missing for project %s: %s", project_id, file_path)
         project.cover_image_filename = None
         await db.flush()
-        raise HTTPException(status_code=404, detail="Cover image file not found")
+        return JSONResponse(status_code=404, content={"detail": "Cover image file not found"})
 
     ext = os.path.splitext(project.cover_image_filename)[1].lower()
     media_type = IMAGE_CONTENT_TYPES.get(ext, "application/octet-stream")
-    return FileResponse(file_path, media_type=media_type)
+    # ⚠️ ``no-cache`` — REVALIDATE, not "do not store". This URL is stable
+    # across the cover being replaced, so an age-based cache shows the old
+    # picture after an upload; ``private`` alone still let a browser reuse a
+    # heuristically fresh copy, which is what a cache-busting query param on
+    # the frontend was working around. ``private``: token-gated user data,
+    # never a shared cache's.
+    return FileResponse(file_path, media_type=media_type, headers={"Cache-Control": "private, no-cache"})
 
 
 @router.delete("/{project_id}/cover-image")

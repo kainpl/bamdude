@@ -121,6 +121,19 @@ def _parse_applied_patches(raw: str | None) -> list[str] | None:
     return value if isinstance(value, list) else None
 
 
+def _object_count(archive: PrintArchive) -> int | None:
+    """How many printable objects the archived plate carried, or None.
+
+    ``extra_data["printable_objects"]`` is what the 3MF parse left behind — a
+    dict keyed by the firmware's ``identify_id``, so its length is the truthful
+    instance count. None (not 0) when the archive has no object metadata at
+    all: an older row, or a 3MF that carried none, is "unknown", and the list
+    renders the line for a hand-typed defective count instead.
+    """
+    objects = (archive.extra_data or {}).get("printable_objects")
+    return len(objects) if isinstance(objects, dict | list) else None
+
+
 def archive_to_response(
     archive: PrintArchive,
     duplicates: list[dict] | None = None,
@@ -179,6 +192,15 @@ def archive_to_response(
         "failure_reason": archive.failure_reason,
         "quantity": archive.quantity,
         "defective_count": archive.defective_count,
+        # ⚠️ Both of these are DEAD unless they are written here. The schema
+        # says ``skip_objects_supported`` is "populated straight from the model
+        # by from_attributes" — but this builder answers with a DICT, so a key
+        # it does not set falls back to the field default and every archive
+        # reported False and no objects. The archive list's object count and
+        # its skip-objects badge (which is drawn only when the count is > 0)
+        # were both invisible for it.
+        "skip_objects_supported": archive.skip_objects_supported,
+        "object_count": _object_count(archive),
         # Detail views only (part_rows passed in) — list callers leave this
         # [] rather than paying for a per-archive query on every page.
         "parts": (

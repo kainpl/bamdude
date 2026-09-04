@@ -93,12 +93,15 @@ class ArchiveResponse(BaseModel):
     duplicate_sequence: int = 0  # 0 = original, 1+ = nth duplicate
     original_archive_id: int | None = None  # ID of the first/original archive
 
-    # Object count (computed from extra_data.printable_objects)
+    # Object count, from ``extra_data.printable_objects``. None means "no object
+    # metadata", which is not the same as zero objects.
     object_count: int | None = None
 
     # gcode_label_objects AND exclude_object — badge in the archive list, and
-    # the preview banner explains what it means. Denormalised column (m114),
-    # populated straight from the model by from_attributes.
+    # the preview banner explains what it means. Denormalised column (m114).
+    # ⚠️ Both fields are filled by ``archives.archive_to_response``, which
+    # answers with a dict — ``from_attributes`` never sees the model, so a field
+    # that builder does not set is this default on every response, for ever.
     skip_objects_supported: bool = False
 
     print_name: str | None

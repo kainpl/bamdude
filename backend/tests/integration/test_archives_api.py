@@ -145,6 +145,42 @@ class TestArchivesAPI:
         assert by_id[linked.id]["library_file_id"] == lib.id
         assert by_id[unlinked.id]["library_file_id"] is None
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_response_carries_the_skip_support_and_the_object_count(
+        self, async_client: AsyncClient, archive_factory, printer_factory
+    ):
+        """Both were dead on the wire, and one hid the other.
+
+        ``archive_to_response`` answers with a DICT, so a field it does not set
+        is the schema's default on every response — ``skip_objects_supported``
+        was False for every archive however the column read, and
+        ``object_count`` was always null. The list draws the skip badge only
+        inside the object-count line, so the badge could never appear at all.
+        """
+        printer = await printer_factory()
+        skippable = await archive_factory(
+            printer.id,
+            print_name="Skippable",
+            skip_objects_supported=True,
+            extra_data={"printable_objects": {"11": "shade", "12": "arm"}},
+        )
+        plain = await archive_factory(printer.id, print_name="Plain")
+
+        detail = await async_client.get(f"/api/v1/archives/{skippable.id}")
+        assert detail.status_code == 200
+        assert detail.json()["skip_objects_supported"] is True
+        assert detail.json()["object_count"] == 2
+
+        listing = await async_client.get("/api/v1/archives/")
+        by_id = {a["id"]: a for a in listing.json()["data"]}
+        assert by_id[skippable.id]["skip_objects_supported"] is True
+        assert by_id[skippable.id]["object_count"] == 2
+        # No metadata is "unknown", not "zero objects": the list still renders
+        # the line for a hand-typed defective count on such a row.
+        assert by_id[plain.id]["skip_objects_supported"] is False
+        assert by_id[plain.id]["object_count"] is None
+
     # ========================================================================
     # Update endpoints
     # ========================================================================

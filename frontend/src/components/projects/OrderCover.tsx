@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Image as ImageIcon, Loader2, Trash2, Upload } from 'lucide-react';
@@ -16,28 +16,22 @@ interface OrderCoverProps {
 /**
  * The order's cover picture, beside the header.
  *
- * ⚠️ **The cache-buster's separator is computed, never assumed.** The URL comes
- * out of `getProjectCoverImageUrl` with the camera stream token on it — an
- * `<img>` cannot send an Authorization header, which is why that endpoint
- * takes the token in the query string — but `withStreamToken` returns the URL
- * BARE while the token is still loading. Hard-coding `&v=` therefore produced
- * `…/cover-image&v=0` on a cold page, a 404 that `rewriteMediaSrcWithToken`
- * cannot repair because there is no `?` for it to work with.
- *
- * The counter itself exists because replacing a cover keeps the same URL:
- * without it the browser shows the old picture until the tab is reloaded.
+ * ⚠️ **The URL is bare — the response header is the single freshness rule.**
+ * Replacing a cover keeps the same URL, which is why this used to carry a
+ * `?v=` counter; the endpoint now answers `Cache-Control: private, no-cache`,
+ * so the browser revalidates and a second rule here could only disagree with
+ * it. (The counter also had to compute its own separator, because
+ * `withStreamToken` returns the URL bare while the token is still loading —
+ * one more thing that is simply gone.) The orders grid card renders the same
+ * bare URL.
  */
 export function OrderCover({ order, canEdit }: OrderCoverProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const fileInput = useRef<HTMLInputElement>(null);
-  const [version, setVersion] = useState(0);
 
-  const refresh = () => {
-    setVersion((v) => v + 1);
-    invalidateOrderViews(queryClient, { orderId: order.id });
-  };
+  const refresh = () => invalidateOrderViews(queryClient, { orderId: order.id });
 
   const upload = useMutation({
     mutationFn: (file: File) => api.uploadProjectCoverImage(order.id, file),
@@ -59,8 +53,7 @@ export function OrderCover({ order, canEdit }: OrderCoverProps) {
   // says so.
   if (!order.cover_image_filename && !canEdit) return null;
 
-  const coverUrl = api.getProjectCoverImageUrl(order.id);
-  const coverSrc = `${coverUrl}${coverUrl.includes('?') ? '&' : '?'}v=${version}`;
+  const coverSrc = api.getProjectCoverImageUrl(order.id);
 
   return (
     <div className="flex items-start gap-2">

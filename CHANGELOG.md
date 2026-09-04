@@ -46,6 +46,20 @@
 
 ### Fixed
 
+- **A retired printer could still be given work.** Archiving a printer hides it everywhere and cancels what it had pending, but the older "add to queue" door only checked that the queue existed — and a queue row survives archiving, because it is the printer's history. Queueing to an archived printer is refused now, the same way the order page's plan already refused it.
+
+- **Importing a Bambuddy database could not finish.** The importer still wrote four queue counters that BamDude removed a year ago, so an import aborted on the very first printer and nothing was migrated. Two more of the same kind were behind it — columns BamDude added that the upstream database cannot supply were not given a value — and the print queue itself was arriving empty in silence, because the column the importer used to find each item's queue is no longer a column on our side. A legacy database now imports its printers, its queues and its queued items.
+
+- **An archive card shows how many objects the plate carried, and whether they can be skipped.** Both facts were recorded and neither ever reached the browser: the list's object count was always empty, and the skip-objects mark that hangs off it could therefore never appear.
+
+- **A print could go missing from an order's prints list.** The list is fetched in pages, ordered by time — and two prints of the same second are a tie the database may break differently for each page, dropping one and repeating another. Prints of the same second now have a stable order. The same endpoint also refuses an unreasonable page size instead of answering with a farm's entire print history.
+
+- **An order's cover picture stops going stale.** Replacing a cover keeps the same address, so a browser could go on showing the old picture until the tab was reloaded — the page worked around it with a changing address, which is now unnecessary: the server tells the browser to check. And a cover whose file has vanished from disk is forgotten on the first request that notices, instead of being re-discovered and re-logged for ever.
+
+- **The camera janitor could kill a running stream on Windows.** Its "is this process still alive?" check is written as a signal that delivers nothing on Linux — but the same call on Windows sends a console interrupt to the process group. It asks properly now.
+
+- **`scripts/prune_orphan_archive_files.py` no longer counts your attachments as rubbish.** Order and product attachments live under the archive folder but are named by no archive row, so the sweep saw every one of them as an orphan and `--apply` would have deleted them. Those two folders are now swept by identity instead: an attachment folder is removed only when the order or product it belongs to is gone — which is the leftover the script never cleaned — and never when the database cannot say which rows exist.
+
 - **Email as a second factor could not send its code.** The login page's request for a one-time code by email was refused by the API gateway before it ever reached the sender: the gateway's list of routes reachable without a session named a route that does not exist. Email 2FA works from the login page again — TOTP and backup codes were never affected.
 
 - **The API gateway matches whole routes now, not fragments of them.** Its list of what a browser may reach without a session — thumbnails, camera streams, covers, the login flow — was matched as plain text anywhere in the address. A handful of routes it never meant to name therefore skipped that first check: the timelapse write routes, the camera-token minter, the OIDC provider editor, and any address a client could put a whitelisted word into. Every one of them was still refused by its own permission check, so nothing was ever reachable without the right to reach it; the outer gate is simply back on all of them, and a test now pins the exact list.

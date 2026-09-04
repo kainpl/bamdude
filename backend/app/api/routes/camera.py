@@ -1790,6 +1790,8 @@ async def cleanup_orphaned_streams():
     import signal
     import time
 
+    import psutil
+
     cleaned = 0
     now = time.time()
 
@@ -1818,11 +1820,14 @@ async def cleanup_orphaned_streams():
         _spawned_ffmpeg_pids.pop(pid, None)
         cleaned += 1
 
-    # 2. Clean up _spawned_ffmpeg_pids entries for dead processes
+    # 2. Clean up _spawned_ffmpeg_pids entries for dead processes.
+    #    ⚠️ ``psutil.pid_exists``, NOT ``os.kill(pid, 0)``. Signal 0 is the
+    #    existence check on POSIX and delivers nothing — but on Windows
+    #    ``signal.CTRL_C_EVENT`` IS 0, so ``os.kill(pid, 0)`` there sends a
+    #    console interrupt to the process group instead of asking a question.
+    #    A janitor tick could kill the running stream it was checking on.
     for pid in list(_spawned_ffmpeg_pids):
-        try:
-            os.kill(pid, 0)  # existence check
-        except (ProcessLookupError, OSError):
+        if not psutil.pid_exists(pid):
             _spawned_ffmpeg_pids.pop(pid, None)
 
     # 3. Clean up _active_streams entries with dead processes

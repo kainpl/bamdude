@@ -61,6 +61,16 @@ async def add_items_to_printer_queue(
     if not queue:
         raise HTTPException(400, "Queue not found")
 
+    # An ARCHIVED printer takes no new work (m105). Archiving retires a printer
+    # from every list the operator can see while its queue row stays for the
+    # history — which is why a queue id alone used to be enough to get past
+    # here, leaving this the last queue door that still accepted work for a
+    # retired machine. 404 and this wording deliberately match the plan's
+    # enqueue endpoint (``routes/projects.py``): the printer is not busy or
+    # unavailable, it is gone.
+    if queue.printer is not None and queue.printer.archived:
+        raise HTTPException(404, "Printer not found")
+
     # ⚠️ A paused queue still ACCEPTS new items — deliberately, since 2026-09-01.
     # Pause stops dispatch, not planning: the item lands visibly at the end of
     # that printer's queue and waits there until somebody resumes it, which is
