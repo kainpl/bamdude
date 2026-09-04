@@ -13,10 +13,13 @@ interface PrinterQueueWidgetProps {
   printerModel?: string | null;
   printerState?: string | null;
   awaitingPlateClear?: boolean;
+  // Whether Repeat has a finished row to re-arm — the backend's
+  // `repeat_available`. Absent (older backend) means "don't hide it".
+  repeatAvailable?: boolean;
   requirePlateClear?: boolean;
 }
 
-export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear, requirePlateClear = true }: PrinterQueueWidgetProps) {
+export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear, repeatAvailable, requirePlateClear = true }: PrinterQueueWidgetProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -97,18 +100,20 @@ export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear
           </div>
         ) : (
           <div className="flex gap-2">
-            <button
-              onClick={() => repeatPrintMutation.mutate()}
-              disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
-              className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
-            >
-              {repeatPrintMutation.isPending ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <RotateCcw className="w-4 h-4" />
-              )}
-              {t('queue.repeatPrint')}
-            </button>
+            {repeatAvailable !== false && (
+              <button
+                onClick={() => repeatPrintMutation.mutate()}
+                disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
+                className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {repeatPrintMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <RotateCcw className="w-4 h-4" />
+                )}
+                {t('queue.repeatPrint')}
+              </button>
+            )}
             <button
               onClick={() => clearPlateMutation.mutate()}
               disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}

@@ -1172,19 +1172,26 @@ class NotificationService:
                             # ``pending > 0``, so the message announcing the LAST
                             # print in a queue carried no control at all \u2014 which
                             # is exactly when repeating is wanted. Repeat re-arms
-                            # the row that just finished; see services/plate_hold.
-                            buttons.append(
-                                [
+                            # the row that just finished; see services/plate_hold \u2014
+                            # and is offered only when that row exists, because
+                            # the gate can be armed over nothing (2026-09-04).
+                            from backend.app.services.plate_hold import repeat_available
+
+                            answers = []
+                            if await repeat_available(printer_id):
+                                answers.append(
                                     InlineKeyboardButton(
                                         text=f"\U0001f501 {t(lang, NS, 'printers.btn_repeat_print')}",
                                         callback_data=f"action:repeat_print:{printer_id}",
-                                    ),
-                                    InlineKeyboardButton(
-                                        text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
-                                        callback_data=f"action:clear_plate:{printer_id}",
-                                    ),
-                                ]
+                                    )
+                                )
+                            answers.append(
+                                InlineKeyboardButton(
+                                    text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
+                                    callback_data=f"action:clear_plate:{printer_id}",
+                                )
                             )
+                            buttons.append(answers)
 
                 # Print progress → pause/stop buttons
                 if event_type == "print_progress":

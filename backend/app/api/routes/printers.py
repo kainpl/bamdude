@@ -60,6 +60,7 @@ from backend.app.services.bambu_mqtt import (
 )
 from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
+from backend.app.services.plate_hold import has_waiting_row as _has_waiting_row
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_location_service import load_tree, subtree_ids
@@ -243,11 +244,11 @@ async def create_printer(
     await db.commit()
     await db.refresh(printer)
 
-    # Auto-create printer queue
-    from backend.app.models.printer_queue import PrinterQueue
+    # Every printer has a queue, under its own id — the same guard the Telegram
+    # add path and startup use, so no path can forget it again.
+    from backend.app.services.printer_queues import ensure_printer_queue
 
-    queue = PrinterQueue(id=printer.id, printer_id=printer.id)
-    db.add(queue)
+    await ensure_printer_queue(db, printer.id)
     await db.commit()
 
     # Connect to the printer
@@ -1325,6 +1326,9 @@ async def get_printer_status(
         ams_auto_switch_filament=state.ams_auto_switch_filament if state else None,
         macro_executing=state.macro_executing if state else None,
         awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
+        repeat_available=(
+            printer_manager.is_awaiting_plate_clear(printer_id) and await _has_waiting_row(db, printer_id)
+        ),
         supports_drying=supports_drying(printer.model, state.firmware_version),
         supports_drying_while_printing=supports_drying_while_printing(printer.model, state.firmware_version),
         drying_screen_only=drying_screen_only(printer.model),

@@ -717,6 +717,7 @@ class PrinterManager:
             return
         try:
             from backend.app.core.websocket import ws_manager
+            from backend.app.services.plate_hold import repeat_available
 
             await ws_manager.send_printer_status(
                 printer_id,
@@ -725,6 +726,7 @@ class PrinterManager:
                     printer_id,
                     self.get_model(printer_id),
                     self.get_drying_targets(printer_id),
+                    repeat_available=await repeat_available(printer_id),
                 ),
             )
         except Exception as e:
@@ -1715,6 +1717,7 @@ def printer_state_to_dict(
     printer_id: int | None = None,
     model: str | None = None,
     drying_targets: dict[int, dict] | None = None,
+    repeat_available: bool = False,
 ) -> dict:
     """Convert PrinterState to a JSON-serializable dict.
 
@@ -2100,6 +2103,12 @@ def printer_state_to_dict(
         "awaiting_plate_clear": (
             printer_manager.is_awaiting_plate_clear(printer_id) if printer_id is not None else False
         ),
+        # Whether Repeat has a finished row to re-arm — the card draws the
+        # button only when this is True. A DB question, so the async callers
+        # answer it (``plate_hold.repeat_available``) and hand it in here; the
+        # same field the REST /status route returns, for the same reason
+        # ``awaiting_plate_clear`` is here.
+        "repeat_available": bool(repeat_available),
     }
     # Add cover URL if there's an active print and printer_id is provided
     # Include PAUSE state so skip objects modal can show cover

@@ -155,6 +155,49 @@ async def test_the_route_refuses_when_nothing_is_waiting(async_client, db_sessio
     assert resp.status_code == 409
 
 
+class TestTheStatusSaysWhetherRepeatIsPossible:
+    """The card shows Repeat only when the route could answer it. ``409 No
+    finished print is waiting`` from a button the card itself put on screen was
+    the report (2026-09-04): the gate had armed with no row behind it."""
+
+    def _state(self):
+        from backend.app.services.bambu_mqtt import PrinterState
+
+        state = PrinterState()
+        state.connected = True
+        state.state = "FINISH"
+        return state
+
+    async def _status(self, async_client, printer_id, *, gate_armed: bool):
+        from unittest.mock import MagicMock, patch
+
+        with patch("backend.app.api.routes.printers.printer_manager") as pm:
+            pm.get_status = MagicMock(return_value=self._state())
+            pm.is_awaiting_plate_clear = MagicMock(return_value=gate_armed)
+            resp = await async_client.get(f"/api/v1/printers/{printer_id}/status")
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    async def test_true_when_the_gate_is_armed_over_a_held_row(self, async_client, db_session, printer_factory):
+        printer, _, _ = await _finished(db_session, printer_factory)
+        body = await self._status(async_client, printer.id, gate_armed=True)
+        assert body["awaiting_plate_clear"] is True
+        assert body["repeat_available"] is True
+
+    async def test_false_when_the_gate_is_armed_over_nothing(self, async_client, db_session, printer_factory):
+        printer = await printer_factory()
+        db_session.add(PrinterQueue(id=printer.id, printer_id=printer.id))
+        await db_session.commit()
+        body = await self._status(async_client, printer.id, gate_armed=True)
+        assert body["awaiting_plate_clear"] is True
+        assert body["repeat_available"] is False
+
+    async def test_false_when_the_gate_is_not_armed(self, async_client, db_session, printer_factory):
+        printer, _, _ = await _finished(db_session, printer_factory)
+        body = await self._status(async_client, printer.id, gate_armed=False)
+        assert body["repeat_available"] is False
+
+
 async def test_a_held_success_releases_the_previous_success_gate(db_session, printer_factory):
     """⚠️ Not incidental — the design keeps the row `completed` partly for this.
 

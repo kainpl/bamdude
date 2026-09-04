@@ -137,12 +137,20 @@ async def test_a_scheduler_item_is_adopted_not_duplicated(db_session, printer_fa
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_printer_with_no_queue_row_is_a_noop(db_session, printer_factory, main_db):
+async def test_a_printer_with_no_queue_row_gets_one_and_still_holds_a_row(db_session, printer_factory, main_db):
+    """⚠️ Used to be a no-op, and the no-op is what the reporter hit: no queue
+    row meant no claim, no claim meant nothing for the completion to close,
+    and the plate gate armed regardless — "Repeat" on the card, 409 from the
+    route (2026-09-04). A missing queue is created on the spot; the printer's
+    id is the queue's id."""
     printer = await printer_factory()
 
-    await mark_queue_printing_for_printer(printer.id)  # no error
+    await mark_queue_printing_for_printer(printer.id)
 
-    assert (await db_session.execute(select(PrintQueueItem))).scalars().all() == []
+    queue = (await db_session.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer.id))).scalar_one()
+    assert queue.id == printer.id
+    rows = (await db_session.execute(select(PrintQueueItem))).scalars().all()
+    assert [(r.queue_id, r.status) for r in rows] == [(queue.id, "printing")]
 
 
 class TestTheRowSurvivesItsOwnCompletion:

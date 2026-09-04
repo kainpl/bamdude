@@ -835,6 +835,12 @@ export interface PrinterStatus {
   // Queue plate-clear gate (#961): true means the printer is waiting on user
   // confirmation before the next auto-dispatch; false means the gate is released.
   awaiting_plate_clear: boolean;
+  // Whether "Repeat" has a finished queue row to re-arm. The gate can be armed
+  // with nothing behind it (a print on a queue-less printer, one already
+  // running when BamDude came up, a completion handler still fetching the
+  // 3MF), and Repeat then answered 409 to a button the card itself had drawn.
+  // Optional: an older backend does not send it, and then the button stays.
+  repeat_available?: boolean;
   // AMS drying support
   supports_drying: boolean;
   // AMS "Print While Drying" — drying that runs concurrently with an active print

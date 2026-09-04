@@ -894,18 +894,20 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
               </div>
             ) : (
               <div className="flex gap-2">
-                <button
-                  onClick={() => repeatPrintMutation.mutate()}
-                  disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
-                  className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                  {repeatPrintMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <RotateCcw className="w-4 h-4" />
-                  )}
-                  {t('queue.repeatPrint')}
-                </button>
+                {status?.repeat_available !== false && (
+                  <button
+                    onClick={() => repeatPrintMutation.mutate()}
+                    disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
+                    className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {repeatPrintMutation.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <RotateCcw className="w-4 h-4" />
+                    )}
+                    {t('queue.repeatPrint')}
+                  </button>
+                )}
                 <button
                   onClick={() => clearPlateMutation.mutate()}
                   disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}

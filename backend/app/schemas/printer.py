@@ -543,6 +543,11 @@ class PrinterStatus(BaseModel):
     # user confirmation before the next auto-dispatch. False means the gate
     # is released (either never armed, or user/swap cleared it).
     awaiting_plate_clear: bool = False
+    # Whether "Repeat" has a finished queue row to re-arm. The gate can be
+    # armed with nothing behind it (a print on a queue-less printer, one that
+    # was already running when BamDude came up, or a completion handler still
+    # busy fetching the 3MF); the card draws Repeat only when this is True.
+    repeat_available: bool = False
     # AMS drying support
     supports_drying: bool = False
     # AMS "Print While Drying" — drying mid-print. Verified per Bambu wiki release notes;
