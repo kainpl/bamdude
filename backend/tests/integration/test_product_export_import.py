@@ -19,6 +19,8 @@ production's ``get_db`` does it after the response.
 import hashlib
 import io
 import json
+import pathlib
+import struct
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -199,6 +201,216 @@ async def _import(client, data: bytes, **form):
         data=form,
         files={"file": ("product.zip", data, "application/zip")},
     )
+
+
+async def _import_chunked(client, data: bytes):
+    """The same POST with no ``Content-Length``.
+
+    httpx computes one from ``files=``, so the declared-length gate would always
+    fire first and the size check on the spooled part would never be exercised.
+    An async iterator makes httpx send ``Transfer-Encoding: chunked`` instead,
+    which is also what a real streaming client does.
+    """
+    boundary = "bamdudeimportboundary"
+    body = (
+        (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="product.zip"\r\n'
+            "Content-Type: application/zip\r\n\r\n"
+        ).encode()
+        + data
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+
+    async def stream():
+        yield body
+
+    return await client.post(
+        "/api/v1/products/import",
+        content=stream(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+
+
+def _corrupt_member(data: bytes, member: str) -> bytes:
+    """The same archive with one byte of one member flipped.
+
+    Rebuilt with the default ``ZIP_STORED`` so the payload is verbatim: flipping
+    a byte then leaves the length and every header intact and fails exactly one
+    check, that member's CRC — which ``ZipFile()`` and ``namelist()`` say nothing
+    about and ``read()`` raises on. That is the shape of the accident this
+    guards against: an archive that opens, validates, and blows up half-way
+    through the copying.
+
+    ⚠️ The data offset is read from the LOCAL header, never computed from the
+    central directory's ``extra``. The two extra fields are allowed to differ in
+    length, so ``header_offset + 30 + len(filename) + len(extra)`` lands
+    somewhere else in the file — which corrupted a header instead, made the
+    import fail at ``ZipFile()`` before it had written anything, and left this
+    test passing while proving nothing.
+    """
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(out, "w") as target:
+        for name in source.namelist():
+            target.writestr(name, source.read(name))
+    raw = bytearray(out.getvalue())
+    with zipfile.ZipFile(io.BytesIO(bytes(raw))) as probe:
+        offset = probe.getinfo(member).header_offset
+    name_len, extra_len = struct.unpack("<HH", raw[offset + 26 : offset + 30])
+    raw[offset + 30 + name_len + extra_len] ^= 0xFF
+    return bytes(raw)
+
+
+def _attachment_files() -> set[pathlib.Path]:
+    """Every file under ``<archive_dir>/products/``, whoever it belongs to.
+
+    ⚠️ Not "directories that appeared", which is what an earlier version of this
+    counted: SQLite hands a deleted row's id straight back, so an import that
+    follows a delete lands in the SAME ``products/<id>/attachments`` the previous
+    product used, and a new-directory check sees nothing at all. What a failed
+    import must leave behind is not "no new directory" but "not one new file".
+    """
+    from backend.app.core.config import settings
+
+    root = pathlib.Path(settings.archive_dir) / "products"
+    return {p for p in root.rglob("*") if p.is_file()} if root.is_dir() else set()
+
+
+@pytest.fixture
+async def exported(committing_client, db_session):
+    """A fully furnished product, its export, and the state to import into.
+
+    Returns ``(zip bytes, manifest, {"shared_file_id", "direct_file_id"})``. The
+    product is deleted and the direct file trashed before the fixture returns, so
+    every import test starts from the same wreckage.
+    """
+    folder = (await committing_client.post("/api/v1/library/folders", json={"name": "Lamp parts"})).json()
+    shared = await _upload(committing_client, "shade.gcode.3mf", SHARED, folder_id=folder["id"])
+    direct = await _upload(committing_client, "lamp.gcode.3mf", DIRECT)
+
+    product = (await committing_client.post("/api/v1/products/", json={"name": "Desk Lamp"})).json()
+    pid = product["id"]
+    await committing_client.patch(
+        f"/api/v1/products/{pid}",
+        json={
+            "description": "A lamp & a shade",
+            "notes": "<p>keep the diffuser</p>",
+            "designer": "Chef&koch",
+            "license": "CC-BY-4.0",
+            "source_url": "https://makerworld.com/models/1234567",
+            "design_id": "1234567",
+        },
+    )
+    assert (
+        await committing_client.put(f"/api/v1/products/{pid}/files", json={"library_file_ids": [direct["id"]]})
+    ).status_code == 200
+    assert (
+        await committing_client.put(f"/api/v1/products/{pid}/folders", json={"library_folder_ids": [folder["id"]]})
+    ).status_code == 200
+
+    detail = (await committing_client.get(f"/api/v1/products/{pid}")).json()
+    parts = {p["name_key"]: p for p in detail["parts"]}
+    assert set(parts) == {"hook.stl", "clip.stl", "shade.stl"}, detail["parts"]
+    await committing_client.patch(f"/api/v1/products/{pid}/parts/{parts['hook.stl']['id']}", json={"qty_per_unit": 4})
+    await committing_client.post(
+        f"/api/v1/products/{pid}/parts",
+        json={"kind": "purchased", "name": "M3 screw", "qty_per_unit": 8, "unit_price": 0.05},
+    )
+
+    shot = await _attach(committing_client, pid, "pictures", "shot.png", PNG)
+    await _attach(committing_client, pid, "bom_docs", "bom.csv", BOM)
+    await _attach(committing_client, pid, "assembly", "guide.pdf", GUIDE)
+    assert (
+        await committing_client.put(f"/api/v1/products/{pid}/cover-image", json={"filename": shot["filename"]})
+    ).status_code == 200
+
+    r = await committing_client.get(f"/api/v1/products/{pid}/export")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/zip"
+    data = r.content
+
+    assert (await committing_client.delete(f"/api/v1/products/{pid}")).status_code == 200
+    assert (await committing_client.delete(f"/api/v1/library/files/{direct['id']}")).status_code == 200
+    return data, _manifest(data), {"shared_file_id": shared["id"], "direct_file_id": direct["id"]}
+
+
+async def _import(client, data: bytes, **form):
+    return await client.post(
+        "/api/v1/products/import",
+        data=form,
+        files={"file": ("product.zip", data, "application/zip")},
+    )
+
+
+async def _import_chunked(client, data: bytes):
+    """The same POST with no ``Content-Length``.
+
+    httpx computes one from ``files=``, so the declared-length gate would always
+    fire first and the size check on the spooled part would never be exercised.
+    An async iterator makes httpx send ``Transfer-Encoding: chunked`` instead,
+    which is also what a real streaming client does.
+    """
+    boundary = "bamdudeimportboundary"
+    body = (
+        (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="product.zip"\r\n'
+            "Content-Type: application/zip\r\n\r\n"
+        ).encode()
+        + data
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+
+    async def stream():
+        yield body
+
+    return await client.post(
+        "/api/v1/products/import",
+        content=stream(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+
+
+def _corrupt_member(data: bytes, member: str) -> bytes:
+    """The same archive with one byte of one member flipped.
+
+    Rebuilt with the default ``ZIP_STORED`` so the payload is verbatim: flipping
+    a byte then leaves the length and every header intact and fails exactly one
+    check, that member's CRC — which ``ZipFile()`` and ``namelist()`` say nothing
+    about and ``read()`` raises on. That is the shape of the accident this
+    guards against: an archive that opens, validates, and blows up half-way
+    through the copying.
+
+    ⚠️ The data offset is read from the LOCAL header, never computed from the
+    central directory's ``extra``. The two extra fields are allowed to differ in
+    length, so ``header_offset + 30 + len(filename) + len(extra)`` lands
+    somewhere else in the file — which corrupted a header instead, made the
+    import fail at ``ZipFile()`` before it had written anything, and left this
+    test passing while proving nothing.
+    """
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(out, "w") as target:
+        for name in source.namelist():
+            target.writestr(name, source.read(name))
+    raw = bytearray(out.getvalue())
+    with zipfile.ZipFile(io.BytesIO(bytes(raw))) as probe:
+        offset = probe.getinfo(member).header_offset
+    name_len, extra_len = struct.unpack("<HH", raw[offset + 26 : offset + 30])
+    raw[offset + 30 + name_len + extra_len] ^= 0xFF
+    return bytes(raw)
+
+
+def _product_dirs() -> dict[str, Path]:
+    """``{product id: its attachments directory}``.
+
+    Keyed on the ID, not on the directory's own name — every one of them is
+    called "attachments", so a set of names is a set of one and an orphan check
+    built on it asserts nothing at all.
+    """
+    from backend.app.core.config import settings
+
+    root = Path(settings.archive_dir) / "products"
+    return {p.name: p / "attachments" for p in root.iterdir()} if root.is_dir() else {}
 
 
 @pytest.mark.asyncio
@@ -484,19 +696,95 @@ async def test_a_declared_length_over_the_ceiling_is_refused_before_anything_is_
 
 
 @pytest.mark.asyncio
-async def test_a_body_over_the_ceiling_stops_mid_stream(monkeypatch):
-    """The declared length is the client's word; the count as the bytes land is
-    the fact, and it must stop the write rather than report it afterwards."""
-    from fastapi import HTTPException, UploadFile
+async def test_a_body_over_the_ceiling_is_refused_when_no_length_was_declared(
+    committing_client, db_session, monkeypatch, exported
+):
+    """The declared length is the client's word and can simply be absent. The
+    size of the part the parser already spooled is the fact, and it is the gate
+    that counts."""
+    data, _, _ = exported
+    monkeypatch.setattr("backend.app.services.product_files.MAX_IMPORT_BYTES", 64)
+    products = len((await committing_client.get("/api/v1/products/")).json())
+    files = await _active_files(db_session)
+    r = await _import_chunked(committing_client, data)
+    assert r.status_code == 413, r.text
+    assert len((await committing_client.get("/api/v1/products/")).json()) == products
+    assert await _active_files(db_session) == files
 
-    from backend.app.api.routes.products import _spool_import_upload
 
-    monkeypatch.setattr("backend.app.services.product_files.MAX_IMPORT_BYTES", 16)
-    before = set(Path(tempfile.gettempdir()).glob("bamdude-product-import-*.zip"))
-    with pytest.raises(HTTPException) as exc:
-        await _spool_import_upload(UploadFile(filename="p.zip", file=io.BytesIO(b"x" * 4096)))
-    assert exc.value.status_code == 413
-    assert set(Path(tempfile.gettempdir()).glob("bamdude-product-import-*.zip")) == before
+@pytest.mark.asyncio
+async def test_a_library_member_over_the_per_member_cap_is_skipped(committing_client, monkeypatch, exported):
+    """``store_library_upload`` takes bytes, so a member is materialised whole —
+    the cap is a memory bound, and crossing it costs that file and nothing else."""
+    data, manifest, ids = exported
+    # Below the SMALLEST member, so both are refused and the product comes back
+    # with nothing bound to it rather than half a recipe.
+    smallest = min(f["size"] for f in manifest["files"])
+    monkeypatch.setattr("backend.app.services.product_files.MAX_IMPORT_MEMBER_BYTES", smallest - 1)
+    r = await _import(committing_client, data)
+    assert r.status_code == 200, r.text
+    skipped = _params(r.json()["warnings"], "skipped_too_large")
+    assert [w["category"] for w in skipped] == ["files", "files"], r.json()["warnings"]
+    assert {w["size"] for w in skipped} == {f["size"] for f in manifest["files"]}
+    # The product is still there, and it simply has no files bound to it.
+    assert r.json()["product"]["library_file_ids"] == []
+    assert r.json()["product"]["name"] == "Desk Lamp"
+
+
+@pytest.mark.asyncio
+async def test_an_external_folder_of_the_same_name_never_receives_the_import(
+    committing_client, db_session, tmp_path, exported
+):
+    """An external root folder is a window onto somebody's mount, and the upload
+    path WRITES THROUGH to it. Reusing one because the names match would put the
+    operator's 3MFs on a share they never named — or, read-only, 403 out of the
+    ingest loop and kill the whole import (403 is not 400, so it does not
+    degrade)."""
+    data, _, _ = exported
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    r = await committing_client.post(
+        "/api/v1/library/folders/external", json={"name": "Desk Lamp", "external_path": str(mount)}
+    )
+    assert r.status_code == 200, r.text
+    external_id = r.json()["id"]
+
+    body = (await _import(committing_client, data)).json()
+    assert body["warnings"] == [], body["warnings"]
+    folders = (await db_session.execute(select(LibraryFolder).where(LibraryFolder.name == "Desk Lamp"))).scalars().all()
+    made = [f for f in folders if not f.is_external]
+    assert len(made) == 1, "the import did not make its own managed folder"
+    landed = (
+        (await db_session.execute(select(LibraryFile.id).where(LibraryFile.folder_id == made[0].id))).scalars().all()
+    )
+    assert set(landed) <= set(body["product"]["library_file_ids"]) and landed
+    assert list(mount.iterdir()) == [], "the import wrote onto an external mount it was never pointed at"
+    assert (
+        await db_session.execute(select(LibraryFile.id).where(LibraryFile.folder_id == external_id))
+    ).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_an_attachment_member_that_cannot_be_read_leaves_no_orphan(committing_client, exported):
+    """``zf.read`` raises on a bad CRC. Every file written before that point has
+    to come back off the disk, or the product page names pictures that are there
+    and the directory holds pictures nothing names."""
+    data, manifest, _ = exported
+    guide = next(a for a in manifest["attachments"] if a["original_name"] == "guide.pdf")
+    broken = _corrupt_member(data, guide["member"])
+
+    # Not first, or nothing has been written by the time the read blows up and
+    # this test proves nothing.
+    assert manifest["attachments"].index(guide) > 0
+
+    # The archive still OPENS and still validates — a bad CRC is only found when
+    # the member is read. Asserting the exact exception matters: a 400 from the
+    # manifest check is an ``Exception`` too, and it would mean the import never
+    # got as far as writing anything.
+    before = _attachment_files()
+    with pytest.raises(zipfile.BadZipFile):
+        await _import(committing_client, broken)
+    assert _attachment_files() == before, "the failed import left attachment files nothing will ever reference"
 
 
 @pytest.mark.asyncio

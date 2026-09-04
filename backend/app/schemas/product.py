@@ -205,6 +205,15 @@ class ProductAttachmentOut(BaseModel):
     ``size`` and ``uploaded_at`` are tolerant on purpose: m158 carried over
     legacy project attachments whose entries held neither, so an upgraded farm
     has rows a strict model would 500 the product page over.
+
+    ``source`` is one of the closed set ``product_files.SOURCE_VALUES`` —
+    ``manual`` (the upload route), ``3mf`` (``fill_from_file``) or ``import``
+    (``import_zip``) — and every writer uses those constants. The WIRE type is
+    still a plain ``str`` for the same reason as the two above: a hand-edited
+    column or a restored backup carrying a fourth value must render the page,
+    not 500 it. The closed set is enforced where it can be enforced — at the
+    writers, by ``test_product_files.py`` — not at the reader, where the only
+    thing a rejection can do is take the page down.
     """
 
     category: str
@@ -212,10 +221,7 @@ class ProductAttachmentOut(BaseModel):
     original_name: str
     size: int = 0
     sort_order: int = 0
-    # The three writers, and there are no others: the upload route
-    # (``manual``), ``fill_from_file`` (``3mf``) and ``import_zip``
-    # (``import``). m158's converted project attachments are ``manual`` too.
-    source: Literal["manual", "3mf", "import"] = "manual"
+    source: str = "manual"
     source_file_id: int | None = None
     uploaded_at: str | None = None
 

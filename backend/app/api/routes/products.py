@@ -16,7 +16,6 @@ reconcile once the product itself is going away.
 
 import logging
 import os
-import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -78,6 +77,7 @@ from backend.app.services.product_files import (
     ATTACHMENT_CATEGORIES,
     CATEGORY_EXTENSIONS,
     COVER_EXTENSIONS,
+    SOURCE_MANUAL,
     attachment_entry,
     attachment_limit,
     category_entries,
@@ -96,10 +96,6 @@ from backend.app.utils.http import build_content_disposition
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/products", tags=["products"])
-
-# One megabyte at a time off the wire — big enough that a 2 GB archive is two
-# thousand writes, small enough that no single chunk is a memory event.
-_UPLOAD_CHUNK = 1024 * 1024
 
 _LOAD = (
     selectinload(Product.parts),
@@ -300,38 +296,30 @@ async def create_product_from_file(
 # ⚠️ **Neither route ever holds an archive in memory.** A product's export
 # carries every 3MF it prints from; on the farm this was built for that is
 # already hundreds of megabytes, and the machine serving it is routinely a Pi.
-# The export builds a temp file and streams it; the import streams the upload
-# into a temp file and reads members out of it.
+# The export builds a temp file and streams it; the import reads members out of
+# the file the multipart parser has already spooled.
 
 
-async def _spool_import_upload(file: UploadFile) -> Path:
-    """The uploaded archive, on disk, with a running ceiling.
+def _measure_upload(file: UploadFile) -> int:
+    """How big the part the multipart parser already wrote actually is.
 
-    ⚠️ Never ``await file.read()`` — that is the whole point. A single read
-    materialises the entire upload before anything has looked at it, so the
-    413 for an over-sized archive would arrive only after the farm had already
-    paid for it in RAM. The count is kept as the chunks land and the write stops
-    the moment it crosses ``import_limit()``.
+    ⚠️ There is nothing to stream here, and an earlier version of this route
+    pretended otherwise: by the time a handler runs, FastAPI has consumed the
+    body and Starlette has put each file part in a ``SpooledTemporaryFile``
+    (memory up to a megabyte, a real file above that). Reading it again in
+    chunks into a temp file of our own copied a file that already existed and
+    could not refuse anything "before receipt" — receipt had happened.
 
-    The declared ``Content-Length`` is checked by the caller first — it is the
-    client's word rather than a fact, so it can refuse early but can never be
-    the only gate.
+    So this measures what we hold, by seeking. It is a fact rather than the
+    client's word, which is what makes it the gate that counts; the declared
+    ``Content-Length`` is checked before it purely as a cheap refusal before OUR
+    work starts.
     """
-    limit = import_limit()
-    handle, name = tempfile.mkstemp(prefix="bamdude-product-import-", suffix=".zip")
-    path = Path(name)
-    total = 0
-    try:
-        with os.fdopen(handle, "wb") as target:
-            while chunk := await file.read(_UPLOAD_CHUNK):
-                total += len(chunk)
-                if total > limit:
-                    raise HTTPException(status_code=413, detail=f"An import may be at most {limit} bytes")
-                target.write(chunk)
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
-    return path
+    handle = file.file
+    handle.seek(0, os.SEEK_END)
+    size = handle.tell()
+    handle.seek(0)
+    return size
 
 
 @router.post("/import", response_model=ProductImportResponse)
@@ -349,12 +337,12 @@ async def import_product(
     declared = request.headers.get("content-length") or ""
     if declared.isdigit() and int(declared) > import_limit():
         raise HTTPException(status_code=413, detail=f"An import may be at most {import_limit()} bytes")
-    path = await _spool_import_upload(file)
-    try:
-        product, warnings = await import_zip(db, path, folder_id=folder_id, user=current_user)
-        return ProductImportResponse(product=await _response(db, product, reload_links=True), warnings=warnings)
-    finally:
-        path.unlink(missing_ok=True)
+    if _measure_upload(file) > import_limit():
+        raise HTTPException(status_code=413, detail=f"An import may be at most {import_limit()} bytes")
+    # ``file.file`` is seekable, which is all ``zipfile`` asks for — so the
+    # archive is read where it already is, member by member.
+    product, warnings = await import_zip(db, file.file, folder_id=folder_id, user=current_user)
+    return ProductImportResponse(product=await _response(db, product, reload_links=True), warnings=warnings)
 
 
 @router.get("/{product_id}/export")
@@ -871,7 +859,7 @@ async def upload_attachment(
         "original_name": original_name,
         "size": len(content),
         "sort_order": next_sort_order(product, category),
-        "source": "manual",
+        "source": SOURCE_MANUAL,
         "uploaded_at": datetime.now().isoformat(),
     }
     product.attachments = [*(product.attachments or []), entry]

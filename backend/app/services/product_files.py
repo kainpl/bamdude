@@ -109,6 +109,16 @@ MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 # request" and nothing about it is buffered in memory.
 MAX_IMPORT_BYTES = 2 * 1024**3
 
+# One MEMBER of that archive, and a much smaller number than the archive itself.
+# ⚠️ This is a memory bound and the archive ceiling is not: ``import_zip`` hands
+# a library member to ``store_library_upload``, whose signature is ``content:
+# bytes`` — so whatever passes this gate is materialised whole. Teaching the
+# library ingest to take a stream would remove the need for the cap and is a
+# change to every upload path in the product (browser, Telegram, virtual
+# printer), deliberately out of this pass. 200 MB clears a plated
+# multi-material 3MF with room to spare.
+MAX_IMPORT_MEMBER_BYTES = 200 * 1024 * 1024
+
 
 def attachment_limit() -> int:
     """The ceiling, read at call time.
@@ -139,9 +149,31 @@ def import_limit() -> int:
     return MAX_IMPORT_BYTES
 
 
+def import_member_limit() -> int:
+    """The per-member ceiling of an import, read at call time. Same rule again."""
+    return MAX_IMPORT_MEMBER_BYTES
+
+
 # Order matters: it is the order the product page renders the sections in, and
 # therefore the order ``GET /attachments`` answers in.
 ATTACHMENT_CATEGORIES = ("pictures", "bom_docs", "assembly", "other")
+
+# Where an attachment entry came from. A CLOSED set of three, and the frontend
+# switches on it — so the constants live here and every writer uses them rather
+# than spelling a string of its own. The three writers are the upload route
+# (``manual``), ``product_card.fill_from_file`` (``3mf``) and
+# ``product_card.import_zip`` (``import``); m158's converted project attachments
+# were written as ``manual`` by a migration that is frozen and cannot import
+# these.
+#
+# ⚠️ The wire type stays a plain ``str`` (``ProductAttachmentOut.source``), NOT a
+# Literal. A hand-edited JSON column or a restored backup carrying something else
+# must render the product page, not 500 it — the same tolerance ``size`` and
+# ``uploaded_at`` are given two lines below it.
+SOURCE_MANUAL = "manual"
+SOURCE_3MF = "3mf"
+SOURCE_IMPORT = "import"
+SOURCE_VALUES = (SOURCE_MANUAL, SOURCE_3MF, SOURCE_IMPORT)
 
 CATEGORY_EXTENSIONS: dict[str, set[str]] = {
     "pictures": set(COVER_EXTENSIONS),

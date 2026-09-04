@@ -60,7 +60,7 @@ import re
 import tempfile
 import uuid
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -82,9 +82,12 @@ from backend.app.services.product_files import (
     ATTACHMENT_CATEGORIES,
     CATEGORY_EXTENSIONS,
     COVER_EXTENSIONS,
+    SOURCE_3MF,
+    SOURCE_IMPORT,
+    SOURCE_MANUAL,
     attachment_limit,
     exceeds_attachment_limit,
-    import_limit,
+    import_member_limit,
     product_attachments_dir,
     safe_attachment_name,
     sorted_attachments,
@@ -315,7 +318,7 @@ async def fill_from_file(
                     "original_name": entry.name,
                     "size": len(data),
                     "sort_order": cursor[category],
-                    "source": "3mf",
+                    "source": SOURCE_3MF,
                     "source_file_id": library_file.id,
                     "uploaded_at": datetime.now().isoformat(),
                 }
@@ -395,6 +398,25 @@ class ExportArchive:
     path: Path
     filename: str
     ascii_filename: str
+
+
+@dataclass(slots=True)
+class _ImportedAttachments:
+    """What an import has put in the attachments directory so far.
+
+    The caller creates it, hands it to :func:`_import_attachments` and cleans up
+    from it if anything after that raises — so it must name every file on disk,
+    including the dedicated cover, which is not one of the gallery ``rows``.
+    """
+
+    rows: list[dict] = field(default_factory=list)
+    cover: str | None = None
+
+    def files_written(self) -> list[str]:
+        names = [row["filename"] for row in self.rows if row.get("filename")]
+        if self.cover and self.cover not in names:
+            names.append(self.cover)
+        return names
 
 
 @dataclass(slots=True)
@@ -570,7 +592,7 @@ def _write_export(
                     "category": entry["category"],
                     "original_name": posixpath.basename(member),
                     "sort_order": entry.get("sort_order") or 0,
-                    "source": entry.get("source") or "manual",
+                    "source": entry.get("source") or SOURCE_MANUAL,
                     "member": member,
                 }
             )
@@ -807,10 +829,20 @@ async def _import_destination(db: AsyncSession, folder_id: int | None, product_n
     an operator who imports into their existing Downloads folder did not say
     that about the two hundred files already in it.
 
-    Without a ``folder_id`` an existing ROOT folder of the same name is REUSED
-    before a new one is made. Importing the same export twice — the ordinary way
-    an operator retries — otherwise leaves two "Desk Lamp" folders side by side,
-    and a third on the next attempt, with nothing to say which is which.
+    Without a ``folder_id`` an existing MANAGED ROOT folder of the same name is
+    REUSED before a new one is made. Importing the same export twice — the
+    ordinary way an operator retries — otherwise leaves two "Desk Lamp" folders
+    side by side, and a third on the next attempt, with nothing to say which is
+    which.
+
+    ⚠️ **Managed only.** An external folder is a window onto somebody's mount,
+    and ``_resolve_upload_destination`` WRITES THROUGH to it — so a share that
+    happens to have a directory named after the product would have received the
+    imported 3MFs, or, if it is read-only, answered 403. A 403 is not a 400, so
+    it would not degrade to a warning either: it would abort the whole import
+    from inside the ingest loop. The operator never asked for either; they asked
+    for a product. Naming a mount explicitly through ``folder_id`` is still
+    honoured, because then they did ask.
 
     ``selectinload``: ``store_library_upload`` runs ``inherit_folder_products``,
     which reads ``folder.products`` — a lazy load inside an async session is a
@@ -824,9 +856,11 @@ async def _import_destination(db: AsyncSession, folder_id: int | None, product_n
         return folder
     existing = (
         await db.execute(
-            query.where(LibraryFolder.name == product_name, LibraryFolder.parent_id.is_(None)).order_by(
-                LibraryFolder.id
-            )
+            query.where(
+                LibraryFolder.name == product_name,
+                LibraryFolder.parent_id.is_(None),
+                LibraryFolder.is_external.is_(False),
+            ).order_by(LibraryFolder.id)
         )
     ).scalars()
     folder = next(iter(existing), None)
@@ -840,14 +874,15 @@ async def _import_destination(db: AsyncSession, folder_id: int | None, product_n
 
 
 async def import_zip(
-    db: AsyncSession, zip_path: Path, *, folder_id: int | None, user: Any
+    db: AsyncSession, zip_source: Any, *, folder_id: int | None, user: Any
 ) -> tuple[Product, list[CardNote]]:
-    """Rebuild a product from an export on disk. Returns it and every note.
+    """Rebuild a product from an export. Returns it and every note.
 
-    ``zip_path`` is a file, not bytes: the route streams the upload to disk
-    against ``import_limit()`` and this reads members out of it one at a time,
-    so a two-gigabyte archive costs a temp file rather than the farm's memory.
-    The caller owns deleting it.
+    ``zip_source`` is anything ``zipfile.ZipFile`` opens — a path, or the
+    seekable file the multipart parser has ALREADY spooled the upload into.
+    Never bytes: members are read out of it one at a time, so a two-gigabyte
+    archive costs whatever the parser spent and not the farm's memory on top.
+    The caller owns closing or deleting it.
 
     **The order, and the rule it buys.** The manifest and every member NAME are
     validated before a single write happens, so a hostile or unreadable archive
@@ -865,7 +900,7 @@ async def import_zip(
     """
     notes: list[CardNote] = []
     try:
-        archive = zipfile.ZipFile(zip_path)
+        archive = zipfile.ZipFile(zip_source)
     except (zipfile.BadZipFile, OSError) as e:
         raise HTTPException(status_code=400, detail="The uploaded file is not a ZIP archive") from e
 
@@ -895,12 +930,24 @@ async def import_zip(
             if member not in names:
                 notes.append(_note("import_file_missing", name=filename or member))
                 continue
-            # A member claiming to be larger than the whole archive may be is a
-            # zip bomb, and ``store_library_upload`` takes bytes — so the size is
-            # read off the directory before anything is inflated.
+            # ⚠️ The one place a library member is materialised whole:
+            # ``store_library_upload`` takes ``content: bytes``. Teaching the
+            # library ingest to take a stream is a change to every upload path
+            # in the product and is deliberately out of this pass, so the size
+            # is read off the ZIP directory and refused BEFORE anything is
+            # inflated. A member over the cap is skipped like a refused file —
+            # its parts simply stay unbound and the rest of the import lands.
             declared = zf.getinfo(member).file_size
-            if declared > import_limit():
-                notes.append(_note("skipped_too_large", name=filename or member, size=declared, limit=import_limit()))
+            if declared > import_member_limit():
+                notes.append(
+                    _note(
+                        "skipped_too_large",
+                        name=filename or member,
+                        size=declared,
+                        limit=import_member_limit(),
+                        category=_FILES_ROOT,
+                    )
+                )
                 continue
             data = zf.read(member)
             digest = hashlib.sha256(data).hexdigest()
@@ -1002,12 +1049,17 @@ async def import_zip(
             )
 
         # ---- attachments and the cover ----
-        rows, cover_stored = await _import_attachments(zf, names, product, manifest, notes)
+        # ⚠️ The guard opens BEFORE the writing starts, not after it. ``zf.read``
+        # raises on an encrypted member and on a bad CRC, so a failure INSIDE the
+        # copy would otherwise leave every file it had already written orphaned —
+        # nothing references them, and nothing sweeps them.
         directory = product_attachments_dir(product.id)
+        written = _ImportedAttachments()
         try:
-            product.attachments = rows
-            if cover_stored:
-                product.cover_image_filename = cover_stored
+            await _import_attachments(zf, names, product, manifest, notes, written)
+            product.attachments = written.rows
+            if written.cover:
+                product.cover_image_filename = written.cover
             await db.flush()
 
             # ---- what the manifest promised and the files no longer carry ----
@@ -1038,13 +1090,12 @@ async def import_zip(
                 if (raw.get("file_hash"), plate_index) not in have:
                     notes.append(_note("import_plate_missing", filename=filename, plate_index=plate_index))
         except BaseException:
-            # The rows are on disk and the column that names them is about to be
-            # rolled back, which would leave files nothing references and nothing
-            # sweeps. Undo the writes, then let the failure through unchanged.
-            for entry in rows:
-                _unlink_quietly(directory / entry["filename"])  # SEC-PATH-OK: uuid4().hex + a checked extension
-            if cover_stored:
-                _unlink_quietly(directory / cover_stored)  # SEC-PATH-OK: 'cover_' + uuid4().hex + a checked extension
+            # The files are on disk and the column that would have named them is
+            # about to be rolled back. Undo the writes — every one this run made,
+            # whether or not it got as far as building a row for it — then let
+            # the failure through unchanged.
+            for stored in written.files_written():
+                _unlink_quietly(directory / stored)  # SEC-PATH-OK: a name this module generated, uuid + a checked ext
             raise
 
     return product, notes
@@ -1073,10 +1124,21 @@ async def _ingest_into_library(db: AsyncSession, *, filename: str, content: byte
 
 
 async def _import_attachments(
-    zf: zipfile.ZipFile, names: set[str], product: Product, manifest: dict, notes: list[CardNote]
-) -> tuple[list[dict], str | None]:
-    """Copy the archive's attachments onto the product. Returns the JSON rows and
-    the stored name of the cover, when one was restored.
+    zf: zipfile.ZipFile,
+    names: set[str],
+    product: Product,
+    manifest: dict,
+    notes: list[CardNote],
+    written: "_ImportedAttachments",
+) -> None:
+    """Copy the archive's attachments onto the product, into ``written``.
+
+    ⚠️ An OUT-PARAMETER rather than a return value, and that is the point: this
+    function writes files, and it can raise part-way through (``zf.read`` throws
+    on an encrypted member and on a bad CRC). A caller that only learns what was
+    written from a return it never receives cannot clean up after a failure. The
+    accumulator is the caller's, so it holds whatever was written up to the
+    moment things went wrong.
 
     ⚠️ ``CATEGORY_EXTENSIONS[category]`` is the only defence against an
     executable landing in the attachments directory (spec §Risks), and an import
@@ -1086,7 +1148,7 @@ async def _import_attachments(
     written with.
     """
     directory = product_attachments_dir(product.id)
-    rows: list[dict] = []
+    rows = written.rows
     cover_name = _text(manifest.get("cover"))
     cover_stored: str | None = None
 
@@ -1136,7 +1198,7 @@ async def _import_attachments(
                 # ⚠️ ``source_file_id`` stays NULL: these entries did not come
                 # from a 3MF THIS farm holds, so a later re-read of a linked file
                 # must never mistake them for its own and replace them.
-                "source": "import",
+                "source": SOURCE_IMPORT,
                 "source_file_id": None,
                 "uploaded_at": datetime.now().isoformat(),
             }
@@ -1147,29 +1209,35 @@ async def _import_attachments(
     # A dedicated cover: its own directory, and it stays out of the gallery here
     # exactly as it did on the farm it came from.
     member = f"{_ATTACHMENTS_ROOT}/{_COVER_ROOT}/{cover_name}" if cover_name else None
-    if cover_stored is not None or member is None:
-        return rows, cover_stored
+    if cover_stored is not None:
+        written.cover = cover_stored
+        return
+    if member is None:
+        return
     if member not in names:
         notes.append(_note("import_cover_missing"))
-        return rows, None
+        return
     ext = os.path.splitext(cover_name)[1].lower()
     if ext not in COVER_EXTENSIONS:
         notes.append(_note("skipped_extension", name=cover_name, ext=ext, category=_COVER_ROOT))
-        return rows, None
+        return
     declared = zf.getinfo(member).file_size
     if exceeds_attachment_limit(declared):
         notes.append(
             _note("skipped_too_large", name=cover_name, size=declared, limit=attachment_limit(), category=_COVER_ROOT)
         )
-        return rows, None
+        return
     stored = f"cover_{uuid.uuid4().hex}{ext}"
     target = (
         directory / stored
     )  # SEC-PATH-OK: 'cover_' + uuid4().hex + an extension validated against the cover allowlist just above
+    # ⚠️ Recorded BEFORE the write, so a failure half-way through leaves a name
+    # the caller's cleanup can act on rather than a file nobody knows about.
+    written.cover = stored
     try:
         await asyncio.to_thread(_write_member, target, zf.read(member))
     except OSError as e:
         logger.error("Failed to write an imported cover %s: %s", target, e)
         notes.append(_note("skipped_unsaved", name=cover_name, category=_COVER_ROOT))
-        return rows, None
-    return rows, stored
+        written.cover = None
+        _unlink_quietly(target)
