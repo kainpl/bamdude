@@ -15,9 +15,11 @@ from sqlalchemy import select
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import Product, ProductPlate, product_files, product_folders
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
+from backend.app.services.part_stock import move
 from backend.app.services.product_files import product_attachments_dir
 
 # One builder for the card 3MF, shared with the library-card tests, so the
@@ -199,6 +201,46 @@ async def test_deleting_a_part_takes_its_procurement_rows_with_it(committing_cli
     assert (await committing_client.delete(f"/api/v1/products/{pid}/parts/{part_id}")).status_code == 200
     db_session.expire_all()
     assert (await db_session.execute(select(ProjectProcurement))).first() is None
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_part_takes_its_stock_movements_with_it(committing_client, db_session, sliced_file):
+    """``product_part_stock_movements.product_part_id`` cascades on PostgreSQL
+    only, exactly like the procurement rows beside it. Left behind, the ledger
+    would hold a balance for a part nothing can name — invisible to every
+    reader (they all join ``product_parts``) and impossible to correct."""
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    parts = {p["name_key"]: p for p in (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"]}
+    doomed, kept = parts["bracket.stl"]["id"], parts["lid.stl"]["id"]
+    await move(db_session, part_id=doomed, delta=3, reason="unfiled_print")
+    await move(db_session, part_id=kept, delta=2, reason="unfiled_print")
+    await db_session.commit()
+
+    assert (await committing_client.delete(f"/api/v1/products/{pid}/parts/{doomed}")).status_code == 200
+    db_session.expire_all()
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    assert [r.product_part_id for r in rows] == [kept], "the deleted part's ledger outlived it"
+
+
+@pytest.mark.asyncio
+async def test_merging_a_part_moves_its_stock_onto_the_target(committing_client, db_session, sliced_file):
+    """Free stock is parts on a shelf, and a merge says those parts are these
+    parts — so unlike the procurement counts (deliberately dropped), the
+    balance follows into the surviving part rather than evaporating."""
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    parts = {p["name_key"]: p for p in (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"]}
+    target, source = parts["bracket.stl"]["id"], parts["lid.stl"]["id"]
+    await move(db_session, part_id=target, delta=1, reason="unfiled_print")
+    await move(db_session, part_id=source, delta=4, reason="unfiled_print")
+    await db_session.commit()
+
+    r = await committing_client.post(f"/api/v1/products/{pid}/parts/{target}/merge", json={"source_part_id": source})
+    assert r.status_code == 200, r.text
+
+    db_session.expire_all()
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    assert {row.product_part_id for row in rows} == {target}
+    assert sum(row.delta for row in rows) == 5
 
 
 @pytest.mark.asyncio

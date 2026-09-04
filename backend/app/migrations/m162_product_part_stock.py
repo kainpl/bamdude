@@ -3,7 +3,7 @@
 Design: docs/superpowers/specs/2026-09-04-projects-redesign-pass8-part-stock-design.md
 (Decision 1 for the shape, Decision 7 for this migration).
 
-One table, one index, **no backfill**. The absence of a backfill is the
+One table, three indexes, **no backfill**. The absence of a backfill is the
 decision, not an omission: an order-less archive from last year may have been
 shipped, scrapped or given away, and nothing in the database says which — so
 inventing a starting balance out of the archive history would hand the
@@ -52,10 +52,14 @@ async def upgrade(conn):
             """
         )
     # Outside the table guard and IF NOT EXISTS (both dialects): a fresh
-    # install already has this index from ``create_all``, and a database that
-    # somehow has the table without it still ends up with it. Every read of the
-    # ledger is "this part, newest first", so this one index serves them all.
-    await conn.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS ix_product_part_stock_movements_part_created "
-        "ON product_part_stock_movements (product_part_id, created_at)"
-    )
+    # install already has these from ``create_all``, and a database that somehow
+    # has the table without one still ends up with it. The three cover the three
+    # reads — the product page and its balances by part, Decision 3's
+    # per-completion idempotency check by archive, Decision 2's already-banked
+    # and Decision 4's release by order line. See the model for the reasoning.
+    for index, columns in (
+        ("ix_product_part_stock_movements_part_created", "product_part_id, created_at"),
+        ("ix_product_part_stock_movements_archive_id", "archive_id"),
+        ("ix_product_part_stock_movements_project_line_id", "project_line_id"),
+    ):
+        await conn.exec_driver_sql(f"CREATE INDEX IF NOT EXISTS {index} ON product_part_stock_movements ({columns})")

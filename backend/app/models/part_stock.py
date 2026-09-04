@@ -21,7 +21,9 @@ replace. The API computes it on read.
 The FK cascades fire on PostgreSQL only — this codebase never sets
 ``PRAGMA foreign_keys = ON`` — so a SQLite path that deletes a part, an order
 line or an archive must clean up after itself exactly as the other pass-1
-tables require.
+tables require. For the part itself that cleanup lives in the writer
+(``part_stock.delete_for_part`` / ``repoint``), because the writer is where
+the rules about this table are kept.
 """
 
 from datetime import datetime
@@ -43,11 +45,18 @@ REASON_MANUAL = "manual"
 
 class ProductPartStockMovement(Base):
     __tablename__ = "product_part_stock_movements"
-    # The only index the table needs: every read is "this part, newest first"
-    # (a balance sums the rows, the product page lists them). It covers a
-    # lookup by ``product_part_id`` alone as its own prefix, so the column
-    # carries no second single-column index of its own.
-    __table_args__ = (Index("ix_product_part_stock_movements_part_created", "product_part_id", "created_at"),)
+    # Three reads, three indexes. ``(product_part_id, created_at)`` is the
+    # product page and every balance — it covers a lookup by ``product_part_id``
+    # alone as its own prefix, so that column needs no index of its own.
+    # ``archive_id`` is Decision 3's idempotency check, which runs on EVERY
+    # order-less print completion; ``project_line_id`` is Decision 2's "how much
+    # of this line's surplus is already banked" and Decision 4's release. Both
+    # of those would otherwise scan a ledger that only ever grows.
+    __table_args__ = (
+        Index("ix_product_part_stock_movements_part_created", "product_part_id", "created_at"),
+        Index("ix_product_part_stock_movements_archive_id", "archive_id"),
+        Index("ix_product_part_stock_movements_project_line_id", "project_line_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     product_part_id: Mapped[int] = mapped_column(ForeignKey("product_parts.id", ondelete="CASCADE"))

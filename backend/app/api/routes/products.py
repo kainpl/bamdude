@@ -60,6 +60,7 @@ from backend.app.schemas.product import (
     ProductUpdate,
     RereadResponse,
 )
+from backend.app.services import part_stock
 from backend.app.services.part_names import canonicalize, name_key
 from backend.app.services.product_card import (
     export_zip,
@@ -680,6 +681,9 @@ async def delete_part(
     # ``PRAGMA foreign_keys = ON``. Left behind, the row counts acquisitions
     # towards a part nothing can name any more.
     await db.execute(delete(ProjectProcurement).where(ProjectProcurement.product_part_id == part_id))
+    # Same story for the stock ledger, whose FK is the same kind of cascade —
+    # and ``part_stock`` is its only writer, so the deletion goes through it.
+    await part_stock.delete_for_part(db, part_id)
     await db.delete(part)
     return {"message": "Part deleted"}
 
@@ -697,6 +701,15 @@ async def merge_part(
     if target is source:
         raise HTTPException(status_code=400, detail="A part cannot be merged into itself")
     merge_parts(target, source)
+    # Free stock, unlike the procurement counts below, MOVES: it is parts on a
+    # shelf, and the merge says those parts are these parts. Before the source
+    # row goes away, and refused (409) when the target cannot hold a balance —
+    # merging a printed part with stock into a purchased one would otherwise
+    # silently destroy it.
+    try:
+        await part_stock.repoint(db, from_part_id=source.id, to_part_id=target.id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     # The source row goes away, so its procurement rows go with it — the same
     # FK-cascade reason as ``delete_part``, and deliberately NOT a transfer of
     # the acquired counts onto the target: PostgreSQL's cascade would drop them
