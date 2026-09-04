@@ -11,6 +11,7 @@ import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -1258,6 +1259,26 @@ async def get_order_plan(
     return _plan_response(plan)
 
 
+class _ResolvedPlate(NamedTuple):
+    """One validated item of an enqueue request, as plain scalars.
+
+    Read out of the loaded rows BEFORE the first writer commits — a commit may
+    expire every instance above it — which is why nothing here is an ORM object.
+    """
+
+    line_id: int
+    plate_id: int
+    library_file_id: int
+    #: The slicer's 1-based plate index, or ``None`` for "the whole file".
+    plate_number: int | None
+    count: int
+    #: The source file already carries swap macros (``LibraryFile.swap_compatible``).
+    baked_swap_macros: bool
+    #: The printer model the 3MF was sliced for, in the spelling the auto-queue
+    #: routes on. ``None`` when the file names none.
+    sliced_for_model: str | None
+
+
 @router.post("/{project_id}/plan/enqueue", response_model=PlanEnqueueResponse)
 async def enqueue_order_plan(
     project_id: int,
@@ -1280,12 +1301,20 @@ async def enqueue_order_plan(
     anything. Its model and its swap-mode setting are read, but only to fill the
     row being written — never to decide whether to write it.
 
-    ⚠️ **The options come from the operator's saved preference**, the same row
-    the print dialog reads before it builds a payload (``preference_options``).
-    This door has no dialog in front of it, and until 2026-09-04 it therefore
-    wrote the writers' own defaults — a farm configured to run swap macros
-    printed without them. Explicit fields in a future request body would win;
-    today the body carries none.
+    ⚠️ **The options come from the operator's saved profile**, the same row the
+    print dialog reads before it builds a payload (``preference_options``). This
+    door has no dialog in front of it, and until 2026-09-04 it therefore wrote
+    the writers' own defaults — a farm configured to run swap macros printed
+    without them. The profile is looked up **per model**: the printer's when one
+    is named, otherwise the model each plate's file was sliced for, which is the
+    same model the auto-queue will route it by.
+
+    ⚠️ **Order of application, when a request body eventually carries its own
+    options block: profile, then body, then the mute.** The body is somebody's
+    explicit answer and outranks a saved default; the mute is not a default at
+    all but a statement about what the machine and the file can physically do,
+    so nothing sent over the wire may talk it out of firing. Today the body
+    carries no such block, and the code is already shaped for one.
 
     Each item is one call to the existing writer with ``quantity = count``, and
     **the writers commit per call**: ``add_items_to_auto_queue`` and
@@ -1347,10 +1376,9 @@ async def enqueue_order_plan(
         product_id: {plate.id: (plate, bool(file.swap_compatible), recipe) for plate, file, recipe in rows}
         for product_id, rows in recipes_by_product.items()
     }
-    # (line_id, ProductPlate.id, library_file_id, queue plate number, count,
-    # the file's baked-in swap macros) — plain scalars, read BEFORE the first
-    # writer commits, because a commit may expire every instance loaded above it.
-    resolved: list[tuple[int, int, int, int | None, int, bool]] = []
+    # Plain scalars, read BEFORE the first writer commits, because a commit may
+    # expire every instance loaded above it.
+    resolved: list[_ResolvedPlate] = []
     for item in data.items:
         line = lines_by_id[item.line_id]
         plates = plates_by_product.get(line.product_id, {})
@@ -1360,16 +1388,35 @@ async def enqueue_order_plan(
         plate, baked_swap_macros, recipe = entry
         if not recipe.sliced:
             raise HTTPException(status_code=404, detail="Plate is not sliced")
-        # ⚠️ ``plate_index = 0`` means the whole file, which on a queue row is
-        # no plate at all — that column carries the slicer's 1-based index.
         resolved.append(
-            (line.id, plate.id, plate.library_file_id, plate.plate_index or None, item.count, baked_swap_macros)
+            _ResolvedPlate(
+                line_id=line.id,
+                plate_id=plate.id,
+                library_file_id=plate.library_file_id,
+                # ⚠️ ``plate_index = 0`` means the whole file, which on a queue
+                # row is no plate at all — that column carries the slicer's
+                # 1-based index.
+                plate_number=plate.plate_index or None,
+                count=item.count,
+                baked_swap_macros=baked_swap_macros,
+                sliced_for_model=recipe.printer_model,
+            )
         )
 
-    # What the print dialog would have sent for this operator and this target.
-    # ⚠️ ONE read for the whole request, before the loop: it is the same answer
-    # for every item, and the first writer's commit may expire what it read.
-    option_defaults = await preference_options(db, current_user, printer_model)
+    # What the print dialog would have sent, per model. ⚠️ Read BEFORE the write
+    # loop for the same reason ``resolved`` is: the first writer's commit may
+    # expire what it read.
+    #
+    # ⚠️ **The model is the PRINTER's when one is named, and the FILE's when one
+    # is not.** The auto-queue picks the machine later, but it picks it by the
+    # model the 3MF was sliced for (``AutoQueueItem.target_model``, derived from
+    # the same metadata) — so that model is known here, and a request whose
+    # plates were sliced for two machines legitimately reads two profiles. A
+    # file that names no model falls back to the operator's most recent row.
+    profiles = {
+        model: await preference_options(db, current_user, model)
+        for model in ({printer_model} if printer_id is not None else {p.sliced_for_model for p in resolved})
+    }
 
     created: list[PlanEnqueueCreated] = []
 
@@ -1386,17 +1433,27 @@ async def enqueue_order_plan(
             detail={"message": message, "created": [c.model_dump() for c in created]},
         )
 
-    for line_id, plate_id, library_file_id, plate_number, count, baked_swap_macros in resolved:
-        options = dict(option_defaults)
+    for plate in resolved:
+        profile = profiles[printer_model if printer_id is not None else plate.sliced_for_model]
+        if printer_id is None:
+            options = profile.for_auto_queue() if profile else {}
+        else:
+            options = profile.for_printer_queue() if profile else {}
+        # ⚠️ A request body carrying its own options block merges HERE — the
+        # explicit answer wins over the saved profile — and the mute below then
+        # applies to the RESULT. That order is the point: the gate is about what
+        # the machine and the file can physically do, so nothing anybody sends
+        # may talk it out of muting. Today the body carries no such block.
+        #
         # The rule every other queue door applies (``services/queue_add.py`` and
         # the two print-now routes): swap macros are meaningful only on a printer
         # with swap mode ON and a source file that does not already carry them
         # baked in by third-party tooling — otherwise the plate change fires
-        # twice. Only ever turns OFF what the preference turned on, so a request
-        # with no preference behind it still lands on the writers' own defaults.
-        if options.get("execute_swap_macros") and (
-            baked_swap_macros or (printer_id is not None and not printer_swap_on)
-        ):
+        # twice. ⚠️ UNCONDITIONAL, not "only when a profile turned them on":
+        # ``AutoQueueItemCreate`` defaults ``execute_swap_macros`` to True, so a
+        # ``swap_compatible`` file with no preference behind it would double-fire
+        # on the auto target through the writer's own default.
+        if plate.baked_swap_macros or (printer_id is not None and not printer_swap_on):
             options["execute_swap_macros"] = False
             options["swap_macro_events"] = None
         try:
@@ -1404,11 +1461,11 @@ async def enqueue_order_plan(
                 rows = await add_items_to_auto_queue(
                     db,
                     AutoQueueItemCreate(
-                        library_file_id=library_file_id,
-                        plate_id=plate_number,
-                        quantity=count,
+                        library_file_id=plate.library_file_id,
+                        plate_id=plate.plate_number,
+                        quantity=plate.count,
                         project_id=project_id,
-                        project_line_id=line_id,
+                        project_line_id=plate.line_id,
                         **options,
                     ),
                     current_user,
@@ -1417,11 +1474,11 @@ async def enqueue_order_plan(
                 rows, _batch_id = await enqueue_batch_copies(
                     db,
                     printer_id=printer_id,
-                    count=count,
-                    library_file_id=library_file_id,
-                    plate_id=plate_number,
+                    count=plate.count,
+                    library_file_id=plate.library_file_id,
+                    plate_id=plate.plate_number,
                     project_id=project_id,
-                    project_line_id=line_id,
+                    project_line_id=plate.line_id,
                     created_by_id=current_user.id if current_user else None,
                     **options,
                 )
@@ -1439,5 +1496,7 @@ async def enqueue_order_plan(
             # readiness verdict. Earlier items are already committed, so say
             # what landed instead of reporting an empty success.
             raise _partial("That printer has no queue")
-        created.append(PlanEnqueueCreated(line_id=line_id, plate_id=plate_id, queue_item_ids=[r.id for r in rows]))
+        created.append(
+            PlanEnqueueCreated(line_id=plate.line_id, plate_id=plate.plate_id, queue_item_ids=[r.id for r in rows])
+        )
     return PlanEnqueueResponse(created=created)

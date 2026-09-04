@@ -44,8 +44,16 @@ logger = logging.getLogger(__name__)
 LAYER_REACHED_EVENT = "layer_reached"
 
 
-def _macro_targets_model(macro: Macro, model: str | None) -> bool:
-    """``macro.printer_models`` is JSON-encoded in storage."""
+def macro_targets_model(macro: Macro, model: str | None) -> bool:
+    """Does this macro's ``printer_models`` cover *model*?
+
+    ``macro.printer_models`` is JSON-encoded in storage, and the three ways that
+    can go wrong (unparseable, not a list, ``"*"``) are decided here and nowhere
+    else. Public because ``print_option_defaults`` narrows the same macro list
+    for a queue row that has not been dispatched yet: a second reading of the
+    same column is exactly the drift that makes a macro fire at one door and not
+    another.
+    """
     try:
         models = json.loads(macro.printer_models or "[]")
     except (json.JSONDecodeError, TypeError):
@@ -74,7 +82,7 @@ def find_macros_for_event(
             continue
         if not macro.enabled:
             continue
-        if not _macro_targets_model(macro, printer.model):
+        if not macro_targets_model(macro, printer.model):
             continue
         if macro.swap_mode_only and not printer.swap_mode_enabled:
             continue

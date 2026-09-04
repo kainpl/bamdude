@@ -1867,8 +1867,27 @@ async def test_enqueue_loads_the_products_and_their_recipes_once_for_the_whole_c
 # Until 2026-09-04 it therefore wrote the writers' own defaults, and a farm
 # configured to run swap macros printed without them.
 
+#: Every toggle set AWAY from the writers' own default, so an assertion that
+#: finds the profile value cannot be reading a coincidence.
+_PROFILE_TOGGLES = {
+    "bed_levelling": "auto",  # writers: "on"
+    "flow_cali": "off",  # writers: "on"
+    "layer_inspect": True,  # writers: False
+    "timelapse": True,  # writers: False
+    "timelapse_storage": "external",  # writers: None
+    "mesh_mode_fast_check": False,  # writers: True
+    "gcode_injection": True,  # printer writer only; its default is False
+    "nozzle_offset_cali": "off",  # printer writer only; its default is "on"
+    # In the profile, but NO writer takes either — pinned below on the queue row.
+    "preheat_override": "on",
+    "preheat_chamber_target_override": 45,
+}
+_SWAP_EVENTS = ["swap_mode_start", "swap_mode_change_table"]
 
-async def _the_dialogs_saved_preference(db, *, printer_model="P1S", deselected_macro_ids=()):
+
+async def _the_dialogs_saved_preference(
+    db, *, printer_model="P1S", deselected_macro_ids=(), events=tuple(_SWAP_EVENTS)
+):
     """The row a PrintModal submit leaves behind for ``test_admin``."""
     user_id = (await db.execute(select(User.id).where(User.username == "test_admin"))).scalar_one()
     db.add(
@@ -1877,15 +1896,8 @@ async def _the_dialogs_saved_preference(db, *, printer_model="P1S", deselected_m
             printer_model=printer_model,
             options=PrintOptionsPreferenceData.model_validate(
                 {
-                    "print_options": {
-                        "bed_levelling": "auto",
-                        "flow_cali": "off",
-                        "layer_inspect": False,
-                        "timelapse": False,
-                        "mesh_mode_fast_check": True,
-                        "gcode_injection": False,
-                    },
-                    "swap_macros": {"execute": True, "events": ["swap_mode_start", "swap_mode_change_table"]},
+                    "print_options": dict(_PROFILE_TOGGLES),
+                    "swap_macros": {"execute": True, "events": list(events)},
                     "event_macros": {"deselected_ids": list(deselected_macro_ids)},
                 }
             ).model_dump(),
@@ -1927,11 +1939,23 @@ async def _written_rows(db, model, ids):
     return rows
 
 
+def _assert_carries_the_shared_profile(row):
+    """The nine options BOTH writers take, on a row of either queue."""
+    assert row.layer_inspect is True
+    assert row.timelapse is True
+    assert row.timelapse_storage == "external"
+    assert row.mesh_mode_fast_check is False
+    assert row.execute_swap_macros is True
+    assert json.loads(row.swap_macro_events) == _SWAP_EVENTS
+
+
 @pytest.mark.asyncio
-async def test_plan_enqueue_to_the_auto_queue_carries_the_saved_preference(committing_client, db_session, catalog):
-    """The auto target names no machine, so there is no model to key the
-    preference by — the operator's saved row is still what the dialog would
-    have shown them, and applying nothing is the bug being fixed."""
+async def test_plan_enqueue_to_the_auto_queue_carries_the_saved_profile(committing_client, db_session, catalog):
+    """The whole profile the dialog spreads, on the auto target.
+
+    ``catalog["file"]`` names no ``sliced_for_model``, so this also pins the
+    fallback: with no model to key by, the operator's most recent row is used.
+    """
     ticked, unticked, _swap = await _three_macros(db_session)
     await _the_dialogs_saved_preference(db_session, deselected_macro_ids=[unticked])
     pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
@@ -1945,8 +1969,7 @@ async def test_plan_enqueue_to_the_auto_queue_carries_the_saved_preference(commi
     rows = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
     assert len(rows) == 2
     for row in rows:
-        assert row.execute_swap_macros is True
-        assert json.loads(row.swap_macro_events) == ["swap_mode_start", "swap_mode_change_table"]
+        _assert_carries_the_shared_profile(row)
         # The preference stores the EXCEPTIONS, so the unticked macro is the
         # only one missing — and the swap macro is not an event macro at all.
         assert json.loads(row.selected_macro_ids) == [ticked]
@@ -1954,11 +1977,19 @@ async def test_plan_enqueue_to_the_auto_queue_carries_the_saved_preference(commi
         # column, which is why the mode itself only survives the per-printer
         # tier. Both differ from the schema's own ``"on"`` default.
         assert row.bed_levelling is False and row.flow_cali is False
+        # ⚠️ The two the printer writer alone takes do NOT arrive here.
+        # ``AutoQueueItemCreate`` has no field for either — the row has a
+        # ``gcode_injection`` column and keeps its default, and no
+        # ``nozzle_offset_cali`` column at all. That asymmetry is the writers',
+        # not this handler's to smooth over.
+        assert row.gcode_injection is False
+        assert not hasattr(row, "nozzle_offset_cali")
 
 
 @pytest.mark.asyncio
-async def test_plan_enqueue_to_a_printer_carries_the_saved_preference(committing_client, db_session, catalog):
-    """Same preference, the other target — and here the tri-state survives."""
+async def test_plan_enqueue_to_a_printer_carries_the_saved_profile(committing_client, db_session, catalog):
+    """Same profile, the other target — plus the two fields only this writer
+    takes, and the tri-state, which only this row can keep."""
     ticked, unticked, _swap = await _three_macros(db_session)
     await _the_dialogs_saved_preference(db_session, deselected_macro_ids=[unticked])
     printer_id = await _swap_printer(db_session)
@@ -1976,18 +2007,64 @@ async def test_plan_enqueue_to_a_printer_carries_the_saved_preference(committing
     rows = await _written_rows(db_session, PrintQueueItem, r.json()["created"][0]["queue_item_ids"])
     assert len(rows) == 2
     for row in rows:
-        assert row.execute_swap_macros is True
-        assert json.loads(row.swap_macro_events) == ["swap_mode_start", "swap_mode_change_table"]
+        _assert_carries_the_shared_profile(row)
         assert json.loads(row.selected_macro_ids) == [ticked]
         assert row.bed_levelling is False and row.bed_levelling_mode == "auto"
         assert row.flow_cali is False and row.flow_cali_mode == "off"
+        # Only this writer takes these two.
+        assert row.gcode_injection is True
+        assert row.nozzle_offset_cali is False and row.nozzle_offset_cali_mode == "off"
+        # ⚠️ The profile carries a preheat override, and NO writer takes it. The
+        # column keeps its own default rather than the handler inventing a path
+        # for it — pinned so a later "why is preheat ignored here" reads as a
+        # decision instead of an oversight.
+        assert row.preheat_override == "inherit"
+        assert row.preheat_chamber_target_override is None
+
+
+@pytest.mark.asyncio
+async def test_plan_enqueue_reads_the_profile_for_the_model_the_file_was_sliced_for(
+    committing_client, db_session, catalog
+):
+    """The auto target names no machine but the FILE names a model, and it is
+    the model the auto-queue will route by — so it is the model the profile is
+    keyed on. One request whose plates were sliced for two machines reads two
+    profiles."""
+    await _name_the_catalog_file_a_model(db_session, catalog["file"], "X1C")
+    twin_file, twin_plate = await _twin_plate(
+        db_session, catalog["product"], filename="lamp-p1s.gcode.3mf", model="P1S", seconds=200
+    )
+    await _the_dialogs_saved_preference(db_session, printer_model="X1C", events=["swap_mode_start"])
+    await _the_dialogs_saved_preference(db_session, printer_model="P1S", events=["swap_mode_change_table"])
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue",
+        json={
+            "items": [
+                {"plate_id": plate_id, "count": 1, "line_id": line_id},
+                {"plate_id": twin_plate.id, "count": 1, "line_id": line_id},
+            ],
+            "target": {"kind": "auto"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    ids = [i for c in r.json()["created"] for i in c["queue_item_ids"]]
+    rows = await _written_rows(db_session, AutoQueueItem, ids)
+    by_file = {row.library_file_id: row for row in rows}
+    # Each row took the events of the row saved for ITS file's model — not the
+    # most recent row, which is the P1S one and would have won everywhere.
+    assert json.loads(by_file[catalog["file"].id].swap_macro_events) == ["swap_mode_start"]
+    assert json.loads(by_file[twin_file.id].swap_macro_events) == ["swap_mode_change_table"]
 
 
 @pytest.mark.asyncio
 async def test_plan_enqueue_without_a_preference_keeps_the_writers_defaults(committing_client, db_session, catalog):
     """Nothing saved changes nothing: the two writers' own defaults, pinned —
     including the asymmetry between them, which is theirs and not this
-    handler's to smooth over."""
+    handler's to smooth over. The printer here has swap mode ON and the file
+    carries no baked-in macros, so the mute below is not in play."""
     printer_id = await _swap_printer(db_session)
     pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
     plate_id = await _plate_id_of_the_only_row(committing_client, pid)
@@ -2002,6 +2079,8 @@ async def test_plan_enqueue_without_a_preference_keeps_the_writers_defaults(comm
     assert auto_row.swap_macro_events is None
     assert auto_row.selected_macro_ids is None
     assert auto_row.bed_levelling is True and auto_row.flow_cali is True
+    assert auto_row.layer_inspect is False and auto_row.timelapse is False
+    assert auto_row.timelapse_storage is None and auto_row.mesh_mode_fast_check is True
 
     r = await committing_client.post(
         f"/api/v1/projects/{pid}/plan/enqueue",
@@ -2014,6 +2093,10 @@ async def test_plan_enqueue_without_a_preference_keeps_the_writers_defaults(comm
     assert queue_row.selected_macro_ids is None
     assert queue_row.bed_levelling is True and queue_row.bed_levelling_mode == "on"
     assert queue_row.flow_cali is True and queue_row.flow_cali_mode == "on"
+    assert queue_row.layer_inspect is False and queue_row.timelapse is False
+    assert queue_row.timelapse_storage is None and queue_row.mesh_mode_fast_check is True
+    assert queue_row.gcode_injection is False
+    assert queue_row.nozzle_offset_cali is True and queue_row.nozzle_offset_cali_mode == "on"
 
 
 @pytest.mark.asyncio
@@ -2021,7 +2104,7 @@ async def test_plan_enqueue_mutes_swap_macros_that_would_fire_twice(committing_c
     """The rule every other queue door applies (``queue_add``, both print-now
     routes): swap macros are meaningful only on a printer with swap mode ON and
     a file that does not already carry them baked in by third-party tooling.
-    Carrying the preference here without that gate would run the plate change
+    Carrying the profile here without that gate would run the plate change
     twice — the printer target used to default the flag to False, so nothing
     ever asked the question on this path before."""
     await _the_dialogs_saved_preference(db_session)
@@ -2037,9 +2120,10 @@ async def test_plan_enqueue_mutes_swap_macros_that_would_fire_twice(committing_c
     assert r.status_code == 200, r.text
     (row,) = await _written_rows(db_session, PrintQueueItem, r.json()["created"][0]["queue_item_ids"])
     assert row.execute_swap_macros is False and row.swap_macro_events is None
-    # Only the swap half is muted — the calibration half of the same preference
-    # has nothing to do with the gate.
+    # Only the swap half is muted — the rest of the same profile has nothing to
+    # do with the gate.
     assert row.bed_levelling_mode == "auto" and row.flow_cali_mode == "off"
+    assert row.timelapse is True
 
     # The file's own baked-in macros mute it on either target, printer or not.
     catalog["file"].swap_compatible = True
@@ -2051,3 +2135,27 @@ async def test_plan_enqueue_mutes_swap_macros_that_would_fire_twice(committing_c
     (auto_row,) = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
     assert auto_row.execute_swap_macros is False and auto_row.swap_macro_events is None
     assert auto_row.bed_levelling is False
+
+
+@pytest.mark.asyncio
+async def test_plan_enqueue_mutes_a_baked_in_file_even_with_no_preference(committing_client, db_session, catalog):
+    """⚠️ The gate is UNCONDITIONAL, not "only when a profile turned them on".
+
+    ``AutoQueueItemCreate`` defaults ``execute_swap_macros`` to True, so a
+    ``swap_compatible`` file with nothing saved at all would double-fire through
+    the writer's own default — the one case where the writers' defaults are NOT
+    left alone, and deliberately."""
+    catalog["file"].swap_compatible = True
+    await db_session.commit()
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue",
+        json={"items": [{"plate_id": plate_id, "count": 1, "line_id": line_id}], "target": {"kind": "auto"}},
+    )
+    assert r.status_code == 200, r.text
+    (row,) = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
+    assert row.execute_swap_macros is False and row.swap_macro_events is None
+    # Nothing else moved: the writer's other defaults still stand.
+    assert row.bed_levelling is True and row.mesh_mode_fast_check is True
