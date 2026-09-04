@@ -128,10 +128,9 @@ def _orphan_entity_dirs(db_path: Path, archive_root: Path) -> list[Path]:
     is what made the directory meaningful, so nothing inside it can be wanted.
     """
     orphans: list[Path] = []
-    # ``closing``: an unreadable directory (OSError from ``iterdir``) below would
-    # otherwise walk out of this function with the connection still open — and
-    # the caller goes on to delete files, which on Windows a lingering handle can
-    # refuse.
+    # ``closing``: anything raised below would otherwise walk out of this
+    # function with the connection still open — and the caller goes on to delete
+    # files, which on Windows a lingering handle can refuse.
     with closing(sqlite3.connect(str(db_path))) as conn:
         for subdir, table in _ENTITY_DIRS:
             root = archive_root / subdir
@@ -145,7 +144,17 @@ def _orphan_entity_dirs(db_path: Path, archive_root: Path) -> list[Path]:
                 # attachment the install has.
                 print(f"warning: skipping {root}: cannot read {table}: {e}", file=sys.stderr)
                 continue
-            for child in sorted(root.iterdir()):
+            try:
+                children = sorted(root.iterdir())
+            except OSError as e:
+                # A root we cannot LIST is "cannot tell", the same reading the
+                # missing-table branch above takes: an offline mount or a
+                # permission change must not be reported as "nothing here is
+                # referenced". Skipping it leaves its subtree alone; the caller
+                # only ever deletes what this function returns.
+                print(f"warning: skipping {root}: cannot list it: {e}", file=sys.stderr)
+                continue
+            for child in children:
                 if not child.is_dir():
                     continue
                 if not child.name.isdigit():

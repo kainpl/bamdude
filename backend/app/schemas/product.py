@@ -6,20 +6,33 @@ every read from the linked file's ``file_metadata``.
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from backend.app.schemas.project import validate_http_url
 
 
-def _clean_name(value: str) -> str:
+def _clean_name(value: Any) -> Any:
     """Trim, and refuse a name that is nothing but whitespace.
 
     ``Field(min_length=1)`` already rejects ``""``; it cannot see that ``"   "``
     is the same thing. Create and update both run this, so the two paths cannot
     disagree about what a stored name looks like (same rule as ``customers``).
+
+    ⚠️ Every caller wires it with ``mode="before"``, so the field's own
+    ``min_length`` / ``max_length`` measure what will be STORED. Run after the
+    constraints — as this module did until the fix ``schemas/customer.py`` got
+    was carried across — they were decoration on one side and a lie on the
+    other: ``"   "`` satisfied ``min_length=1`` and only this function caught
+    it, while a full-length name typed with a trailing space was a 422 for a
+    length the very next statement was about to remove.
+
+    A non-string goes straight through: the field's own type check answers
+    those, and raising here would be a 500 rather than a 422.
     """
+    if not isinstance(value, str):
+        return value
     trimmed = value.strip()
     if not trimmed:
         raise ValueError("name cannot be blank")
@@ -45,9 +58,9 @@ class ProductCreate(BaseModel):
     source_url: str | None = None
     design_id: str | None = None
 
-    @field_validator("name")
+    @field_validator("name", mode="before")
     @classmethod
-    def _name_is_clean(cls, v: str) -> str:
+    def _name_is_clean(cls, v: Any) -> Any:
         return _clean_name(v)
 
     @field_validator("source_url")
@@ -66,9 +79,9 @@ class ProductUpdate(BaseModel):
     design_id: str | None = None
     is_active: bool | None = None
 
-    @field_validator("name")
+    @field_validator("name", mode="before")
     @classmethod
-    def _name_is_never_null_and_is_clean(cls, v: str | None) -> str | None:
+    def _name_is_never_null_and_is_clean(cls, v: Any) -> Any:
         return _clean_name(_never_null(v, "name"))
 
     @field_validator("is_active")
@@ -94,9 +107,9 @@ class ProductPartCreate(BaseModel):
     sourcing_url: str | None = None
     remarks: str | None = None
 
-    @field_validator("name")
+    @field_validator("name", mode="before")
     @classmethod
-    def _name_is_clean(cls, v: str) -> str:
+    def _name_is_clean(cls, v: Any) -> Any:
         return _clean_name(v)
 
     @field_validator("sourcing_url")
@@ -113,9 +126,9 @@ class ProductPartUpdate(BaseModel):
     remarks: str | None = None
     sort_order: int | None = None
 
-    @field_validator("name")
+    @field_validator("name", mode="before")
     @classmethod
-    def _name_is_never_null_and_is_clean(cls, v: str | None) -> str | None:
+    def _name_is_never_null_and_is_clean(cls, v: Any) -> Any:
         return _clean_name(_never_null(v, "name"))
 
     @field_validator("qty_per_unit", "sort_order")

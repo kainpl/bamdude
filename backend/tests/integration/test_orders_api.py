@@ -932,6 +932,28 @@ async def test_project_archives_lists_only_this_orders_archives(committing_clien
     assert (await committing_client.get("/api/v1/projects/9999/archives")).status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_a_trashed_print_is_not_in_the_orders_walk(committing_client, db_session, catalog):
+    """⚠️ ``deleted_at`` — the filter every other order-archive reader applies.
+
+    ``order_metrics``' two loaders both skip trashed archives, so nothing
+    attributes one to a line. Left in this list it came back as an archive the
+    page could show but no line claimed, i.e. under **Unlisted** — a print the
+    operator had thrown away, listed as work of theirs nobody had filed.
+    """
+    from datetime import datetime, timezone
+
+    pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
+    kept = await _completed_print(db_session, pid, catalog["file"].id)
+    trashed = await _completed_print(db_session, pid, catalog["file"].id)
+    trashed.deleted_at = datetime.now(timezone.utc)
+    await db_session.commit()
+
+    r = await committing_client.get(f"/api/v1/projects/{pid}/archives")
+    assert r.status_code == 200, r.text
+    assert [a["id"] for a in r.json()] == [kept.id]
+
+
 # ---------- the plan (spec pass 3) ----------
 
 
@@ -1391,7 +1413,7 @@ async def test_queued_yield_counts_nothing_for_a_file_the_product_does_not_have(
 
 
 @pytest.mark.asyncio
-async def test_line_products_carries_a_cover_flag_per_line_in_line_order(committing_client, catalog):
+async def test_line_products_carries_a_cover_flag_per_line_in_line_order(committing_client, db_session, catalog):
     """The order card draws a cover strip from ``line_products`` — one entry per
     line, in line order, saying whether that product has a cover to draw at all
     (spec §Decisions 4). It replaces ``product_cover_filenames``: the effective
@@ -1419,6 +1441,24 @@ async def test_line_products_carries_a_cover_flag_per_line_in_line_order(committ
     assert row["line_products"] == [
         {"product_id": plain, "has_cover": False},
         {"product_id": covered, "has_cover": True},
+    ]
+
+    # ⚠️ "line order" is ``(sort_order, id)`` — what every figure path sorts by —
+    # and NOT the order the relationship happens to load in. Move the first line
+    # behind the second and the strip must follow, or the card and the order page
+    # it opens disagree about which product comes first.
+    first = (
+        await db_session.execute(
+            select(ProjectLine).where(ProjectLine.project_id == pid, ProjectLine.product_id == plain)
+        )
+    ).scalar_one()
+    first.sort_order = 5
+    await db_session.commit()
+
+    row = next(p for p in (await committing_client.get("/api/v1/projects/")).json() if p["id"] == pid)
+    assert row["line_products"] == [
+        {"product_id": covered, "has_cover": True},
+        {"product_id": plain, "has_cover": False},
     ]
 
 

@@ -246,9 +246,13 @@ async def list_projects(
                 ordered=pf.ordered,
                 printed=pf.printed,
                 progress=pf.progress,
+                # ``(sort_order, id)`` — the order every figure path puts the
+                # lines in. The relationship's own order is the database's, so
+                # the cover strip on the card would otherwise be free to differ
+                # from the line list on the order page it opens.
                 line_products=[
                     LineProductOut(product_id=line.product_id, has_cover=line.product_id in covered)
-                    for line in project.lines
+                    for line in sorted(project.lines, key=lambda line: (line.sort_order, line.id))
                 ],
             )
         )
@@ -441,7 +445,13 @@ async def list_project_archives(
     query = (
         select(PrintArchive)
         .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
-        .where(PrintArchive.project_id == project_id)
+        # ⚠️ ``deleted_at`` is the same filter every other order-archive reader
+        # applies (``order_metrics``' two loaders, the figures behind them).
+        # Without it a trashed print came back into the order page's walk, was
+        # matched against no line — nothing attributes a deleted archive — and
+        # so surfaced under "Unlisted": a print the operator had thrown away,
+        # listed as work of theirs nobody had filed.
+        .where(PrintArchive.project_id == project_id, PrintArchive.deleted_at.is_(None))
         # ⚠️ ``id`` is the TIEBREAKER, not decoration: ``created_at`` has second
         # resolution on SQLite, so two prints of the same second are a tie the
         # database may break differently for each LIMIT/OFFSET page — which

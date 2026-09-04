@@ -34,6 +34,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.product import Product, ProductPart, ProductPlate, product_files, product_folders
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
+from backend.app.services.library_objects_backfill import backfill_library_objects
 
 pytestmark = pytest.mark.integration
 
@@ -1334,6 +1335,52 @@ async def test_the_seeded_parts_keep_the_legacy_plans_copies(db_session, test_en
     await _run_seed(test_engine)
     db_session.expire_all()
     assert await _qty(orders["empty"]) == known
+
+
+@pytest.mark.asyncio
+async def test_a_seed_re_entered_after_the_backfill_still_gets_its_parts(db_session, test_engine, tmp_path):
+    """⚠️ ``seed()`` can be re-entered with NOTHING left to fill, and must still
+    seed the parts the conversion could not derive.
+
+    ``library_objects_backfill._write_chunk`` COMMITS per chunk. So a ``seed()``
+    killed after the chunks landed and before the parts step comes back to files
+    that are already filled — an EMPTY ``filled_ids`` — and the runner re-enters
+    from the top because no ``_migrations`` row was written. Gating the parts
+    step on ``filled_ids`` alone therefore skipped it on exactly the run that had
+    to do it, and then dropped the hand-over table at the bottom of the same
+    function: the ``copies`` factor gone, the product part-less, forever.
+
+    The widened gate is ``filled_ids ∪ the files named in _PENDING_COPIES``, and
+    that second set is by construction "plates the conversion could not measure",
+    so no curated product is walked (its twin test above still holds).
+
+    The interruption is simulated the way it really happens: the backfill is run
+    through the service FIRST, so the ``seed()`` below finds the metadata already
+    there and reports nothing filled.
+    """
+    async with test_engine.begin() as conn:
+        for ddl in _LEGACY_DDL:
+            await conn.execute(text(ddl))
+    order_id = await _legacy_order_for(db_session, tmp_path, "interrupted", metadata=None, copies=2)
+    await db_session.commit()
+
+    await _run_upgrade(test_engine)
+
+    # The half that survived the interruption: the chunks committed.
+    maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    first_pass = await backfill_library_objects(maker, sync_products=False)
+    assert first_pass.filled == 1, "the fixture must give the re-entry something already filled"
+
+    # ...and now the run that comes back to a worklist with nothing in it.
+    async with test_engine.begin() as conn:
+        assert await table_exists(conn, m158._PENDING_COPIES), "the hand-over must outlive the interruption"
+    await _run_seed(test_engine)
+    db_session.expire_all()
+
+    line = await _line_of(db_session, order_id)
+    parts = await _parts_of(db_session, line.product_id)
+    # 2 copies × 2 brackets, 2 copies × 1 lid — the factor applied, not lost.
+    assert {key: part.qty_per_unit for key, part in parts.items()} == {"bracket.stl": 4, "lid.stl": 2}
 
 
 @pytest.mark.asyncio

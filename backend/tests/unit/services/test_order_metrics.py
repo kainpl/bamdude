@@ -1,5 +1,11 @@
 """Formulas and the attribution rule, on in-memory rows."""
 
+from contextlib import contextmanager
+from math import ceil
+
+from sqlalchemy import event, select
+from sqlalchemy.engine import Engine
+
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.customer import Customer
@@ -479,10 +485,15 @@ async def test_grouped_figures_reproduce_the_per_order_arithmetic(db_session):
     assert (live.ordered, live.printed, live.progress, live.total_cost) == (3, 4, 1.0, 3.5)
     assert (dead.ordered, dead.printed, dead.progress, dead.total_cost) == (1, 0, 0.0, 3.0)
 
+    # ⚠️ ``usable_units`` is the UNCAPPED number — l1 printed 3 against an
+    # ordered 2 and says so. A caller that wants the capped one takes ``min``
+    # with ``need``; the line carries no pre-capped field of its own, because a
+    # figure nobody reads is a figure nobody notices going wrong.
     by_line = {line.line_id: line for line in [*live.lines, *dead.lines]}
-    assert (by_line[ids["l1"]].need, by_line[ids["l1"]].usable_units, by_line[ids["l1"]].printed_units) == (2, 3, 2)
-    assert (by_line[ids["l2"]].need, by_line[ids["l2"]].usable_units, by_line[ids["l2"]].printed_units) == (1, 1, 1)
-    assert (by_line[ids["l3"]].need, by_line[ids["l3"]].usable_units, by_line[ids["l3"]].printed_units) == (1, 0, 0)
+    assert (by_line[ids["l1"]].need, by_line[ids["l1"]].usable_units) == (2, 3)
+    assert (by_line[ids["l2"]].need, by_line[ids["l2"]].usable_units) == (1, 1)
+    assert (by_line[ids["l3"]].need, by_line[ids["l3"]].usable_units) == (1, 0)
+    assert not hasattr(by_line[ids["l1"]], "printed_units"), "a capped twin is a second answer waiting to disagree"
 
     assert units_delivered(orders.values(), ids["lamp"]) == 3
     assert units_delivered(orders.values(), ids["hook_product"]) == 1
@@ -504,6 +515,79 @@ async def test_grouped_figures_reproduce_the_per_order_arithmetic(db_session):
         assert {line.line_id: line.need for line in grouped.lines} == {
             line_id: f.quantity for line_id, f in figs.items()
         }
+
+
+@contextmanager
+def _statement_spy(fragment: str):
+    """Every statement issued while the block runs whose SQL names ``fragment``.
+
+    Listens on the ``Engine`` class rather than on one engine: the session under
+    test is built by a fixture and its bind is not this test's business.
+    """
+    seen: list[str] = []
+
+    def _record(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if fragment in statement:
+            seen.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _record)
+    try:
+        yield seen
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record)
+
+
+async def test_the_archive_parts_query_is_chunked_over_the_ids(db_session):
+    """⚠️ One ``IN`` list of every archive of every listed order does not fit.
+
+    The batch loader is asked for a whole PAGE of orders — the orders list, the
+    customer page, every product endpoint — so this list is "all the prints of
+    all of them", which on a working farm is tens of thousands of ids. SQLite
+    refuses a statement past 32766 host parameters (``too many SQL variables``)
+    and PostgreSQL merely plans it badly; either way the page that broke is the
+    one that got popular.
+
+    The rows are built id-only on purpose: the query under test reads
+    ``archive_id`` and nothing else, so the fixture does not need to be
+    plausible, only numerous.
+    """
+    ids = await build_parity_fixture(db_session)
+    db_session.add_all(
+        [
+            PrintArchive(
+                project_id=ids["live"] if n % 2 else ids["dead"],
+                plate_index=1,
+                filename="bulk",
+                file_path="",
+                file_size=0,
+                status="completed",
+                quantity=1,
+            )
+            for n in range(1100)
+        ]
+    )
+    await db_session.commit()
+
+    total = len(
+        (
+            await db_session.execute(
+                select(PrintArchive.id).where(PrintArchive.project_id.in_([ids["live"], ids["dead"]]))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert total > 500, "the fixture must exceed one chunk or this test asserts nothing"
+
+    with _statement_spy("print_archive_parts") as statements:
+        orders = await grouped_figures(db_session, project_ids=[ids["live"], ids["dead"]])
+
+    assert len(statements) == ceil(total / 500), f"{total} archives should be {ceil(total / 500)} statements"
+    # ...and the figures are still the parity fixture's: an archive with no part
+    # rows attributes nothing, so the arithmetic above it cannot have moved.
+    by_order = {o.project_id: o for o in orders}
+    assert (by_order[ids["live"]].ordered, by_order[ids["live"]].printed) == (3, 4)
+    assert units_delivered(orders, ids["lamp"]) == 3
 
 
 async def test_grouped_figures_can_be_asked_by_product(db_session):

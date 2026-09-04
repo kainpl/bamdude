@@ -24,13 +24,13 @@ FIX = Path(__file__).parent / "fixtures" / "cloud_link" / "v1"
 
 @pytest.mark.parametrize("p", sorted((FIX / "valid").glob("*.json")), ids=lambda p: p.stem)
 def test_valid_fixtures_parse(p):
-    parse_frame(json.loads(p.read_text()))
+    parse_frame(json.loads(p.read_text(encoding="utf-8")))
 
 
 @pytest.mark.parametrize("p", sorted((FIX / "invalid").glob("*.json")), ids=lambda p: p.stem)
 def test_invalid_fixtures_rejected(p):
     with pytest.raises(ValueError) as excinfo:
-        parse_frame(json.loads(p.read_text()))
+        parse_frame(json.loads(p.read_text(encoding="utf-8")))
     # pydantic's ValidationError IS a ValueError, so `pytest.raises(ValueError)`
     # alone would pass even if the conversion in parse_frame were deleted.
     assert type(excinfo.value) is ValueError
@@ -67,7 +67,7 @@ def test_make_frame_reproduces_the_fixture(p):
     that zod declares ``.optional()`` (absent when unset) being emitted as an
     explicit ``null``, which zod refuses.
     """
-    raw = json.loads(p.read_text())
+    raw = json.loads(p.read_text(encoding="utf-8"))
     assert _numbers_as_floats(make_frame(parse_frame(raw))) == _numbers_as_floats(raw)
 
 
@@ -75,4 +75,4 @@ def test_fixture_snapshot_is_present_and_current():
     """A parametrize over an empty glob passes with zero cases — guard that."""
     cases = list((FIX / "valid").glob("*.json")) + list((FIX / "invalid").glob("*.json"))
     assert len(cases) >= 15, f"fixture snapshot looks truncated: {len(cases)} case(s)"
-    assert (FIX / "VERSION").read_text().strip() == "envelope-v1"
+    assert (FIX / "VERSION").read_text(encoding="utf-8").strip() == "envelope-v1"

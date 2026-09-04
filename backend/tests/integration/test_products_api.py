@@ -503,6 +503,49 @@ async def test_an_empty_patch_does_not_clear_the_seeded_flag(committing_client, 
     assert r.status_code == 200 and r.json()["auto"] is True
 
 
+@pytest.mark.asyncio
+async def test_names_are_trimmed_before_their_length_is_measured(committing_client, sliced_file):
+    """⚠️ The trim runs ``mode="before"``, so ``min_length`` / ``max_length``
+    measure what will be STORED — the same fix ``schemas/customer.py`` got.
+
+    Run after the constraints, they were decoration on one side and a lie on the
+    other: ``"   "`` satisfied ``min_length=1`` and only the validator caught it,
+    while a full-length name typed with a trailing space was refused for a
+    length the very next statement was about to remove.
+    """
+    pid = (await committing_client.post("/api/v1/products/", json={"name": "  Trimmed  "})).json()["id"]
+    assert (await committing_client.get(f"/api/v1/products/{pid}")).json()["name"] == "Trimmed"
+    r = await committing_client.patch(f"/api/v1/products/{pid}", json={"name": "  Renamed  "})
+    assert r.status_code == 200 and r.json()["name"] == "Renamed"
+
+    # A product name is bounded at 255; the padded one FITS, 256 real ones do not.
+    fits = "A" * 255
+    r = await committing_client.post("/api/v1/products/", json={"name": f" {fits} "})
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == fits
+    assert (await committing_client.post("/api/v1/products/", json={"name": "A" * 256})).status_code == 422
+    assert (await committing_client.post("/api/v1/products/", json={"name": "   "})).status_code == 422
+
+    # Parts carry the same rule at their own bound of 512.
+    part_fits = "B" * 512
+    r = await committing_client.post(
+        f"/api/v1/products/{pid}/parts", json={"kind": "purchased", "name": f" {part_fits} ", "qty_per_unit": 1}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == part_fits
+    part_id = r.json()["id"]
+    r = await committing_client.patch(f"/api/v1/products/{pid}/parts/{part_id}", json={"name": "  M3 screw  "})
+    assert r.status_code == 200 and r.json()["name"] == "M3 screw"
+    assert (
+        await committing_client.post(
+            f"/api/v1/products/{pid}/parts", json={"kind": "purchased", "name": "B" * 513, "qty_per_unit": 1}
+        )
+    ).status_code == 422
+    assert (
+        await committing_client.patch(f"/api/v1/products/{pid}/parts/{part_id}", json={"name": "   "})
+    ).status_code == 422
+
+
 # ---------- the model card: auto-fill, re-read, all-time printed (spec §Decisions 2, 5, 7) ----------
 #
 # The two rules everything below defends:

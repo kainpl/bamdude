@@ -131,6 +131,13 @@ class TestFreshInstall:
         drop actually happened — the frozen migrations (m016, m044, m048) still
         CREATE and fill these tables earlier in the chain, so a fresh install
         proves m158 runs after them and cleans up.
+
+        ``_m158_pending_plate_copies`` is in the list for the same reason from
+        the other end: it is m158's own scratch table, created in ``upgrade()``
+        and dropped at the very bottom of ``seed()``. Left behind it would mean
+        ``seed()`` never reached its end, which is exactly the interrupted-run
+        state the parts step is now written to recover from — and a fresh
+        install has nothing to recover, so on this path it must be gone.
         """
         psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
         import asyncio
@@ -142,6 +149,7 @@ class TestFreshInstall:
             "project_parts",
             "library_file_projects",
             "library_folder_projects",
+            "_m158_pending_plate_copies",
         )
 
         async def go() -> set[str]:
@@ -156,7 +164,9 @@ class TestFreshInstall:
                 await conn.close()
 
         survivors = asyncio.run(go())
-        assert survivors == set(), f"m158 left legacy project tables behind on a fresh install: {sorted(survivors)}"
+        assert survivors == set(), (
+            f"m158 left legacy or scratch project tables behind on a fresh install: {sorted(survivors)}"
+        )
 
 
 class TestSqliteMigration:

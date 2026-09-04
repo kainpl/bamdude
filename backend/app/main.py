@@ -9270,9 +9270,15 @@ async def auth_middleware(request, call_next):
             return await call_next(request)
 
     # Allow public patterns (read-only display data like thumbnails).
-    # ``match``, never ``search``: the patterns are anchored, and a search
-    # would put the old substring hole back in a costlier form.
-    if any(pattern.match(path) for pattern in PUBLIC_API_PATTERNS):
+    # ``fullmatch``, never ``search``: the patterns are anchored, and a search
+    # would put the old substring hole back in a costlier form. ⚠️ Not ``match``
+    # either — the trailing ``$`` every pattern carries also matches immediately
+    # BEFORE a final newline, and the ASGI path is percent-DECODED, so a request
+    # for ``…/thumbnail%0A`` arrived here as ``…/thumbnail\n`` and skipped the
+    # gate. Nothing routes to such a path, so this closes a hole that led only
+    # to a 404 — but the whitelist's promise is "exactly these paths", and
+    # ``fullmatch`` is what makes it exactly.
+    if any(pattern.fullmatch(path) for pattern in PUBLIC_API_PATTERNS):
         return await call_next(request)
 
     # --- Auth gate ---------------------------------------------------------

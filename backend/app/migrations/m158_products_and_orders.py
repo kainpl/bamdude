@@ -1014,15 +1014,27 @@ async def seed(session_factory):
             library_objects.skipped_unreachable,
             library_objects.skipped_unparseable,
         )
-    # ⚠️ Scoped to the ids THIS run filled, not to "something was filled". A
-    # re-run must not walk the plates of a product it did not touch and put back
-    # an ``auto`` part somebody deleted on purpose.
-    if library_objects.filled_ids:
-        async with session_factory() as session:
-            seeded = await _seed_printed_parts_from_plates(session, library_objects.filled_ids)
+    # ⚠️ Scoped to the ids THIS run filled PLUS the files the conversion could not
+    # measure, not to "something was filled". A re-run must not walk the plates of
+    # a product it did not touch and put back an ``auto`` part somebody deleted on
+    # purpose — and every row of ``_PENDING_COPIES`` is by construction a plate
+    # this migration owes parts to, so the union widens the walk to those and to
+    # no curated product.
+    #
+    # ⚠️ The union is what makes ``seed()`` RE-ENTRANT. ``library_objects_backfill
+    # ._write_chunk`` commits per chunk, so a ``seed()`` interrupted after the
+    # chunks landed and before this step comes back to files that are already
+    # filled and therefore to an EMPTY ``filled_ids``: gating on that alone
+    # skipped the parts step and then dropped the hand-over at the bottom of this
+    # function, losing the ``copies`` factor with nothing left to recover it from.
+    async with session_factory() as session:
+        pending_files = {file_id for _product_id, file_id, _plate in await _pending_plate_copies(session)}
+        parts_scope = sorted(set(library_objects.filled_ids) | pending_files)
+        if parts_scope:
+            seeded = await _seed_printed_parts_from_plates(session, parts_scope)
             await session.commit()
-        if seeded:
-            logger.info("m158 seed: %d printed part(s) derived from the newly filled objects", seeded)
+            if seeded:
+                logger.info("m158 seed: %d printed part(s) derived from the newly filled objects", seeded)
 
     async with session_factory() as session:
         have_rows = {
@@ -1090,9 +1102,12 @@ async def seed(session_factory):
     await seed_history_only_products(session_factory)
 
     # The hand-over is spent. Dropped LAST, so a ``seed()`` that raises anywhere
-    # above leaves it in place for the re-entry the runner will make — the parts
-    # step is idempotent, so applying the factor twice is not possible, but
-    # losing it before it has been applied once would be.
+    # above leaves it in place for the re-entry the runner will make. It is also
+    # the WORKLIST that re-entry runs on: the backfill commits per chunk and so
+    # has nothing left to report the second time round, and these rows are then
+    # the only surviving record of which files still owe their products parts.
+    # Applying the factor twice is not possible (the parts step only adds a key
+    # nothing covers yet); losing it before it has been applied once would be.
     #
     # ⚠️ Known residual, accepted: a file the backfill above could NOT reach (its
     # share was offline during the upgrade) gets its objects from the boot sweep

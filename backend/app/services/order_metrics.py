@@ -3,6 +3,12 @@
 The archive is the only source of fact. Queue tables are never read here.
 Everything is computed on read over one loaded ``OrderContext``; an order has
 tens to hundreds of archives, which is nothing.
+
+That last sentence is about ONE order. The list pages ask about many at once
+(``_batch_contexts`` → :func:`grouped_figures`), where "tens to hundreds of
+archives" is multiplied by the page — which is why that loader is batched
+rather than looped, why its ``IN`` lists are chunked, and why its parity with
+:func:`load_order_context` is pinned by a test instead of by inspection.
 """
 
 from __future__ import annotations
@@ -24,6 +30,11 @@ from backend.app.services.product_composition import part_index
 
 _DONE = "completed"
 _RUNNING = "printing"
+
+#: How many ids go into one ``IN (...)`` list. The same 500 the library scanner
+#: batches in (m148) and the same ``selectin`` uses for its parent chunking, so
+#: the batch loader's statement count is a multiple of one number and not two.
+_IN_CHUNK = 500
 
 
 def archive_material_set(filament_type: str | None) -> set[str]:
@@ -440,16 +451,20 @@ class GroupedLineFigures:
     ``usable_units`` is ``LineFigures.units_printed`` — the number of whole units
     the line's parts support, and deliberately NOT capped: an overprinted line
     reports 3 against an ordered 2, which is what the product page and the order
-    page both show. ``printed_units`` is that number capped at ``need``, which is
-    what a progress bar fills from.
+    page both show. ``need`` is the line's own quantity, so a caller that wants
+    the capped number takes ``min`` of the two and every caller that does not
+    keeps the honest one.
+
+    ⚠️ No ``project_id`` here and no pre-capped ``printed_units``: both were
+    carried for a reader that never appeared, and the order id is already on the
+    :class:`GroupedOrderFigures` the line hangs off. A figure nobody reads is a
+    figure nobody notices going wrong.
     """
 
     line_id: int
-    project_id: int
     product_id: int
     need: int
     usable_units: int
-    printed_units: int
 
 
 @dataclass(slots=True)
@@ -482,10 +497,11 @@ async def _batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[
     attribution rules is a second answer waiting to disagree with the first.
 
     "Fixed" is EIGHT statements — projects, their lines, products, their parts,
-    their plates, archives, archive parts, procurement — up to ``selectin``'s
-    500-parent chunking, which splits each of the three eager loads once per
-    further 500 parents. So it is fixed in the number of ORDERS and not quite
-    constant in the size of the farm; nothing here degrades to per-order.
+    their plates, archives, archive parts, procurement — up to two chunkings:
+    ``selectin``'s own 500-parent split on each of the three eager loads, and
+    the 500-id slicing of the archive-parts ``IN`` below. So it is fixed in the
+    number of ORDERS and not quite constant in the size of the farm; nothing
+    here degrades to per-order.
     """
     if not project_ids:
         return []
@@ -525,14 +541,24 @@ async def _batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[
         archives_by_project[archive.project_id].append(archive)
     archive_ids = [a.id for archives in archives_by_project.values() for a in archives]
     parts_by_archive: dict[int, list[PrintArchivePart]] = defaultdict(list)
-    if archive_ids:
+    # ⚠️ Chunked. This ``IN`` list is every archive of every order asked for, and
+    # the callers ask for a whole page of them — the orders list, the customer
+    # page, every product endpoint. A farm with a few hundred orders of a few
+    # hundred prints each puts tens of thousands of bound parameters into one
+    # statement, and SQLite refuses past 32766 of them (``too many SQL
+    # variables``); PostgreSQL accepts it and plans it badly. Slicing costs one
+    # extra statement per 500 archives and bounds the worst case instead.
+    for start in range(0, len(archive_ids), _IN_CHUNK):
         for row in (
             (
                 await db.execute(
                     select(PrintArchivePart)
-                    .where(PrintArchivePart.archive_id.in_(archive_ids))
+                    .where(PrintArchivePart.archive_id.in_(archive_ids[start : start + _IN_CHUNK]))
                     # The per-order loader's ordering, for the reason stated
-                    # there: ``hand_out`` reads these in sequence.
+                    # there: ``hand_out`` reads these in sequence. Each slice is
+                    # ordered and the rows are bucketed per archive below, so the
+                    # concatenation of the slices cannot disturb a single
+                    # archive's own sequence.
                     .order_by(PrintArchivePart.id)
                 )
             )
@@ -615,11 +641,9 @@ async def grouped_figures(
                 lines=[
                     GroupedLineFigures(
                         line_id=figs.line_id,
-                        project_id=ctx.project.id,
                         product_id=figs.product_id,
                         need=figs.quantity,
                         usable_units=figs.units_printed,
-                        printed_units=min(figs.units_printed, figs.quantity),
                     )
                     for figs in (line_figures[line.id] for line in ctx.lines)
                 ],
@@ -631,12 +655,16 @@ async def grouped_figures(
 def units_delivered(figures: Iterable[GroupedOrderFigures], product_id: int) -> int:
     """How many units of ``product_id`` the given orders have printed, all statuses.
 
-    The per-part ``need`` cap is already inside ``usable_units`` — it is what
-    ``attribute`` awards against — but the LINE's quantity is deliberately not
-    applied here: an order that printed 3 of an ordered 2 really did print 3, and
-    the order page says so. Capping only this side would make the product page
-    and the order page disagree about the same prints, which is the one thing
-    this helper exists to prevent.
+    ``usable_units`` is NOT capped at the line's ``need`` — a surplus is awarded
+    to the first taker and stays on its line, so an order that printed 3 of an
+    ordered 2 reports 3 here, exactly as the order page reports it. Capping only
+    this side would make the product page and the order page disagree about the
+    same prints, which is the one thing this helper exists to prevent.
+
+    (The uncapped reading is also the one :class:`GroupedLineFigures` documents.
+    This docstring used to claim the opposite — that ``need`` was "already
+    inside" the number — which is what a reader would have believed while
+    watching a product page under-report every overprinted order.)
     """
     return sum(line.usable_units for order in figures for line in order.lines if line.product_id == product_id)
 

@@ -60,7 +60,19 @@ from backend.app.main import PUBLIC_API_PATTERNS, app
 #
 # ``setup`` is in the vocabulary and used by no pattern: the setup-gate routes
 # are whitelisted by exact path in ``PUBLIC_API_ROUTES``, not by a pattern.
-_DEPENDENCY_GATES = frozenset({"stream-token", "overlay-token", "camwall-token"})
+
+#: Which dependency FACTORY each dependency gate means, by the qualified name of
+#: the closure it returns. Checking the tag against this and not merely against
+#: "carries some dependency" is what makes the column a claim about the code:
+#: all three closures are named ``checker``, as is
+#: ``require_ownership_permission``'s, so on the bare name a route that traded
+#: its stream token for an ordinary permission still read as gated.
+_GATE_DEPENDENCY = {
+    "stream-token": "require_camera_stream_token",
+    "overlay-token": "require_overlay_token",
+    "camwall-token": "require_camwall_token",
+}
+_DEPENDENCY_GATES = frozenset(_GATE_DEPENDENCY)
 _HANDLER_GATES = frozenset({"slicer-token", "pre-auth", "nonce"})
 _GATES = _DEPENDENCY_GATES | _HANDLER_GATES | frozenset({"anonymous", "setup"})
 
@@ -156,7 +168,9 @@ def _matching(route: APIRoute, *, hostile: bool) -> list[str]:
     hits: list[str] = []
     for path in _fills(route, hostile=hostile):
         for pattern in PUBLIC_API_PATTERNS:
-            if pattern.match(path) and pattern.pattern not in hits:
+            # ``fullmatch``, the same call the middleware makes. Asking with
+            # ``match`` would be asking a weaker question than production does.
+            if pattern.fullmatch(path) and pattern.pattern not in hits:
                 hits.append(pattern.pattern)
     return hits
 
@@ -180,11 +194,22 @@ def _gate_dependencies(route: APIRoute) -> list[str]:
     ⚠️ "has at least one dependency" is not the question: every handler that
     touches the database has ``get_db``, so the naive count says every route is
     gated. What distinguishes them is a dependency that is not the session.
+
+    ⚠️ ``__qualname__``, not ``__name__``. All three token dependencies are
+    closures returned by a factory and every one of them is called ``checker``
+    — and so is ``require_ownership_permission``'s. On the bare name a
+    stream-token gate and an ordinary permission gate are the same string, so
+    swapping one for the other on a whitelisted route left this file happy: the
+    entry still said "stream-token", the route no longer had one, and the
+    middleware had already stepped aside. The qualified name carries the
+    factory (``require_camera_stream_token.<locals>.checker``), which is what
+    :data:`_GATE_DEPENDENCY` matches the tag against.
     """
     names = []
     for dependency in route.dependant.dependencies:
-        name = getattr(dependency.call, "__name__", None) or type(dependency.call).__name__
-        if name != "get_db":
+        call = dependency.call
+        name = getattr(call, "__qualname__", None) or getattr(call, "__name__", None) or type(call).__name__
+        if name.split(".")[0] != "get_db":
             names.append(name)
     return names
 
@@ -194,11 +219,29 @@ def _api_routes() -> list[APIRoute]:
 
 
 def test_every_pattern_is_anchored_at_both_ends():
-    """``re.match`` anchors the start on its own; ``^`` says so to the reader,
-    and ``$`` is what stops a client-named tail from widening the match."""
+    """``^`` says the start is anchored to the reader; ``$`` stops a
+    client-named tail from widening the match.
+
+    ⚠️ ``$`` alone is not the whole anchor: it also matches immediately before a
+    final newline, and the ASGI path is percent-decoded, so ``…/thumbnail%0A``
+    reaches the middleware as a path ending in a real newline. That is why the
+    middleware and :func:`_matching` both call ``fullmatch`` — the anchors here
+    are the readable half of the rule, the call is the enforcing half.
+    """
     for pattern in PUBLIC_API_PATTERNS:
         assert pattern.pattern.startswith("^"), pattern.pattern
         assert pattern.pattern.endswith("$"), pattern.pattern
+
+
+def test_a_trailing_newline_does_not_ride_in_on_the_dollar_anchor():
+    """The decoded path of ``GET …/thumbnail%0A`` must not be whitelisted."""
+    decoded = "/api/v1/archives/7/thumbnail" + chr(10)
+    opened = [p.pattern for p in PUBLIC_API_PATTERNS if p.fullmatch(decoded)]
+    assert not opened, f"a trailing newline still opens: {opened}"
+    # ...and the same path WITH the newline is exactly what ``match`` would have let in.
+    assert [p.pattern for p in PUBLIC_API_PATTERNS if p.match(decoded)], (
+        "the fixture no longer demonstrates the hole ``fullmatch`` closes"
+    )
 
 
 @pytest.mark.parametrize("hostile", [False, True], ids=["ordinary", "hostile-segments"])
@@ -232,7 +275,10 @@ def test_every_listed_route_carries_the_gate_its_entry_names():
         assert gate in _GATES, f"{path}: unknown gate {gate!r}"
         deps = _gate_dependencies(_intended(path))
         if gate in _DEPENDENCY_GATES:
-            assert deps, f"{path} ({why}): tagged {gate}, but its dependant carries no gate"
+            factory = _GATE_DEPENDENCY[gate]
+            assert any(name.split(".")[0] == factory for name in deps), (
+                f"{path} ({why}): tagged {gate}, so it must carry {factory}() — it carries {deps or 'no gate'}"
+            )
         else:
             assert not deps, f"{path} ({why}): tagged {gate}, but {deps} now gates it — retag the entry"
 
@@ -241,7 +287,7 @@ def test_every_pattern_earns_its_place():
     """A pattern matching no route at all is rot — that is how
     ``"/auth/2fa/send-code"`` survived beside the route actually called."""
     live = {path for r in _api_routes() for hostile in (False, True) for path in _fills(r, hostile=hostile)}
-    dead = [p.pattern for p in PUBLIC_API_PATTERNS if not any(p.match(path) for path in live)]
+    dead = [p.pattern for p in PUBLIC_API_PATTERNS if not any(p.fullmatch(path) for path in live)]
     assert not dead, f"patterns matching no registered route: {dead}"
 
 

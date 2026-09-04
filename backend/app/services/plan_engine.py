@@ -191,6 +191,11 @@ def cover(
     """
     remaining = {pid: n for pid, n in outstanding.items() if n > 0}
     yields = {plate.id: line_yield(recipe, counted) for plate, _file, recipe in candidates}
+    # Beside ``yields`` and for the same reason: the tie-break reads it on every
+    # candidate of every iteration, and it is a pure function of the recipe. Left
+    # inside the loop it was recomputed ``MAX_ITERATIONS × len(candidates)``
+    # times for an answer that cannot have changed.
+    seconds = {plate.id: estimate_seconds(recipe) for plate, _file, recipe in candidates}
     rows: dict[int, PlanRow] = {}
     order: list[int] = []
     truncated = True
@@ -202,7 +207,7 @@ def cover(
             if useful <= 0:
                 continue
             waste = sum(max(0, n - remaining.get(pid, 0)) for pid, n in yields[plate.id].items())
-            key = _pick_key(useful, waste, estimate_seconds(recipe), plate.id)
+            key = _pick_key(useful, waste, seconds[plate.id], plate.id)
             if best is None or key < best[0]:
                 best = (key, plate, file, recipe, gain)
         if best is None:

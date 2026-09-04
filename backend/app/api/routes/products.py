@@ -1229,7 +1229,8 @@ async def get_product_cover_image(
         # cover rule — and RETURN the 404 rather than raise it: ``get_db`` rolls
         # the request back on anything that escapes the handler, so a raise would
         # undo the very heal it just performed. (The project cover route's twin
-        # has exactly that bug.)
+        # had exactly that bug and was fixed alongside this one in pass 6 — it
+        # now returns its 404 too, so the two routes heal the same way.)
         logger.warning("Cover image file missing for product %s: %s", product_id, path)
         if product.cover_image_filename == name:
             product.cover_image_filename = None
