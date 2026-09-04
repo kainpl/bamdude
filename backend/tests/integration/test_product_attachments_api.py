@@ -363,3 +363,98 @@ async def test_deleting_the_implicit_cover_hands_the_role_to_the_next_picture(co
     assert (
         await committing_client.get(f"/api/v1/products/{product}/cover-image", params={"token": token})
     ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_an_implicit_cover_whose_file_vanished_prunes_that_picture(committing_client, product):
+    """The heal has to cover BOTH shapes of the cover rule.
+
+    The explicit branch clears a column. The implicit one has no column to
+    clear: the first picture elected itself, so the entry IS the thing that is
+    wrong, and leaving it would make ``has_cover`` keep promising a picture
+    every request 404s on — with the next picture hidden behind it forever.
+    """
+    first = (await _upload(committing_client, product, "pictures", "a.png", PNG + b"AAA")).json()["filename"]
+    second = (await _upload(committing_client, product, "pictures", "b.png", PNG + b"BBB")).json()["filename"]
+    (product_attachments_dir(product) / first).unlink()
+
+    token = await _stream_token()
+    gone = await committing_client.get(f"/api/v1/products/{product}/cover-image", params={"token": token})
+    assert gone.status_code == 404
+
+    detail = (await committing_client.get(f"/api/v1/products/{product}")).json()
+    assert [a["filename"] for a in detail["attachments"]] == [second]
+    assert detail["cover_image_filename"] is None and detail["has_cover"] is True
+    assert (
+        await committing_client.get(f"/api/v1/products/{product}/cover-image", params={"token": token})
+    ).content == PNG + b"BBB"
+
+
+@pytest.mark.asyncio
+async def test_the_cover_is_revalidated_and_a_uuid_named_picture_is_not(committing_client, product):
+    """Two URLs, two caching answers, and the difference is whether the URL is
+    stable across the bytes changing.
+
+    ``/cover-image`` is one URL for whatever the cover happens to be, so a
+    browser that reuses a heuristically fresh copy shows the OLD picture after
+    an upload — ``no-cache`` means revalidate, not "do not store".
+    ``/attachment-image/<uuid>.png`` can never change under its own name.
+    """
+    name = (await _upload(committing_client, product, "pictures", "a.png")).json()["filename"]
+    token = await _stream_token()
+
+    cover = await committing_client.get(f"/api/v1/products/{product}/cover-image", params={"token": token})
+    assert cover.headers["cache-control"] == "private, no-cache"
+
+    picture = await committing_client.get(
+        f"/api/v1/products/{product}/attachment-image/{name}", params={"token": token}
+    )
+    assert picture.headers["cache-control"] == "private, max-age=3600"
+
+
+@pytest.mark.asyncio
+async def test_a_download_names_the_file_in_the_operators_own_alphabet(committing_client, product):
+    """``FileResponse(filename=...)`` is encoded latin-1, so a Ukrainian name
+    would have raised ``UnicodeEncodeError`` from inside the response instead of
+    downloading. Same RFC 6266 helper as ``card-download`` and the export."""
+    name = (await _upload(committing_client, product, "bom_docs", "специфікація.csv", b"a,b\n")).json()["filename"]
+
+    r = await committing_client.get(f"/api/v1/products/{product}/attachments/{name}")
+
+    assert r.status_code == 200 and r.content == b"a,b\n"
+    # The legacy ``filename=`` parameter keeps whatever survives latin-1 — here
+    # the extension alone, stripped of its leading dot — and the real name
+    # travels in ``filename*``, which every modern browser prefers.
+    assert r.headers["content-disposition"] == (
+        "attachment; filename=\"csv\"; filename*=UTF-8''%D1%81%D0%BF%D0%B5%D1%86%D0%B8%D1%84%D1%96%D0%BA%D0%B0%D1%86%D1%96%D1%8F.csv"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_row_missing_its_category_renders_instead_of_500ing(committing_client, db_session, product):
+    """m158 carried project attachments over into this column, and a restored
+    backup can hold anything. ``ProductAttachmentOut`` defaults every field a
+    legacy row may lack — ``filename`` alone has no default, and an entry
+    without one is dropped by ``_rows`` long before the model sees it."""
+    from sqlalchemy import select
+
+    from backend.app.models.product import Product
+
+    row = (await db_session.execute(select(Product).where(Product.id == product))).scalar_one()
+    row.attachments = [{"filename": "legacy.png", "size": 3}, {"original_name": "nameless.png"}]
+    await db_session.commit()
+
+    detail = (await committing_client.get(f"/api/v1/products/{product}")).json()
+
+    assert detail["attachments"] == [
+        {
+            "category": "other",
+            "filename": "legacy.png",
+            "original_name": "",
+            "size": 3,
+            "sort_order": 0,
+            "source": "manual",
+            "source_file_id": None,
+            "uploaded_at": None,
+        }
+    ]

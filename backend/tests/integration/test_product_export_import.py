@@ -21,6 +21,7 @@ import io
 import json
 import struct
 import tempfile
+import threading
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +30,7 @@ import pytest
 from sqlalchemy import func, select
 
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.models.product import ProductPlate
+from backend.app.models.product import Product, ProductPlate
 from backend.app.services.product_files import product_attachments_dir
 from backend.app.utils.http import build_content_disposition
 
@@ -717,3 +718,65 @@ async def test_a_file_whose_bytes_are_gone_is_left_out_of_the_export(committing_
 
     data = (await committing_client.get(f"/api/v1/products/{pid}/export")).content
     assert _manifest(data)["files"] == []
+
+
+@pytest.mark.asyncio
+async def test_no_member_of_the_archive_is_inflated_on_the_event_loop(committing_client, monkeypatch, exported):
+    """Inflating and hashing a member is the expensive half of an import.
+
+    A 3MF member may be two hundred megabytes (``import_member_limit``), and
+    ``ZipFile.read`` decompresses the whole of it into a buffer and then it is
+    hashed — one full pass each. On the event loop that is the farm's
+    websockets, MQTT callbacks and every other request stopped for the duration.
+    Threading only the WRITE, which is what the cover path used to do, buys
+    nothing: the read was already the long part.
+
+    ``product.json`` is deliberately not in the assertion — it is read on the
+    loop, before anything is created, and it is a manifest, not a payload.
+    """
+    data, _, _ = exported
+    loop_thread = threading.current_thread()
+    reads: list[tuple[str, bool]] = []
+    original = zipfile.ZipFile.read
+
+    def recording(self, name, pwd=None):
+        reads.append((name.filename if isinstance(name, zipfile.ZipInfo) else str(name), threading.current_thread()))
+        return original(self, name, pwd)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", recording)
+    assert (await _import(committing_client, data)).status_code == 200
+
+    payload = [(name, thread) for name, thread in reads if name.startswith(("files/", "attachments/"))]
+    assert payload, reads  # the archive really does carry both kinds of member
+    assert {name.split("/", 1)[0] for name, _ in payload} == {"files", "attachments"}
+    assert [name for name, thread in payload if thread is loop_thread] == []
+
+
+@pytest.mark.asyncio
+async def test_a_path_separator_in_the_operators_own_filename_round_trips(committing_client, db_session):
+    """An export this BamDude then refuses to import is not a round trip.
+
+    ``original_name`` is whatever the operator's browser sent, and on POSIX a
+    backslash is an ordinary character in a filename — ``os.path.basename``
+    leaves it alone there, so it used to reach the ZIP verbatim and the
+    importer's ``_reject_hostile_members`` answered 400 to our own archive.
+    The exporter sanitises now; the importer's refusal stays, and the two are
+    checked together here.
+    """
+    pid = (await committing_client.post("/api/v1/products/", json={"name": "Slash"})).json()["id"]
+    shot = await _attach(committing_client, pid, "pictures", "shot.png", PNG)
+    product = (await db_session.execute(select(Product).where(Product.id == pid))).scalar_one()
+    product.attachments = [{**shot, "original_name": "foo\\bar.png"}]
+    await db_session.commit()
+
+    data = (await committing_client.get(f"/api/v1/products/{pid}/export")).content
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        names = zf.namelist()
+    assert not any("\\" in name for name in names), names
+    assert "attachments/pictures/foo_bar.png" in names, names
+
+    body = (await _import(committing_client, data)).json()
+    assert body["warnings"] == [], body["warnings"]
+    (entry,) = body["product"]["attachments"]
+    assert entry["original_name"] == "foo_bar.png" and entry["category"] == "pictures"
+    assert (product_attachments_dir(body["product"]["id"]) / entry["filename"]).read_bytes() == PNG

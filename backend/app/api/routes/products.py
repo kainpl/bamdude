@@ -1,7 +1,8 @@
 """Products (вироби) — catalog entities: composition, plate recipes, links.
 
-Card fields, typed attachments, cover, export/import arrive in pass 4; the
-columns already exist. Permissions: the projects family (spec §API).
+Card fields, typed attachments, the cover and export/import all live here;
+the columns behind them predate the routes. Permissions: the projects family
+(spec §API).
 
 ⚠️ **No route here writes ``product_files`` or ``product_folders``.** The link
 tables are owned by ``services/product_sync.py``, which keeps the pivot, the
@@ -14,10 +15,12 @@ SQLite honours no ``ON DELETE CASCADE``, and there is no desired set left to
 reconcile once the product itself is going away.
 """
 
+import asyncio
 import logging
 import os
+import shutil
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -415,6 +418,73 @@ async def delete_product(
     return {"message": "Product deleted"}
 
 
+def _copy_attachment_files(
+    source_id: int, new_id: int, entries: list[dict], cover: str | None
+) -> tuple[list[dict], str | None]:
+    """Copy one product's attachment files to another and return the new rows.
+
+    ⚠️ **Blocking, and it runs in ONE thread hop.** Copying is the only work
+    here and it is all filesystem; splitting it per file would only multiply the
+    hops. It touches no ORM object — the rows arrive as plain dicts and leave as
+    plain dicts, because a lazy attribute read off the event loop is a
+    ``MissingGreenlet``, not a SELECT.
+
+    ⚠️ **Fresh stored names, not a directory copy.** ``projects`` duplicates by
+    ``copytree`` and keeps the names; here every entry gets a new ``uuid4``, so
+    the two products' galleries can never end up naming the same file — which is
+    what would let deleting one take the other's pictures with it. The
+    ``original_name`` the operator gave is kept exactly as it was.
+
+    ⚠️ **The dedicated cover is not a gallery entry**, so it is copied
+    separately or the copy would carry a column pointing at nothing. A cover
+    that IS a gallery picture is remapped to that picture's new name instead.
+
+    A source file whose bytes are gone is dropped rather than carried as a row
+    that resolves to nothing: an entry the copy cannot show is worse than no
+    entry, and the source still has whatever it still has.
+    """
+    src_dir = product_attachments_dir(source_id)
+    dst_dir = product_attachments_dir(new_id)
+    rows: list[dict] = []
+    stamp = datetime.now(UTC).isoformat()
+    renamed: dict[str, str] = {}
+
+    def carry(stored: str, prefix: str = "") -> str | None:
+        try:
+            safe_attachment_name(stored)
+        except HTTPException:  # a hand-edited row; its file is not ours to guess at
+            return None
+        source_path = src_dir / stored  # SEC-PATH-OK: guarded by safe_attachment_name just above
+        if not source_path.is_file():
+            return None
+        fresh = f"{prefix}{uuid.uuid4().hex}{os.path.splitext(stored)[1].lower()}"
+        try:
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(
+                source_path, dst_dir / fresh
+            )  # SEC-PATH-OK: 'cover_'? + uuid4().hex + the source's own extension
+        except OSError as e:
+            logger.warning("Product %s: attachment %s could not be copied from %s: %s", new_id, stored, source_id, e)
+            return None
+        renamed[stored] = fresh
+        return fresh
+
+    for entry in entries:
+        stored = entry.get("filename")
+        fresh = carry(stored) if isinstance(stored, str) else None
+        if fresh is None:
+            continue
+        rows.append({**entry, "filename": fresh, "uploaded_at": stamp})
+
+    if not cover:
+        return rows, None
+    if cover in renamed:
+        return rows, renamed[cover]
+    # Not in the gallery: a dedicated upload, carried under its own prefix so
+    # `_drop_dedicated_cover` still recognises it on the copy.
+    return rows, carry(cover, prefix="cover_")
+
+
 @router.post("/{product_id}/duplicate", response_model=ProductResponse)
 async def duplicate_product(
     product_id: int,
@@ -422,7 +492,13 @@ async def duplicate_product(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
 ):
-    """Composition, aliases, links: a copy, never a move. Attachments follow in pass 4."""
+    """Composition, aliases, links, pictures and documents: a copy, never a move.
+
+    The attachment FILES are copied too, not just the column — see
+    :func:`_copy_attachment_files`. A copy holding the source's filenames would
+    look right until somebody deleted the source, and then show a gallery of
+    broken tiles.
+    """
     source = await _get(db, product_id)
     copy = Product(
         name=data.name or f"{source.name} (Copy)",
@@ -464,6 +540,16 @@ async def duplicate_product(
         )
     for folder in list(source.library_folders):
         await _apply_folder(db, folder.id, await _folder_product_ids(db, folder.id) | {copy.id})
+
+    # Read the JSON column into plain dicts HERE, on the loop, before the thread
+    # touches anything: the worker gets data, never an ORM row.
+    copy.attachments, copy.cover_image_filename = await asyncio.to_thread(
+        _copy_attachment_files,
+        source.id,
+        copy.id,
+        sorted_attachments(source),
+        source.cover_image_filename,
+    )
     await db.flush()
     return await _response(db, copy, reload_links=True)
 
@@ -848,7 +934,9 @@ async def upload_attachment(
     if exceeds_attachment_limit(len(content)):
         raise HTTPException(status_code=413, detail=f"An attachment may be at most {attachment_limit()} bytes")
     try:
-        path.write_bytes(content)
+        # Off the loop: an attachment is up to 50 MB and a write to a NAS-backed
+        # archive directory blocks for as long as that mount feels like.
+        await asyncio.to_thread(path.write_bytes, content)
     except OSError as e:
         logger.error("Failed to save product attachment %s: %s", path, e)
         raise HTTPException(status_code=500, detail="Failed to save attachment") from e
@@ -860,7 +948,8 @@ async def upload_attachment(
         "size": len(content),
         "sort_order": next_sort_order(product, category),
         "source": SOURCE_MANUAL,
-        "uploaded_at": datetime.now().isoformat(),
+        # UTC and aware — see the same stamp in ``product_card``.
+        "uploaded_at": datetime.now(UTC).isoformat(),
     }
     product.attachments = [*(product.attachments or []), entry]
     await db.flush()
@@ -923,7 +1012,15 @@ async def download_attachment(
     )  # SEC-PATH-OK: filename is rejected for separators, .. and empty just above the join
     if not path.exists():
         raise HTTPException(status_code=404, detail="Attachment file not found")
-    return FileResponse(path, filename=entry.get("original_name") or filename, media_type="application/octet-stream")
+    # ⚠️ The header is BUILT, never handed to Starlette as ``filename=``: that
+    # parameter is encoded latin-1, and an attachment an operator named in
+    # Ukrainian would raise ``UnicodeEncodeError`` from deep inside the response
+    # instead of downloading. Same helper as ``card-download`` and the export.
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": build_content_disposition(entry.get("original_name") or filename)},
+    )
 
 
 @router.get("/{product_id}/attachment-image/{filename}")
@@ -1055,7 +1152,7 @@ async def set_product_cover_image(
         )  # SEC-PATH-OK: 'cover_' + uuid4().hex + an extension validated against the cover allowlist just above
         content = await upload.read()
         try:
-            path.write_bytes(content)
+            await asyncio.to_thread(path.write_bytes, content)
         except OSError as e:
             logger.error("Failed to save product cover image %s: %s", path, e)
             raise HTTPException(status_code=500, detail="Failed to save cover image") from e
@@ -1091,18 +1188,30 @@ async def get_product_cover_image(
     safe_attachment_name(name)
     path = product_attachments_dir(product_id) / name  # SEC-PATH-OK: guarded by safe_attachment_name just above
     if not path.exists():
-        # The column references a file that vanished. Clear it — and RETURN the
-        # 404 rather than raise it: ``get_db`` rolls the request back on anything
-        # that escapes the handler, so a raise would undo the very heal it just
-        # performed. (The project cover route's twin has exactly that bug.)
+        # Whatever named this file vanished with it. Heal BOTH shapes of the
+        # cover rule — and RETURN the 404 rather than raise it: ``get_db`` rolls
+        # the request back on anything that escapes the handler, so a raise would
+        # undo the very heal it just performed. (The project cover route's twin
+        # has exactly that bug.)
         logger.warning("Cover image file missing for product %s: %s", product_id, path)
         if product.cover_image_filename == name:
             product.cover_image_filename = None
-            await db.flush()
+        else:
+            # The IMPLICIT cover: no column to clear, so the gallery entry that
+            # elected itself is the thing that is wrong. Leaving it would make
+            # `has_cover` keep promising a picture every request 404s on, and
+            # would hide every later picture behind a tile that never loads.
+            product.attachments = [
+                a for a in (product.attachments or []) if not (isinstance(a, dict) and a.get("filename") == name)
+            ]
+        await db.flush()
         return JSONResponse(status_code=404, content={"detail": "Cover image file not found"})
-    # ``private`` and nothing else: token-gated user data, and this URL is stable
-    # across a cover being replaced, so it must never be cached by age.
-    return FileResponse(path, media_type=image_media_type(name), headers={"Cache-Control": "private"})
+    # ⚠️ ``no-cache`` — REVALIDATE, not "do not store". This URL is stable across
+    # the cover being replaced, so an age-based cache shows the old picture after
+    # an upload; ``private`` alone still let a browser reuse a heuristically
+    # fresh copy, which is what a cache-busting query param on the frontend was
+    # working around. ``private``: token-gated user data, never a shared cache's.
+    return FileResponse(path, media_type=image_media_type(name), headers={"Cache-Control": "private, no-cache"})
 
 
 @router.delete("/{product_id}/cover-image")

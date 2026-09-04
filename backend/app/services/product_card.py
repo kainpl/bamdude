@@ -180,6 +180,31 @@ def _write_member(target: Path, data: bytes) -> None:
     target.write_bytes(data)
 
 
+# ⚠️ **One ``to_thread`` per member, and it does ALL of the blocking work.**
+# Inflating a member is CPU on a buffer that may be two hundred megabytes, and
+# hashing it is another pass over the same bytes — on the event loop that is the
+# whole farm's websockets, MQTT callbacks and every other request stopped for
+# the duration. Reading on the loop and threading only the write (which is what
+# the cover path used to do) buys nothing: the read is the expensive half.
+#
+# The ``ZipFile`` is created by :func:`import_zip` and handed to these helpers
+# from ITS coroutine only, one call at a time — a ``ZipFile`` is not thread-safe
+# (one shared file handle, one seek position), and this is safe precisely
+# because the calls are sequential and the coroutine awaits each one before it
+# makes the next. Never fan these out with ``gather``.
+def _read_and_hash_member(zf: zipfile.ZipFile, name: str) -> tuple[bytes, str]:
+    """A library member and the SHA-256 of what was actually inflated."""
+    data = zf.read(name)
+    return data, hashlib.sha256(data).hexdigest()
+
+
+def _read_and_write_member(zf: zipfile.ZipFile, name: str, target: Path) -> bytes:
+    """An attachment member, straight from the archive onto disk."""
+    data = zf.read(name)
+    _write_member(target, data)
+    return data
+
+
 def _unlink_quietly(target: Path) -> None:
     if not target.exists():
         return
@@ -320,7 +345,11 @@ async def fill_from_file(
                     "sort_order": cursor[category],
                     "source": SOURCE_3MF,
                     "source_file_id": library_file.id,
-                    "uploaded_at": datetime.now().isoformat(),
+                    # UTC and AWARE, like every other timestamp this codebase
+                    # stores. A naive local stamp is unreadable the moment two
+                    # farms exchange an export, and it is the one field here
+                    # nothing can recompute afterwards.
+                    "uploaded_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
             cursor[category] += 1
@@ -451,6 +480,37 @@ def export_slug(product: Any) -> str:
     return slug or f"product-{product.id}"
 
 
+# Everything a member name may not carry: either path separator (``\`` is not
+# one on POSIX, so a backslash SURVIVES ``os.path.basename`` there and lands in
+# the archive verbatim), the C0/C1 control characters and DEL.
+_UNSAFE_MEMBER_CHARS = re.compile(r"[/\\\x00-\x1f\x7f-\x9f]")
+
+
+def _safe_member_name(name: Any) -> str:
+    """The operator's own filename, made fit to be a ZIP member name.
+
+    ⚠️ **The exporter's half of a rule the importer already enforces.**
+    ``_reject_hostile_members`` refuses a whole archive whose member names carry
+    a separator — including a backslash, which on POSIX is an ordinary character
+    in a filename and therefore reaches the ZIP intact. An attachment somebody
+    uploaded as ``foo\\bar.png`` then produced an export THIS BamDude answers 400
+    to: a round trip that fails on our own output.
+
+    Sanitised, not truncated to a basename: ``a/b.png`` becomes ``a_b.png``
+    rather than ``b.png``, so the name the operator sees on the other side is
+    still the name they gave. Leading dots go the same way — a member called
+    ``.hidden`` is a hidden file wherever the archive is unpacked by hand, and
+    ``..`` is the traversal the importer refuses outright.
+
+    The importer's refusal STAYS. This is defence in depth on our own writes; it
+    says nothing about the archives other farms send.
+    """
+    cleaned = _UNSAFE_MEMBER_CHARS.sub("_", str(name or ""))
+    bare = cleaned.lstrip(".")
+    cleaned = "_" * (len(cleaned) - len(bare)) + bare
+    return cleaned or "_"
+
+
 def _member(directory: str, name: str, taken: set[str]) -> str:
     """A member path nothing else in the archive has.
 
@@ -458,7 +518,12 @@ def _member(directory: str, name: str, taken: set[str]) -> str:
     the stored uuid, not on what the operator called the file. In a ZIP they
     would be one member silently overwriting the other, so the second gets a
     ``(2)`` and the manifest records the name it actually went in as.
+
+    ⚠️ Every arcname the exporter writes goes through here, which is what makes
+    :func:`_safe_member_name` unskippable — a second place that built a member
+    path by hand would be the one that shipped a backslash.
     """
+    name = _safe_member_name(name)
     stem, ext = os.path.splitext(name)
     candidate = f"{directory}/{name}"
     n = 2
@@ -582,9 +647,11 @@ def _write_export(
         attachments: list[dict] = []
         exported_name: dict[str, str] = {}
         for entry, source in attachment_sources:
-            member = _member(
-                f"{_ATTACHMENTS_ROOT}/{entry['category']}", os.path.basename(str(entry["original_name"])), taken
-            )
+            # No ``os.path.basename``: it splits on ``\`` on Windows and not on
+            # POSIX, so the same product would export under two different member
+            # names depending on the farm's OS. ``_safe_member_name`` (inside
+            # ``_member``) neutralises both separators the same way everywhere.
+            member = _member(f"{_ATTACHMENTS_ROOT}/{entry['category']}", str(entry["original_name"]), taken)
             members[member] = source
             exported_name[entry["filename"]] = posixpath.basename(member)
             attachments.append(
@@ -603,7 +670,7 @@ def _write_export(
             if stored in exported_name:
                 cover = exported_name[stored]
             else:
-                cover = f"{_COVER_ROOT}{os.path.splitext(stored)[1].lower()}"
+                cover = _safe_member_name(f"{_COVER_ROOT}{os.path.splitext(stored)[1].lower()}")
                 members[f"{_ATTACHMENTS_ROOT}/{_COVER_ROOT}/{cover}"] = source
 
         manifest = {
@@ -949,8 +1016,7 @@ async def import_zip(
                     )
                 )
                 continue
-            data = zf.read(member)
-            digest = hashlib.sha256(data).hexdigest()
+            data, digest = await asyncio.to_thread(_read_and_hash_member, zf, member)
             # ⚠️ The digest is COMPUTED, never read out of the manifest — the
             # manifest is the sender's word and the library row it picks is a
             # real file somebody else's product may already be printing.
@@ -1177,13 +1243,12 @@ async def _import_attachments(
         if exceeds_attachment_limit(declared):
             notes.append(_note("skipped_too_large", name=original, size=declared, limit=attachment_limit()))
             continue
-        data = zf.read(member)
         stored = f"{uuid.uuid4().hex}{ext}"
         target = (
             directory / stored
         )  # SEC-PATH-OK: stored = uuid4().hex + an extension validated against this category's allowlist just above
         try:
-            await asyncio.to_thread(_write_member, target, data)
+            data = await asyncio.to_thread(_read_and_write_member, zf, member, target)
         except OSError as e:
             # ⚠️ A write that fails PART-WAY — the ordinary shape of ENOSPC —
             # leaves a truncated file behind, and no row will name it because
@@ -1204,7 +1269,7 @@ async def _import_attachments(
                 # must never mistake them for its own and replace them.
                 "source": SOURCE_IMPORT,
                 "source_file_id": None,
-                "uploaded_at": datetime.now().isoformat(),
+                "uploaded_at": datetime.now(timezone.utc).isoformat(),
             }
         )
         if cover_stored is None and cover_name and original == cover_name and category == "pictures":
@@ -1239,7 +1304,7 @@ async def _import_attachments(
     # the caller's cleanup can act on rather than a file nobody knows about.
     written.cover = stored
     try:
-        await asyncio.to_thread(_write_member, target, zf.read(member))
+        await asyncio.to_thread(_read_and_write_member, zf, member, target)
     except OSError as e:
         logger.error("Failed to write an imported cover %s: %s", target, e)
         notes.append(_note("skipped_unsaved", name=cover_name, category=_COVER_ROOT))

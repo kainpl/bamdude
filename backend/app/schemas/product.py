@@ -216,9 +216,15 @@ class ProductAttachmentOut(BaseModel):
     thing a rejection can do is take the page down.
     """
 
-    category: str
+    # ⚠️ ``category`` and ``original_name`` are DEFAULTED for the same reason
+    # ``size`` is: the docstring above promises tolerance of what m158 carried
+    # over, and a legacy row missing either would 500 the whole product page
+    # rather than render one unlabelled attachment. ``filename`` has no default
+    # on purpose — an entry that names no file is not an attachment, and
+    # ``_rows`` drops it before this model ever sees it.
+    category: str = "other"
     filename: str
-    original_name: str
+    original_name: str = ""
     size: int = 0
     sort_order: int = 0
     source: str = "manual"

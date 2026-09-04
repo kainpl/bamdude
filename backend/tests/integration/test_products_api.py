@@ -366,6 +366,78 @@ async def test_duplicating_a_folder_linked_product_copies_folder_files_and_plate
     assert source["library_folder_ids"] == [folder_id] and source["plates_count"] == 2
 
 
+async def _attach(client, product_id: int, category: str, name: str, content: bytes) -> dict:
+    r = await client.post(
+        f"/api/v1/products/{product_id}/attachments",
+        data={"category": category},
+        files={"file": (name, content, "application/octet-stream")},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+@pytest.mark.asyncio
+async def test_duplicating_a_product_carries_the_gallery_and_its_own_copies_of_the_files(committing_client):
+    """The FILES come across, not just the column.
+
+    ``attachments`` names files inside ``products/<id>/attachments``, so a copy
+    that kept the source's stored names would render correctly right up until
+    somebody deleted the source — and then show a gallery of broken tiles it
+    could never repair. Fresh ``uuid4`` names are what makes the two products'
+    files independent; the ``original_name`` the operator gave is kept as it is.
+    """
+    pid = (await committing_client.post("/api/v1/products", json={"name": "Lamp"})).json()["id"]
+    await _attach(committing_client, pid, "pictures", "front.png", PNG_A)
+    back = await _attach(committing_client, pid, "pictures", "back.png", PNG_A + b"B")
+    await _attach(committing_client, pid, "bom_docs", "bom.csv", BOM_CSV)
+    assert (
+        await committing_client.put(f"/api/v1/products/{pid}/cover-image", json={"filename": back["filename"]})
+    ).status_code == 200
+
+    copy = (await committing_client.post(f"/api/v1/products/{pid}/duplicate", json={})).json()
+    source = (await committing_client.get(f"/api/v1/products/{pid}")).json()
+
+    assert [(a["category"], a["original_name"]) for a in copy["attachments"]] == [
+        ("pictures", "front.png"),
+        ("pictures", "back.png"),
+        ("bom_docs", "bom.csv"),
+    ]
+    assert [a["sort_order"] for a in copy["attachments"]] == [0, 1, 0]
+    stored = {a["filename"] for a in copy["attachments"]}
+    assert stored.isdisjoint({a["filename"] for a in source["attachments"]})
+    directory = product_attachments_dir(copy["id"])
+    assert all((directory / name).is_file() for name in stored)
+    assert copy["has_cover"] is True
+    assert copy["cover_image_filename"] == next(
+        a["filename"] for a in copy["attachments"] if a["original_name"] == "back.png"
+    )
+    assert (directory / copy["cover_image_filename"]).read_bytes() == PNG_A + b"B"
+
+    # The whole point: the copy outlives the original.
+    assert (await committing_client.delete(f"/api/v1/products/{pid}")).status_code == 200
+    assert all((directory / name).is_file() for name in stored)
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_gets_its_own_dedicated_cover_file(committing_client):
+    """A dedicated cover is not a gallery entry, so nothing in ``attachments``
+    would have carried it — the copy would have kept a column pointing at the
+    SOURCE's file, and deleting the source would have emptied both."""
+    pid = (await committing_client.post("/api/v1/products", json={"name": "Bare"})).json()["id"]
+    original = (
+        await committing_client.put(
+            f"/api/v1/products/{pid}/cover-image", files={"file": ("hero.png", PNG_A, "image/png")}
+        )
+    ).json()["filename"]
+
+    copy = (await committing_client.post(f"/api/v1/products/{pid}/duplicate", json={})).json()
+
+    assert copy["attachments"] == [] and copy["has_cover"] is True
+    stored = copy["cover_image_filename"]
+    assert stored.startswith("cover_") and stored != original
+    assert (product_attachments_dir(copy["id"]) / stored).read_bytes() == PNG_A
+
+
 @pytest.mark.asyncio
 async def test_a_purchased_part_refuses_an_alias(committing_client, sliced_file):
     pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]

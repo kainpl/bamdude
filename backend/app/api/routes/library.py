@@ -4487,6 +4487,14 @@ async def get_library_file_card_file(
     Token-gated because an ``<img>`` cannot carry an Authorization header — and
     ``/card-file/`` is in ``main.py``'s ``PUBLIC_API_PATTERNS`` so the request
     reaches this gate at all.
+
+    ⚠️ **Stream-token-ONLY by design, exactly like the plate-thumbnail route.**
+    It carries no ownership check, and that is not an oversight: the same is
+    true of every ``<img>`` surface in BamDude, because the credential a browser
+    can put in a URL is the only one it has. ``/card`` and ``card-download``
+    beside it ARE ownership-scoped — the split is deliberate, and the price of
+    it is that pictures, and nothing but pictures, sit behind the kiosk
+    credential.
     """
     data, media_type, _name = await _card_member(db, file_id, zip_path, categories=CARD_PICTURE_CATEGORIES)
     if not media_type.startswith("image/"):

@@ -18,12 +18,6 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.services.archive_parts import seed_archive_parts
 from backend.app.services.library_helpers import skip_objects_supported_from_metadata
-
-# ``ProjectPageParser`` moved to ``services/threemf_card`` and became
-# ``ThreeMFCardParser`` — one card parser for archives, library files and
-# products. The alias keeps this import path working for one pass while the
-# call sites migrate; drop it once nothing imports the old name.
-from backend.app.services.threemf_card import ThreeMFCardParser as ProjectPageParser  # noqa: F401
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
@@ -579,7 +573,7 @@ class ThreeMFParser:
                 # 3MF metadata values are XML-encoded — `&` becomes `&amp;`, etc.
                 # BambuStudio sometimes writes triple-encoded payloads
                 # (`&amp;amp;amp;`), so unescape in a loop until stable (the same
-                # trick ProjectPageParser uses). Without this a Title like
+                # trick `ThreeMFCardParser` uses). Without this a Title like
                 # "Foo & Bar" lands in the DB as raw "Foo &amp; Bar" and React
                 # double-escapes it on render to "Foo &amp;amp; Bar" (#1658).
                 decoded = value.strip()

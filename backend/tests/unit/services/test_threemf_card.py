@@ -386,11 +386,3 @@ class TestListAuxiliaries:
 
         assert all(entries == [] for entries in listed.values())
         assert sorted(listed) == sorted(set(CATEGORY_FOLDERS.values()))
-
-
-class TestTheOldNameStillResolves:
-    def test_archive_module_re_exports_the_parser(self):
-        """``services.archive.ProjectPageParser`` is an alias for one pass."""
-        from backend.app.services.archive import ProjectPageParser
-
-        assert ProjectPageParser is ThreeMFCardParser

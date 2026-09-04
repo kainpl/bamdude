@@ -50,7 +50,8 @@ class Product(Base):
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)  # HTML (TipTap)
-    # Model card (spec §Product card) — filled by pass 4, columns exist from day one.
+    # Model card (spec §Product card): filled from a linked 3MF by
+    # ``product_card.fill_from_file``, or typed by hand — never overwritten.
     designer: Mapped[str | None] = mapped_column(String(255), nullable=True)
     license: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
@@ -58,7 +59,7 @@ class Product(Base):
     # Explicit cover; NULL = first ``pictures`` attachment (spec decision 6).
     cover_image_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # [{"category": "pictures|bom_docs|assembly|other", "filename", "original_name",
-    #   "size", "sort_order", "source": "3mf|manual", "uploaded_at"}]
+    #   "size", "sort_order", "source": "3mf|manual|import", "source_file_id", "uploaded_at"}]
     attachments: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Catalog flag: an inactive product is not offered for new order lines.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
