@@ -122,6 +122,8 @@
 
 - **The Inventory stats bar no longer downloads the whole inventory to show five numbers.** The totals, the per-material breakdown and the low-stock count are counted in the database, so on a large farm the bar stops costing a full inventory download on every visit. The low-stock count now also refreshes straight after you change the low-stock threshold, instead of showing the previous number until something else reloaded the page.
 
+- **Library files that never knew what they hold get it filled in.** A 3MF uploaded before BamDude could read a plate's objects — or added while its network share was unreachable — carried no list of what it prints, so a product linked to it got no parts and an order's plan had nothing to count. Those files are read and filled in during the upgrade, and tried again at every start for the ones a share being offline put out of reach; a product bound to such a file gains its parts the moment its file does. A file that is already known is never opened, and nothing else it records is re-read or rewritten.
+
 ## [0.5.5] - 2026-08-28
 
 Image: `ghcr.io/kainpl/bamdude:0.5.5` / `kainpl/bamdude:0.5.5` (`:latest` tracks this).

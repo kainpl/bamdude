@@ -8004,6 +8004,75 @@ def stop_label_reclaim() -> None:
         logging.getLogger(__name__).info("Label job reclaim sweep stopped")
 
 
+_library_objects_backfill_task = None
+
+
+async def _library_objects_backfill_once() -> None:
+    """One pass of the library object-metadata sweep (spec §G).
+
+    ``m158.seed()`` runs the same function at upgrade; this is the retry for
+    everything it could not reach — a share that was down then and is up now.
+    There is deliberately no manual script: the user who needs this is the user
+    who cannot run one.
+
+    ⚠️ **Nothing escapes this coroutine.** It is a fire-and-forget task, so an
+    exception here would surface only as an "exception was never retrieved"
+    line, and a ``CancelledError`` at shutdown is not a fault — the sweep is
+    resumable by construction and simply runs again at the next start.
+    """
+    log = logging.getLogger(__name__)
+    try:
+        from backend.app.services.library_objects_backfill import backfill_library_objects
+
+        summary = await backfill_library_objects(async_session)
+        if summary.filled or summary.skipped_unreachable or summary.skipped_unparseable:
+            log.info(
+                "Library object metadata: filled %d of %d 3MF(s) (%d unreachable, %d unparseable), "
+                "%d product(s) resynced",
+                summary.filled,
+                summary.scanned,
+                summary.skipped_unreachable,
+                summary.skipped_unparseable,
+                summary.products_synced,
+            )
+    except asyncio.CancelledError:
+        log.debug("Library object metadata backfill cancelled")
+    except Exception:
+        log.warning("Library object metadata backfill failed", exc_info=True)
+
+
+def start_library_objects_backfill() -> None:
+    """Fill in the objects of library 3MFs that have none — once, at boot.
+
+    ⚠️ A background task rather than a step of the lifespan: on a healthy
+    install it is one SELECT that returns nothing, but on an install whose NAS
+    was unreachable it is a walk over every file the upgrade missed, and the app
+    may not wait for that to answer its first request.
+    """
+    global _library_objects_backfill_task
+    if _library_objects_backfill_task is None:
+        _library_objects_backfill_task = asyncio.create_task(_library_objects_backfill_once())
+
+
+async def stop_library_objects_backfill() -> None:
+    """Cancel the sweep AND wait for it to notice.
+
+    Awaited, unlike the loops beside it: this one holds a database session while
+    it writes a chunk, and returning from the lifespan with that still in flight
+    is how a shutdown ends with a half-written batch and a closed engine.
+    """
+    global _library_objects_backfill_task
+    task = _library_objects_backfill_task
+    _library_objects_backfill_task = None
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -8708,6 +8777,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         logging.getLogger(__name__).warning("library scan sweep failed", exc_info=True)
 
+    # Library 3MFs that never got their object metadata (uploaded before the
+    # extractor existed, or scanned while their mount was down) get it here.
+    # m158 does the same at upgrade; this is the retry, and on an install where
+    # nothing is missing it is one SELECT.
+    start_library_objects_backfill()
+
     # Event-loop stall watchdog: dumps all thread stacks to stderr if the loop
     # freezes (#1486 — silent "container hangs after adding a printer" reports).
     from backend.app.services.loop_watchdog import start_loop_watchdog
@@ -8892,6 +8967,7 @@ async def lifespan(app: FastAPI):
         logging.warning("Failed to shut down camera broadcasters: %s", e)
     stop_expected_prints_cleanup()
     stop_label_reclaim()
+    await stop_library_objects_backfill()
 
     from backend.app.services.library_scan import cancel_running_scans
 

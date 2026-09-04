@@ -15,11 +15,13 @@ Two starting shapes are exercised, because m158 has to survive both:
 Shape (iii) — already converted — is the re-run, and must change nothing.
 """
 
+import io
 import json
 import logging
+import zipfile
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.migrations import m158_products_and_orders as m158
@@ -1050,3 +1052,96 @@ async def test_rule_b_counts_the_raw_plan_copies_not_the_expanded_plates(db_sess
     # The discriminating one: raw 4 / 2 = 2, where the expanded sum would give
     # 4 / 4 = 1 and quietly halve every requirement on the order.
     assert (await _line_of(db_session, ids[1])).quantity == 2
+
+
+# ---------------------------------------------------------------------------
+# The library half of the same hole (spec §G): a FILE that never knew its
+# objects. The archive backfill above cannot help it — its product has no
+# plates, no parts, and a plan with nothing to count.
+# ---------------------------------------------------------------------------
+
+
+def _sliced_3mf(objects_by_plate: dict[int, list[str]]) -> bytes:
+    identify = 100
+    plates = []
+    for index, names in sorted(objects_by_plate.items()):
+        objects = ""
+        for name in names:
+            identify += 1
+            objects += f'<object identify_id="{identify}" name="{name}" skipped="false" />'
+        plates.append(f'<plate><metadata key="index" value="{index}" />{objects}</plate>')
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("3D/3dmodel.model", '<?xml version="1.0"?><model/>')
+        zf.writestr("Metadata/slice_info.config", '<?xml version="1.0"?><config>' + "".join(plates) + "</config>")
+        for index in sorted(objects_by_plate):
+            zf.writestr(f"Metadata/plate_{index}.gcode", b"; sliced\n")
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_the_seed_fills_a_library_file_that_never_knew_its_objects(db_session, test_engine, tmp_path):
+    """Uploaded before the extractor existed, or scanned off a mount that was
+    down: the row has no ``printable_objects``, so its product gets no printed
+    parts. The seed fills both, in that order — the objects, then the sync that
+    turns them into parts."""
+    target = tmp_path / "bracket.gcode.3mf"
+    target.write_bytes(_sliced_3mf({1: ["bracket.stl", "bracket.stl", "lid.stl"]}))
+    file = LibraryFile(
+        filename="bracket.gcode.3mf",
+        file_path=str(target),
+        file_size=1,
+        file_type="gcode",
+        file_metadata=None,
+    )
+    product = Product(name="Bracket kit")
+    db_session.add_all([file, product])
+    await db_session.flush()
+    await db_session.execute(insert(product_files).values(product_id=product.id, library_file_id=file.id))
+    await db_session.commit()
+    file_id, product_id = file.id, product.id
+
+    await _run_seed(test_engine)
+    db_session.expire_all()
+
+    row = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == file_id))).scalar_one()
+    assert sorted(row.file_metadata["printable_objects"].values()) == ["bracket.stl", "bracket.stl", "lid.stl"]
+    parts = (await db_session.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars().all()
+    assert {p.name_key: p.qty_per_unit for p in parts} == {"bracket.stl": 2, "lid.stl": 1}
+    plates = (
+        (await db_session.execute(select(ProductPlate).where(ProductPlate.product_id == product_id))).scalars().all()
+    )
+    assert [p.plate_index for p in plates] == [0]
+
+    # A ``DEBUG=true`` re-run must add nothing: the worklist query is the marker,
+    # and the file now has objects, so the second pass does not even open it.
+    stamp = row.updated_at
+    await _run_seed(test_engine)
+    db_session.expire_all()
+    again = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == file_id))).scalar_one()
+    assert again.updated_at == stamp
+    parts = (await db_session.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars().all()
+    assert len(parts) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_seed_survives_a_library_file_whose_mount_is_down(db_session, test_engine, caplog):
+    """An unreachable path is skipped and retried at the next start — it must
+    never take the upgrade down, and it must never be recorded as "no objects"."""
+    file = LibraryFile(
+        filename="offline.gcode.3mf",
+        file_path="//nas/share/offline.gcode.3mf",
+        file_size=1,
+        file_type="gcode",
+        file_metadata={"print_time_seconds": 900},
+    )
+    db_session.add(file)
+    await db_session.commit()
+    file_id = file.id
+
+    with caplog.at_level(logging.WARNING):
+        await _run_seed(test_engine)
+
+    db_session.expire_all()
+    row = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == file_id))).scalar_one()
+    assert row.file_metadata == {"print_time_seconds": 900}

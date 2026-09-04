@@ -847,9 +847,31 @@ async def seed(session_factory):
             logger.info("m158 seed: backfilled part rows for %d archive(s)", backfilled)
         await session.commit()
 
-    # AFTER the backfill, never before: rule D reads exactly the rows the
-    # backfill has just written, and reordering the two leaves every
-    # history-only product part-less.
+    # The library half of the same hole. The archive backfill above cannot help
+    # a product whose FILE is the one that never knew its objects (uploaded
+    # before the extractor existed, or scanned while its mount was down): such a
+    # product gets no printed parts and the plan nothing to count. Same posture
+    # as the block above — idempotent (the worklist query is the marker, so a
+    # ``DEBUG=true`` re-run adds nothing), never raises, and a file this upgrade
+    # could not reach is retried by the boot sweep in ``main.py``'s lifespan.
+    from backend.app.services.library_objects_backfill import backfill_library_objects
+
+    objects = await backfill_library_objects(session_factory)
+    if objects.filled or objects.skipped_unreachable or objects.skipped_unparseable:
+        logger.info(
+            "m158 seed: object metadata filled for %d of %d library 3MF(s) "
+            "(%d unreachable, %d unparseable), %d product(s) resynced",
+            objects.filled,
+            objects.scanned,
+            objects.skipped_unreachable,
+            objects.skipped_unparseable,
+            objects.products_synced,
+        )
+
+    # AFTER both backfills, never before: rule D reads exactly the rows the
+    # archive backfill has just written, and a product whose file has only now
+    # gained its objects gains real printed parts from the library backfill —
+    # either way, reordering leaves a history-only product part-less.
     await seed_history_only_products(session_factory)
 
 
