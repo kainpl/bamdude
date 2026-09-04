@@ -42,8 +42,8 @@ from backend.app.services.order_filing import line_for_plate
 from backend.app.services.order_metrics import (
     LineFigures,
     OrderContext,
-    _batch_contexts,
     attribute,
+    batch_contexts,
     line_accepts_materials,
 )
 from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
@@ -623,7 +623,7 @@ async def plan_for_orders(db: AsyncSession, project_ids: list[int]) -> dict[int,
     The candidates endpoint asks for the plan of every order that could hold a
     plate, which on a working farm is every open order carrying that product; in
     a loop that was ~14 statements EACH, including a full archive-and-parts read
-    per order. ``order_metrics._batch_contexts`` is the loader the orders list
+    per order. ``order_metrics.batch_contexts`` is the loader the orders list
     already uses for exactly this shape, and it returns the contexts
     :func:`load_order_context` would have returned one at a time (pinned by its
     own parity test), so the arithmetic below is untouched.
@@ -645,7 +645,7 @@ async def plan_for_orders(db: AsyncSession, project_ids: list[int]) -> dict[int,
     """
     if not project_ids:
         return {}
-    contexts = await _batch_contexts(db, project_ids)
+    contexts = await batch_contexts(db, project_ids)
     if not contexts:
         return {}
     figures_by_project = {ctx.project.id: attribute(ctx)[0] for ctx in contexts}

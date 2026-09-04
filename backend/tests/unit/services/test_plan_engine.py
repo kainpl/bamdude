@@ -12,7 +12,7 @@ from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import plan_engine
 from backend.app.services.filament_cost import cost_of
-from backend.app.services.order_metrics import LineFigures, OrderContext, PartFigures
+from backend.app.services.order_metrics import LineFigures, OrderContext, PartFigures, attribute
 from backend.app.services.plan_engine import plan_lines
 from backend.app.services.product_composition import PlateRecipe
 
@@ -520,3 +520,39 @@ def test_alternatives_are_sorted_by_model_and_never_list_the_row_itself():
     assert row.plate_id == 1
     # A model-less plate sorts first (""), then by model name, then by plate id.
     assert [(a.plate_id, a.printer_model) for a in row.alternatives] == [(3, None), (4, "A1"), (2, "P1S")]
+
+
+def test_a_line_that_took_kits_off_the_shelf_plans_only_the_rest():
+    """The plan block follows ``need`` and needs no rule of its own: ten ordered
+    with three off the product's free stock is seven to print, so ``outstanding``
+    starts from seven parts and the covering buys seven prints, not ten.
+
+    Figures come through ``attribute`` rather than the hand-built ``_figs``
+    helper on purpose — the reservation enters the arithmetic in
+    ``_new_line_figures``, which is exactly the step a hand-built figure skips.
+    """
+    p = _part(1, 10, "a", 1)
+    line = _line(100, 10, 10)
+    plate = _cand(1, 10, {1: 1})
+
+    bare = _ctx([line], [p])
+    assert plan_lines(bare, attribute(bare)[0], {10: [plate]}, {}, None).lines[0].outstanding_before == {1: 10}
+
+    ctx = _ctx([line], [p])
+    ctx.reserved_by_line = {line.id: 3}
+    lp = plan_lines(ctx, attribute(ctx)[0], {10: [plate]}, {}, None).lines[0]
+
+    assert lp.outstanding_before == {1: 7}
+    assert sum(row.count for row in lp.rows) == 7
+    assert lp.surplus_after == {}
+
+
+def test_a_line_covered_entirely_from_stock_plans_nothing():
+    p = _part(1, 10, "a", 2)
+    line = _line(100, 10, 4)
+    ctx = _ctx([line], [p])
+    ctx.reserved_by_line = {line.id: 4}
+
+    lp = plan_lines(ctx, attribute(ctx)[0], {10: [_cand(1, 10, {1: 2})]}, {}, None).lines[0]
+
+    assert lp.outstanding_before == {} and lp.rows == [] and lp.unsatisfiable == []

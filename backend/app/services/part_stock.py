@@ -54,7 +54,7 @@ nothing can name any more.
 
 import logging
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,10 +63,21 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import ProductPart, ProductPlate
+from backend.app.models.project_line import ProjectLine
 from backend.app.services.order_metrics import index_plates, products_for_print, row_quantity
 from backend.app.services.product_composition import part_index
 
 logger = logging.getLogger(__name__)
+
+#: The two reasons that make up a line's reservation. Read as ONE sum: a
+#: release is not the deletion of a reservation but a movement of its own, so
+#: "what is still reserved" is ``−Σ(both)`` and never "the last row wins".
+_RESERVATION_REASONS = ("reserved_for_order", "reservation_released")
+
+#: How many ids go into one ``IN (...)`` list, matching ``order_metrics``' own
+#: chunk. The batch reader below is asked about every line of a whole page of
+#: orders, and SQLite refuses a statement past 32766 host parameters.
+_IN_CHUNK = 500
 
 #: The one archive status a print may be credited from. Spelled here rather
 #: than imported from ``order_metrics._DONE`` because that name is private;
@@ -284,6 +295,220 @@ async def movements(db: AsyncSession, product_id: int, *, limit: int = 200) -> l
         .limit(limit)
     )
     return list(rows.scalars().all())
+
+
+async def _counted_parts(db: AsyncSession, product_id: int) -> list[ProductPart]:
+    """The product's counted parts, lowest id first — the order a reservation
+    is written in, so a ledger read back reads the same way twice."""
+    rows = (
+        (await db.execute(select(ProductPart).where(ProductPart.product_id == product_id).order_by(ProductPart.id)))
+        .scalars()
+        .all()
+    )
+    return [part for part in rows if is_counted(part)]
+
+
+async def _reserved_net_by_part(db: AsyncSession, line_id: int) -> list[tuple[int, int]]:
+    """``(part_id, units still reserved)`` for one line, from the ledger.
+
+    ``−Σ delta`` over the line's ``reserved_for_order`` and
+    ``reservation_released`` rows: a reservation of 3 that was released reads
+    zero, and one released twice by a bug reads zero rather than negative
+    (the ``> 0`` filter). Parts with nothing outstanding are absent.
+    """
+    rows = (
+        await db.execute(
+            select(
+                ProductPartStockMovement.product_part_id,
+                func.coalesce(func.sum(ProductPartStockMovement.delta), 0),
+            )
+            .where(
+                ProductPartStockMovement.project_line_id == line_id,
+                ProductPartStockMovement.reason.in_(_RESERVATION_REASONS),
+            )
+            .group_by(ProductPartStockMovement.product_part_id)
+            .order_by(ProductPartStockMovement.product_part_id)
+        )
+    ).all()
+    return [(part_id, -int(net or 0)) for part_id, net in rows if int(net or 0) < 0]
+
+
+async def release_for_line(db: AsyncSession, line: ProjectLine, *, note: str) -> None:
+    """Put a line's reservation back on the shelf (Decision 4).
+
+    What is released is what the LEDGER says is still reserved — ``Σ reserved
+    − Σ released`` per part — never ``quantity × qty_per_unit`` recomputed from
+    the line. The line's quantity may have changed since, the reservation may
+    have been clamped when it was taken, and a part may have been merged into
+    another; only the ledger knows what actually came off the shelf, and
+    releasing a recomputed number is how a ledger starts inventing stock.
+
+    Nothing reserved writes nothing: pressing cancel on an order whose lines
+    never reserved leaves no trail of zeroes (Decision 6 puts this table in
+    front of the operator).
+
+    ``note`` is required and not defaulted because the product page shows it,
+    and "why did these parts come back" is the only question that history
+    answers — "reservation rewritten", "order cancelled", "line deleted".
+
+    A part that has since stopped counting is skipped and logged: it has no
+    balance to return to, and :func:`move` would refuse it as a caller error.
+    Its stock stays out until the part is a counted part again — which is the
+    same thing the reversal of an unfiled print does for the same reason.
+
+    Flushes through :func:`move`; the caller commits.
+    """
+    outstanding = await _reserved_net_by_part(db, line.id)
+    if not outstanding:
+        return
+    parts = {
+        part.id: part
+        for part in (
+            await db.execute(select(ProductPart).where(ProductPart.id.in_([pid for pid, _n in outstanding])))
+        ).scalars()
+    }
+    for part_id, units in outstanding:
+        part = parts.get(part_id)
+        if part is None or not is_counted(part):
+            logger.info(
+                "part_stock: part %s no longer holds stock; line %s's reservation of %d is not released",
+                part_id,
+                line.id,
+                units,
+            )
+            continue
+        await move(
+            db,
+            part_id=part_id,
+            delta=units,
+            reason="reservation_released",
+            project_line_id=line.id,
+            note=note,
+        )
+
+
+async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, created_by: int | None = None) -> int:
+    """Take ``units`` whole kits off the product's shelf for this line (Decision 4).
+
+    **Release first, then decide.** The product's balance already has THIS
+    line's own reservation subtracted from it, so computing
+    :func:`kits_available` before the release would make an edit from 3 to 3 a
+    reservation of 0 — the line would be bidding against itself. Rewriting is
+    release + reserve inside the caller's one transaction, which is why
+    :func:`move` never commits.
+
+    **The answer may be smaller than the question** (Ruling 1): the line dialog
+    renders a default and the operator presses OK some minutes later, by which
+    time another order may have taken the shelf. Asking for 5 of 3 reserves 3
+    and returns 3 — the response tells the dialog what it got, and no balance
+    ever goes negative. Asking for more than the line ordered is NOT clamped
+    here: the ledger records what came off the shelf, and how many of them the
+    line still needs is ``order_metrics``' arithmetic, not the shelf's.
+
+    Returns the kits actually reserved, read back from the movements written
+    rather than from the number asked for — the same discipline the banking
+    button follows, so the day a rule is added to :func:`move` the caller
+    follows the shelf instead of its own request.
+
+    A product with no counted part reserves nothing and says 0: there is no kit
+    to be short of, exactly as :func:`kits_available` answers.
+
+    Flushes through :func:`move`; the caller commits.
+    """
+    if units < 0:
+        raise ValueError(f"cannot reserve {units} units for line {line.id}; a reservation is never negative")
+    await release_for_line(db, line, note="reservation rewritten")
+    parts = await _counted_parts(db, line.product_id)
+    if not parts or units == 0:
+        return 0
+    # After the release, so the shelf includes what this line was holding.
+    take = min(units, kits_available(await balances(db, line.product_id), parts))
+    if take <= 0:
+        return 0
+    reserved = take
+    for part in parts:
+        movement = await move(
+            db,
+            part_id=part.id,
+            delta=-take * part.qty_per_unit,
+            reason="reserved_for_order",
+            project_line_id=line.id,
+            created_by=created_by,
+        )
+        # ⚠️ No ``archive_id`` on a reservation, ever: ``reverse_unfiled_print``
+        # negates EVERY row carrying an archive id, and a reservation caught in
+        # that sum would be handed back as stock the print never made.
+        reserved = min(reserved, 0 if movement is None else -movement.delta // part.qty_per_unit)
+    return reserved
+
+
+async def reserved_units_by_line(
+    db: AsyncSession, line_ids: Sequence[int], qty_per_unit: Mapping[int, int]
+) -> dict[int, int]:
+    """``line_id → kits reserved from stock``, for many lines in ONE query.
+
+    The reservation has no column on ``project_lines`` (Decision 4): it IS the
+    ledger, so every reader derives it the same way — ``−Σ delta`` over the
+    line's reservation rows, divided by that part's ``qty_per_unit``, and the
+    scarcest part wins because a kit is the unit the operator reserves in.
+
+    ⚠️ **One query for every line of the page**, because both order loaders
+    call this for a whole batch of orders (the pass-6 discipline). A per-line
+    variant would put an N+1 under the orders list, the customer page and every
+    product endpoint at once.
+
+    Only lines that actually hold something appear in the answer — a caller
+    reads ``.get(line_id, 0)``. ``qty_per_unit`` is the caller's own map of the
+    parts it has already loaded; a part missing from it is skipped rather than
+    guessed at, and a line left with no readable part reads 0.
+    """
+    if not line_ids:
+        return {}
+    per_line: dict[int, list[int]] = defaultdict(list)
+    for start in range(0, len(line_ids), _IN_CHUNK):
+        rows = (
+            await db.execute(
+                select(
+                    ProductPartStockMovement.project_line_id,
+                    ProductPartStockMovement.product_part_id,
+                    func.coalesce(func.sum(ProductPartStockMovement.delta), 0),
+                )
+                .where(
+                    ProductPartStockMovement.project_line_id.in_(line_ids[start : start + _IN_CHUNK]),
+                    ProductPartStockMovement.reason.in_(_RESERVATION_REASONS),
+                )
+                .group_by(ProductPartStockMovement.project_line_id, ProductPartStockMovement.product_part_id)
+            )
+        ).all()
+        for line_id, part_id, net in rows:
+            qty = qty_per_unit.get(part_id)
+            if not qty:
+                continue
+            per_line[line_id].append(max(0, -int(net or 0)) // qty)
+    return {line_id: kits for line_id, taken in per_line.items() if (kits := min(taken)) > 0}
+
+
+async def detach_line(db: AsyncSession, line_id: int) -> int:
+    """Cut a deleted order line out of the ledger, keeping its history.
+
+    ``project_line_id`` is ON DELETE SET NULL and PostgreSQL would do this
+    itself; SQLite would not (this codebase never sets ``PRAGMA foreign_keys =
+    ON``), and the rows it left would name a line id that no longer exists —
+    counted as "already banked" against whatever line inherits that rowid on a
+    fresh install, and offered as a dead link from the product's history.
+
+    Called AFTER :func:`release_for_line`, never instead of it: detaching first
+    would hide the reservation from the release query and leave the stock off
+    the shelf forever. What survives is the ``surplus_banked`` and released
+    rows with no line — the parts are on the shelf regardless of what happened
+    to the paperwork.
+    """
+    result = await db.execute(
+        update(ProductPartStockMovement)
+        .where(ProductPartStockMovement.project_line_id == line_id)
+        .values(project_line_id=None)
+    )
+    return result.rowcount or 0
 
 
 async def delete_for_part(db: AsyncSession, part_id: int) -> int:

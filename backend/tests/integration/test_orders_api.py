@@ -2414,3 +2414,327 @@ async def test_removing_an_archive_from_an_order_puts_its_parts_back_on_the_shel
     assert await part_stock.unfiled_credit_net(db_session, archive_id) == 3, "one shade and two arms are back"
     rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
     assert Counter(row.reason for row in rows) == {"unfiled_print": 4, "manual": 2}
+
+
+# ---------- pass 8, Decision 4/5: a line reserves kits from free stock ----------
+
+
+async def _shelf(db, product_id: int, kits: int) -> dict[str, ProductPart]:
+    """``kits`` whole Lamps onto the product's free stock. Returns its parts by
+    name, so a test can read the balance it expects to move.
+
+    ⚠️ These helpers take an id and never the ``catalog`` fixture: they expire
+    the session, and a fixture object read after that is a lazy load with no
+    greenlet under it.
+    """
+    parts = {
+        part.name: part
+        for part in (await db.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars()
+    }
+    for part in parts.values():
+        if part.kind == "printed" and part.qty_per_unit > 0:
+            await part_stock.move(db, part_id=part.id, delta=kits * part.qty_per_unit, reason="unfiled_print")
+    await db.commit()
+    return parts
+
+
+async def _kits(db, product_id: int) -> int:
+    db.expire_all()
+    parts = (await db.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars().all()
+    return part_stock.kits_available(await part_stock.balances(db, product_id), list(parts))
+
+
+async def _line_movements(db, line_id: int) -> list[ProductPartStockMovement]:
+    db.expire_all()
+    rows = await db.execute(
+        select(ProductPartStockMovement)
+        .where(ProductPartStockMovement.project_line_id == line_id)
+        .order_by(ProductPartStockMovement.id)
+    )
+    return list(rows.scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_a_new_line_takes_kits_off_the_shelf(committing_client, db_session, catalog):
+    """Decision 4 on the wire: the dialog's «Зі складу» becomes one
+    ``reserved_for_order`` movement per counted part, ``−units × qty_per_unit``,
+    and the product has that many fewer kits to offer the next line."""
+    product_id = catalog["product"].id
+    parts = await _shelf(db_session, product_id, kits=5)
+    # Ids read BEFORE anything expires the session: an expired fixture row is a
+    # lazy load with no greenlet under it.
+    shade_id, arm_id = parts["shade"].id, parts["arm"].id
+    order_id = (await committing_client.post("/api/v1/projects/", json={"name": "Lamps"})).json()["id"]
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{order_id}/lines",
+        json={"product_id": product_id, "quantity": 10, "from_stock_units": 3},
+    )
+
+    assert r.status_code == 200, r.text
+    line = r.json()["lines"][0]
+    assert line["from_stock_units"] == 3
+    moved = await _line_movements(db_session, line["id"])
+    assert {m.reason for m in moved} == {"reserved_for_order"}
+    assert {m.product_part_id: m.delta for m in moved} == {shade_id: -3, arm_id: -6}
+    assert await _kits(db_session, product_id) == 2, "five kits on the shelf, three of them spoken for"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_dialog_reserves_what_is_there_and_the_response_says_so(committing_client, db_session, catalog):
+    """Ruling 1. The box was filled in when there were five; by the time OK was
+    pressed another order had taken two. Reserving three is the honest answer,
+    and the response is what the dialog re-renders from."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=3)
+    order_id = (await committing_client.post("/api/v1/projects/", json={"name": "Lamps"})).json()["id"]
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{order_id}/lines",
+        json={"product_id": product_id, "quantity": 10, "from_stock_units": 5},
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["lines"][0]["from_stock_units"] == 3
+    assert await _kits(db_session, product_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_product_with_nothing_on_the_shelf_reserves_nothing(committing_client, db_session, catalog):
+    """No stock is not an error — the line is created and says it took nothing."""
+    product_id = catalog["product"].id
+    order_id = (await committing_client.post("/api/v1/projects/", json={"name": "Lamps"})).json()["id"]
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{order_id}/lines",
+        json={"product_id": product_id, "quantity": 4, "from_stock_units": 2},
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["lines"][0]["from_stock_units"] == 0
+    assert await _line_movements(db_session, r.json()["lines"][0]["id"]) == []
+
+
+@pytest.mark.asyncio
+async def test_an_order_created_with_its_lines_reserves_for_them_too(committing_client, db_session, catalog):
+    """Most lines are created with the order, so the same box must mean the same
+    thing on that path — otherwise the dialog silently does nothing on the one
+    route that matters most."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=6)
+
+    r = await committing_client.post(
+        "/api/v1/projects/",
+        json={
+            "name": "Lamps",
+            "lines": [
+                {"product_id": product_id, "quantity": 5, "from_stock_units": 2},
+                {"product_id": product_id, "quantity": 5, "from_stock_units": 3},
+            ],
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    assert [line["from_stock_units"] for line in r.json()["lines"]] == [2, 3]
+    assert await _kits(db_session, product_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_editing_the_reservation_down_releases_the_difference(committing_client, db_session, catalog):
+    """A rewrite, not an adjustment: release what the line holds, take the new
+    number off the shelf. The ledger keeps both halves."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=5)
+    order_id = (await committing_client.post("/api/v1/projects/", json={"name": "Lamps"})).json()["id"]
+    line_id = (
+        await committing_client.post(
+            f"/api/v1/projects/{order_id}/lines",
+            json={"product_id": product_id, "quantity": 10, "from_stock_units": 3},
+        )
+    ).json()["lines"][0]["id"]
+
+    r = await committing_client.patch(f"/api/v1/projects/{order_id}/lines/{line_id}", json={"from_stock_units": 1})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["lines"][0]["from_stock_units"] == 1
+    assert await _kits(db_session, product_id) == 4, "two of the three kits went back"
+    assert Counter(m.reason for m in await _line_movements(db_session, line_id)) == {
+        "reserved_for_order": 4,
+        "reservation_released": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_edit_that_does_not_mention_the_stock_leaves_the_reservation_alone(
+    committing_client, db_session, catalog
+):
+    """``from_stock_units`` absent — or explicitly null — means "don't touch it".
+    Unlike ``quantity``, this field has a meaningful "leave it as it is": the
+    dialog sends the box only when the operator has a shelf to take from."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=5)
+    order_id = (await committing_client.post("/api/v1/projects/", json={"name": "Lamps"})).json()["id"]
+    line_id = (
+        await committing_client.post(
+            f"/api/v1/projects/{order_id}/lines",
+            json={"product_id": product_id, "quantity": 10, "from_stock_units": 3},
+        )
+    ).json()["lines"][0]["id"]
+
+    absent = await committing_client.patch(f"/api/v1/projects/{order_id}/lines/{line_id}", json={"quantity": 12})
+    explicit_null = await committing_client.patch(
+        f"/api/v1/projects/{order_id}/lines/{line_id}", json={"from_stock_units": None}
+    )
+
+    assert absent.json()["lines"][0]["from_stock_units"] == 3
+    assert explicit_null.status_code == 200, explicit_null.text
+    assert explicit_null.json()["lines"][0]["from_stock_units"] == 3
+    assert await _kits(db_session, product_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_line_gives_its_kits_back_and_unlinks_its_history(committing_client, db_session, catalog):
+    """Ruling 10, both halves. The reservation is released FIRST — detaching
+    first would hide it from the query that hands it back — and what survives
+    the line is its banked history, with no line to name."""
+    product_id = catalog["product"].id
+    shade_id = (await _shelf(db_session, product_id, kits=5))["shade"].id
+    order_id = (await committing_client.post("/api/v1/projects/", json={"name": "Lamps"})).json()["id"]
+    line_id = (
+        await committing_client.post(
+            f"/api/v1/projects/{order_id}/lines",
+            json={"product_id": product_id, "quantity": 10, "from_stock_units": 3},
+        )
+    ).json()["lines"][0]["id"]
+    # A banked surplus on the same line, so the history has something to survive.
+    await part_stock.move(db_session, part_id=shade_id, delta=4, reason="surplus_banked", project_line_id=line_id)
+    await db_session.commit()
+
+    r = await committing_client.delete(f"/api/v1/projects/{order_id}/lines/{line_id}")
+
+    assert r.status_code == 200, r.text
+    assert await _line_movements(db_session, line_id) == [], "SQLite honours no ON DELETE SET NULL"
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    banked = [m for m in rows if m.reason == "surplus_banked"]
+    assert [(m.delta, m.project_line_id) for m in banked] == [(4, None)]
+    assert Counter(m.reason for m in rows)["reservation_released"] == 2
+    assert await _kits(db_session, product_id) == 5, "the three kits came back before the line went"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_an_order_releases_every_line(committing_client, db_session, catalog):
+    """The order will never consume them, so the shelf gets them back."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=6)
+    order_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Lamps",
+                "lines": [
+                    {"product_id": product_id, "quantity": 5, "from_stock_units": 2},
+                    {"product_id": product_id, "quantity": 5, "from_stock_units": 3},
+                ],
+            },
+        )
+    ).json()["id"]
+    assert await _kits(db_session, product_id) == 1
+
+    r = await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "cancelled"})
+
+    assert r.status_code == 200, r.text
+    assert [line["from_stock_units"] for line in r.json()["lines"]] == [0, 0]
+    assert await _kits(db_session, product_id) == 6
+    # …and cancelling again finds nothing outstanding rather than releasing twice.
+    await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "cancelled"})
+    assert await _kits(db_session, product_id) == 6
+
+
+@pytest.mark.asyncio
+async def test_completing_an_order_releases_nothing(committing_client, db_session, catalog):
+    """The stock was CONSUMED — the kits went out with the order. Handing them
+    back on completion would put parts on a shelf that are in a customer's box."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=5)
+    order_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Lamps", "lines": [{"product_id": product_id, "quantity": 3, "from_stock_units": 3}]},
+        )
+    ).json()["id"]
+
+    r = await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "completed"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["lines"][0]["from_stock_units"] == 3
+    assert await _kits(db_session, product_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_reserved_line_needs_less_reads_further_and_plans_fewer_prints(committing_client, db_session, catalog):
+    """Decision 5 end to end: ``need`` drops by the reservation, ``ordered``
+    does not, progress counts the shelf as done, and the plan block stops
+    recommending plates for parts that are already on it."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=3)
+    order_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Lamps",
+                "lines": [{"product_id": product_id, "quantity": 10, "from_stock_units": 3}],
+            },
+        )
+    ).json()["id"]
+
+    body = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()
+    line = body["lines"][0]
+    assert line["from_stock_units"] == 3
+    assert {p["name"]: p["need"] for p in line["parts"]} == {"shade": 7, "arm": 14}
+    assert body["figures"]["ordered"] == 10, "the customer still ordered ten"
+    assert body["figures"]["from_stock_units"] == 3
+    assert body["figures"]["remaining"] == 7 and body["figures"]["printed"] == 0
+
+    plan = (await committing_client.get(f"/api/v1/projects/{order_id}/plan")).json()
+    outstanding = {row["name"]: row["count"] for row in plan["lines"][0]["outstanding_before"]}
+    assert outstanding == {"shade": 7, "arm": 14}, "the plan block follows need, with no rule of its own"
+
+
+@pytest.mark.asyncio
+async def test_a_line_covered_entirely_from_stock_reads_done(committing_client, db_session, catalog):
+    """A fully reserved line is 100 % with nothing printed, and the order says
+    everything is printed — the close-the-order banner reads exactly that."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=4)
+    order_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Lamps", "lines": [{"product_id": product_id, "quantity": 4, "from_stock_units": 4}]},
+        )
+    ).json()["id"]
+
+    body = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()
+
+    assert body["lines"][0]["progress"] == 1.0 and body["lines"][0]["units_printed"] == 0
+    assert body["figures"]["progress"] == 1.0 and body["figures"]["all_printed"] is True
+    assert all(p["need"] == 0 and p["remaining"] == 0 for p in body["lines"][0]["parts"])
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_order_gives_every_line_its_kits_back(committing_client, db_session, catalog):
+    """Its lines go with it, so they go through the same two steps a single
+    deleted line does — released, then unlinked from a rowid SQLite will reuse."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=5)
+    order_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Lamps", "lines": [{"product_id": product_id, "quantity": 9, "from_stock_units": 3}]},
+        )
+    ).json()["id"]
+
+    assert (await committing_client.delete(f"/api/v1/projects/{order_id}")).status_code == 200
+
+    assert await _kits(db_session, product_id) == 5
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    assert {m.project_line_id for m in rows} == {None}

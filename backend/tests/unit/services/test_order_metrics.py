@@ -25,7 +25,7 @@ from backend.app.services.order_metrics import (
 )
 
 
-def _ctx(lines, parts, archives, archive_parts, plate_product, procurement=None):
+def _ctx(lines, parts, archives, archive_parts, plate_product, procurement=None, reserved=None):
     project = Project(name="O", price=100.0)
     project.id = 1
     products = {}
@@ -51,6 +51,10 @@ def _ctx(lines, parts, archives, archive_parts, plate_product, procurement=None)
         archive_parts_by_archive=dict(archive_parts),
         procurement_by_part=procurement or {},
         whole_file_product=whole_file,
+        # ``line_id → kits off the product's free stock``, as the loaders read
+        # it back out of the stock ledger (pass 8, Decision 4). Left empty by
+        # default, which is what an order whose product has no stock looks like.
+        reserved_by_line=reserved or {},
     )
 
 
@@ -597,3 +601,170 @@ async def test_grouped_figures_can_be_asked_by_product(db_session):
     orders = await grouped_figures(db_session, product_ids=[ids["lamp"]])
     assert sorted(o.project_id for o in orders) == sorted([ids["live"], ids["dead"]])
     assert units_delivered(orders, ids["lamp"]) == 3
+
+
+# ---------- kits taken off the product's free stock (pass 8, Decision 5) ----------
+
+
+def test_a_line_that_took_kits_off_the_shelf_needs_only_the_rest():
+    """``need = (quantity - from_stock_units) * qty_per_unit``. Ten ordered with
+    three off the shelf is seven to print — and each part follows its own
+    ``qty_per_unit``, so a part wanted twice per unit drops by twice three."""
+    parts = [_part(1, 10, "a", 2)]
+    lines = [_line(100, 10, 10)]
+    archives = [_archive(1, file_id=5, plate=1)]
+    ap = {1: [_ap(1, "a", 12)]}
+
+    bare = attribute(_ctx(lines, parts, archives, ap, {(5, 1): 10}))[0][100]
+    assert (bare.parts[0].need, bare.parts[0].remaining, bare.units_printed) == (20, 8, 6)
+    assert bare.progress == 0.6 and bare.from_stock_units == 0
+
+    figs = attribute(_ctx(lines, parts, archives, ap, {(5, 1): 10}, reserved={100: 3}))[0][100]
+
+    assert figs.from_stock_units == 3
+    assert (figs.parts[0].need, figs.parts[0].remaining) == (14, 2)
+    assert figs.units_printed == 6, "the prints are the prints; the shelf is counted separately"
+    assert figs.progress == 0.9  # (6 printed + 3 from stock) / 10
+
+
+def test_a_fully_reserved_line_reads_a_hundred_per_cent_with_nothing_printed():
+    """Decision 5's headline: the order is covered, so it says so."""
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 10)]
+    figs = attribute(_ctx(lines, parts, [], {}, {}, reserved={100: 10}))[0][100]
+
+    assert figs.parts[0].need == 0 and figs.parts[0].remaining == 0
+    assert figs.units_printed == 0 and figs.progress == 1.0
+
+
+def test_the_reservation_reaches_one_hundred_per_cent_at_the_reduced_need():
+    """Ten ordered, three off the shelf: seven printed units is done, and the
+    bar does not wait for the three that were never going to be printed."""
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 10)]
+    archives = [_archive(1, file_id=5, plate=1)]
+    figs = attribute(_ctx(lines, parts, archives, {1: [_ap(1, "a", 7)]}, {(5, 1): 10}, reserved={100: 3}))[0][100]
+
+    assert figs.units_printed == 7 and figs.progress == 1.0
+    assert figs.parts[0].remaining == 0 and figs.parts[0].surplus == 0
+
+
+def test_the_surplus_rises_by_what_came_off_the_shelf():
+    """Intended, not a bug: the kits came off the shelf, so the prints that
+    covered them ARE extra — and «Списати надлишок» can put them back."""
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 10)]
+    archives = [_archive(1, file_id=5, plate=1)]
+    ap = {1: [_ap(1, "a", 10)]}
+    figs = attribute(_ctx(lines, parts, archives, ap, {(5, 1): 10}, reserved={100: 4}))[0][100]
+
+    assert figs.parts[0].need == 6 and figs.parts[0].surplus == 4
+
+
+def test_a_line_edited_below_what_it_already_reserved_needs_nothing_rather_than_less_than_nothing():
+    """An ordinary state — the quantity box moved and the stock box did not.
+    A negative need would flow straight into ``surplus`` as a phantom."""
+    parts = [_part(1, 10, "a", 3)]
+    lines = [_line(100, 10, 2)]
+    figs = attribute(_ctx(lines, parts, [], {}, {}, reserved={100: 5}))[0][100]
+
+    assert figs.parts[0].need == 0 and figs.parts[0].surplus == 0
+    assert figs.from_stock_units == 5, "the ledger reading is not capped at the quantity"
+    assert figs.progress == 1.0
+
+
+def test_the_order_figures_count_kits_off_the_shelf_as_done():
+    """``ordered`` and ``printed`` stay literal — the customer ordered that many
+    and the farm printed this many — while everything that answers "is there
+    anything left to do" counts the shelf."""
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 10)]
+    archives = [_archive(1, file_id=5, plate=1)]
+    ctx = _ctx(lines, parts, archives, {1: [_ap(1, "a", 6)]}, {(5, 1): 10}, reserved={100: 4})
+    figs, other = attribute(ctx)
+    pf = project_figures(ctx, figs, other)
+
+    assert (pf.ordered, pf.printed, pf.from_stock_units) == (10, 6, 4)
+    assert pf.remaining == 0 and pf.progress == 1.0
+    assert pf.all_printed is True, "the close-the-order banner reads this; nothing is left to print"
+    assert pf.complete == 10, "six printed kits plus four off the shelf, no purchased part to gate them"
+
+
+def test_purchased_parts_still_gate_a_kit_that_came_off_the_shelf():
+    """A kit from stock is printed parts only — its screws are procurement's
+    problem exactly as a printed kit's are."""
+    parts = [_part(1, 10, "a", 1), _part(2, 10, "screw", 4, kind="purchased")]
+    lines = [_line(100, 10, 10)]
+    ctx = _ctx(lines, parts, [], {}, {}, procurement={2: 8}, reserved={100: 10})
+    figs, other = attribute(ctx)
+    pf = project_figures(ctx, figs, other)
+
+    assert pf.complete == 2  # 8 screws // 4 per unit
+    assert pf.remaining == 0 and pf.all_printed is True
+
+
+async def test_both_loaders_read_the_same_reservation(db_session):
+    """The per-order loader and the batch one must agree about what a line has
+    taken off the shelf, or the orders list and the order page disagree about
+    the same order. One helper, so the parity is structural."""
+    from backend.app.services.order_metrics import batch_contexts
+    from backend.app.services.part_stock import move, reserve_for_line
+
+    ids = await build_parity_fixture(db_session)
+    lamp_parts = {
+        part.name: part
+        for part in (
+            await db_session.execute(select(ProductPart).where(ProductPart.product_id == ids["lamp"]))
+        ).scalars()
+    }
+    # One kit's worth on the shelf: the Lamp wants 1 shade and 2 bases.
+    await move(db_session, part_id=lamp_parts["shade"].id, delta=1, reason="manual", note="counted in")
+    await move(db_session, part_id=lamp_parts["base"].id, delta=2, reason="manual", note="counted in")
+    line = await db_session.get(ProjectLine, ids["l1"])
+    assert await reserve_for_line(db_session, line, 1) == 1
+    await db_session.commit()
+
+    one = await load_order_context(db_session, ids["live"])
+    batched = {ctx.project.id: ctx for ctx in await batch_contexts(db_session, [ids["live"], ids["dead"]])}
+
+    assert one.reserved_by_line == {ids["l1"]: 1}
+    assert batched[ids["live"]].reserved_by_line == one.reserved_by_line
+    assert batched[ids["dead"]].reserved_by_line == {}, "a line that reserved nothing is absent, not zero"
+    # ...and the arithmetic that hangs off it agrees field by field.
+    for ctx in (one, batched[ids["live"]]):
+        figs = attribute(ctx)[0][ids["l1"]]
+        assert figs.from_stock_units == 1
+        # Lamp x2 with one kit off the shelf: 1 shade and 2 bases still wanted.
+        assert {p.name: p.need for p in figs.parts} == {"shade": 1, "base": 2}
+
+
+async def test_grouped_figures_carry_the_reservation_per_line(db_session):
+    """Pass 6's grouped shape gains one field, beside ``usable_units`` and never
+    inside it: one number is prints, the other is the shelf."""
+    from backend.app.services.part_stock import move, reserve_for_line
+
+    ids = await build_parity_fixture(db_session)
+    lamp_parts = {
+        part.name: part
+        for part in (
+            await db_session.execute(select(ProductPart).where(ProductPart.product_id == ids["lamp"]))
+        ).scalars()
+    }
+    await move(db_session, part_id=lamp_parts["shade"].id, delta=1, reason="manual", note="counted in")
+    await move(db_session, part_id=lamp_parts["base"].id, delta=2, reason="manual", note="counted in")
+    await reserve_for_line(db_session, await db_session.get(ProjectLine, ids["l1"]), 1)
+    await db_session.commit()
+
+    orders = {o.project_id: o for o in await grouped_figures(db_session, project_ids=[ids["live"], ids["dead"]])}
+    by_line = {line.line_id: line for order in orders.values() for line in order.lines}
+
+    assert by_line[ids["l1"]].from_stock_units == 1
+    assert by_line[ids["l1"]].usable_units == 3, "the prints are untouched by the reservation"
+    assert by_line[ids["l2"]].from_stock_units == 0
+    # The per-order arithmetic still reproduces it, which is the parity claim.
+    for project_id, grouped in orders.items():
+        ctx = await load_order_context(db_session, project_id)
+        figs, _other = attribute(ctx)
+        assert {line.line_id: line.from_stock_units for line in grouped.lines} == {
+            line_id: f.from_stock_units for line_id, f in figs.items()
+        }

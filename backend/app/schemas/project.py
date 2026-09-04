@@ -58,6 +58,13 @@ class ProjectLineCreate(BaseModel):
     material: str | None = Field(default=None, max_length=50)
     color: str | None = Field(default=None, max_length=64)
     note: str | None = None
+    #: Whole units to take off the product's free stock instead of printing
+    #: (pass 8, Decision 4). NOT a column on ``project_lines`` — the route
+    #: turns it into ledger movements, so the handler must exclude it from the
+    #: model dump it builds the row from. The number that comes back on
+    #: :class:`ProjectLineResponse` is what was actually reserved, which is
+    #: less when the shelf emptied between rendering the dialog and pressing OK.
+    from_stock_units: int = Field(default=0, ge=0)
 
     @field_validator("material")
     @classmethod
@@ -71,6 +78,12 @@ class ProjectLineUpdate(BaseModel):
     color: str | None = Field(default=None, max_length=64)
     note: str | None = None
     sort_order: int | None = None
+    #: ``None`` — absent or explicitly null — leaves the reservation alone; a
+    #: number REWRITES it (release + reserve in the one transaction). Not in
+    #: ``_not_null`` for exactly that reason: unlike ``quantity``, this field
+    #: has a meaningful "don't touch it", and the dialog sends the box only
+    #: when the operator has a shelf to take from.
+    from_stock_units: int | None = Field(default=None, ge=0)
 
     @field_validator("quantity", "sort_order")
     @classmethod
@@ -183,6 +196,11 @@ class ProjectLineResponse(BaseModel):
     note: str | None
     sort_order: int
     units_printed: int
+    # Kits taken off the product's free stock (pass 8, Decision 4), read back
+    # from the ledger — so this is what was ACTUALLY reserved, not what the
+    # dialog asked for. ``units_printed`` stays prints only; "done" is the two
+    # added, which is what ``progress`` already is.
+    from_stock_units: int = 0
     # 0.0–1.0, capped server-side (``order_metrics._finish`` /
     # ``project_figures``). An overprinted line reports its excess through
     # ``units_printed`` and each part's ``surplus``, never through this.
@@ -218,6 +236,10 @@ class ProjectFiguresOut(BaseModel):
     progress: float
     other_prints_count: int
     all_printed: bool
+    # Σ over the lines. ``printed`` and ``ordered`` stay literal — the farm
+    # printed this many, the customer ordered that many — and this is the third
+    # number the order card shows beside them when it is not zero.
+    from_stock_units: int = 0
 
 
 class ProjectResponse(BaseModel):

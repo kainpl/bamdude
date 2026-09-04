@@ -5,7 +5,7 @@ Everything is computed on read over one loaded ``OrderContext``; an order has
 tens to hundreds of archives, which is nothing.
 
 That last sentence is about ONE order. The list pages ask about many at once
-(``_batch_contexts`` → :func:`grouped_figures`), where "tens to hundreds of
+(``batch_contexts`` → :func:`grouped_figures`), where "tens to hundreds of
 archives" is multiplied by the page — which is why that loader is batched
 rather than looped, why its ``IN`` lists are chunked, and why its parity with
 :func:`load_order_context` is pinned by a test instead of by inspection.
@@ -99,11 +99,23 @@ class PartFigures:
 
 @dataclass
 class LineFigures:
+    """One order line's figures.
+
+    ``from_stock_units`` is how many whole units the line took off the
+    product's free stock (pass 8, Decision 4) — read from the ledger, never a
+    column. It is the RAW ledger reading and is deliberately not capped at
+    ``quantity``: the shelf gave up that many kits whatever the line was later
+    edited to, and a capped twin would disagree with the product's balance. The
+    arithmetic that cannot go negative floors itself instead (see
+    :func:`_new_line_figures`).
+    """
+
     line_id: int
     product_id: int
     quantity: int
     material: str | None
     units_printed: int = 0
+    from_stock_units: int = 0
     progress: float = 0.0
     parts: list[PartFigures] = field(default_factory=list)
     archive_ids: list[int] = field(default_factory=list)
@@ -132,6 +144,11 @@ class ProjectFigures:
     progress: float = 0.0
     other_prints_count: int = 0
     all_printed: bool = False
+    #: Σ of the lines' ``from_stock_units`` — units this order took off the
+    #: shelf instead of printing (pass 8, Decision 5). ``printed`` stays prints
+    #: only; ``remaining``, ``progress``, ``complete`` and ``all_printed``
+    #: count these as done, because they are.
+    from_stock_units: int = 0
 
 
 @dataclass
@@ -155,6 +172,44 @@ class OrderContext:
     # archives carry the slicer's own index, which is 1. An exact tuple lookup
     # therefore misses nearly every single-plate print there is.
     whole_file_product: dict[int, list[int]] = field(default_factory=dict)  # library_file_id → product ids
+    # ``line_id → kits reserved from the product's free stock`` (pass 8,
+    # Decision 4). Loaded, not derived: the reservation lives in the stock
+    # ledger and nowhere else, so a context built without it reads every line
+    # as reserving nothing — which is exactly right for the tests that build
+    # one by hand and for an order whose product has no stock.
+    reserved_by_line: dict[int, int] = field(default_factory=dict)
+
+
+def _counted_qty_per_unit(products: Iterable[Product]) -> dict[int, int]:
+    """``part_id → qty_per_unit`` over the counted parts of these products.
+
+    The divisor the stock ledger's reservation is read back through, taken from
+    the parts the loader has already got rather than re-queried. Same predicate
+    as :func:`_new_line_figures` and ``part_stock.is_counted``.
+    """
+    return {
+        part.id: part.qty_per_unit
+        for product in products
+        for part in product.parts
+        if part.kind == "printed" and part.qty_per_unit > 0
+    }
+
+
+async def _load_reserved(db: AsyncSession, line_ids: Sequence[int], qty_per_unit: dict[int, int]) -> dict[int, int]:
+    """:attr:`OrderContext.reserved_by_line`, in one query for every line given.
+
+    ⚠️ Imported inside the function on purpose: ``part_stock`` imports THIS
+    module for ``index_plates`` / ``products_for_print`` / ``row_quantity``, so
+    a module-level import here would close the circle. By the time a loader
+    runs, both modules are fully imported.
+
+    Both loaders go through this one helper, so "the batch loader loads the
+    reservation the same way" is structural rather than a promise — the same
+    reason the archive-parts ordering is shared.
+    """
+    from backend.app.services.part_stock import reserved_units_by_line
+
+    return await reserved_units_by_line(db, line_ids, qty_per_unit)
 
 
 async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext | None:
@@ -228,11 +283,32 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         archive_parts_by_archive=dict(by_archive),
         procurement_by_part=procurement,
         whole_file_product=whole_file_products,
+        reserved_by_line=await _load_reserved(db, [line.id for line in lines], _counted_qty_per_unit(products)),
     )
 
 
-def _new_line_figures(line: ProjectLine, parts: list[ProductPart]) -> LineFigures:
-    figs = LineFigures(line_id=line.id, product_id=line.product_id, quantity=line.quantity, material=line.material)
+def _new_line_figures(line: ProjectLine, parts: list[ProductPart], from_stock_units: int = 0) -> LineFigures:
+    """The line's parts, each with the number of them the ORDER still wants.
+
+    ``need = (quantity − from_stock_units) × qty_per_unit`` (pass 8, Decision
+    5): kits taken off the shelf are not printed twice, so every "still needed"
+    figure downstream — ``remaining``, the plan's ``outstanding``, the greedy
+    hand-out's ``_room`` — drops with the reservation, and ``surplus`` rises by
+    it, which is the intended reading (the kits came off the shelf, so the
+    extra prints ARE extra).
+
+    ⚠️ The ``max(0, …)`` is not decoration: a line edited down to a quantity
+    below what it has already reserved is an ordinary state, and a negative
+    need would flow straight into ``surplus`` as a phantom.
+    """
+    figs = LineFigures(
+        line_id=line.id,
+        product_id=line.product_id,
+        quantity=line.quantity,
+        material=line.material,
+        from_stock_units=from_stock_units,
+    )
+    to_print = max(0, line.quantity - from_stock_units)
     for part in parts:
         if part.kind != "printed" or part.qty_per_unit <= 0:
             continue
@@ -242,7 +318,7 @@ def _new_line_figures(line: ProjectLine, parts: list[ProductPart]) -> LineFigure
                 name=part.name,
                 kind=part.kind,
                 qty_per_unit=part.qty_per_unit,
-                need=part.qty_per_unit * line.quantity,
+                need=part.qty_per_unit * to_print,
             )
         )
     return figs
@@ -264,7 +340,13 @@ def _finish(figs: LineFigures) -> None:
     # part's ``surplus`` carry it uncapped, which is where the overprint is
     # meant to be read. Clamping at every consumer instead was the alternative,
     # and the frontend was the only one that remembered.
-    figs.progress = min(1.0, round(figs.units_printed / figs.quantity, 4)) if figs.quantity else 0.0
+    #
+    # ``+ from_stock_units`` (pass 8, Decision 5): a unit taken off the shelf is
+    # a unit the order has, so a fully reserved line reads 100 % with nothing
+    # printed. ``units_printed`` stays prints only — the two numbers are shown
+    # side by side and must not be one number that quietly means both.
+    done = figs.units_printed + figs.from_stock_units
+    figs.progress = min(1.0, round(done / figs.quantity, 4)) if figs.quantity else 0.0
 
 
 def line_accepts_materials(line: ProjectLine, materials: set[str]) -> bool:
@@ -320,7 +402,12 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
     file may sit in several products (a shared flask), so a single print can feed
     several lines — and did, wrongly, when it was handed out whole.
     """
-    figures = {line.id: _new_line_figures(line, ctx.parts_by_product.get(line.product_id, [])) for line in ctx.lines}
+    figures = {
+        line.id: _new_line_figures(
+            line, ctx.parts_by_product.get(line.product_id, []), ctx.reserved_by_line.get(line.id, 0)
+        )
+        for line in ctx.lines
+    }
     indexes = {pid: part_index(parts) for pid, parts in ctx.parts_by_product.items()}
     by_part_id = {line_id: {pf.part_id: pf for pf in figs.parts} for line_id, figs in figures.items()}
     line_by_id = {line.id: line for line in ctx.lines}
@@ -476,9 +563,15 @@ def project_figures(
     for figs in line_figures.values():
         pf.ordered += figs.quantity
         pf.printed += figs.units_printed
-        printed_by_product[figs.product_id] += figs.units_printed
+        pf.from_stock_units += figs.from_stock_units
+        # Kits off the shelf are units the order HAS, so they enter ``complete``
+        # (still gated by the purchased parts — a kit with no screws assembles
+        # into nothing) and every "still needed" figure below. Only ``printed``
+        # and ``ordered`` stay literal: the customer ordered that many and the
+        # farm printed this many.
+        printed_by_product[figs.product_id] += figs.units_printed + figs.from_stock_units
     pf.complete = sum(_units_complete(ctx, pid, printed) for pid, printed in printed_by_product.items())
-    pf.remaining = max(0, pf.ordered - pf.printed)
+    pf.remaining = max(0, pf.ordered - pf.printed - pf.from_stock_units)
     for a in ctx.archives:
         pf.total_time_seconds += int(a.actual_time_seconds or a.print_time_seconds or 0)
         pf.total_filament_grams += float(a.filament_used_grams or 0)
@@ -490,9 +583,14 @@ def project_figures(
     # Capped for the same reason a line's is (see ``_finish``): ``printed`` and
     # ``ordered`` sit beside it uncapped, so an overprinted order still reads
     # "5 of 3" while its bar stays full rather than overflowing its track.
-    pf.progress = min(1.0, round(pf.printed / pf.ordered, 4)) if pf.ordered else 0.0
+    pf.progress = min(1.0, round((pf.printed + pf.from_stock_units) / pf.ordered, 4)) if pf.ordered else 0.0
     pf.other_prints_count = len(other)
-    pf.all_printed = bool(line_figures) and all(f.units_printed >= f.quantity for f in line_figures.values())
+    # ⚠️ ``all_printed`` is what the close-the-order banner reads, so a line
+    # covered entirely from stock must satisfy it — otherwise an order that
+    # needs no further print never suggests closing.
+    pf.all_printed = bool(line_figures) and all(
+        f.units_printed + f.from_stock_units >= f.quantity for f in line_figures.values()
+    )
     return pf
 
 
@@ -520,6 +618,10 @@ class GroupedLineFigures:
     product_id: int
     need: int
     usable_units: int
+    #: Kits this line took off the product's free stock (pass 8, Decision 5).
+    #: Beside ``usable_units``, never inside it: one is prints, the other is
+    #: the shelf, and the caller that wants "done" adds them.
+    from_stock_units: int = 0
 
 
 @dataclass(slots=True)
@@ -537,7 +639,7 @@ class GroupedOrderFigures:
     lines: list[GroupedLineFigures] = field(default_factory=list)
 
 
-async def _batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[OrderContext]:
+async def batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[OrderContext]:
     """Every :class:`OrderContext` in ``project_ids``, in a fixed number of queries.
 
     The per-order loader is right for one order and wrong once per row of a
@@ -551,12 +653,18 @@ async def _batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[
     re-derives a figure in SQL, because a second implementation of the
     attribution rules is a second answer waiting to disagree with the first.
 
-    "Fixed" is EIGHT statements — projects, their lines, products, their parts,
-    their plates, archives, archive parts, procurement — up to two chunkings:
-    ``selectin``'s own 500-parent split on each of the three eager loads, and
-    the 500-id slicing of the archive-parts ``IN`` below. So it is fixed in the
-    number of ORDERS and not quite constant in the size of the farm; nothing
-    here degrades to per-order.
+    "Fixed" is NINE statements — projects, their lines, products, their parts,
+    their plates, archives, archive parts, procurement, stock reservations — up
+    to three chunkings: ``selectin``'s own 500-parent split on each of the
+    three eager loads, the 500-id slicing of the archive-parts ``IN`` below,
+    and the reservation reader's own. So it is fixed in the number of ORDERS
+    and not quite constant in the size of the farm; nothing here degrades to
+    per-order.
+
+    Public since pass 8: ``plan_engine`` has imported it since pass 7 (the
+    candidates endpoint plans a page of orders at once), and a leading
+    underscore on a name two modules already share only tells the next reader
+    something untrue.
     """
     if not project_ids:
         return []
@@ -628,6 +736,14 @@ async def _batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[
         await db.execute(select(ProjectProcurement).where(ProjectProcurement.project_id.in_(project_ids)))
     ).scalars():
         procurement_by_project[row.project_id][row.product_part_id] = row.quantity_acquired
+    # One reservation read for every line of every order asked about — the same
+    # helper the per-order loader uses, so the two cannot drift about what a
+    # line has taken off the shelf.
+    reserved = await _load_reserved(
+        db,
+        [line.id for lines in lines_by_project.values() for line in lines],
+        _counted_qty_per_unit(products),
+    )
 
     out: list[OrderContext] = []
     for project in projects:
@@ -652,6 +768,7 @@ async def _batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[
                 archive_parts_by_archive={a.id: parts_by_archive[a.id] for a in archives if a.id in parts_by_archive},
                 procurement_by_part=procurement_by_project.get(project.id, {}),
                 whole_file_product=whole_file_products,
+                reserved_by_line={line.id: reserved[line.id] for line in lines if line.id in reserved},
             )
         )
     return out
@@ -681,7 +798,7 @@ async def grouped_figures(
             .all()
         )
     out: list[GroupedOrderFigures] = []
-    for ctx in await _batch_contexts(db, sorted(ids)):
+    for ctx in await batch_contexts(db, sorted(ids)):
         line_figures, other = attribute(ctx)
         pf = project_figures(ctx, line_figures, other)
         out.append(
@@ -697,6 +814,7 @@ async def grouped_figures(
                         product_id=figs.product_id,
                         need=figs.quantity,
                         usable_units=figs.units_printed,
+                        from_stock_units=figs.from_stock_units,
                     )
                     for figs in (line_figures[line.id] for line in ctx.lines)
                 ],
@@ -765,6 +883,7 @@ __all__ = [
     "ProjectFigures",
     "archive_material_set",
     "attribute",
+    "batch_contexts",
     "customer_figures",
     "grouped_figures",
     "line_accepts_materials",

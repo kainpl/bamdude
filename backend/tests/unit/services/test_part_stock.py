@@ -15,6 +15,8 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import Product, ProductPart, ProductPlate
+from backend.app.models.project import Project
+from backend.app.models.project_line import ProjectLine
 from backend.app.services.part_stock import (
     REASONS,
     PartStockError,
@@ -23,14 +25,19 @@ from backend.app.services.part_stock import (
     delete_for_part,
     delete_for_parts,
     detach_archive,
+    detach_line,
     kits_available,
     lock_part_stmt,
     move,
     movements,
+    release_for_line,
     repoint,
+    reserve_for_line,
+    reserved_units_by_line,
     reverse_unfiled_print,
     unfiled_credit_net,
 )
+from backend.tests.unit.services.test_product_composition import counting_statements
 
 
 async def _make_product(db_session, *parts: tuple[str, str, int]) -> tuple[Product, dict[str, ProductPart]]:
@@ -651,3 +658,272 @@ async def test_the_reversal_finishes_every_part_it_can_before_it_complains(db_se
     # The base came back off the shelf even though the lid could not.
     assert await balances(db_session, product.id) == {parts["lid"].id: 0, parts["base"].id: 0}
     assert await unfiled_credit_net(db_session, archive.id) == 3, "the lids the order now double-counts"
+
+
+# ---------- an order line's reservation (Decision 4) ----------
+
+
+async def _line(db_session, product, quantity=10) -> ProjectLine:
+    """One order line against ``product``, with the order the FK names."""
+    project = Project(name="O")
+    db_session.add(project)
+    await db_session.flush()
+    line = ProjectLine(project_id=project.id, product_id=product.id, quantity=quantity, sort_order=0)
+    db_session.add(line)
+    await db_session.flush()
+    return line
+
+
+async def _line_rows(db_session, line_id: int) -> list[ProductPartStockMovement]:
+    rows = await db_session.execute(
+        select(ProductPartStockMovement)
+        .where(ProductPartStockMovement.project_line_id == line_id)
+        .order_by(ProductPartStockMovement.id)
+    )
+    return list(rows.scalars().all())
+
+
+async def test_a_line_reserves_whole_kits_across_every_counted_part(db_session, kit):
+    """Decision 4: the kit is the unit the operator thinks in. Two kits of a
+    one-lid-one-base product take two of each, and what is left is what the
+    next line may take."""
+    product, parts = kit
+    line = await _line(db_session, product)
+
+    assert await reserve_for_line(db_session, line, 2) == 2
+
+    assert await balances(db_session, product.id) == {parts["lid"].id: 3, parts["base"].id: 1}
+    assert kits_available(await balances(db_session, product.id), list(parts.values())) == 1
+    assert [(m.reason, m.delta) for m in await _line_rows(db_session, line.id)] == [
+        ("reserved_for_order", -2),
+        ("reserved_for_order", -2),
+    ]
+
+
+async def test_a_reservation_takes_qty_per_unit_of_each_part(db_session):
+    """A part wanted twice per unit is reserved twice per kit — the same
+    multiplication the ledger has to be read back through."""
+    product, parts = await _make_product(db_session, ("shade", "printed", 1), ("arm", "printed", 2))
+    await move(db_session, part_id=parts["shade"].id, delta=10, reason="unfiled_print")
+    await move(db_session, part_id=parts["arm"].id, delta=10, reason="unfiled_print")
+    line = await _line(db_session, product)
+
+    # 10 arms make 5 kits, 10 shades make 10 — the scarcest part decides.
+    assert await reserve_for_line(db_session, line, 5) == 5
+    assert await balances(db_session, product.id) == {parts["shade"].id: 5, parts["arm"].id: 0}
+
+
+async def test_asking_for_more_kits_than_the_shelf_holds_reserves_what_is_there(db_session, kit):
+    """Ruling 1: the dialog rendered a default and the operator pressed OK some
+    minutes later. The honest answer is a smaller reservation, not an error
+    page — and the RETURN VALUE is what the response tells the dialog."""
+    product, parts = kit
+    line = await _line(db_session, product)
+
+    assert await reserve_for_line(db_session, line, 5) == 3, "three bases is three kits"
+
+    assert await balances(db_session, product.id) == {parts["lid"].id: 2, parts["base"].id: 0}
+    assert all(row.delta == -3 for row in await _line_rows(db_session, line.id))
+
+
+async def test_a_product_with_nothing_on_the_shelf_reserves_nothing_and_says_so(db_session):
+    product, _parts = await _make_product(db_session, ("lid", "printed", 1))
+    line = await _line(db_session, product)
+
+    assert await reserve_for_line(db_session, line, 3) == 0
+    assert await _line_rows(db_session, line.id) == [], "a ledger of zeroes is a ledger nobody reads"
+
+
+async def test_a_product_with_no_counted_part_reserves_nothing(db_session):
+    """Nothing to be short of — the same answer ``kits_available`` gives."""
+    product, _parts = await _make_product(db_session, ("screw", "purchased", 4), ("jig", "printed", 0))
+    line = await _line(db_session, product)
+
+    assert await reserve_for_line(db_session, line, 3) == 0
+
+
+async def test_rewriting_a_reservation_downwards_releases_only_the_difference(db_session, kit):
+    """Editing 3 to 1 puts two kits back. The ledger keeps both movements —
+    what went out and what came back, never a row edited in place."""
+    product, parts = kit
+    line = await _line(db_session, product)
+    await reserve_for_line(db_session, line, 3)
+
+    assert await reserve_for_line(db_session, line, 1) == 1
+
+    assert await balances(db_session, product.id) == {parts["lid"].id: 4, parts["base"].id: 2}
+    lid_rows = [m for m in await _line_rows(db_session, line.id) if m.product_part_id == parts["lid"].id]
+    assert [(m.reason, m.delta) for m in lid_rows] == [
+        ("reserved_for_order", -3),
+        ("reservation_released", 3),
+        ("reserved_for_order", -1),
+    ]
+
+
+async def test_rewriting_a_reservation_to_the_same_number_keeps_it(db_session, kit):
+    """The release comes FIRST or the line bids against itself: the product's
+    balance already has this line's own kits subtracted from it, so computing
+    ``kits_available`` before releasing would turn an edit from 3 to 3 into a
+    reservation of nothing."""
+    product, parts = kit
+    line = await _line(db_session, product)
+    await reserve_for_line(db_session, line, 3)
+
+    assert await reserve_for_line(db_session, line, 3) == 3
+
+    assert await balances(db_session, product.id) == {parts["lid"].id: 2, parts["base"].id: 0}
+
+
+async def test_a_reservation_of_zero_releases_the_whole_thing(db_session, kit):
+    product, parts = kit
+    line = await _line(db_session, product)
+    await reserve_for_line(db_session, line, 3)
+
+    assert await reserve_for_line(db_session, line, 0) == 0
+
+    assert await balances(db_session, product.id) == {parts["lid"].id: 5, parts["base"].id: 3}
+
+
+async def test_a_negative_reservation_is_a_caller_bug(db_session, kit):
+    product, _parts = kit
+    line = await _line(db_session, product)
+    with pytest.raises(ValueError, match="never negative"):
+        await reserve_for_line(db_session, line, -1)
+
+
+async def test_a_reservation_never_names_an_archive(db_session, kit):
+    """``reverse_unfiled_print`` negates EVERY row carrying an archive id, so a
+    reservation caught in that sum would be handed back as stock a print never
+    made."""
+    product, _parts = kit
+    line = await _line(db_session, product)
+    await reserve_for_line(db_session, line, 2)
+
+    assert {m.archive_id for m in await _line_rows(db_session, line.id)} == {None}
+
+
+async def test_releasing_reads_the_ledger_and_not_the_line(db_session, kit):
+    """What comes back is what went out — even after the line's quantity has
+    been edited. Recomputing ``quantity * qty_per_unit`` is how a ledger starts
+    inventing stock."""
+    product, parts = kit
+    line = await _line(db_session, product, quantity=10)
+    await reserve_for_line(db_session, line, 2)
+    line.quantity = 99
+    await db_session.flush()
+
+    await release_for_line(db_session, line, note="order cancelled")
+
+    assert await balances(db_session, product.id) == {parts["lid"].id: 5, parts["base"].id: 3}
+    released = [m for m in await _line_rows(db_session, line.id) if m.reason == "reservation_released"]
+    assert [m.delta for m in released] == [2, 2]
+    assert {m.note for m in released} == {"order cancelled"}
+
+
+async def test_releasing_a_line_that_reserved_nothing_writes_nothing(db_session, kit):
+    product, _parts = kit
+    line = await _line(db_session, product)
+
+    await release_for_line(db_session, line, note="order cancelled")
+
+    assert await _line_rows(db_session, line.id) == []
+
+
+async def test_releasing_twice_gives_the_shelf_its_kits_back_once(db_session, kit):
+    """Cancelling an order that was already cancelled, or deleting a line of
+    it: the second pass reads the ledger, finds nothing outstanding and writes
+    nothing."""
+    product, parts = kit
+    line = await _line(db_session, product)
+    await reserve_for_line(db_session, line, 3)
+    await release_for_line(db_session, line, note="order cancelled")
+
+    await release_for_line(db_session, line, note="line deleted")
+
+    assert await balances(db_session, product.id) == {parts["lid"].id: 5, parts["base"].id: 3}
+    assert [m.reason for m in await _line_rows(db_session, line.id)].count("reservation_released") == 2
+
+
+async def test_a_part_that_stopped_counting_keeps_its_reservation_out(db_session, kit):
+    """It has no balance to return to, and ``move`` would refuse it as a caller
+    error. The rest of the kit still comes back — one part is not the plate."""
+    product, parts = kit
+    line = await _line(db_session, product)
+    await reserve_for_line(db_session, line, 2)
+    parts["lid"].kind = "purchased"
+    await db_session.flush()
+
+    await release_for_line(db_session, line, note="order cancelled")
+
+    assert await balances(db_session, product.id) == {parts["base"].id: 3}
+
+
+async def test_the_reservation_reads_back_as_kits_for_many_lines_in_one_query(db_session, test_engine):
+    """The loaders ask about a whole page of orders at once (the pass-6 batch
+    discipline), so this is ONE statement however many lines there are."""
+    product, parts = await _make_product(db_session, ("shade", "printed", 1), ("arm", "printed", 2))
+    await move(db_session, part_id=parts["shade"].id, delta=20, reason="unfiled_print")
+    await move(db_session, part_id=parts["arm"].id, delta=20, reason="unfiled_print")
+    first = await _line(db_session, product)
+    second = await _line(db_session, product)
+    empty = await _line(db_session, product)
+    await reserve_for_line(db_session, first, 3)
+    await reserve_for_line(db_session, second, 2)
+    qty = {parts["shade"].id: 1, parts["arm"].id: 2}
+
+    with counting_statements(test_engine, match="product_part_stock_movements") as seen:
+        read = await reserved_units_by_line(db_session, [first.id, second.id, empty.id], qty)
+
+    assert read == {first.id: 3, second.id: 2}, "a line holding nothing is absent, not zero"
+    assert len(seen) == 1, "one query for every line of the page"
+
+
+async def test_the_reading_is_the_net_of_reserve_and_release(db_session, kit):
+    """A release is a movement of its own, not the deletion of a reservation —
+    so "still reserved" is the sum of both and never "the last row wins"."""
+    product, parts = kit
+    line = await _line(db_session, product)
+    await reserve_for_line(db_session, line, 3)
+    await reserve_for_line(db_session, line, 1)
+
+    qty = {part.id: part.qty_per_unit for part in parts.values()}
+    assert await reserved_units_by_line(db_session, [line.id], qty) == {line.id: 1}
+
+
+async def test_the_scarcest_part_decides_what_a_line_holds(db_session, kit):
+    """The mirror of ``kits_available``: a hand correction that hands back one
+    base of a two-kit reservation leaves the line holding one kit, not two."""
+    product, parts = kit
+    line = await _line(db_session, product)
+    await reserve_for_line(db_session, line, 2)
+    await move(db_session, part_id=parts["base"].id, delta=1, reason="reservation_released", project_line_id=line.id)
+
+    qty = {parts["lid"].id: 1, parts["base"].id: 1}
+    assert await reserved_units_by_line(db_session, [line.id], qty) == {line.id: 1}
+
+
+async def test_asking_about_no_lines_asks_the_database_nothing(db_session):
+    assert await reserved_units_by_line(db_session, [], {}) == {}
+
+
+async def test_a_deleted_line_leaves_its_history_behind_with_no_line(db_session, kit):
+    """Ruling 10: SQLite honours no ``ON DELETE SET NULL``, so the route detaches
+    by hand — AFTER releasing, or the reservation would be invisible to the
+    query that hands it back. What survives is the banked history, unlinked."""
+    product, parts = kit
+    line = await _line(db_session, product)
+    await move(db_session, part_id=parts["lid"].id, delta=4, reason="surplus_banked", project_line_id=line.id)
+    await reserve_for_line(db_session, line, 2)
+
+    await release_for_line(db_session, line, note="line deleted")
+    assert await detach_line(db_session, line.id) == 5
+
+    assert await _line_rows(db_session, line.id) == []
+    banked = [m for m in await movements(db_session, product.id) if m.reason == "surplus_banked"]
+    assert [(m.delta, m.project_line_id) for m in banked] == [(4, None)]
+    # ...and the kits are back on the shelf, which is what "release first" buys.
+    assert await balances(db_session, product.id) == {parts["lid"].id: 9, parts["base"].id: 3}
+
+
+async def test_detaching_a_line_nothing_ever_reserved_moves_no_row(db_session):
+    assert await detach_line(db_session, 9999) == 0

@@ -132,6 +132,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
             note=line.note,
             sort_order=line.sort_order,
             units_printed=figs[line.id].units_printed,
+            from_stock_units=figs[line.id].from_stock_units,
             progress=figs[line.id].progress,
             parts=[
                 PartFiguresOut(
@@ -278,12 +279,39 @@ async def _check_product(db: AsyncSession, product_id: int) -> Product:
     return product
 
 
+async def _reserve(db: AsyncSession, line: ProjectLine, units: int, user: User | None) -> None:
+    """Rewrite a line's free-stock reservation (pass 8, Decision 4).
+
+    ⚠️ Never commits — the reservation and the line edit that asked for it are
+    ONE transaction, closed by ``get_db`` after the response is built. That is
+    also why ``_response`` reads the reservation back out of the ledger rather
+    than being handed the return value: the number on the wire is then the same
+    number every other reader will see.
+
+    A refusal is a 409 like the rest of the stock surface. In practice a
+    reservation cannot be refused — ``move`` clamps it to what is on the shelf
+    instead (Ruling 1) — but the writer decides that, not this route.
+    """
+    try:
+        await part_stock.reserve_for_line(db, line, units, created_by=user.id if user else None)
+    except part_stock.PartStockError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+async def _release(db: AsyncSession, line: ProjectLine, note: str) -> None:
+    """Put a line's reservation back (line deleted, order cancelled)."""
+    try:
+        await part_stock.release_for_line(db, line, note=note)
+    except part_stock.PartStockError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
 @router.post("", response_model=ProjectResponse)
 @router.post("/", response_model=ProjectResponse)
 async def create_project(
     data: ProjectCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_CREATE),
 ):
     await _check_customer(db, data.customer_id)
     for line in data.lines:
@@ -292,10 +320,22 @@ async def create_project(
     # Appended BEFORE the flush: on a pending row the collection is created
     # empty without a query, and the cascade fills in ``project_id``. Touching
     # it after the flush would be a lazy load, which async SQLAlchemy refuses.
+    # ``from_stock_units`` is dropped from the dump because it is NOT a column
+    # (pass 8, Decision 4): it becomes ledger movements below, once the rows
+    # have ids to name.
+    wanted: list[tuple[ProjectLine, int]] = []
     for i, line in enumerate(data.lines):
-        project.lines.append(ProjectLine(sort_order=i, **line.model_dump()))
+        row = ProjectLine(sort_order=i, **line.model_dump(exclude={"from_stock_units"}))
+        project.lines.append(row)
+        wanted.append((row, line.from_stock_units))
     db.add(project)
     await db.flush()
+    # An order created WITH its lines reserves exactly as a line added later
+    # does — otherwise the same dialog would silently mean nothing on the one
+    # path that creates most lines.
+    for row, units in wanted:
+        if units:
+            await _reserve(db, row, units, current_user)
     return await _response(db, project.id)
 
 
@@ -314,6 +354,7 @@ async def update_project(
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     project = await _get_project(db, project_id)
+    lines = list(project.lines)
     if data.status is not None and data.status not in PROJECT_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid status")
     if data.priority is not None and data.priority not in PROJECT_PRIORITIES:
@@ -324,6 +365,14 @@ async def update_project(
     # field leaves the column alone (the tags/due_date/#2536 lesson, applied to all).
     for field_name in data.model_fields_set:
         setattr(project, field_name, getattr(data, field_name))
+    if data.status == "cancelled":
+        # Cancelling gives the shelf its kits back (pass 8, Decision 4) — the
+        # order will never consume them. COMPLETING deliberately does not: the
+        # stock was consumed, and the movements stand as the record of it.
+        # Cancelling an already-cancelled order releases nothing a second time,
+        # because the release reads what the ledger still holds and finds zero.
+        for line in lines:
+            await _release(db, line, "order cancelled")
     return await _response(db, project.id)
 
 
@@ -333,6 +382,12 @@ async def delete_project(
 ):
     """Archives and queue rows survive, unlinked (SET NULL done explicitly — SQLite enforces nothing)."""
     project = await _get_project(db, project_id)
+    # Its lines go with it, so they go through the same two steps a single
+    # deleted line does (Ruling 10): the kits come back to the shelf, and the
+    # history that named the line stops naming an id that will be reused.
+    for line in list(project.lines):
+        await _release(db, line, "order deleted")
+        await part_stock.detach_line(db, line.id)
     for model in (PrintArchive, PrintQueueItem, AutoQueueItem):
         await db.execute(
             update(model).where(model.project_id == project_id).values(project_id=None, project_line_id=None)
@@ -349,13 +404,19 @@ async def add_line(
     project_id: int,
     data: ProjectLineCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     project = await _get_project(db, project_id)
     await _check_product(db, data.product_id)
-    project.lines.append(
-        ProjectLine(sort_order=max((ln.sort_order for ln in project.lines), default=-1) + 1, **data.model_dump())
+    line = ProjectLine(
+        sort_order=max((ln.sort_order for ln in project.lines), default=-1) + 1,
+        **data.model_dump(exclude={"from_stock_units"}),
     )
+    project.lines.append(line)
+    if data.from_stock_units:
+        # Flushed first so the movements have a line id to name.
+        await db.flush()
+        await _reserve(db, line, data.from_stock_units, current_user)
     return await _response(db, project.id)
 
 
@@ -372,11 +433,18 @@ async def update_line(
     line_id: int,
     data: ProjectLineUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     line = await _get_line(db, project_id, line_id)
-    for field_name in data.model_fields_set:
+    for field_name in data.model_fields_set - {"from_stock_units"}:
         setattr(line, field_name, getattr(data, field_name))
+    if data.from_stock_units is not None:
+        # Rewritten, never adjusted by a difference: ``reserve_for_line``
+        # releases what this line holds and takes the new number off the shelf
+        # again, in this same transaction. Editing 3 → 3 must therefore still
+        # end at 3, which is why the release comes first — the product's
+        # balance already has this line's own kits subtracted from it.
+        await _reserve(db, line, data.from_stock_units, current_user)
     return await _response(db, project_id)
 
 
@@ -388,12 +456,18 @@ async def delete_line(
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     line = await _get_line(db, project_id, line_id)
+    # Release BEFORE detaching, or the reservation becomes invisible to the
+    # query that hands it back and the kits stay off the shelf for good.
+    await _release(db, line, "line deleted")
     # The prints stay, and stay in the order: only the line they were filed
     # under goes. Done explicitly because SQLite enforces nothing — this
     # codebase never sets ``PRAGMA foreign_keys = ON``, so the ON DELETE SET
-    # NULL these three FKs declare is honoured by PostgreSQL alone.
+    # NULL these three FKs declare is honoured by PostgreSQL alone. The stock
+    # ledger is the fourth table with that FK, and its history survives the
+    # line: the parts are on the shelf whatever happened to the paperwork.
     for model in (PrintArchive, PrintQueueItem, AutoQueueItem):
         await db.execute(update(model).where(model.project_line_id == line_id).values(project_line_id=None))
+    await part_stock.detach_line(db, line_id)
     project = await _get_project(db, project_id)
     project.lines.remove(line)  # delete-orphan turns this into the DELETE
     return await _response(db, project_id)
