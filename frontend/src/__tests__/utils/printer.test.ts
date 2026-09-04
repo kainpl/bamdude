@@ -102,6 +102,17 @@ describe('normalizeModelName', () => {
     expect(normalizeModelName('N6')).toBe('X2D');
   });
 
+  // The frontend map is a superset of the backend's `PRINTER_MODEL_ID_MAP`
+  // (backend/app/utils/printer_models.py) — these three A1-series codes are
+  // in that map and must be here too.
+  it.each([
+    ['A11', 'A1'],
+    ['A12', 'A1 Mini'],
+    ['A04', 'A1 Mini'],
+  ])('resolves the A1-series code %s to %s', (code, expected) => {
+    expect(normalizeModelName(code)).toBe(expected);
+  });
+
   it('leaves a short name alone and strips the prefix off one it does not know', () => {
     expect(normalizeModelName('X1C')).toBe('X1C');
     expect(normalizeModelName('Bambu Lab Z9')).toBe('Z9');

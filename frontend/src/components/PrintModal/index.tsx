@@ -892,11 +892,11 @@ export function PrintModal({
   // requirements land, which can be sooner.
   const candidatesEnabled =
     asksAboutOrder && (selectedPlateIds.length > 0 || platesData !== undefined || libraryPlatesError);
-  const { data: orderCandidates, isLoading: orderCandidatesLoading } = useOrderCandidates(
-    libraryFileId,
-    orderPlateIndex,
-    candidatesEnabled,
-  );
+  const {
+    data: orderCandidates,
+    isLoading: orderCandidatesLoading,
+    isPlaceholderData: orderCandidatesPlaceholder,
+  } = useOrderCandidates(libraryFileId, orderPlateIndex, candidatesEnabled);
 
   // ⚠️ **The proposal is DERIVED, never synced into state by an effect.** The
   // silent members of a grouped run submit from an effect of their own, and
@@ -947,7 +947,18 @@ export function PrintModal({
   // plates query it waits on, and `isLoading` is false for a settled failure as
   // well as for a finished fetch — so every path out of `candidatesEnabled`
   // being false ends in it becoming true or in the dialog having nothing to ask.
-  const orderAnswerPending = asksAboutOrder && (!candidatesEnabled || orderCandidatesLoading);
+  //
+  // ⚠️ **A plate SWITCH is also "not yet", even though `isLoading` alone says
+  // otherwise.** The hook's `placeholderData` keeps the previous plate's list
+  // on screen while the new plate's request is in flight, keyed on the same
+  // file — and TanStack then reports `status: 'success'` / `isPending: false`,
+  // so `isLoading` is false throughout. Without `orderCandidatesPlaceholder`
+  // here, submitting in that window would file the print under the OLD
+  // plate's proposal while `orderCandidates` still holds it. The field's
+  // `loading` prop stays `orderCandidatesLoading` on its own — the picker
+  // keeps showing the previous list without flicker; only the submit waits.
+  const orderAnswerPending =
+    asksAboutOrder && (!candidatesEnabled || orderCandidatesLoading || orderCandidatesPlaceholder);
 
   // What the payloads carry. When the dialog asked, its answer is the whole
   // truth — including "no order", which must not fall back to a prop.

@@ -257,6 +257,91 @@ describe('PrintModal — the order this print is filed under', () => {
     expect(seen).toContain(2);
   });
 
+  it('keeps the submit disabled through a plate switch while the new plate is still answering, and files the NEW plate\'s order once it answers', async () => {
+    // ⚠️ R1 regression: `useOrderCandidates`' `placeholderData` keeps the OLD
+    // plate's list on screen while the new plate's request is in flight (same
+    // file) — TanStack then reports `status: 'success'` / `isPending: false`
+    // for the whole of that window, so `isLoading` alone says the switch is
+    // already answered. Before this fix the submit was enabled here, and a
+    // click sent order A's ids under a print of plate 2.
+    let releasePlate2: ((data: OrderCandidate[]) => void) | null = null;
+    server.use(
+      http.get('/api/v1/library/files/:id/plates', () => HttpResponse.json(MULTI_PLATE)),
+      http.get('/api/v1/library/files/:id/order-candidates', async ({ request }) => {
+        const plate = Number(new URL(request.url).searchParams.get('plate_index') ?? 0);
+        if (plate === 1) return HttpResponse.json([candidate()]); // order A
+        const data = await new Promise<OrderCandidate[]>((resolve) => {
+          releasePlate2 = resolve;
+        });
+        return HttpResponse.json(data);
+      }),
+    );
+    const print = vi.spyOn(api, 'printLibraryFile').mockResolvedValue({ status: 'dispatched' } as never);
+    const user = userEvent.setup();
+
+    render(<PrintModal mode="reprint" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />);
+
+    const field = (await screen.findByLabelText('Order')) as HTMLSelectElement;
+    await waitFor(() => expect(field.value).toBe('4:9'));
+
+    await user.click(screen.getByTitle('Plate 2'));
+    await user.click(screen.getByText('Plate 2'));
+    await waitFor(() => expect(releasePlate2).not.toBeNull());
+
+    await user.click(screen.getByText('X1 Carbon'));
+    const submit = screen.getByRole('button', { name: /^print$/i });
+    expect(submit).toBeDisabled();
+
+    await user.click(submit);
+    expect(print).not.toHaveBeenCalled();
+
+    releasePlate2!([spareStock({ outstanding_prints: 3 })]); // order B
+
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
+
+    await waitFor(() =>
+      expect(print).toHaveBeenCalledWith(5, 1, expect.objectContaining({ project_id: 6, project_line_id: 12 })),
+    );
+    expect(print).not.toHaveBeenCalledWith(5, 1, expect.objectContaining({ project_id: 4 }));
+  });
+
+  it('does not drop the field to its loading state during that same switch — it keeps showing the OLD plate\'s list', async () => {
+    // Pinned apart from the submit gate on purpose: the fix must not fold the
+    // two concerns together. `OrderFilingField`'s `loading` prop stays
+    // `orderCandidatesLoading`, never the placeholder flag — that was F4's
+    // whole point, and this is what would break if someone "simplified" the
+    // gate by reusing one flag for both jobs.
+    let releasePlate2: ((data: OrderCandidate[]) => void) | null = null;
+    server.use(
+      http.get('/api/v1/library/files/:id/plates', () => HttpResponse.json(MULTI_PLATE)),
+      http.get('/api/v1/library/files/:id/order-candidates', async ({ request }) => {
+        const plate = Number(new URL(request.url).searchParams.get('plate_index') ?? 0);
+        if (plate === 1) return HttpResponse.json([candidate()]); // order A
+        const data = await new Promise<OrderCandidate[]>((resolve) => {
+          releasePlate2 = resolve;
+        });
+        return HttpResponse.json(data);
+      }),
+    );
+    const user = userEvent.setup();
+
+    render(<PrintModal mode="reprint" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />);
+
+    const field = (await screen.findByLabelText('Order')) as HTMLSelectElement;
+    await waitFor(() => expect(field.value).toBe('4:9'));
+
+    await user.click(screen.getByTitle('Plate 2'));
+    await user.click(screen.getByText('Plate 2'));
+    await waitFor(() => expect(releasePlate2).not.toBeNull());
+
+    // Still order A's list on screen — not gone, not empty.
+    expect((screen.getByLabelText('Order') as HTMLSelectElement).value).toBe('4:9');
+
+    releasePlate2!([spareStock({ outstanding_prints: 3 })]); // order B
+    await waitFor(() => expect((screen.getByLabelText('Order') as HTMLSelectElement).value).toBe('6:12'));
+  });
+
   it('never overwrites a choice the operator made, whatever the plate does', async () => {
     serveCandidates({ 1: [candidate()], 2: [spareStock({ outstanding_prints: 3 })] });
     server.use(http.get('/api/v1/library/files/:id/plates', () => HttpResponse.json(MULTI_PLATE)));

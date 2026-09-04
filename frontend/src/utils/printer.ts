@@ -41,6 +41,11 @@ export function hasDoorSensor(model: string | null | undefined): boolean {
 // Map SSDP model codes (e.g. "BL-P001") to display names (e.g. "X1C") that
 // match what slicers stamp into the 3MF `sliced_for_model` metadata. Used
 // for compatibility checks before dispatching a sliced file to a printer.
+//
+// A superset of the backend's `PRINTER_MODEL_ID_MAP`
+// (backend/app/utils/printer_models.py) — every backend row is here.
+// `BL-P003` is frontend-only (the backend map lacks it; removing it here
+// buys nothing).
 const MODEL_DISPLAY_MAP: Record<string, string> = {
   // H2 Series
   'O1D': 'H2D',
@@ -65,6 +70,9 @@ const MODEL_DISPLAY_MAP: Record<string, string> = {
   // A1 Series
   'N2S': 'A1',
   'N1': 'A1 Mini',
+  'A11': 'A1',
+  'A12': 'A1 Mini',
+  'A04': 'A1 Mini',
   // Direct matches (already in display form)
   'X1C': 'X1C',
   'X1': 'X1',
