@@ -18,7 +18,12 @@
 
 import { describe, it, expect } from 'vitest';
 import { QueryClient } from '@tanstack/react-query';
-import { ORDER_VIEW_KEYS, invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
+import {
+  ORDER_VIEW_KEYS,
+  invalidateAfterDelete,
+  invalidateOrderCandidates,
+  invalidateOrderViews,
+} from '../../utils/queryInvalidation';
 
 /** A query only has a state once something has put it in the cache. */
 function seed(qc: QueryClient, keys: unknown[][]) {
@@ -76,7 +81,7 @@ describe('invalidateOrderViews', () => {
     expect(stale(qc, ['queue'])).toBe(false);
   });
 
-  it('publishes the six keys as a list the websocket hook can walk', () => {
+  it('publishes the keys as a list the websocket hook can walk', () => {
     // `useWebSocket` cannot call the helper: its invalidations are debounced
     // and staggered through one shared timer, so it needs the KEYS rather than
     // the calls. Exporting the list is what keeps the two in step.
@@ -87,7 +92,25 @@ describe('invalidateOrderViews', () => {
       'project-plan',
       'customers',
       'customer',
+      'order-candidates',
     ]);
+  });
+});
+
+describe('invalidateOrderCandidates', () => {
+  it('marks the print dialogs’ proposal stale and leaves the order pages alone', () => {
+    // ⚠️ A queue write from `PrintModal` is not an order mutation: the dialog
+    // may be filing under no order at all, and sweeping every order view from
+    // there would refetch pages nothing on screen is showing. What it MUST move
+    // is the count the next dialog proposes — the hook caches it for 30 s.
+    const qc = new QueryClient();
+    seed(qc, [['order-candidates', 5, 1], ['project', 5], ['projects']]);
+
+    invalidateOrderCandidates(qc);
+
+    expect(stale(qc, ['order-candidates', 5, 1])).toBe(true);
+    expect(stale(qc, ['project', 5])).toBe(false);
+    expect(stale(qc, ['projects'])).toBe(false);
   });
 });
 

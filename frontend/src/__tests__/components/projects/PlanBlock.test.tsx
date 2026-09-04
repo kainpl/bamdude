@@ -17,7 +17,15 @@ import { QueryClient, onlineManager, useQuery, useQueryClient } from '@tanstack/
 import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
 import { api } from '../../../api/client';
-import type { Order, OrderPlan, PlanRow as PlanRowData, Permission, PlateRecipe } from '../../../api/client';
+import type {
+  Order,
+  OrderPlan,
+  PlanAlternative,
+  PlanRow as PlanRowData,
+  Permission,
+  PlateRecipe,
+  Printer,
+} from '../../../api/client';
 import { PlanBlock } from '../../../components/projects/PlanBlock';
 import { ORDER_VIEW_KEYS } from '../../../utils/queryInvalidation';
 
@@ -124,6 +132,8 @@ const plan: OrderPlan = {
           filament_used_grams: 100,
           cost: 2,
           time_unknown: false,
+          printer_model: 'X1C',
+          alternatives: [],
         },
         {
           plate_id: 200,
@@ -136,6 +146,8 @@ const plan: OrderPlan = {
           filament_used_grams: 20,
           cost: 0.4,
           time_unknown: false,
+          printer_model: null,
+          alternatives: [],
         },
       ],
       // The server's own answer, and deliberately NOT what the recipes below
@@ -212,6 +224,8 @@ const spareRow: PlanRowData = {
   filament_used_grams: 50,
   cost: 1,
   time_unknown: false,
+  printer_model: null,
+  alternatives: [],
 };
 
 /** Two lines of the SAME product, so one `getProductPlates` mock serves both
@@ -226,6 +240,47 @@ const twoLinePlan: OrderPlan = {
   lines: [plan.lines[0], { ...plan.lines[0], line_id: 20 }],
 };
 
+/** The same ten bodies, sliced for the other machine — a different FILE with
+ *  the identical counted yield, which is the whole shape this feature is
+ *  about. Slower and heavier, so switching to it is visible in every figure. */
+const otherModel: PlanAlternative = {
+  plate_id: 400,
+  library_file_id: 8,
+  plate_index: 2,
+  filename: 'big-p1s.3mf',
+  printer_model: 'P1S',
+  print_time_seconds: 7200,
+  filament_used_grams: 150,
+  cost: 3,
+  time_unknown: false,
+};
+
+const planWithAlternative: OrderPlan = {
+  ...plan,
+  lines: [
+    {
+      ...plan.lines[0],
+      candidates: [100, 200, 400],
+      rows: [{ ...plan.lines[0].rows[0], alternatives: [otherModel] }, plan.lines[0].rows[1]],
+    },
+  ],
+};
+
+/** The alternative as the product's plate list has it — what "+ plate" would
+ *  offer if nothing stopped it. */
+const alternativePlate: PlateRecipe = {
+  ...plates[0],
+  id: 400,
+  library_file_id: 8,
+  plate_index: 2,
+  filename: 'big-p1s.3mf',
+};
+
+const farm = [
+  { id: 1, name: 'Carbon', model: 'X1C' },
+  { id: 2, name: 'Pea', model: 'P1S' },
+] as unknown as Printer[];
+
 describe('PlanBlock', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -236,6 +291,10 @@ describe('PlanBlock', () => {
     // The currency is the test's choice, not `formatMoney`'s USD fallback —
     // otherwise the money assertions pass on an unresolved settings query.
     vi.spyOn(api, 'getSettings').mockResolvedValue({ currency: 'UAH' } as never);
+    // A row with alternatives asks which printers exist, so "to printer…" can
+    // hand the dialog the file that machine was sliced for. A plan without one
+    // asks nothing — the query is gated — and this mock covers both.
+    vi.spyOn(api, 'getPrinters').mockResolvedValue(farm);
   });
 
   it('renders the recommended plates of every line', async () => {
@@ -815,5 +874,192 @@ describe('PlanBlock', () => {
 
     await waitFor(() => expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(1));
     expect(screen.getByTestId('plan-row-20-100-count')).toHaveValue(7);
+  });
+
+  // ---- the same part, sliced once per printer model (pass 7, decision 6) ----
+
+  it('offers the other file the part is sliced for, and follows it in every figure', async () => {
+    // ⚠️ The engine's greedy picks ONE plate and hangs every print on it, so
+    // the second file was invisible in the block even though the operator owns
+    // both machines. This switch is the whole fix.
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    const enqueue = vi
+      .spyOn(api, 'enqueueOrderPlan')
+      .mockResolvedValue({ created: [{ line_id: 10, plate_id: 400, queue_item_ids: [7] }] });
+
+    render(<PlanBlock order={order} canEdit />);
+
+    const files = await screen.findByTestId('plan-row-10-100-file');
+    expect(files).toHaveAccessibleName('File');
+    expect([...files.querySelectorAll('option')].map((o) => o.textContent)).toEqual([
+      'big.3mf (X1C)',
+      'big-p1s.3mf (P1S)',
+    ]);
+    // The row with no alternative keeps its plain filename, and no switch.
+    expect(screen.queryByTestId('plan-row-10-200-file')).not.toBeInTheDocument();
+    expect(screen.getByTestId('plan-totals-time')).toHaveTextContent('1h 30m');
+
+    fireEvent.change(files, { target: { value: '400' } });
+
+    const row = screen.getByTestId('plan-row-10-100');
+    expect(row).toHaveTextContent('150.0');
+    expect(row).toHaveTextContent('₴3.00');
+    // 7200 + 1800 seconds, 150 + 20 grams, 3.00 + 0.40 — the count never moves,
+    // because the two files make the same parts.
+    expect(screen.getByTestId('plan-totals-prints')).toHaveTextContent('2');
+    expect(screen.getByTestId('plan-totals-time')).toHaveTextContent('2h 30m');
+    expect(screen.getByTestId('plan-totals-grams')).toHaveTextContent('170.0');
+    expect(screen.getByTestId('plan-totals-cost')).toHaveTextContent('₴3.40');
+
+    fireEvent.click(screen.getByTestId('plan-row-10-100-queue'));
+
+    await waitFor(() =>
+      expect(enqueue).toHaveBeenCalledWith(1, {
+        items: [{ plate_id: 400, count: 1, line_id: 10 }],
+        target: { kind: 'auto' },
+      }),
+    );
+  });
+
+  it('hands the printer leg the file that printer was sliced for', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    fireEvent.change(await screen.findByTestId('plan-row-10-100-printer-pick'), { target: { value: '2' } });
+
+    expect(printModal.props).toMatchObject({
+      // The P1S file, not the row's own — and the printer the operator named
+      // travels with it, pinned rather than hidden.
+      libraryFileId: 8,
+      preselectedPlateId: 2,
+      initialSelectedPrinterIds: [2],
+      lockPrinterSelection: true,
+      projectId: 1,
+      projectLineId: 10,
+      initialDispatchMode: 'specific',
+    });
+
+    cleanup();
+    printModal.props = null;
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    fireEvent.change(await screen.findByTestId('plan-row-10-100-printer-pick'), { target: { value: '1' } });
+
+    expect(printModal.props).toMatchObject({ libraryFileId: 5, preselectedPlateId: 1, initialSelectedPrinterIds: [1] });
+  });
+
+  it('splits a row across the two files, and refuses a split that does not add up', async () => {
+    // ⚠️ The auto-queue routes an item by its `target_model`, so a file only
+    // ever reaches the printers it was sliced for — splitting the count is the
+    // only way one line's work reaches two models at once.
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    const enqueue = vi
+      .spyOn(api, 'enqueueOrderPlan')
+      .mockResolvedValue({ created: [{ line_id: 10, plate_id: 100, queue_item_ids: [7] }] });
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-split'));
+
+    // Everything on the file the row is showing, which is what "no split" means.
+    expect(screen.getByTestId('plan-row-10-100-split-100')).toHaveValue(1);
+    expect(screen.getByTestId('plan-row-10-100-split-400')).toHaveValue(0);
+    expect(screen.queryByTestId('plan-row-10-100-split-error')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('plan-row-10-100-split-400'), { target: { value: '2' } });
+
+    expect(screen.getByTestId('plan-row-10-100-split-error')).toHaveTextContent('Counts must add up to 1');
+    expect(screen.getByTestId('plan-row-10-100-split-apply')).toBeDisabled();
+    expect(screen.getByTestId('plan-row-10-100-queue')).toBeDisabled();
+    expect(screen.getByTestId('plan-enqueue-all')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('plan-row-10-100-inc'));
+    fireEvent.click(screen.getByTestId('plan-row-10-100-inc'));
+
+    expect(screen.queryByTestId('plan-row-10-100-split-error')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('plan-row-10-100-split-apply'));
+
+    await waitFor(() =>
+      expect(enqueue).toHaveBeenCalledWith(1, {
+        items: [
+          { plate_id: 100, count: 1, line_id: 10 },
+          { plate_id: 400, count: 2, line_id: 10 },
+        ],
+        target: { kind: 'auto' },
+      }),
+    );
+  });
+
+  it('carries one item per file into the whole-plan body', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    const enqueue = vi
+      .spyOn(api, 'enqueueOrderPlan')
+      .mockResolvedValue({ created: [{ line_id: 10, plate_id: 100, queue_item_ids: [7] }] });
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-split'));
+    fireEvent.change(screen.getByTestId('plan-row-10-100-split-400'), { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId('plan-row-10-100-inc'));
+    fireEvent.click(screen.getByTestId('plan-row-10-100-inc'));
+
+    fireEvent.click(screen.getByTestId('plan-enqueue-all'));
+
+    await waitFor(() =>
+      expect(enqueue).toHaveBeenCalledWith(1, {
+        items: [
+          { plate_id: 100, count: 1, line_id: 10 },
+          { plate_id: 400, count: 2, line_id: 10 },
+          { plate_id: 200, count: 1, line_id: 10 },
+        ],
+        target: { kind: 'auto' },
+      }),
+    );
+  });
+
+  it('keeps a row’s alternative out of the add-plate menu', async () => {
+    // ⚠️ Adding it would put the same work on screen twice: the row already
+    // offers that file as a switch, and a second row for it would be counted
+    // again by every total.
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
+      ...planWithAlternative,
+      lines: [{ ...planWithAlternative.lines[0], candidates: [100, 200, 300, 400] }],
+    });
+    vi.spyOn(api, 'getProductPlates').mockResolvedValue([...plates, spare, alternativePlate]);
+
+    render(<PlanBlock order={order} canEdit />);
+
+    const add = await screen.findByTestId('plan-line-10-add');
+    expect([...add.querySelectorAll('option')].map((o) => o.textContent)).toEqual([
+      'Add a plate…',
+      'extra.3mf · Plate 2',
+    ]);
+  });
+
+  it('reseeds a file choice the plan no longer offers', async () => {
+    // ⚠️ The alternatives join the per-line signature for this reason: a
+    // switch made against a plan that has since moved would otherwise survive
+    // the reseed and send a plate the line no longer plans.
+    const get = vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+
+    render(
+      <>
+        <PlanBlock order={order} canEdit />
+        <Refetcher id={1} />
+      </>,
+    );
+
+    fireEvent.change(await screen.findByTestId('plan-row-10-100-file'), { target: { value: '400' } });
+    expect(screen.getByTestId('plan-row-10-100-file')).toHaveValue('400');
+
+    get.mockResolvedValue(plan);
+    fireEvent.click(screen.getByTestId('force-refetch'));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+
+    await waitFor(() => expect(screen.queryByTestId('plan-row-10-100-file')).not.toBeInTheDocument());
+    expect(screen.getByTestId('plan-totals-time')).toHaveTextContent('1h 30m');
   });
 });

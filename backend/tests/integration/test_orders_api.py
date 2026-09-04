@@ -1,5 +1,7 @@
 """Orders: lines, figures, procurement, lifecycle, links — spec §5/§8 + §Order lifecycle."""
 
+from collections import Counter
+
 import pytest
 from sqlalchemy import select
 
@@ -1023,6 +1025,122 @@ async def test_plan_ignores_an_auto_queue_row_already_handed_to_a_printer(commit
     line = (await committing_client.get(f"/api/v1/projects/{pid}/plan")).json()["lines"][0]
     assert _by_name(line["outstanding_before"]) == {"shade": 2, "arm": 4}
     assert line["rows"][0]["count"] == 2
+
+
+async def _twin_plate(db, product, *, filename, model, seconds):
+    """A second file of the SAME product making the same parts per print.
+
+    This is the shape the whole alternatives feature is about: one part, sliced
+    once per printer model, so two library files yield ``1 shade + 2 arms``
+    apiece and only the target machine tells them apart.
+    """
+    file = LibraryFile(
+        filename=filename,
+        file_path=filename,
+        file_size=1,
+        file_type="gcode",
+        file_metadata={
+            "sliced_for_model": model,
+            "plates": [
+                {
+                    "index": 1,
+                    "printable_objects": {"1": "shade", "2": "arm", "3": "arm_2"},
+                    "print_time_seconds": seconds,
+                    "filaments": [{"slot_id": 1, "type": "PETG"}],
+                }
+            ],
+        },
+    )
+    db.add(file)
+    await db.flush()
+    plate = ProductPlate(product_id=product.id, library_file_id=file.id, plate_index=0)
+    db.add(plate)
+    await db.commit()
+    return file, plate
+
+
+async def _name_the_catalog_file_a_model(db, file, model):
+    """``file_metadata`` is a JSON column — mutating the dict in place is not a
+    change SQLAlchemy sees, so the whole value is replaced."""
+    meta = dict(file.file_metadata or {})
+    meta["sliced_for_model"] = model
+    file.file_metadata = meta
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_the_plan_names_the_other_file_the_same_part_is_sliced_for(committing_client, db_session, catalog):
+    """The greedy picks one plate and hangs every print on it, so the other
+    file — the same part, sliced for the other printer — was invisible in the
+    block (user report, 2026-09-04). It rides out on the row, with its own
+    figures and the printer model that tells the operator which machine it is
+    for."""
+    await _name_the_catalog_file_a_model(db_session, catalog["file"], "X1C")
+    twin_file, twin_plate = await _twin_plate(
+        db_session, catalog["product"], filename="lamp-p1s.gcode.3mf", model="Bambu Lab P1S", seconds=200
+    )
+    pid, _line_id = await _order_with_line(committing_client, catalog["product"].id, 4)
+
+    line = (await committing_client.get(f"/api/v1/projects/{pid}/plan")).json()["lines"][0]
+    row = line["rows"][0]
+
+    # The faster file wins the pick; the slower one is the alternative.
+    assert row["filename"] == "lamp.gcode.3mf" and row["printer_model"] == "X1C"
+    assert row["alternatives"] == [
+        {
+            "plate_id": twin_plate.id,
+            "library_file_id": twin_file.id,
+            "plate_index": 0,
+            "filename": "lamp-p1s.gcode.3mf",
+            # ⚠️ Normalised on the way out: the 3MF says "Bambu Lab P1S" and the
+            # auto-queue routes on "P1S". A raw name here would match no printer.
+            "printer_model": "P1S",
+            "print_time_seconds": 200,
+            "filament_used_grams": None,
+            "cost": None,
+            "time_unknown": False,
+        }
+    ]
+    # The totals stay the PICKED plate's — the what-if of a switched file is the
+    # block's arithmetic, not a second plan the server computed.
+    assert (await committing_client.get(f"/api/v1/projects/{pid}/plan")).json()["totals"]["print_time_seconds"] == (
+        row["count"] * 100
+    )
+
+
+@pytest.mark.asyncio
+async def test_plan_enqueue_splits_one_line_across_two_files(committing_client, db_session, catalog):
+    """Two items, one line, two plates — because the auto-queue routes an item
+    by its ``target_model``, so a file only ever reaches the printers it was
+    sliced for. Splitting the count is the only way one line's work reaches two
+    models."""
+    await _name_the_catalog_file_a_model(db_session, catalog["file"], "X1C")
+    twin_file, twin_plate = await _twin_plate(
+        db_session, catalog["product"], filename="lamp-p1s.gcode.3mf", model="P1S", seconds=200
+    )
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue",
+        json={
+            "items": [
+                {"plate_id": twin_plate.id, "count": 2, "line_id": line_id},
+                {"plate_id": plate_id, "count": 3, "line_id": line_id},
+            ],
+            "target": {"kind": "auto"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    created = r.json()["created"]
+    assert [(c["plate_id"], len(c["queue_item_ids"])) for c in created] == [(twin_plate.id, 2), (plate_id, 3)]
+
+    ids = [i for c in created for i in c["queue_item_ids"]]
+    rows = (await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.id.in_(ids)))).scalars().all()
+    assert len(rows) == 5
+    assert {row.project_line_id for row in rows} == {line_id}
+    by_file = Counter(row.library_file_id for row in rows)
+    assert by_file == Counter({catalog["file"].id: 3, twin_file.id: 2})
 
 
 @pytest.mark.asyncio

@@ -4872,6 +4872,7 @@ export default {
       row: {
         plate: 'Пластина {{n}}',
         wholeFile: 'Увесь файл',
+        file: 'Файл',
         covers: 'Покриває:',
         count: 'Друків цієї пластини',
         toQueue_one: '× {{count}} у чергу',
@@ -4883,6 +4884,14 @@ export default {
         atZero: 'При 0 нічого надсилати',
         decrease: 'Менше',
         increase: 'Більше',
+      },
+      split: {
+        title: 'Розділити між файлами',
+        sum_one: 'Сума має дорівнювати {{count}}',
+        sum_few: 'Сума має дорівнювати {{count}}',
+        sum_many: 'Сума має дорівнювати {{count}}',
+        sum_other: 'Сума має дорівнювати {{count}}',
+        apply: 'В чергу окремо',
       },
       col: {
         plate: 'Пластина',

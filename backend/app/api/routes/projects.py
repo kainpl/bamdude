@@ -41,6 +41,7 @@ from backend.app.schemas.project import (
     LineProductOut,
     OrderPlanResponse,
     PartFiguresOut,
+    PlanAlternativeOut,
     PlanEnqueueCreated,
     PlanEnqueueRequest,
     PlanEnqueueResponse,
@@ -1193,6 +1194,27 @@ def _plan_response(plan: OrderPlan) -> OrderPlanResponse:
                         filament_used_grams=row.filament_used_grams,
                         cost=row.cost,
                         time_unknown=row.time_unknown,
+                        printer_model=row.printer_model,
+                        # ⚠️ The totals below are the PICKED plate's, and stay
+                        # so. Switching a row to one of these is the block's
+                        # what-if (``planMath.projectPlan``), asked of a plan
+                        # the server has already answered — recomputing it here
+                        # would mean sending a plan per combination of choices
+                        # nobody has made yet.
+                        alternatives=[
+                            PlanAlternativeOut(
+                                plate_id=alt.plate_id,
+                                library_file_id=alt.library_file_id,
+                                plate_index=alt.plate_index,
+                                filename=alt.filename,
+                                printer_model=alt.printer_model,
+                                print_time_seconds=alt.print_time_seconds,
+                                filament_used_grams=alt.filament_used_grams,
+                                cost=alt.cost,
+                                time_unknown=alt.time_unknown,
+                            )
+                            for alt in row.alternatives
+                        ],
                     )
                     for row in line.rows
                 ],

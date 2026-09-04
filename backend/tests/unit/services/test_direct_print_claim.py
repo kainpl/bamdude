@@ -110,3 +110,110 @@ async def test_a_printer_with_no_queue_row_claims_nothing(db_session, printer_fa
     printer = await printer_factory()
 
     assert await claim_printer_for_direct_print(db_session, printer_id=printer.id, origin="direct") is None
+
+
+# ---- filing the print under the order's line (spec pass 7, Decision 4a) ----
+
+
+async def _order_over_a_file(db_session, *, lines=1):
+    """One product, one library file it prints from, and ``lines`` order lines
+    of that product — all in the same material, so nothing but their count can
+    tell them apart."""
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.product import Product, ProductPlate
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+
+    file = LibraryFile(
+        filename="lamp.gcode.3mf",
+        file_path="lamp",
+        file_size=1,
+        file_type="gcode",
+        file_metadata={
+            "plates": [
+                {
+                    "index": 1,
+                    "printable_objects": {"1": "shade"},
+                    "print_time_seconds": 100,
+                    "filaments": [{"slot_id": 1, "type": "PETG"}],
+                }
+            ]
+        },
+    )
+    product = Product(name="Lamp")
+    project = Project(name="O")
+    db_session.add_all([file, product, project])
+    await db_session.flush()
+    db_session.add(ProductPlate(product_id=product.id, library_file_id=file.id, plate_index=0))
+    made = []
+    for i in range(lines):
+        line = ProjectLine(project_id=project.id, product_id=product.id, quantity=1, material="PETG", sort_order=i)
+        db_session.add(line)
+        made.append(line)
+    await db_session.commit()
+    return file, project, made
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_print_now_files_the_line_the_order_did_not_name(db_session, printer_factory):
+    """⚠️ The one queue writer that was NOT filing it. The Print dialog offers an
+    order for a direct print too, and "print now" with quantity 1 skips
+    ``enqueue_batch_copies`` entirely — so without this the operator answered
+    the Order field and the row carried the order with no line, which is exactly
+    the state pass 7 exists to end."""
+    printer, _row = await _queue(db_session, printer_factory)
+    file, project, lines = await _order_over_a_file(db_session)
+
+    item = await claim_printer_for_direct_print(
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=file.id,
+        options={"plate_id": 1},
+        project_id=project.id,
+    )
+
+    assert item.project_id == project.id
+    assert item.project_line_id == lines[0].id
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_two_alike_lines_leave_the_claim_unfiled_rather_than_guessing(db_session, printer_factory):
+    """Two lines of one product in one material: the plate cannot tell them
+    apart, and filing somebody's print against work nobody ordered is worse than
+    leaving it to the plan's implicit branch, which re-asks on every read."""
+    printer, _row = await _queue(db_session, printer_factory)
+    file, project, _lines = await _order_over_a_file(db_session, lines=2)
+
+    item = await claim_printer_for_direct_print(
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=file.id,
+        options={"plate_id": 1},
+        project_id=project.id,
+    )
+
+    assert item.project_id == project.id
+    assert item.project_line_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_line_the_caller_named_is_never_re_decided(db_session, printer_factory):
+    printer, _row = await _queue(db_session, printer_factory)
+    file, project, lines = await _order_over_a_file(db_session, lines=2)
+
+    item = await claim_printer_for_direct_print(
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=file.id,
+        options={"plate_id": 1},
+        project_id=project.id,
+        project_line_id=lines[1].id,
+    )
+
+    assert item.project_line_id == lines[1].id

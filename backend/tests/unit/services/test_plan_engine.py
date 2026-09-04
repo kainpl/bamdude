@@ -74,10 +74,23 @@ def _figs(line, parts, remaining, in_progress=None):
     return figs
 
 
-def _cand(plate_id, product_id, yields, *, secs=100, grams=10.0, sliced=True, materials=("PETG",), file_id=1, index=1):
+def _cand(
+    plate_id,
+    product_id,
+    yields,
+    *,
+    secs=100,
+    grams=10.0,
+    sliced=True,
+    materials=("PETG",),
+    file_id=1,
+    index=1,
+    model=None,
+    filename="f.3mf",
+):
     plate = ProductPlate(product_id=product_id, library_file_id=file_id, plate_index=index)
     plate.id = plate_id
-    file = LibraryFile(filename="f.3mf", file_path="", file_type="3mf", file_size=0)
+    file = LibraryFile(filename=filename, file_path="", file_type="3mf", file_size=0)
     file.id = file_id
     recipe = PlateRecipe(
         library_file_id=file_id,
@@ -87,6 +100,7 @@ def _cand(plate_id, product_id, yields, *, secs=100, grams=10.0, sliced=True, ma
         materials=set(materials),
         print_time_seconds=secs,
         filament_used_grams=grams,
+        printer_model=model,
     )
     return plate, file, recipe
 
@@ -421,3 +435,88 @@ def test_a_rows_cost_is_the_farms_own_arithmetic():
         ctx, {line.id: _figs(line, [part], {1: 1})}, {10: [_cand(1, 10, {1: 1}, grams=None)]}, {}, 0.02
     )
     assert no_grams.lines[0].rows[0].cost is None and cost_of(None, 20.0) is None
+
+
+# ---- alternatives: the same part, sliced once per printer model (pass 7, decision 6) ----
+
+
+def test_a_plate_making_the_same_counted_parts_is_an_alternative():
+    """The greedy picks ONE plate and hangs every print on it, so the second
+    file — the same part sliced for the other printer — used to be invisible in
+    the block even though the operator owns both machines (user report,
+    2026-09-04). It rides out on the row it duplicates, with its own figures.
+    """
+    body = _part(1, 10, "body", 1)
+    line = _line(100, 10, 10)
+    ctx = _ctx([line], [body])
+    figures = {line.id: _figs(line, [body], {1: 10})}
+    fast = _cand(1, 10, {1: 5}, secs=1000, grams=50.0, file_id=1, model="X1C", filename="body-x1c.3mf")
+    slow = _cand(2, 10, {1: 5}, secs=2000, grams=60.0, file_id=2, model="P1S", filename="body-p1s.3mf")
+
+    plan = plan_lines(ctx, figures, {10: [fast, slow]}, {}, 0.02)
+    rows = plan.lines[0].rows
+
+    assert [(r.plate_id, r.count) for r in rows] == [(1, 2)]
+    assert rows[0].printer_model == "X1C"
+    assert [(a.plate_id, a.printer_model, a.filename) for a in rows[0].alternatives] == [(2, "P1S", "body-p1s.3mf")]
+    alt = rows[0].alternatives[0]
+    # Its OWN figures, per print — the block re-does the arithmetic against them
+    # the moment the operator switches files.
+    assert (alt.library_file_id, alt.plate_index) == (2, 1)
+    assert (alt.print_time_seconds, alt.filament_used_grams, alt.cost) == (2000, 60.0, 1.2)
+    assert alt.time_unknown is False
+
+
+def test_a_plate_with_a_different_counted_yield_is_not_an_alternative():
+    """Same product, same material, half the parts per print. Switching to it
+    would print half the order — it is a candidate, and the "+ plate" menu is
+    where it belongs, not the row's file switch."""
+    body = _part(1, 10, "body", 1)
+    line = _line(100, 10, 10)
+    ctx = _ctx([line], [body])
+    figures = {line.id: _figs(line, [body], {1: 10})}
+    five = _cand(1, 10, {1: 5}, secs=1000, file_id=1, model="X1C")
+    two = _cand(2, 10, {1: 2}, secs=2000, file_id=2, model="P1S")
+
+    plan = plan_lines(ctx, figures, {10: [five, two]}, {}, None)
+
+    assert [r.plate_id for r in plan.lines[0].rows] == [1]
+    assert plan.lines[0].rows[0].alternatives == []
+
+
+def test_an_uncounted_part_beside_the_same_counted_ones_is_still_an_alternative():
+    """The key is the COUNTED yield, exactly as ``line_yield`` reads it. A plate
+    that also carries a part this line zeroes (``qty_per_unit = 0``, or another
+    product's part on a shared bed) makes the same thing for this line — the
+    extra is somebody else's surplus, not a different plate."""
+    body = _part(1, 10, "body", 1)
+    trinket = _part(2, 10, "trinket", 0)
+    line = _line(100, 10, 10)
+    ctx = _ctx([line], [body, trinket])
+    figures = {line.id: _figs(line, [body, trinket], {1: 10})}
+    plain = _cand(1, 10, {1: 5}, secs=1000, file_id=1, model="X1C")
+    plus = _cand(2, 10, {1: 5, 2: 4}, secs=2000, file_id=2, model="P1S")
+
+    plan = plan_lines(ctx, figures, {10: [plain, plus]}, {}, None)
+    rows = plan.lines[0].rows
+
+    assert [r.plate_id for r in rows] == [1]
+    assert [a.plate_id for a in rows[0].alternatives] == [2]
+
+
+def test_alternatives_are_sorted_by_model_and_never_list_the_row_itself():
+    body = _part(1, 10, "body", 1)
+    line = _line(100, 10, 10)
+    ctx = _ctx([line], [body])
+    figures = {line.id: _figs(line, [body], {1: 10})}
+    picked = _cand(1, 10, {1: 5}, secs=1000, file_id=1, model="X1C")
+    p1s = _cand(2, 10, {1: 5}, secs=2000, file_id=2, model="P1S")
+    nameless = _cand(3, 10, {1: 5}, secs=3000, file_id=3, model=None)
+    a1 = _cand(4, 10, {1: 5}, secs=4000, file_id=4, model="A1")
+
+    plan = plan_lines(ctx, figures, {10: [picked, p1s, nameless, a1]}, {}, None)
+    row = plan.lines[0].rows[0]
+
+    assert row.plate_id == 1
+    # A model-less plate sorts first (""), then by model name, then by plate id.
+    assert [(a.plate_id, a.printer_model) for a in row.alternatives] == [(3, None), (4, "A1"), (2, "P1S")]

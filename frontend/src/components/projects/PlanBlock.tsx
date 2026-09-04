@@ -11,7 +11,7 @@ import { formatDuration } from '../../utils/date';
 import { Button } from '../Button';
 import { PlanLine } from './PlanLine';
 import { MAX_PER_PLATE } from './PlanRow';
-import { projectPlan } from './planMath';
+import { projectPlan, rowDistribution, splitTotal, type ChosenByRow, type SplitByRow } from './planMath';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 /**
@@ -64,6 +64,22 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
 
   const [counts, setCounts] = useState<Record<number, Record<number, number>>>({});
   const [added, setAdded] = useState<Record<number, PlanRowData[]>>({});
+  /**
+   * `line_id → row plate_id → the plate that row is set to print`, and
+   * `line_id → row plate_id → plate_id → prints` beside it.
+   *
+   * The same part is routinely sliced once per printer model, so a row stands
+   * for several files with the identical counted yield (`PlanRow.alternatives`).
+   * The first map is which of them a row is showing; the second is how its
+   * count is split across them, which is what sends one line's work to two
+   * printer MODELS — the auto-queue routes an item by `target_model`.
+   *
+   * ⚠️ **Both are answers about a PLAN, and are dropped with the counts when
+   * the plan moves** — see the signature below, which carries the alternatives
+   * for exactly this reason.
+   */
+  const [chosen, setChosen] = useState<Record<number, ChosenByRow>>({});
+  const [split, setSplit] = useState<Record<number, SplitByRow>>({});
 
   /**
    * `line_id → everything about THAT line's plan the operator's edits answer.`
@@ -84,7 +100,11 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
     const out: Record<number, string> = {};
     for (const line of plan?.lines ?? []) {
       out[line.line_id] = JSON.stringify([
-        line.rows.map((row) => [row.plate_id, row.count]),
+        // ⚠️ The alternatives are IN the signature. A file switch or a split is
+        // an answer about the set of plates the row offered when it was made,
+        // and a plan that comes back offering a different set has to take it
+        // back — otherwise the block sends a plate this row no longer plans.
+        line.rows.map((row) => [row.plate_id, row.count, row.alternatives.map((a) => a.plate_id)]),
         line.outstanding_before.map((p) => [p.part_id, p.count]),
         line.surplus_after.map((p) => [p.part_id, p.count]),
         line.unsatisfiable.map((p) => [p.part_id, p.count]),
@@ -104,14 +124,16 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
   useEffect(() => {
     const before = seenSignatures.current;
     seenSignatures.current = signatures;
-    setCounts((prev) => {
+    // The line is gone from the plan, or it is planning something else: either
+    // way the edit has nothing left to mean (decision 9). A line whose
+    // signature came back identical keeps every answer untouched. All three
+    // maps are keyed by line and reseed together — a count, a file switch and a
+    // split are one answer about one plan.
+    const keepAnswered = <T,>(prev: Record<number, T>): Record<number, T> => {
       let dropped = false;
-      const next: Record<number, Record<number, number>> = {};
+      const next: Record<number, T> = {};
       for (const [key, edits] of Object.entries(prev)) {
         const lineId = Number(key);
-        // The line is gone from the plan, or it is planning something else:
-        // either way the edit has nothing left to mean (decision 9). A line
-        // whose signature came back identical keeps every count untouched.
         if (before[lineId] !== signatures[lineId]) {
           dropped = true;
           continue;
@@ -119,7 +141,10 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
         next[lineId] = edits;
       }
       return dropped ? next : prev;
-    });
+    };
+    setCounts(keepAnswered);
+    setChosen(keepAnswered);
+    setSplit(keepAnswered);
   }, [signatures]);
 
   // ⚠️ A hand-added plate is not seeded from anything, so a reseed cannot
@@ -207,30 +232,56 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
     let grams = 0;
     let cost: number | null = null;
     for (const line of lines) {
-      const projected = projectPlan(line, counts[line.line_id] ?? {}, {});
+      const projected = projectPlan(line, counts[line.line_id] ?? {}, {}, chosen[line.line_id] ?? {});
       prints += projected.prints;
       seconds = seconds == null || projected.seconds == null ? null : seconds + projected.seconds;
       grams += projected.grams;
       if (projected.cost != null) cost = (cost ?? 0) + projected.cost;
     }
     return { prints, seconds, grams: Math.round(grams * 100) / 100, cost };
-  }, [lines, counts]);
+  }, [lines, counts, chosen]);
 
-  const items = useMemo(() => {
-    const out: PlanEnqueueItem[] = [];
-    for (const line of lines) {
-      for (const row of line.rows) {
-        const count = Math.max(0, Math.trunc(counts[line.line_id]?.[row.plate_id] ?? row.count));
-        if (count > 0) out.push({ plate_id: row.plate_id, count, line_id: line.line_id });
-      }
-    }
-    return out;
-  }, [lines, counts]);
+  /** One item per (line, file) with something on it — the row's own plate, the
+   *  alternative it was switched to, or every file of a split. */
+  const itemsFor = useCallback(
+    (line: (typeof lines)[number], only?: number): PlanEnqueueItem[] =>
+      line.rows
+        .filter((row) => only === undefined || row.plate_id === only)
+        .flatMap((row) =>
+          rowDistribution(
+            row,
+            Math.max(0, Math.trunc(counts[line.line_id]?.[row.plate_id] ?? row.count)),
+            chosen[line.line_id]?.[row.plate_id],
+            split[line.line_id]?.[row.plate_id],
+          ).map((entry) => ({ ...entry, line_id: line.line_id })),
+        ),
+    [counts, chosen, split],
+  );
+
+  const items = useMemo(() => lines.flatMap((line) => itemsFor(line)), [lines, itemsFor]);
 
   const overCap = items.some((item) => item.count > MAX_PER_PLATE);
+  // ⚠️ A half-made split blocks the WHOLE-plan button too, not only its own
+  // row: sending everything else and silently skipping the row being edited
+  // would be the one outcome the operator cannot see coming.
+  const splitOff = lines.some((line) =>
+    line.rows.some((row) => {
+      const rowSplit = split[line.line_id]?.[row.plate_id];
+      return (
+        rowSplit != null &&
+        splitTotal(rowSplit) !== Math.max(0, Math.trunc(counts[line.line_id]?.[row.plate_id] ?? row.count))
+      );
+    }),
+  );
 
   const setCount = (lineId: number, plateId: number, next: number) =>
     setCounts((prev) => ({ ...prev, [lineId]: { ...(prev[lineId] ?? {}), [plateId]: Math.max(0, next) } }));
+
+  const setChoice = (lineId: number, rowPlateId: number, plateId: number) =>
+    setChosen((prev) => ({ ...prev, [lineId]: { ...(prev[lineId] ?? {}), [rowPlateId]: plateId } }));
+
+  const setRowSplit = (lineId: number, rowPlateId: number, next: Record<number, number>) =>
+    setSplit((prev) => ({ ...prev, [lineId]: { ...(prev[lineId] ?? {}), [rowPlateId]: next } }));
 
   const heading = (
     <h2 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -347,6 +398,8 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
                 order={order}
                 line={line}
                 counts={counts[line.line_id] ?? {}}
+                chosen={chosen[line.line_id] ?? {}}
+                split={split[line.line_id] ?? {}}
                 currency={settings?.currency}
                 showCost={showCost}
                 canQueue={canQueue}
@@ -354,12 +407,12 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
                 busy={enqueue.isPending}
                 ratePerGram={ratePerGram}
                 onCount={(plateId, next) => setCount(line.line_id, plateId, next)}
+                onChoose={(rowPlateId, plateId) => setChoice(line.line_id, rowPlateId, plateId)}
+                onSplit={(rowPlateId, next) => setRowSplit(line.line_id, rowPlateId, next)}
                 onAddPlate={(row) =>
                   setAdded((prev) => ({ ...prev, [line.line_id]: [...(prev[line.line_id] ?? []), row] }))
                 }
-                onEnqueueRow={(plateId, count) =>
-                  enqueue.mutate([{ plate_id: plateId, count, line_id: line.line_id }])
-                }
+                onEnqueueRow={(rowPlateId) => enqueue.mutate(itemsFor(line, rowPlateId))}
                 onQueued={invalidate}
               />
             ))}
@@ -394,7 +447,7 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
             {canQueue && (
               <Button
                 data-testid="plan-enqueue-all"
-                disabled={enqueue.isPending || overCap}
+                disabled={enqueue.isPending || overCap || splitOff}
                 title={overCap ? t('orders.plan.row.tooMany') : undefined}
                 onClick={() =>
                   items.length === 0

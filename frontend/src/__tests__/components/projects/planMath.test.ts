@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LinePlan, PlanPartCount } from '../../../api/client';
-import { parseCount, projectPlan } from '../../../components/projects/planMath';
+import { chosenPlate, parseCount, projectPlan, rowDistribution } from '../../../components/projects/planMath';
 
 /**
  * Two plates against 120 bodies and 10 caps — the parent spec's worked case,
@@ -30,6 +30,22 @@ const line: LinePlan = {
       filament_used_grams: 500,
       cost: 10,
       time_unknown: false,
+      printer_model: 'X1C',
+      // The same 100 bodies, sliced for the other machine: half the speed and a
+      // little more filament, and the yield identical by construction.
+      alternatives: [
+        {
+          plate_id: 400,
+          library_file_id: 8,
+          plate_index: 1,
+          filename: 'big-p1s.3mf',
+          printer_model: 'P1S',
+          print_time_seconds: 72000,
+          filament_used_grams: 550,
+          cost: 11,
+          time_unknown: false,
+        },
+      ],
     },
     {
       plate_id: 200,
@@ -45,6 +61,8 @@ const line: LinePlan = {
       filament_used_grams: 50,
       cost: 1,
       time_unknown: false,
+      printer_model: null,
+      alternatives: [],
     },
   ],
   surplus_after: [],
@@ -148,6 +166,67 @@ describe('projectPlan', () => {
     const p = projectPlan(empty, {}, {});
 
     expect(p).toEqual({ surplusAfter: [], prints: 0, seconds: 0, grams: 0, cost: null });
+  });
+});
+
+describe('the file a row is set to print', () => {
+  it('is the row’s own plate until an alternative is chosen', () => {
+    expect(chosenPlate(line.rows[0]).filename).toBe('big.3mf');
+    expect(chosenPlate(line.rows[0], line.rows[0].plate_id).printer_model).toBe('X1C');
+  });
+
+  it('is the alternative once it is', () => {
+    const chosen = chosenPlate(line.rows[0], 400);
+
+    expect(chosen).toEqual({
+      plate_id: 400,
+      library_file_id: 8,
+      plate_index: 1,
+      filename: 'big-p1s.3mf',
+      printer_model: 'P1S',
+      print_time_seconds: 72000,
+      filament_used_grams: 550,
+      cost: 11,
+      time_unknown: false,
+    });
+  });
+
+  it('falls back to the row when the chosen plate is no longer offered', () => {
+    // ⚠️ A choice made against a plan that has since moved: the reseed drops
+    // it, but a render between the two must not go blank or send a plate this
+    // row cannot print.
+    expect(chosenPlate(line.rows[0], 999).filename).toBe('big.3mf');
+  });
+
+  it('projects the chosen alternative’s per-print figures, not the row’s', () => {
+    const p = projectPlan(line, {}, yields, { 100: 400 });
+
+    // The yield is identical by construction, so the counts and the surplus do
+    // not move — only what the machine spends making them.
+    expect(p.prints).toBe(3);
+    expect(p.surplusAfter).toEqual([]);
+    expect(p.seconds).toBe(72000 + 2 * 3600);
+    expect(p.grams).toBeCloseTo(650);
+    expect(p.cost).toBeCloseTo(13);
+  });
+});
+
+describe('rowDistribution', () => {
+  it('is the whole count on the chosen file when nothing is split', () => {
+    expect(rowDistribution(line.rows[0], 4, undefined, undefined)).toEqual([{ plate_id: 100, count: 4 }]);
+    expect(rowDistribution(line.rows[0], 4, 400, undefined)).toEqual([{ plate_id: 400, count: 4 }]);
+  });
+
+  it('drops a file the operator emptied, and keeps the row’s order', () => {
+    expect(rowDistribution(line.rows[0], 5, undefined, { 100: 3, 400: 2 })).toEqual([
+      { plate_id: 100, count: 3 },
+      { plate_id: 400, count: 2 },
+    ]);
+    expect(rowDistribution(line.rows[0], 5, undefined, { 100: 0, 400: 5 })).toEqual([{ plate_id: 400, count: 5 }]);
+  });
+
+  it('sends nothing for a row at zero', () => {
+    expect(rowDistribution(line.rows[0], 0, undefined, undefined)).toEqual([]);
   });
 });
 

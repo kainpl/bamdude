@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.services.part_names import canonicalize, name_key
+from backend.app.utils.printer_models import normalize_model_name
 
 PURCHASED_KEY_PREFIX = "purchased:"
 
@@ -106,6 +107,14 @@ class PlateRecipe:
     colors: set[str] = field(default_factory=set)
     print_time_seconds: int | None = None
     filament_used_grams: float | None = None
+    #: The printer model the 3MF was sliced for, in the short spelling the
+    #: auto-queue routes on (``AutoQueueItem.target_model`` →
+    #: ``normalize_model_name``). It is a property of the FILE, not of one
+    #: plate: ``file_metadata["sliced_for_model"]`` is written once per 3MF by
+    #: ``ThreeMFParser``, so every plate of a file carries the same answer.
+    #: ``None`` when the file names no model — which is not "any model", only
+    #: "we do not know".
+    printer_model: str | None = None
 
 
 def estimate_seconds(recipe: PlateRecipe) -> int | None:
@@ -164,6 +173,15 @@ def recipe_for(
     recipe.filament_used_grams = float(grams) if isinstance(grams, (int, float)) else None
     recipe.materials = plate_materials(meta, plate.plate_index)
     recipe.colors = plate_colors(meta, plate.plate_index)
+    # ⚠️ Normalised AGAIN, on purpose. ``ThreeMFParser`` already writes a short
+    # name into ``sliced_for_model`` for a file it parsed itself, but rows
+    # ingested by older code (and by the git restore) carry whatever the 3MF
+    # said — a raw "Bambu Lab X1 Carbon", or an internal code like "C12". The
+    # value has to compare equal to the auto-queue's ``target_model``, which is
+    # run through this same function, or a plate the operator switched to would
+    # be routed to no printer at all.
+    raw_model = (meta or {}).get("sliced_for_model")
+    recipe.printer_model = normalize_model_name(raw_model) if isinstance(raw_model, str) else None
     # Mirrors ``LibraryFile.is_printable()`` — BOTH of its branches. ``file_type``
     # alone is NOT the answer: ``detect_file_type`` collapses ``.gcode.3mf`` to
     # "gcode" by FILENAME and leaves "3mf" on packages that may or may not hold

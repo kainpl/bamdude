@@ -292,6 +292,35 @@ class PlanPartCount(BaseModel):
     count: int
 
 
+class PlanAlternativeOut(BaseModel):
+    """Another plate of the row's line that makes exactly the same counted parts.
+
+    The same part is routinely sliced once per printer model — two files, one
+    yield — and the engine's greedy picks one of them, which made the other
+    invisible in the plan block. This is that other file: the block offers it as
+    a file switch on the row, preselects it when the operator sends the row to a
+    printer of its model, and can split the row's count across it, because the
+    auto-queue routes an item by ``target_model`` and a file only ever reaches
+    the printers it was sliced for.
+
+    The figures are PER PRINT, like the row's. The COUNT is not repeated here on
+    purpose: the counted yield is identical by construction, so the row's count
+    is the count whichever file is chosen.
+    """
+
+    plate_id: int  # ProductPlate.id
+    library_file_id: int
+    plate_index: int  # 0 = the whole file
+    filename: str
+    # The short model name the auto-queue routes on, or null when the file names
+    # none — which is "we do not know", never "any printer".
+    printer_model: str | None = None
+    print_time_seconds: int | None = None
+    filament_used_grams: float | None = None
+    cost: float | None = None
+    time_unknown: bool = False
+
+
 class PlanRowOut(BaseModel):
     """One plate, printed ``count`` times.
 
@@ -311,6 +340,10 @@ class PlanRowOut(BaseModel):
     filament_used_grams: float | None = None
     cost: float | None = None
     time_unknown: bool = False
+    printer_model: str | None = None
+    # The line's other candidate plates with the identical counted yield, this
+    # one excluded — see ``PlanAlternativeOut``. Empty is the ordinary case.
+    alternatives: list[PlanAlternativeOut] = []
 
 
 class LinePlanOut(BaseModel):

@@ -55,6 +55,38 @@ Candidate = tuple[ProductPlate, LibraryFile, PlateRecipe]
 
 
 @dataclass
+class PlanAlternative:
+    """Another plate of the same line that makes exactly the same counted parts.
+
+    The same part is routinely sliced once per printer model — two files, one
+    yield — and the greedy picks whichever scored best and hangs every print on
+    it, so the other file was invisible in the plan block (user report,
+    2026-09-04). This is that other file, riding out on the row it duplicates.
+
+    ⚠️ **"The same" is the COUNTED yield**, exactly as :func:`line_yield` reads
+    it: a plate carrying an extra part this line does not count still makes the
+    same thing for this line, and a plate making half as many is a different
+    plate that belongs in the "+ plate" menu instead.
+
+    The figures are PER PRINT, like a row's — the block re-does its arithmetic
+    against them the moment the operator switches files, without asking the
+    server again. The count does NOT move with the switch: the yields are
+    identical by construction, so the same number of prints covers the same
+    work.
+    """
+
+    plate_id: int  # ProductPlate.id
+    library_file_id: int
+    plate_index: int  # 0 = the whole file
+    filename: str
+    printer_model: str | None = None
+    print_time_seconds: int | None = None
+    filament_used_grams: float | None = None
+    cost: float | None = None
+    time_unknown: bool = False
+
+
+@dataclass
 class PlanRow:
     """One plate, printed ``count`` times.
 
@@ -75,6 +107,13 @@ class PlanRow:
     # Sliced but timeless: the plate ranked on its useful count alone (time 1),
     # so the operator can see why it out-ranked a plate with a real estimate.
     time_unknown: bool = False
+    # The printer model this plate's file was sliced for, in the spelling the
+    # auto-queue routes on. ``None`` = the file names none.
+    printer_model: str | None = None
+    # The line's OTHER candidate plates with the identical counted yield, this
+    # one excluded, sorted by ``(printer_model or "", plate_id)``. Empty is the
+    # ordinary case; see :class:`PlanAlternative`.
+    alternatives: list[PlanAlternative] = field(default_factory=list)
 
 
 @dataclass
@@ -149,9 +188,21 @@ def _pick_key(useful: int, waste: int, secs: int | None, plate_id: int) -> tuple
     return (-(useful / (secs or 1)), waste, (secs is None, secs or 0), plate_id)
 
 
-def _row_for(plate: ProductPlate, file: LibraryFile, recipe: PlateRecipe, price_per_gram: float | None) -> PlanRow:
+def _figures(recipe: PlateRecipe, price_per_gram: float | None) -> tuple[int | None, float | None, float | None]:
+    """``(seconds, grams, cost)`` for ONE print of this plate.
+
+    Shared by :func:`_row_for` and :func:`_alternative_for` because a row and
+    the alternative that replaces it on screen are priced by the same rule — the
+    block swaps one for the other and the operator must not see the cost of a
+    plate change its arithmetic along with its file.
+    """
     grams = recipe.filament_used_grams
     secs = estimate_seconds(recipe)
+    return secs, grams, (round(grams * price_per_gram, 2) if grams and price_per_gram else None)
+
+
+def _row_for(plate: ProductPlate, file: LibraryFile, recipe: PlateRecipe, price_per_gram: float | None) -> PlanRow:
+    secs, grams, cost = _figures(recipe, price_per_gram)
     return PlanRow(
         plate_id=plate.id,
         library_file_id=plate.library_file_id,
@@ -159,9 +210,65 @@ def _row_for(plate: ProductPlate, file: LibraryFile, recipe: PlateRecipe, price_
         filename=file.filename,
         print_time_seconds=secs,
         filament_used_grams=grams,
-        cost=round(grams * price_per_gram, 2) if grams and price_per_gram else None,
+        cost=cost,
+        time_unknown=secs is None,
+        printer_model=recipe.printer_model,
+    )
+
+
+def _alternative_for(
+    plate: ProductPlate, file: LibraryFile, recipe: PlateRecipe, price_per_gram: float | None
+) -> PlanAlternative:
+    secs, grams, cost = _figures(recipe, price_per_gram)
+    return PlanAlternative(
+        plate_id=plate.id,
+        library_file_id=plate.library_file_id,
+        plate_index=plate.plate_index,
+        filename=file.filename,
+        printer_model=recipe.printer_model,
+        print_time_seconds=secs,
+        filament_used_grams=grams,
+        cost=cost,
         time_unknown=secs is None,
     )
+
+
+def _attach_alternatives(
+    rows: list[PlanRow], candidates: list[Candidate], counted: set[int], price_per_gram: float | None
+) -> None:
+    """Hang each row's interchangeable plates on it, in place.
+
+    Runs AFTER :func:`cover` and changes nothing it decided: the pick, the
+    counts and the surplus are the picked plate's, and swapping a file is the
+    block's what-if, not a second plan. It costs one pass over the candidates
+    the line already had — no query, no recipe re-read.
+
+    The grouping key is the plate's yield of COUNTED parts as a frozen set of
+    ``(part_id, n)`` pairs, i.e. :func:`line_yield` frozen. Two plates share a
+    key exactly when one print of either covers the same work for this line;
+    everything else about them — the file, the printer model, the time, the
+    weight — is free to differ, and that is the point.
+    """
+    if not rows:
+        return
+    by_key: dict[frozenset[tuple[int, int]], list[Candidate]] = {}
+    key_by_plate: dict[int, frozenset[tuple[int, int]]] = {}
+    for plate, file, recipe in candidates:
+        key = frozenset(line_yield(recipe, counted).items())
+        key_by_plate[plate.id] = key
+        by_key.setdefault(key, []).append((plate, file, recipe))
+    for row in rows:
+        key = key_by_plate.get(row.plate_id)
+        if key is None:
+            continue
+        row.alternatives = sorted(
+            (
+                _alternative_for(plate, file, recipe, price_per_gram)
+                for plate, file, recipe in by_key[key]
+                if plate.id != row.plate_id
+            ),
+            key=lambda alt: (alt.printer_model or "", alt.plate_id),
+        )
 
 
 def cover(
@@ -307,6 +414,7 @@ def plan_lines(
         not_sliced = [plate.id for plate, _file, recipe in recipes if not recipe.sliced]
         candidates = [row for row in recipes if row[2].sliced and line_accepts_materials(line, row[2].materials)]
         rows, surplus, line_truncated = cover(outstanding, candidates, counted, price_per_gram)
+        _attach_alternatives(rows, candidates, counted, price_per_gram)
         truncated = truncated or line_truncated
         yielded: set[int] = set()
         for _plate, _file, recipe in candidates:
@@ -518,6 +626,7 @@ __all__ = [
     "Candidate",
     "LinePlan",
     "OrderPlan",
+    "PlanAlternative",
     "PlanRow",
     "PlanTotals",
     "cover",

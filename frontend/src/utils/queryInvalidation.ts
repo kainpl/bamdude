@@ -26,7 +26,7 @@
 import type { QueryClient } from '@tanstack/react-query';
 
 /**
- * The six caches an order mutation can move, as key prefixes.
+ * The caches an order mutation can move, as key prefixes.
  *
  * Exported as a list because `useWebSocket` cannot call the helper: its
  * invalidations are debounced and staggered through one shared timer, so it
@@ -40,6 +40,11 @@ export const ORDER_VIEW_KEYS = [
   'project-plan', // pass 3: what is still to print
   'customers', // the customer tiles are computed from these orders
   'customer', // and one customer's page with them — the prefix, see above
+  // pass 7: the orders a print dialog offers, and how many prints each still
+  // needs. It IS an order view — the number comes from the plan engine — and it
+  // is mounted only while such a dialog is open, so the prefix costs nothing
+  // off that dialog. See `invalidateOrderCandidates` for the narrow call.
+  'order-candidates',
 ] as const;
 
 /** What the caller touched. Read for call-site legibility today; see below. */
@@ -60,6 +65,21 @@ export function invalidateOrderViews(qc: QueryClient, opts: OrderViewScope = {})
   for (const key of ORDER_VIEW_KEYS) {
     qc.invalidateQueries({ queryKey: [key] });
   }
+}
+
+/**
+ * Mark the print dialogs' order proposal stale, and nothing else.
+ *
+ * ⚠️ **For a queue write that is not an order mutation** — `PrintModal`
+ * queueing a library file. Its `outstanding_prints` is what the picker shows
+ * ("still needs 5 prints"), the hook caches it for 30 s, and a second print of
+ * the same file inside that window would otherwise be offered the count from
+ * before the first. The dialog has no business invalidating the order PAGES,
+ * which it may not even be filing under — hence one key rather than
+ * `invalidateOrderViews`.
+ */
+export function invalidateOrderCandidates(qc: QueryClient): void {
+  qc.invalidateQueries({ queryKey: ['order-candidates'] });
 }
 
 type DeletedKind = 'order' | 'product' | 'customer';

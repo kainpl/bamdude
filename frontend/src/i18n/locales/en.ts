@@ -4828,6 +4828,7 @@ export default {
       row: {
         plate: 'Plate {{n}}',
         wholeFile: 'Whole file',
+        file: 'File',
         covers: 'Covers:',
         count: 'Prints of this plate',
         toQueue_one: '× {{count}} to queue',
@@ -4837,6 +4838,12 @@ export default {
         atZero: 'Nothing to send at 0',
         decrease: 'Fewer',
         increase: 'More',
+      },
+      split: {
+        title: 'Split across files',
+        sum_one: 'Counts must add up to {{count}}',
+        sum_other: 'Counts must add up to {{count}}',
+        apply: 'Queue split',
       },
       col: {
         plate: 'Plate',

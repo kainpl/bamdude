@@ -25,6 +25,7 @@ import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hoo
 import { useOrderCandidates } from '../../hooks/useOrderCandidates';
 import { OrderFilingField, type OrderFilingValue } from '../OrderFilingField';
 import { canQueueWithoutAsking } from '../../utils/bulkQueueEligibility';
+import { invalidateOrderCandidates } from '../../utils/queryInvalidation';
 import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
 import { getBedTypeInfo } from '../../utils/bedType';
@@ -1184,6 +1185,7 @@ export function PrintModal({
         }
         queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
         queryClient.invalidateQueries({ queryKey: ['queue'] });
+        invalidateOrderCandidates(queryClient);
         onSuccess?.();
         onClose();
       } catch (err) {
@@ -1441,6 +1443,7 @@ export function PrintModal({
         }
       }
       queryClient.invalidateQueries({ queryKey: ['queue'] });
+      invalidateOrderCandidates(queryClient);
       onSuccess?.();
       onClose();
     } else if (results.success === 0) {
@@ -1448,6 +1451,7 @@ export function PrintModal({
     } else {
       showToast(t('printModal.partialSuccess', { success: results.success, failed: results.failed }), 'error');
       queryClient.invalidateQueries({ queryKey: ['queue'] });
+      invalidateOrderCandidates(queryClient);
     }
   };
 

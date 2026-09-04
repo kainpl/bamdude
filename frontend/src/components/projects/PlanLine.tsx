@@ -12,6 +12,12 @@ interface PlanLineProps {
   /** The line's plan with the manually added plates already merged into `rows`. */
   line: LinePlan;
   counts: Record<number, number>;
+  /** `row plate_id → the plate that row is set to print`, when the operator has
+   *  switched a row to one of its alternatives. */
+  chosen: Record<number, number>;
+  /** `row plate_id → plate_id → prints`, for the rows the operator has split
+   *  across the files the same part is sliced for. */
+  split: Record<number, Record<number, number>>;
   currency: string | null | undefined;
   showCost: boolean;
   canQueue: boolean;
@@ -21,8 +27,10 @@ interface PlanLineProps {
    *  manually added plate is priced the same way the planned ones were. */
   ratePerGram: number | null;
   onCount: (plateId: number, next: number) => void;
+  onChoose: (rowPlateId: number, plateId: number) => void;
+  onSplit: (rowPlateId: number, next: Record<number, number>) => void;
   onAddPlate: (row: PlanRowData) => void;
-  onEnqueueRow: (plateId: number, count: number) => void;
+  onEnqueueRow: (rowPlateId: number) => void;
   onQueued: () => void;
 }
 
@@ -46,6 +54,13 @@ function rowFromRecipe(plate: PlateRecipe, ratePerGram: number | null): PlanRowD
         ? Math.round(plate.filament_used_grams * ratePerGram * 100) / 100
         : null,
     time_unknown: plate.print_time_seconds == null,
+    // ⚠️ A hand-added plate carries neither. The plate LIST does not say what a
+    // file was sliced for and the engine is the only thing that groups plates
+    // by their counted yield, so inventing either here would be a guess dressed
+    // as an answer: the row prints the plate the operator asked for, and asks
+    // nothing about the others.
+    printer_model: null,
+    alternatives: [],
   };
 }
 
@@ -70,6 +85,8 @@ export function PlanLine({
   order,
   line,
   counts,
+  chosen,
+  split,
   currency,
   showCost,
   canQueue,
@@ -77,6 +94,8 @@ export function PlanLine({
   busy,
   ratePerGram,
   onCount,
+  onChoose,
+  onSplit,
   onAddPlate,
   onEnqueueRow,
   onQueued,
@@ -108,10 +127,13 @@ export function PlanLine({
     return out;
   }, [plates, counted]);
 
-  const projected = projectPlan(line, counts, yields);
+  const projected = projectPlan(line, counts, yields, chosen);
   const surplus = projected.surplusAfter ?? line.surplus_after;
 
-  const planned = new Set(line.rows.map((r) => r.plate_id));
+  // ⚠️ A row's ALTERNATIVES are as planned as the row itself — the row already
+  // offers each of them as a file switch, so offering one here too would put
+  // the same work on screen twice and count it twice in every total.
+  const planned = new Set(line.rows.flatMap((r) => [r.plate_id, ...r.alternatives.map((a) => a.plate_id)]));
   const addable = (plates ?? []).filter((p) => line.candidates.includes(p.id) && !planned.has(p.id));
   // Named or not shown. A bare `#42` is a database id on an operator's screen
   // — it names nothing they can act on, and while the recipes are in flight it
@@ -191,13 +213,17 @@ export function PlanLine({
                     lineId={line.line_id}
                     row={row}
                     count={count}
+                    chosen={chosen[row.plate_id]}
+                    split={split[row.plate_id]}
                     currency={currency}
                     showCost={showCost}
                     canQueue={canQueue}
                     canPrint={canPrint}
                     busy={busy}
                     onCount={(next) => onCount(row.plate_id, next)}
-                    onEnqueue={() => onEnqueueRow(row.plate_id, count)}
+                    onChoose={(plateId) => onChoose(row.plate_id, plateId)}
+                    onSplit={(next) => onSplit(row.plate_id, next)}
+                    onEnqueue={() => onEnqueueRow(row.plate_id)}
                     onQueued={onQueued}
                   />
                 );

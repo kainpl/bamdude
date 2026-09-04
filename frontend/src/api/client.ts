@@ -1539,6 +1539,41 @@ export interface PlanRow {
   /** Sliced, but the file carries no estimate — the plate was ranked on its
    *  useful count alone. */
   time_unknown: boolean;
+  /** The short printer-model name this plate's file was sliced for, or null
+   *  when the file names none — which is "we do not know", never "any". */
+  printer_model: string | null;
+  /** The line's other candidate plates that make exactly the same counted
+   *  parts. Empty is the ordinary case; see `PlanAlternative`. */
+  alternatives: PlanAlternative[];
+}
+
+/**
+ * Another plate of the row's line that makes exactly the same counted parts.
+ *
+ * The same part is routinely sliced once per printer model — two files, one
+ * yield — and the engine's greedy picks one of them, so the other file used to
+ * be invisible in the plan block. The block offers these as a file switch on
+ * the row, preselects the one whose `printer_model` matches the printer being
+ * sent to, and can split the row's count across them: the auto-queue routes an
+ * item by `target_model`, so a file only ever reaches its own printers.
+ *
+ * ⚠️ The figures are **per print**, like a row's. There is deliberately no
+ * count: the counted yield is identical by construction, so the row's count is
+ * the count whichever file is chosen — only the time, the weight and the cost
+ * move with the switch.
+ */
+export interface PlanAlternative {
+  /** `ProductPlate.id`. */
+  plate_id: number;
+  library_file_id: number;
+  /** 0 means the whole file rather than a numbered plate. */
+  plate_index: number;
+  filename: string;
+  printer_model: string | null;
+  print_time_seconds: number | null;
+  filament_used_grams: number | null;
+  cost: number | null;
+  time_unknown: boolean;
 }
 
 export interface LinePlan {

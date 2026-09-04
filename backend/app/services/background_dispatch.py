@@ -1048,7 +1048,10 @@ class BackgroundDispatchService:
             # deliberate. Moving it out would leave the job queued but unclaimed
             # for however long the write takes — which is the exact window the
             # claim exists to close. The cost is bounded: one INSERT plus one
-            # UPDATE, and the enqueue path is not on any hot loop.
+            # UPDATE — plus, only when the caller named an ORDER and no line,
+            # the three small reads ``order_filing.resolve_line_id`` makes to
+            # find it (spec pass 7) — and the enqueue path is not on any hot
+            # loop.
             from backend.app.services.queue_batch import claim_printer_for_direct_print
 
             async with async_session() as claim_db:

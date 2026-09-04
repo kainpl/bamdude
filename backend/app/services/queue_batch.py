@@ -117,6 +117,19 @@ async def claim_printer_for_direct_print(
     if not queue:
         return None
 
+    # The order named without its line — file the line when this plate points at
+    # exactly one (spec pass 7, Decision 4a), the same rule and the same helper
+    # the three queue writers use. ⚠️ "Print now" with quantity 1 never reaches
+    # ``enqueue_batch_copies``, so without this the one door that dispatches
+    # straight to a printer was also the one door that dropped the answer the
+    # operator had just given the Print dialog's Order field. An explicit line is
+    # never overridden; an ambiguous plate stays NULL and the plan's implicit
+    # branch re-asks on every read.
+    if project_id is not None and project_line_id is None:
+        project_line_id = await resolve_line_id(
+            db, project_id=project_id, library_file_id=library_file_id, plate_index=(options or {}).get("plate_id")
+        )
+
     item = PrintQueueItem(
         queue_id=queue.id,
         position=0,

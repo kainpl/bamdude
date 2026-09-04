@@ -1,4 +1,4 @@
-import type { LinePlan, PlanPartCount } from '../../api/client';
+import type { LinePlan, PlanAlternative, PlanPartCount, PlanRow } from '../../api/client';
 
 /**
  * The plan's what-if arithmetic — the ONLY place the client computes anything
@@ -39,6 +39,84 @@ export interface PlanProjection {
 /** `plate_id → parts made by ONE print of that plate, toward this line. */
 export type YieldByPlate = Record<number, PlanPartCount[]>;
 
+/** `row plate_id → the plate the operator set that row to print`, which is
+ *  either the row's own or one of its alternatives. A row absent from the map
+ *  prints the plate the engine picked. */
+export type ChosenByRow = Record<number, number>;
+
+/** `row plate_id → plate_id → how many prints go on that file`. Only rows the
+ *  operator has actually split appear; see `rowDistribution`. */
+export type SplitByRow = Record<number, Record<number, number>>;
+
+/** Everything a row's figures come from, whichever file it is set to.
+ *
+ *  It IS `PlanAlternative` — deliberately, because the whole point of an
+ *  alternative is that it stands in for the row it hangs on. Named separately
+ *  so a reader of `chosenPlate` is not told the row's own plate is an
+ *  alternative to itself. */
+export type ChosenPlate = PlanAlternative;
+
+/**
+ * The plate a row is currently set to print.
+ *
+ * ⚠️ **An unknown choice falls back to the row's own plate rather than to
+ * nothing.** A choice is made against a plan that the farm can move under it at
+ * any moment (`project-plan` is invalidated by every print event anywhere), and
+ * while the block's reseed drops such a choice, the render between the two
+ * would otherwise show a blank row — or, worse, enqueue a plate this row cannot
+ * print.
+ */
+export function chosenPlate(row: PlanRow, chosen?: number): ChosenPlate {
+  const alternative = chosen == null || chosen === row.plate_id ? undefined : row.alternatives.find((a) => a.plate_id === chosen);
+  if (alternative) return alternative;
+  return {
+    plate_id: row.plate_id,
+    library_file_id: row.library_file_id,
+    plate_index: row.plate_index,
+    filename: row.filename,
+    printer_model: row.printer_model,
+    print_time_seconds: row.print_time_seconds,
+    filament_used_grams: row.filament_used_grams,
+    cost: row.cost,
+    time_unknown: row.time_unknown,
+  };
+}
+
+/**
+ * How one row's prints are distributed over files, as enqueue items would have
+ * them: `[{ plate_id, count }]`, files with nothing on them left out.
+ *
+ * Without a split that is the whole count on the chosen file — one item, which
+ * is what the plan block has always sent. With one it is several, and that is
+ * the only way a line's work reaches two printer MODELS: the auto-queue routes
+ * an item by its `target_model`, so a file only ever reaches the printers it
+ * was sliced for.
+ *
+ * The order is the row's own — its plate first, then its alternatives as the
+ * server sorted them — so the body a test reads back is stable.
+ */
+export function rowDistribution(
+  row: PlanRow,
+  count: number,
+  chosen: number | undefined,
+  split: Record<number, number> | undefined,
+): { plate_id: number; count: number }[] {
+  const clamp = (n: number) => Math.max(0, Math.trunc(n));
+  if (!split) {
+    const n = clamp(count);
+    return n > 0 ? [{ plate_id: chosenPlate(row, chosen).plate_id, count: n }] : [];
+  }
+  return [row.plate_id, ...row.alternatives.map((a) => a.plate_id)]
+    .map((plateId) => ({ plate_id: plateId, count: clamp(split[plateId] ?? 0) }))
+    .filter((entry) => entry.count > 0);
+}
+
+/** What a split currently adds up to — the number that has to equal the row's
+ *  count before it can be queued. */
+export function splitTotal(split: Record<number, number> | undefined): number {
+  return Object.values(split ?? {}).reduce((sum, n) => sum + Math.max(0, Math.trunc(n)), 0);
+}
+
 /**
  * What the operator typed in a count box, as a count.
  *
@@ -66,7 +144,12 @@ export function parseCount(value: string, previous: number): number {
  * a row at zero is kept on screen but contributes nothing, to totals or to
  * surplus, and is excluded from the enqueue body.
  */
-export function projectPlan(line: LinePlan, counts: Record<number, number>, yields: YieldByPlate): PlanProjection {
+export function projectPlan(
+  line: LinePlan,
+  counts: Record<number, number>,
+  yields: YieldByPlate,
+  chosen: ChosenByRow = {},
+): PlanProjection {
   let prints = 0;
   let seconds = 0;
   let timeUnknown = false;
@@ -82,12 +165,19 @@ export function projectPlan(line: LinePlan, counts: Record<number, number>, yiel
     const n = Math.max(0, Math.trunc(counts[row.plate_id] ?? row.count));
     if (n === 0) continue;
 
+    // ⚠️ The FIGURES follow the file the row is set to, the YIELD never does:
+    // an alternative is by construction a plate making the same counted parts,
+    // so switching files changes what the farm spends and nothing about what
+    // comes off it. A split (`rowDistribution`) is deliberately NOT projected
+    // here — it is a routing decision taken at the moment of queueing, and the
+    // row's figures stay those of the one file it is showing.
+    const plate = chosenPlate(row, chosen[row.plate_id]);
     prints += n;
-    if (row.print_time_seconds == null || row.time_unknown) timeUnknown = true;
-    else seconds += n * row.print_time_seconds;
-    if (row.filament_used_grams != null) grams += n * row.filament_used_grams;
-    if (row.cost != null) {
-      cost += n * row.cost;
+    if (plate.print_time_seconds == null || plate.time_unknown) timeUnknown = true;
+    else seconds += n * plate.print_time_seconds;
+    if (plate.filament_used_grams != null) grams += n * plate.filament_used_grams;
+    if (plate.cost != null) {
+      cost += n * plate.cost;
       costed = true;
     }
 
