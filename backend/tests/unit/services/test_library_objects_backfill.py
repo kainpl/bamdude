@@ -1,25 +1,31 @@
 """Library 3MFs that never got their object metadata get it — and nothing else.
 
-⚠️ These pin the three ways this sweep can go wrong quietly. A file whose mount
-is down must be *skipped*, not emptied — the row still describes real objects,
-we simply cannot see them today. A file that already carries objects must not be
-re-parsed and re-written, or every boot rewrites the whole library and stamps
-``updated_at`` on rows nothing touched. And a file bound to a product must go
-back through ``sync_product_for_file``: the objects are only half the fix —
-without the sync the product still has no parts and the plan still counts
-nothing.
+⚠️ These pin the four ways this sweep can go wrong quietly.
+
+* A file whose mount is down must be *skipped*, not emptied — the row still
+  describes real objects, we simply cannot see them today.
+* A file that has already been ASKED must not be asked again, or every boot
+  re-opens the library; and the marker is the ``printable_objects`` KEY, never a
+  non-empty value, because an empty map is an answer.
+* The marker must not be ``has_sliced_gcode``: objects also come from
+  ``slice_info.config``, which a saved project carries without any packed
+  g-code — exactly the files this feature exists for.
+* A file bound to a product must go back through ``sync_product_for_file``: the
+  objects are only half the fix — without the sync the product still has no
+  parts and the plan still counts nothing.
 """
 
 from __future__ import annotations
 
 import asyncio
 import io
+import json
 import threading
 import zipfile
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import event, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.models.library import LibraryFile
@@ -32,9 +38,18 @@ from backend.app.services.library_objects_backfill import (
 )
 
 
-def sliced_3mf(objects_by_plate: dict[int, list[str]], *, marker: bytes = b"") -> bytes:
+def sliced_3mf(
+    objects_by_plate: dict[int, list[str]],
+    *,
+    marker: bytes = b"",
+    pack_gcode: bool = True,
+    settings: dict | None = None,
+) -> bytes:
     """A real sliced 3MF — the same shape ``test_product_export_import`` builds:
     ``plate_N.gcode`` for plate discovery, ``slice_info`` for the object names.
+
+    ``pack_gcode=False`` is a **saved project** rather than an exported sliced
+    file: Bambu Studio wrote the slice_info but packed no g-code.
     """
     identify = 100
     plates = []
@@ -50,13 +65,26 @@ def sliced_3mf(objects_by_plate: dict[int, list[str]], *, marker: bytes = b"") -
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("3D/3dmodel.model", '<?xml version="1.0"?><model/>')
         zf.writestr("Metadata/slice_info.config", '<?xml version="1.0"?><config>' + "".join(plates) + "</config>")
-        for index in sorted(objects_by_plate):
-            zf.writestr(f"Metadata/plate_{index}.gcode", b"; sliced\n" + marker)
+        if settings is not None:
+            zf.writestr("Metadata/project_settings.config", json.dumps(settings))
+        if pack_gcode:
+            for index in sorted(objects_by_plate):
+                zf.writestr(f"Metadata/plate_{index}.gcode", b"; sliced\n" + marker)
+        else:
+            zf.writestr("Metadata/note.txt", marker or b"x")
     return buf.getvalue()
 
 
 MONO = sliced_3mf({1: ["hook.stl", "hook.stl", "clip.stl"]}, marker=b"mono")
 MULTI = sliced_3mf({1: ["body.stl"], 2: ["lid.stl", "lid.stl"]}, marker=b"multi")
+#: A saved project, not an exported sliced file — m137 stamps such a container
+#: ``has_sliced_gcode = False``, and it still names its objects.
+PROJECT_ONLY = sliced_3mf({1: ["knob.stl", "knob.stl"]}, marker=b"project", pack_gcode=False)
+SKIPPABLE = sliced_3mf(
+    {1: ["tab.stl"]},
+    marker=b"skippable",
+    settings={"gcode_label_objects": "1", "exclude_object": "1"},
+)
 
 
 def _factory(engine):
@@ -115,6 +143,9 @@ async def library(db_session, tmp_path):
     return ids
 
 
+# ── The worklist: who is work, and what it costs to ask ──────────────────────
+
+
 @pytest.mark.asyncio
 async def test_only_a_3mf_without_objects_is_work(library, test_engine):
     worklist = await files_missing_objects(_factory(test_engine))
@@ -140,21 +171,99 @@ async def test_a_plate_that_carries_objects_is_not_work(db_session, test_engine,
 
 
 @pytest.mark.asyncio
-async def test_a_container_known_to_hold_no_gcode_is_never_work(db_session, test_engine, tmp_path):
-    """``has_sliced_gcode is False`` is the parse's own answer: this container
-    has no ``Metadata/*.gcode``, so it has no printable objects and never will.
-    Left on the worklist it would be re-opened on every single boot, forever,
-    to learn the same nothing."""
-    target = tmp_path / "model.3mf"
-    target.write_bytes(b"PK\x03\x04not-a-zip")
+async def test_a_plate_asked_and_found_nothing_is_not_asked_again(db_session, test_engine, tmp_path):
+    """``parse_per_plate_skip_metadata`` writes ``printable_objects`` for every
+    plate it finds, ``{}`` included — an empty map is an ANSWER. Keying the
+    worklist on emptiness instead of on the key re-opens such files at every
+    single boot, for ever."""
+    target = tmp_path / "asked.gcode.3mf"
+    target.write_bytes(MONO)
     await _add_file(
         db_session,
-        filename="model.3mf",
+        filename="asked.gcode.3mf",
         path=str(target),
-        metadata={"has_sliced_gcode": False},
+        metadata={"plates": [{"index": 1, "printable_objects": {}}]},
     )
 
     assert await files_missing_objects(_factory(test_engine)) == []
+
+
+@pytest.mark.asyncio
+async def test_a_project_3mf_with_no_packed_gcode_is_work_and_gets_its_objects(db_session, test_engine, tmp_path):
+    """⚠️ The file this whole feature exists for. Objects have a third source —
+    ``Metadata/slice_info.config`` — which Bambu Studio writes on every save of a
+    sliced plate, while ``plate_N.gcode`` is packed only on "export sliced file".
+    m137 stamped ``has_sliced_gcode = False`` across every legacy project 3MF, so
+    a worklist that excluded on that flag would skip precisely these files."""
+    target = tmp_path / "project.3mf"
+    target.write_bytes(PROJECT_ONLY)
+    file_id = await _add_file(
+        db_session,
+        filename="project.3mf",
+        path=str(target),
+        metadata={"has_sliced_gcode": False, "print_time_seconds": 120},
+    )
+
+    assert [fid for fid, _ in await files_missing_objects(_factory(test_engine))] == [file_id]
+    assert (await backfill_library_objects(_factory(test_engine))).filled == 1
+
+    db_session.expire_all()
+    row = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == file_id))).scalar_one()
+    assert sorted(row.file_metadata["printable_objects"].values()) == ["knob.stl", "knob.stl"]
+    # Still true of the file, and not ours to revise.
+    assert row.file_metadata["has_sliced_gcode"] is False
+    assert await files_missing_objects(_factory(test_engine)) == []
+
+
+@pytest.mark.asyncio
+async def test_only_3mf_rows_are_fetched_at_all(db_session, test_engine, tmp_path):
+    """⚠️ One SELECT, prefiltered in SQL. Fetching every non-deleted row's
+    ``file_metadata`` so Python can JSON-parse it makes a boot task proportional
+    to the whole library — on the event loop, for rows that can never be work."""
+    for name in ("a.stl", "b.step", "c.gcode", "d.png"):
+        (tmp_path / name).write_bytes(b"x")
+        await _add_file(db_session, filename=name, path=str(tmp_path / name), metadata=None)
+    (tmp_path / "e.gcode.3mf").write_bytes(MONO)
+    only = await _add_file(db_session, filename="e.gcode.3mf", path=str(tmp_path / "e.gcode.3mf"), metadata=None)
+
+    seen: list[tuple[str, object]] = []
+
+    def spy(conn, cursor, statement, parameters, context, executemany):
+        if "library_files" in statement:
+            seen.append((statement, parameters))
+
+    event.listen(test_engine.sync_engine, "before_cursor_execute", spy)
+    try:
+        worklist = await files_missing_objects(_factory(test_engine))
+    finally:
+        event.remove(test_engine.sync_engine, "before_cursor_execute", spy)
+
+    assert [fid for fid, _ in worklist] == [only]
+    assert len(seen) == 1, seen
+    assert "%.3mf" in str(seen[0][1])
+
+
+@pytest.mark.asyncio
+async def test_a_trashed_file_is_not_work(db_session, test_engine, tmp_path):
+    """A file in the trash is not part of the library, and restoring it re-reads
+    nothing — the sweep would be parsing files the user deleted."""
+    target = tmp_path / "trashed.gcode.3mf"
+    target.write_bytes(MONO)
+    row = LibraryFile(
+        filename="trashed.gcode.3mf",
+        file_path=str(target),
+        file_type="gcode",
+        file_size=1,
+        file_metadata=None,
+        deleted_at=datetime.now(timezone.utc),
+    )
+    db_session.add(row)
+    await db_session.commit()
+
+    assert await files_missing_objects(_factory(test_engine)) == []
+
+
+# ── What gets written ────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -240,6 +349,49 @@ async def test_the_plates_of_a_multi_plate_file_each_get_their_own(db_session, t
 
 
 @pytest.mark.asyncio
+async def test_a_plate_the_cached_list_never_held_is_added(db_session, test_engine, tmp_path):
+    """A cached plate list can be SHORTER than the file — the parse that wrote it
+    saw fewer plates, or was cut off. Merging only into what is there leaves the
+    product permanently blind to the plates nobody recorded."""
+    target = tmp_path / "short.gcode.3mf"
+    target.write_bytes(MULTI)
+    fid = await _add_file(
+        db_session,
+        filename="short.gcode.3mf",
+        path=str(target),
+        metadata={"plates": [{"index": 1, "objects": ["body.stl"]}], "is_multi_plate": False},
+    )
+
+    assert (await backfill_library_objects(_factory(test_engine))).filled == 1
+
+    db_session.expire_all()
+    row = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == fid))).scalar_one()
+    assert sorted(p["index"] for p in row.file_metadata["plates"]) == [1, 2]
+    assert row.file_metadata["is_multi_plate"] is True
+
+
+@pytest.mark.asyncio
+async def test_skip_objects_supported_is_derived_like_a_fresh_upload(db_session, test_engine, tmp_path):
+    """The badge column is denormalised out of the metadata at every write site.
+    A backfilled row that gains the objects but keeps a stale ``False`` badges
+    differently from the same file uploaded fresh."""
+    target = tmp_path / "skippable.gcode.3mf"
+    target.write_bytes(SKIPPABLE)
+    fid = await _add_file(db_session, filename="skippable.gcode.3mf", path=str(target), metadata=None)
+
+    assert (await backfill_library_objects(_factory(test_engine))).filled == 1
+
+    db_session.expire_all()
+    row = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == fid))).scalar_one()
+    assert row.file_metadata["gcode_label_objects"] is True
+    assert row.file_metadata["exclude_object"] is True
+    assert row.skip_objects_supported is True
+
+
+# ── What must never take the sweep (or the upgrade) down ─────────────────────
+
+
+@pytest.mark.asyncio
 async def test_an_unreachable_file_is_counted_and_nothing_is_written(db_session, test_engine, tmp_path):
     """A mount that is down is indistinguishable from a file somebody deleted,
     and the row still describes real objects. Skipping is the only safe answer —
@@ -275,6 +427,111 @@ async def test_a_corrupt_container_is_counted_and_never_raises(db_session, test_
     db_session.expire_all()
     row = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == good_id))).scalar_one()
     assert row.file_metadata["printable_objects"]
+
+
+@pytest.mark.asyncio
+async def test_a_worklist_that_cannot_be_read_returns_an_empty_summary(test_engine, monkeypatch):
+    """⚠️ It runs inside ``m158.seed()``. An exception out of here leaves the
+    upgrade committed with no ``_migrations`` row, and the next boot re-enters
+    the whole migration — because one SELECT failed."""
+
+    async def boom(session_factory):
+        raise RuntimeError("no such column")
+
+    monkeypatch.setattr(backfill, "files_missing_objects", boom)
+
+    summary = await backfill_library_objects(_factory(test_engine))
+
+    assert (summary.scanned, summary.filled) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_chunk_that_will_not_write_does_not_take_the_others_down(
+    db_session, test_engine, tmp_path, monkeypatch
+):
+    """Each chunk is its own transaction, so a chunk that fails costs its own
+    files and nothing else — the sweep is resumable at the next start anyway."""
+    ids = []
+    for name in ("one.gcode.3mf", "two.gcode.3mf"):
+        (tmp_path / name).write_bytes(MONO)
+        ids.append(await _add_file(db_session, filename=name, path=str(tmp_path / name), metadata=None))
+
+    real = backfill._write_chunk
+    calls = {"n": 0}
+
+    async def flaky(session_factory, chunk, *, sync_products):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("locked")
+        return await real(session_factory, chunk, sync_products=sync_products)
+
+    monkeypatch.setattr(backfill, "_write_chunk", flaky)
+
+    summary = await backfill_library_objects(_factory(test_engine), batch_size=1)
+
+    assert (summary.scanned, summary.filled) == (2, 1)
+    db_session.expire_all()
+    first = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == ids[0]))).scalar_one()
+    second = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == ids[1]))).scalar_one()
+    assert first.file_metadata is None
+    assert second.file_metadata["printable_objects"]
+
+
+@pytest.mark.asyncio
+async def test_the_writes_go_in_chunks(db_session, test_engine, tmp_path, monkeypatch):
+    """⚠️ The m148 rule: one transaction per chunk, sized for LOCK TIME. A single
+    transaction around the whole library takes SQLite's write lock for the length
+    of the sweep, and unrelated queries die naming an innocent victim."""
+    for n in range(backfill.BATCH_SIZE + 1):
+        name = f"f{n}.gcode.3mf"
+        (tmp_path / name).write_bytes(MONO)
+        await _add_file(db_session, filename=name, path=str(tmp_path / name), metadata=None)
+
+    sizes: list[int] = []
+    real = backfill._write_chunk
+
+    async def spy(session_factory, chunk, *, sync_products):
+        sizes.append(len(chunk))
+        return await real(session_factory, chunk, sync_products=sync_products)
+
+    monkeypatch.setattr(backfill, "_write_chunk", spy)
+
+    summary = await backfill_library_objects(_factory(test_engine))
+
+    assert sizes == [backfill.BATCH_SIZE, 1]
+    assert summary.filled == backfill.BATCH_SIZE + 1
+
+
+@pytest.mark.asyncio
+async def test_the_parse_never_runs_on_the_event_loop(library, test_engine, monkeypatch):
+    """⚠️ Unzipping a 3MF off a network share on the loop stalls every other
+    request in the process — the m148 rule, which this sweep runs under too."""
+    seen: list[str] = []
+    real = backfill._extract_objects
+
+    def spy(file_path):
+        seen.append(threading.current_thread().name)
+        return real(file_path)
+
+    monkeypatch.setattr(backfill, "_extract_objects", spy)
+
+    await backfill_library_objects(_factory(test_engine))
+
+    assert seen and all(name != threading.main_thread().name for name in seen)
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_is_cancellable(library, test_engine):
+    """It rides the lifespan, so shutdown cancels it mid-file. Nothing here may
+    hold a session across the await that gets cancelled."""
+    task = asyncio.create_task(backfill_library_objects(_factory(test_engine)))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+# ── Products: the half that makes the objects visible ────────────────────────
 
 
 @pytest.mark.asyncio
@@ -314,10 +571,43 @@ async def test_a_product_bound_to_the_file_gains_its_parts(db_session, test_engi
 
 
 @pytest.mark.asyncio
+async def test_sync_products_false_writes_the_objects_and_touches_no_product(
+    db_session, test_engine, tmp_path, monkeypatch
+):
+    """⚠️ What ``m158.seed()`` asks for. ``sync_product_for_file`` emits
+    entity-wide ORM selects against TODAY's models; a migration running mid-chain
+    may not, or the day a later migration adds a column to ``product_parts`` this
+    seed emits SQL the database does not have. The migration seeds the parts in
+    text SQL instead."""
+    target = tmp_path / "linked.gcode.3mf"
+    target.write_bytes(MONO)
+    fid = await _add_file(db_session, filename="linked.gcode.3mf", path=str(target), metadata=None)
+    product = Product(name="Desk Lamp")
+    db_session.add(product)
+    await db_session.flush()
+    await db_session.execute(insert(product_files).values(product_id=product.id, library_file_id=fid))
+    await db_session.commit()
+
+    calls: list[int] = []
+
+    async def spy(db, *, library_file_id, product_ids):
+        calls.append(library_file_id)
+
+    monkeypatch.setattr(backfill, "sync_product_for_file", spy)
+
+    summary = await backfill_library_objects(_factory(test_engine), sync_products=False)
+
+    assert (summary.filled, summary.products_synced) == (1, 0)
+    assert calls == []
+    db_session.expire_all()
+    row = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == fid))).scalar_one()
+    assert row.file_metadata["printable_objects"]
+
+
+@pytest.mark.asyncio
 async def test_a_file_that_belongs_to_nobody_costs_no_sync(library, test_engine, monkeypatch):
-    """The inverse of the test above: the overwhelming majority of a library
-    belongs to no product, and a sync per file would be a plate reconciliation
-    per file for nothing."""
+    """The inverse: the overwhelming majority of a library belongs to no product,
+    and a sync per file would be a plate reconciliation per file for nothing."""
     calls: list[int] = []
 
     async def spy(db, *, library_file_id, product_ids):
@@ -329,57 +619,6 @@ async def test_a_file_that_belongs_to_nobody_costs_no_sync(library, test_engine,
 
     assert summary.filled == 1
     assert calls == [] and summary.products_synced == 0
-
-
-@pytest.mark.asyncio
-async def test_a_trashed_file_is_not_work(db_session, test_engine, tmp_path):
-    """A file in the trash is not part of the library, and restoring it re-reads
-    nothing — the sweep would be parsing files the user deleted."""
-    from datetime import datetime, timezone
-
-    target = tmp_path / "trashed.gcode.3mf"
-    target.write_bytes(MONO)
-    row = LibraryFile(
-        filename="trashed.gcode.3mf",
-        file_path=str(target),
-        file_type="gcode",
-        file_size=1,
-        file_metadata=None,
-        deleted_at=datetime.now(timezone.utc),
-    )
-    db_session.add(row)
-    await db_session.commit()
-
-    assert await files_missing_objects(_factory(test_engine)) == []
-
-
-@pytest.mark.asyncio
-async def test_the_parse_never_runs_on_the_event_loop(library, test_engine, monkeypatch):
-    """⚠️ Unzipping a 3MF off a network share on the loop stalls every other
-    request in the process — the m148 rule, which this sweep runs under too."""
-    seen: list[str] = []
-    real = backfill._extract_objects
-
-    def spy(file_path):
-        seen.append(threading.current_thread().name)
-        return real(file_path)
-
-    monkeypatch.setattr(backfill, "_extract_objects", spy)
-
-    await backfill_library_objects(_factory(test_engine))
-
-    assert seen and all(name != threading.main_thread().name for name in seen)
-
-
-@pytest.mark.asyncio
-async def test_the_sweep_is_cancellable(library, test_engine):
-    """It rides the lifespan, so shutdown cancels it mid-file. Nothing here may
-    hold a session across the await that gets cancelled."""
-    task = asyncio.create_task(backfill_library_objects(_factory(test_engine)))
-    await asyncio.sleep(0)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
 
 
 # ── The boot half: the same sweep, wired into the lifespan ───────────────────

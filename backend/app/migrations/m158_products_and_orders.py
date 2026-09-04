@@ -105,15 +105,24 @@ under-provisioned). ``project_procurement.quantity_acquired`` stays absolute.
 Miss this and "780 brackets + 780 screws" asks for 608 400 screws and can never
 complete a unit.
 
-``seed(session_factory)`` therefore does two jobs, in this order and only in
-this order. First the one-time ``print_archive_parts`` backfill for
-pre-existing archives: users upgrade through migrations only, so that
-population has to happen here; ``scripts/backfill_archive_parts.py`` remains
-the manual RE-RUN tool (rule changes, troubleshooting), not the normal upgrade
-path. It is idempotent — archives that already have rows are skipped, so the
-retry after a failed run adds nothing to what the first pass wrote. ⚠️ **Then**
-rule D, which reads exactly the rows that backfill has just written — swap the
-two and every history-only product stays part-less, silently.
+``seed(session_factory)`` therefore does three jobs, in this order and only in
+this order. **First** the library object backfill
+(``services/library_objects_backfill.py``) plus
+``_seed_printed_parts_from_plates``: a 3MF that never got its
+``printable_objects`` gives its product no printed parts, and the conversion
+above has already read that empty metadata — so the objects are filled and the
+parts derived from them here. It asks that sweep NOT to touch products
+(``sync_products=False``): the service reconciles through
+``sync_product_for_file``, which emits entity-wide ORM selects, and a migration
+running mid-chain may not. **Then** the one-time ``print_archive_parts``
+backfill for pre-existing archives: users upgrade through migrations only, so
+that population has to happen here; ``scripts/backfill_archive_parts.py``
+remains the manual RE-RUN tool (rule changes, troubleshooting), not the normal
+upgrade path. It is idempotent — archives that already have rows are skipped, so
+the retry after a failed run adds nothing to what the first pass wrote.
+⚠️ **Then** rule D, which reads exactly the rows that backfill has just written
+and must not claim a product the library half can already measure — reorder any
+of the three and a product stays part-less, silently.
 
 FK CASCADE is honoured by PostgreSQL only — this codebase never sets
 ``PRAGMA foreign_keys`` on SQLite; hard-delete paths clean up explicitly.
@@ -776,19 +785,152 @@ async def upgrade(conn):
     await _drop_legacy(conn)
 
 
-async def seed(session_factory):
-    """One-time parts-ledger backfill for pre-existing archives.
+async def _seed_printed_parts_from_plates(session) -> int:
+    """Every product plate's object keys become printed parts it does not have.
 
-    ``scripts/backfill_archive_parts.py`` stays as the manual RE-RUN tool (rule
-    changes, troubleshooting); first population happens here so every user gets
-    it on upgrade. Idempotent: archives that already have rows are skipped, so a
-    ``DEBUG=true`` re-run adds nothing. Path resolution and error posture mirror
-    m114_skip_objects_supported's precedent for a migration that opens archive
-    3MFs. Named-column selects only — this seed must survive later schema drift.
+    The text-SQL twin of ``product_sync.seed_parts_for_product``, run once in
+    ``seed()`` after the library object backfill has filled the metadata this
+    reads. Returns the number of parts created.
+
+    ⚠️ **Why not ``sync_product_for_file``**, which is the single writer of this
+    everywhere else: it emits ``select(ProductPlate)`` and ``select(ProductPart)``
+    — entity-wide ORM selects against TODAY's models. A migration runs mid-chain,
+    so the day a later migration adds a column to either table this seed would
+    emit SQL the database does not have yet, for every user upgrading from an
+    older release. Named columns only, here as everywhere in this file.
+
+    ⚠️ **Only ADDS.** A key already covered by a part's ``name_key`` or by one of
+    its aliases is left alone, so an operator's edits survive and a re-run writes
+    nothing. A product with no plate rows is untouched — a plate is what says
+    "this file makes parts for this product", and rule D handles the rest.
+    """
+    rows = (
+        await session.execute(
+            text(
+                "SELECT pp.product_id, pp.plate_index, lf.file_metadata "
+                "FROM product_plates pp JOIN library_files lf ON lf.id = pp.library_file_id "
+                "ORDER BY pp.product_id, pp.plate_index"
+            )
+        )
+    ).all()
+    by_product: dict[int, list[tuple[int, dict]]] = {}
+    for product_id, plate_index, raw_meta in rows:
+        try:
+            meta = _load_meta(raw_meta)
+        except Exception:  # noqa: BLE001 — one unreadable file_metadata must not abort the upgrade
+            logger.warning("m158 seed: unreadable metadata on a plate of product %s", product_id, exc_info=True)
+            continue
+        by_product.setdefault(product_id, []).append((plate_index or 0, meta))
+
+    created = 0
+    for product_id, plates in by_product.items():
+        existing = (
+            await session.execute(
+                text("SELECT name_key, aliases, sort_order FROM product_parts WHERE product_id = :p"),
+                {"p": product_id},
+            )
+        ).all()
+        known: set[str] = set()
+        next_sort = -1
+        for part_key, raw_aliases, sort_order in existing:
+            known.add(part_key)
+            aliases = raw_aliases
+            if isinstance(aliases, str):
+                try:
+                    aliases = json.loads(aliases)
+                except (TypeError, ValueError):
+                    aliases = []
+            for alias in aliases or []:
+                known.add(str(alias))
+            next_sort = max(next_sort, int(sort_order or 0))
+        next_sort += 1
+
+        for plate_index, meta in plates:
+            try:
+                counts, display = _plate_key_counts(meta, plate_index)
+            except Exception:  # noqa: BLE001 — one corrupt file_metadata must not abort the upgrade
+                logger.warning("m158 seed: skipped plate metadata of product %s", product_id, exc_info=True)
+                continue
+            for key, instances in counts.items():
+                if key in known:
+                    continue
+                await session.execute(
+                    text(
+                        "INSERT INTO product_parts "
+                        "(product_id, kind, name, name_key, qty_per_unit, aliases, auto, sort_order) "
+                        "VALUES (:pid, 'printed', :n, :k, :q, :al, :auto, :so)"
+                    ),
+                    {
+                        "pid": product_id,
+                        "n": display[key],
+                        "k": key,
+                        "q": instances,
+                        "al": json.dumps([key]),
+                        "auto": 1 if is_sqlite() else True,
+                        "so": next_sort,
+                    },
+                )
+                # ⚠️ Marked known before the flush: within one product a key
+                # belongs to exactly one part, and two plates carrying the same
+                # object would otherwise each insert one and collide on
+                # ``uq_product_parts_key``.
+                known.add(key)
+                next_sort += 1
+                created += 1
+    return created
+
+
+async def seed(session_factory):
+    """Library object metadata, then the parts-ledger backfill, then rule D.
+
+    The archive half: ``scripts/backfill_archive_parts.py`` stays as the manual
+    RE-RUN tool (rule changes, troubleshooting); first population happens here so
+    every user gets it on upgrade. Idempotent: archives that already have rows
+    are skipped, so a ``DEBUG=true`` re-run adds nothing. Path resolution and
+    error posture mirror m114_skip_objects_supported's precedent for a migration
+    that opens archive 3MFs. Named-column selects only — this seed must survive
+    later schema drift, which is also why the library half below seeds its parts
+    through ``_seed_printed_parts_from_plates`` rather than the ORM service.
     """
     from backend.app.core.config import settings as _settings
     from backend.app.services.archive import extract_printable_objects_from_3mf
+    from backend.app.services.library_objects_backfill import backfill_library_objects
     from backend.app.services.part_names import tally_objects
+
+    # ── First: the LIBRARY half of the same hole ────────────────────────────
+    # A 3MF whose ``file_metadata`` never got ``printable_objects`` — uploaded
+    # before the extractor existed, or scanned while its mount was down — gives
+    # its product no printed parts and the plan nothing to count. It runs FIRST
+    # because everything after it reads ``file_metadata``: the parts seeded from
+    # it immediately below, and rule D at the end, which must not treat a product
+    # we can now measure from its own file as history-only.
+    #
+    # ⚠️ ``sync_products=False``. The sweep's own reconciliation goes through
+    # ``sync_product_for_file``, which emits entity-wide ORM selects — a
+    # migration running mid-chain may not. ``_seed_printed_parts_from_plates``
+    # does that job in named-column text SQL instead. The boot sweep in
+    # ``main.py`` keeps the ORM path for the files this upgrade could not reach.
+    #
+    # ⚠️ The conversion in ``upgrade()`` has already run and committed by now, so
+    # it read the EMPTY metadata; the parts it could not derive are derived here
+    # instead. Filling the objects before the conversion is not available to us —
+    # ``upgrade`` is one transaction, and unzipping a library inside it is the
+    # very lock-holding this codebase forbids (m148).
+    objects = await backfill_library_objects(session_factory, sync_products=False)
+    if objects.filled or objects.skipped_unreachable or objects.skipped_unparseable:
+        logger.info(
+            "m158 seed: object metadata filled for %d of %d library 3MF(s) (%d unreachable, %d unparseable)",
+            objects.filled,
+            objects.scanned,
+            objects.skipped_unreachable,
+            objects.skipped_unparseable,
+        )
+    if objects.filled:
+        async with session_factory() as session:
+            seeded = await _seed_printed_parts_from_plates(session)
+            await session.commit()
+        if seeded:
+            logger.info("m158 seed: %d printed part(s) derived from the newly filled objects", seeded)
 
     async with session_factory() as session:
         have_rows = {
@@ -847,31 +989,12 @@ async def seed(session_factory):
             logger.info("m158 seed: backfilled part rows for %d archive(s)", backfilled)
         await session.commit()
 
-    # The library half of the same hole. The archive backfill above cannot help
-    # a product whose FILE is the one that never knew its objects (uploaded
-    # before the extractor existed, or scanned while its mount was down): such a
-    # product gets no printed parts and the plan nothing to count. Same posture
-    # as the block above — idempotent (the worklist query is the marker, so a
-    # ``DEBUG=true`` re-run adds nothing), never raises, and a file this upgrade
-    # could not reach is retried by the boot sweep in ``main.py``'s lifespan.
-    from backend.app.services.library_objects_backfill import backfill_library_objects
-
-    objects = await backfill_library_objects(session_factory)
-    if objects.filled or objects.skipped_unreachable or objects.skipped_unparseable:
-        logger.info(
-            "m158 seed: object metadata filled for %d of %d library 3MF(s) "
-            "(%d unreachable, %d unparseable), %d product(s) resynced",
-            objects.filled,
-            objects.scanned,
-            objects.skipped_unreachable,
-            objects.skipped_unparseable,
-            objects.products_synced,
-        )
-
-    # AFTER both backfills, never before: rule D reads exactly the rows the
-    # archive backfill has just written, and a product whose file has only now
-    # gained its objects gains real printed parts from the library backfill —
-    # either way, reordering leaves a history-only product part-less.
+    # AFTER the archive backfill, never before: rule D reads exactly the rows it
+    # has just written. And by now the library backfill at the TOP of this
+    # function has given every product whose FILE was the empty one its real
+    # printed parts, so rule D correctly leaves those alone — a product we can
+    # measure from its own file is not a history-only product. Reordering any of
+    # the three leaves a product part-less, silently.
     await seed_history_only_products(session_factory)
 
 

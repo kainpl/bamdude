@@ -1079,12 +1079,46 @@ def _sliced_3mf(objects_by_plate: dict[int, list[str]]) -> bytes:
     return buf.getvalue()
 
 
+async def _seed_watching_for_orm(engine, monkeypatch) -> list[int]:
+    """``seed()`` with ``sync_product_for_file`` spied on — it must never fire.
+
+    ⚠️ Not style. That function emits ``select(ProductPlate)`` and
+    ``select(ProductPart)`` — entity-wide selects built from TODAY's models. A
+    migration runs mid-chain, so the day a later migration adds a column to
+    either table this seed would emit SQL the database does not have yet, for
+    every user upgrading from an older release. The seed derives its parts in
+    named-column text SQL instead.
+    """
+    from backend.app.services import library_objects_backfill as _backfill, product_sync as _sync
+
+    calls: list[int] = []
+
+    async def spy(db, *, library_file_id, product_ids):
+        calls.append(library_file_id)
+
+    monkeypatch.setattr(_backfill, "sync_product_for_file", spy)
+    monkeypatch.setattr(_sync, "sync_product_for_file", spy)
+    await _run_seed(engine)
+    return calls
+
+
 @pytest.mark.asyncio
-async def test_the_seed_fills_a_library_file_that_never_knew_its_objects(db_session, test_engine, tmp_path):
-    """Uploaded before the extractor existed, or scanned off a mount that was
-    down: the row has no ``printable_objects``, so its product gets no printed
-    parts. The seed fills both, in that order — the objects, then the sync that
-    turns them into parts."""
+async def test_a_converted_order_gets_parts_from_a_file_that_never_knew_its_objects(
+    db_session, test_engine, tmp_path, monkeypatch
+):
+    """⚠️ What running the library backfill FIRST in ``seed()`` buys.
+
+    The conversion reads ``file_metadata`` to derive a product's printed parts. A
+    3MF that never got its ``printable_objects`` gives it nothing, so the order
+    converts to a product with a plate and no parts — nothing to measure, no
+    progress, a plan that counts nothing. The seed fills the objects and then
+    derives the parts from them, before rule D can claim the product as
+    history-only.
+    """
+    async with test_engine.begin() as conn:
+        for ddl in _LEGACY_DDL:
+            await conn.execute(text(ddl))
+
     target = tmp_path / "bracket.gcode.3mf"
     target.write_bytes(_sliced_3mf({1: ["bracket.stl", "bracket.stl", "lid.stl"]}))
     file = LibraryFile(
@@ -1092,42 +1126,101 @@ async def test_the_seed_fills_a_library_file_that_never_knew_its_objects(db_sess
         file_path=str(target),
         file_size=1,
         file_type="gcode",
-        file_metadata=None,
+        file_metadata=None,  # never parsed — the whole premise
     )
-    product = Product(name="Bracket kit")
-    db_session.add_all([file, product])
+    project = Project(name="Bracket order", status="active")
+    db_session.add_all([file, project])
     await db_session.flush()
-    await db_session.execute(insert(product_files).values(product_id=product.id, library_file_id=file.id))
+    await db_session.execute(text("UPDATE projects SET is_template = 0 WHERE id = :id"), {"id": project.id})
+    await db_session.execute(
+        text("INSERT INTO library_file_projects (file_id, project_id) VALUES (:f, :p)"),
+        {"f": file.id, "p": project.id},
+    )
+    await db_session.execute(
+        text(
+            "INSERT INTO project_print_plan_items (project_id, library_file_id, copies, order_index, plate_index) "
+            "VALUES (:p, :f, 1, 0, 0)"
+        ),
+        {"p": project.id, "f": file.id},
+    )
     await db_session.commit()
-    file_id, product_id = file.id, product.id
+    file_id, order_id = file.id, project.id
 
-    await _run_seed(test_engine)
+    await _run_upgrade(test_engine)
     db_session.expire_all()
-
-    row = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == file_id))).scalar_one()
-    assert sorted(row.file_metadata["printable_objects"].values()) == ["bracket.stl", "bracket.stl", "lid.stl"]
-    parts = (await db_session.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars().all()
-    assert {p.name_key: p.qty_per_unit for p in parts} == {"bracket.stl": 2, "lid.stl": 1}
+    line = await _line_of(db_session, order_id)
+    product_id = line.product_id
+    # The conversion had nothing to read: a plate, and no parts on it.
+    assert await _parts_of(db_session, product_id) == {}
     plates = (
         (await db_session.execute(select(ProductPlate).where(ProductPlate.product_id == product_id))).scalars().all()
     )
     assert [p.plate_index for p in plates] == [0]
 
+    calls = await _seed_watching_for_orm(test_engine, monkeypatch)
+
+    db_session.expire_all()
+    row = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == file_id))).scalar_one()
+    assert sorted(row.file_metadata["printable_objects"].values()) == ["bracket.stl", "bracket.stl", "lid.stl"]
+    parts = await _parts_of(db_session, product_id)
+    assert {key: part.qty_per_unit for key, part in parts.items()} == {"bracket.stl": 2, "lid.stl": 1}
+    assert all(part.auto for part in parts.values())
+    assert calls == []
+
     # A ``DEBUG=true`` re-run must add nothing: the worklist query is the marker,
-    # and the file now has objects, so the second pass does not even open it.
+    # and the parts step only ever ADDS a key no part covers.
     stamp = row.updated_at
     await _run_seed(test_engine)
     db_session.expire_all()
     again = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == file_id))).scalar_one()
     assert again.updated_at == stamp
-    parts = (await db_session.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars().all()
-    assert len(parts) == 2
+    assert len(await _parts_of(db_session, product_id)) == 2
 
 
 @pytest.mark.asyncio
-async def test_the_seed_survives_a_library_file_whose_mount_is_down(db_session, test_engine, caplog):
+async def test_an_operator_edited_part_survives_the_seed(db_session, test_engine, tmp_path):
+    """The parts step only ADDS. A key already covered by a part's ``name_key``
+    or by one of its aliases is left exactly as the operator left it — the seed
+    is not a re-derivation of the product."""
+    target = tmp_path / "kit.gcode.3mf"
+    target.write_bytes(_sliced_3mf({1: ["bracket.stl", "bracket.stl", "lid.stl"]}))
+    file = LibraryFile(
+        filename="kit.gcode.3mf", file_path=str(target), file_size=1, file_type="gcode", file_metadata=None
+    )
+    product = Product(name="Bracket kit")
+    db_session.add_all([file, product])
+    await db_session.flush()
+    db_session.add(ProductPlate(product_id=product.id, library_file_id=file.id, plate_index=0))
+    db_session.add(
+        ProductPart(
+            product_id=product.id,
+            kind="printed",
+            name="Bracket",
+            name_key="bracket",
+            qty_per_unit=7,
+            aliases=["bracket.stl"],
+            auto=False,
+        )
+    )
+    await db_session.execute(insert(product_files).values(product_id=product.id, library_file_id=file.id))
+    await db_session.commit()
+    product_id = product.id
+
+    await _run_seed(test_engine)
+    db_session.expire_all()
+
+    parts = await _parts_of(db_session, product_id)
+    assert set(parts) == {"bracket", "lid.stl"}
+    assert parts["bracket"].qty_per_unit == 7 and parts["bracket"].auto is False
+    assert parts["lid.stl"].qty_per_unit == 1 and parts["lid.stl"].auto is True
+
+
+@pytest.mark.asyncio
+async def test_the_seed_survives_a_library_file_whose_mount_is_down(db_session, test_engine, monkeypatch):
     """An unreachable path is skipped and retried at the next start — it must
     never take the upgrade down, and it must never be recorded as "no objects"."""
+    from backend.app.services import library_objects_backfill as _backfill
+
     file = LibraryFile(
         filename="offline.gcode.3mf",
         file_path="//nas/share/offline.gcode.3mf",
@@ -1139,9 +1232,19 @@ async def test_the_seed_survives_a_library_file_whose_mount_is_down(db_session, 
     await db_session.commit()
     file_id = file.id
 
-    with caplog.at_level(logging.WARNING):
-        await _run_seed(test_engine)
+    seen: dict = {}
+    real = _backfill.backfill_library_objects
 
+    async def capture(session_factory, **kwargs):
+        seen["summary"] = await real(session_factory, **kwargs)
+        return seen["summary"]
+
+    monkeypatch.setattr(_backfill, "backfill_library_objects", capture)
+
+    await _run_seed(test_engine)
+
+    assert seen["summary"].skipped_unreachable == 1
+    assert seen["summary"].filled == 0
     db_session.expire_all()
     row = (await db_session.execute(select(LibraryFile).where(LibraryFile.id == file_id))).scalar_one()
     assert row.file_metadata == {"print_time_seconds": 900}
