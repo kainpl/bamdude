@@ -13,15 +13,29 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
 import { api } from '../../../api/client';
-import type { Order, OrderPlan, Permission, PlateRecipe } from '../../../api/client';
+import type { Order, OrderPlan, PlanRow as PlanRowData, Permission, PlateRecipe } from '../../../api/client';
 import { PlanBlock } from '../../../components/projects/PlanBlock';
 
 /** What the mocked `useAuth` grants — reset in `beforeEach`, narrowed per test. */
 const auth = vi.hoisted(() => ({ granted: new Set<string>() }));
+
+/** The printer leg is asserted on its PROPS. What "to printer…" hands the modal
+ *  — the file, the plate, the order, the line and the locked dispatch mode — is
+ *  the whole of the contract between the plan and the printer; rendering the
+ *  real modal would test the modal instead, and it is a heavy tree that fetches
+ *  half the farm. */
+const printModal = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
+
+vi.mock('../../../components/PrintModal', () => ({
+  PrintModal: (props: Record<string, unknown>) => {
+    printModal.props = props;
+    return null;
+  },
+}));
 
 // The block gates its two row actions on two DIFFERENT permissions, and the
 // real `AuthProvider` in the render helper always resolves the same admin. Only
@@ -46,6 +60,22 @@ function OrderProbe({ id, onFetch }: { id: number; onFetch: () => void }) {
     },
   });
   return null;
+}
+
+/** A refetch of the plan the operator did not ask for — a print finishing on
+ *  another printer invalidates `project-plan` farm-wide (the archive events
+ *  carry no `project_id`), and this is that event with nothing else attached. */
+function Refetcher({ id }: { id: number }) {
+  const queryClient = useQueryClient();
+  return (
+    <button
+      type="button"
+      data-testid="force-refetch"
+      onClick={() => queryClient.invalidateQueries({ queryKey: ['project-plan', id] })}
+    >
+      refetch
+    </button>
+  );
 }
 
 const order = {
@@ -147,9 +177,46 @@ const plates: PlateRecipe[] = [
   },
 ];
 
+/** A candidate the greedy did NOT pick — the only shape in which the "+ plate"
+ *  menu has anything to offer. Priced nowhere on the wire: its cost has to be
+ *  derived from the rate a costed server row implies (2.00 for 100 g). */
+const spare: PlateRecipe = {
+  id: 300,
+  library_file_id: 9,
+  plate_index: 2,
+  filename: 'extra.3mf',
+  sliced: true,
+  yield: [{ part_id: 1, name: 'Body', count: 3 }],
+  unassigned: [],
+  materials: ['PETG'],
+  colors: [],
+  print_time_seconds: 900,
+  filament_used_grams: 50,
+};
+
+const planWithSpare: OrderPlan = {
+  ...plan,
+  lines: [{ ...plan.lines[0], candidates: [100, 200, 300] }],
+};
+
+/** The same spare plate, once the server has planned it itself. */
+const spareRow: PlanRowData = {
+  plate_id: 300,
+  library_file_id: 9,
+  plate_index: 2,
+  filename: 'extra.3mf',
+  count: 2,
+  useful: [{ part_id: 1, name: 'Body', count: 3 }],
+  print_time_seconds: 900,
+  filament_used_grams: 50,
+  cost: 1,
+  time_unknown: false,
+};
+
 describe('PlanBlock', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    printModal.props = null;
     auth.granted = new Set(['projects:update', 'queue:create', 'printers:control']);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(plan);
     vi.spyOn(api, 'getProductPlates').mockResolvedValue(plates);
@@ -234,7 +301,10 @@ describe('PlanBlock', () => {
   it('names a part no plate can make, and points at the product’s files', async () => {
     render(<PlanBlock order={order} canEdit />);
 
-    const row = await screen.findByTestId('plan-unsatisfiable-2');
+    // ⚠️ The id carries the LINE beside the part: a part id is unique per
+    // product, not per order, so two lines of one product would collide on a
+    // bare `plan-unsatisfiable-2`.
+    const row = await screen.findByTestId('plan-unsatisfiable-10-2');
     expect(row).toHaveTextContent(/no plate for/i);
     expect(row).toHaveTextContent('Cap');
     expect(row).toHaveTextContent('PETG');
@@ -326,11 +396,248 @@ describe('PlanBlock', () => {
     expect(screen.queryByTestId('plan-row-10-100-printer')).not.toBeInTheDocument();
   });
 
-  it('hides every queue action from a reader', async () => {
+  it('hides every queue action from a reader, and keeps the printer', async () => {
     render(<PlanBlock order={order} canEdit={false} />);
 
     expect(await screen.findByTestId('plan-row-10-100')).toBeInTheDocument();
     expect(screen.queryByTestId('plan-enqueue-all')).not.toBeInTheDocument();
     expect(screen.queryByTestId('plan-row-10-100-queue')).not.toBeInTheDocument();
+    // ⚠️ `canEdit` is the ORDER's own gate (a closed order, a read-only view)
+    // and it does not speak for the printers. Somebody holding
+    // `printers:control` may still send a plate to a machine.
+    expect(screen.getByTestId('plan-row-10-100-printer')).toBeInTheDocument();
+  });
+
+  // ---- the operator's edits vs. the farm's own events ----
+
+  it('keeps the counts and the hand-added rows across a refetch that changed nothing', async () => {
+    // ⚠️ `project-plan` is invalidated by every `print_complete` /
+    // `archive_created` on the farm, because those events carry no
+    // `project_id`. Reseeding on the CLOCK therefore wiped the operator's
+    // half-made plan whenever any printer anywhere finished a job.
+    const get = vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithSpare);
+    vi.spyOn(api, 'getProductPlates').mockResolvedValue([...plates, spare]);
+
+    render(
+      <>
+        <PlanBlock order={order} canEdit />
+        <Refetcher id={1} />
+      </>,
+    );
+
+    fireEvent.change(await screen.findByTestId('plan-line-10-add'), { target: { value: '300' } });
+    fireEvent.change(screen.getByTestId('plan-row-10-100-count'), { target: { value: '5' } });
+    expect(screen.getByTestId('plan-row-10-300')).toBeInTheDocument();
+
+    // The product's NAME is the one thing that moves, and it is deliberately
+    // outside the signature: it is what makes the arrival of the second
+    // response observable at all (an identical payload changes nothing on
+    // screen, so nothing can be waited for), and it is itself a change the
+    // counts must survive.
+    get.mockResolvedValue({
+      ...planWithSpare,
+      lines: [{ ...planWithSpare.lines[0], product_name: 'Flask, renamed' }],
+    });
+    fireEvent.click(screen.getByTestId('force-refetch'));
+
+    expect(await screen.findByText('Flask, renamed')).toBeInTheDocument();
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(5);
+    expect(screen.getByTestId('plan-row-10-300')).toBeInTheDocument();
+  });
+
+  it('reseeds the counts when the plan itself changed', async () => {
+    const get = vi.spyOn(api, 'getOrderPlan').mockResolvedValue(plan);
+
+    render(
+      <>
+        <PlanBlock order={order} canEdit />
+        <Refetcher id={1} />
+      </>,
+    );
+
+    fireEvent.change(await screen.findByTestId('plan-row-10-100-count'), { target: { value: '5' } });
+    expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(5);
+
+    // Six bodies outstanding instead of twelve: an edit made against the old
+    // plan has nothing left to mean, so the server's counts come back.
+    get.mockResolvedValue({
+      ...plan,
+      lines: [{ ...plan.lines[0], outstanding_before: [{ part_id: 1, name: 'Body', count: 6 }] }],
+    });
+    fireEvent.click(screen.getByTestId('force-refetch'));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+
+    await waitFor(() => expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(1));
+  });
+
+  it('drops a hand-added plate once the server plans it, rather than showing it twice', async () => {
+    const get = vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithSpare);
+    vi.spyOn(api, 'getProductPlates').mockResolvedValue([...plates, spare]);
+
+    render(
+      <>
+        <PlanBlock order={order} canEdit />
+        <Refetcher id={1} />
+      </>,
+    );
+
+    fireEvent.change(await screen.findByTestId('plan-line-10-add'), { target: { value: '300' } });
+    expect(screen.getAllByTestId('plan-row-10-300')).toHaveLength(1);
+
+    get.mockResolvedValue({
+      ...plan,
+      lines: [{ ...plan.lines[0], candidates: [100, 200, 300], rows: [...plan.lines[0].rows, spareRow] }],
+    });
+    fireEvent.click(screen.getByTestId('force-refetch'));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+
+    await waitFor(() => expect(screen.getByTestId('plan-row-10-300-count')).toHaveValue(2));
+    expect(screen.getAllByTestId('plan-row-10-300')).toHaveLength(1);
+  });
+
+  // ---- the affordances themselves ----
+
+  it('refuses to queue more than 999 of one plate, and says why', async () => {
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.change(await screen.findByTestId('plan-row-10-100-count'), { target: { value: '1000' } });
+
+    // ⚠️ Disabled with the reason, never clamped: 1000 is a number the
+    // operator typed on purpose, and silently turning it into 999 would queue
+    // work nobody asked for.
+    expect(screen.getByTestId('plan-row-10-100-queue')).toBeDisabled();
+    expect(screen.getByTestId('plan-row-10-100-queue')).toHaveAttribute('title', 'At most 999 per plate');
+    expect(screen.getByTestId('plan-enqueue-all')).toBeDisabled();
+    expect(screen.getByTestId('plan-enqueue-all')).toHaveAttribute('title', 'At most 999 per plate');
+
+    fireEvent.change(screen.getByTestId('plan-row-10-100-count'), { target: { value: '999' } });
+
+    expect(screen.getByTestId('plan-row-10-100-queue')).toBeEnabled();
+    expect(screen.getByTestId('plan-enqueue-all')).toBeEnabled();
+  });
+
+  it('sends one row on its own button, and only that row', async () => {
+    const enqueue = vi
+      .spyOn(api, 'enqueueOrderPlan')
+      .mockResolvedValue({ created: [{ line_id: 10, plate_id: 200, queue_item_ids: [7] }] });
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-200-inc'));
+    fireEvent.click(screen.getByTestId('plan-row-10-200-queue'));
+
+    await waitFor(() =>
+      expect(enqueue).toHaveBeenCalledWith(1, {
+        items: [{ plate_id: 200, count: 2, line_id: 10 }],
+        target: { kind: 'auto' },
+      }),
+    );
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('prices a hand-added plate at the rate the plan itself implies', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithSpare);
+    vi.spyOn(api, 'getProductPlates').mockResolvedValue([...plates, spare]);
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.change(await screen.findByTestId('plan-line-10-add'), { target: { value: '300' } });
+
+    const row = screen.getByTestId('plan-row-10-300');
+    expect(row).toHaveTextContent('extra.3mf');
+    // One print, and the figures come from the RECIPE — the plan never
+    // mentioned this plate.
+    expect(screen.getByTestId('plan-row-10-300-count')).toHaveValue(1);
+    expect(row).toHaveTextContent('15m');
+    expect(row).toHaveTextContent('50.0');
+    // ⚠️ No cost on the wire for a plate nobody planned: 2.00 for 100 g on
+    // row 100 is the farm's rate, and 50 g of it is 1.00.
+    expect(row).toHaveTextContent('₴1.00');
+  });
+
+  it('offers the add-plate menu to somebody who can only print', async () => {
+    // Adding a row is a client-side what-if — nothing is written anywhere. A
+    // `printers:control` user reaches the printer button through it.
+    auth.granted = new Set(['projects:update', 'printers:control']);
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithSpare);
+    vi.spyOn(api, 'getProductPlates').mockResolvedValue([...plates, spare]);
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.change(await screen.findByTestId('plan-line-10-add'), { target: { value: '300' } });
+
+    expect(screen.getByTestId('plan-row-10-300-printer')).toBeInTheDocument();
+    expect(screen.queryByTestId('plan-row-10-300-queue')).not.toBeInTheDocument();
+  });
+
+  it('sends nothing, and says so, when every row is at zero', async () => {
+    const enqueue = vi.spyOn(api, 'enqueueOrderPlan');
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-dec'));
+    fireEvent.click(screen.getByTestId('plan-row-10-200-dec'));
+    fireEvent.click(screen.getByTestId('plan-enqueue-all'));
+
+    expect(await screen.findByText('Nothing to send — every row is at zero.')).toBeInTheDocument();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('names the steppers and says why a button at zero is disabled', async () => {
+    render(<PlanBlock order={order} canEdit />);
+
+    const row = within(await screen.findByTestId('plan-row-10-100'));
+    expect(row.getByLabelText('Fewer')).toBeInTheDocument();
+    expect(row.getByLabelText('More')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('plan-row-10-100-dec'));
+
+    expect(screen.getByTestId('plan-row-10-100-dec')).toBeDisabled();
+    expect(screen.getByTestId('plan-row-10-100-dec')).toHaveAttribute('title', 'Nothing to send at 0');
+    expect(screen.getByTestId('plan-row-10-100-queue')).toBeDisabled();
+    expect(screen.getByTestId('plan-row-10-100-queue')).toHaveAttribute('title', 'Nothing to send at 0');
+  });
+
+  it('heads the plate table with named columns', async () => {
+    render(<PlanBlock order={order} canEdit />);
+
+    const headers = within(await screen.findByTestId('plan-line-10')).getAllByRole('columnheader');
+    expect(headers.map((h) => h.textContent)).toEqual([
+      'Plate',
+      'Covers',
+      'Prints',
+      'Print time',
+      'Filament, g',
+      'Cost',
+      'Actions',
+    ]);
+  });
+
+  it('hands the printer leg the file, the plate, the order and the line', async () => {
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+
+    expect(printModal.props).toMatchObject({
+      libraryFileId: 5,
+      preselectedPlateId: 1,
+      projectId: 1,
+      projectLineId: 10,
+      // Routing, not dispatching: "to printer…" already answered the only
+      // question the toggle asks, so the modal opens on that leg and stays.
+      initialDispatchMode: 'specific',
+      lockDispatchMode: true,
+    });
+
+    cleanup();
+    printModal.props = null;
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-200-printer'));
+
+    // ⚠️ `plate_index` 0 is "the whole file", not "plate 0" — the modal must
+    // be handed nothing rather than a zero it would pin.
+    expect(printModal.props?.preselectedPlateId).toBeUndefined();
   });
 });

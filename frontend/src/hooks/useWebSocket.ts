@@ -332,8 +332,14 @@ export function useWebSocket() {
    * ⚠️ A print is the one thing that changes a project's data without anybody
    * touching the project. The archive events carry no ``project_id``, so the
    * whole prefix is invalidated — that costs nothing off a project page,
-   * because TanStack only refetches *active* queries and these five are
+   * because TanStack only refetches *active* queries and these six are
    * mounted nowhere else.
+   *
+   * ⚠️ On a project page it is NOT free: `project-plan` is refetched by a
+   * print finishing on any printer in the farm, and `PlanBlock` therefore
+   * reseeds the operator's counts on the plan's CONTENT rather than on the
+   * fact of a refetch. Adding a key here that carries unsaved edits needs the
+   * same treatment.
    *
    * Kept as one list rather than repeated per case: the three archive events
    * below all answer the same question, and three copies drift. Reported as

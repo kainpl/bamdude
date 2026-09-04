@@ -1495,11 +1495,12 @@ export interface PlanEnqueueItem {
 
 /** `auto` = the auto-queue distributor picks the printer; `printer` = that
  *  printer's own queue. Naming a printer is a ROUTING choice, never a dispatch
- *  one — nothing here or downstream asks whether it is ready. */
-export interface PlanEnqueueTarget {
-  kind: 'auto' | 'printer';
-  printer_id?: number | null;
-}
+ *  one — nothing here or downstream asks whether it is ready.
+ *
+ *  ⚠️ A union, not one shape with an optional id: the server's own validator
+ *  422s a `printer` target with no `printer_id` and an `auto` target that names
+ *  one, and a type that admits both pairings only lets the mistake reach it. */
+export type PlanEnqueueTarget = { kind: 'auto' } | { kind: 'printer'; printer_id: number };
 
 export interface PlanEnqueueRequest {
   items: PlanEnqueueItem[];

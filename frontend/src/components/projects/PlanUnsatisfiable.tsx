@@ -4,6 +4,7 @@ import { AlertTriangle } from 'lucide-react';
 import type { PlanPartCount } from '../../api/client';
 
 interface PlanUnsatisfiableProps {
+  lineId: number;
   productId: number;
   material: string | null;
   part: PlanPartCount;
@@ -20,12 +21,20 @@ interface PlanUnsatisfiableProps {
  * disabled** (pass-3 scope: slicing a part from the plan is a later pass). The
  * disabled button is kept rather than dropped so the answer to "why can't I
  * just slice it here" is on screen instead of absent.
+ *
+ * ⚠️ **The test id carries the LINE id beside the part's**, exactly as
+ * `PlanRow`'s does: a `ProductPart.id` is unique per product, not per order, so
+ * two lines of the same product put the same part on screen twice and a bare
+ * `plan-unsatisfiable-2` would match both.
  */
-export function PlanUnsatisfiable({ productId, material, part, colSpan }: PlanUnsatisfiableProps) {
+export function PlanUnsatisfiable({ lineId, productId, material, part, colSpan }: PlanUnsatisfiableProps) {
   const { t } = useTranslation();
 
   return (
-    <tr data-testid={`plan-unsatisfiable-${part.part_id}`} className="border-b border-bambu-dark-tertiary last:border-0">
+    <tr
+      data-testid={`plan-unsatisfiable-${lineId}-${part.part_id}`}
+      className="border-b border-bambu-dark-tertiary last:border-0"
+    >
       <td colSpan={colSpan} className="px-3 py-2">
         <div className="flex items-center gap-2 flex-wrap text-sm">
           <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />

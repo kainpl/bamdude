@@ -146,29 +146,66 @@ export function PlanLine({
       {(line.rows.length > 0 || line.unsatisfiable.length > 0) && (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
+            {/* Every column but the first carries a bare number or a glyph, and
+                a table of bare numbers says nothing about what they measure.
+                The labels the footer already uses are reused verbatim so the
+                same figure is not named two ways on one screen. */}
+            <thead>
+              <tr className="text-xs text-bambu-gray border-b border-bambu-dark-tertiary">
+                <th scope="col" className="px-3 py-2 text-left font-medium">
+                  {t('orders.plan.col.plate')}
+                </th>
+                <th scope="col" className="px-3 py-2 text-left font-medium">
+                  {t('orders.plan.col.covers')}
+                </th>
+                <th scope="col" className="px-3 py-2 text-left font-medium">
+                  {t('orders.plan.totals.prints')}
+                </th>
+                <th scope="col" className="px-3 py-2 text-right font-medium">
+                  {t('orders.plan.totals.time')}
+                </th>
+                <th scope="col" className="px-3 py-2 text-right font-medium">
+                  {t('orders.plan.totals.grams')}
+                </th>
+                {showCost && (
+                  <th scope="col" className="px-3 py-2 text-right font-medium">
+                    {t('orders.plan.totals.cost')}
+                  </th>
+                )}
+                <th scope="col" className="px-3 py-2 text-right font-medium">
+                  {t('orders.plan.col.actions')}
+                </th>
+              </tr>
+            </thead>
             <tbody>
-              {line.rows.map((row) => (
-                <PlanRow
-                  key={row.plate_id}
-                  order={order}
-                  lineId={line.line_id}
-                  row={row}
-                  count={Math.max(0, Math.trunc(counts[row.plate_id] ?? row.count))}
-                  currency={currency}
-                  showCost={showCost}
-                  canQueue={canQueue}
-                  canPrint={canPrint}
-                  busy={busy}
-                  onCount={(next) => onCount(row.plate_id, next)}
-                  onEnqueue={() =>
-                    onEnqueueRow(row.plate_id, Math.max(0, Math.trunc(counts[row.plate_id] ?? row.count)))
-                  }
-                  onQueued={onQueued}
-                />
-              ))}
+              {line.rows.map((row) => {
+                // ⚠️ ONE expression, computed once. The count the row SHOWS and
+                // the count its button SENDS have to be the same number, and
+                // two copies of the arithmetic are two chances for them not to
+                // be.
+                const count = Math.max(0, Math.trunc(counts[row.plate_id] ?? row.count));
+                return (
+                  <PlanRow
+                    key={row.plate_id}
+                    order={order}
+                    lineId={line.line_id}
+                    row={row}
+                    count={count}
+                    currency={currency}
+                    showCost={showCost}
+                    canQueue={canQueue}
+                    canPrint={canPrint}
+                    busy={busy}
+                    onCount={(next) => onCount(row.plate_id, next)}
+                    onEnqueue={() => onEnqueueRow(row.plate_id, count)}
+                    onQueued={onQueued}
+                  />
+                );
+              })}
               {line.unsatisfiable.map((part) => (
                 <PlanUnsatisfiable
                   key={part.part_id}
+                  lineId={line.line_id}
                   productId={line.product_id}
                   material={line.material}
                   part={part}
@@ -192,7 +229,12 @@ export function PlanLine({
           )}
         </div>
 
-        {canQueue && addable.length > 0 && (
+        {/* ⚠️ Gated on EITHER permission, because adding a row writes nothing:
+            it is a client-side what-if that puts a plate on screen at count 1.
+            Somebody who holds only `printers:control` reaches "to printer…"
+            through this menu, and gating it on `queue:create` alone hid the
+            only door they have. */}
+        {(canQueue || canPrint) && addable.length > 0 && (
           <select
             data-testid={`plan-line-${line.line_id}-add`}
             value=""

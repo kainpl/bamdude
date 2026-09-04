@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LinePlan, PlanPartCount } from '../../../api/client';
-import { projectPlan } from '../../../components/projects/planMath';
+import { parseCount, projectPlan } from '../../../components/projects/planMath';
 
 /**
  * Two plates against 120 bodies and 10 caps — the parent spec's worked case,
@@ -148,5 +148,32 @@ describe('projectPlan', () => {
     const p = projectPlan(empty, {}, {});
 
     expect(p).toEqual({ surplusAfter: [], prints: 0, seconds: 0, grams: 0, cost: null });
+  });
+});
+
+describe('parseCount', () => {
+  it('takes a whole number and floors it at zero', () => {
+    expect(parseCount('7', 1)).toBe(7);
+    expect(parseCount('0', 1)).toBe(0);
+    expect(parseCount('2.9', 1)).toBe(2);
+    // A minus sign is a count nobody can print — the floor is the same one the
+    // engine applies to a line's outstanding work.
+    expect(parseCount('-4', 3)).toBe(0);
+  });
+
+  it('refuses a number that is not finite, keeping what was there', () => {
+    // ⚠️ `Number('1e999')` is `Infinity`, and `Number(x) || 0` waves it
+    // through: the row then rendered `Infinityh NaMm` and the arithmetic below
+    // it went with it. A count the browser cannot represent is not an edit.
+    expect(parseCount('1e999', 4)).toBe(4);
+    expect(parseCount('-1e999', 4)).toBe(4);
+    expect(parseCount('abc', 4)).toBe(4);
+  });
+
+  it('reads an emptied box as zero, not as a refusal', () => {
+    // Clearing the box to type a new number must not snap the old one back —
+    // the operator would be unable to type at all.
+    expect(parseCount('', 4)).toBe(0);
+    expect(parseCount('   ', 4)).toBe(0);
   });
 });

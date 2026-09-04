@@ -5,6 +5,7 @@ import { formatMoney } from '../../utils/currency';
 import { formatDuration } from '../../utils/date';
 import { Button } from '../Button';
 import { PrintModal } from '../PrintModal';
+import { parseCount } from './planMath';
 
 /** The server's own ceiling on one enqueue item (`PlanEnqueueItem.count`). */
 export const MAX_PER_PLATE = 999;
@@ -65,6 +66,7 @@ export function PlanRow({
   const [printing, setPrinting] = useState(false);
 
   const tooMany = count > MAX_PER_PLATE;
+  const atZero = count === 0;
   const step = 'px-2 py-1 rounded border border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary disabled:opacity-40 disabled:hover:bg-transparent';
 
   return (
@@ -87,11 +89,17 @@ export function PlanRow({
 
       <td className="px-3 py-2">
         <div className="inline-flex items-center gap-1">
+          {/* ⚠️ A bare `−` / `+` is invisible to a screen reader and to every
+              test that asks for a control by name — the glyphs carry the whole
+              meaning. The title on the disabled one answers the question the
+              disabling raises rather than leaving it on screen unexplained. */}
           <button
             type="button"
             data-testid={`plan-row-${lineId}-${row.plate_id}-dec`}
             className={step}
-            disabled={count <= 0}
+            aria-label={t('orders.plan.row.decrease')}
+            title={atZero ? t('orders.plan.row.atZero') : undefined}
+            disabled={atZero}
             onClick={() => onCount(count - 1)}
           >
             −
@@ -102,13 +110,14 @@ export function PlanRow({
             data-testid={`plan-row-${lineId}-${row.plate_id}-count`}
             value={count}
             aria-label={t('orders.plan.row.count')}
-            onChange={(e) => onCount(Math.max(0, Math.trunc(Number(e.currentTarget.value) || 0)))}
+            onChange={(e) => onCount(parseCount(e.currentTarget.value, count))}
             className="w-16 px-2 py-1 text-right tabular-nums bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:border-bambu-green focus:outline-none"
           />
           <button
             type="button"
             data-testid={`plan-row-${lineId}-${row.plate_id}-inc`}
             className={step}
+            aria-label={t('orders.plan.row.increase')}
             onClick={() => onCount(count + 1)}
           >
             +
@@ -137,8 +146,8 @@ export function PlanRow({
               size="sm"
               variant="outline"
               data-testid={`plan-row-${lineId}-${row.plate_id}-queue`}
-              disabled={busy || count === 0 || tooMany}
-              title={tooMany ? t('orders.plan.row.tooMany') : undefined}
+              disabled={busy || atZero || tooMany}
+              title={tooMany ? t('orders.plan.row.tooMany') : atZero ? t('orders.plan.row.atZero') : undefined}
               onClick={onEnqueue}
             >
               {t('orders.plan.row.toQueue', { count })}

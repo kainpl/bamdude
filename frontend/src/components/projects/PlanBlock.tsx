@@ -21,13 +21,16 @@ import { projectPlan } from './planMath';
  * what is printed, in progress and queued, and this is where the operator
  * adjusts the counts and sends the result to the queue.
  *
- * ⚠️ **The counts are a what-if that lives only until the next refetch.** They
- * are seeded from the response — an empty `counts` map means "every row at the
- * count the server planned" — and cleared whenever `dataUpdatedAt` moves, i.e.
- * on every refetch, identical payload included. That is the design's own
- * choice (decision 9): the plan is recomputed from scratch on every read, so an
- * edit made against an older plan has nothing left to mean. Anything the
- * operator wants to keep, they send to the queue.
+ * ⚠️ **The counts are a what-if that lives until the PLAN changes — not until
+ * the next refetch.** They are seeded from the response (an empty `counts` map
+ * means "every row at the count the server planned") and cleared when the
+ * plan's own content moves: decision 9 says an edit made against an older plan
+ * has nothing left to mean, and that is still true. But `project-plan` is
+ * invalidated by every `print_complete` / `archive_created` on the FARM —
+ * archive events carry no `project_id`, so the whole prefix goes — and clearing
+ * on the clock meant a print finishing on an unrelated printer wiped the
+ * operator's half-made plan mid-edit. Hence the signature below: the same
+ * payload back is not a change.
  *
  * ⚠️ **Nothing here asks whether a printer is ready.** Sending a row to a
  * queue is a routing decision; readiness — plate clear, drying, stagger,
@@ -47,7 +50,6 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
     isLoading,
     isError,
     refetch,
-    dataUpdatedAt,
   } = useQuery({
     queryKey: ['project-plan', order.id],
     queryFn: () => api.getOrderPlan(order.id),
@@ -61,10 +63,60 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
   const [counts, setCounts] = useState<Record<number, Record<number, number>>>({});
   const [added, setAdded] = useState<Record<number, PlanRowData[]>>({});
 
+  /**
+   * Everything about the plan the operator's edits are an answer TO.
+   *
+   * ⚠️ **Content, never the clock.** Anything not in here — the product's name,
+   * the totals, the order of two identical reads — leaves the edits alone,
+   * which is the whole point: the block is refetched by farm-wide print events
+   * that have nothing to do with this order. Anything that IS in here means the
+   * plan the operator was editing no longer exists.
+   */
+  const signature = useMemo(
+    () =>
+      JSON.stringify(
+        (plan?.lines ?? []).map((line) => [
+          line.line_id,
+          line.rows.map((row) => [row.plate_id, row.count]),
+          line.outstanding_before.map((p) => [p.part_id, p.count]),
+          line.surplus_after.map((p) => [p.part_id, p.count]),
+          line.unsatisfiable.map((p) => [p.part_id, p.count]),
+          line.candidates,
+          line.not_sliced,
+        ]),
+      ),
+    [plan],
+  );
+
   useEffect(() => {
     setCounts({});
-    setAdded({});
-  }, [dataUpdatedAt]);
+  }, [signature]);
+
+  // ⚠️ A hand-added plate is not seeded from anything, so a reseed cannot
+  // restore it — it survives every refetch instead, and is dropped only when it
+  // has stopped meaning what it meant: the line is gone, the plate is no longer
+  // a candidate, or the server has planned that plate itself (keeping it would
+  // then show one plate on two rows).
+  useEffect(() => {
+    setAdded((prev) => {
+      const lines = plan?.lines;
+      if (!lines) return prev;
+      const next: Record<number, PlanRowData[]> = {};
+      for (const line of lines) {
+        const before = prev[line.line_id];
+        if (!before?.length) continue;
+        const planned = new Set(line.rows.map((row) => row.plate_id));
+        const kept = before.filter((row) => line.candidates.includes(row.plate_id) && !planned.has(row.plate_id));
+        if (kept.length > 0) next[line.line_id] = kept.length === before.length ? before : kept;
+      }
+      // Same rows, same arrays: hand back the state that is already there, so a
+      // refetch that drops nothing does not re-render the block either.
+      const same =
+        Object.keys(next).length === Object.keys(prev).length &&
+        Object.entries(next).every(([lineId, rows]) => prev[Number(lineId)] === rows);
+      return same ? prev : next;
+    });
+  }, [signature, plan]);
 
   // The endpoint demands `projects:update` AND `queue:create`; a user missing
   // either never sees the button rather than being handed a 403 on click.
@@ -162,9 +214,13 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
     </h2>
   );
 
+  // ⚠️ `plan-block` marks THE BLOCK, on every branch — it answers "is the plan
+  // on this page", not "has the plan arrived". Carrying it on the loaded and
+  // failed branches only made "the page mounts the block" a question that could
+  // be asked of the page just before the plan resolved, and answered no.
   if (!active) {
     return (
-      <section className="space-y-3">
+      <section className="space-y-3" data-testid="plan-block">
         {heading}
         <p className="text-sm text-bambu-gray" data-testid="plan-closed">
           {t('orders.plan.closed')}
@@ -175,7 +231,7 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
 
   if (isLoading) {
     return (
-      <section className="space-y-3">
+      <section className="space-y-3" data-testid="plan-block">
         {heading}
         <div className="flex items-center gap-2 text-bambu-gray text-sm">
           <Loader2 className="w-4 h-4 animate-spin" />

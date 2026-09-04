@@ -40,6 +40,25 @@ export interface PlanProjection {
 export type YieldByPlate = Record<number, PlanPartCount[]>;
 
 /**
+ * What the operator typed in a count box, as a count.
+ *
+ * ⚠️ **`Number(value) || 0` is not enough, and the way it fails is silent.**
+ * `Number('1e999')` is `Infinity`, which is truthy, so it went straight through
+ * — and the row then rendered `Infinityh NaMm` while every total below it went
+ * to `NaN`. A value the browser cannot represent is not an edit at all, so the
+ * previous count stands; the same goes for anything that is not a number.
+ *
+ * An EMPTY box is the one non-number that does mean something: it is zero, not
+ * a refusal, or the operator could never clear the field to type a new figure.
+ */
+export function parseCount(value: string, previous: number): number {
+  if (value.trim() === '') return 0;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return previous;
+  return Math.max(0, Math.trunc(n));
+}
+
+/**
  * Project one line's plan at the counts the operator currently has on screen.
  *
  * `counts` overrides a row's server count by `plate_id`; a row absent from it
