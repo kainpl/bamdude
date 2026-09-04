@@ -31,7 +31,12 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const fileInput = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false);
+  // ⚠️ WHICH row is busy, not THAT one is. A single flag disabled the download
+  // button of every attachment in the list while one of them was being
+  // fetched, so a list of ten looked broken because one large file was slow.
+  // `null` is "nothing in flight"; the filename is the row's own key.
+  const [downloadingName, setDownloadingName] = useState<string | null>(null);
+  const [deletingName, setDeletingName] = useState<string | null>(null);
 
   const attachments = order.attachments ?? [];
 
@@ -45,12 +50,16 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
 
   const remove = useMutation({
     mutationFn: (filename: string) => api.deleteProjectAttachment(order.id, filename),
+    // The row that was asked for is the row that goes quiet — `remove.isPending`
+    // alone cannot say which one, and the mutation is shared by every row.
+    onMutate: (filename: string) => setDeletingName(filename),
     onSuccess: refresh,
     onError: (e: Error) => showToast(e.message, 'error'),
+    onSettled: () => setDeletingName(null),
   });
 
   const download = async (attachment: ProjectAttachment) => {
-    setBusy(true);
+    setDownloadingName(attachment.filename);
     try {
       const token = getAuthToken();
       const response = await fetch(api.getProjectAttachmentUrl(order.id, attachment.filename), {
@@ -68,7 +77,7 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
     } catch (e) {
       showToast((e as Error).message, 'error');
     } finally {
-      setBusy(false);
+      setDownloadingName(null);
     }
   };
 
@@ -118,8 +127,9 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
               </div>
               <button
                 type="button"
+                data-testid={`attachment-download-${attachment.filename}`}
                 onClick={() => download(attachment)}
-                disabled={busy}
+                disabled={downloadingName === attachment.filename}
                 title={t('common.download')}
                 className="p-1.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors disabled:opacity-50"
               >
@@ -128,8 +138,9 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
               {canEdit && (
                 <button
                   type="button"
+                  data-testid={`attachment-delete-${attachment.filename}`}
                   onClick={() => remove.mutate(attachment.filename)}
-                  disabled={remove.isPending}
+                  disabled={deletingName === attachment.filename}
                   title={t('orders.attachments.delete')}
                   className="p-1.5 rounded text-status-error hover:bg-bambu-dark-tertiary transition-colors disabled:opacity-50"
                 >

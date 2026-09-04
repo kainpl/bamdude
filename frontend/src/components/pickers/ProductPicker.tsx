@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import { selectableProducts } from '../../utils/projects';
+import { useBoundIds } from '../../hooks/useBoundIds';
 import { useToast } from '../../contexts/ToastContext';
 
 const INPUT_CLASS =
@@ -29,7 +30,12 @@ export function ProductPicker({ value, onChange, disabled, allowCreate }: Produc
     queryFn: () => api.getProducts({}),
   });
 
-  const bound = selectableProducts(products, value != null ? [value] : null);
+  // Whatever this picker ARRIVED bound to stays offered, in the catalog or
+  // not — the same rule, from the same hook, as `LinkToProductsModal`. Keying
+  // it off the live `value` instead made the offer blink out the moment the
+  // catalog query came back with the product retired.
+  const keepOffered = useBoundIds(value);
+  const bound = selectableProducts(products, keepOffered);
   const query = filter.trim().toLowerCase();
   const filtered = query ? bound.filter((p) => p.name.toLowerCase().includes(query)) : bound;
   const offerCreate = Boolean(allowCreate) && filtered.length === 0 && query.length > 0;

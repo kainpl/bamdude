@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
@@ -23,6 +23,8 @@ import { OrderAttachments } from '../../components/projects/OrderAttachments';
 import { DuplicateOrderModal } from '../../components/projects/DuplicateOrderModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
+import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
+import { useOrderDetail } from '../../hooks/useOrderDetail';
 
 /**
  * One order: who it is for, what it asks for, and how much of it is printed.
@@ -41,6 +43,7 @@ export function OrderPage() {
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const forgetOrder = useForgetOnUnmount(['project', id]);
 
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -51,11 +54,7 @@ export function OrderPage() {
     isLoading,
     isError,
     error,
-  } = useQuery({
-    queryKey: ['project', id],
-    queryFn: () => api.getOrder(id),
-    enabled: Number.isFinite(id),
-  });
+  } = useOrderDetail(id);
 
   // The customer keys go too, and as prefixes — their tiles are computed
   // from this order and its siblings, and with a 60 s `staleTime` a key left
@@ -78,6 +77,13 @@ export function OrderPage() {
     onSuccess: () => {
       invalidateAfterDelete(queryClient, 'order');
       showToast(t('orders.toast.deleted'));
+      // ⚠️ The entry goes when this page UNMOUNTS, not on the next line: a
+      // `removeQueries` here would run while the page is still mounted (React
+      // has only scheduled the route change) and its own observer would refetch
+      // the order that was just deleted. Armed here, dropped on unmount — see
+      // `useForgetOnUnmount`. Without it a Back inside the 60 s `staleTime`
+      // renders the deleted order out of cache.
+      forgetOrder();
       navigate('/projects');
     },
     onError: (e: Error) => showToast(e.message, 'error'),

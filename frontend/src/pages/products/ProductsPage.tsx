@@ -8,6 +8,7 @@ import type { Product, ProductListItem, ProductListParams } from '../../api/clie
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ProjectsTabs } from '../../components/projects/ProjectsTabs';
+import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 import { ProductCard } from '../../components/products/ProductCard';
 import { ProductCardDialog } from '../../components/products/ProductCardDialog';
 import { FromFileDialog } from '../../components/products/FromFileDialog';
@@ -63,6 +64,10 @@ export function ProductsPage() {
     onSuccess: (saved) => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
       queryClient.invalidateQueries({ queryKey: ['product', saved.id] });
+      // ⚠️ And the order views: a product that leaves the catalog is
+      // still on the lines of every order that ordered it, and the cards
+      // and pickers reading those lines have to be told.
+      invalidateOrderViews(queryClient);
       showToast(saved.is_active ? t('products.toast.shown') : t('products.toast.hidden'));
     },
     onError: (e: Error) => showToast(e.message, 'error'),
@@ -70,8 +75,11 @@ export function ProductsPage() {
 
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteProduct(id),
+    // The LISTS, from the one place that decides which ones — an order card
+    // renders the deleted product's cover, so `['projects']` goes with
+    // `['products']` and neither site gets its own opinion about that.
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      invalidateAfterDelete(queryClient, 'product');
       showToast(t('products.toast.deleted'));
       setDeleting(null);
     },
@@ -82,6 +90,9 @@ export function ProductsPage() {
 
   const duplicate = useMutation({
     mutationFn: (id: number) => api.duplicateProduct(id),
+    // ⚠️ No order view moves here, deliberately: the copy is a brand-new
+    // product that no order line names yet. Invalidating them would refetch
+    // every order on the way out of a page nobody is coming back to.
     onSuccess: (saved) => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
       showToast(t('products.toast.duplicated'));

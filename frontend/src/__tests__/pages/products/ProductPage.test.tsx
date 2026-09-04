@@ -13,9 +13,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { Routes, Route } from 'react-router-dom';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { ProductPage } from '../../../pages/products/ProductPage';
+import { createAppQueryClient } from '../../../utils/appQueryClient';
 
 const product = {
   id: 1,
@@ -126,5 +128,65 @@ describe('ProductPage', () => {
 
     fireEvent.click(await screen.findByRole('checkbox', { name: /in catalog/i }));
     await waitFor(() => expect(update).toHaveBeenCalledWith(1, { is_active: false }));
+  });
+  it('says once that it could not refresh, and keeps the product on screen', async () => {
+    // The page answers "do I have data?" before "did the fetch fail?", which is
+    // right — a proxy hiccup must not throw away a product somebody is reading
+    // — and silent. The cache says so, once, through `meta.refreshToast`.
+    const client = createAppQueryClient();
+    // The retry is the app's, the delay is not: an exponential backoff would put
+    // the toast a second away for no gain. The QueryCache under test is the
+    // app's own.
+    client.setDefaultOptions({ queries: { retry: false, staleTime: 60_000 } });
+
+    vi.spyOn(api, 'getProduct')
+      .mockResolvedValueOnce(product as never)
+      .mockRejectedValue(new Error('Gateway timeout'));
+    vi.spyOn(api, 'updateProduct').mockResolvedValue({ ...product, is_active: false } as never);
+
+    window.history.pushState({}, '', '/products/1');
+    render(
+      <QueryClientProvider client={client}>
+        <Routes>
+          <Route path="/products/:id" element={<ProductPage />} />
+        </Routes>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Flask' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: /in catalog/i }));
+
+    expect(await screen.findByText(/could not refresh/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Flask' })).toBeInTheDocument();
+    expect(screen.getAllByText(/could not refresh/i)).toHaveLength(1);
+  });
+
+  it('forgets the deleted product, so a Back inside staleTime cannot render it', async () => {
+    const client = createAppQueryClient();
+    const get = vi.spyOn(api, 'getProduct').mockResolvedValue(product as never);
+    vi.spyOn(api, 'deleteProduct').mockResolvedValue(undefined as never);
+
+    window.history.pushState({}, '', '/products/1');
+    render(
+      <QueryClientProvider client={client}>
+        <Routes>
+          <Route path="/products/:id" element={<ProductPage />} />
+          <Route path="/products" element={<p>product list</p>} />
+        </Routes>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Flask' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    // The confirm dialog's own button carries the same word (`common.delete`),
+    // so the header's is the first and the dialog's is the last.
+    const deletes = await screen.findAllByRole('button', { name: /^delete$/i });
+    fireEvent.click(deletes[deletes.length - 1]);
+
+    expect(await screen.findByText('product list')).toBeInTheDocument();
+    await waitFor(() => expect(client.getQueryData(['product', 1])).toBeUndefined());
+    // Nothing was refetched on the way out — that would have been a 404 in the
+    // query of a page already leaving.
+    expect(get).toHaveBeenCalledTimes(1);
   });
 });

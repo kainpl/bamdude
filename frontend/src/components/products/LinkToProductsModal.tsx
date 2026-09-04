@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link2, Loader2, Package, X } from 'lucide-react';
@@ -7,6 +7,7 @@ import type { ProductRef } from '../../api/client';
 import { Button } from '../Button';
 import { useToast } from '../../contexts/ToastContext';
 import { selectableProducts } from '../../utils/projects';
+import { useBoundIds } from '../../hooks/useBoundIds';
 
 /** What the modal needs of the row it was opened from. A file and a folder
  *  differ only in which name field they carry and which update call saves
@@ -58,13 +59,14 @@ export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModal
     [item.products, item.product_ids],
   );
   const [selectedIds, setSelectedIds] = useState<Set<number>>(initialIds);
-  // ⚠️ Frozen at mount, deliberately. `selectableProducts` keeps an INACTIVE
-  // product on offer only because something is linked to it — so keying that
-  // off the live selection made unticking an inactive chip delete the chip
-  // itself, and the operator could not change their mind without reopening
-  // the dialog. What the item arrived linked to stays offered for the whole
-  // session of this dialog, ticked or not.
-  const keepOffered = useRef(initialIds);
+  // ⚠️ Frozen at mount, deliberately — one rule, one hook, shared with
+  // `ProductPicker`. `selectableProducts` keeps an INACTIVE product on offer
+  // only because something is linked to it, so keying that off the live
+  // selection made unticking an inactive chip delete the chip itself, and the
+  // operator could not change their mind without reopening the dialog. What
+  // the item arrived linked to stays offered for the whole session of this
+  // dialog, ticked or not.
+  const keepOffered = useBoundIds(initialIds);
 
   const { data: allProducts } = useQuery({
     queryKey: ['products', {}],
@@ -73,9 +75,11 @@ export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModal
 
   // Whatever this item ARRIVED linked to stays offered, in the catalog or
   // not — see `selectableProducts`.
+  // `keepOffered` is frozen at mount, so it is in the deps for the linter's
+  // sake and never changes the answer.
   const products = useMemo(
-    () => selectableProducts(allProducts, keepOffered.current),
-    [allProducts],
+    () => selectableProducts(allProducts, keepOffered),
+    [allProducts, keepOffered],
   );
 
   const toggle = (id: number) => {

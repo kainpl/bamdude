@@ -1,10 +1,10 @@
-import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { MoreVertical, Pencil, Copy, CheckCircle2, RotateCcw, Ban, Trash2, Package } from 'lucide-react';
+import { Pencil, Copy, CheckCircle2, RotateCcw, Ban, Trash2, Package } from 'lucide-react';
 import { api } from '../../api/client';
 import type { OrderListItem, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
 import { StatusBadge } from './StatusBadge';
 import { PriorityBadge } from './PriorityBadge';
 import { ProgressBar } from './ProgressBar';
@@ -26,32 +26,30 @@ function isOverdue(order: OrderListItem): boolean {
   return new Date(order.due_date) < startOfToday;
 }
 
-/** Prevents the menu (and everything inside it) from bubbling into the card's
- *  own `<Link>` — without both `preventDefault` and `stopPropagation` a click
- *  on "Edit" would also navigate to the order page. */
-function stopCardNavigation(e: React.MouseEvent) {
-  e.preventDefault();
-  e.stopPropagation();
-}
-
 /**
  * One order in the grid. Every figure (`ordered`, `printed`, `progress`,
  * `lines_count`) is displayed exactly as the server sent it — never
  * recomputed here (design decision 8).
+ *
+ * ⚠️ **The link is an OVERLAY, not the card's wrapper.** The menu button used
+ * to sit inside the `<a>` — invalid HTML — and every one of its items had to
+ * cancel the navigation its own click caused. One item added without that
+ * guard navigated instead of acting, and a keyboard activation navigated
+ * whatever the guard said. Now the anchor covers the card from on top
+ * (`absolute inset-0`, named by `aria-label` because it wraps no text) and the
+ * menu is an ordinary sibling above it: there is nothing left to cancel.
  */
 export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }: OrderCardProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
-  const [menuOpen, setMenuOpen] = useState(false);
   const overdue = isOverdue(order);
   // Three at most: the strip is a hint at what is in the order, not its contents.
   const lineProducts = (order.line_products ?? []).slice(0, 3);
 
   return (
-    <Link
-      to={`/projects/${order.id}`}
+    <div
       data-testid={`order-${order.id}-card`}
-      className="block @container rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary hover:border-bambu-green/50 overflow-hidden"
+      className="relative @container rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary hover:border-bambu-green/50 overflow-hidden"
     >
       <div className="h-1.5" style={{ backgroundColor: order.color || '#6b7280' }} />
 
@@ -94,115 +92,81 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
         <div className="flex-1 min-w-0 space-y-1.5">
           <div className="flex items-start justify-between gap-2">
             <h3 className="font-semibold text-white truncate">{order.name}</h3>
-            <div className="relative flex-shrink-0" onClick={stopCardNavigation}>
-              <button
-                type="button"
-                onClick={(e) => {
-                  stopCardNavigation(e);
-                  setMenuOpen((v) => !v);
-                }}
-                className="p-1.5 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-white transition-colors"
-                aria-label={t('common.actions')}
-              >
-                <MoreVertical className="w-4 h-4" />
-              </button>
-              {menuOpen && (
-                <>
-                  <div
-                    className="fixed inset-0 z-10"
-                    onClick={(e) => {
-                      stopCardNavigation(e);
-                      setMenuOpen(false);
-                    }}
-                  />
-                  <div className="absolute right-0 top-8 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[160px]">
+            {/* Above the overlay link, so the trigger is clickable at all. */}
+            <div className="relative z-10 flex-shrink-0">
+              <CardActionMenu label={t('common.actions')} testId={`order-${order.id}-menu`} width={160}>
+                {(close) => (
+                  <>
                     {hasPermission('projects:update') && (
-                      <button
-                        type="button"
-                        className="w-full px-3 py-2 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
-                        onClick={(e) => {
-                          stopCardNavigation(e);
+                      <CardActionMenuItem
+                        onSelect={() => {
                           onEdit(order);
-                          setMenuOpen(false);
+                          close();
                         }}
                       >
                         <Pencil className="w-4 h-4" />
                         {t('orders.card.menu.edit')}
-                      </button>
+                      </CardActionMenuItem>
                     )}
                     {hasPermission('projects:create') && (
-                      <button
-                        type="button"
-                        className="w-full px-3 py-2 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
-                        onClick={(e) => {
-                          stopCardNavigation(e);
+                      <CardActionMenuItem
+                        onSelect={() => {
                           onDuplicate(order);
-                          setMenuOpen(false);
+                          close();
                         }}
                       >
                         <Copy className="w-4 h-4" />
                         {t('orders.card.menu.duplicate')}
-                      </button>
+                      </CardActionMenuItem>
                     )}
                     {hasPermission('projects:update') && order.status === 'active' && (
-                      <button
-                        type="button"
-                        className="w-full px-3 py-2 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
-                        onClick={(e) => {
-                          stopCardNavigation(e);
+                      <CardActionMenuItem
+                        onSelect={() => {
                           onSetStatus(order, 'completed');
-                          setMenuOpen(false);
+                          close();
                         }}
                       >
                         <CheckCircle2 className="w-4 h-4" />
                         {t('orders.card.menu.complete')}
-                      </button>
+                      </CardActionMenuItem>
                     )}
                     {hasPermission('projects:update') && order.status !== 'active' && (
-                      <button
-                        type="button"
-                        className="w-full px-3 py-2 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
-                        onClick={(e) => {
-                          stopCardNavigation(e);
+                      <CardActionMenuItem
+                        onSelect={() => {
                           onSetStatus(order, 'active');
-                          setMenuOpen(false);
+                          close();
                         }}
                       >
                         <RotateCcw className="w-4 h-4" />
                         {t('orders.card.menu.reopen')}
-                      </button>
+                      </CardActionMenuItem>
                     )}
                     {hasPermission('projects:update') && order.status === 'active' && (
-                      <button
-                        type="button"
-                        className="w-full px-3 py-2 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
-                        onClick={(e) => {
-                          stopCardNavigation(e);
+                      <CardActionMenuItem
+                        onSelect={() => {
                           onSetStatus(order, 'cancelled');
-                          setMenuOpen(false);
+                          close();
                         }}
                       >
                         <Ban className="w-4 h-4" />
                         {t('orders.card.menu.cancel')}
-                      </button>
+                      </CardActionMenuItem>
                     )}
                     {hasPermission('projects:delete') && (
-                      <button
-                        type="button"
-                        className="w-full px-3 py-2 text-left text-sm flex items-center gap-2 text-red-500 hover:bg-bambu-dark"
-                        onClick={(e) => {
-                          stopCardNavigation(e);
+                      <CardActionMenuItem
+                        danger
+                        onSelect={() => {
                           onDelete(order);
-                          setMenuOpen(false);
+                          close();
                         }}
                       >
                         <Trash2 className="w-4 h-4" />
                         {t('orders.card.menu.delete')}
-                      </button>
+                      </CardActionMenuItem>
                     )}
-                  </div>
-                </>
-              )}
+                  </>
+                )}
+              </CardActionMenu>
             </div>
           </div>
 
@@ -225,6 +189,12 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
           <p className="text-xs text-bambu-gray">{t('orders.card.lines', { count: order.lines_count })}</p>
         </div>
       </div>
-    </Link>
+
+      <Link
+        to={`/projects/${order.id}`}
+        aria-label={order.name}
+        className="absolute inset-0 rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green"
+      />
+    </div>
   );
 }

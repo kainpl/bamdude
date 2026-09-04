@@ -100,3 +100,36 @@ describe('ProductCard export', () => {
     expect(await screen.findByText(/export failed \(HTTP 500\)/i)).toBeInTheDocument();
   });
 });
+
+/**
+ * ⚠️ A `<button>` inside an `<a>` is invalid HTML, and the menu used to be
+ * exactly that: every item cancelled the navigation its own click caused, so
+ * one item added without the guard navigated instead of acting. The panel now
+ * lives on `document.body` and the card's anchor is an overlay.
+ */
+describe('ProductCard menu placement', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders the open menu outside the card anchor, on document.body', async () => {
+    mount();
+
+    fireEvent.click(await screen.findByTestId('product-menu'));
+
+    const panel = screen.getByRole('menu');
+    expect(panel.parentElement).toBe(document.body);
+    expect(screen.getByRole('link').contains(panel)).toBe(false);
+    expect(screen.getByTestId('product-4-card').querySelector('[role="menu"]')).toBeNull();
+  });
+
+  it('closes on Escape', async () => {
+    mount();
+
+    fireEvent.click(await screen.findByTestId('product-menu'));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+});

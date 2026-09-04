@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import { formatFileSize } from '../utils/file';
+import { setToastHandler } from '../utils/toastBridge';
 
 type ToastType = 'success' | 'error' | 'warning' | 'info' | 'loading';
 
@@ -491,6 +492,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('background-dispatch', onDispatchEvent);
   }, [t]);
 
+  // Lend `showToast` to the one caller that cannot use the hook: the app's
+  // `QueryClient` is built at module scope, so its `QueryCache.onError` has no
+  // React tree to read a context out of. Unregistered on unmount, so a toast
+  // raised after teardown is dropped rather than aimed at a dead provider.
+  useEffect(() => {
+    setToastHandler(showToast);
+    return () => setToastHandler(null);
+  }, [showToast]);
 
   return (
     <ToastContext.Provider value={{ showToast, showPersistentToast, dismissToast }}>

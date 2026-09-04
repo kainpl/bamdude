@@ -16,6 +16,47 @@ import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryIn
 
 const GROUP_STORAGE_KEY = 'projects.groupByCustomer';
 
+/** How many placeholder cards the first fetch draws. Enough to fill the top of
+ *  a normal window without pretending to know how many orders there are. */
+const SKELETON_CARDS = 6;
+
+/**
+ * The grid while the FIRST fetch is in flight.
+ *
+ * ⚠️ **`isLoading`, never `isFetching`.** A background refetch — every order
+ * mutation invalidates `['projects']` — still has the orders on screen, and
+ * replacing them with grey boxes for a moment is worse than showing figures
+ * that are one request old. TanStack's `isLoading` is exactly "pending with no
+ * data", which is the only state that has nothing to show.
+ */
+function OrdersSkeleton() {
+  return (
+    <div
+      data-testid="orders-skeleton"
+      aria-hidden="true"
+      className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]"
+    >
+      {Array.from({ length: SKELETON_CARDS }, (_, i) => (
+        <div
+          key={i}
+          className="animate-pulse rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary overflow-hidden"
+        >
+          <div className="h-1.5 bg-bambu-dark-tertiary" />
+          <div className="p-4 flex gap-3">
+            <div className="w-20 h-20 flex-shrink-0 rounded-lg bg-bambu-dark" />
+            <div className="flex-1 space-y-2 py-1">
+              <div className="h-4 w-2/3 rounded bg-bambu-dark" />
+              <div className="h-3 w-1/3 rounded bg-bambu-dark" />
+              <div className="h-2 w-full rounded bg-bambu-dark" />
+              <div className="h-3 w-1/4 rounded bg-bambu-dark" />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** `Map` (not a plain object) so the group order matches first appearance in
  *  the already-filtered list, rather than an object's own key-insertion
  *  quirks with numeric-looking names. */
@@ -191,7 +232,9 @@ export function OrdersPage() {
 
       {!isLoading && visible.length === 0 && <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>}
 
-      {groups ? (
+      {isLoading ? (
+        <OrdersSkeleton />
+      ) : groups ? (
         <div className="space-y-6">
           {[...groups.entries()].map(([customerName, group]) => (
             <section key={customerName}>

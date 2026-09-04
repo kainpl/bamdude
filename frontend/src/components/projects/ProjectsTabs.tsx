@@ -2,12 +2,16 @@ import { Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ClipboardList, Package, Users } from 'lucide-react';
 
+// ⚠️ **All three exclude a detail path, and they must stay identical.** Only
+// the three LIST pages render this nav (`OrdersPage`, `ProductsPage`,
+// `CustomersPage` — grep), so a detail route never reaches these regexes at
+// all; the exclusion is belt-and-braces for the day one of them does, and the
+// three disagreeing about the same question is exactly the rot this comment
+// exists to stop. A detail page carries a breadcrumb instead of a lit tab.
 const TABS = [
-  // `/projects/12` is an order's own page and carries a breadcrumb instead, so
-  // the Orders tab deliberately does not light up there.
   { to: '/projects', key: 'projects.tabs.orders', icon: ClipboardList, match: /^\/projects(?!\/\d)/ },
-  { to: '/products', key: 'projects.tabs.products', icon: Package, match: /^\/products/ },
-  { to: '/customers', key: 'projects.tabs.customers', icon: Users, match: /^\/customers/ },
+  { to: '/products', key: 'projects.tabs.products', icon: Package, match: /^\/products(?!\/\d)/ },
+  { to: '/customers', key: 'projects.tabs.customers', icon: Users, match: /^\/customers(?!\/\d)/ },
 ] as const;
 
 /**

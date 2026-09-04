@@ -43,9 +43,16 @@ describe('OrderCover', () => {
   });
 
   it('shows nothing at all to a viewer of an order with no cover', () => {
-    render(<OrderCover order={{ id: 1, cover_image_filename: null } as unknown as Order} canEdit={false} />);
+    // `null`, not an empty fragment: React renders both as nothing, and only
+    // one of them says so to the next reader.
+    render(
+      <div data-testid="cover-slot">
+        <OrderCover order={{ id: 1, cover_image_filename: null } as unknown as Order} canEdit={false} />
+      </div>,
+    );
 
     expect(screen.queryByTestId('order-cover-image')).not.toBeInTheDocument();
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByTestId('cover-slot')).toBeEmptyDOMElement();
   });
 });

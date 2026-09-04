@@ -57,6 +57,13 @@ interface LoadedArchives {
  * per-line archive ids names nothing at all, and stopping on that would show
  * one page of a long history with no sign of the rest; the short page is then
  * the only stop the walk has.
+ *
+ * ⚠️ **A short page while some named ids are still missing is `truncated:
+ * false`.** There is nothing older to read, so the history IS complete and the
+ * button that offers to read further cannot help: the ids left over name
+ * archives that were deleted (or re-filed elsewhere), and pinning a "load
+ * older prints" button to them would offer the operator a click that walks the
+ * whole archive and comes back with exactly what is already on screen.
  */
 async function loadOrderArchives(orderId: number, named: Set<number>, maxPages: number): Promise<LoadedArchives> {
   const byId = new Map<number, Archive>();
@@ -102,6 +109,14 @@ export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
   // Pages bought by hand past the guard. In the key, so a click is a fetch —
   // `placeholderData` keeps the prints on screen while it runs, rather than
   // dropping the grid back to its spinner.
+  //
+  // ⚠️ **This is a bigger CAP, not the next page.** Clicking "load older
+  // prints" re-walks from offset 0 with `MAX_PAGES + extraPages` allowed;
+  // nothing is paged incrementally. Offset paging over `created_at desc`
+  // shifts under a farm that is still printing, so resuming from where the
+  // last walk stopped would skip whatever moved across the boundary — and the
+  // id-keyed map makes re-reading the pages already in hand cost nothing but
+  // the requests.
   const [extraPages, setExtraPages] = useState(0);
 
   const { data, isLoading, isFetching } = useQuery({

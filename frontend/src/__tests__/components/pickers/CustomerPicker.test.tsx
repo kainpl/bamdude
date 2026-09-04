@@ -78,7 +78,7 @@ describe('CustomerPicker', () => {
     });
 
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Delta' } });
-    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /cancel creating customer/i }));
 
     expect(await screen.findByRole('combobox')).toBeInTheDocument();
     expect(create).not.toHaveBeenCalled();
@@ -88,5 +88,20 @@ describe('CustomerPicker', () => {
       target: { value: screen.getByRole('option', { name: /new customer/i }).getAttribute('value') },
     });
     expect(screen.getByRole('textbox')).toHaveValue('');
+  });
+  it('names its Cancel for what it cancels, not just "Cancel"', async () => {
+    // ⚠️ The picker lives INSIDE dialogs that have a Cancel of their own. Two
+    // buttons called "Cancel" in one form is a coin toss for anybody driving
+    // it by accessible name — a screen reader, a keyboard user reading the
+    // rotor, or a test.
+    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+    render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
+    const select = await screen.findByRole('combobox');
+    fireEvent.change(select, {
+      target: { value: screen.getByRole('option', { name: /new customer/i }).getAttribute('value') },
+    });
+
+    expect(screen.getByRole('button', { name: /cancel creating customer/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^cancel$/i })).not.toBeInTheDocument();
   });
 });

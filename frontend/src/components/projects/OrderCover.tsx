@@ -54,8 +54,10 @@ export function OrderCover({ order, canEdit }: OrderCoverProps) {
   const busy = upload.isPending || remove.isPending;
 
   // Nothing to show and nothing to do: a read-only viewer gets an empty grey
-  // box otherwise, which reads as a picture that failed to load.
-  if (!order.cover_image_filename && !canEdit) return <></>;
+  // box otherwise, which reads as a picture that failed to load. `null`, not
+  // an empty fragment — React renders both as nothing, and only one of them
+  // says so.
+  if (!order.cover_image_filename && !canEdit) return null;
 
   const coverUrl = api.getProjectCoverImageUrl(order.id);
   const coverSrc = `${coverUrl}${coverUrl.includes('?') ? '&' : '?'}v=${version}`;

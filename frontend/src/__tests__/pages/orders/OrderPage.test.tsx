@@ -7,10 +7,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { Routes, Route } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { OrderPage } from '../../../pages/orders/OrderPage';
+import { createAppQueryClient } from '../../../utils/appQueryClient';
 
 const order = {
   id: 1,
@@ -213,5 +214,68 @@ describe('OrderPage', () => {
 
     fireEvent.click(await screen.findByTestId('close-suggestion-complete'));
     await waitFor(() => expect(probeFetch).toHaveBeenCalledTimes(2));
+  });
+  it('says once that it could not refresh, and keeps the order on screen', async () => {
+    // The page deliberately answers "do I have data?" before "did the fetch
+    // fail?", which is right — a proxy hiccup must not throw away an order
+    // somebody is reading — and completely silent: the figures are now older
+    // than they look. The cache says so, once, through `meta.refreshToast`.
+    const client = createAppQueryClient();
+    // The retry is the app's, the delay is not: an exponential backoff would
+    // put the toast a second away for no gain. Everything under test — the
+    // QueryCache and its `onError` — is the app's own.
+    client.setDefaultOptions({ queries: { retry: false, staleTime: 60_000 } });
+
+    vi.spyOn(api, 'getOrder')
+      .mockResolvedValueOnce(order as never)
+      .mockRejectedValue(new Error('Gateway timeout'));
+    vi.spyOn(api, 'updateOrder').mockResolvedValue({ ...order, status: 'completed' } as never);
+
+    window.history.pushState({}, '', '/projects/1');
+    render(
+      <QueryClientProvider client={client}>
+        <Routes>
+          <Route path="/projects/:id" element={<OrderPage />} />
+        </Routes>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByTestId('close-suggestion-complete'));
+
+    expect(await screen.findByText(/could not refresh/i)).toBeInTheDocument();
+    // The stale order is still there — the toast is the whole of the damage.
+    expect(screen.getByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
+    expect(screen.queryByText(/could not load this order/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/could not refresh/i)).toHaveLength(1);
+  });
+
+  it('forgets the deleted order, so a Back inside staleTime cannot render it', async () => {
+    // ⚠️ The entry is dropped AFTER `navigate`: while this page is still
+    // mounted, removing it re-runs the `queryFn` on an order that is gone.
+    const client = createAppQueryClient();
+    const get = vi.spyOn(api, 'getOrder').mockResolvedValue(order as never);
+    vi.spyOn(api, 'deleteOrder').mockResolvedValue(undefined as never);
+
+    window.history.pushState({}, '', '/projects/1');
+    render(
+      <QueryClientProvider client={client}>
+        <Routes>
+          <Route path="/projects/:id" element={<OrderPage />} />
+          <Route path="/projects" element={<p>order list</p>} />
+        </Routes>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+
+    expect(await screen.findByText('order list')).toBeInTheDocument();
+    await waitFor(() => expect(client.getQueryData(['project', 1])).toBeUndefined());
+    // Nothing was refetched on the way out — that would have been a 404 in the
+    // query of a page that is already leaving.
+    expect(get).toHaveBeenCalledTimes(1);
   });
 });

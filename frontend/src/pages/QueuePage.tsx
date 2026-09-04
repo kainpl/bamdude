@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Calendar, LayoutGrid } from 'lucide-react';
 import { api } from '../api/client';
+import { usePendingQueueItems, usePrintingQueueItems } from '../hooks/useQueueItems';
 import { compareLocationNames } from '../utils/locationOrder';
 import { readStoredQueueSort, sortQueues, type QueueSortOption } from '../utils/queueOrder';
 import { buildLocationIndex, readStoredLocationFilter } from '../utils/locationTree';
@@ -88,11 +89,8 @@ export function QueuePage() {
   });
 
   // Fetch all pending items - used by stats bar + "All" view + Timeline.
-  const { data: allPendingItems } = useQuery({
-    queryKey: ['queue', 'all', 'pending'],
-    queryFn: () => api.getQueue(undefined, 'pending'),
-    refetchInterval: 30000,
-  });
+  // Shared with the order page's queue panel through `useQueueItems`.
+  const { data: allPendingItems } = usePendingQueueItems();
 
   // Auto-queue work still waiting to be routed. Shares its key with the nav
   // badge so TanStack serves both from one request.
@@ -104,11 +102,7 @@ export function QueuePage() {
 
   // Fetch all printing items (real + virtual external/direct) so Timeline
   // can lay out the "now" slot even for prints initiated outside BamDude.
-  const { data: allPrintingItems } = useQuery({
-    queryKey: ['queue', 'all', 'printing'],
-    queryFn: () => api.getQueue(undefined, 'printing'),
-    refetchInterval: 10000,
-  });
+  const { data: allPrintingItems } = usePrintingQueueItems();
 
   // Combined list for Timeline — pending + printing.  Printing items (real
   // + virtual) anchor each lane's "currently running" slot.

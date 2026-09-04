@@ -15,6 +15,7 @@ import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
 import { formatMoney } from '../../utils/currency';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
+import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 
 /** One figure, as the server counted it — this page never adds anything up. */
 function Tile({ label, value }: { label: string; value: string | number }) {
@@ -42,6 +43,7 @@ export function CustomerPage() {
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const forgetCustomer = useForgetOnUnmount(['customer', id]);
 
   const [tab, setTab] = useState<ProjectStatus | 'all'>('active');
   const [editingCustomer, setEditingCustomer] = useState(false);
@@ -58,6 +60,9 @@ export function CustomerPage() {
     queryKey: ['customer', id],
     queryFn: () => api.getCustomer(id),
     enabled: Number.isFinite(id),
+    // This page keeps its data when a REFETCH fails (see the note below), so
+    // it is the cache's job to say the figures are older than they look.
+    meta: { refreshToast: true },
   });
   const { data: orders = [] } = useQuery({
     queryKey: ['projects', { customer_id: id }],
@@ -87,6 +92,13 @@ export function CustomerPage() {
     onSuccess: () => {
       invalidateAfterDelete(queryClient, 'customer');
       showToast(t('customers.toast.deleted'));
+      // ⚠️ The entry goes when this page UNMOUNTS, not on the next line: a
+      // `removeQueries` here would run while the page is still mounted (React
+      // has only scheduled the route change) and its own observer would refetch
+      // the customer that was just deleted. Armed here, dropped on unmount —
+      // see `useForgetOnUnmount`. Without it a Back inside the 60 s
+      // `staleTime` renders the deleted customer out of cache.
+      forgetCustomer();
       navigate('/customers');
     },
     onError: (e: Error) => showToast(e.message, 'error'),

@@ -13,12 +13,13 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { QueryClient, useQuery, useQueryClient } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
 import { api } from '../../../api/client';
 import type { Order, OrderPlan, PlanRow as PlanRowData, Permission, PlateRecipe } from '../../../api/client';
 import { PlanBlock } from '../../../components/projects/PlanBlock';
+import { ORDER_VIEW_KEYS } from '../../../utils/queryInvalidation';
 
 /** What the mocked `useAuth` grants — reset in `beforeEach`, narrowed per test. */
 const auth = vi.hoisted(() => ({ granted: new Set<string>() }));
@@ -639,5 +640,28 @@ describe('PlanBlock', () => {
     // ⚠️ `plate_index` 0 is "the whole file", not "plate 0" — the modal must
     // be handed nothing rather than a zero it would pin.
     expect(printModal.props?.preselectedPlateId).toBeUndefined();
+  });
+  it('marks the two QUEUE caches stale beside every order view, once a plate is queued', async () => {
+    // ⚠️ `['queue']` and `['auto-queue']` are NOT order views and cannot join
+    // `ORDER_VIEW_KEYS`: no order page reads either, and enqueueing is the only
+    // order action that puts rows in a printer's queue and in the auto-queue
+    // distributor. Drop them and the queue page keeps showing the old count
+    // for its whole `staleTime` after a plan is sent.
+    vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({
+      created: [{ line_id: 10, plate_id: 200, queue_item_ids: [7] }],
+    });
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-200-queue'));
+
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['queue'] }),
+    );
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['auto-queue'] });
+    for (const key of ORDER_VIEW_KEYS) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: [key] });
+    }
   });
 });

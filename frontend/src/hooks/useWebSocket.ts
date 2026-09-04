@@ -333,8 +333,8 @@ export function useWebSocket() {
    * ⚠️ A print is the one thing that changes a project's data without anybody
    * touching the project. The archive events carry no ``project_id``, so the
    * whole prefix is invalidated — that costs nothing off a project page,
-   * because TanStack only refetches *active* queries and these six are
-   * mounted nowhere else.
+   * because TanStack only refetches *active* queries and these seven
+   * (`ORDER_VIEW_KEYS` plus `project-timeline`) are mounted nowhere else.
    *
    * ⚠️ On a project page it is NOT free: `project-plan` is refetched by a
    * print finishing on any printer in the farm, and `PlanBlock` therefore

@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { LoadingBlock } from './components/LoadingBlock';
 import { api } from './api/client';
@@ -43,14 +43,10 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ColorCatalogProvider } from './contexts/ColorCatalogContext';
 import { ConnectionProvider } from './contexts/ConnectionContext';
 import { useConnectionToast } from './hooks/useConnectionToast';
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 1000 * 60,
-      retry: 1,
-    },
-  },
-});
+import { createAppQueryClient } from './utils/appQueryClient';
+// Built in `utils/appQueryClient` so a test can build the same client — the
+// cache carries the "could not refresh" toast, which is behaviour, not config.
+const queryClient = createAppQueryClient();
 
 function WebSocketProvider({ children }: { children: React.ReactNode }) {
   useWebSocket();

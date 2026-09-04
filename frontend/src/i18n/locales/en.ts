@@ -123,7 +123,10 @@ export default {
     max: 'Max',
     back: 'Back',
     previous: 'Previous',
-    next: 'Next'
+    next: 'Next',
+    toast: {
+      refreshFailed: 'Could not refresh — showing the last loaded data',
+    },
   },
 
   amsHistory: {
@@ -4678,7 +4681,7 @@ export default {
     newCustomer: 'New customer…',
     newCustomerName: 'Customer name',
     create: 'Create',
-    cancelCreate: 'Cancel',
+    cancelCreate: 'Cancel creating customer',
     notInCatalog: 'not in catalog',
   },
 

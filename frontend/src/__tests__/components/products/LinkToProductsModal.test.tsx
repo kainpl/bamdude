@@ -12,9 +12,21 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { useQueryClient } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { LinkToProductsModal } from '../../../components/products/LinkToProductsModal';
+
+/** Somebody retires a product in another tab: the catalog query is invalidated
+ *  farm-wide and comes back with the row flagged inactive. */
+function Retire() {
+  const queryClient = useQueryClient();
+  return (
+    <button type="button" data-testid="retire" onClick={() => queryClient.invalidateQueries({ queryKey: ['products'] })}>
+      retire
+    </button>
+  );
+}
 
 describe('LinkToProductsModal', () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -127,5 +139,52 @@ describe('LinkToProductsModal', () => {
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
 
     await waitFor(() => expect(update).toHaveBeenCalledWith(3, { product_ids: [] }));
+  });
+  it('a product retired AFTER the dialog opened stays on offer', async () => {
+    // ⚠️ The keep-set is frozen at MOUNT — one rule, one hook (`useBoundIds`),
+    // shared with `ProductPicker`. Read live, the chip for a product somebody
+    // retires while this dialog is open would vanish under the operator's
+    // hand, and the save that follows would commit the missing link.
+    const get = vi
+      .spyOn(api, 'getProducts')
+      .mockResolvedValueOnce([{ id: 1, name: 'Flask', is_active: true }] as never)
+      .mockResolvedValue([{ id: 1, name: 'Flask', is_active: false }] as never);
+
+    render(
+      <>
+        <Retire />
+        <LinkToProductsModal
+          kind="file"
+          item={{ id: 3, filename: 'a.3mf', products: [{ id: 1, name: 'Flask', is_active: true }] }}
+          onClose={() => {}}
+        />
+      </>,
+    );
+
+    expect(await screen.findByRole('button', { name: 'Flask' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('retire'));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByRole('button', { name: 'Flask' })).toBeInTheDocument();
+  });
+
+  it('keeps an unticked inactive product offered, so the operator can change their mind', async () => {
+    vi.spyOn(api, 'getProducts').mockResolvedValue([
+      { id: 1, name: 'Flask', is_active: true },
+      { id: 9, name: 'Retired', is_active: false },
+    ] as never);
+
+    render(
+      <LinkToProductsModal
+        kind="file"
+        item={{ id: 3, filename: 'a.3mf', products: [{ id: 9, name: 'Retired', is_active: false }] }}
+        onClose={() => {}}
+      />,
+    );
+
+    // Untick it: keyed off the live selection the chip would delete itself.
+    fireEvent.click(await screen.findByRole('button', { name: /Retired/ }));
+    expect(screen.getByRole('button', { name: /Retired/ })).toBeInTheDocument();
   });
 });

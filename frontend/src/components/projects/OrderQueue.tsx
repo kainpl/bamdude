@@ -4,6 +4,8 @@ import { Link } from 'react-router-dom';
 import { Clock, Layers, ListTodo, Package } from 'lucide-react';
 import { api, withStreamToken } from '../../api/client';
 import type { PrintQueueItem } from '../../api/client';
+import { useOrderDetail } from '../../hooks/useOrderDetail';
+import { usePendingQueueItems, usePrintingQueueItems } from '../../hooks/useQueueItems';
 import { formatDuration, formatETA, type TimeFormat } from '../../utils/date';
 
 interface OrderQueueProps {
@@ -29,21 +31,16 @@ interface OrderQueueProps {
 export function OrderQueue({ orderId }: OrderQueueProps) {
   const { t } = useTranslation();
 
-  const { data: order } = useQuery({
-    queryKey: ['project', orderId],
-    queryFn: () => api.getOrder(orderId),
-  });
+  const { data: order } = useOrderDetail(orderId);
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
-  const { data: printingAll } = useQuery({
-    queryKey: ['queue', 'printing'],
-    queryFn: () => api.getQueue(undefined, 'printing'),
-    refetchInterval: 10_000,
-  });
-  const { data: pendingAll } = useQuery({
-    queryKey: ['queue', 'pending'],
-    queryFn: () => api.getQueue(undefined, 'pending'),
-    refetchInterval: 30_000,
-  });
+  // ⚠️ The SHARED farm-wide queue, not a private copy. This panel used to ask
+  // for the same two lists under keys of its own (`['queue', 'printing']` /
+  // `['queue', 'pending']`), which TanStack could not tell were the queue
+  // page's question — so the same rows were fetched twice, on two timers, and
+  // the two screens could disagree. `useQueueItems` owns the key and the
+  // interval for both.
+  const { data: printingAll } = usePrintingQueueItems();
+  const { data: pendingAll } = usePendingQueueItems();
 
   const mine = (items: PrintQueueItem[] | undefined) =>
     (items ?? []).filter((item) => item.project_id === orderId);

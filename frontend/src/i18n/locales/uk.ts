@@ -123,7 +123,10 @@ export default {
     max: 'Макс',
     back: 'Назад',
     previous: 'Попередня',
-    next: 'Наступна'
+    next: 'Наступна',
+    toast: {
+      refreshFailed: 'Не вдалося оновити — показано останні завантажені дані',
+    },
   },
 
   amsHistory: {
@@ -4720,7 +4723,7 @@ export default {
     newCustomer: 'Новий замовник…',
     newCustomerName: "Ім'я замовника",
     create: 'Створити',
-    cancelCreate: 'Скасувати',
+    cancelCreate: 'Скасувати створення замовника',
     notInCatalog: 'не в каталозі',
   },
 

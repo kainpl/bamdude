@@ -15,7 +15,8 @@ import { LinkedFiles } from '../../components/products/LinkedFiles';
 import { ProductOrders } from '../../components/products/ProductOrders';
 import { ProductCardDialog } from '../../components/products/ProductCardDialog';
 import { ConfirmModal } from '../../components/ConfirmModal';
-import { invalidateAfterDelete } from '../../utils/queryInvalidation';
+import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
+import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 
 /**
  * One product: what it is, what it is made of, what prints it, and who wants it.
@@ -37,6 +38,7 @@ export function ProductPage() {
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const forgetProduct = useForgetOnUnmount(['product', id]);
 
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -50,11 +52,19 @@ export function ProductPage() {
     queryKey: ['product', id],
     queryFn: () => api.getProduct(id),
     enabled: Number.isFinite(id),
+    // This page keeps its data when a REFETCH fails (see the long note below),
+    // so it is the cache's job to say the figures are older than they look.
+    meta: { refreshToast: true },
   });
 
+  // ⚠️ The order views go too. A product's NAME, its cover and whether it is
+  // in the catalog are all rendered on order cards and inside an order's
+  // lines, so a change here that stopped at `['products']` left every order
+  // view showing the old one until its own 60 s `staleTime` expired.
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['product', id] });
     queryClient.invalidateQueries({ queryKey: ['products'] });
+    invalidateOrderViews(queryClient);
   };
 
   const toggleActive = useMutation({
@@ -88,6 +98,13 @@ export function ProductPage() {
     onSuccess: () => {
       invalidateAfterDelete(queryClient, 'product');
       showToast(t('products.toast.deleted'));
+      // ⚠️ The entry goes when this page UNMOUNTS, not on the next line: a
+      // `removeQueries` here would run while the page is still mounted (React
+      // has only scheduled the route change) and its own observer would refetch
+      // the product that was just deleted. Armed here, dropped on unmount — see
+      // `useForgetOnUnmount`. Without it a Back inside the 60 s `staleTime`
+      // renders the deleted product out of cache.
+      forgetProduct();
       navigate('/products');
     },
     // A product an order line uses answers 409 — the server's own sentence is
