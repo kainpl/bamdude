@@ -4552,11 +4552,13 @@ async def get_library_file_card_download(
     it gives the designer's own filename back. Pictures are reachable here too —
     a download of one is a legitimate thing to want.
 
-    ⚠️ Fail-closed by its own dependency, and that is load-bearing: ``zip_path``
-    is client text, and ``auth_middleware`` matches ``PUBLIC_API_PATTERNS`` as a
-    SUBSTRING of the whole path, so a member named ``.../thumbnail.png`` makes
-    the middleware wave the request through. ``require_ownership_permission``
-    answers 401 with no credentials, so nothing is served regardless.
+    ⚠️ Fail-closed by its own dependency, and that stays load-bearing:
+    ``zip_path`` is client text. ``auth_middleware`` used to match
+    ``PUBLIC_API_PATTERNS`` as a SUBSTRING of the whole path, so a member named
+    ``.../thumbnail.png`` made it wave the request through; the patterns are
+    anchored regexes now and it refuses first. Both layers say no —
+    ``require_ownership_permission`` answers 401 with no credentials, so nothing
+    is served even if a future entry re-opens the path.
     """
     user, can_read_all = auth_result
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))

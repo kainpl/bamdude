@@ -1076,8 +1076,8 @@ async def get_attachment_image(
     middleware and never reach this route's own stream-token gate — the route
     would be dead for the only client that needs it, a browser ``<img>``. The
     whitelist entry lets the request REACH the gate; it does not open the route.
-    Nesting it under ``/attachments/`` would have needed a pattern that also
-    matched the bearer-only download beside it.
+    The entry is one anchored regex over this route alone, so the bearer-only
+    download under ``/attachments/`` is out of its reach by construction.
 
     Pictures ONLY: a bom_docs PDF is not served through a token surface just
     because it happens to be attached. The stored name is a uuid and never

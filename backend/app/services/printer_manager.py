@@ -2125,7 +2125,7 @@ def printer_state_to_dict(
     # Add cover URL if there's an active print and printer_id is provided
     # Include PAUSE state so skip objects modal can show cover
     if printer_id and state.state in ("RUNNING", "PAUSE") and state.gcode_file:
-        result["cover_url"] = f"/api/v1/printers/{printer_id}/cover"
+        result["cover_url"] = f"/api/v1/printers/{printer_id}/camera-cover"
     else:
         result["cover_url"] = None
     return result

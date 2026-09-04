@@ -267,15 +267,17 @@ async def test_the_browser_reaches_card_file_with_only_a_stream_token(committing
 async def test_card_download_needs_a_bearer_token_even_when_the_path_fools_the_middleware(
     committing_client, db_session, tmp_path
 ):
-    """``auth_middleware`` matches ``PUBLIC_API_PATTERNS`` as a SUBSTRING of the
-    whole path, and ``zip_path`` is client text — so a member called
-    ``thumbnail.txt`` makes the middleware wave the request straight through
-    (``/thumbnail`` is a pattern, for the archive and library thumbnail routes).
+    """``zip_path`` is client text, and ``auth_middleware`` USED TO match
+    ``PUBLIC_API_PATTERNS`` as a SUBSTRING of the whole path — so a member
+    called ``thumbnail.txt`` made the middleware wave the request straight
+    through (``/thumbnail`` was a pattern, for the archive and library
+    thumbnail routes). The patterns are anchored regexes now, so the middleware
+    refuses first; ``backend/tests/test_auth_public_patterns.py`` pins that.
 
-    The route's own ``require_ownership_permission`` is what refuses it: that
-    dependency answers 401 when no credentials arrive at all. This test exists so
-    a future refactor cannot quietly swap it for something that treats "no user"
-    as "no restriction".
+    The route's own ``require_ownership_permission`` is the layer this test
+    keeps honest: it answers 401 when no credentials arrive at all, and it must
+    go on doing so, so a future refactor cannot quietly swap it for something
+    that treats "no user" as "no restriction".
     """
     from httpx import ASGITransport, AsyncClient
 

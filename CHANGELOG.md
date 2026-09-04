@@ -46,6 +46,10 @@
 
 ### Fixed
 
+- **Email as a second factor could not send its code.** The login page's request for a one-time code by email was refused by the API gateway before it ever reached the sender: the gateway's list of routes reachable without a session named a route that does not exist. Email 2FA works from the login page again — TOTP and backup codes were never affected.
+
+- **The API gateway matches whole routes now, not fragments of them.** Its list of what a browser may reach without a session — thumbnails, camera streams, covers, the login flow — was matched as plain text anywhere in the address. A handful of routes it never meant to name therefore skipped that first check: the timelapse write routes, the camera-token minter, the OIDC provider editor, and any address a client could put a whitelisted word into. Every one of them was still refused by its own permission check, so nothing was ever reachable without the right to reach it; the outer gate is simply back on all of them, and a test now pins the exact list.
+
 - **Selection boxes look like checkboxes everywhere.** Archives, printer cards, the queue, the plate picker, the label templates, the K-profiles list and the printer's own file browser drew their selection mark as an outlined square with a tick in the same colour — a tinted glyph rather than a ticked box, visibly a different control from the checkboxes beside it. All of them now fill with your accent colour and carry a dark tick, exactly as a checkbox does. Where a list lets you pick only one thing, the mark is a plain tick, which is what picking one thing looks like.
 
 - **Selection ticks are drawn heavier.** The checkmark inside a selected box was a hairline at that size, noticeably thinner than the one a browser draws in an ordinary checkbox; it now has the weight to match. They are also dark now rather than white, which is what a browser puts on an accent this bright — on the green, the teal and the blue accent alike, a dark mark is more than twice as legible as a white one.

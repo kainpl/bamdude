@@ -917,9 +917,9 @@ class TestRedownloadEndpoint:
 class TestImportCoverEndpoints:
     """GET /makerworld/imports/{id}/cover and /cover-variant.
 
-    These are bypass-auth via the URL-pattern whitelist (``/cover`` in
-    path) since ``<img src>`` browser fetches can't carry a JWT. The
-    endpoints themselves serve a file from
+    These are bypass-auth via the URL-pattern whitelist (one anchored regex
+    each in ``main.py::PUBLIC_API_PATTERNS``) since ``<img src>`` browser
+    fetches can't carry a JWT. The endpoints themselves serve a file from
     ``library/makerworld-covers/<id>-{cover,variant}.<ext>`` based on
     the meta-row's stored relative path.
     """
@@ -942,9 +942,11 @@ class TestImportCoverEndpoints:
 
     @pytest.mark.asyncio
     async def test_variant_cover_uses_cover_variant_path(self, async_client, db_session):
-        """Path is intentionally ``cover-variant`` (not ``variant-cover``)
-        so the substring ``/cover`` matches the auth-middleware public
-        whitelist — a regression test for the rename + auth-bypass fix.
+        """Path is intentionally ``cover-variant`` (not ``variant-cover``) —
+        a regression test for the rename + auth-bypass fix. It was the
+        substring ``/cover`` that made the rename matter; the whitelist now
+        names both cover routes explicitly, and ``variant-cover`` is a route
+        that does not exist either way.
         """
         from backend.app.models.library_file_makerworld_meta import LibraryFileMakerworldMeta
 

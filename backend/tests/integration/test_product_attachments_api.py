@@ -307,8 +307,8 @@ async def test_the_browser_reaches_the_picture_with_only_a_stream_token(committi
         assert served.status_code == 200, served.text
         assert served.content == PNG
 
-        # The cover route is reachable the same way (``/cover`` is already a
-        # whitelisted pattern, as it is for the project cover route).
+        # The cover route is reachable the same way — it has a whitelist
+        # pattern of its own, as the project cover route does.
         cover = await anonymous.get(f"/api/v1/products/{product}/cover-image", params={"token": token})
         assert cover.status_code == 200 and cover.content == PNG
         assert (await anonymous.get(f"/api/v1/products/{product}/cover-image")).status_code == 401

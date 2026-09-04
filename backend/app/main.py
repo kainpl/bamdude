@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -8973,76 +8974,127 @@ PUBLIC_API_PREFIXES = [
     "/api/v1/ws",
 ]
 
-# Route patterns that are public (read-only display data)
-# These are checked with "in path" - needed because browsers load images/videos
-# via <img src> and <video src> which don't include Authorization headers
-PUBLIC_API_PATTERNS = [
+# Route patterns that are public — ANCHORED regexes, one per intended route,
+# matched with ``re.match`` against the RAW request path.
+#
+# Needed because a browser loads images and video via ``<img src>`` /
+# ``<video src>``, which cannot carry an Authorization header: those routes
+# take a token in the query string instead, and the middleware has to let the
+# request REACH that gate. Matching here only skips the blanket JWT gate — the
+# route's own ``RequirePermission`` / stream-token / overlay-token / nonce
+# dependency still runs, and a route with none of those does not belong here.
+#
+# ⚠️ These used to be plain substrings tested with ``in path``, which matched
+# ANYWHERE in the path. Nothing was exposed (every route kept its own gate) but
+# the middleware's defence in depth was silently absent on routes nobody had
+# listed: ``"/timelapse"``, commented as the video, also opened the six
+# timelapse write routes; ``"/camera/stream"`` opened
+# ``POST /printers/camera/stream-token``; ``"/auth/oidc/providers"`` opened the
+# provider CRUD; and ``"/thumbnail"`` was satisfied by a segment the CLIENT
+# names (``…/card-download/thumbnail.txt``).
+#
+# Rules for adding one:
+#   * anchor both ends — ``^/api/v1/...$``;
+#   * ``\d+`` for an int path param, ``[^/]+`` for one string segment;
+#   * ``.+`` ONLY where the ROUTE ITSELF declares ``{x:path}``, and always
+#     behind that route's fixed segment, so a client tail cannot widen it;
+#   * the middleware runs BEFORE routing — there is no matched route to read
+#     here, only the raw path, which is why anchoring is the whole defence.
+#
+# ``backend/tests/test_auth_public_patterns.py`` holds the table of every route
+# these are meant to open and fails on drift in either direction.
+PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Thumbnails
-    "/thumbnail",  # /archives/{id}/thumbnail, /library/files/{id}/thumbnail
-    "/plate-thumbnail/",  # /archives/{id}/plate-thumbnail/{plate_id}
-    "/plate-preview",  # /archives/{id}/plate-preview — <img> loaded like its siblings; its handler always claimed this
+    re.compile(r"^/api/v1/archives/\d+/thumbnail$"),
+    re.compile(r"^/api/v1/library/files/\d+/thumbnail$"),
+    re.compile(r"^/api/v1/archives/\d+/plate-thumbnail/\d+$"),
+    re.compile(r"^/api/v1/library/files/\d+/plate-thumbnail/\d+$"),
+    # <img> loaded like its siblings; its handler always claimed this
+    re.compile(r"^/api/v1/archives/\d+/plate-preview$"),
     # Images and media
-    "/photos/",  # /archives/{id}/photos/{filename}
-    "/project-image/",  # /archives/{id}/project-image/{path}
-    # /library/files/{id}/card-file/{zip_path} — the model card's pictures, loaded
-    # by <img> from the card dialog. Narrow like /overlay-status above: the two
-    # slashes mean this substring can only ever match that one endpoint, and the
-    # route's own RequireCameraStreamToken is what authenticates it — this entry
+    re.compile(r"^/api/v1/archives/\d+/photos/[^/]+$"),
+    # ``{image_path:path}`` — the ONLY reason a ``.+`` appears here, and it sits
+    # behind the route's own fixed segment.
+    re.compile(r"^/api/v1/archives/\d+/project-image/.+$"),
+    # /library/files/{id}/card-file/{zip_path} — the model card's pictures,
+    # loaded by <img> from the card dialog. ``{zip_path:path}`` again; the
+    # route's own RequireCameraStreamToken is what authenticates it, this entry
     # only lets the request reach that gate.
-    "/card-file/",
-    # /products/{id}/attachment-image/{filename} — a product's gallery pictures,
-    # loaded by <img> from the product page. Same reasoning and same narrowness:
-    # the segment exists on exactly one route (the bearer-only attachment
-    # download deliberately lives under /attachments/ instead, so no pattern can
-    # reach both), and the route's own RequireCameraStreamToken authenticates it.
-    "/attachment-image/",
-    "/qrcode",  # /archives/{id}/qrcode
-    "/timelapse",  # /archives/{id}/timelapse (video)
-    "/cover",  # /printers/{id}/cover
-    "/icon",  # /external-links/{id}/icon
+    re.compile(r"^/api/v1/library/files/\d+/card-file/.+$"),
+    # /products/{id}/attachment-image/{filename} — a product's gallery
+    # pictures, loaded by <img> from the product page. Same reasoning: the
+    # bearer-only attachment download deliberately lives under /attachments/
+    # instead, so no pattern here can reach it.
+    re.compile(r"^/api/v1/products/\d+/attachment-image/[^/]+$"),
+    # The product and order covers, both stream-token routes. The write methods
+    # share these paths and ride in with them — the middleware sees a path, not
+    # a method — and are stopped by their own PROJECTS_UPDATE permission.
+    re.compile(r"^/api/v1/products/\d+/cover-image$"),
+    re.compile(r"^/api/v1/projects/\d+/cover-image$"),
+    re.compile(r"^/api/v1/archives/\d+/qrcode$"),
+    # The timelapse VIDEO only. The six timelapse routes beside it
+    # (info/process/scan/select/upload/thumbnails) are ordinary bearer reads
+    # and writes and are NOT public — a bare "/timelapse" substring opened
+    # every one of them.
+    re.compile(r"^/api/v1/archives/\d+/timelapse$"),
+    # /printers/{id}/camera-cover — the running job's cover picture. The
+    # segment is unique on purpose: it was ``/cover``, whitelisted as the bare
+    # substring "/cover", which is unanchorable to one route.
+    re.compile(r"^/api/v1/printers/\d+/camera-cover$"),
+    re.compile(r"^/api/v1/external-links/\d+/icon$"),
+    # The OIDC button's icon on the LOGIN page, so it must load with no session.
+    # Narrow: the provider CRUD beside it is settings work behind SETTINGS_*.
+    re.compile(r"^/api/v1/auth/oidc/providers/\d+/icon$"),
     # Streaming-overlay status feed (upstream #2613). OBS is a fresh browser
     # with no session, so the overlay carries a long-lived ``overlay``-scoped
-    # token in the URL instead of a JWT. Listed as a PATTERN, not a PREFIX:
-    # prefixes are matched with startswith, so "/printers/" would open every
-    # printer route — this substring can only ever match this one endpoint.
-    # The route's own RequireOverlayToken gate is what authenticates it; this
-    # entry only lets the request reach that gate.
-    "/overlay-status",  # /printers/{id}/overlay-status
+    # token in the URL instead of a JWT. The route's own RequireOverlayToken
+    # gate is what authenticates it; this entry only lets it be reached.
+    re.compile(r"^/api/v1/printers/\d+/overlay-status$"),
     # Cam Wall kiosk feed (upstream #2531). Same reasoning as the overlay feed
     # above: a TV or Pi has no login session, so the wall carries a long-lived
-    # ``camwall``-scoped token in the URL. The route's own RequireCamWallToken
-    # gate authenticates it; this entry only lets the request reach that gate.
-    "/camwall/printers",
-    # Camera (streams loaded via <img> tag)
-    "/camera/stream",  # /printers/{id}/camera/stream
-    "/camera/snapshot",  # /printers/{id}/camera/snapshot
-    # Slicer token-authenticated downloads - protocol handlers (bambustudioopen://,
-    # orcaslicer://) cannot send auth headers. These endpoints validate a short-lived
-    # download token in the URL path instead.
-    "/dl/",  # /archives/{id}/dl/{token}/{filename}, /library/files/{id}/dl/{token}/{filename}
-    # 2FA + OIDC endpoints consumed by the login page before the user has a JWT.
-    # /verify trades a pre-auth token for a JWT; /oidc/providers lists enabled
-    # OIDC buttons; /oidc/authorize/{id} starts the PKCE flow; /oidc/callback
-    # lands from the identity provider; /oidc/exchange swaps the bridge token
-    # for a JWT. All of these carry their own short-lived token binding so the
-    # auth-middleware can skip them safely.
-    "/auth/2fa/verify",
-    "/auth/2fa/send-code",
-    "/auth/oidc/providers",
-    "/auth/oidc/authorize/",
-    "/auth/oidc/callback",
-    "/auth/oidc/exchange",
+    # ``camwall``-scoped token in the URL, checked by RequireCamWallToken.
+    re.compile(r"^/api/v1/camwall/printers$"),
+    # Camera (streams loaded via <img> tag). ⚠️ NOT the token MINTER beside
+    # them — ``POST /printers/camera/stream-token`` needs CAMERA_VIEW and is
+    # what a substring "/camera/stream" quietly opened.
+    re.compile(r"^/api/v1/printers/\d+/camera/stream$"),
+    re.compile(r"^/api/v1/printers/\d+/camera/snapshot$"),
+    # A plate-detection reference picture, shown by <img> in the same settings
+    # panel and gated by the same stream token.
+    re.compile(r"^/api/v1/printers/\d+/camera/plate-detection/references/\d+/thumbnail$"),
+    # Slicer token-authenticated downloads — protocol handlers
+    # (bambustudioopen://, orcaslicer://) cannot send auth headers. These
+    # endpoints validate a short-lived download token in the URL path instead.
+    re.compile(r"^/api/v1/archives/\d+/dl/[^/]+/[^/]+$"),
+    re.compile(r"^/api/v1/library/files/\d+/dl/[^/]+/[^/]+$"),
+    # 2FA + OIDC endpoints consumed by the login page before the user has a
+    # JWT. /2fa/verify trades a pre-auth token for a JWT and /2fa/email/send
+    # mails the code for it; /oidc/providers lists enabled OIDC buttons;
+    # /oidc/authorize/{id} starts the PKCE flow; /oidc/callback lands from the
+    # identity provider; /oidc/exchange swaps the bridge token for a JWT. All
+    # carry their own short-lived token binding, so the middleware can skip
+    # them safely.
+    # ⚠️ ``/2fa/email/send`` is listed here because the login page calls it with
+    # no session. The substring list named ``/auth/2fa/send-code``, a route
+    # that has never existed — so email OTP could not send its code at all.
+    re.compile(r"^/api/v1/auth/2fa/verify$"),
+    re.compile(r"^/api/v1/auth/2fa/email/send$"),
+    re.compile(r"^/api/v1/auth/oidc/providers$"),
+    re.compile(r"^/api/v1/auth/oidc/authorize/\d+$"),
+    re.compile(r"^/api/v1/auth/oidc/callback$"),
+    re.compile(r"^/api/v1/auth/oidc/exchange$"),
     # Obico ML API fetches JPEG frames by one-shot nonce (issue #172 follow-up).
     # The nonce itself is the credential: 32-byte random, single-use, ~30s TTL.
-    "/obico/cached-frame/",  # /obico/cached-frame/{nonce}
-    # MakerWorld thumbnail proxy (B.5 — 0.5.x cycle). <img> tags can't send
-    # Authorization headers and would 401 every image; the upstream is
-    # MakerWorld's *public* CDN (anyone visiting makerworld.com can fetch
-    # without auth) and the route's SSRF guard restricts the upstream host
-    # to the MakerWorld CDN allowlist, so this can't be abused as a
-    # generic open proxy.
-    "/makerworld/thumbnail",
-]
+    re.compile(r"^/api/v1/obico/cached-frame/[^/]+$"),
+    # MakerWorld covers and the thumbnail proxy (B.5 — 0.5.x cycle). <img> tags
+    # can't send Authorization headers and would 401 every image; the proxy's
+    # upstream is MakerWorld's *public* CDN (anyone visiting makerworld.com can
+    # fetch without auth) and the route's SSRF guard restricts the upstream host
+    # to the MakerWorld CDN allowlist, so it can't be abused as an open proxy.
+    re.compile(r"^/api/v1/makerworld/imports/\d+/cover$"),
+    re.compile(r"^/api/v1/makerworld/imports/\d+/cover-variant$"),
+    re.compile(r"^/api/v1/makerworld/thumbnail$"),
+)
 
 
 # NOTE: security_headers_middleware is registered *after* auth_middleware below
@@ -9137,10 +9189,11 @@ async def auth_middleware(request, call_next):
         if path.startswith(prefix):
             return await call_next(request)
 
-    # Allow public patterns (read-only display data like thumbnails)
-    for pattern in PUBLIC_API_PATTERNS:
-        if pattern in path:
-            return await call_next(request)
+    # Allow public patterns (read-only display data like thumbnails).
+    # ``match``, never ``search``: the patterns are anchored, and a search
+    # would put the old substring hole back in a costlier form.
+    if any(pattern.match(path) for pattern in PUBLIC_API_PATTERNS):
+        return await call_next(request)
 
     # --- Auth gate ---------------------------------------------------------
     auth_header = request.headers.get("Authorization")

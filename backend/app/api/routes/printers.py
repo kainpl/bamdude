@@ -955,7 +955,7 @@ async def get_printer_status(
     # Determine cover URL if there's an active print (including paused)
     cover_url = None
     if state.state in ("RUNNING", "PAUSE") and state.gcode_file:
-        cover_url = f"/api/v1/printers/{printer_id}/cover"
+        cover_url = f"/api/v1/printers/{printer_id}/camera-cover"
 
     # Convert HMS errors to response format
     hms_errors = [
@@ -1552,7 +1552,7 @@ def clear_cover_cache(printer_id: int) -> None:
     _cover_cache.pop(printer_id, None)
 
 
-@router.get("/{printer_id}/cover")
+@router.get("/{printer_id}/camera-cover")
 async def get_printer_cover(
     printer_id: int,
     view: str | None = None,

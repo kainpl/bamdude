@@ -959,7 +959,7 @@ class TestPrinterStateToDict:
         """Verify cover_url is added for running prints."""
         result = printer_state_to_dict(mock_state, printer_id=1)
 
-        assert result["cover_url"] == "/api/v1/printers/1/cover"
+        assert result["cover_url"] == "/api/v1/printers/1/camera-cover"
 
     def test_current_plate_id_extracted_from_gcode_file(self, mock_state):
         """Verify current_plate_id is parsed from a Bambu plate path (upstream #881)."""
