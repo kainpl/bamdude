@@ -12,6 +12,7 @@ from typing import Literal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.schemas.calibration_mode import normalize_mode
@@ -181,11 +182,16 @@ async def enqueue_batch_copies(
     project_id: int | None = None,
     project_line_id: int | None = None,
     batch_id: str | None = None,
+    library_file: LibraryFile | None = None,
 ) -> tuple[list[PrintQueueItem], str | None]:
     """Append ``count`` identical pending items to the given printer's queue.
 
     Used by direct-print endpoints to queue up the extra copies after the first
     is dispatched. Returns (items, batch_id). If count <= 0, returns ([], None).
+
+    ``library_file`` is the row for ``library_file_id`` when the caller has it —
+    the print-now route validates the file before it queues anything, so filing
+    the order line below would otherwise SELECT it a second time.
     """
     if count <= 0:
         return [], None
@@ -210,7 +216,7 @@ async def enqueue_batch_copies(
     # branch re-asks on every read.
     if project_id is not None and project_line_id is None:
         project_line_id = await resolve_line_id(
-            db, project_id=project_id, library_file_id=library_file_id, plate_index=plate_id
+            db, project_id=project_id, library_file_id=library_file_id, plate_index=plate_id, file=library_file
         )
 
     if batch_id is None:

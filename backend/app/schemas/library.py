@@ -593,6 +593,13 @@ class OrderCandidateOut(BaseModel):
     ``priority`` is the RANK of the order's priority (higher is more urgent),
     not the stored word — the list arrives already sorted, and this is here so a
     client can re-sort without a second vocabulary to learn.
+
+    ``line_material`` is the line's own material. One ORDER may appear several
+    times — every line whose product holds this plate and whose material accepts
+    it is offered, because the writers refuse to guess between two of them and
+    the operator is the one who may answer — so the label needs something that
+    tells two lines of the same order apart. ``None`` means the line takes any
+    material; the dialog then shows nothing extra rather than the word "none".
     """
 
     project_id: int
@@ -604,3 +611,4 @@ class OrderCandidateOut(BaseModel):
     priority: int
     deadline: datetime | None = None
     created_at: datetime
+    line_material: str | None = None

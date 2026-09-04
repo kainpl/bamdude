@@ -4512,8 +4512,11 @@ async def get_library_file_order_candidates(
             priority=c.priority,
             deadline=c.deadline,
             created_at=c.created_at,
+            line_material=c.line_material,
         )
-        for c in await order_candidates(db, lib_file.id, plate_index)
+        # The file itself, not its id: the visibility check above has just read
+        # the row, and the service would otherwise SELECT it a second time.
+        for c in await order_candidates(db, lib_file, plate_index)
     ]
 
 
@@ -5123,6 +5126,9 @@ async def print_library_file(
             created_by_id=current_user.id if current_user else None,
             project_id=effective_project_id,
             project_line_id=body.project_line_id,
+            # Validated at the top of this handler, so the order-line filing
+            # inside does not read it again.
+            library_file=lib_file,
         )
         return {
             "status": "queued",

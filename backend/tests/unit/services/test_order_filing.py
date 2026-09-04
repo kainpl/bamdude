@@ -13,7 +13,7 @@ engine's implicit branch) are exercised in ``test_order_candidates_api.py`` and
 """
 
 from backend.app.models.project_line import ProjectLine
-from backend.app.services.order_filing import line_for_plate
+from backend.app.services.order_filing import accepting_lines, line_for_plate
 
 
 def _line(lid, product_id, material=None, sort=0):
@@ -69,10 +69,34 @@ def test_a_plate_with_no_materials_narrows_nothing():
     assert line_for_plate([free_a, free_b], 10, set()) is None
 
 
-def test_when_the_material_narrowed_the_set_the_first_line_wins():
-    """Three lines, one ruled out by material: the survivors are ordered by
-    ``(sort_order, id)`` and the first of them takes the plate."""
-    second = _line(100, 10, material=None, sort=5)
-    first = _line(101, 10, material="PETG", sort=1)
+def test_two_accepting_lines_beside_a_ruled_out_third_still_resolve_to_nothing():
+    """⚠️ A ruled-out line does not make the survivors distinguishable.
+
+    This used to return the first survivor by ``(sort_order, id)`` whenever the
+    materials had ruled at least one line out — read as "the plate demonstrably
+    speaks to this half of the order". It does not: an unrelated PLA line in a
+    third position says nothing whatever about the two PETG lines beside it, and
+    the exception turned an order nobody could answer into a silent pick.
+    """
+    first = _line(100, 10, material="PETG", sort=1)
+    second = _line(101, 10, material=None, sort=5)
     ruled_out = _line(102, 10, material="PLA", sort=0)
-    assert line_for_plate([second, first, ruled_out], 10, {"PETG"}) is first
+    assert line_for_plate([second, first, ruled_out], 10, {"PETG"}) is None
+    # Both accepting lines are still OFFERED — the dialog asks, the writers do
+    # not guess, and those are two different questions.
+    assert accepting_lines([second, first, ruled_out], 10, {"PETG"}) == [first, second]
+
+
+def test_accepting_lines_is_ordered_and_filtered_like_the_resolver():
+    """The list the candidates endpoint offers is the resolver's own set, in
+    ``(sort_order, id)`` order — a line of another product is never in it, and a
+    single survivor is exactly what ``line_for_plate`` answers with."""
+    petg = _line(100, 10, material="PETG", sort=3)
+    free = _line(101, 10, material=None, sort=1)
+    pla = _line(102, 10, material="PLA", sort=0)
+    other_product = _line(103, 20, material=None, sort=0)
+
+    assert accepting_lines([petg, free, pla, other_product], 10, {"PETG"}) == [free, petg]
+    assert accepting_lines([petg, pla, other_product], 10, {"PETG"}) == [petg]
+    assert line_for_plate([petg, pla, other_product], 10, {"PETG"}) is petg
+    assert accepting_lines([], 10, {"PETG"}) == []

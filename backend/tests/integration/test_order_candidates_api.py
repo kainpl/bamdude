@@ -11,11 +11,13 @@ separately they start disagreeing, and the operator is told "still needs 5" in
 one place and "3" in the other about the same plate.
 """
 
+from contextlib import contextmanager
 from datetime import datetime
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import update
+from sqlalchemy import event, update
+from sqlalchemy.engine import Engine
 
 from backend.app.core.auth import create_access_token
 from backend.app.models.archive import PrintArchive
@@ -116,6 +118,27 @@ async def _finish_one_unit(db, project_id, file_id):
     await db.commit()
 
 
+@contextmanager
+def _statement_spy(fragment: str):
+    """Every statement issued while the block runs whose SQL names ``fragment``.
+
+    The technique ``test_order_metrics.py`` uses for the same question: listen on
+    the ``Engine`` class rather than on one engine, because the session under
+    test is built by a fixture and its bind is not this test's business.
+    """
+    seen: list[str] = []
+
+    def _record(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if fragment in statement:
+            seen.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _record)
+    try:
+        yield seen
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record)
+
+
 async def _candidates(client, file_id, plate_index=1):
     r = await client.get(f"/api/v1/library/files/{file_id}/order-candidates?plate_index={plate_index}")
     assert r.status_code == 200, r.text
@@ -193,11 +216,19 @@ async def test_a_whole_file_product_plate_answers_for_the_slicers_plate(committi
 
 
 @pytest.mark.asyncio
-async def test_the_material_picks_the_line_and_two_alike_lines_pick_none(committing_client, db_session, lamp):
-    """Decision 2, both halves. A PETG plate against a PETG line and a PLA line
-    is one candidate; against two lines it cannot tell apart it is none — an
-    order with nothing to file under is not offered, because the writers would
-    refuse to stamp it anyway."""
+async def test_the_material_rules_a_line_out_and_every_survivor_is_its_own_candidate(
+    committing_client, db_session, lamp
+):
+    """Decision 2 as amended by pass 7's final review, both halves.
+
+    A PETG plate against a PLA line and a PETG line is ONE candidate — the PLA
+    line is ruled out and is not offered at all. Against an order whose other
+    two lines both accept it is TWO candidates of the same order, not none: the
+    WRITERS refuse to guess between them (a stamp made with nobody watching), but
+    the operator standing in front of the dialog may answer, and hiding the
+    question from them is not the same as refusing to guess it. What tells the
+    two apart on screen rides on the wire — ``line_material``, the line's own.
+    """
     product_id, file_id = lamp["product"].id, lamp["file"].id
     narrowed, lines = await _order(
         committing_client,
@@ -207,12 +238,24 @@ async def test_the_material_picks_the_line_and_two_alike_lines_pick_none(committ
         lines=[
             {"product_id": product_id, "quantity": 2, "material": "PLA"},
             {"product_id": product_id, "quantity": 2, "material": "PETG"},
+            # No material at all: a line that takes every plate, so it accepts
+            # this one beside the PETG line and cannot be told apart from it by
+            # the plate. On the wire it is ``null``, which is what the dialog
+            # renders as no suffix rather than the word "none".
+            {"product_id": product_id, "quantity": 2},
         ],
     )
     rows = await _candidates(committing_client, file_id)
-    assert [(r["project_id"], r["project_line_id"]) for r in rows] == [(narrowed, lines[1])]
+    assert [(r["project_id"], r["project_line_id"]) for r in rows] == [
+        (narrowed, lines[1]),
+        (narrowed, lines[2]),
+    ], "both accepting lines, in the order the operator sees them; the PLA line is not offered"
+    assert [r["line_material"] for r in rows] == ["PETG", None]
 
-    await _order(
+    # Two lines of the SAME material are equally indistinguishable, and equally
+    # offered — the wire cannot disambiguate them, and the operator picking
+    # either one is still an answer the writers will honour.
+    twins, twin_lines = await _order(
         committing_client,
         product_id,
         2,
@@ -223,7 +266,10 @@ async def test_the_material_picks_the_line_and_two_alike_lines_pick_none(committ
         ],
     )
     rows = await _candidates(committing_client, file_id)
-    assert [(r["project_id"], r["project_line_id"]) for r in rows] == [(narrowed, lines[1])]
+    assert [(r["project_id"], r["project_line_id"]) for r in rows if r["project_id"] == twins] == [
+        (twins, twin_lines[0]),
+        (twins, twin_lines[1]),
+    ]
 
 
 @pytest.mark.asyncio
@@ -320,3 +366,68 @@ async def test_the_number_is_the_plan_blocks_own_number(committing_client, db_se
     # 6 ordered − 1 printed − 2 queued = 3, and the queued pair counts only
     # because the writer filed the line for it.
     assert row["count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_the_number_holds_for_an_alternative_plate_the_block_did_not_pick(committing_client, db_session, lamp):
+    """The same part sliced twice — one file per printer model, identical yield.
+
+    The greedy picks ONE of them and hangs every print on it; the other is that
+    row's ``alternative`` and appears in the block only as a file the operator
+    may switch to. Asked about the alternative's own plate, this endpoint still
+    answers — with the number the block shows for the row it replaces, because
+    covering the same work with an interchangeable plate takes the same number
+    of prints. A picker that answered anything else would tell the operator
+    "still needs 4" about a file the block calls 3.
+    """
+    product_id, picked_file_id = lamp["product"].id, lamp["file"].id
+    twin = _sliced("lamp-p1s.gcode.3mf")
+    db_session.add(twin)
+    await db_session.flush()
+    db_session.add(ProductPlate(product_id=product_id, library_file_id=twin.id, plate_index=0))
+    await db_session.commit()
+    twin_id = twin.id
+
+    pid, (line_id,) = await _order(committing_client, product_id, 5)
+
+    plan = (await committing_client.get(f"/api/v1/projects/{pid}/plan")).json()
+    (row,) = [r for line in plan["lines"] if line["line_id"] == line_id for r in line["rows"]]
+    assert row["library_file_id"] == picked_file_id, "the fixture's plate is the lower id, so the greedy takes it"
+    assert [alt["library_file_id"] for alt in row["alternatives"]] == [twin_id]
+
+    for file_id in (picked_file_id, twin_id):
+        rows = await _candidates(committing_client, file_id)
+        assert [(r["project_line_id"], r["outstanding_prints"]) for r in rows] == [(line_id, row["count"])]
+
+
+@pytest.mark.asyncio
+async def test_three_candidate_orders_are_planned_in_one_batch(committing_client, db_session, lamp):
+    """⚠️ One plan per candidate ORDER was one full context load per order.
+
+    The endpoint asks the plan engine for its numbers — deliberately, so the
+    picker and the block can never disagree — and it asks about every open order
+    holding this product. Run one at a time that was the whole archive-and-parts
+    read of each order, per keystroke-driven refresh of a dialog. The batch is
+    ``plan_for_orders``, and the spy below counts the read that used to repeat:
+    exactly one, whatever the number of orders.
+
+    The second half is the point of doing it at all — the batched numbers must be
+    the ones the per-order path computes, or the saving bought a different answer.
+    """
+    product_id, file_id = lamp["product"].id, lamp["file"].id
+    ids = [await _order(committing_client, product_id, n, name=f"O{n}") for n in (2, 3, 4)]
+
+    with _statement_spy("FROM print_archives") as statements:
+        rows = await _candidates(committing_client, file_id)
+
+    assert len(statements) == 1, f"one batched archive read, got {len(statements)}: {statements}"
+    assert len(rows) == 3
+
+    from backend.app.services.plan_engine import plan_for_order
+
+    one_at_a_time = {}
+    for pid, (line_id,) in ids:
+        plan = await plan_for_order(db_session, pid)
+        (row,) = [r for line in plan.lines if line.line_id == line_id for r in line.rows]
+        one_at_a_time[line_id] = row.count
+    assert {r["project_line_id"]: r["outstanding_prints"] for r in rows} == one_at_a_time

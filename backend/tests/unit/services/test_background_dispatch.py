@@ -129,6 +129,103 @@ async def test_the_claim_a_direct_print_takes_says_it_is_direct(dispatch_claim_d
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_a_direct_print_carries_the_line_the_claim_resolved(dispatch_claim_db, db_session, printer_factory):
+    """⚠️ The claim resolves the order LINE; the job is what stamps the ARCHIVE.
+
+    ``claim_printer_for_direct_print`` files the line when the caller named only
+    an order (spec pass 7, Decision 4a) — and ``_run_print_library_file`` calls
+    ``archive_print(project_line_id=job.project_line_id)``. Built from the
+    caller's original ids, the job carried ``None``: the queue row knew the line
+    and the print history did not, so a "print now" answered in the dialog's
+    Order field landed in the archive unfiled and the order page had to
+    re-derive it from the product every time.
+    """
+    from sqlalchemy import select
+
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.models.product import Product, ProductPart, ProductPlate
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+
+    printer = await printer_factory()
+    db_session.add(PrinterQueue(id=printer.id, printer_id=printer.id))
+    file = LibraryFile(
+        filename="lamp.gcode.3mf",
+        file_path="lamp.gcode.3mf",
+        file_type="gcode",
+        file_size=1,
+        file_metadata={
+            "plates": [
+                {
+                    "index": 1,
+                    "printable_objects": {"1": "shade"},
+                    "print_time_seconds": 100,
+                    "filaments": [{"slot_id": 1, "type": "PETG"}],
+                }
+            ]
+        },
+    )
+    product = Product(name="Lamp")
+    project = Project(name="O")
+    db_session.add_all([file, product, project])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            ProductPart(product_id=product.id, kind="printed", name="shade", name_key="shade", qty_per_unit=1),
+            ProductPlate(product_id=product.id, library_file_id=file.id, plate_index=0),
+        ]
+    )
+    line = ProjectLine(project_id=project.id, product_id=product.id, quantity=1, material="PETG")
+    db_session.add(line)
+    await db_session.commit()
+
+    service = BackgroundDispatchService()
+    with (
+        patch("backend.app.services.background_dispatch.printer_manager.get_status", return_value=None),
+        patch("backend.app.services.background_dispatch.ws_manager.broadcast", new_callable=AsyncMock),
+    ):
+        await service.dispatch_print_library_file(
+            file_id=file.id,
+            filename=file.filename,
+            printer_id=printer.id,
+            printer_name=printer.name,
+            options={"plate_id": 1},
+            requested_by_user_id=None,
+            requested_by_username=None,
+            # The dialog's Order field answered, with no line named — exactly
+            # what every door other than the plan block sends.
+            project_id=project.id,
+        )
+
+    (job,) = service._queued_jobs
+    assert (job.project_id, job.project_line_id) == (project.id, line.id)
+
+    # ...and it is the SAME answer the queue row got, not a second derivation.
+    (claim,) = (
+        (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.queue_id == printer.id))).scalars().all()
+    )
+    assert (claim.project_id, claim.project_line_id) == (job.project_id, job.project_line_id)
+
+
+def test_the_library_file_archive_is_stamped_from_the_job():
+    """The other half of the test above, which cannot be driven without a
+    printer and an FTP server: the archive row this job becomes takes its order
+    ids from the JOB. Read off the source because the alternative is a full
+    dispatch; the assertion above is what makes the job's own value right.
+    """
+    import inspect
+
+    from backend.app.services import background_dispatch as module
+
+    source = inspect.getsource(module.BackgroundDispatchService._run_print_library_file)
+    assert "project_id=job.project_id" in source
+    assert "project_line_id=job.project_line_id" in source
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_cancel_queued_job_removes_it_and_broadcasts(dispatch_claim_db):
     """Cancelling queued job removes it immediately."""
     service = BackgroundDispatchService()

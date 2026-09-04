@@ -9,7 +9,9 @@ product → line, so the asymmetry was on the queued side alone.
 
 Three answers live here, and they are the same rule asked three ways:
 
-* :func:`line_for_plate` — pure. WHICH line of a set the plate lands on.
+* :func:`accepting_lines` — pure. Which lines of a set the plate COULD land on.
+* :func:`line_for_plate` — pure. That set when it holds exactly one line, so a
+  writer may stamp it with nobody watching; ``None`` for every other size.
 * :func:`resolve_line_id` — what the three queue writers stamp on a row when the
   caller named an order and no line. :class:`LineFiler` is the same answer with
   its three reads hoisted, for the writer that asks it once per plate of a
@@ -69,6 +71,12 @@ class OrderCandidate:
     ``priority`` is the RANK of ``Project.priority`` in ``PROJECT_PRIORITIES``
     (higher is more urgent), not the stored word — the wire wants something
     sortable and the word is already on the order elsewhere.
+
+    ``line_material`` is the LINE's own material, and it is on the wire because
+    an order may contribute SEVERAL candidates: when two lines both accept the
+    plate the dialog offers both, and the material is the only thing that tells
+    them apart on screen. ``None`` is an ordinary value — a line with no
+    material takes every plate.
     """
 
     project_id: int
@@ -80,39 +88,48 @@ class OrderCandidate:
     priority: int
     deadline: datetime | None
     created_at: datetime
+    line_material: str | None = None
 
 
-def line_for_plate(lines: list[ProjectLine], product_id: int, materials: set[str]) -> ProjectLine | None:
-    """The one line of ``lines`` this plate lands on, or ``None``.
+def accepting_lines(lines: list[ProjectLine], product_id: int, materials: set[str]) -> list[ProjectLine]:
+    """Every line of ``lines`` this plate could land on, in ``(sort_order, id)`` order.
 
     The lines of the order that carry ``product_id``, filtered by the material
     rule (:func:`order_metrics.line_accepts_materials` — the same rule
-    attribution applies to a finished archive). Exactly one survivor is the
-    answer.
-
-    ⚠️ **Several survivors is not "take the first" in general.** It is the first
-    by ``(sort_order, id)`` ONLY when the plate carried materials AND those
-    materials ruled at least one line out — i.e. the plate demonstrably speaks
-    to this half of the order. Otherwise the answer is ``None``: two lines the
-    plate cannot tell apart are two lines, and guessing between them files
-    somebody's print against work nobody ordered. That is the whole reason this
-    returns an optional rather than a best effort.
+    attribution applies to a finished archive). This is the whole answer;
+    :func:`line_for_plate` is this answer narrowed to the case where it is
+    unambiguous, and the candidates endpoint offers the list as it stands.
 
     ⚠️ A plate with no materials at all (unsliced, or metadata without
     filaments) matches no CONSTRAINED line — "we do not know what this prints
     in" is not "it prints in anything". Same reading an archive with no
     ``filament_type`` gets.
     """
-    of_product = [line for line in lines if line.product_id == product_id]
-    accepting = sorted(
-        (line for line in of_product if line_accepts_materials(line, materials)),
+    return sorted(
+        (line for line in lines if line.product_id == product_id and line_accepts_materials(line, materials)),
         key=lambda line: (line.sort_order, line.id),
     )
-    if len(accepting) == 1:
-        return accepting[0]
-    if accepting and materials and len(accepting) < len(of_product):
-        return accepting[0]
-    return None
+
+
+def line_for_plate(lines: list[ProjectLine], product_id: int, materials: set[str]) -> ProjectLine | None:
+    """The one line of ``lines`` this plate lands on, or ``None``.
+
+    :func:`accepting_lines`, resolved only when EXACTLY ONE line accepts.
+
+    ⚠️ **Several survivors is never "take the first".** Two lines the plate
+    cannot tell apart are two lines, and guessing between them files somebody's
+    print against work nobody ordered — that is the whole reason this returns an
+    optional rather than a best effort. It once made an exception for "the
+    materials ruled at least one line out", which read as the plate speaking to
+    this half of the order; it does not. A third, unrelated PLA line does not
+    make two PETG lines distinguishable, and the exception turned exactly that
+    into a silent pick (spec pass 7, Decision 4a — amended after the final
+    review). What the dialog does with two accepting lines is offer BOTH
+    (:func:`order_candidates`) and let the operator answer; what this answers is
+    only what a writer may stamp with nobody watching.
+    """
+    accepting = accepting_lines(lines, product_id, materials)
+    return accepting[0] if len(accepting) == 1 else None
 
 
 def _prints_for_plate(recipe: PlateRecipe, outstanding: dict[int, int]) -> int:
@@ -188,30 +205,37 @@ async def _plate_recipes_for_file(
     return recipes, {product.id: product for product in products}
 
 
-async def order_candidates(db: AsyncSession, library_file_id: int, plate_index: int) -> list[OrderCandidate]:
+async def order_candidates(db: AsyncSession, file: LibraryFile, plate_index: int) -> list[OrderCandidate]:
     """The active orders this plate could be filed under, best first.
 
     An order qualifies when it has a line whose PRODUCT holds this plate and
-    whose material accepts it — :func:`line_for_plate`, once per (order,
-    product), so one order with two lines on two different products yields two
-    candidates while one order with two indistinguishable lines yields none
-    (there is nothing to propose that the writers would then refuse to stamp).
+    whose material accepts it — :func:`accepting_lines`, per (order, product).
+    **Every accepting line is its own candidate**, so an order with two lines it
+    cannot tell apart contributes two entries rather than none: the writers
+    refuse to GUESS between them (:func:`line_for_plate`), which is not a reason
+    to hide from the operator the two answers they are free to give. What
+    disambiguates them rides on the candidate — ``line_material``, and the
+    product name where two lines are for two different products.
+
+    ⚠️ ``file`` is passed in, already loaded, because the route that answers this
+    has just read it to decide whether the caller may see it at all. Re-reading
+    it here would be a second SELECT for a row in hand.
 
     Ranking, in order: lines that still need the plate first, then order
     priority (higher first), then deadline (earlier first, none last), then the
-    older order. **The amount still needed does not rank** — sorting by it would
-    starve either the big order or the nearly-finished one, depending on which
-    way round it went.
+    older order, then the line's own ``(sort_order, id)`` — so an order's several
+    candidates arrive in the order the operator sees its lines in.
+    **The amount still needed does not rank** — sorting by it would starve either
+    the big order or the nearly-finished one, depending on which way round it
+    went.
 
-    ⚠️ ``outstanding_prints`` comes from ``plan_for_order`` — the plan block's
-    own machinery, run once per candidate ORDER (not per candidate line, and not
-    per plate). Deriving the number here from the figures instead would be a
-    second implementation of "outstanding", and what this endpoint owes the
-    operator is the SAME outstanding number the block works from, asked about
-    this plate. Asked about a plate the block's greedy pick never chose it still
-    answers, and the block names no row to compare it with. The cost is one plan
-    per active order that holds this product, which is the same computation
-    opening any one of those order pages does.
+    ⚠️ ``outstanding_prints`` comes from the PLAN — the plan block's own
+    machinery, asked once for ALL candidate orders in one batch
+    (``plan_for_orders``). Deriving the number here from the figures instead
+    would be a second implementation of "outstanding", and what this endpoint
+    owes the operator is the SAME outstanding number the block works from, asked
+    about this plate. Asked about a plate the block's greedy pick never chose it
+    still answers, and the block names no row to compare it with.
 
     ⚠️ Archived customers are not filtered because there is no such thing:
     ``customers`` has no archived flag, and ``projects.archived`` was retired by
@@ -221,11 +245,8 @@ async def order_candidates(db: AsyncSession, library_file_id: int, plate_index: 
     # :func:`line_for_plate` from this module for its own implicit branch, and a
     # module-level import in both directions is a cycle. The engine is the lower
     # layer of the two, so this is the edge that gives.
-    from backend.app.services.plan_engine import plan_for_order
+    from backend.app.services.plan_engine import plan_for_orders
 
-    file = (await db.execute(select(LibraryFile).where(LibraryFile.id == library_file_id))).scalar_one_or_none()
-    if file is None:
-        return []
     index = plate_index or 0
     recipes, products = await _plate_recipes_for_file(db, file, index)
     if not recipes:
@@ -247,32 +268,43 @@ async def order_candidates(db: AsyncSession, library_file_id: int, plate_index: 
         .all()
     )
 
-    out: list[OrderCandidate] = []
+    # (project, line, product id), before any plan is asked for: the plans cost
+    # one batch for the whole set, and an order with nothing to file under must
+    # not be in it.
+    matched: list[tuple[Project, ProjectLine, int]] = []
     for project in projects:
         lines = sorted(project.lines, key=lambda line: (line.sort_order, line.id))
-        resolved: dict[int, int] = {}  # line id → product id
+        seen: set[int] = set()  # a line resolved by two products of the same order is still one candidate
         for product_id in recipes:
-            line = line_for_plate(lines, product_id, materials)
-            if line is not None:
-                resolved.setdefault(line.id, product_id)
-        if not resolved:
-            continue
-        plan = await plan_for_order(db, project.id)
-        outstanding_by_line = {lp.line_id: lp.outstanding_before for lp in (plan.lines if plan else [])}
-        for line_id, product_id in resolved.items():
-            out.append(
-                OrderCandidate(
-                    project_id=project.id,
-                    project_name=project.name,
-                    project_line_id=line_id,
-                    product_id=product_id,
-                    product_name=products[product_id].name,
-                    outstanding_prints=_prints_for_plate(recipes[product_id], outstanding_by_line.get(line_id) or {}),
-                    priority=_priority_rank(project.priority),
-                    deadline=project.due_date,
-                    created_at=project.created_at,
-                )
-            )
+            for line in accepting_lines(lines, product_id, materials):
+                if line.id in seen:
+                    continue
+                seen.add(line.id)
+                matched.append((project, line, product_id))
+    if not matched:
+        return []
+
+    plans = await plan_for_orders(db, sorted({project.id for project, _line, _pid in matched}))
+    outstanding_by_line: dict[int, dict[int, int]] = {
+        lp.line_id: lp.outstanding_before for plan in plans.values() for lp in plan.lines
+    }
+
+    out = [
+        OrderCandidate(
+            project_id=project.id,
+            project_name=project.name,
+            project_line_id=line.id,
+            product_id=product_id,
+            product_name=products[product_id].name,
+            outstanding_prints=_prints_for_plate(recipes[product_id], outstanding_by_line.get(line.id) or {}),
+            priority=_priority_rank(project.priority),
+            deadline=project.due_date,
+            created_at=project.created_at,
+            line_material=line.material,
+        )
+        for project, line, product_id in matched
+    ]
+    line_order = {line.id: (line.sort_order, line.id) for _project, line, _pid in matched}
 
     out.sort(
         key=lambda c: (
@@ -281,7 +313,7 @@ async def order_candidates(db: AsyncSession, library_file_id: int, plate_index: 
             (c.deadline is None, c.deadline or datetime.min),
             c.created_at,
             c.project_id,
-            c.project_line_id,
+            line_order[c.project_line_id],
         )
     )
     return out
@@ -331,20 +363,28 @@ class LineFiler:
         return next(iter(resolved)) if len(resolved) == 1 else None
 
 
-async def line_filer(db: AsyncSession, *, project_id: int, library_file_id: int | None) -> LineFiler:
+async def line_filer(
+    db: AsyncSession, *, project_id: int, library_file_id: int | None, file: LibraryFile | None = None
+) -> LineFiler:
     """Load what filing this file under this order needs, once.
 
     Every "nothing to file against" case — no file named, an order with no lines,
     a file that is gone — comes back as an EMPTY filer rather than an exception,
     so a caller in a per-plate loop has one shape to handle and
     :meth:`LineFiler.for_plate` answers ``None`` for all of them.
+
+    ``file`` is the row for ``library_file_id`` when the caller already holds it
+    — every writer validates the source before it files anything, so the SELECT
+    below is usually a second read of a row in hand. It is used only when its id
+    matches; a mismatch re-reads rather than filing against the wrong file.
     """
     if library_file_id is None:
         return LineFiler(lines=[], file=None, plates=[])
     lines = list((await db.execute(select(ProjectLine).where(ProjectLine.project_id == project_id))).scalars().all())
     if not lines:
         return LineFiler(lines=[], file=None, plates=[])
-    file = (await db.execute(select(LibraryFile).where(LibraryFile.id == library_file_id))).scalar_one_or_none()
+    if file is None or file.id != library_file_id:
+        file = (await db.execute(select(LibraryFile).where(LibraryFile.id == library_file_id))).scalar_one_or_none()
     if file is None:
         return LineFiler(lines=lines, file=None, plates=[])
     plates = list(
@@ -363,7 +403,12 @@ async def line_filer(db: AsyncSession, *, project_id: int, library_file_id: int 
 
 
 async def resolve_line_id(
-    db: AsyncSession, *, project_id: int, library_file_id: int | None, plate_index: int | None
+    db: AsyncSession,
+    *,
+    project_id: int,
+    library_file_id: int | None,
+    plate_index: int | None,
+    file: LibraryFile | None = None,
 ) -> int | None:
     """The unambiguous line of ``project_id`` for this plate, or ``None``.
 
@@ -373,9 +418,10 @@ async def resolve_line_id(
     same decision about it on every read.
 
     A caller filing several plates of the same file under the same order wants
-    :func:`line_filer` instead — this is that, with the load per call.
+    :func:`line_filer` instead — this is that, with the load per call. ``file``
+    is passed straight through: see :func:`line_filer`.
     """
-    filer = await line_filer(db, project_id=project_id, library_file_id=library_file_id)
+    filer = await line_filer(db, project_id=project_id, library_file_id=library_file_id, file=file)
     return filer.for_plate(plate_index)
 
 
@@ -383,6 +429,7 @@ __all__ = [
     "CLOSED_STATUSES",
     "LineFiler",
     "OrderCandidate",
+    "accepting_lines",
     "line_filer",
     "line_for_plate",
     "order_candidates",

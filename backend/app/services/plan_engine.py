@@ -10,9 +10,10 @@ and nothing else — keep the names ``attribute`` and ``cover`` apart in code,
 tests and the vault, or a change to one reads as a change to both.
 
 The engine proper (:func:`plan_lines` and everything above it) is pure: no
-session, no printer state, no clock. Only :func:`plan_for_order` and
-:func:`queued_yield_by_line` touch the database. Routing is not dispatching —
-nothing here asks whether a printer is ready, and nothing here may start to.
+session, no printer state, no clock. Only :func:`plan_for_orders` (and its
+one-order wrapper :func:`plan_for_order`) and :func:`queued_yield_by_line` touch
+the database. Routing is not dispatching — nothing here asks whether a printer
+is ready, and nothing here may start to.
 
 **Cost.** The app already has one filament price and it is farm-wide:
 ``services.filament_cost.default_rate_per_kg`` reads the ``default_filament_cost``
@@ -41,9 +42,9 @@ from backend.app.services.order_filing import line_for_plate
 from backend.app.services.order_metrics import (
     LineFigures,
     OrderContext,
+    _batch_contexts,
     attribute,
     line_accepts_materials,
-    load_order_context,
 )
 from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
 
@@ -612,25 +613,65 @@ async def queued_yield_by_line(
     return out
 
 
-async def plan_for_order(db: AsyncSession, project_id: int) -> OrderPlan | None:
-    """Load everything :func:`plan_lines` needs and run it. ``None`` = no order.
+async def plan_for_orders(db: AsyncSession, project_ids: list[int]) -> dict[int, OrderPlan]:
+    """The plan of every order in ``project_ids``, in ONE round of queries.
+
+    ``project_id → OrderPlan``, with no entry for an id that names no order —
+    the same "there is nothing here" :func:`plan_for_order` says with ``None``.
+
+    ⚠️ **This is the batch, and the one-order function is a wrapper over it.**
+    The candidates endpoint asks for the plan of every order that could hold a
+    plate, which on a working farm is every open order carrying that product; in
+    a loop that was ~14 statements EACH, including a full archive-and-parts read
+    per order. ``order_metrics._batch_contexts`` is the loader the orders list
+    already uses for exactly this shape, and it returns the contexts
+    :func:`load_order_context` would have returned one at a time (pinned by its
+    own parity test), so the arithmetic below is untouched.
+
+    Two things are shared across the orders and both are safe to share:
+
+    * ``recipes_for_products`` over the UNION of every order's products — a
+      recipe is a property of a plate and a file, not of the order asking, and
+      ``plan_lines`` indexes it by ``line.product_id``. A superset costs nothing.
+    * ``queued_yield_by_line`` over the UNION of the lines. Its LINE branch
+      filters on line ids, and its IMPLICIT branch groups the lines it was given
+      by ``project_id`` and asks each order about its own rows — so both branches
+      stay keyed per order however many orders are in the call. A product of
+      SOMEBODY ELSE's order in the shared recipe map yields no line here either:
+      ``line_for_plate`` only ever looks at the lines of the row's own order.
 
     Computed on every read, never cached and never stored: a second call after
     enqueuing sees the new queue rows and plans that much less.
     """
-    ctx = await load_order_context(db, project_id)
-    if ctx is None:
-        return None
-    figures, _other = attribute(ctx)
-    # ⚠️ ONE load for the whole order. This was a comprehension calling the
-    # single-product helper per product — a SELECT per line of a page that
-    # recomputes its plan on every read.
-    recipes_by_product = await recipes_for_products(db, ctx.products_by_id.values())
-    counted_by_line = {line_id: {pf.part_id for pf in figs.parts} for line_id, figs in figures.items()}
-    queued = await queued_yield_by_line(db, recipes_by_product, ctx.lines, counted_by_line)
+    if not project_ids:
+        return {}
+    contexts = await _batch_contexts(db, project_ids)
+    if not contexts:
+        return {}
+    figures_by_project = {ctx.project.id: attribute(ctx)[0] for ctx in contexts}
+    # ⚠️ ONE load for every product of every order. Per ORDER this was already a
+    # single call (it used to be one per product — a SELECT per line of a page
+    # that recomputes its plan on every read); per BATCH it is one for all.
+    products_by_id = {pid: product for ctx in contexts for pid, product in ctx.products_by_id.items()}
+    recipes_by_product = await recipes_for_products(db, products_by_id.values())
+    counted_by_line = {
+        line_id: {pf.part_id for pf in figs.parts}
+        for figures in figures_by_project.values()
+        for line_id, figs in figures.items()
+    }
+    all_lines = [line for ctx in contexts for line in ctx.lines]
+    queued = await queued_yield_by_line(db, recipes_by_product, all_lines, counted_by_line)
     rate_per_kg = await default_rate_per_kg(db)
     price_per_gram = rate_per_kg / 1000.0 if rate_per_kg > 0 else None
-    return plan_lines(ctx, figures, recipes_by_product, queued, price_per_gram)
+    return {
+        ctx.project.id: plan_lines(ctx, figures_by_project[ctx.project.id], recipes_by_product, queued, price_per_gram)
+        for ctx in contexts
+    }
+
+
+async def plan_for_order(db: AsyncSession, project_id: int) -> OrderPlan | None:
+    """One order's plan — :func:`plan_for_orders` for one. ``None`` = no order."""
+    return (await plan_for_orders(db, [project_id])).get(project_id)
 
 
 __all__ = [
@@ -644,6 +685,7 @@ __all__ = [
     "cover",
     "line_yield",
     "plan_for_order",
+    "plan_for_orders",
     "plan_lines",
     "queued_yield_by_line",
 ]

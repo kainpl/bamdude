@@ -1917,13 +1917,13 @@ async def _three_macros(db):
     return ticked.id, unticked.id, swap.id
 
 
-async def _swap_printer(db, *, swap_mode_enabled=True):
+async def _swap_printer(db, *, swap_mode_enabled=True, model="P1S"):
     printer = Printer(
         name="Pswap",
         serial_number="SW1",
         ip_address="10.0.0.7",
         access_code="1234",
-        model="P1S",
+        model=model,
         swap_mode_enabled=swap_mode_enabled,
     )
     db.add(printer)
@@ -2095,6 +2095,42 @@ async def test_plan_enqueue_finds_a_preference_saved_under_a_longer_model_name(c
     assert r.status_code == 200, r.text
     (other,) = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
     assert other.swap_macro_events is None and other.mesh_mode_fast_check is True
+
+
+@pytest.mark.asyncio
+async def test_the_event_macros_of_a_long_named_printer_are_matched_on_its_short_name(
+    committing_client, db_session, catalog
+):
+    """⚠️ One normalising rule for the whole profile lookup, not just half of it.
+
+    ``_saved_preference`` already compared the model through
+    ``normalize_model_name``; the macro narrowing beside it compared raw. So a
+    printer row spelled "Bambu Lab X1 Carbon" found its saved profile and then
+    matched NO macro at all, because the macro editor writes short names — and an
+    empty ``selected_macro_ids`` is indistinguishable from "the operator ticked
+    nothing", so the print simply ran without its macros and said nothing.
+    """
+    targeted = Macro(name="lights on", event="print_started", gcode="M355 S1", printer_models='["X1C"]')
+    elsewhere = Macro(name="p1s only", event="print_started", gcode="M300", printer_models='["P1S"]')
+    db_session.add_all([targeted, elsewhere])
+    await db_session.commit()
+    await _the_dialogs_saved_preference(db_session, printer_model="Bambu Lab X1 Carbon")
+    printer_id = await _swap_printer(db_session, model="Bambu Lab X1 Carbon")
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    plate_id = await _plate_id_of_the_only_row(committing_client, pid)
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{pid}/plan/enqueue",
+        json={
+            "items": [{"plate_id": plate_id, "count": 1, "line_id": line_id}],
+            "target": {"kind": "printer", "printer_id": printer_id},
+        },
+    )
+    assert r.status_code == 200, r.text
+    (row,) = await _written_rows(db_session, PrintQueueItem, r.json()["created"][0]["queue_item_ids"])
+    # The X1C macro is ticked and the P1S one is not: normalising is still
+    # MATCHING — it does not widen a macro onto another machine.
+    assert json.loads(row.selected_macro_ids) == [targeted.id]
 
 
 @pytest.mark.asyncio

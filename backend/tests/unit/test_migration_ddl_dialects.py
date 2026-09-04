@@ -66,8 +66,15 @@ CREATE TABLE project_print_plan_items (
 )
 """
 
-#: Tokens SQLite accepts and PostgreSQL does not have at all.
-SQLITE_ONLY_TOKENS = ("AUTOINCREMENT", "DATETIME")
+#: Tokens SQLite accepts and PostgreSQL does not have at all. ``WITHOUT ROWID``
+#: is the one that reads as harmless and is not: it is a storage decision only
+#: SQLite has a concept of, and asyncpg fails on it exactly as it fails on
+#: ``AUTOINCREMENT`` — at parse time, before ``IF NOT EXISTS`` can save it.
+SQLITE_ONLY_TOKENS = ("AUTOINCREMENT", "DATETIME", "WITHOUT ROWID")
+
+#: What PostgreSQL spells "this column numbers itself". ``BIGSERIAL`` contains
+#: ``SERIAL`` and is listed anyway, because the point of the list is to be read.
+POSTGRES_AUTOINCREMENT_TOKENS = ("SERIAL", "BIGSERIAL", "IDENTITY")
 
 
 # ── Recording doubles ───────────────────────────────────────────────────────
@@ -315,6 +322,38 @@ def test_no_migration_reaches_postgresql_with_sqlite_only_create_table(modelled_
             if hits:
                 offenders.append(f"{name}: CREATE TABLE {table} reaches PostgreSQL carrying {hits}")
     assert not offenders, "SQLite-only DDL on the PostgreSQL path:\n  " + "\n  ".join(offenders)
+
+
+def test_a_postgresql_twin_of_an_autoincrement_table_numbers_its_key_itself(modelled_tables, migration_modules):
+    """⚠️ Parsing is not the whole rule — the PostgreSQL twin must still WORK.
+
+    ``id INTEGER PRIMARY KEY`` parses perfectly on PostgreSQL and is a plain
+    integer column: no sequence, no default, so the first INSERT that omits the
+    id fails with a NOT NULL violation. On SQLite the same words are the rowid
+    alias and number themselves, which is why ``AUTOINCREMENT`` is often dropped
+    rather than translated when a dialect twin is written — the test above is
+    happy (the token is gone) and the fresh install dies on its first row.
+
+    So: wherever a migration creates an unmodelled table with ``AUTOINCREMENT``
+    on one dialect, the DDL PostgreSQL actually reaches has to say ``SERIAL`` /
+    ``BIGSERIAL`` / ``GENERATED … AS IDENTITY``.
+    """
+    checked: list[str] = []
+    offenders: list[str] = []
+    for name, tree in migration_modules:
+        rows = _unmodelled_creates(name, tree, modelled_tables)
+        numbering_itself = {table for table, ddl, _pg in rows if "AUTOINCREMENT" in ddl.upper()}
+        for table, ddl, pg_reachable in rows:
+            upper = ddl.upper()
+            # The SQLite twin itself: it is not on the PostgreSQL path (the test
+            # above is what proves that) and it is not what this asks about.
+            if not pg_reachable or table not in numbering_itself or "AUTOINCREMENT" in upper:
+                continue
+            checked.append(f"{name}.{table}")
+            if not any(token in upper for token in POSTGRES_AUTOINCREMENT_TOKENS):
+                offenders.append(f"{name}: CREATE TABLE {table} reaches PostgreSQL with a key that numbers nothing")
+    assert checked, "no AUTOINCREMENT table with a PostgreSQL twin was found — the scan is asserting nothing"
+    assert not offenders, "a PostgreSQL primary key with no sequence behind it:\n  " + "\n  ".join(offenders)
 
 
 def test_the_scan_still_sees_the_tables_m158_removed_from_the_models(modelled_tables, migration_modules):

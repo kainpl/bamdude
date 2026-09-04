@@ -88,8 +88,6 @@ async def seed(session_factory):
     # seed has nothing to backfill anyway (empty table), and on upgrade
     # installs that already passed m044 the column is also gone. Guard
     # the SELECT so it doesn't crash with "no such column".
-    from backend.app.core.db_dialect import is_postgres
-
     async with session_factory() as db:
         if is_postgres():
             col_check = await db.execute(

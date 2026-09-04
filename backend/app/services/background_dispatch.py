@@ -1067,6 +1067,21 @@ class BackgroundDispatchService:
                     project_line_id=project_line_id,
                 )
                 claim_item_id = claim_item.id if claim_item is not None else None
+                if claim_item is not None:
+                    # ⚠️ **The claim row is the resolved answer, and the job must
+                    # carry it.** ``claim_printer_for_direct_print`` files the
+                    # line when the caller named only an order (spec pass 7,
+                    # Decision 4a) — and the job below is what
+                    # ``_run_print_library_file`` stamps the ARCHIVE from
+                    # (``archive_print(project_line_id=job.project_line_id)``).
+                    # Built from the caller's original ids instead, the queue row
+                    # knew the line and the print history did not, so a "print
+                    # now" for an order landed in the archive unfiled and the
+                    # order page's own attribution had to re-derive it. Reading
+                    # them BOTH off the row also keeps the two rows about one
+                    # print from disagreeing about the order.
+                    project_id = claim_item.project_id
+                    project_line_id = claim_item.project_line_id
 
             dispatch_position = len(self._queued_jobs) + len(self._active_jobs) + 1
             job = PrintDispatchJob(

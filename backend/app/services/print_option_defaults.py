@@ -225,12 +225,21 @@ async def _selected_macro_ids(db: AsyncSession, printer_model: str | None, desel
     for — every enabled macro is offered. That is safe rather than optimistic:
     ``macro_trigger`` re-filters the list against the printer the job actually
     lands on, so a superset can only ever fire what that printer matches anyway.
+
+    ⚠️ **The model is NORMALISED first, exactly as :func:`_saved_preference`
+    normalises it — one rule for both halves of this module.** The callers spell
+    a model however their source does ("Bambu Lab X1 Carbon" off a printer row,
+    "C12" out of a 3MF), while ``macro.printer_models`` holds the short names the
+    macro editor writes. Compared raw, a long-name printer matched no macro at
+    all and the queue row went out with an empty list — silently, because an
+    empty selection is also what "the operator deselected everything" looks like.
     """
+    wanted = normalize_model_name(printer_model)
     macros = (await db.execute(select(Macro).where(Macro.enabled.is_(True)))).scalars().all()
     return [
         macro.id
         for macro in macros
         if not macro.event.startswith(_SWAP_EVENT_PREFIX)
         and macro.id not in deselected
-        and (not printer_model or macro_targets_model(macro, printer_model))
+        and (not wanted or macro_targets_model(macro, wanted))
     ]

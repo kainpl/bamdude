@@ -151,8 +151,10 @@ async def add_items_to_auto_queue(
     # order and the file, never on the plate index. The question below is per
     # plate, but the rows it reads are not, and asking ``resolve_line_id`` inside
     # the fan-out repeated all three SELECTs per plate of a multi-plate call.
+    # ``file=library_file``: validated at the top of this function, so the
+    # filer does not SELECT the same row a second time.
     filer = (
-        await line_filer(db, project_id=effective_project_id, library_file_id=data.library_file_id)
+        await line_filer(db, project_id=effective_project_id, library_file_id=data.library_file_id, file=library_file)
         if effective_project_id is not None and data.project_line_id is None
         else None
     )
