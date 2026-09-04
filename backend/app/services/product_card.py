@@ -1185,7 +1185,11 @@ async def _import_attachments(
         try:
             await asyncio.to_thread(_write_member, target, data)
         except OSError as e:
+            # ⚠️ A write that fails PART-WAY — the ordinary shape of ENOSPC —
+            # leaves a truncated file behind, and no row will name it because
+            # this entry is being skipped. Nothing else would ever remove it.
             logger.error("Failed to write an imported attachment %s: %s", target, e)
+            _unlink_quietly(target)
             notes.append(_note("skipped_unsaved", name=original))
             continue
         rows.append(

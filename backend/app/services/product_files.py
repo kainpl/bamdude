@@ -104,9 +104,15 @@ MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 # A product export's ceiling — a different question from an attachment's, and a
 # much larger answer: the archive carries every 3MF the product prints from, and
 # a plated multi-material 3MF is routinely hundreds of megabytes. This is a
-# TRANSPORT bound, not a policy: the upload is streamed to a temp file with this
-# as a running stop, so the number is "what a farm's disk can absorb from one
-# request" and nothing about it is buffered in memory.
+# TRANSPORT bound, not a policy — "what a farm will accept back in one request".
+#
+# The import route checks it twice: against the declared ``Content-Length``, a
+# cheap refusal before any of our work but only the client's word; and then
+# against the real size of the part FastAPI has ALREADY spooled to a
+# ``SpooledTemporaryFile`` before the handler ran. Nothing is streamed here and
+# nothing is buffered by us — by the time anything can refuse, the bytes are
+# already on the server's disk. Bounding the ALLOCATION is a separate number,
+# :data:`MAX_IMPORT_MEMBER_BYTES` below.
 MAX_IMPORT_BYTES = 2 * 1024**3
 
 # One MEMBER of that archive, and a much smaller number than the archive itself.

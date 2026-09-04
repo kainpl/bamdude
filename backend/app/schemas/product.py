@@ -292,7 +292,11 @@ class CardNote(BaseModel):
         # answers whichever container the file arrived in. The import's cover
         # variants add ``category = "cover"``, which no fill ever produces.
         "skipped_extension",  # params: name, ext, category
-        "skipped_too_large",  # params: name, size, limit (+ category on the cover)
+        # params: name, size, limit, category — where category is one of
+        # ATTACHMENT_CATEGORIES, "cover" (the dedicated cover), or "files" (a
+        # library member over the per-member cap). A card FILL emits it without
+        # a category at all; the frontend must not require one.
+        "skipped_too_large",
         "skipped_unreadable",  # params: name
         "skipped_unsaved",  # params: name (+ category on the cover)
         "nothing_to_fill",
