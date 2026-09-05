@@ -1525,7 +1525,8 @@ class PrintScheduler:
         """
         per_printer_iv = (printer.stagger_interval_minutes * 60) if printer.stagger_interval_minutes else 0
         # The PRINTER's id — the resolver reads slot.printer_id as the identity whose tags and location decide the
-        # group; PrinterQueue.id merely prefers to equal it (ensure_printer_queue has a squatter branch).
+        # group; PrinterQueue.id == printer_id is the invariant, but the printer object is in hand, so its id is
+        # the honest key.
         self._register_stagger_start(printer.id, per_printer_iv or interval_seconds)
 
     async def acquire_stagger_slot(self, printer_id: int) -> None:

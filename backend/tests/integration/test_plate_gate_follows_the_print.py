@@ -212,9 +212,13 @@ class TestADiscardedArchiveTakesNoRowWithIt:
 
 class TestTheCompletionFindsTheRowByThePrintersQueue:
     async def test_a_queue_whose_id_is_not_the_printers_still_matches(self, db_session, printer_factory, main_db):
-        """``queue_id == printer_id`` held only by construction; a queue created
-        after an orphan squatted on the id breaks it, and the completion then
-        found no row to close — for ever."""
+        """``PrinterQueue.id == printer_id`` is enforced again (the guard repairs a
+        misplaced row rather than creating one beside it), so this no longer
+        pins a state the app can reach. It pins the lookup instead: the
+        completion finds its rows through ``PrinterQueue.printer_id``, not by
+        assuming the ids match — which is why a queue whose id drifted (a
+        restored database, a row the old next-free-id branch left behind) still
+        has its printing rows found rather than none, for ever."""
         from backend.app.main import _printing_rows_for_printer
 
         printer = await printer_factory()
