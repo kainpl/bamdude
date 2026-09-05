@@ -1363,6 +1363,12 @@ export interface ProjectLine {
   note: string | null;
   sort_order: number;
   units_printed: number;
+  /** Kits taken off the product's free stock instead of being printed (pass 8,
+   *  Decision 4). Read back from the LEDGER, so it is what was actually
+   *  reserved — the server clamps the request to `min(asked, quantity,
+   *  kits_available)` — and not what the dialog asked for. `units_printed`
+   *  stays prints only; "done" is the two added, which is what `progress` is. */
+  from_stock_units: number;
   progress: number;
   parts: PartFigures[];
   /** Archives attributed to this line, in processing order. One archive can
@@ -1376,6 +1382,9 @@ export interface ProjectLineCreate {
   material?: string | null;
   color?: string | null;
   note?: string | null;
+  /** Kits to reserve off the product's free stock. Omitted means zero, and the
+   *  dialog omits it rather than sending a 0 nobody typed. */
+  from_stock_units?: number;
 }
 
 export interface ProjectLineUpdate {
@@ -1384,6 +1393,11 @@ export interface ProjectLineUpdate {
   color?: string | null;
   note?: string | null;
   sort_order?: number;
+  /** ⚠️ Absent (or null) leaves the reservation ALONE; a number REWRITES it —
+   *  release + reserve in one server transaction. Unlike `quantity`, this field
+   *  has a meaningful "don't touch it", which is why the line editor sends it
+   *  only when the operator moved the box. */
+  from_stock_units?: number | null;
 }
 
 /** A purchased part rolled up across every line of the order. */
@@ -1410,6 +1424,10 @@ export interface ProjectFigures {
   progress: number;
   other_prints_count: number;
   all_printed: boolean;
+  /** Σ over the lines of what was taken off free stock (pass 8). `ordered` and
+   *  `printed` stay literal — the customer ordered that many, the farm printed
+   *  this many — and this is the third number beside them. */
+  from_stock_units: number;
 }
 
 export interface Order {
@@ -1454,6 +1472,17 @@ export interface OrderListItem {
   ordered: number;
   printed: number;
   progress: number;
+  /**
+   * Kits taken off free stock across the order (pass 8, Decision 5) — shown on
+   * the card beside `printed` when it is greater than zero.
+   *
+   * ⚠️ **Optional because the LIST response does not carry it yet.**
+   * `ProjectFiguresOut` (the order DETAIL) gained the field in pass 8;
+   * `ProjectListResponse` did not, so today this is always `undefined` and the
+   * card renders nothing. Kept as the card's single reading of the number so
+   * that adding it server-side is one line there and none here.
+   */
+  from_stock_units?: number;
   /** One entry per line, in line order. The id is what the card's cover URL is
    *  built from, so a line whose product HAS a cover shows it and one that has
    *  none keeps its place as a placeholder. */
@@ -1755,6 +1784,12 @@ export interface ProductPart {
   sourcing_url: string | null;
   remarks: string | null;
   sort_order: number;
+  /** What is on the shelf for this part (pass 8) — a SUM over the ledger, never
+   *  a column, poured in by every route that answers with a part. `0` for a
+   *  part that holds no stock and for one that is not counted at all (purchased,
+   *  or `qty_per_unit = 0`); the two read alike here on purpose, because both
+   *  mean "nothing to take". */
+  stock_balance: number;
 }
 
 export interface ProductPartCreate {
@@ -1839,6 +1874,10 @@ export interface ProductListItem {
   parts_count: number;
   plates_count: number;
   lines_count: number;
+  /** Whole units the free stock can already make (pass 8) — `min` over the
+   *  counted parts of `balance / qty_per_unit`, floored. Carried by the LIST
+   *  response at no extra request, so the card reads it directly. */
+  kits_available: number;
 }
 
 export interface Product extends ProductListItem {
@@ -1858,6 +1897,127 @@ export interface Product extends ProductListItem {
   units_printed_total: number;
   created_at: string;
   updated_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Free stock of product parts (projects redesign, pass 8)
+//
+// Mirrors `backend/app/schemas/product.py` (`StockBalanceOut`,
+// `StockMovementOut`, `ProductStockOut`, `StockAdjustIn`) and
+// `schemas/project.py` (`StockMovedOut`, `BankSurplusResponse`) one field per
+// field. Stock is a LEDGER of movements, never a counter — every number below
+// is a sum the server computed, and nothing here adds anything up.
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a movement was written — the closed set of
+ * `backend/app/services/part_stock.py::REASONS`, copied for the same reason
+ * `STOCK_NOTE_TOKENS` is. Each maps to a `stock.reason.*` label in both
+ * locales; an unknown reason is shown as its own token rather than a blank,
+ * because a row with no reason at all is worse than an untranslated one.
+ */
+export const STOCK_REASONS = [
+  'surplus_banked',
+  'unfiled_print',
+  'reserved_for_order',
+  'reservation_released',
+  'manual',
+] as const;
+
+export type StockReason = (typeof STOCK_REASONS)[number];
+
+/**
+ * Every `note` the BACKEND writes — a closed set of tokens, never a sentence.
+ *
+ * ⚠️ **Source of truth: `backend/app/services/part_stock.py::NOTE_TOKENS`.**
+ * Copied rather than derived because nothing on this side can import Python;
+ * the copy is pinned by `ProductStock.test.tsx`, which also checks that each
+ * token has a `stock.note.*` label in both locales. A movement whose note is
+ * NOT one of these is the operator's own words and is shown verbatim — that is
+ * the whole reason the backend's half is tokens (Ruling 17): a sentence written
+ * once in English is read in the operator's language for the life of the
+ * ledger, and cannot be translated after the fact.
+ */
+export const STOCK_NOTE_TOKENS = [
+  'order_cancelled',
+  'line_deleted',
+  'project_deleted',
+  'reservation_rewritten',
+  'filed_under_order',
+  'unfiled_from_order',
+  'counted_by_operator',
+] as const;
+
+export type StockNoteToken = (typeof STOCK_NOTE_TOKENS)[number];
+
+/** One counted part and what is on its shelf. `qty_per_unit` rides along
+ *  because the page's question is "how many kits", which is
+ *  `balance / qty_per_unit` per part. */
+export interface StockBalance {
+  part_id: number;
+  name: string;
+  qty_per_unit: number;
+  balance: number;
+}
+
+/**
+ * One row of the ledger.
+ *
+ * ⚠️ **`part_name` is the name, and a lookup in `balances` is not.** A part
+ * that stopped counting keeps its history but leaves `balances`, so its
+ * movements name a `part_id` no balance carries.
+ *
+ * `note` is a TOKEN from the backend's closed set for everything the server
+ * wrote (translated through `stock.note.*`) and the operator's own words for a
+ * hand correction (shown verbatim) — see `STOCK_NOTE_TOKENS`.
+ */
+export interface StockMovement {
+  id: number;
+  part_id: number;
+  part_name: string;
+  /** Signed: `+` onto the shelf, `−` off it. A reversal is a movement too. */
+  delta: number;
+  reason: string;
+  project_line_id: number | null;
+  /** Resolved server-side from the line — both null once the line is detached. */
+  order_id: number | null;
+  order_name: string | null;
+  archive_id: number | null;
+  note: string | null;
+  created_by: number | null;
+  created_at: string;
+}
+
+/** `GET /products/{id}/stock`. `balances` is counted parts only; `movements` is
+ *  deliberately NOT filtered that way and comes newest first. */
+export interface ProductStock {
+  balances: StockBalance[];
+  kits_available: number;
+  movements: StockMovement[];
+}
+
+/** `POST /products/{id}/stock/adjust` — the operator's hand correction. The
+ *  note is REQUIRED: a movement whose reason is `manual` says nothing at all
+ *  unless the person making it does. */
+export interface StockAdjust {
+  part_id: number;
+  /** Never zero — the server refuses one (422). */
+  delta: number;
+  note: string;
+}
+
+/** One part's change of stock, as the operator is told about it. */
+export interface StockMoved {
+  part_id: number;
+  name: string;
+  delta: number;
+}
+
+/** `POST /projects/{id}/bank-surplus`. `nothing_to_bank` is not "`moved` is
+ *  empty" restated — it is the answer to a second press, which is a success. */
+export interface BankSurplusResponse {
+  moved: StockMoved[];
+  nothing_to_bank: boolean;
 }
 
 /** One member of an `Auxiliaries/` folder inside a 3MF. `url` is built by the
@@ -7272,6 +7432,17 @@ export const api = {
     return request<ArchiveSlim[]>(`/archives/slim${qs ? `?${qs}` : ''}`);
   },
   getArchive: (id: number) => request<Archive>(`/archives/${id}`),
+  /**
+   * Count one old order-less print into its product's free stock (pass 8).
+   *
+   * New prints are credited automatically; history deliberately is not, because
+   * nobody knows which of last year's order-less prints were shipped. This is
+   * the operator vouching for one of them. 409 for a print filed under an order
+   * or one already standing on the shelf; an EMPTY list is a legitimate answer
+   * (the plate may belong to no product).
+   */
+  countArchiveIntoStock: (id: number) =>
+    request<StockMoved[]>(`/archives/${id}/count-into-stock`, { method: 'POST' }),
   getNo3MFWarning: () => request<{ has_fallback: boolean }>('/archives/no-3mf-warning'),
   searchArchives: (query: string, options?: {
     printerId?: number;
@@ -9539,6 +9710,16 @@ export const api = {
   /** What to print next for every line of the order. Computed on every read,
    *  never cached server-side: a second call after enqueuing plans that much
    *  less. */
+  /**
+   * Move this order's overprint onto its products' shelves (pass 8, Decision 2).
+   *
+   * Never automatic, and pressing it twice moves only what has appeared since —
+   * so `nothing_to_bank` is a SUCCESS, not an error, and reads "the surplus was
+   * already banked".
+   */
+  bankOrderSurplus: (orderId: number) =>
+    request<BankSurplusResponse>(`/projects/${orderId}/bank-surplus`, { method: 'POST' }),
+
   getOrderPlan: (id: number) => request<OrderPlan>(`/projects/${id}/plan`),
   enqueueOrderPlan: (id: number, body: PlanEnqueueRequest) =>
     request<PlanEnqueueResponse>(`/projects/${id}/plan/enqueue`, {
@@ -9578,6 +9759,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name: name ?? null }),
     }),
+  /** The product's free stock: the shelf, how many kits it makes, and the
+   *  ledger that got it there (newest first, capped by `limit`). */
+  getProductStock: (id: number, limit = 200) =>
+    request<ProductStock>(`/products/${id}/stock?limit=${limit}`),
+  /** A hand correction. 409 when it would take a balance below zero, 422 for a
+   *  part that holds no stock — the server's own sentence is in `detail`, which
+   *  is what `ApiError.message` carries. */
+  adjustProductStock: (id: number, data: StockAdjust) =>
+    request<StockMovement>(`/products/${id}/stock/adjust`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
   getProductPlates: (id: number) => request<PlateRecipe[]>(`/products/${id}/plates`),
   createProductPart: (productId: number, data: ProductPartCreate) =>
     request<ProductPart>(`/products/${productId}/parts`, {

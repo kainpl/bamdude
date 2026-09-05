@@ -31,6 +31,11 @@ const SOURCE_ROOT = path.resolve(__dirname, '../../');
 const OWNER: Record<string, string> = {
   project: 'hooks/useOrderDetail.ts',
   product: 'hooks/useProductDetail.ts',
+  // Pass 8. Three screens ask a product's free stock — the product page's
+  // section, the add-line row and the line editor — and they disagree about
+  // `enabled` by construction, so two hand-written declarations would be a race
+  // for whose options apply rather than two watchers of one key.
+  'product-stock': 'hooks/useProductStock.ts',
 };
 
 /** The invalidation helper is allowed to spell any key out; it observes none.

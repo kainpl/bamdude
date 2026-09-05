@@ -105,6 +105,19 @@ function CustomerProbe({ onFetch }: { onFetch: () => void }) {
   return null;
 }
 
+/** The catalog's own query, so an invalidation of `['products']` shows up as
+ *  the refetch the operator actually gets. */
+function ProductsProbe({ onFetch }: { onFetch: () => void }) {
+  useQuery({
+    queryKey: ['products', 'probe'],
+    queryFn: async () => {
+      onFetch();
+      return null;
+    },
+  });
+  return null;
+}
+
 describe('OrderPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -333,5 +346,92 @@ describe('OrderPage', () => {
     // Nothing was refetched on the way out — that would have been a 404 in the
     // query of a page that is already leaving.
     expect(get).toHaveBeenCalledTimes(1);
+  });
+  /**
+   * «Bank the surplus» (pass 8, Decision 2). The header renders the button and
+   * the PAGE owns the call, the two invalidations and the sentence — only the
+   * page knows which products the order's lines are for, and the response is
+   * aggregated per PART, so it cannot say.
+   */
+  describe('banking the surplus', () => {
+    const overprinted = {
+      ...order,
+      lines: [
+        {
+          ...order.lines[0],
+          parts: [
+            { part_id: 1, name: 'lid', qty_per_unit: 1, need: 2, usable: 7, in_progress: 0, remaining: 0, surplus: 5 },
+          ],
+        },
+      ],
+    };
+
+    it('posts once and says what landed on which product shelf', async () => {
+      vi.spyOn(api, 'getOrder').mockResolvedValue(overprinted as never);
+      const bank = vi
+        .spyOn(api, 'bankOrderSurplus')
+        .mockResolvedValue({ moved: [{ part_id: 1, name: 'lids', delta: 5 }], nothing_to_bank: false });
+
+      window.history.pushState({}, '', '/projects/1');
+      render(
+        <Routes>
+          <Route path="/projects/:id" element={<OrderPage />} />
+        </Routes>,
+      );
+
+      fireEvent.click(await screen.findByTestId('order-bank-surplus'));
+
+      await waitFor(() => expect(bank).toHaveBeenCalledWith(1));
+      // Data, not keys — the counts and part names are the server's, the
+      // product is the one this order's line names.
+      expect(await screen.findByText('5 lids → free stock of Flask')).toBeInTheDocument();
+    });
+
+    it('treats a second press as the success it is', async () => {
+      vi.spyOn(api, 'getOrder').mockResolvedValue(overprinted as never);
+      vi.spyOn(api, 'bankOrderSurplus').mockResolvedValue({ moved: [], nothing_to_bank: true });
+
+      window.history.pushState({}, '', '/projects/1');
+      render(
+        <Routes>
+          <Route path="/projects/:id" element={<OrderPage />} />
+        </Routes>,
+      );
+
+      fireEvent.click(await screen.findByTestId('order-bank-surplus'));
+
+      // ⚠️ Neutral, never an error: the surplus was already banked, which is
+      // exactly what the operator wanted to be true.
+      expect(await screen.findByText(/already on the shelf/i)).toBeInTheDocument();
+    });
+
+    it('refetches the product views as well as the order', async () => {
+      // The shelf the surplus landed on belongs to a PRODUCT, and every screen
+      // showing `kits_available` is now wrong — the catalog cards, the product
+      // page's stock section, and the kits the next line dialog offers. An
+      // order-only invalidation would leave the next order for the same product
+      // offering kits that are already spoken for.
+      const products = vi.fn();
+      vi.spyOn(api, 'getOrder').mockResolvedValue(overprinted as never);
+      vi.spyOn(api, 'bankOrderSurplus').mockResolvedValue({ moved: [], nothing_to_bank: true });
+
+      window.history.pushState({}, '', '/projects/1');
+      // ⚠️ One `render` call: the helper builds a fresh QueryClient per call, so
+      // a probe mounted in a second call would watch a different cache and see
+      // nothing this page invalidated.
+      render(
+        <>
+          <ProductsProbe onFetch={products} />
+          <Routes>
+            <Route path="/projects/:id" element={<OrderPage />} />
+          </Routes>
+        </>,
+      );
+      await waitFor(() => expect(products).toHaveBeenCalledTimes(1));
+
+      fireEvent.click(await screen.findByTestId('order-bank-surplus'));
+
+      await waitFor(() => expect(products).toHaveBeenCalledTimes(2));
+    });
   });
 });

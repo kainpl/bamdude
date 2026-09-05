@@ -3,7 +3,9 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
 import { api } from '../../api/client';
+import type { Order, ProjectLine } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { useProductStock } from '../../hooks/useProductStock';
 import { ProductPicker } from '../pickers/ProductPicker';
 import { Button } from '../Button';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
@@ -25,6 +27,11 @@ const FIELD_CLASS =
  * server has no such rule either, and the plan block (pass 3) is where "no
  * plate for this part in this material" is surfaced, with the plates in hand
  * to say it properly.
+ *
+ * ⚠️ **«From stock» is offered only when there IS stock**, and it defaults to
+ * `min(kits_available, quantity)` — the operator's usual answer is "take what
+ * is on the shelf" (pass 8, Decision 4). The box is editable down to 0 because
+ * the other answer, "keep the shelf for something else", is theirs to give.
  */
 export function AddLineRow({ orderId }: { orderId: number }) {
   const { t } = useTranslation();
@@ -36,9 +43,22 @@ export function AddLineRow({ orderId }: { orderId: number }) {
   const [material, setMaterial] = useState('');
   const [color, setColor] = useState('');
   const [note, setNote] = useState('');
+  /** `null` is "the operator has not touched the box", which is what makes the
+   *  default follow the quantity as it is typed. A typed 0 is not null. */
+  const [fromStock, setFromStock] = useState<number | null>(null);
+
+  // Only once a product is picked — a disabled query in TanStack v5 is pending
+  // and NOT fetching, so nothing is asked for until there is something to ask
+  // about. The hook owns the key; see `useProductStock`.
+  const { data: stock } = useProductStock(productId);
+  const kits = stock?.kits_available ?? 0;
+  // Clamped against BOTH the shelf and the line: reserving more kits than the
+  // line will ship is not a reservation, it is stock taken out of circulation.
+  // The server clamps too — this is what the operator SEES it will send.
+  const reserve = Math.min(fromStock ?? quantity, kits, quantity);
 
   const add = useMutation({
-    mutationFn: () =>
+    mutationFn: (units: number) =>
       api.addOrderLine(orderId, {
         product_id: productId!,
         quantity,
@@ -53,16 +73,40 @@ export function AddLineRow({ orderId }: { orderId: number }) {
         material: material.trim().toUpperCase() || null,
         color: color.trim() || null,
         note: note.trim() || null,
+        // ⚠️ Sent only when there is something to reserve. The server defaults
+        // it to 0, so a `from_stock_units: 0` on every line would be a field
+        // nobody typed riding on every request — and the reservation path would
+        // run for products that hold no stock at all.
+        ...(units > 0 ? { from_stock_units: units } : {}),
       }),
-    onSuccess: () => {
+    onSuccess: (saved: Order, units: number) => {
       // ⚠️ The whole set, not the order alone: a new line is new work, so the
-      // plan block has a part to plan that it does not know about yet.
+      // plan block has a part to plan that it does not know about yet. The
+      // product's shelf moved too when kits were reserved.
       invalidateOrderViews(queryClient, { orderId });
+      if (units > 0) {
+        queryClient.invalidateQueries({ queryKey: ['product-stock', productId] });
+        queryClient.invalidateQueries({ queryKey: ['product', productId] });
+        queryClient.invalidateQueries({ queryKey: ['products'] });
+        // What was ACTUALLY reserved can be less than what was asked: the shelf
+        // may have emptied between this row rendering and Save. The server
+        // answers with the whole order, and the new line is its highest id —
+        // the row itself is about to reset, so the number is said in a toast
+        // rather than left in a box nobody will look at again.
+        const created = saved.lines.reduce<ProjectLine | null>(
+          (best, line) => (best && best.id > line.id ? best : line),
+          null,
+        );
+        if (created && created.from_stock_units < units) {
+          showToast(t('stock.line.clamped', { n: created.from_stock_units }), 'warning');
+        }
+      }
       setProductId(null);
       setQuantity(1);
       setMaterial('');
       setColor('');
       setNote('');
+      setFromStock(null);
     },
     onError: (e: Error) => showToast(e.message, 'error'),
   });
@@ -86,6 +130,27 @@ export function AddLineRow({ orderId }: { orderId: number }) {
           disabled={add.isPending}
           className={`${FIELD_CLASS} w-20`}
         />
+        {/* Only when the shelf has something. `> 0`, never a bare `&&` on the
+            number itself — `{0 && …}` renders the 0. */}
+        {kits > 0 && (
+          <div className="mt-1">
+            <label className="block text-xs text-bambu-gray" htmlFor="add-line-from-stock">
+              {t('stock.line.label')}
+            </label>
+            <input
+              id="add-line-from-stock"
+              data-testid="add-line-from-stock"
+              type="number"
+              min={0}
+              max={Math.min(kits, quantity)}
+              value={reserve}
+              onChange={(e) => setFromStock(Math.max(0, Number(e.target.value) || 0))}
+              disabled={add.isPending}
+              className={`${FIELD_CLASS} w-20`}
+            />
+            <p className="text-xs text-bambu-gray mt-0.5">{t('stock.line.available', { n: kits })}</p>
+          </div>
+        )}
       </td>
       <td className="p-2">
         <label className="sr-only" htmlFor="add-line-material">
@@ -129,7 +194,7 @@ export function AddLineRow({ orderId }: { orderId: number }) {
       </td>
       <td className="p-2" />
       <td className="p-2 text-right">
-        <Button size="sm" onClick={() => add.mutate()} disabled={productId == null || add.isPending}>
+        <Button size="sm" onClick={() => add.mutate(reserve)} disabled={productId == null || add.isPending}>
           <Plus className="w-4 h-4" />
           {t('orders.lines.addLine')}
         </Button>

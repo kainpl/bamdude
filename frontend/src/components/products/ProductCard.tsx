@@ -154,6 +154,19 @@ export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDe
           {product.lines_count > 0 && (
             <p className="text-xs text-bambu-gray">{t('products.card.inOrders', { count: product.lines_count })}</p>
           )}
+
+          {/* Free stock (pass 8). Shown ONLY when there is some: a badge reading
+              "0 kits in stock" on every product in the catalog is noise, and the
+              number comes free with the list response, so nothing is fetched to
+              decide. Same `> 0` guard and the same reason as above. */}
+          {product.kits_available > 0 && (
+            <span
+              data-testid="product-kits-badge"
+              className="inline-block px-2 py-0.5 rounded-full text-xs bg-bambu-green/15 text-bambu-green"
+            >
+              {t('stock.card.kits', { count: product.kits_available })}
+            </span>
+          )}
         </div>
       </div>
 

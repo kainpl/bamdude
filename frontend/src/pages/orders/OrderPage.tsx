@@ -69,6 +69,42 @@ export function OrderPage() {
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
+  /**
+   * «Bank the surplus» — the order's overprint onto its products' shelves.
+   *
+   * ⚠️ **Two caches move, not one.** The order's own figures change (a banked
+   * surplus is still printed, but the shelf it landed on is a product's) AND
+   * every product view that shows `kits_available` — the catalog cards, the
+   * product page's stock section, and the stock the line dialog offers. A
+   * mutation that stopped at `invalidateOrderViews` would leave the next order
+   * for the same product offering kits that are already on a shelf it cannot
+   * see.
+   *
+   * ⚠️ **`nothing_to_bank` is a SUCCESS.** It is the answer to a second press —
+   * the surplus was already banked — so it gets a neutral toast, never an error.
+   */
+  const bankSurplus = useMutation({
+    mutationFn: () => api.bankOrderSurplus(id),
+    onSuccess: (result) => {
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ['product-stock'] });
+      queryClient.invalidateQueries({ queryKey: ['product'] });
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      if (result.nothing_to_bank) {
+        showToast(t('stock.bank.nothing'), 'info');
+        return;
+      }
+      // Data, not keys: the parts and their counts come back from the server,
+      // and the product is the one (or ones) the order's lines name — the
+      // response is aggregated per PART, so it cannot say which product a part
+      // belongs to and the order is the only place that knows.
+      const moved = result.moved.map((m) => `${m.delta} ${m.name}`).join(', ');
+      const products = [...new Set((order?.lines ?? []).map((line) => line.product_name))].join(', ');
+      showToast(t('stock.bank.done', { moved, product: products }));
+    },
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
+
   const remove = useMutation({
     mutationFn: () => api.deleteOrder(id),
     // ⚠️ The LISTS only. Marking `['project', id]` stale asks TanStack to
@@ -129,6 +165,8 @@ export function OrderPage() {
             onDuplicate={() => setDuplicating(true)}
             onDelete={() => setDeleting(true)}
             onSetStatus={(status) => setStatus.mutate(status)}
+            onBankSurplus={() => bankSurplus.mutate()}
+            bankingSurplus={bankSurplus.isPending}
           />
         </div>
         <OrderCover order={order} canEdit={canEdit} />

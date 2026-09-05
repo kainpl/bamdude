@@ -46,6 +46,13 @@ export function OrderFigures({ figures }: { figures: ProjectFigures }) {
       <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(120px,1fr))]">
         <Tile label={t('orders.figures.ordered')} value={figures.ordered} />
         <Tile label={t('orders.figures.printed')} value={figures.printed} />
+        {/* Beside `printed`, and only when there is any (pass 8, Decision 5).
+            `ordered` and `printed` stay literal — the customer asked for that
+            many and the farm printed this many — and a permanent "0" tile on
+            every order in the farm would be a column of noise. */}
+        {figures.from_stock_units > 0 && (
+          <Tile label={t('stock.line.label')} value={figures.from_stock_units} />
+        )}
         <Tile label={t('orders.figures.complete')} value={figures.complete} />
         <Tile label={t('orders.figures.remaining')} value={figures.remaining} />
         <Tile label={t('orders.figures.time')} value={hoursMinutes(figures.total_time_seconds)} />

@@ -47,6 +47,7 @@ const order = {
       note: null,
       sort_order: 1,
       units_printed: 4,
+      from_stock_units: 0,
       progress: 1,
       archive_ids: [],
       parts: [],
@@ -61,6 +62,7 @@ const order = {
       note: null,
       sort_order: 0,
       units_printed: 1,
+      from_stock_units: 2,
       progress: 0.5,
       archive_ids: [],
       parts: [
@@ -207,5 +209,87 @@ describe('OrderLinesTable', () => {
 
     expect(await screen.findByTestId('line-10-expand')).toBeInTheDocument();
     expect(screen.queryByTestId('line-10-print')).not.toBeInTheDocument();
+  });
+  describe('kits from stock (pass 8)', () => {
+    // Line 10 holds two kits; line 11 holds none. `stock` is what is still FREE
+    // — the line's own reservation is not in it, which is why the editable
+    // ceiling below is the two added together.
+    const stock = {
+      kits_available: 1,
+      balances: [{ part_id: 1, name: 'flask', qty_per_unit: 1, balance: 1 }],
+      movements: [],
+    };
+
+    it('shows what a line already takes off the shelf, and nothing for a line that takes none', () => {
+      render(<OrderLinesTable order={order} canEdit />);
+
+      expect(screen.getByTestId('line-10-from-stock-shown')).toHaveTextContent('from stock 2');
+      // ⚠️ Not "from stock 0" and not a bare 0 either — line 11 reserves
+      // nothing, so the row says nothing.
+      expect(screen.queryByTestId('line-11-from-stock-shown')).not.toBeInTheDocument();
+    });
+
+    it('offers the free kits PLUS the line own, because an edit releases its reservation first', async () => {
+      vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
+      render(<OrderLinesTable order={order} canEdit />);
+
+      fireEvent.click(screen.getByTestId('line-10-edit'));
+      const box = (await screen.findByTestId('line-10-from-stock')) as HTMLInputElement;
+      expect(box.value).toBe('2');
+      // One free + two this line already holds = three, capped by the line's
+      // own quantity of two. A ceiling of one would make the box unable to
+      // re-save the number it opened with.
+      expect(box.max).toBe('2');
+    });
+
+    it('sends the rewritten reservation, and nothing else', async () => {
+      vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
+      const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
+      render(<OrderLinesTable order={order} canEdit />);
+
+      fireEvent.click(screen.getByTestId('line-10-edit'));
+      fireEvent.change(await screen.findByTestId('line-10-from-stock'), { target: { value: '1' } });
+      fireEvent.click(screen.getByTestId('line-10-save'));
+
+      await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { from_stock_units: 1 }));
+    });
+
+    it('leaves the reservation alone on a save that did not touch it', async () => {
+      vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
+      const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
+      render(<OrderLinesTable order={order} canEdit />);
+
+      fireEvent.click(screen.getByTestId('line-10-edit'));
+      await screen.findByTestId('line-10-from-stock');
+      // Scoped to the row: the add-line row at the bottom carries a note box of
+      // its own, so a page-wide query finds two.
+      const row = screen.getByTestId('line-10-save').closest('tr') as HTMLElement;
+      fireEvent.change(within(row).getByLabelText(/note/i), { target: { value: 'urgent' } });
+      fireEvent.click(screen.getByTestId('line-10-save'));
+
+      // ⚠️ Absent, not the current value restated: on this field alone, absent
+      // means "leave it" and a number means "rewrite it" — release and reserve
+      // again, with the ledger rows that record both. A note edit must not
+      // rewrite a reservation.
+      await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { note: 'urgent' }));
+    });
+
+    it('says so when the shelf emptied and less was reserved than asked', async () => {
+      vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
+      // Line 11 reserves nothing yet. Asked for two, the server could only hold
+      // one back — the shelf emptied between the row opening and Save.
+      const saved = {
+        ...order,
+        lines: order.lines.map((l) => (l.id === 11 ? { ...l, from_stock_units: 1 } : l)),
+      } as unknown as typeof order;
+      vi.spyOn(api, 'updateOrderLine').mockResolvedValue(saved);
+      render(<OrderLinesTable order={order} canEdit />);
+
+      fireEvent.click(screen.getByTestId('line-11-edit'));
+      fireEvent.change(await screen.findByTestId('line-11-from-stock'), { target: { value: '2' } });
+      fireEvent.click(screen.getByTestId('line-11-save'));
+
+      expect(await screen.findByText(/only 1 could be reserved/i)).toBeInTheDocument();
+    });
   });
 });

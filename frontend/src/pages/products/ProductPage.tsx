@@ -9,6 +9,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { ProductGallery } from '../../components/products/ProductGallery';
 import { ProductHeader } from '../../components/products/ProductHeader';
 import { CompositionTable } from '../../components/products/CompositionTable';
+import { ProductStock } from '../../components/products/ProductStock';
 import { PlatesByFile } from '../../components/products/PlatesByFile';
 import { ProductAttachments } from '../../components/products/ProductAttachments';
 import { LinkedFiles } from '../../components/products/LinkedFiles';
@@ -177,6 +178,13 @@ export function ProductPage() {
       </div>
 
       <CompositionTable product={product} canEdit={canEdit} />
+
+      {/* Directly under the composition, because it is the same list of parts
+          seen from the shelf rather than from the design. Reading the shelf is
+          `projects:read` and correcting it is `projects:update` (Decision 7) —
+          no new permission: whoever may change an order's lines may change the
+          stock those lines draw on. */}
+      {hasPermission('projects:read') && <ProductStock productId={product.id} canEdit={canEdit} />}
 
       <PlatesByFile productId={product.id} />
 

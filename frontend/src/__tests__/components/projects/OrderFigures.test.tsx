@@ -17,6 +17,7 @@ describe('OrderFigures', () => {
           total_filament_grams: 0,
           total_cost: 0,
           defective: 0,
+          from_stock_units: 0,
           margin: null,
           progress: 0,
           other_prints_count: 0,
@@ -43,6 +44,7 @@ describe('OrderFigures', () => {
           total_filament_grams: 123.45,
           total_cost: 12.5,
           defective: 1,
+          from_stock_units: 0,
           margin: -3,
           progress: 0.4,
           other_prints_count: 2,
@@ -55,5 +57,31 @@ describe('OrderFigures', () => {
     expect(screen.getByText('1:30')).toBeInTheDocument();
     expect(screen.getByText('123.5')).toBeInTheDocument();
     expect(screen.getByText(/other prints/i)).toBeInTheDocument();
+  });
+  it('shows what came off the shelf beside the printed count, and only when there is any', () => {
+    // Pass 8, Decision 5. `ordered` and `printed` stay literal — the customer
+    // asked for ten and the farm printed four — and this is the third number.
+    // A permanent "0" tile on every order in the farm would be a column of
+    // noise, so the tile exists only when the figure does.
+    const figures = {
+      ordered: 10,
+      printed: 4,
+      complete: 3,
+      remaining: 3,
+      total_time_seconds: 0,
+      total_filament_grams: 0,
+      total_cost: 0,
+      defective: 0,
+      from_stock_units: 3,
+      margin: null,
+      progress: 0.7,
+      other_prints_count: 0,
+      all_printed: false,
+    };
+    const { rerender } = render(<OrderFigures figures={figures} />);
+    expect(screen.getByText('From stock')).toBeInTheDocument();
+
+    rerender(<OrderFigures figures={{ ...figures, from_stock_units: 0 }} />);
+    expect(screen.queryByText('From stock')).not.toBeInTheDocument();
   });
 });

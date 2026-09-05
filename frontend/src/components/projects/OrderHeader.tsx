@@ -1,7 +1,18 @@
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Ban, CheckCircle2, ChevronRight, Copy, ExternalLink, Pencil, RotateCcw, Tag, Trash2 } from 'lucide-react';
+import {
+  Ban,
+  CheckCircle2,
+  ChevronRight,
+  Copy,
+  ExternalLink,
+  PackagePlus,
+  Pencil,
+  RotateCcw,
+  Tag,
+  Trash2,
+} from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -16,6 +27,10 @@ interface OrderHeaderProps {
   onDuplicate: () => void;
   onDelete: () => void;
   onSetStatus: (status: ProjectStatus) => void;
+  /** «Bank the surplus» (pass 8, Decision 2). The page owns the call and the
+   *  toast — it is the one that knows which products the order is for. */
+  onBankSurplus: () => void;
+  bankingSurplus: boolean;
 }
 
 /**
@@ -26,8 +41,23 @@ interface OrderHeaderProps {
  * pair is rendered together or not at all. Both go through `formatMoney`, like
  * every other amount on these pages: a bare `toLocaleString` here is how
  * `$30.50` on one screen became `30.5` on the next.
+ *
+ * ⚠️ **The bank button is DISABLED, not hidden, when there is no surplus.** It
+ * is a whole-order action that appears once an overprint exists and would
+ * otherwise blink into the row of buttons at a moment nobody was looking; the
+ * title says why it cannot be pressed. Its enablement reads the figures the
+ * page already loaded — `parts[].surplus` per line, exactly as `order_metrics`
+ * computed it — and never asks the server a second question.
  */
-export function OrderHeader({ order, onEdit, onDuplicate, onDelete, onSetStatus }: OrderHeaderProps) {
+export function OrderHeader({
+  order,
+  onEdit,
+  onDuplicate,
+  onDelete,
+  onSetStatus,
+  onBankSurplus,
+  bankingSurplus,
+}: OrderHeaderProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   // The app-wide currency, fetched the way every other money-showing screen
@@ -36,6 +66,11 @@ export function OrderHeader({ order, onEdit, onDuplicate, onDelete, onSetStatus 
 
   const margin = order.figures.margin;
   const tags = order.tags ? order.tags.split(',').map((tag) => tag.trim()).filter(Boolean) : [];
+  // Anything overprinted anywhere in the order. Deliberately NOT "surplus minus
+  // what was already banked" — the server owns that subtraction and answers
+  // `nothing_to_bank` for a second press, which the page reports as the success
+  // it is. Reconstructing the arithmetic here would be a second, weaker copy.
+  const hasSurplus = order.lines.some((line) => line.parts.some((part) => part.surplus > 0));
 
   return (
     <header className="space-y-3">
@@ -120,6 +155,18 @@ export function OrderHeader({ order, onEdit, onDuplicate, onDelete, onSetStatus 
             <Button variant="secondary" onClick={onDuplicate}>
               <Copy className="w-4 h-4" />
               {t('orders.header.duplicate')}
+            </Button>
+          )}
+          {hasPermission('projects:update') && (
+            <Button
+              variant="secondary"
+              data-testid="order-bank-surplus"
+              onClick={onBankSurplus}
+              disabled={!hasSurplus || bankingSurplus}
+              title={hasSurplus ? undefined : t('stock.bank.none')}
+            >
+              <PackagePlus className="w-4 h-4" />
+              {t('stock.bank.action')}
             </Button>
           )}
           {hasPermission('projects:update') && order.status === 'active' && (

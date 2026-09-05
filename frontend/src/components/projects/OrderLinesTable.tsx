@@ -6,6 +6,7 @@ import { ChevronDown, ChevronRight, ChevronUp, Check, Pencil, Trash2, X } from '
 import { api } from '../../api/client';
 import type { Order, ProjectLine, ProjectLineUpdate } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { useProductStock } from '../../hooks/useProductStock';
 import { ConfirmModal } from '../ConfirmModal';
 import { ProgressBar } from './ProgressBar';
 import { LinePartsTable } from './LinePartsTable';
@@ -20,19 +21,26 @@ const ICON_BUTTON_CLASS =
 /** What an inline edit is holding, before anything is sent. */
 interface Draft {
   id: number;
+  /** Not edited — carried so the row's stock query has a product to ask about
+   *  without the hook having to search the order for the line again. */
+  productId: number;
   quantity: number;
   material: string;
   color: string;
   note: string;
+  /** Kits this line takes off the shelf (pass 8, Decision 4). */
+  fromStock: number;
 }
 
 function draftOf(line: ProjectLine): Draft {
   return {
     id: line.id,
+    productId: line.product_id,
     quantity: line.quantity,
     material: line.material ?? '',
     color: line.color ?? '',
     note: line.note ?? '',
+    fromStock: line.from_stock_units,
   };
 }
 
@@ -60,6 +68,12 @@ function changedFields(line: ProjectLine, draft: Draft): ProjectLineUpdate {
   if (color !== (line.color ?? null)) patch.color = color;
   const note = draft.note.trim() || null;
   if (note !== (line.note ?? null)) patch.note = note;
+  // ⚠️ Sent only when the operator MOVED the box. On this field alone, absent
+  // means "leave the reservation alone" and a number means "rewrite it"
+  // (release + reserve in one server transaction) — so restating the current
+  // value would burn a rewrite, and with it the ledger rows that record one,
+  // on every save that touched a note.
+  if (draft.fromStock !== line.from_stock_units) patch.from_stock_units = draft.fromStock;
   return patch;
 }
 
@@ -106,11 +120,31 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
     invalidateOrderViews(queryClient, { orderId: order.id });
   };
 
+  // The shelf of the product being edited. `null` while nothing is open, which
+  // in TanStack v5 is a DISABLED query — pending, not fetching, asking nothing.
+  // The hook owns the key so this and the add-line row below cannot end up
+  // fighting over one query's options; see `useProductStock`.
+  const { data: editStock } = useProductStock(draft ? draft.productId : null);
+
   const save = useMutation({
     mutationFn: ({ lineId, data }: { lineId: number; data: ProjectLineUpdate }) =>
       api.updateOrderLine(order.id, lineId, data),
-    onSuccess: () => {
+    onSuccess: (saved, { lineId, data }) => {
       invalidate();
+      if (data.from_stock_units != null) {
+        // The reservation moved parts, so the product's shelf and the catalog
+        // card that shows `kits_available` are both stale.
+        queryClient.invalidateQueries({ queryKey: ['product-stock'] });
+        queryClient.invalidateQueries({ queryKey: ['product'] });
+        queryClient.invalidateQueries({ queryKey: ['products'] });
+        // What was ACTUALLY reserved can be less than what was asked — the
+        // shelf may have emptied since the row was opened. The row is closing,
+        // so the honest number is said rather than shown.
+        const line = saved.lines.find((l) => l.id === lineId);
+        if (line && line.from_stock_units < data.from_stock_units) {
+          showToast(t('stock.line.clamped', { n: line.from_stock_units }), 'warning');
+        }
+      }
       setDraft(null);
     },
     onError: (e: Error) => showToast(e.message, 'error'),
@@ -220,6 +254,43 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                     ) : (
                       line.quantity
                     )}
+                    {/* Kits off the shelf, under the quantity because they are
+                        the same unit: the line asks for N, and some of those N
+                        come from stock instead of a printer. A column of its own
+                        would push the table past the width it already has.
+                        ⚠️ The editable ceiling is what is FREE plus what this
+                        line already holds — an edit releases its own reservation
+                        before making the new one, so the line's own kits are back
+                        in the pool by the time the server clamps. */}
+                    {editing
+                      ? (() => {
+                          const pool = (editStock?.kits_available ?? 0) + line.from_stock_units;
+                          if (pool <= 0) return null;
+                          return (
+                            <div className="mt-1">
+                              <label className="block text-xs text-bambu-gray" htmlFor={`line-${line.id}-from-stock`}>
+                                {t('stock.line.label')}
+                              </label>
+                              <input
+                                id={`line-${line.id}-from-stock`}
+                                data-testid={`line-${line.id}-from-stock`}
+                                type="number"
+                                min={0}
+                                max={Math.min(pool, editing.quantity)}
+                                value={editing.fromStock}
+                                onChange={(e) =>
+                                  setDraft({ ...editing, fromStock: Math.max(0, Number(e.target.value) || 0) })
+                                }
+                                className={`${FIELD_CLASS} w-20`}
+                              />
+                            </div>
+                          );
+                        })()
+                      : line.from_stock_units > 0 && (
+                          <p className="text-xs text-bambu-gray" data-testid={`line-${line.id}-from-stock-shown`}>
+                            {t('stock.line.reserved', { n: line.from_stock_units })}
+                          </p>
+                        )}
                   </td>
                   <td className="p-2">
                     {editing ? (

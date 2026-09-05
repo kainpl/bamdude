@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link, PackageX } from 'lucide-react';
+import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link, PackagePlus, PackageX } from 'lucide-react';
 import { api } from '../api/client';
 import type { Archive } from '../api/client';
 import { Button } from './Button';
+import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { OrderPicker } from './pickers/OrderPicker';
 import { OrderLinePicker } from './pickers/OrderLinePicker';
 import { invalidateOrderViews } from '../utils/queryInvalidation';
@@ -37,6 +39,8 @@ interface EditArchiveModalProps {
 
 export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditArchiveModalProps) {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
+  const { showToast } = useToast();
 
   // Close on Escape key
   useEffect(() => {
@@ -188,6 +192,41 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       invalidateOrderViews(queryClient);
       onClose();
     },
+  });
+
+  /**
+   * "Count this print into the product's free stock" (pass 8, Decision 3).
+   *
+   * New order-less prints are credited automatically by the completion handler;
+   * HISTORY deliberately is not, because nobody knows which of last year's
+   * order-less prints were shipped, scrapped or are still in a drawer. This
+   * button is the operator vouching for one of them, and it is the only way a
+   * pre-pass-8 print reaches a shelf.
+   *
+   * ⚠️ **An empty list is a legitimate answer, not a failure** — the print may
+   * have finished nothing good, or its plate may belong to no product. Saying
+   * so plainly is better than a green toast listing nothing.
+   */
+  const countIntoStock = useMutation({
+    mutationFn: () => api.countArchiveIntoStock(archive.id),
+    onSuccess: (moved) => {
+      // The archive rows this modal reads, plus every product view that shows
+      // `kits_available` — the shelf just moved for a product this modal never
+      // names.
+      queryClient.invalidateQueries({ queryKey: ['archives'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-detail', archive.id] });
+      queryClient.invalidateQueries({ queryKey: ['product-stock'] });
+      queryClient.invalidateQueries({ queryKey: ['product'] });
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      if (moved.length === 0) {
+        showToast(t('stock.archive.nothing'), 'info');
+        return;
+      }
+      showToast(t('stock.archive.done', { moved: moved.map((m) => `${m.delta} ${m.name}`).join(', ') }));
+    },
+    // 409 — the print is filed under an order, or its parts are already on the
+    // shelf. The server's own sentence is what `ApiError.message` carries.
+    onError: (e: Error) => showToast(e.message, 'error'),
   });
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -346,6 +385,30 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
               onChange={setProjectLineId}
             />
           </div>
+
+          {/* Count this print into free stock — for an ORDER-LESS print only.
+              ⚠️ Both the saved value and the draft are asked. The endpoint
+              judges what is stored (it 409s a print filed under an order), so
+              `archive.project_id` is the real gate; `projectId` is added
+              because an operator who has just picked an order in the box above
+              is about to file this print there, and offering to shelve it in
+              the same breath is offering two contradictory things. */}
+          {hasPermission('projects:update') && archive.project_id == null && projectId == null && (
+            <div className="rounded-lg border border-bambu-dark-tertiary p-3 space-y-2">
+              <p className="text-xs text-bambu-gray">{t('stock.archive.hint')}</p>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                data-testid="archive-count-into-stock"
+                onClick={() => countIntoStock.mutate()}
+                disabled={countIntoStock.isPending}
+              >
+                <PackagePlus className="w-4 h-4" />
+                {t('stock.archive.count')}
+              </Button>
+            </div>
+          )}
 
           {/* Quantity - number of items printed */}
           <div>

@@ -16,8 +16,25 @@ import { Routes, Route } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
+import type { Permission } from '../../../api/client';
 import { ProductPage } from '../../../pages/products/ProductPage';
 import { createAppQueryClient } from '../../../utils/appQueryClient';
+
+const auth = vi.hoisted(() => ({ granted: null as Set<string> | null }));
+
+// Only the hook is replaced, and only when a test asks: `null` falls through to
+// the admin the render helper's real `AuthProvider` resolves, so every existing
+// test below is untouched.
+vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../contexts/AuthContext')>();
+  return {
+    ...actual,
+    useAuth: () => {
+      const real = actual.useAuth();
+      return { ...real, hasPermission: (p: Permission) => auth.granted?.has(p) ?? real.hasPermission(p) };
+    },
+  };
+});
 
 const product = {
   id: 1,
@@ -59,7 +76,9 @@ function mountAt(id = 1) {
 describe('ProductPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    auth.granted = null;
     vi.spyOn(api, 'getProduct').mockResolvedValue(product as never);
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({ balances: [], kits_available: 0, movements: [] });
     vi.spyOn(api, 'getProductPlates').mockResolvedValue([] as never);
     vi.spyOn(api, 'getLibraryFiles').mockResolvedValue([] as never);
     vi.spyOn(api, 'getFoldersByProduct').mockResolvedValue([] as never);
@@ -244,5 +263,33 @@ describe('ProductPage', () => {
     // Nothing was refetched on the way out — that would have been a 404 in the
     // query of a page already leaving.
     expect(get).toHaveBeenCalledTimes(1);
+  });
+  describe('free stock (pass 8)', () => {
+    it('shows the shelf, right under the composition it is a shelf of', async () => {
+      vi.spyOn(api, 'getProductStock').mockResolvedValue({
+        balances: [{ part_id: 1, name: 'lid', qty_per_unit: 1, balance: 3 }],
+        kits_available: 3,
+        movements: [],
+      });
+
+      mountAt();
+
+      expect(await screen.findByTestId('product-stock')).toBeInTheDocument();
+      expect(await screen.findByTestId('stock-kits')).toHaveTextContent('3 kits');
+      await waitFor(() => expect(api.getProductStock).toHaveBeenCalledWith(1));
+    });
+
+    it('is not rendered at all without projects:read', async () => {
+      // Reading the shelf is `PROJECTS_READ` (Decision 7) — no new permission,
+      // and the section is gated rather than merely emptied so a user who may
+      // not see it does not fire its request either.
+      auth.granted = new Set<string>();
+
+      mountAt();
+
+      expect(await screen.findByRole('heading', { name: 'Flask' })).toBeInTheDocument();
+      expect(screen.queryByTestId('product-stock')).not.toBeInTheDocument();
+      expect(api.getProductStock).not.toHaveBeenCalled();
+    });
   });
 });

@@ -5270,6 +5270,84 @@ export default {
     },
   },
 
+  // Free stock of product parts (projects redesign, pass 8).
+  //
+  // `reason.*` and `note.*` are CLOSED sets mirrored from
+  // `backend/app/services/part_stock.py` (`REASONS` / `NOTE_TOKENS`) — the
+  // backend writes tokens rather than sentences precisely so that these labels
+  // can exist. A note that is not one of the seven is the operator's own words
+  // and is printed verbatim.
+  stock: {
+    title: 'Free stock',
+    kits_one: '{{count}} kit',
+    kits_other: '{{count}} kits',
+    kitsHint: 'Whole units the shelf can already make.',
+    empty: 'Nothing on the shelf yet.',
+    part: 'Part',
+    perUnit: 'Per unit',
+    balance: 'On the shelf',
+    movements: 'Movements',
+    noMovements: 'Nothing has moved yet.',
+    date: 'Date',
+    change: 'Change',
+    reasonColumn: 'Reason',
+    reference: 'Where from',
+    noteColumn: 'Note',
+    archiveRef: 'Print #{{n}}',
+    reason: {
+      surplus_banked: 'Surplus banked',
+      unfiled_print: 'Print without an order',
+      reserved_for_order: 'Reserved for an order',
+      reservation_released: 'Reservation released',
+      manual: 'Hand correction',
+    },
+    note: {
+      order_cancelled: 'the order was cancelled',
+      line_deleted: 'the line was deleted',
+      project_deleted: 'the order was deleted',
+      reservation_rewritten: 'the reservation was rewritten',
+      filed_under_order: 'filed under an order',
+      unfiled_from_order: 'taken back out of its order',
+      counted_by_operator: 'counted by the operator',
+    },
+    adjust: {
+      open: 'Adjust',
+      title: 'Adjust the stock',
+      part: 'Part',
+      delta: 'Change (+ onto the shelf, − off it)',
+      note: 'Why',
+      notePlaceholder: 'Counted the shelf…',
+      submit: 'Save',
+      saved: 'The stock was corrected.',
+      noParts: 'This product counts no parts, so it holds no stock.',
+    },
+    bank: {
+      action: 'Bank the surplus',
+      none: 'No line of this order has a surplus.',
+      done: '{{moved}} → free stock of {{product}}',
+      nothing: 'Nothing to bank — this surplus is already on the shelf.',
+    },
+    line: {
+      label: 'From stock',
+      available: '{{n}} available',
+      clamped: 'Only {{n}} could be reserved — the shelf had no more.',
+      reserved: 'from stock {{n}}',
+    },
+    card: {
+      kits_one: '{{count}} kit in stock',
+      kits_other: '{{count}} kits in stock',
+    },
+    order: {
+      fromStock: 'from stock {{n}}',
+    },
+    archive: {
+      count: 'Count into stock',
+      hint: 'This print is filed under no order, so its good parts can go onto the shelf.',
+      done: '{{moved}} → free stock',
+      nothing: 'This print counted nothing into stock.',
+    },
+  },
+
   // Projects
   projects: {
     tabs: {

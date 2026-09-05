@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { render } from '../../utils';
+import { strayZeroTextNodes } from '../../domHelpers';
 import { api, ApiError } from '../../../api/client';
 import type { ProductListItem } from '../../../api/client';
 import { ProductCard } from '../../../components/products/ProductCard';
@@ -21,6 +22,7 @@ const base: ProductListItem = {
   parts_count: 2,
   plates_count: 1,
   lines_count: 0,
+  kits_available: 0,
 };
 
 const noop = () => {};
@@ -131,5 +133,24 @@ describe('ProductCard menu placement', () => {
 
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+});
+
+describe('ProductCard free-stock badge', () => {
+  it('shows the kits the shelf can already make', () => {
+    // The number rides along on the LIST response, so nothing is fetched to
+    // decide — and the badge is the whole reading of it (pass 8, Decision 6).
+    mount({ kits_available: 3 });
+
+    expect(screen.getByTestId('product-kits-badge')).toHaveTextContent('3 kits in stock');
+  });
+
+  it('says nothing at all about an empty shelf', () => {
+    // Every product in the catalog would otherwise carry "0 kits in stock".
+    // ⚠️ `> 0`, never a bare `&&` on the number — `{0 && …}` renders the 0.
+    mount({ kits_available: 0 });
+
+    expect(screen.queryByTestId('product-kits-badge')).not.toBeInTheDocument();
+    expect(strayZeroTextNodes(screen.getByTestId('product-4-card'))).toHaveLength(0);
   });
 });
