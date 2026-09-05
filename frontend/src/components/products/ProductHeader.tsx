@@ -91,12 +91,11 @@ export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggle
   const reread = useMutation({
     mutationFn: (fileId: number) => api.rereadProductCard(product.id, fileId),
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['product', product.id] });
-      queryClient.invalidateQueries({ queryKey: ['products'] });
-      // ⚠️ The order views too: a re-read imports the 3MF's Model Pictures,
-      // which can hand the product its FIRST cover — and an order card renders
-      // that cover off the projects query. Without this the card keeps its
-      // placeholder until something else happens to refetch orders.
+      // ⚠️ One call, product keys included since Ruling 29. The order views are
+      // wanted here for their own sake too: a re-read imports the 3MF's Model
+      // Pictures, which can hand the product its FIRST cover — and an order
+      // card renders that cover off the projects query. Without this the card
+      // keeps its placeholder until something else refetches orders.
       invalidateOrderViews(queryClient);
       setRereadOpen(false);
       // One toast, every note in it: they are one answer to one question, and

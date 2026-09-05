@@ -54,11 +54,10 @@ export function ProductPage() {
   // in the catalog are all rendered on order cards and inside an order's
   // lines, so a change here that stopped at `['products']` left every order
   // view showing the old one until its own 60 s `staleTime` expired.
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['product', id] });
-    queryClient.invalidateQueries({ queryKey: ['products'] });
-    invalidateOrderViews(queryClient);
-  };
+  // ⚠️ ONE call: `['product', id]` and `['products']` are in `ORDER_VIEW_KEYS`
+  // since Ruling 29 (the shelf moves with an order's lines), so naming them
+  // here as well was two refetches of this very page for one save.
+  const invalidate = () => invalidateOrderViews(queryClient);
 
   const toggleActive = useMutation({
     // `is_active` is one of the two fields the server refuses as an explicit

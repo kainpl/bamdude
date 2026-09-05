@@ -127,26 +127,18 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
   const { data: editStock } = useProductStock(draft ? draft.productId : null);
 
   const save = useMutation({
-    // ⚠️ `productId` rides along rather than being read off `draft` in the
-    // callback: the row is closed inside `onSuccess`, and a scoped invalidation
-    // that reads a piece of state the same handler is about to clear is one
-    // reordering away from invalidating `['product', undefined]`, which is a
-    // no-op nothing reports.
-    mutationFn: ({ lineId, data }: { lineId: number; data: ProjectLineUpdate; productId: number }) =>
+    mutationFn: ({ lineId, data }: { lineId: number; data: ProjectLineUpdate }) =>
       api.updateOrderLine(order.id, lineId, data),
-    onSuccess: (saved, { lineId, data, productId }) => {
+    onSuccess: (saved, { lineId, data }) => {
+      // ⚠️ The product's shelf, its `kits_available` and the catalog card that
+      // shows it are in `ORDER_VIEW_KEYS` since Ruling 29 — they have to be,
+      // because the six call sites that RELEASE stock (a deleted line, a
+      // cancelled or deleted order) know no product to scope by. So a rewritten
+      // reservation is covered by the call below and NOT invalidated a second
+      // time here: two `invalidateQueries` for one key is two refetches of the
+      // same product page, which is what the scoped copy used to cost.
       invalidate();
       if (data.from_stock_units != null) {
-        // The reservation moved parts, so the product's shelf and the catalog
-        // card that shows `kits_available` are both stale. Scoped to the ONE
-        // product this line names — a line edit cannot move another product's
-        // shelf, and the bare prefixes would refetch every product page and
-        // stock section this session has ever opened. `['products']` stays
-        // whole: the catalog list is one query keyed by its filters, not by a
-        // product id.
-        queryClient.invalidateQueries({ queryKey: ['product-stock', productId] });
-        queryClient.invalidateQueries({ queryKey: ['product', productId] });
-        queryClient.invalidateQueries({ queryKey: ['products'] });
         // What was ACTUALLY reserved can be less than what was asked — the
         // shelf may have emptied since the row was opened. The row is closing,
         // so the honest number is said rather than shown.
@@ -200,7 +192,7 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
       setDraft(null);
       return;
     }
-    save.mutate({ lineId: line.id, data, productId: editing.productId });
+    save.mutate({ lineId: line.id, data });
   };
 
   const toggleExpanded = (lineId: number) =>
@@ -294,13 +286,22 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                                 type="number"
                                 min={0}
                                 max={Math.min(pool, editing.quantity)}
-                                // The pool arrives after the row opens, so the
-                                // ceiling can shrink under a value already in
-                                // the draft — display the honest number rather
-                                // than one the ceiling above already forbids.
-                                value={Math.min(editing.fromStock, editing.quantity, pool)}
+                                value={editing.fromStock}
+                                // ⚠️ **The DRAFT is clamped, not the display**
+                                // (finding I2). While the ceiling was applied
+                                // only to `value`, the box showed 2 and the
+                                // draft held the 7 that was typed: the save sent
+                                // 7, the server clamped it back to 2, and an
+                                // edit that changed nothing but a note burned a
+                                // release-and-retake on the ledger — while
+                                // warning about a clamp the operator never saw.
+                                // `changedFields` still sends the field only
+                                // when it MOVED.
                                 onChange={(e) =>
-                                  setDraft({ ...editing, fromStock: Math.max(0, Number(e.target.value) || 0) })
+                                  setDraft({
+                                    ...editing,
+                                    fromStock: Math.min(Math.max(0, Number(e.target.value) || 0), editing.quantity, pool),
+                                  })
                                 }
                                 className={`${FIELD_CLASS} w-20`}
                               />

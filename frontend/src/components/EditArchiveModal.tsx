@@ -386,29 +386,38 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
             />
           </div>
 
-          {/* Count this print into free stock — for an ORDER-LESS print only.
+          {/* Count this print into free stock — for a COMPLETED, ORDER-LESS
+              print only.
               ⚠️ Both the saved value and the draft are asked. The endpoint
               judges what is stored (it 409s a print filed under an order), so
               `archive.project_id` is the real gate; `projectId` is added
               because an operator who has just picked an order in the box above
               is about to file this print there, and offering to shelve it in
-              the same breath is offering two contradictory things. */}
-          {hasPermission('projects:update') && archive.project_id == null && projectId == null && (
-            <div className="rounded-lg border border-bambu-dark-tertiary p-3 space-y-2">
-              <p className="text-xs text-bambu-gray">{t('stock.archive.hint')}</p>
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                data-testid="archive-count-into-stock"
-                onClick={() => countIntoStock.mutate()}
-                disabled={countIntoStock.isPending}
-              >
-                <PackagePlus className="w-4 h-4" />
-                {t('stock.archive.count')}
-              </Button>
-            </div>
-          )}
+              the same breath is offering two contradictory things.
+              ⚠️ And `status` (finding I5): only a finished print put anything
+              on a shelf — `credit_unfiled_print` refuses every other status —
+              so on a failed or cancelled one this button can do nothing but
+              answer "this print counted nothing into stock", which reads as a
+              bug in the button rather than as the rule it is. */}
+          {hasPermission('projects:update') &&
+            archive.status === 'completed' &&
+            archive.project_id == null &&
+            projectId == null && (
+              <div className="rounded-lg border border-bambu-dark-tertiary p-3 space-y-2">
+                <p className="text-xs text-bambu-gray">{t('stock.archive.hint')}</p>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  data-testid="archive-count-into-stock"
+                  onClick={() => countIntoStock.mutate()}
+                  disabled={countIntoStock.isPending}
+                >
+                  <PackagePlus className="w-4 h-4" />
+                  {t('stock.archive.count')}
+                </Button>
+              </div>
+            )}
 
           {/* Quantity - number of items printed */}
           <div>

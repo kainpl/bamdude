@@ -122,7 +122,10 @@ describe('ProductHeader — re-read from file', () => {
     fireEvent.click(await screen.findByRole('button', { name: /re-read/i }));
     fireEvent.click(await screen.findByRole('menuitem', { name: /flask\.3mf/i }));
 
-    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['product', 7] }));
+    // ⚠️ The PREFIX, not `['product', 7]`: since Ruling 29 the product keys are
+    // order views, so one `invalidateOrderViews` covers them — naming them
+    // again here was two refetches of the same page for one re-read.
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['product'] }));
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['products'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['projects'] });
   });

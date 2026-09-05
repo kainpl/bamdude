@@ -294,7 +294,10 @@ describe('ModelCardModal — a library file', () => {
     const menu = await screen.findByRole('menu');
     fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Desk lamp' }));
 
-    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['product', 8] }));
+    // ⚠️ The PREFIX, not `['product', 8]`: since Ruling 29 the product keys are
+    // order views, so one `invalidateOrderViews` covers them — naming them
+    // again here was two refetches of the same page for one re-read.
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['product'] }));
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['products'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['projects'] });
   });

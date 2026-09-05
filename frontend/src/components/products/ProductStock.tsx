@@ -1,11 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Loader2, PackageCheck, X } from 'lucide-react';
-import { api, STOCK_NOTE_TOKENS } from '../../api/client';
+import { api, STOCK_MOVEMENT_LIMIT, STOCK_NOTE_TOKENS } from '../../api/client';
 import type { StockMovement } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { useDialogFocus } from '../../hooks/useDialogFocus';
 import { useProductStock } from '../../hooks/useProductStock';
 import { formatDateOnly } from '../../utils/date';
 import type { DateFormat } from '../../utils/date';
@@ -73,11 +74,27 @@ interface AdjustDialogProps {
  * Only COUNTED parts are offered, because they are the only ones that hold a
  * balance — the server answers 422 for any other, and offering a part whose
  * only possible outcome is an error is worse than not offering it.
+ *
+ * ⚠️ It follows the page's overlay contract like every other dialog here —
+ * `role`, `aria-modal`, a name, `useDialogFocus` and Escape (finding M1). An
+ * overlay without them is an anonymous `<div>` a screen reader never announces,
+ * and a keyboard user who opens it starts at the top of the page behind.
  */
 function AdjustDialog({ productId, parts, onClose }: AdjustDialogProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
+  const titleId = useId();
+  // Mounted only while it is open, so "open" is simply `true`.
+  const dialog = useDialogFocus<HTMLDivElement>(true);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const [partId, setPartId] = useState<number>(parts[0]?.part_id ?? 0);
   const [delta, setDelta] = useState('1');
@@ -105,9 +122,20 @@ function AdjustDialog({ productId, parts, onClose }: AdjustDialogProps) {
 
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary">
+      {/* The role, the name and the focus as one unit — see `useDialogFocus`,
+          which lists every overlay that uses it and says what it does not do. */}
+      <div
+        ref={dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary outline-none"
+      >
         <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">{t('stock.adjust.title')}</h2>
+          <h2 id={titleId} className="text-lg font-semibold text-white">
+            {t('stock.adjust.title')}
+          </h2>
           <button
             type="button"
             onClick={onClose}
@@ -211,12 +239,18 @@ interface ProductStockProps {
  * "Nothing on the shelf yet" over a request that never came back tells the
  * operator their stock is gone — and this section's whole job is to say what is
  * there. The three states are rendered apart, in one ternary, for both tables.
+ *
+ * ⚠️ **Data before status** (finding I1). The gate below is `!data`, never
+ * `isError`: a BACKGROUND refetch that fails leaves the shelf on screen exactly
+ * as it was, the same rule the order, product and customer pages follow. The
+ * hook carries `meta: { refreshToast: true }` so that silence is reported once,
+ * rather than by blanking a section somebody is reading.
  */
 export function ProductStock({ productId, canEdit }: ProductStockProps) {
   const { t } = useTranslation();
   const [adjusting, setAdjusting] = useState(false);
 
-  const { data, isPending, isError } = useProductStock(productId);
+  const { data, isError } = useProductStock(productId);
   // The user's own date format, fetched the way every other date-showing screen
   // fetches it; `formatDateOnly` covers the unresolved first paint.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
@@ -231,21 +265,25 @@ export function ProductStock({ productId, canEdit }: ProductStockProps) {
   // the ledger's "nothing has moved yet" beside a failed shelf would assert
   // something this component does not know. Both tables — and the movements
   // heading — therefore live behind this early return.
-  if (isPending || isError) {
+  //
+  // ⚠️ Gated on `!data`, NOT on `isError`: with data in hand the section keeps
+  // rendering it whatever the last refetch did (finding I1). So this branch is
+  // the FIRST load only — pending, or failed with nothing to show.
+  if (!data) {
     return (
       <section className="space-y-3" data-testid="product-stock">
         <h2 className="text-lg font-medium text-white flex items-center gap-2">
           <PackageCheck className="w-5 h-5 text-bambu-green" />
           {t('stock.title')}
         </h2>
-        {isPending ? (
+        {isError ? (
+          <p className="text-sm text-red-500" data-testid="stock-error">
+            {t('stock.error')}
+          </p>
+        ) : (
           <p className="flex items-center gap-2 text-sm text-bambu-gray">
             <Loader2 className="w-4 h-4 animate-spin" />
             {t('common.loading')}
-          </p>
-        ) : (
-          <p className="text-sm text-red-500" data-testid="stock-error">
-            {t('stock.error')}
           </p>
         )}
       </section>
@@ -266,8 +304,17 @@ export function ProductStock({ productId, canEdit }: ProductStockProps) {
         )}
       </div>
 
+      {/* ⚠️ An empty `balances` means the product COUNTS nothing — every counted
+          part is in the answer, with a 0 where nothing has moved (finding M2).
+          So a shelf that is merely empty renders the table full of zeros under
+          a «0 комплектів» headline, which is the honest reading: the parts
+          exist, there are none of them. This sentence is only for a product
+          with no printed part to count at all, where a table of nothing and a
+          kit count would both be noise. */}
       {balances.length === 0 ? (
-        <p className="text-sm text-bambu-gray">{t('stock.empty')}</p>
+        <p className="text-sm text-bambu-gray" data-testid="stock-no-counted-parts">
+          {t('stock.noCountedParts')}
+        </p>
       ) : (
         <div className="space-y-2">
           <p className="text-xl font-semibold text-white" data-testid="stock-kits">
@@ -356,6 +403,16 @@ export function ProductStock({ productId, canEdit }: ProductStockProps) {
             </tbody>
           </table>
         </div>
+      )}
+      {/* ⚠️ Say when the ledger is CUT (finding M3). A full page of exactly the
+          limit is indistinguishable from a complete history, and a product with
+          two years of prints has plenty more — the operator would read the
+          oldest row shown as the first movement there ever was. The comparison
+          is against the constant the request itself uses. */}
+      {movements.length === STOCK_MOVEMENT_LIMIT && (
+        <p className="text-xs text-bambu-gray" data-testid="stock-movements-truncated">
+          {t('stock.showingLast', { count: STOCK_MOVEMENT_LIMIT })}
+        </p>
       )}
 
       {adjusting && (

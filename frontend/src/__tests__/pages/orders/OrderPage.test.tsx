@@ -85,6 +85,7 @@ const order = {
     progress: 1,
     other_prints_count: 0,
     all_printed: true,
+    bankable_surplus: 0,
   },
 };
 
@@ -356,6 +357,12 @@ describe('OrderPage', () => {
   describe('banking the surplus', () => {
     const overprinted = {
       ...order,
+      // ⚠️ `bankable_surplus` is what the button is enabled on (Ruling 30) —
+      // the surplus MINUS what this order has already banked, summed by the
+      // server. The per-part `surplus` below is the fact about the prints that
+      // banking never lowers, and gating on it is what kept the button lit for
+      // ever.
+      figures: { ...order.figures, bankable_surplus: 5 },
       lines: [
         {
           ...order.lines[0],

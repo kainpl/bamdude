@@ -11,6 +11,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { Order, ProductStock } from '../../../api/client';
@@ -34,10 +36,28 @@ function savedOrder(fromStock: number): Order {
   } as unknown as Order;
 }
 
-function mount() {
+/** A stand-in for a product page's own `['product', 3]` query: an invalidation
+ *  is only observable as a REFETCH, and only while something watches the key. */
+function ProductProbe({ onFetch }: { onFetch: () => void }) {
+  useQuery({
+    queryKey: ['product', 3],
+    queryFn: async () => {
+      onFetch();
+      return null;
+    },
+  });
+  return null;
+}
+
+function mount(probe?: ReactNode) {
   render(
     <table>
       <tbody>
+        {probe ? (
+          <tr>
+            <td>{probe}</td>
+          </tr>
+        ) : null}
         <AddLineRow orderId={1} />
       </tbody>
     </table>,
@@ -123,6 +143,29 @@ describe('AddLineRow · from stock', () => {
         note: null,
       }),
     );
+  });
+
+  it('refetches the product stock it just took kits off', async () => {
+    // ⚠️ The reservation moved parts off a PRODUCT's shelf, and this row sits on
+    // an ORDER page — without an invalidation nothing refetches that key and the
+    // next line dialog offers kits that are already spoken for. Covered by
+    // `ORDER_VIEW_KEYS` since Ruling 29 (the six release call sites know no
+    // product at all), so this asserts the REFETCH the operator gets rather than
+    // which call asked for it.
+    const get = vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
+    vi.spyOn(api, 'addOrderLine').mockResolvedValue(savedOrder(3));
+    const product = vi.fn();
+    mount(<ProductProbe onFetch={product} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cap' }));
+    await screen.findByTestId('add-line-from-stock');
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(product).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: /add line/i }));
+
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(product).toHaveBeenCalledTimes(2));
   });
 
   it('says so when the shelf emptied and less was reserved than asked', async () => {

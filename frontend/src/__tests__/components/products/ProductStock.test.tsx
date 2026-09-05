@@ -10,10 +10,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
-import { useQuery } from '@tanstack/react-query';
+import { act, screen, fireEvent, waitFor } from '@testing-library/react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { QueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import { render } from '../../utils';
-import { api, ApiError, STOCK_NOTE_TOKENS, STOCK_REASONS } from '../../../api/client';
+import { api, ApiError, STOCK_MOVEMENT_LIMIT, STOCK_NOTE_TOKENS, STOCK_REASONS } from '../../../api/client';
 import type { ProductStock as ProductStockWire } from '../../../api/client';
 import { ProductStock } from '../../../components/products/ProductStock';
 import { formatDateOnly } from '../../../utils/date';
@@ -41,6 +43,16 @@ function ProductsProbe({ onFetch }: { onFetch: () => void }) {
       return null;
     },
   });
+  return null;
+}
+
+/** The test's handle on the wrapper's own client, so an invalidation can be
+ *  driven from outside the component under test. */
+function CaptureClient({ onReady }: { onReady: (qc: QueryClient) => void }) {
+  const qc = useQueryClient();
+  useEffect(() => {
+    onReady(qc);
+  }, [qc, onReady]);
   return null;
 }
 
@@ -198,19 +210,6 @@ describe('ProductStock', () => {
     expect(screen.queryByRole('button', { name: /adjust/i })).not.toBeInTheDocument();
   });
 
-  it('says the shelf is empty rather than showing a zero table', async () => {
-    vi.spyOn(api, 'getProductStock').mockResolvedValue({ balances: [], kits_available: 0, movements: [] });
-
-    render(<ProductStock productId={5} canEdit />);
-
-    expect(await screen.findByText(/nothing on the shelf/i)).toBeInTheDocument();
-    // A SETTLED empty success is the only state that may say this.
-    expect(screen.getByText(/nothing has moved yet/i)).toBeInTheDocument();
-    expect(screen.queryByTestId('stock-kits')).not.toBeInTheDocument();
-    // Nothing to correct, so nothing offering to.
-    expect(screen.queryByRole('button', { name: /adjust/i })).not.toBeInTheDocument();
-  });
-
   it('dates a movement from the naive-UTC column, not from the platform parser', async () => {
     // ⚠️ `created_at` carries no `Z`, and `new Date(x)` reads a naive string as
     // LOCAL time — so the raw parser and the truth disagree by the whole offset
@@ -242,9 +241,152 @@ describe('ProductStock', () => {
 
     render(<ProductStock productId={5} canEdit />);
 
-    expect(await screen.findByText(/could not load the stock/i)).toBeInTheDocument();
-    expect(screen.queryByText(/nothing on the shelf/i)).not.toBeInTheDocument();
+    expect(await screen.findByTestId('stock-error')).toHaveTextContent(/could not load the stock/i);
+    expect(screen.queryByTestId('stock-no-counted-parts')).not.toBeInTheDocument();
     expect(screen.queryByText(/nothing has moved yet/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps the shelf on screen when a background refetch fails', async () => {
+    // ⚠️ Data before status (finding I1) — the rule the order, product and
+    // customer pages already follow. A proxy hiccup on a REFETCH must not blank
+    // a section somebody is reading; the stale balances plus one toast are the
+    // honest answer, an empty section is not.
+    const get = vi
+      .spyOn(api, 'getProductStock')
+      .mockResolvedValueOnce(stock)
+      .mockRejectedValue(new ApiError('Bad gateway', 502));
+    let client: QueryClient | null = null;
+
+    render(
+      <>
+        <CaptureClient onReady={(qc) => (client = qc)} />
+        <ProductStock productId={5} canEdit />
+      </>,
+    );
+    expect(await screen.findByTestId('stock-kits')).toHaveTextContent('3 kits');
+
+    await act(async () => {
+      await client!.invalidateQueries({ queryKey: ['product-stock', 5] });
+    });
+
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('stock-kits')).toHaveTextContent('3 kits');
+    expect(screen.getByTestId('stock-balance-1')).toHaveTextContent('5');
+    expect(screen.queryByTestId('stock-error')).not.toBeInTheDocument();
+    // …and the query is the one `appQueryClient` reports on, so the silence is
+    // not silent. The flag lives on the hook, which is the only declaration of
+    // this key.
+    expect(client!.getQueryCache().find({ queryKey: ['product-stock', 5] })?.meta?.refreshToast).toBe(true);
+  });
+
+  it('says the product counts no printed parts rather than showing an empty table', async () => {
+    // ⚠️ `balances` is empty only when the product COUNTS nothing — every
+    // counted part comes back, with a 0 where nothing has moved. So this
+    // sentence is about the product's composition, never about an empty shelf.
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({ balances: [], kits_available: 0, movements: [] });
+
+    render(<ProductStock productId={5} canEdit />);
+
+    expect(await screen.findByTestId('stock-no-counted-parts')).toBeInTheDocument();
+    // A SETTLED empty success is the only state that may say this.
+    expect(screen.getByText(/nothing has moved yet/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('stock-kits')).not.toBeInTheDocument();
+    // Nothing to correct, so nothing offering to.
+    expect(screen.queryByRole('button', { name: /adjust/i })).not.toBeInTheDocument();
+  });
+
+  it('shows a shelf that is merely empty as zeros under a zero-kit headline', async () => {
+    // The other half of finding M2: the parts exist and there are none of them,
+    // which is a table of zeros — not "this product has no counted parts".
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({
+      kits_available: 0,
+      balances: [
+        { part_id: 1, name: 'Lid', qty_per_unit: 1, balance: 0 },
+        { part_id: 2, name: 'Flask', qty_per_unit: 2, balance: 0 },
+      ],
+      movements: [],
+    });
+
+    render(<ProductStock productId={5} canEdit />);
+
+    expect(await screen.findByTestId('stock-kits')).toHaveTextContent('0 kits');
+    expect(screen.getByTestId('stock-balance-1')).toHaveTextContent('0');
+    expect(screen.getByTestId('stock-balance-2')).toHaveTextContent('0');
+    expect(screen.queryByTestId('stock-no-counted-parts')).not.toBeInTheDocument();
+  });
+
+  it('says so when the ledger it shows is only the last page of it', async () => {
+    // ⚠️ Finding M3. A full page of exactly the limit is indistinguishable from
+    // a complete history, so the operator reads the oldest row as the first
+    // movement there ever was.
+    const many = Array.from({ length: STOCK_MOVEMENT_LIMIT }, (_, i) => ({ ...stock.movements[0], id: 1000 + i }));
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({ ...stock, movements: many });
+
+    render(<ProductStock productId={5} canEdit />);
+
+    expect(await screen.findByTestId('stock-movements-truncated')).toHaveTextContent(
+      `Showing the last ${STOCK_MOVEMENT_LIMIT} movements`,
+    );
+  });
+
+  it('does not claim a truncated ledger when the page is not full', async () => {
+    vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
+
+    render(<ProductStock productId={5} canEdit />);
+
+    await screen.findByTestId('stock-kits');
+    expect(screen.queryByTestId('stock-movements-truncated')).not.toBeInTheDocument();
+  });
+
+  it('the adjust dialog answers a keyboard like every other overlay', async () => {
+    // Finding M1: the role, the name, the focus and Escape as one unit — see
+    // `useDialogFocus`. Without them it is an anonymous `<div>` a screen reader
+    // never announces, opening at the top of the page behind.
+    vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
+
+    render(<ProductStock productId={5} canEdit />);
+    fireEvent.click(await screen.findByRole('button', { name: /adjust/i }));
+
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveAccessibleName('Adjust the stock');
+    await waitFor(() => expect(document.activeElement).toBe(dialog));
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('refuses to submit a correction that says nothing or moves nothing', async () => {
+    // The three ways this form is not a movement: no reason given (the note is
+    // the whole value of a `manual` row), a delta of zero (the ledger never
+    // writes one) and a fractional delta (parts are whole things).
+    const adjust = vi.spyOn(api, 'adjustProductStock').mockResolvedValue(stock.movements[2]);
+    vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
+
+    render(<ProductStock productId={5} canEdit />);
+    fireEvent.click(await screen.findByRole('button', { name: /adjust/i }));
+    const submit = screen.getByTestId('stock-adjust-submit');
+
+    // A delta with no note.
+    fireEvent.change(screen.getByLabelText(/change/i), { target: { value: '3' } });
+    expect(submit).toBeDisabled();
+
+    // A note with a zero delta.
+    fireEvent.change(screen.getByLabelText(/why/i), { target: { value: 'counted the shelf' } });
+    fireEvent.change(screen.getByLabelText(/change/i), { target: { value: '0' } });
+    expect(submit).toBeDisabled();
+
+    // Half a lid is not a lid.
+    fireEvent.change(screen.getByLabelText(/change/i), { target: { value: '1.5' } });
+    expect(submit).toBeDisabled();
+
+    // Whitespace is not a reason.
+    fireEvent.change(screen.getByLabelText(/change/i), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText(/why/i), { target: { value: '   ' } });
+    expect(submit).toBeDisabled();
+
+    expect(adjust).not.toHaveBeenCalled();
   });
 
   /**

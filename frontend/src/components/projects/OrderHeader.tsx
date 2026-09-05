@@ -42,12 +42,18 @@ interface OrderHeaderProps {
  * every other amount on these pages: a bare `toLocaleString` here is how
  * `$30.50` on one screen became `30.5` on the next.
  *
- * ⚠️ **The bank button is DISABLED, not hidden, when there is no surplus.** It
- * is a whole-order action that appears once an overprint exists and would
- * otherwise blink into the row of buttons at a moment nobody was looking; the
- * title says why it cannot be pressed. Its enablement reads the figures the
- * page already loaded — `parts[].surplus` per line, exactly as `order_metrics`
- * computed it — and never asks the server a second question.
+ * ⚠️ **The bank button is DISABLED, not hidden, when there is nothing to
+ * bank.** It is a whole-order action that would otherwise blink into the row of
+ * buttons at a moment nobody was looking; the title says why it cannot be
+ * pressed. Its enablement reads the figures the page already loaded and never
+ * asks the server a second question.
+ *
+ * ⚠️ **It gates on `bankable_surplus`, which is the surplus MINUS what this
+ * order has already banked** (Ruling 30). It used to gate on the surplus
+ * itself — a fact about the prints that banking never lowers — so the button
+ * stayed lit for ever and every press after the first answered "nothing to
+ * bank". The subtraction is the server's, on the same grouped ledger read the
+ * figures come from, so the gate and the action are one number.
  */
 export function OrderHeader({
   order,
@@ -66,11 +72,11 @@ export function OrderHeader({
 
   const margin = order.figures.margin;
   const tags = order.tags ? order.tags.split(',').map((tag) => tag.trim()).filter(Boolean) : [];
-  // Anything overprinted anywhere in the order. Deliberately NOT "surplus minus
-  // what was already banked" — the server owns that subtraction and answers
-  // `nothing_to_bank` for a second press, which the page reports as the success
-  // it is. Reconstructing the arithmetic here would be a second, weaker copy.
-  const hasSurplus = order.lines.some((line) => line.parts.some((part) => part.surplus > 0));
+  // What the button would still move, in parts, summed by the server over
+  // every line and part of the order (Ruling 30). Never reconstructed from
+  // `parts[].surplus` here: that is a fact about the prints and stays put after
+  // a bank, so the button lit up for ever and answered "nothing to bank".
+  const canBank = order.figures.bankable_surplus > 0;
 
   return (
     <header className="space-y-3">
@@ -162,8 +168,8 @@ export function OrderHeader({
               variant="secondary"
               data-testid="order-bank-surplus"
               onClick={onBankSurplus}
-              disabled={!hasSurplus || bankingSurplus}
-              title={hasSurplus ? undefined : t('stock.bank.none')}
+              disabled={!canBank || bankingSurplus}
+              title={canBank ? undefined : t('stock.bank.none')}
             >
               <PackagePlus className="w-4 h-4" />
               {t('stock.bank.action')}

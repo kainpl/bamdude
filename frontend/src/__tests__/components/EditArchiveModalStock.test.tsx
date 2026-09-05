@@ -6,7 +6,8 @@
  * order-less prints were shipped, scrapped or are still in a drawer. This
  * button is the operator vouching for one of them, so the two things it must
  * never get wrong are WHEN it is offered — an archive filed under an order has
- * its parts counted there already — and what it says when the server refuses.
+ * its parts counted there already, and one that never finished put nothing on
+ * any shelf — and what it says when the server refuses.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -70,6 +71,16 @@ describe('EditArchiveModal · count into stock', () => {
     // Its parts are counted against that order's lines — putting them on a
     // shelf as well would count them twice, which is what the endpoint 409s.
     render(<EditArchiveModal archive={{ ...archive, project_id: 3 }} onClose={vi.fn()} />);
+
+    expect(screen.queryByTestId('archive-count-into-stock')).not.toBeInTheDocument();
+  });
+
+  it('is not offered for a print that did not finish', () => {
+    // Finding I5. Only a finished print put anything on a shelf —
+    // `credit_unfiled_print` refuses every other status — so on a failed or
+    // cancelled one the button can do nothing but answer "this print counted
+    // nothing into stock", which reads as a broken button rather than a rule.
+    render(<EditArchiveModal archive={{ ...archive, status: 'failed' }} onClose={vi.fn()} />);
 
     expect(screen.queryByTestId('archive-count-into-stock')).not.toBeInTheDocument();
   });

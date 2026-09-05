@@ -72,13 +72,12 @@ export function OrderPage() {
   /**
    * «Bank the surplus» — the order's overprint onto its products' shelves.
    *
-   * ⚠️ **Two caches move, not one.** The order's own figures change (a banked
-   * surplus is still printed, but the shelf it landed on is a product's) AND
-   * every product view that shows `kits_available` — the catalog cards, the
-   * product page's stock section, and the stock the line dialog offers. A
-   * mutation that stopped at `invalidateOrderViews` would leave the next order
-   * for the same product offering kits that are already on a shelf it cannot
-   * see.
+   * ⚠️ **Two caches move, not one.** The order's own figures change (the
+   * banked surplus is no longer bankable, so the button goes dark) AND every
+   * product view that shows `kits_available` — the catalog cards, the product
+   * page's stock section, and the stock the line dialog offers. Both halves are
+   * in `ORDER_VIEW_KEYS` since Ruling 29, so one call covers them; invalidating
+   * the product keys again here would be a second refetch of the same pages.
    *
    * ⚠️ **`nothing_to_bank` is a SUCCESS.** It is the answer to a second press —
    * the surplus was already banked — so it gets a neutral toast, never an error.
@@ -87,9 +86,6 @@ export function OrderPage() {
     mutationFn: () => api.bankOrderSurplus(id),
     onSuccess: (result) => {
       invalidate();
-      queryClient.invalidateQueries({ queryKey: ['product-stock'] });
-      queryClient.invalidateQueries({ queryKey: ['product'] });
-      queryClient.invalidateQueries({ queryKey: ['products'] });
       if (result.nothing_to_bank) {
         showToast(t('stock.bank.nothing'), 'info');
         return;

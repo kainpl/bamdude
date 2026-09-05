@@ -661,11 +661,10 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
   const reread = useMutation({
     mutationFn: (productId: number) => api.rereadProductCard(productId, fileId),
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['product', result.product.id] });
-      queryClient.invalidateQueries({ queryKey: ['products'] });
-      // ⚠️ The product keys are NOT order views and stay above. The order
-      // views go too: the re-read can give the product its FIRST cover, and an
-      // order card renders that cover off the projects query.
+      // ⚠️ The product keys ARE order views since Ruling 29 (the shelf moves
+      // with an order's lines), so this one call covers them. It is needed for
+      // its own sake too: the re-read can give the product its FIRST cover, and
+      // an order card renders that cover off the projects query.
       invalidateOrderViews(queryClient);
       setRereadOpen(false);
       showToast(cardNotesText(t, result.notes));

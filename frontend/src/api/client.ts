@@ -1428,6 +1428,12 @@ export interface ProjectFigures {
    *  `printed` stay literal — the customer ordered that many, the farm printed
    *  this many — and this is the third number beside them. */
   from_stock_units: number;
+  /** What «Списати надлишок» would still move, in PARTS (Ruling 30): Σ over the
+   *  lines and their parts of `surplus − already_banked`. The bank button is
+   *  enabled on exactly this and on nothing it computes itself — it gated on
+   *  the surplus before, which banking never lowers, so it stayed lit for ever
+   *  over an order that answered "nothing to bank". */
+  bankable_surplus: number;
 }
 
 export interface Order {
@@ -1786,7 +1792,15 @@ export interface ProductPart {
    *  a column, poured in by every route that answers with a part. `0` for a
    *  part that holds no stock and for one that is not counted at all (purchased,
    *  or `qty_per_unit = 0`); the two read alike here on purpose, because both
-   *  mean "nothing to take". */
+   *  mean "nothing to take".
+   *
+   *  ⚠️ **Not what the stock SECTION reads.** «Вільний залишок» asks
+   *  `GET /products/{id}/stock` (`useProductStock`), which answers the shelf,
+   *  `kits_available` and the ledger in one request. This field is here for the
+   *  routes that answer with a single part — creating one, editing one, merging
+   *  two — where the caller has a part in hand and no stock response beside it.
+   *  Rendering a product's shelf out of these would be a second reading of the
+   *  same ledger, one part at a time. */
   stock_balance: number;
 }
 
@@ -1985,6 +1999,16 @@ export interface StockMovement {
   created_by: number | null;
   created_at: string;
 }
+
+/**
+ * How many movements `GET /products/{id}/stock` is asked for.
+ *
+ * Exported because the section has to SAY when it is showing a truncated
+ * ledger: a full page of exactly this many rows is indistinguishable from a
+ * complete history, and a product with two years of prints has plenty more.
+ * One constant, read by the request and by the footer that reports it.
+ */
+export const STOCK_MOVEMENT_LIMIT = 200;
 
 /** `GET /products/{id}/stock`. `balances` is counted parts only; `movements` is
  *  deliberately NOT filtered that way and comes newest first. */
@@ -9759,7 +9783,7 @@ export const api = {
     }),
   /** The product's free stock: the shelf, how many kits it makes, and the
    *  ledger that got it there (newest first, capped by `limit`). */
-  getProductStock: (id: number, limit = 200) =>
+  getProductStock: (id: number, limit: number = STOCK_MOVEMENT_LIMIT) =>
     request<ProductStock>(`/products/${id}/stock?limit=${limit}`),
   /** A hand correction. 409 when it would take a balance below zero, 422 for a
    *  part that holds no stock — the server's own sentence is in `detail`, which

@@ -219,11 +219,10 @@ function ProductForm({ product, onClose, onLightboxOpenChange }: ProductFormProp
       return api.createProduct(data);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['products'] });
-      if (product) queryClient.invalidateQueries({ queryKey: ['product', product.id] });
-      // ⚠️ The order views too, and this is the dialog that actually renames a
-      // product: `ProjectLineResponse.product_name` is denormalised, so an
-      // order card and every order line kept the OLD name for as long as their
+      // ⚠️ One call, product keys included since Ruling 29 — and this is the
+      // dialog that actually renames a product:
+      // `ProjectLineResponse.product_name` is denormalised, so an order card
+      // and every order line kept the OLD name for as long as their
       // `staleTime` said the answer was fresh. Same one decision as an order
       // save — see `utils/queryInvalidation`.
       invalidateOrderViews(queryClient);

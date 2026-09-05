@@ -152,11 +152,9 @@ export function ProductGallery({
   // every other renderer of the cover (`ProductCard`, `OrderCard`) does not
   // have. One rule, and it lives on the response.
   const done = () => {
-    // The product keys are not order views and stay here; the order views go
-    // too, because the first picture is the implicit cover an order card
-    // renders.
-    queryClient.invalidateQueries({ queryKey: ['product', product.id] });
-    queryClient.invalidateQueries({ queryKey: ['products'] });
+    // ⚠️ One call: the product keys are order views since Ruling 29, and they
+    // are wanted here for their own sake as well — the first picture is the
+    // implicit cover an order card renders.
     invalidateOrderViews(queryClient);
   };
   const fail = (e: Error) => showToast(e.message, 'error');

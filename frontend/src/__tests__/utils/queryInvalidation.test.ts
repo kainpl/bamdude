@@ -72,13 +72,35 @@ describe('invalidateOrderViews', () => {
 
   it('leaves a cache nobody asked about alone', () => {
     const qc = new QueryClient();
-    seed(qc, [['products'], ['archives'], ['queue']]);
+    seed(qc, [['archives'], ['queue'], ['library-files']]);
 
     invalidateOrderViews(qc);
 
-    expect(stale(qc, ['products'])).toBe(false);
     expect(stale(qc, ['archives'])).toBe(false);
     expect(stale(qc, ['queue'])).toBe(false);
+    expect(stale(qc, ['library-files'])).toBe(false);
+  });
+
+  it('moves the product views too, because stock moves with an order', () => {
+    // Ruling 29. A line reserves kits off a product's shelf; deleting the line,
+    // cancelling the order or deleting it puts them back. Six call sites did
+    // that and invalidated none of it, so «Вільний залишок» and the catalog
+    // cards kept the pre-release numbers until the page was reloaded. The
+    // per-product scoping is given up on purpose — most of those call sites
+    // know no product at all, and a prefix costs nothing off a page that is not
+    // mounted.
+    const qc = new QueryClient();
+    seed(qc, [
+      ['product-stock', 7],
+      ['product', 7],
+      ['products', {}],
+    ]);
+
+    invalidateOrderViews(qc);
+
+    expect(stale(qc, ['product-stock', 7])).toBe(true);
+    expect(stale(qc, ['product', 7])).toBe(true);
+    expect(stale(qc, ['products', {}])).toBe(true);
   });
 
   it('publishes the keys as a list the websocket hook can walk', () => {
@@ -93,6 +115,9 @@ describe('invalidateOrderViews', () => {
       'customers',
       'customer',
       'order-candidates',
+      'product-stock',
+      'product',
+      'products',
     ]);
   });
 });
@@ -117,7 +142,15 @@ describe('invalidateOrderCandidates', () => {
 describe('invalidateAfterDelete', () => {
   it('refreshes the lists an order leaves behind, never the order itself', () => {
     const qc = new QueryClient();
-    seed(qc, [['projects'], ['customers'], ['customer', 2], ['project', 5]]);
+    seed(qc, [
+      ['projects'],
+      ['customers'],
+      ['customer', 2],
+      ['project', 5],
+      ['product-stock', 7],
+      ['product', 7],
+      ['products'],
+    ]);
 
     invalidateAfterDelete(qc, 'order');
 
@@ -126,6 +159,12 @@ describe('invalidateAfterDelete', () => {
     // The customer survives the order, so their page is stale, not gone.
     expect(stale(qc, ['customer', 2])).toBe(true);
     expect(stale(qc, ['project', 5])).toBe(false);
+    // Deleting an order releases every line's reservation and re-credits its
+    // finished prints (Rulings 25–26), so the shelf moved — and the page that
+    // deleted it is usually a LIST, which knows no product to scope by.
+    expect(stale(qc, ['product-stock', 7])).toBe(true);
+    expect(stale(qc, ['product', 7])).toBe(true);
+    expect(stale(qc, ['products'])).toBe(true);
   });
 
   it('refreshes the order cards after a product goes, never the product', () => {

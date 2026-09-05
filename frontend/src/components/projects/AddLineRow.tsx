@@ -83,11 +83,12 @@ export function AddLineRow({ orderId }: { orderId: number }) {
       // ⚠️ The whole set, not the order alone: a new line is new work, so the
       // plan block has a part to plan that it does not know about yet. The
       // product's shelf moved too when kits were reserved.
+      // ⚠️ The product keys ride in `ORDER_VIEW_KEYS` since Ruling 29 — the
+      // shelf moves with an order's lines, and most of the call sites that move
+      // it know no product at all. Invalidating them again here, scoped, would
+      // be a second refetch of the same product page for one save.
       invalidateOrderViews(queryClient, { orderId });
       if (units > 0) {
-        queryClient.invalidateQueries({ queryKey: ['product-stock', productId] });
-        queryClient.invalidateQueries({ queryKey: ['product', productId] });
-        queryClient.invalidateQueries({ queryKey: ['products'] });
         // What was ACTUALLY reserved can be less than what was asked: the shelf
         // may have emptied between this row rendering and Save. The server
         // answers with the whole order, and the new line is its highest id —

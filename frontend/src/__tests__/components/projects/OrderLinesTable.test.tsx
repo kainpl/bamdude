@@ -310,10 +310,15 @@ describe('OrderLinesTable', () => {
       await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { quantity: 1, from_stock_units: 1 }));
     });
 
-    it('refetches the ONE product the line names, not every product page open', async () => {
-      // A line edit cannot move another product's shelf, and the bare prefixes
-      // would refetch every product page and stock section this session has
-      // ever opened.
+    it('refetches the product views a rewritten reservation moved', async () => {
+      // ⚠️ Ruling 29 changed the SCOPE here. `invalidateOrderViews` now carries
+      // the bare product prefixes, because the six call sites that RELEASE
+      // stock (a deleted line, a cancelled or deleted order) know no product at
+      // all. So a product page open on something else refetches too; only
+      // mounted queries do, and a stale shelf is the worse trade. ONCE each:
+      // the mutation leaves those keys to the helper rather than invalidating
+      // them a second time under a scoped key, which was two refetches of the
+      // same page for one save.
       const mine = vi.fn();
       const other = vi.fn();
       vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
@@ -333,13 +338,62 @@ describe('OrderLinesTable', () => {
       fireEvent.change(await screen.findByTestId('line-10-from-stock'), { target: { value: '1' } });
       fireEvent.click(screen.getByTestId('line-10-save'));
 
-      // Line 10's product is 1.
+      // Line 10's product is 1 — the one whose shelf actually moved — and the
+      // sibling page refetches with it.
       await waitFor(() => expect(mine).toHaveBeenCalledTimes(2));
-      expect(other).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(other).toHaveBeenCalledTimes(2));
+      expect(mine).toHaveBeenCalledTimes(2);
+    });
+
+    it('sends the number it is showing, clamped in the draft and not only on screen', async () => {
+      // ⚠️ Finding I2. While the ceiling was applied to `value` alone, the box
+      // showed 1 and the DRAFT held the 9 that was typed: the save sent 9, the
+      // server clamped it back, and the operator was warned about a clamp they
+      // had never seen coming. Display and write are the same number now.
+      vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
+      const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue({
+        ...order,
+        lines: order.lines.map((l) => (l.id === 11 ? { ...l, from_stock_units: 1 } : l)),
+      } as never);
+      render(<OrderLinesTable order={order} canEdit />);
+
+      fireEvent.click(screen.getByTestId('line-11-edit'));
+      const box = (await screen.findByTestId('line-11-from-stock')) as HTMLInputElement;
+      fireEvent.change(box, { target: { value: '9' } });
+
+      expect(box.value).toBe('1');
+      fireEvent.click(screen.getByTestId('line-11-save'));
+
+      await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 11, { from_stock_units: 1 }));
+      // Nothing was clamped by the SERVER — the box asked for what was there —
+      // so the operator is told nothing.
+      await waitFor(() => expect(screen.queryByText(/could be reserved/i)).not.toBeInTheDocument());
+    });
+
+    it('sends no reservation at all when the clamp lands back on what is stored', async () => {
+      // Line 10 already holds its ceiling. Typing past it must not turn a save
+      // into a rewrite — that is a release and a re-reserve, two ledger rows,
+      // for an edit that changed nothing.
+      vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
+      const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
+      render(<OrderLinesTable order={order} canEdit />);
+
+      fireEvent.click(screen.getByTestId('line-10-edit'));
+      const box = (await screen.findByTestId('line-10-from-stock')) as HTMLInputElement;
+      fireEvent.change(box, { target: { value: '7' } });
+
+      expect(box.value).toBe('2');
+      fireEvent.click(screen.getByTestId('line-10-save'));
+
+      await waitFor(() => expect(screen.queryByTestId('line-10-from-stock')).not.toBeInTheDocument());
+      expect(patch).not.toHaveBeenCalled();
     });
 
     it('says so when the shelf emptied and less was reserved than asked', async () => {
-      vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
+      // ⚠️ The box clamps to the pool it KNOWS (finding I2), so the only way
+      // less comes back is a shelf that moved after the row was rendered —
+      // which is exactly what this is: three kits cached, one still there.
+      vi.spyOn(api, 'getProductStock').mockResolvedValue({ ...stock, kits_available: 3 } as never);
       // Line 11 reserves nothing yet. Asked for two, the server could only hold
       // one back — the shelf emptied between the row opening and Save.
       const saved = {

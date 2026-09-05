@@ -21,8 +21,15 @@ import type { ProductStock } from '../api/client';
  *
  * `retry: false` because every consumer degrades to "no stock" on a failure and
  * none of them can act on the error: the line dialog simply offers no kits, and
- * the section says the shelf is empty. Three silent retries would only delay
- * that by seconds while the operator waits on a spinner.
+ * the section says so. Three silent retries would only delay that by seconds
+ * while the operator waits on a spinner.
+ *
+ * `meta: { refreshToast: true }` because the section now keeps the shelf on
+ * screen when a BACKGROUND refetch fails (finding I1 — data before status, the
+ * rule the three detail pages already follow). That is the right call, and it
+ * is also completely silent: the balances shown are older than they look and
+ * only the cache knows it. `utils/appQueryClient` turns that into one toast,
+ * and only for a query that already held data.
  */
 export function useProductStock(id: number | null) {
   return useQuery<ProductStock>({
@@ -30,5 +37,6 @@ export function useProductStock(id: number | null) {
     queryFn: () => api.getProductStock(id as number),
     enabled: Number.isFinite(id),
     retry: false,
+    meta: { refreshToast: true },
   });
 }

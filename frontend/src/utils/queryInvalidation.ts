@@ -21,6 +21,16 @@
  * it: `project-plan` carries the operator's unsaved counts, so `PlanBlock`
  * reseeds on the plan's CONTENT rather than on the fact of a refetch. A key
  * added to this list that holds unsaved edits needs the same treatment.
+ *
+ * ⚠️ **The product keys are here because STOCK moves with an order** (pass 8,
+ * Ruling 29). A line reserves kits off a product's shelf and a deleted line, a
+ * cancelled order or a deleted order puts them back; a completed order-less
+ * print credits one. Six call sites released stock and invalidated none of it,
+ * so «Вільний залишок» and the catalog cards kept the pre-release numbers until
+ * the page was reloaded — the classic "right after F5, wrong before it". The
+ * per-product scoping is given up deliberately: the helper's whole job is that
+ * a call site does not get to have an opinion about the list, and a prefix
+ * costs nothing off a page that is not mounted.
  */
 
 import type { QueryClient } from '@tanstack/react-query';
@@ -45,6 +55,13 @@ export const ORDER_VIEW_KEYS = [
   // is mounted only while such a dialog is open, so the prefix costs nothing
   // off that dialog. See `invalidateOrderCandidates` for the narrow call.
   'order-candidates',
+  // pass 8: the free stock an order's lines take off and put back — the shelf
+  // section, the product page's own `kits_available`, and the catalog cards
+  // that show it. Prefixes, so an order that moved another product's shelf
+  // (two lines, two products) is covered by one call. See the header.
+  'product-stock',
+  'product',
+  'products',
 ] as const;
 
 /** What the caller touched. Read for call-site legibility today; see below. */
@@ -88,7 +105,11 @@ type DeletedKind = 'order' | 'product' | 'customer';
 const DELETE_KEYS: Record<DeletedKind, readonly string[]> = {
   // The customer survives the order and their totals move with it; `customer`
   // is the prefix because the page that deleted it need not be the customer's.
-  order: ['projects', 'customers', 'customer'],
+  // The product keys are here for the same reason they are in
+  // `ORDER_VIEW_KEYS` (Ruling 29): deleting an order releases every line's
+  // reservation and re-credits its finished prints, so the shelf moves — and
+  // the page that deleted it is usually a LIST, which knows no product at all.
+  order: ['projects', 'customers', 'customer', 'product-stock', 'product', 'products'],
   // An order card renders the product's cover off the `projects` query.
   product: ['products', 'projects'],
   // The orders survive their customer and lose the denormalised name.

@@ -62,11 +62,11 @@ export function ProductsPage() {
   const toggleActive = useMutation({
     mutationFn: (product: ProductListItem) => api.updateProduct(product.id, { is_active: !product.is_active }),
     onSuccess: (saved) => {
-      queryClient.invalidateQueries({ queryKey: ['products'] });
-      queryClient.invalidateQueries({ queryKey: ['product', saved.id] });
-      // ⚠️ And the order views: a product that leaves the catalog is
-      // still on the lines of every order that ordered it, and the cards
-      // and pickers reading those lines have to be told.
+      // ⚠️ The order views, which since Ruling 29 include the product keys: a
+      // product that leaves the catalog is still on the lines of every order
+      // that ordered it, and the cards and pickers reading those lines have to
+      // be told. Naming `['product', id]` and `['products']` again here was two
+      // refetches of each for one toggle.
       invalidateOrderViews(queryClient);
       showToast(saved.is_active ? t('products.toast.shown') : t('products.toast.hidden'));
     },

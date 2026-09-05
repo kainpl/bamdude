@@ -4,8 +4,14 @@
  * «Bank the surplus» is DISABLED rather than hidden when there is nothing to
  * bank: it is a permanent action of the order, and a button that appears the
  * moment an overprint happens would arrive in the middle of a row nobody was
- * watching. Its enablement reads the figures the page already loaded — a
- * `surplus` on any part of any line — and asks the server nothing.
+ * watching.
+ *
+ * ⚠️ Its enablement is `figures.bankable_surplus` — the surplus MINUS what the
+ * order has already banked, summed by the server (Ruling 30). It used to read
+ * `parts[].surplus`, a fact about the prints that banking never lowers, so the
+ * button stayed lit for ever and every press after the first answered "nothing
+ * to bank". The figures come off the page's existing query; the header asks the
+ * server nothing.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -28,7 +34,7 @@ vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
   };
 });
 
-function orderWith(surplus: number): Order {
+function orderWith(surplus: number, bankable = surplus): Order {
   return {
     id: 1,
     name: 'Ten flasks',
@@ -52,7 +58,7 @@ function orderWith(surplus: number): Order {
         ],
       },
     ],
-    figures: { margin: null },
+    figures: { margin: null, bankable_surplus: bankable },
   } as unknown as Order;
 }
 
@@ -86,7 +92,17 @@ describe('OrderHeader · bank the surplus', () => {
     expect(button).toBeDisabled();
     // The button says why it cannot be pressed rather than leaving the operator
     // to guess which line it is waiting for.
-    expect(button).toHaveAttribute('title', expect.stringMatching(/surplus/i));
+    expect(button).toHaveAttribute('title', expect.stringMatching(/bank/i));
+  });
+
+  it('goes dark once the surplus has been banked, though the surplus itself stays', () => {
+    // Ruling 30, and the regression that made the button useless: five parts
+    // still overprinted, five already on the shelf, nothing left to move.
+    mount(orderWith(5, 0));
+
+    const button = screen.getByTestId('order-bank-surplus');
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title', expect.stringMatching(/bank/i));
   });
 
   it('is enabled by a surplus on any part of any line, and hands the press up', () => {
