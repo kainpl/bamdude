@@ -51,7 +51,7 @@ export function OrderFigures({ figures }: { figures: ProjectFigures }) {
             many and the farm printed this many — and a permanent "0" tile on
             every order in the farm would be a column of noise. */}
         {figures.from_stock_units > 0 && (
-          <Tile label={t('stock.line.label')} value={figures.from_stock_units} />
+          <Tile label={t('stock.figures.fromStock')} value={figures.from_stock_units} />
         )}
         <Tile label={t('orders.figures.complete')} value={figures.complete} />
         <Tile label={t('orders.figures.remaining')} value={figures.remaining} />

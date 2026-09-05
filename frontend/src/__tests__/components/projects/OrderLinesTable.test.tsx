@@ -33,6 +33,21 @@ function OrderProbe({ id }: { id: number }) {
   return null;
 }
 
+/**
+ * A stand-in for a product page's own `['product', id]` query — an invalidation
+ * is only observable as a REFETCH, and only while something watches the key.
+ */
+function ProductProbe({ id, onFetch }: { id: number; onFetch: () => void }) {
+  useQuery({
+    queryKey: ['product', id],
+    queryFn: async () => {
+      onFetch();
+      return null;
+    },
+  });
+  return null;
+}
+
 const order = {
   id: 1,
   status: 'active',
@@ -272,6 +287,55 @@ describe('OrderLinesTable', () => {
       // again, with the ledger rows that record both. A note edit must not
       // rewrite a reservation.
       await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { note: 'urgent' }));
+    });
+
+    it('lowers the reservation with the quantity, in the same edit', async () => {
+      // ⚠️ A line for one unit holding two kits is not a reservation, it is
+      // stock taken out of circulation. The server clamps it away anyway
+      // (Ruling 16), so a box left showing 2 would be the display disagreeing
+      // with the write — and the operator would never see the kit come back.
+      vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
+      const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
+      render(<OrderLinesTable order={order} canEdit />);
+
+      fireEvent.click(screen.getByTestId('line-10-edit'));
+      const box = (await screen.findByTestId('line-10-from-stock')) as HTMLInputElement;
+      expect(box.value).toBe('2');
+
+      const row = screen.getByTestId('line-10-save').closest('tr') as HTMLElement;
+      fireEvent.change(within(row).getByLabelText(/quantity/i), { target: { value: '1' } });
+      expect((screen.getByTestId('line-10-from-stock') as HTMLInputElement).value).toBe('1');
+
+      fireEvent.click(screen.getByTestId('line-10-save'));
+      await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { quantity: 1, from_stock_units: 1 }));
+    });
+
+    it('refetches the ONE product the line names, not every product page open', async () => {
+      // A line edit cannot move another product's shelf, and the bare prefixes
+      // would refetch every product page and stock section this session has
+      // ever opened.
+      const mine = vi.fn();
+      const other = vi.fn();
+      vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
+      vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
+
+      render(
+        <>
+          <ProductProbe id={1} onFetch={mine} />
+          <ProductProbe id={99} onFetch={other} />
+          <OrderLinesTable order={order} canEdit />
+        </>,
+      );
+      await waitFor(() => expect(mine).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(other).toHaveBeenCalledTimes(1));
+
+      fireEvent.click(screen.getByTestId('line-10-edit'));
+      fireEvent.change(await screen.findByTestId('line-10-from-stock'), { target: { value: '1' } });
+      fireEvent.click(screen.getByTestId('line-10-save'));
+
+      // Line 10's product is 1.
+      await waitFor(() => expect(mine).toHaveBeenCalledTimes(2));
+      expect(other).toHaveBeenCalledTimes(1);
     });
 
     it('says so when the shelf emptied and less was reserved than asked', async () => {

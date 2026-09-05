@@ -127,15 +127,25 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
   const { data: editStock } = useProductStock(draft ? draft.productId : null);
 
   const save = useMutation({
-    mutationFn: ({ lineId, data }: { lineId: number; data: ProjectLineUpdate }) =>
+    // ⚠️ `productId` rides along rather than being read off `draft` in the
+    // callback: the row is closed inside `onSuccess`, and a scoped invalidation
+    // that reads a piece of state the same handler is about to clear is one
+    // reordering away from invalidating `['product', undefined]`, which is a
+    // no-op nothing reports.
+    mutationFn: ({ lineId, data }: { lineId: number; data: ProjectLineUpdate; productId: number }) =>
       api.updateOrderLine(order.id, lineId, data),
-    onSuccess: (saved, { lineId, data }) => {
+    onSuccess: (saved, { lineId, data, productId }) => {
       invalidate();
       if (data.from_stock_units != null) {
         // The reservation moved parts, so the product's shelf and the catalog
-        // card that shows `kits_available` are both stale.
-        queryClient.invalidateQueries({ queryKey: ['product-stock'] });
-        queryClient.invalidateQueries({ queryKey: ['product'] });
+        // card that shows `kits_available` are both stale. Scoped to the ONE
+        // product this line names — a line edit cannot move another product's
+        // shelf, and the bare prefixes would refetch every product page and
+        // stock section this session has ever opened. `['products']` stays
+        // whole: the catalog list is one query keyed by its filters, not by a
+        // product id.
+        queryClient.invalidateQueries({ queryKey: ['product-stock', productId] });
+        queryClient.invalidateQueries({ queryKey: ['product', productId] });
         queryClient.invalidateQueries({ queryKey: ['products'] });
         // What was ACTUALLY reserved can be less than what was asked — the
         // shelf may have emptied since the row was opened. The row is closing,
@@ -190,7 +200,7 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
       setDraft(null);
       return;
     }
-    save.mutate({ lineId: line.id, data });
+    save.mutate({ lineId: line.id, data, productId: editing.productId });
   };
 
   const toggleExpanded = (lineId: number) =>
@@ -246,9 +256,16 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                         min={1}
                         aria-label={t('orders.lines.quantity')}
                         value={editing.quantity}
-                        onChange={(e) =>
-                          setDraft({ ...editing, quantity: Math.max(1, Number(e.target.value) || 1) })
-                        }
+                        onChange={(e) => {
+                          // ⚠️ Lowering the quantity lowers the reservation with
+                          // it. A line for two units holding five kits is not a
+                          // reservation, it is stock taken out of circulation —
+                          // the server clamps it away anyway (Ruling 16), and a
+                          // box left showing five while three go back on the
+                          // shelf is the display disagreeing with the write.
+                          const quantity = Math.max(1, Number(e.target.value) || 1);
+                          setDraft({ ...editing, quantity, fromStock: Math.min(editing.fromStock, quantity) });
+                        }}
                         className={`${FIELD_CLASS} w-20`}
                       />
                     ) : (
@@ -277,7 +294,11 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                                 type="number"
                                 min={0}
                                 max={Math.min(pool, editing.quantity)}
-                                value={editing.fromStock}
+                                // The pool arrives after the row opens, so the
+                                // ceiling can shrink under a value already in
+                                // the draft — display the honest number rather
+                                // than one the ceiling above already forbids.
+                                value={Math.min(editing.fromStock, editing.quantity, pool)}
                                 onChange={(e) =>
                                   setDraft({ ...editing, fromStock: Math.max(0, Number(e.target.value) || 0) })
                                 }

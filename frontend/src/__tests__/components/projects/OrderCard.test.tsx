@@ -31,23 +31,25 @@ describe('OrderCard', () => {
     expect(screen.getByTestId('product-cover')).toHaveAttribute('src', expect.stringContaining('/products/11/cover-image'));
     expect(screen.getAllByTestId('product-cover-placeholder')).toHaveLength(1);
   });
-  it('shows what came off the shelf beside the printed count, and only when there is any', () => {
-    // Pass 8, Decision 5. `printed` stays literal — the farm printed four — and
-    // this is the other half of "done".
-    // ⚠️ The LIST response does not carry `from_stock_units` yet (the order
-    // DETAIL's figures do), so the field is optional and the card renders
-    // nothing without it. That absence is the first case here.
+  it('says nothing about the shelf when the list response omits the field', () => {
+    // Pass 8, Decision 5. ⚠️ The LIST response does not carry `from_stock_units`
+    // yet (the order DETAIL's figures do), so the field is optional and today
+    // the card renders nothing at all. That absence is this case.
     render(<OrderCard order={base} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
     expect(screen.queryByTestId('order-1-from-stock')).not.toBeInTheDocument();
   });
-  it('shows the shelf count once the server sends one', () => {
+  it('shows what came off the shelf beside the printed count once the server sends it', () => {
+    // `printed` stays literal — the farm printed four — and this is the other
+    // half of "done".
     render(<OrderCard order={{ ...base, from_stock_units: 3 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
     expect(screen.getByTestId('order-1-from-stock')).toHaveTextContent('from stock 3');
+  });
+  it('shows nothing, and no bare zero, for an order that reserved none', () => {
     // A zero is not "no stock reserved, shown as 0" — it is nothing at all, and
     // a bare `&&` on the number would have rendered the 0 itself.
-    render(<OrderCard order={{ ...base, id: 2, from_stock_units: 0 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
-    expect(screen.queryByTestId('order-2-from-stock')).not.toBeInTheDocument();
-    expect(strayZeroTextNodes(screen.getByTestId('order-2-card'))).toHaveLength(0);
+    render(<OrderCard order={{ ...base, from_stock_units: 0 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    expect(screen.queryByTestId('order-1-from-stock')).not.toBeInTheDocument();
+    expect(strayZeroTextNodes(screen.getByTestId('order-1-card'))).toHaveLength(0);
   });
   it('shows at most three product tiles however long the order is', () => {
     const many = [11, 12, 13, 14, 15].map((product_id) => ({ product_id, has_cover: false }));

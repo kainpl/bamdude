@@ -5283,6 +5283,7 @@ export default {
     kits_other: '{{count}} kits',
     kitsHint: 'Whole units the shelf can already make.',
     empty: 'Nothing on the shelf yet.',
+    error: 'Could not load the stock.',
     part: 'Part',
     perUnit: 'Per unit',
     balance: 'On the shelf',
@@ -5319,7 +5320,6 @@ export default {
       notePlaceholder: 'Counted the shelf…',
       submit: 'Save',
       saved: 'The stock was corrected.',
-      noParts: 'This product counts no parts, so it holds no stock.',
     },
     bank: {
       action: 'Bank the surplus',
@@ -5339,6 +5339,9 @@ export default {
     },
     order: {
       fromStock: 'from stock {{n}}',
+    },
+    figures: {
+      fromStock: 'From stock',
     },
     archive: {
       count: 'Count into stock',

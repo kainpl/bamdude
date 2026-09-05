@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Loader2, PackageCheck, X } from 'lucide-react';
 import { api, STOCK_NOTE_TOKENS } from '../../api/client';
 import type { StockMovement } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { useProductStock } from '../../hooks/useProductStock';
+import { formatDateOnly } from '../../utils/date';
+import type { DateFormat } from '../../utils/date';
 import { Button } from '../Button';
 
 const FIELD_CLASS =
@@ -204,15 +206,51 @@ interface ProductStockProps {
  * `balances`.** A part that stopped counting keeps its history but leaves the
  * balances, so the lookup would render a blank for exactly the rows that need
  * explaining.
+ *
+ * ⚠️ **A failed fetch is not an empty shelf, and neither is a pending one.**
+ * "Nothing on the shelf yet" over a request that never came back tells the
+ * operator their stock is gone — and this section's whole job is to say what is
+ * there. The three states are rendered apart, in one ternary, for both tables.
  */
 export function ProductStock({ productId, canEdit }: ProductStockProps) {
   const { t } = useTranslation();
   const [adjusting, setAdjusting] = useState(false);
 
   const { data, isPending, isError } = useProductStock(productId);
+  // The user's own date format, fetched the way every other date-showing screen
+  // fetches it; `formatDateOnly` covers the unresolved first paint.
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const dateFormat = (settings?.date_format || 'system') as DateFormat;
 
   const balances = data?.balances ?? [];
   const movements = data?.movements ?? [];
+
+  // ⚠️ **One query, so ONE unsettled state for the whole section.** The shelf
+  // and the ledger below it come out of the same request, so a spinner (or an
+  // error) per table would be the same sentence printed twice; and rendering
+  // the ledger's "nothing has moved yet" beside a failed shelf would assert
+  // something this component does not know. Both tables — and the movements
+  // heading — therefore live behind this early return.
+  if (isPending || isError) {
+    return (
+      <section className="space-y-3" data-testid="product-stock">
+        <h2 className="text-lg font-medium text-white flex items-center gap-2">
+          <PackageCheck className="w-5 h-5 text-bambu-green" />
+          {t('stock.title')}
+        </h2>
+        {isPending ? (
+          <p className="flex items-center gap-2 text-sm text-bambu-gray">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            {t('common.loading')}
+          </p>
+        ) : (
+          <p className="text-sm text-red-500" data-testid="stock-error">
+            {t('stock.error')}
+          </p>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section className="space-y-3" data-testid="product-stock">
@@ -228,12 +266,7 @@ export function ProductStock({ productId, canEdit }: ProductStockProps) {
         )}
       </div>
 
-      {isPending ? (
-        <p className="flex items-center gap-2 text-sm text-bambu-gray">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          {t('common.loading')}
-        </p>
-      ) : isError || balances.length === 0 ? (
+      {balances.length === 0 ? (
         <p className="text-sm text-bambu-gray">{t('stock.empty')}</p>
       ) : (
         <div className="space-y-2">
@@ -268,6 +301,9 @@ export function ProductStock({ productId, canEdit }: ProductStockProps) {
       )}
 
       <h3 className="text-sm font-medium text-white pt-1">{t('stock.movements')}</h3>
+      {/* Reached only on a SETTLED success (see the early return above), so
+          "nothing has moved yet" is a fact about the ledger and not about the
+          request. */}
       {movements.length === 0 ? (
         <p className="text-sm text-bambu-gray">{t('stock.noMovements')}</p>
       ) : (
@@ -292,8 +328,14 @@ export function ProductStock({ productId, canEdit }: ProductStockProps) {
                     data-testid={`stock-movement-${m.id}`}
                     className="border-t border-bambu-dark-tertiary text-white"
                   >
+                    {/* ⚠️ `formatDateOnly`, never `new Date(x).toLocaleDateString()`:
+                        the column is NAIVE UTC (no `Z`), which the platform
+                        parser reads as LOCAL time — at UTC+3 the last three
+                        hours of every UTC day would be dated yesterday. The
+                        helper appends the `Z` and honours the user's own
+                        `date_format`, exactly as `OrderPrints` does. */}
                     <td className="p-2 text-bambu-gray whitespace-nowrap">
-                      {new Date(m.created_at).toLocaleDateString()}
+                      {formatDateOnly(m.created_at, undefined, dateFormat)}
                     </td>
                     <td className="p-2">{m.part_name}</td>
                     <td className={`p-2 tabular-nums ${m.delta > 0 ? 'text-bambu-green' : 'text-red-400'}`}>

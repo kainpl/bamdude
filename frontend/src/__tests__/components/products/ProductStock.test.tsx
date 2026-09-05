@@ -16,6 +16,7 @@ import { render } from '../../utils';
 import { api, ApiError, STOCK_NOTE_TOKENS, STOCK_REASONS } from '../../../api/client';
 import type { ProductStock as ProductStockWire } from '../../../api/client';
 import { ProductStock } from '../../../components/products/ProductStock';
+import { formatDateOnly } from '../../../utils/date';
 import en from '../../../i18n/locales/en';
 import uk from '../../../i18n/locales/uk';
 
@@ -100,6 +101,9 @@ const stock: ProductStockWire = {
 describe('ProductStock', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    // The section reads the user's own `date_format`, like every other
+    // date-showing screen. `iso` makes the assertion below zone-independent.
+    vi.spyOn(api, 'getSettings').mockResolvedValue({ date_format: 'iso' } as never);
   });
 
   it('shows the server kits, every counted balance and the whole ledger', async () => {
@@ -200,9 +204,47 @@ describe('ProductStock', () => {
     render(<ProductStock productId={5} canEdit />);
 
     expect(await screen.findByText(/nothing on the shelf/i)).toBeInTheDocument();
+    // A SETTLED empty success is the only state that may say this.
+    expect(screen.getByText(/nothing has moved yet/i)).toBeInTheDocument();
     expect(screen.queryByTestId('stock-kits')).not.toBeInTheDocument();
     // Nothing to correct, so nothing offering to.
     expect(screen.queryByRole('button', { name: /adjust/i })).not.toBeInTheDocument();
+  });
+
+  it('dates a movement from the naive-UTC column, not from the platform parser', async () => {
+    // ⚠️ `created_at` carries no `Z`, and `new Date(x)` reads a naive string as
+    // LOCAL time — so the raw parser and the truth disagree by the whole offset
+    // for the hours near midnight, which is where the operator's "did that
+    // happen yesterday?" question always lands. `formatDateOnly` appends the Z.
+    const naive = '2026-09-01T22:30:00';
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({
+      ...stock,
+      movements: [{ ...stock.movements[0], created_at: naive }],
+    });
+
+    render(<ProductStock productId={5} canEdit />);
+
+    const row = await screen.findByTestId('stock-movement-9');
+    const shown = row.querySelector('td')?.textContent ?? '';
+    await waitFor(() => expect(shown).not.toBe(''));
+    // The helper's own answer for that string — zone-independent by
+    // construction — and the proof that it was read as UTC: the naive value and
+    // the same instant spelled with a Z land on the same day.
+    expect(row.querySelector('td')).toHaveTextContent(formatDateOnly(naive, undefined, 'iso'));
+    expect(formatDateOnly(naive, undefined, 'iso')).toBe(formatDateOnly(`${naive}Z`, undefined, 'iso'));
+  });
+
+  it('a failed fetch says so, and never claims the shelf is empty', async () => {
+    // ⚠️ "Nothing on the shelf yet" over a request that never came back tells
+    // the operator their stock is gone. The section's whole job is to say what
+    // is there, so it must be able to say that it does not know.
+    vi.spyOn(api, 'getProductStock').mockRejectedValue(new ApiError('Product not found', 404));
+
+    render(<ProductStock productId={5} canEdit />);
+
+    expect(await screen.findByText(/could not load the stock/i)).toBeInTheDocument();
+    expect(screen.queryByText(/nothing on the shelf/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/nothing has moved yet/i)).not.toBeInTheDocument();
   });
 
   /**
