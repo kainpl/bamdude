@@ -2499,6 +2499,12 @@ export interface AppSettings {
   stagger_interval_minutes: number;
   stagger_wait_for_bed: boolean;
   stagger_strict_for_direct_dispatch: boolean;
+  // Staggered start by group (electrical phases). The id lists are JSON arrays
+  // kept as strings on the wire, like every structured setting here.
+  stagger_split_by_tags: boolean;
+  stagger_group_tag_ids: string;
+  stagger_split_by_location: boolean;
+  stagger_group_location_ids: string;
   // LDAP authentication
   ldap_enabled: boolean;
   ldap_server_url: string;
@@ -3961,6 +3967,19 @@ export interface StaggerSlotInfo {
   state: 'heating' | 'interval_wait';
   seconds_to_free: number;
   interval_seconds: number;
+  /** No picked tag / location — counts in every group, because its phase is unknown. */
+  wildcard: boolean;
+}
+
+export interface StaggerGroup {
+  tag_id: number | null;
+  location_id: number | null;
+  /** "Фаза 1 · Цех 2"; null for the single global group when nothing is split. */
+  label: string | null;
+  occupied: number;
+  free_slots: number;
+  next_free_in_seconds: number | null;
+  slots: StaggerSlotInfo[];
 }
 
 export interface StaggerState {
@@ -3968,9 +3987,8 @@ export interface StaggerState {
   concurrent: number;
   interval_minutes: number;
   wait_for_bed: boolean;
-  slots: StaggerSlotInfo[];
-  free_slots: number;
-  next_free_in_seconds: number | null;
+  split: { by_tags: boolean; by_location: boolean };
+  groups: StaggerGroup[];
 }
 
 export interface PrintQueueItemCreate {

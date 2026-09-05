@@ -58,6 +58,7 @@ import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
 import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPanel';
 import { LabelDevicesSettings } from '../components/settings/LabelDevicesSettings';
+import { StaggerGroupPickers } from '../components/settings/StaggerGroupPickers';
 import { LabelTemplateEditor } from '../components/labels/LabelTemplateEditor';
 import { LabelSheetEditor } from '../components/labels/LabelSheetEditor';
 import { RetentionCard } from '../components/settings/RetentionCard';
@@ -1267,6 +1268,10 @@ export function SettingsPage() {
       (baseline.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
       (baseline.stagger_wait_for_bed ?? true) !== (localSettings.stagger_wait_for_bed ?? true) ||
       (baseline.stagger_strict_for_direct_dispatch ?? false) !== (localSettings.stagger_strict_for_direct_dispatch ?? false) ||
+      (baseline.stagger_split_by_tags ?? false) !== (localSettings.stagger_split_by_tags ?? false) ||
+      (baseline.stagger_group_tag_ids ?? '[]') !== (localSettings.stagger_group_tag_ids ?? '[]') ||
+      (baseline.stagger_split_by_location ?? false) !== (localSettings.stagger_split_by_location ?? false) ||
+      (baseline.stagger_group_location_ids ?? '[]') !== (localSettings.stagger_group_location_ids ?? '[]') ||
       (baseline.preheat_enabled ?? false) !== (localSettings.preheat_enabled ?? false) ||
       (baseline.preheat_filament_targets ?? '') !== (localSettings.preheat_filament_targets ?? '') ||
       (baseline.preheat_max_wait_seconds ?? 900) !== (localSettings.preheat_max_wait_seconds ?? 900) ||
@@ -1365,6 +1370,10 @@ export function SettingsPage() {
         stagger_interval_minutes: localSettings.stagger_interval_minutes,
         stagger_wait_for_bed: localSettings.stagger_wait_for_bed,
         stagger_strict_for_direct_dispatch: localSettings.stagger_strict_for_direct_dispatch,
+        stagger_split_by_tags: localSettings.stagger_split_by_tags,
+        stagger_group_tag_ids: localSettings.stagger_group_tag_ids,
+        stagger_split_by_location: localSettings.stagger_split_by_location,
+        stagger_group_location_ids: localSettings.stagger_group_location_ids,
         preheat_enabled: localSettings.preheat_enabled,
         preheat_filament_targets: localSettings.preheat_filament_targets,
         preheat_max_wait_seconds: localSettings.preheat_max_wait_seconds,
@@ -1425,6 +1434,10 @@ export function SettingsPage() {
     }
     setLocalSettings(prev => prev ? { ...prev, [key]: value } : null);
   }, [hasPermission, showToast, t]);
+
+  // With a split on, the concurrent cap is per group, not farm-wide — so the
+  // field has to say so, or the same number reads as a very different promise.
+  const staggerSplitOn = !!(localSettings?.stagger_split_by_tags || localSettings?.stagger_split_by_location);
 
   const handleTestExternalCamera = async (printerId: number, url: string, cameraType: string) => {
     if (!url) {
@@ -3548,10 +3561,10 @@ export function SettingsPage() {
                     <div className="flex items-center justify-between">
                       <div>
                         <label className="block text-sm text-white">
-                          {t('settings.staggerConcurrent')}
+                          {t(staggerSplitOn ? 'settings.staggerConcurrentPerGroup' : 'settings.staggerConcurrent')}
                         </label>
                         <p className="text-xs text-bambu-gray mt-0.5">
-                          {t('settings.staggerConcurrentDescription')}
+                          {t(staggerSplitOn ? 'settings.staggerConcurrentPerGroupDescription' : 'settings.staggerConcurrentDescription')}
                         </p>
                       </div>
                       <input
@@ -3623,6 +3636,14 @@ export function SettingsPage() {
                         <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
                       </label>
                     </div>
+
+                    <StaggerGroupPickers
+                      byTags={localSettings.stagger_split_by_tags ?? false}
+                      tagIds={localSettings.stagger_group_tag_ids ?? '[]'}
+                      byLocation={localSettings.stagger_split_by_location ?? false}
+                      locationIds={localSettings.stagger_group_location_ids ?? '[]'}
+                      onChange={(key, value) => updateSetting(key, value)}
+                    />
                   </>
                 )}
               </div>

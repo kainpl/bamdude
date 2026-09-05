@@ -1235,7 +1235,9 @@ export default {
       nextFreeIn: 'next free in {{duration}}',
       allFree: 'All slots free',
       heating: 'heating bed',
-      intervalWait: 'grid recovery'
+      intervalWait: 'grid recovery',
+      group: '{{label}}: {{occupied}}/{{capacity}}',
+      wildcard: 'no group, counts everywhere'
     },
     // Print modal
     print: 'Print',
@@ -2528,6 +2530,15 @@ export default {
     staggerWaitForBedDescription: 'Slot frees when bed reaches target temperature (±1°C). When off, slot frees immediately after print starts.',
     staggerStrictForDirect: 'Strict mode for direct dispatch',
     staggerStrictForDirectDescription: 'When enabled, Print Now / Reprint respect the stagger cap and refuse to start if no slot is free. When off (default), direct dispatches bypass the cap but still occupy a slot afterwards.',
+    staggerConcurrentPerGroup: 'Concurrent starts per group',
+    staggerConcurrentPerGroupDescription: 'Max printers heating at the same time within one group — a phase, a room, or both',
+    staggerSplitByTags: 'Split by printer tags',
+    staggerSplitByTagsDescription: 'Each chosen tag is its own cap. Tag every printer with its phase.',
+    staggerSplitByLocation: 'Split by location',
+    staggerSplitByLocationDescription: 'Each chosen location is its own cap; a printer belongs to the nearest chosen place above it.',
+    staggerGroupsPick: 'Groups',
+    staggerGroupsNone: 'Nothing chosen yet — the cap stays farm-wide.',
+    staggerWildcardHint: 'A printer with none of the chosen tags (or no chosen location above it) counts in every group and starts only when all of them have room.',
     // Preheat & heat soak (#1468)
     preheatTitle: 'Preheat & Heat Soak',
     preheatDescription: 'Heat the bed (and chamber, if supported) and hold at temperature before each queued print starts. Helpful for engineering filaments (PA, ABS) on printers without an active chamber heater — the bed warms the chamber by radiation while the soak timer runs. The bed target is read from the print file; chamber behaviour depends on printer model.',
