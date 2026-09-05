@@ -116,11 +116,17 @@ Upstream can send a Telegram message — a notification channel, one way, over t
 - **A reconciliation sweep** compares what BamDude believes is printing against what the printers actually report, so a job that ended in a way nobody saw does not sit there forever claiming to be running.
 - **Two hashes per archive, because the file that prints is not always the file you handed over.** BamDude patches the 3MF on its way to the printer, so an archive records both the original and the bytes actually sent. Deduplication on disk keys off the original — the same plate printed on five printers is stored once — and deleting an archive removes the file only when the last reference to it goes.
 
-### Projects that plan the work, not just group it
+### Projects are orders, and they say what to print next
 
-- **A print plan** — per-file copies with live filament, time and cost totals and per-row printed/remaining counters, applied back to the project's own targets in one click.
-- **Defective parts count against the target.** A project that needs forty usable parts is not finished because forty came off the plates. Scrap is recorded per print and subtracted.
-- **A file or folder can belong to several projects at once** — many-to-many, with per-chip unlink rather than one owner per file.
+A project used to be a folder with a target number written on it. It is an **order** now: who it is for, what it is worth, when it is due — and lines that each say *product × quantity*. What a thing is made of is a property of the **product**, not of the order that happens to want twelve of them.
+
+- **Customers, orders, products — three lists that mean three different things.** A line names a product and a quantity, with a material that filters and a colour that only hints; the order above it carries the customer, the price (and therefore the margin), the priority and the deadline. A product carries its parts — printed ones with how many go into one unit, purchased ones with a price and a link — and its plates, a plate being no more than "this plate of this file makes these parts". The same part sliced once per printer model is two plates of one product, not two products.
+- **"What to print next", per line, recalculated on every read.** BamDude picks plates greedily by the useful parts they yield per hour of printing, until the line's shortfall is covered, and it subtracts what is already committed: prints in progress, everything sitting in both queues, and the kits a line has taken from stock. Nothing is cached, so putting six plates in the queue and asking again offers six fewer.
+- **A line whose parts are sliced for two machines is offered both.** Alternative plates of equal yield come with the row, and the count can be split across them — which is the only way one line's work reaches two printer models, because the auto-queue routes each file to the machines it was sliced for. Work sent from the plan carries the full print profile you saved for that model, macros and all, rather than the writer's own defaults.
+- **A print is filed under its order where it is started, not afterwards.** The print and auto-queue dialogs ask "which order is this for?" and offer the orders that still need this plate first, with how many prints each still wants; the queue writers fill in the line themselves when exactly one line of the named order can accept the plate, and refuse to guess between two. An order is never guessed — one product stands in many orders, and only the person pressing Print knows which.
+- **A product's spare parts have a shelf of their own.** The plate that makes four lids for an order that wanted three leaves a fourth: bank it to the product's free stock, and the next order can take whole kits off the shelf instead of printing them. It is a ledger of movements rather than a stock column — every reservation, release, correction and credit is a row you can read — and a print that belongs to no order lands there by itself. Kits taken from stock count as done everywhere: the line's progress, the plan and the "everything is printed" banner all see them.
+- **Defective parts still count against the target.** An order for forty usable parts is not finished because forty came off the plates. Scrap is recorded per print and subtracted.
+- **A file or folder belongs to the product** — many-to-many, so one shared file can feed several products, and each product then feeds however many orders ask for it.
 
 ### Locations that nest
 
@@ -275,20 +281,22 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - STL / OBJ thumbnail generation — shaded surfaces with Lambertian lighting + transparent background so cards "float" on whatever theme is rendering them
 - Folder structure with drag-and-drop
 - Print directly or add to queue
-- **The same file is never stored twice** — every path a file can arrive by (upload, API, drop, project import, slicer output, Send-to-Printer, and linked NAS folders) checks the content hash first and reuses the library row that already holds those bytes. You are told which file was used instead; a row whose bytes went missing gets them back in place, keeping its name, folder, notes, tags, projects and print history. Restoring from the trash asks before it recreates a duplicate
+- **The same file is never stored twice** — every path a file can arrive by (upload, API, drop, product import, slicer output, Send-to-Printer, and linked NAS folders) checks the content hash first and reuses the library row that already holds those bytes. You are told which file was used instead; a row whose bytes went missing gets them back in place, keeping its name, folder, notes, tags, products and print history. Restoring from the trash asks before it recreates a duplicate
 - Duplicate detection
 - **Trash bin with restore** — soft-delete with configurable retention (default 30 days), background sweeper hard-deletes past the window, opt-in scheduled auto-purge for old library files + archives; trash UIs render thumbnails and a unified split-button (trash + caret dropdown for purge-old)
 
-### Projects
-- Group related prints
-- Track plates and parts
-- **Print plan table**: per-file copies with live filament/time/cost totals + per-row printed/remaining counters
-- **Headline "remaining" totals** on Print Jobs / Print Time / Filament Used cards (green when done, amber when there's work left)
-- **One-click "Apply to project"** in print plan + BOM totals rows — writes plate count, parts count, and budget (filament + materials cost) into the project's target fields; project edit modal also pre-fills from the plan + shows a "From plan: N" hint to re-sync after changes
-- Link folders or individual files from the File Manager — **many-to-many** (a file or folder can belong to several projects at once)
-- Per-chip unlink (`×` on each project chip) for granular detach
-- **Duplicate a project** — copies the print plan, the file and folder links, the BOM, the targets, notes, tags, budget and cover under a new name, and leaves the print history behind. The copy always starts **active**, whatever the original's status, because duplicating one is how new work begins; sub-projects come along if you ask
-- Import/Export as ZIP or JSON
+### Projects — Orders, Products, Customers
+- **Three lists under one section** — orders (what was asked for), products (how it is made), customers (who asked)
+- **Order page** — price and margin in the header, headline figures, lines of *product × quantity* that expand into per-part progress, a purchased-parts checklist, the prints grouped **by the line they belong to**, the queue, a timeline, attachments and notes, and a banner offering to close the order once everything is printed
+- **"What to print next"** under the lines — plates chosen by useful parts per print hour until the shortfall is covered, with live filament / time / cost totals, alternative files per printer model and a split across them, and one-click send of a row, a split or the whole plan to a printer or the auto-queue
+- **Product page** — composition (printed parts with per-unit counts, purchased parts with price and link), plates grouped by file, linked files and folders, free stock, and every order that asks for this product
+- **Free stock of product parts** — a movement ledger with a reason on every row, a bank-the-surplus button on the order, a hand correction with a note, and a per-line "from stock" reservation that every order figure counts as already done
+- **The order is asked for where the print starts** — the print and auto-queue dialogs offer the orders that still need this plate, ranked by how many prints each still wants; the archive editor and the order page can file (and un-file) a print afterwards
+- **Count a past print into stock** — a button in the archive editor for an order-less print whose parts are on the shelf but were never recorded
+- Link folders or individual files from the File Manager to a **product** — **many-to-many** (a file or folder can belong to several products at once), with per-chip unlink
+- **Duplicate an order** — customer, lines, price, tags and notes under a new name, always **active**, leaving the prints, queue items and purchasing progress with the original
+- **Duplicate a product** — composition with its aliases, card, file and folder links
+- **Products import/export as ZIP** — the product, its files and its attachments; a product cannot be deleted while an order line still asks for it
 
 </td>
 <td width="50%" valign="top">
