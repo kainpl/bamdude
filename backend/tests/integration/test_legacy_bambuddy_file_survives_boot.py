@@ -8,7 +8,7 @@ was actively harmful — nothing reads the file any more, yet the boot would sti
 rename a database we no longer understand and throw away its un-checkpointed
 transactions.
 
-It is also what makes the message m000 logs true: it tells the operator the file
+It is also what makes the startup notice true: it tells the operator the file
 is *left untouched*, and that the file is theirs to remove when they are done
 with it. A log line contradicted by the code twenty lines away is worse than no
 log line, so the promise is pinned here rather than trusted.

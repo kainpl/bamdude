@@ -234,9 +234,10 @@ async def run_all_migrations(engine, session_factory) -> None:
     # Run all pending migrations sequentially
     await _run_pending(engine, session_factory)
 
-    # Every boot, not once: see _warn_if_foreign_bambuddy_file.
-    if is_sqlite():
-        await _warn_if_foreign_bambuddy_file(settings.data_dir)
+    # Every boot, not once, and on every engine: the FILE is what matters, and a
+    # PostgreSQL install with a stray bambuddy.db in its data directory deserves
+    # the same sentence (two stat calls). See _warn_if_foreign_bambuddy_file.
+    await _warn_if_foreign_bambuddy_file(settings.data_dir)
 
 
 async def _has_existing_data(engine) -> bool:
