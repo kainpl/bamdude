@@ -1517,6 +1517,17 @@ class PrintScheduler:
             len(self._stagger_slots),
         )
 
+    def _pre_register_stagger_slot(self, printer: Printer, interval_seconds: int) -> None:
+        """Take ``printer``'s stagger slot up front, on the queue dispatch path.
+
+        ``interval_seconds`` is the farm-wide default; the printer's own
+        override beats it when set.
+        """
+        per_printer_iv = (printer.stagger_interval_minutes * 60) if printer.stagger_interval_minutes else 0
+        # The PRINTER's id — the resolver reads slot.printer_id as the identity whose tags and location decide the
+        # group; PrinterQueue.id merely prefers to equal it (ensure_printer_queue has a squatter branch).
+        self._register_stagger_start(printer.id, per_printer_iv or interval_seconds)
+
     async def acquire_stagger_slot(self, printer_id: int) -> None:
         """Block until ``printer_id`` holds a stagger slot.
 
@@ -2751,8 +2762,7 @@ class PrintScheduler:
         # they wait until a slot frees before doing any FTP work.
         stagger_enabled, _stagger_concurrent, stagger_interval, _stagger_wait_bed = await self._get_stagger_settings(db)
         if stagger_enabled:
-            per_printer_iv = (printer.stagger_interval_minutes * 60) if printer.stagger_interval_minutes else 0
-            self._register_stagger_start(item.queue_id, per_printer_iv or stagger_interval)
+            self._pre_register_stagger_slot(printer, stagger_interval)
 
         # Spawn the dispatch + post-dispatch bookkeeping in its own task so
         # multiple queue items targeting different printers run in parallel

@@ -82,16 +82,30 @@ class StaggerSplit:
 
     @classmethod
     async def from_settings(cls, db: AsyncSession) -> StaggerSplit:
-        from backend.app.api.routes.settings import get_setting
+        """The four rows in ONE round-trip.
+
+        This runs on every scheduler tick, so the keys are read with a single
+        ``IN`` query rather than four separate ``get_setting`` calls. A key with
+        no row reads as None — exactly what ``get_setting`` returned for it — so
+        the parsing below is unchanged.
+        """
+        from backend.app.models.settings import Settings
 
         def _bool(value: str | None) -> bool:
             return (value or "false").lower() == "true"
 
+        rows = await db.execute(
+            select(Settings.key, Settings.value).where(
+                Settings.key.in_([SETTING_BY_TAGS, SETTING_TAG_IDS, SETTING_BY_LOCATION, SETTING_LOCATION_IDS])
+            )
+        )
+        values: dict[str, str | None] = dict(rows.all())
+
         return cls(
-            by_tags=_bool(await get_setting(db, SETTING_BY_TAGS)),
-            tag_ids=parse_id_list(await get_setting(db, SETTING_TAG_IDS)),
-            by_location=_bool(await get_setting(db, SETTING_BY_LOCATION)),
-            location_ids=parse_id_list(await get_setting(db, SETTING_LOCATION_IDS)),
+            by_tags=_bool(values.get(SETTING_BY_TAGS)),
+            tag_ids=parse_id_list(values.get(SETTING_TAG_IDS)),
+            by_location=_bool(values.get(SETTING_BY_LOCATION)),
+            location_ids=parse_id_list(values.get(SETTING_LOCATION_IDS)),
         )
 
 

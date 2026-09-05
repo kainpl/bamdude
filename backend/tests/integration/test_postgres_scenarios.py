@@ -236,6 +236,67 @@ class TestFreshInstall:
         assert "ix_hms_muted_entries_printer_id" in indexes, indexes
         assert "uq_hms_muted_printer_code" in constraints, constraints
 
+    def test_the_printer_tag_tables_carry_their_widths_key_and_composite_pk(self, result):
+        """m164's two tables, with the three things only a real server enforces.
+
+        ``name_key`` is deliberately VARCHAR(128) against ``name``'s 64 because
+        ``.lower()`` is not length-preserving in Unicode — SQLite ignores the
+        width entirely, so a narrowed column here would reject a legal tag on
+        PostgreSQL alone. The UNIQUE index is the case-insensitive identity the
+        whole entity exists for, and the link table's composite primary key is
+        what makes pinning the same tag twice a no-op at the storage level.
+        """
+        assert "printer_tags" in result["tables"]
+        assert "printer_tag_links" in result["tables"]
+
+        psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
+        import asyncio
+
+        url = _pg_url()
+
+        async def go() -> tuple[list[str], dict[str, tuple[str, int | None]], list[str], list[str]]:
+            conn = await psycopg.connect(url, timeout=20)
+            try:
+                indexes = await conn.fetch(
+                    "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = $1 AND indexname = $2",
+                    "printer_tags",
+                    "ix_printer_tags_name_key",
+                )
+                columns = await conn.fetch(
+                    "SELECT column_name, data_type, character_maximum_length "
+                    "FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = $1",
+                    "printer_tags",
+                )
+                pk = await conn.fetch(
+                    "SELECT a.attname FROM pg_constraint c "
+                    "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey) "
+                    "WHERE c.conrelid = 'public.printer_tag_links'::regclass AND c.contype = 'p'"
+                )
+                fks = await conn.fetch(
+                    "SELECT confrelid::regclass::text AS target FROM pg_constraint "
+                    "WHERE conrelid = 'public.printer_tag_links'::regclass AND contype = 'f'"
+                )
+                return (
+                    [r["indexdef"] for r in indexes],
+                    {r["column_name"]: (r["data_type"], r["character_maximum_length"]) for r in columns},
+                    sorted(r["attname"] for r in pk),
+                    sorted(r["target"] for r in fks),
+                )
+            finally:
+                await conn.close()
+
+        indexdefs, columns, pk_columns, fk_targets = asyncio.run(go())
+
+        assert indexdefs, "ix_printer_tags_name_key is missing"
+        assert "UNIQUE" in indexdefs[0], indexdefs[0]
+
+        assert columns.get("name_key") == ("character varying", 128), columns.get("name_key")
+        assert columns.get("name") == ("character varying", 64), columns.get("name")
+
+        assert pk_columns == ["printer_id", "tag_id"], pk_columns
+        assert "printers" in fk_targets, fk_targets
+
 
 class TestSqliteMigration:
     """An existing SQLite install must carry its rows across."""

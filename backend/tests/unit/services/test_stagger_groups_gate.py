@@ -90,11 +90,46 @@ class TestWildcard:
             assert scheduler._stagger_reason(True, 1, 1, r) == "Staggered start [Фаза 1]: waiting for P9 to heat up"
 
 
+class TestQueuePreRegister:
+    """The queue path takes its slot before spawning the dispatch task, and the
+    id it takes it under is what every group question later reads."""
+
+    def test_the_slot_is_taken_under_the_printers_id(self, scheduler):
+        printer = SimpleNamespace(id=7, stagger_interval_minutes=0)
+        scheduler._pre_register_stagger_slot(printer, 300)
+        assert [(s.printer_id, s.interval_seconds) for s in scheduler._stagger_slots] == [(7, 300)]
+
+    def test_the_per_printer_interval_beats_the_farm_default(self, scheduler):
+        printer = SimpleNamespace(id=7, stagger_interval_minutes=2)
+        scheduler._pre_register_stagger_slot(printer, 300)
+        assert scheduler._stagger_slots[0].interval_seconds == 120
+
+    def test_the_phase_it_occupies_is_the_printers_own(self, scheduler):
+        """Registered under anything but the printer's id — the queue row's id,
+        say — the slot would be counted against whatever groups THAT id wears.
+        Here an untagged id would be a wildcard and shut every phase; printer 1
+        is on phase 1, so phase 2 must stay open.
+        """
+        r = _phases()
+        scheduler._pre_register_stagger_slot(SimpleNamespace(id=1, stagger_interval_minutes=0), 300)
+        assert scheduler._can_start_staggered(1, 4, r) is False  # phase 1 is P1's, and it is full
+        assert scheduler._can_start_staggered(1, 2, r) is True  # phase 2 was never touched
+
+
 class TestSelfAndGlobal:
     def test_a_printer_never_blocks_itself(self, scheduler):
         r = _phases()
         _gate(scheduler, r, 1, [1])
         assert scheduler._can_start_staggered(1, 1, r) is True  # its own slot, not another's
+
+    def test_the_self_exclusion_holds_on_the_global_resolver_too(self, scheduler):
+        """The queue tick asks about a printer; the legacy call shape asks about
+        the farm. Same one slot, opposite answers — and it must stay that way,
+        or cap 1 refuses the very print that took the slot.
+        """
+        scheduler._register_stagger_start(1, 120)
+        assert scheduler._can_start_staggered(1, 1, StaggerGroupResolver.global_only()) is True
+        assert scheduler._can_start_staggered(1) is False  # no printer named: nobody is excluded
 
     def test_the_global_resolver_is_todays_gate(self, scheduler):
         r = StaggerGroupResolver.global_only()
