@@ -53,6 +53,8 @@
 
 ### Fixed
 
+- **«Drain the emptiest spool first» can now be switched on from Settings → Filament → Filament checks.** The rule was already honoured by the print dialog, the auto-queue and the virtual printer, but nothing in the interface let you turn it on.
+
 - **The saved camera ROI for plate detection is now returned by the printer endpoints** instead of always reading as empty; nothing about detection itself changes.
 
 - **The «not enough filament» warning now knows about AMS Filament Backup.** With backup on, a print whose slot maps to a spool with too little left is no longer flagged when another loaded spool of the same filament and colour covers the rest: the check pools what the print needs and what is left across the whole backup group, and when it does warn it names the group rather than one tray. A tray with no spool registered in the inventory adds nothing to the pool — register the spool if it should count. With backup off, the check behaves exactly as before.

@@ -2295,6 +2295,8 @@ export default {
     },
     disableFilamentWarnings: 'Disable filament warnings',
     disableFilamentWarningsDesc: 'Don\'t show warnings about insufficient filament when printing or queueing',
+    preferLowestFilament: 'Drain the emptiest spool first',
+    preferLowestFilamentDesc: 'When several loaded spools match a print equally (same type and colour), pick the one with the least filament left. Applies wherever BamDude picks the tray itself: the print dialog, the auto-queue and the virtual printer.',
     usageAccuracy: {
       title: 'Usage accuracy',
       zeroPoint: 'Close spools at empty on runout',

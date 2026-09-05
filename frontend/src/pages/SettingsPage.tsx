@@ -1252,6 +1252,7 @@ export function SettingsPage() {
       // ``archive_3mf_retention_days`` pattern above.
       (baseline.log_retention_days ?? 7) !== (localSettings.log_retention_days ?? 7) ||
       baseline.disable_filament_warnings !== localSettings.disable_filament_warnings ||
+      (baseline.prefer_lowest_filament ?? false) !== (localSettings.prefer_lowest_filament ?? false) ||
       (baseline.runout_zero_point_enabled ?? true) !== (localSettings.runout_zero_point_enabled ?? true) ||
       (baseline.ams_sync_bidirectional ?? true) !== (localSettings.ams_sync_bidirectional ?? true) ||
       (baseline.runout_purge_grams ?? 0) !== (localSettings.runout_purge_grams ?? 0) ||
@@ -1354,6 +1355,7 @@ export function SettingsPage() {
         ams_history_retention_days: localSettings.ams_history_retention_days,
         log_retention_days: localSettings.log_retention_days,
         disable_filament_warnings: localSettings.disable_filament_warnings,
+        prefer_lowest_filament: localSettings.prefer_lowest_filament,
         runout_zero_point_enabled: localSettings.runout_zero_point_enabled,
         ams_sync_bidirectional: localSettings.ams_sync_bidirectional,
         runout_purge_grams: localSettings.runout_purge_grams,
@@ -5411,6 +5413,23 @@ export function SettingsPage() {
                       type="checkbox"
                       checked={localSettings.disable_filament_warnings}
                       onChange={(e) => updateSetting('disable_filament_warnings', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-white">{t('settings.preferLowestFilament')}</p>
+                    <p className="text-sm text-bambu-gray">
+                      {t('settings.preferLowestFilamentDesc')}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.prefer_lowest_filament ?? false}
+                      onChange={(e) => updateSetting('prefer_lowest_filament', e.target.checked)}
                       className="sr-only peer"
                     />
                     <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>

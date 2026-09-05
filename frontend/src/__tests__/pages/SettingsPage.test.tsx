@@ -498,4 +498,78 @@ describe('SettingsPage', () => {
     });
   });
 
+  describe('Filament checks — prefer_lowest_filament', () => {
+    /**
+     * The rule was honoured by the print dialog, the auto-queue and the
+     * virtual printer long before anything on screen could turn it on. What
+     * this pins is the wiring, not the rule: the toggle has to reach the PUT
+     * body, which means both hand-written lists in SettingsPage (the
+     * hasChanges comparison and the save payload) carry the key. The drift
+     * guard next door proves the two lists agree with each other; only an
+     * actual save proves they agree with the server.
+     */
+    const LABEL = 'Drain the emptiest spool first';
+
+    /** Click the Filament tab and wait for the Filament checks card. */
+    const switchToFilamentTab = async (user: ReturnType<typeof userEvent.setup>) => {
+      await waitFor(() => {
+        expect(screen.getAllByText('Filament').length).toBeGreaterThan(0);
+      });
+      await user.click(screen.getAllByText('Filament')[0]);
+      await screen.findByText(LABEL);
+    };
+
+    /** The checkbox that sits in the same row as a given label. */
+    const toggleFor = (label: string): HTMLInputElement => {
+      const row = screen.getByText(label).closest('.flex.items-center.justify-between');
+      expect(row, `no toggle row around "${label}"`).not.toBeNull();
+      const input = row!.querySelector('input[type="checkbox"]');
+      expect(input, `no checkbox in the "${label}" row`).not.toBeNull();
+      return input as HTMLInputElement;
+    };
+
+    it('renders the toggle off when the server has never set it', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+      await switchToFilamentTab(user);
+
+      // mockSettings omits the key entirely — the `?? false` fallback is what
+      // keeps an old server's response from rendering an indeterminate box.
+      expect(toggleFor(LABEL)).not.toBeChecked();
+    });
+
+    it('sends prefer_lowest_filament: true once switched on', async () => {
+      let receivedBody: Record<string, unknown> | null = null;
+      server.use(
+        // The page saves with PUT; the shared beforeEach only mocks PATCH, so
+        // without this handler the save would fall through to the catch-all.
+        http.put('/api/v1/settings/', async ({ request }) => {
+          receivedBody = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ ...mockSettings, ...receivedBody });
+        })
+      );
+
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+      await switchToFilamentTab(user);
+
+      const toggle = toggleFor(LABEL);
+      await user.click(toggle);
+
+      // Assert the local flip first: if the click were swallowed (missing
+      // settings:update, say) the PUT wait below would time out with nothing
+      // to say about why.
+      await waitFor(() => expect(toggleFor(LABEL)).toBeChecked());
+
+      // The save is debounced by 500ms.
+      await waitFor(
+        () => {
+          expect(receivedBody).not.toBeNull();
+          expect(receivedBody!.prefer_lowest_filament).toBe(true);
+        },
+        { timeout: 5000 }
+      );
+    });
+  });
+
 });
