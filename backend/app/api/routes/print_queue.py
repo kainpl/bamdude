@@ -11,7 +11,7 @@ from threading import Lock
 
 import defusedxml.ElementTree as ET
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -217,6 +217,13 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "created_by_username": item.created_by.username if item.created_by else None,
     }
     response = PrintQueueItemResponse(**item_dict)
+    # ⚠️ Only when the relationship is already loaded. This runs in async
+    # request handlers, where touching an unloaded relationship is not a lazy
+    # query but a MissingGreenlet — and not every caller eager-loads the order.
+    # An endpoint that did not load it answers ``project_name=None``; the ones
+    # the copy-queue dialog reads from do load it.
+    if item.project_id is not None and "project" not in sa_inspect(item).unloaded:
+        response.project_name = item.project.name if item.project else None
     if item.archive:
         # Soft-deleted (trashed) archive: the row survives but its files are
         # gone from disk. Suppress the archive-derived surface so we never
@@ -320,6 +327,7 @@ async def list_queue(
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .order_by(PrintQueueItem.queue_id, PrintQueueItem.position)
     )
@@ -386,6 +394,7 @@ async def add_to_queue(
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == item.id)
     )
@@ -521,6 +530,7 @@ async def get_queue_item(
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == item_id)
     )
@@ -634,6 +644,7 @@ async def update_queue_item(
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == item_id)
     )
@@ -932,6 +943,7 @@ async def start_queue_item(
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == item_id)
     )
@@ -1059,6 +1071,7 @@ async def clone_item_endpoint(
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == first.id)
     )
@@ -1220,6 +1233,7 @@ async def retry_failed_item(
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == item_id)
     )

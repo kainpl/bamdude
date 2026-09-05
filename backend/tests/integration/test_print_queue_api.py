@@ -2108,3 +2108,34 @@ async def test_the_batch_writer_files_the_line_too(db_session):
         .all()
     )
     assert {row.project_line_id for row in rows} == {lines[1].id}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_queue_row_says_which_order_it_is_filed_under(async_client: AsyncClient, db_session):
+    """``project_name`` rides on the row so the copy-queue dialog can show where
+    a copy will land without a second request — and stays None under no order."""
+    _printer, queue = await _create_printer_with_queue(
+        db_session, name="Named", ip_address="192.168.9.3", serial_number="NAMED00001", access_code="12345678"
+    )
+    lib_file, order, _lines = await _order_catalog(db_session, materials=["PETG"])
+
+    filed = await async_client.post(
+        "/api/v1/queue/",
+        json={"queue_id": queue.id, "library_file_id": lib_file.id, "project_id": order.id, "plate_id": 1},
+    )
+    assert filed.status_code == 200, filed.text
+    assert filed.json()["project_name"] == "O"
+
+    unfiled = await async_client.post(
+        "/api/v1/queue/",
+        json={"queue_id": queue.id, "library_file_id": lib_file.id, "plate_id": 1},
+    )
+    assert unfiled.status_code == 200, unfiled.text
+    assert unfiled.json()["project_name"] is None
+
+    listed = await async_client.get(f"/api/v1/queue/?queue_id={queue.id}")
+    assert listed.status_code == 200, listed.text
+    by_id = {row["id"]: row for row in listed.json()}
+    assert by_id[filed.json()["id"]]["project_name"] == "O"
+    assert by_id[unfiled.json()["id"]]["project_name"] is None

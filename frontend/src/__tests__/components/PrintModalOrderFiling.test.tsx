@@ -812,3 +812,28 @@ describe('PrintModal — the order this print is filed under', () => {
     });
   });
 });
+
+describe('an answer given by the caller', () => {
+  it('does not ask when the caller already answered "no order" — a copied queue item', async () => {
+    const seen: number[] = [];
+    serveCandidates({ 0: [candidate()] }, seen);
+    const add = vi.spyOn(api, 'addToQueue').mockResolvedValue({ id: 1 } as never);
+    const user = userEvent.setup();
+
+    render(
+      <PrintModal mode="add-to-queue" libraryFileId={5} archiveName="lamp.gcode.3mf" orderAnswered onClose={() => {}} />,
+    );
+
+    await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+    expect(screen.queryByLabelText('Order')).not.toBeInTheDocument();
+
+    await user.click(screen.getByText('X1 Carbon'));
+    await user.click(screen.getByRole('button', { name: /^add to queue$/i }));
+
+    await waitFor(() => expect(add).toHaveBeenCalled());
+    // Filed under nothing — and the candidates were never even fetched, so the
+    // dialog had no proposal to slip in.
+    expect(add.mock.calls[0][0]).toMatchObject({ project_id: undefined, project_line_id: null });
+    expect(seen).toEqual([]);
+  });
+});

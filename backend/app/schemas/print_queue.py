@@ -102,6 +102,10 @@ class PrintQueueItemResponse(BaseModel):
     printer_id: int | None = None  # Convenience - resolved from queue
     project_id: int | None = None  # Linked project (the order this print is for)
     project_line_id: int | None = None  # Which line of that order
+    # The order's name, for surfaces that show where a row is filed without
+    # another round trip (the copy-queue dialog). None when the row is filed
+    # under no order — or when the endpoint did not load the relationship.
+    project_name: str | None = None
     waiting_reason: str | None = None
     archive_id: int | None
     library_file_id: int | None

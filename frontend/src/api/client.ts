@@ -3894,6 +3894,9 @@ export interface PrintQueueItem {
    *  dispatcher → archive; NULL means the job is bound to the order but to no
    *  line of it. */
   project_line_id?: number | null;
+  /** The order's name, so a surface can say where the row is filed without a
+   *  second request (the copy-queue dialog). Null under no order. */
+  project_name?: string | null;
   waiting_reason: string | null;
   archive_id: number | null;
   library_file_id: number | null;

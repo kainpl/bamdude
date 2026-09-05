@@ -153,7 +153,7 @@ export function CopyQueueModal({ source, items, droppedCount = 0, onCancel, onCo
               {items.length === 0 ? (
                 <p className="text-sm text-bambu-gray italic p-4 text-center">{t('copyQueue.nothingToCopy')}</p>
               ) : (
-                items.map(({ file, printing, printTimeSeconds, filamentGrams, thumbnailUrl }, index) => {
+                items.map(({ file, printing, orderName, printTimeSeconds, filamentGrams, thumbnailUrl }, index) => {
                   const checked = pickedItems.has(index);
                   return (
                     <button
@@ -185,6 +185,9 @@ export function CopyQueueModal({ source, items, droppedCount = 0, onCancel, onCo
                           {[
                             printing ? t('copyQueue.printingNow') : null,
                             file.plateId != null ? t('copyQueue.plate', { n: file.plateId }) : null,
+                            // The copy files under this order without asking —
+                            // so it is said here, where the item can still be unticked.
+                            orderName ? t('copyQueue.forOrder', { name: orderName }) : null,
                             printTimeSeconds ? formatDuration(printTimeSeconds) : null,
                             filamentGrams ? `${Math.round(filamentGrams)} g` : null,
                           ]

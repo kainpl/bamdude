@@ -4240,6 +4240,7 @@ export default {
     clear: 'Зняти все',
     printingNow: 'друкується зараз',
     plate: 'Плита {{n}}',
+    forOrder: 'Замовлення: {{name}}',
     pending_one: '{{count}} у черзі',
     pending_few: '{{count}} у черзі',
     pending_many: '{{count}} у черзі',

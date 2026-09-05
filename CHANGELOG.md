@@ -54,6 +54,7 @@
 
 ### Fixed
 
+- **A copied queue no longer re-asks which order each item is for.** Copying a queue onto other printers ran every item through the Schedule dialog, which asked about the order again although the source row already carried the answer — and, since the question is asked once per group, every item after the first took the dialog's own proposal and could land under a different order than its original. A copy now files where its source was filed, including under no order at all, and the copy dialog says which order each item will land under next to its plate.
 - **«Drain the emptiest spool first» can now be switched on from Settings → Filament → Filament checks.** The rule was already honoured by the print dialog, the auto-queue and the virtual printer, but nothing in the interface let you turn it on.
 
 - **The saved camera ROI for plate detection is now returned by the printer endpoints** instead of always reading as empty; nothing about detection itself changes.

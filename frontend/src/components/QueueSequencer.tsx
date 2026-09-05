@@ -34,6 +34,13 @@ export interface SequencedFile {
   /** The batch this item belonged to in the SOURCE queue, so the block the
    *  operator built there can be re-formed on the target. */
   batchId?: string | null;
+  /** The order the SOURCE row was filed under — present only for a copy, where
+   *  the question was already answered. ⚠️ Present-with-nulls is an answer too
+   *  ("no order"), and must not be asked again: a copy that re-asked got the
+   *  dialog's proposal — the first order still short of this plate — and landed
+   *  under a different order than its original. Absent means nobody answered
+   *  (a bulk selection), and the dialog asks as usual. */
+  orderFiling?: { projectId: number | null; projectLineId: number | null };
 }
 
 interface QueueSequencerProps {
@@ -398,6 +405,12 @@ export function QueueSequencer({
       preselectedPlateId={member.plateIds ? undefined : member.file.plateId}
       preselectedPlateIds={member.plateIds ?? undefined}
       archiveName={member.file.name}
+      // A copy files where its source row was filed — including "nowhere".
+      // Per MEMBER, not per group: the order is not part of the carried
+      // answer, so two copies from two orders in one group each keep their own.
+      projectId={member.file.orderFiling?.projectId ?? undefined}
+      projectLineId={member.file.orderFiling?.projectLineId ?? undefined}
+      orderAnswered={member.file.orderFiling !== undefined}
       initialSelectedPrinterIds={initialSelectedPrinterIds}
       initialDispatchMode={initialDispatchMode}
       lockDispatchMode={lockDispatchMode}

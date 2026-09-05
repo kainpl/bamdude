@@ -63,11 +63,14 @@ const FIVE_PLATE: LibraryGroupingMetadata = {
 
 let posts: number;
 let postedPlates: (number | null | undefined)[];
+/** `[project_id, project_line_id]` of every row posted, in order. */
+let postedOrders: [number | null | undefined, number | null | undefined][];
 let batched: number[][];
 
 beforeEach(() => {
   posts = 0;
   postedPlates = [];
+  postedOrders = [];
   batched = [];
   server.use(
     http.get('/api/v1/library/grouping-metadata', () => HttpResponse.json([FIVE_PLATE])),
@@ -105,9 +108,15 @@ beforeEach(() => {
       HttpResponse.json({ filaments: [{ slot_id: 1, type: 'PETG', color: '#FF0000', used_grams: 10 }] }),
     ),
     http.post('/api/v1/queue/', async ({ request }) => {
-      const body = (await request.json()) as { plate_id?: number | null; quantity?: number };
+      const body = (await request.json()) as {
+        plate_id?: number | null;
+        quantity?: number;
+        project_id?: number | null;
+        project_line_id?: number | null;
+      };
       const made = Array.from({ length: body.quantity ?? 1 }, () => (posts += 1));
       postedPlates.push(body.plate_id);
+      postedOrders.push([body.project_id, body.project_line_id]);
       return HttpResponse.json({ id: made[0], status: 'pending', created_item_ids: made });
     }),
     http.post('/api/v1/queue/batch', async ({ request }) => {
@@ -142,8 +151,13 @@ async function queueTheOpenDialog() {
 }
 
 /** What `copyableItems` produces for one queue item. */
-function copied(itemId: number, plateId: number | null, batchId?: string): SequencedFile {
-  return { id: 1, name: 'badges', source: 'library', plateId, itemId, batchId };
+function copied(
+  itemId: number,
+  plateId: number | null,
+  batchId?: string,
+  orderFiling?: SequencedFile['orderFiling'],
+): SequencedFile {
+  return { id: 1, name: 'badges', source: 'library', plateId, itemId, batchId, orderFiling };
 }
 
 describe('copying a queue', () => {
@@ -300,5 +314,49 @@ describe('the blocks the source queue had', () => {
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
     expect(posts).toBe(2);
+  });
+});
+
+describe('the order a copy inherits', () => {
+  it('⚠️ each copy files where ITS source row was filed — per member, not per group', async () => {
+    // Two rows of the same file and plate, filed under two different orders,
+    // share one dialog (one answer for printer, schedule, options) — but the
+    // order is not part of that answer. Before the fix the silent second copy
+    // took the dialog's own proposal and landed under whatever order was
+    // short of this plate.
+    const onDone = vi.fn();
+    render(
+      <CopyRun
+        files={[
+          copied(101, 3, undefined, { projectId: 4, projectLineId: 9 }),
+          copied(102, 3, undefined, { projectId: 5, projectLineId: null }),
+        ]}
+        onDone={onDone}
+      />,
+    );
+
+    await screen.findByText('badges');
+    expect(screen.queryByLabelText('Order')).not.toBeInTheDocument();
+    await queueTheOpenDialog();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(postedOrders).toEqual([
+      [4, 9],
+      [5, null],
+    ]);
+  });
+
+  it('a row filed under NO order stays under no order — "none" is an answer, not a blank', async () => {
+    const onDone = vi.fn();
+    render(<CopyRun files={[copied(101, 3, undefined, { projectId: null, projectLineId: null })]} onDone={onDone} />);
+
+    await screen.findByText('badges');
+    expect(screen.queryByLabelText('Order')).not.toBeInTheDocument();
+    await queueTheOpenDialog();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    // `project_id` is omitted from the payload (undefined does not serialise);
+    // the line is explicitly none.
+    expect(postedOrders).toEqual([[undefined, null]]);
   });
 });

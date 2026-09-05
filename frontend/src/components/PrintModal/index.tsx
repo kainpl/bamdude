@@ -92,6 +92,7 @@ export function PrintModal({
   onSuccess,
   projectId,
   projectLineId,
+  orderAnswered,
   cleanupLibraryAfterDispatch,
   initialDispatchMode,
   lockDispatchMode,
@@ -869,8 +870,11 @@ export function PrintModal({
   // trip whose only visible effect is a submit button disabled while it happens
   // and a field that never appears. A viewer who may print but not read orders
   // gets exactly the dialog they had before this feature existed.
+  // ⚠️ `orderAnswered` covers the answer "no order" too — a copied queue item
+  // whose source was never filed must not be re-asked and handed a proposal.
   const asksAboutOrder =
     isLibraryFile &&
+    !orderAnswered &&
     projectId == null &&
     projectLineId == null &&
     hasPermission('projects:read') &&

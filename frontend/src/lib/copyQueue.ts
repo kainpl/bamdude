@@ -7,6 +7,10 @@ export interface CopyableItem {
   file: SequencedFile;
   /** This is the print running right now — worth saying, and it sorts first. */
   printing: boolean;
+  /** The order the copy will be filed under, shown in the row so the operator
+   *  sees it BEFORE anything queues — the dialog will not ask again. Null for
+   *  a row filed under no order, and for the live print, which has no row. */
+  orderName?: string | null;
   printTimeSeconds: number | null;
   filamentGrams: number | null;
   thumbnailUrl: string | null;
@@ -44,7 +48,11 @@ export function copyableItems(items: readonly PrintQueueItem[]): CopyableItem[] 
           // tells the run the plate is already decided.
           itemId: item.id,
           batchId: item.batch_id,
+          // The order the source row was filed under — "none" included. Always
+          // set for a queue row: the question WAS answered when it was queued.
+          orderFiling: { projectId: item.project_id ?? null, projectLineId: item.project_line_id ?? null },
         },
+        orderName: item.project_name,
         printing: item.status === 'printing',
         printTimeSeconds: item.print_time_seconds ?? null,
         filamentGrams: item.filament_used_grams ?? null,

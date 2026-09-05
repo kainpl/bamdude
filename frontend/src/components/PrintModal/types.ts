@@ -171,6 +171,12 @@ export interface PrintModalProps {
    *  means "bound to the order, to no line of it", which is what the order
    *  page shows as its other prints. */
   projectLineId?: number | null;
+  /** The caller has already answered the order question — with ``projectId`` /
+   *  ``projectLineId``, or with neither, which is the answer "no order". Hides
+   *  the Order field either way. A copied queue item passes this: its source
+   *  row already carries the answer, and re-asking handed the dialog's own
+   *  proposal to every member that submits silently. */
+  orderAnswered?: boolean;
   /** Delete the LibraryFile after dispatch — used by the Printers-page Direct-Print flow
    *  so transient uploads don't linger in File Manager. Only applies to library-file prints. */
   cleanupLibraryAfterDispatch?: boolean;

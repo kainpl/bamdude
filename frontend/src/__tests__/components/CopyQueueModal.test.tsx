@@ -29,6 +29,9 @@ const item = (over: Partial<PrintQueueItem> = {}): PrintQueueItem =>
     archive_name: null,
     archive_thumbnail: null,
     plate_id: null,
+    project_id: null,
+    project_line_id: null,
+    project_name: null,
     position: 1,
     status: 'pending',
     ...over,
@@ -214,6 +217,9 @@ describe('the dialog', () => {
           // file apart and let the source queue's blocks be re-formed.
           itemId: 1,
           batchId: undefined,
+          // Answered "no order" when it was queued — carried, so the dialog
+          // does not ask again.
+          orderFiling: { projectId: null, projectLineId: null },
         },
       ],
       [2],
@@ -239,5 +245,25 @@ describe('the dialog', () => {
     renderModal([item({ id: 1 })], 1);
 
     expect(await screen.findByText(/1 item is not backed by a file/i)).toBeInTheDocument();
+  });
+});
+
+describe('the order a copy inherits', () => {
+  it('carries the order the row was filed under — and "none" as an answer, not an absence', () => {
+    const [filed] = copyableItems([item({ project_id: 4, project_line_id: 9, project_name: 'Lamps' })]);
+    expect(filed.file.orderFiling).toEqual({ projectId: 4, projectLineId: 9 });
+    expect(filed.orderName).toBe('Lamps');
+
+    const [unfiled] = copyableItems([item({ project_id: null, project_line_id: null, project_name: null })]);
+    // Present with nulls: the question was answered when the row was queued,
+    // and the dialog must not ask it again.
+    expect(unfiled.file.orderFiling).toEqual({ projectId: null, projectLineId: null });
+    expect(unfiled.orderName).toBeNull();
+  });
+
+  it('says in the row which order the copy will land under', () => {
+    renderModal([item({ id: 1, project_id: 4, project_line_id: 9, project_name: 'Lamps' }), item({ id: 2 })]);
+    // Only the filed row says so; an unfiled row has nothing to announce.
+    expect(screen.getAllByText(/Order: Lamps/)).toHaveLength(1);
   });
 });
