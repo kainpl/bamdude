@@ -110,6 +110,14 @@ async def test_running_observed_skips_when_baseline_already_present():
         # about the TIMELAPSE half — under xdist, a neighbouring test can
         # leave printer 1 registered and flip that branch on.
         patch("backend.app.main.printer_manager.get_status", return_value=None),
+        # d93977c8: a print already under way claims its queue row, and finding
+        # its archive is a DB read that also runs before the baseline
+        # early-return. Pin it to "no live archive" so no claim is attempted
+        # and this test stays about the TIMELAPSE half.
+        patch(
+            "backend.app.main._live_archive_for_running_print",
+            new=AsyncMock(return_value=(None, None)),
+        ),
     ):
         from backend.app.main import on_print_running_observed
 
@@ -124,7 +132,7 @@ async def test_running_observed_skips_when_baseline_already_present():
             },
         )
 
-        # Neither the DB lookup nor the FTP scan should have run.
+        # Neither the timelapse DB lookup nor the FTP scan should have run.
         mock_session_maker.assert_not_called()
         mock_list.assert_not_called()
 
