@@ -207,6 +207,35 @@ async def answer_by_repeating(db: AsyncSession, printer_id: int) -> PrintQueueIt
     return row
 
 
+async def has_waiting_row(db: AsyncSession, printer_id: int) -> bool:
+    """Whether Repeat has anything to re-arm — the card's question, asked
+    before it draws the button.
+
+    The gate alone is not the answer: it arms whenever ``require_plate_clear``
+    says so, row or no row — a print on a queue-less printer, one already
+    running when BamDude came up, or one whose completion handler is still busy
+    fetching the 3MF — and Repeat then answered ``409`` to a button the card had
+    itself put on screen (2026-09-04). Clear plate has no such question: it is
+    silent when nothing waits.
+    """
+    return await waiting_row(db, printer_id) is not None
+
+
+async def repeat_available(printer_id: int) -> bool:
+    """``has_waiting_row`` for callers without a session — the WebSocket
+    status broadcasts and the Telegram keyboards. Cheap when the gate is not
+    armed (no query at all), which is nearly always."""
+    from backend.app.core.database import async_session
+    from backend.app.services.printer_manager import printer_manager
+
+    # ``is True``, not truthiness: a test that hands the callbacks a MagicMock
+    # manager must not send this to the developer's real database.
+    if printer_manager.is_awaiting_plate_clear(printer_id) is not True:
+        return False
+    async with async_session() as db:
+        return await has_waiting_row(db, printer_id)
+
+
 async def waiting_row(db: AsyncSession, printer_id: int) -> PrintQueueItem | None:
     """The finished row this printer is waiting to be asked about, if any.
 

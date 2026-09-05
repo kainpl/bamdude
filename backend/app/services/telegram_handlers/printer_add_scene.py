@@ -212,6 +212,15 @@ async def cb_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: Telegr
             db.add(printer)
             await db.commit()
 
+            # Every printer has a queue, under its own id. This path never
+            # created one, so a printer added from the bot had no claim for
+            # its prints, nothing for the completion to close and nothing for
+            # Repeat to re-arm (2026-09-04).
+            from backend.app.services.printer_queues import ensure_printer_queue
+
+            await ensure_printer_queue(db, printer.id)
+            await db.commit()
+
             # Connect
             from backend.app.services.printer_manager import printer_manager
 

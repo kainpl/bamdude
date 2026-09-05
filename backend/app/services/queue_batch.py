@@ -99,9 +99,9 @@ async def claim_printer_for_direct_print(
     dispatched a second time. ``position=0`` keeps it out of the pending
     ordering, which is computed over pending rows only.
 
-    Returns ``None`` when the printer has no queue row — the caller carries on
-    and dispatches unclaimed, exactly as before this existed. A missing queue is
-    a broken install, not a reason to refuse somebody's print.
+    A printer without a queue row gets one here (``services/printer_queues``)
+    rather than dispatching unclaimed: an unclaimed print is one the completion
+    cannot close and Repeat cannot re-arm (2026-09-04).
 
     ⚠️ ``origin`` is REQUIRED and has no default, because this one helper builds
     the claim for two different things: ``"direct"`` for the Print dialog and
@@ -113,10 +113,9 @@ async def claim_printer_for_direct_print(
 
     The caller owns the release: see ``background_dispatch``.
     """
-    result = await db.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer_id))
-    queue = result.scalar_one_or_none()
-    if not queue:
-        return None
+    from backend.app.services.printer_queues import ensure_printer_queue
+
+    queue = await ensure_printer_queue(db, printer_id)
 
     # The order named without its line — file the line when this plate points at
     # exactly one (spec pass 7, Decision 4a), the same rule and the same helper

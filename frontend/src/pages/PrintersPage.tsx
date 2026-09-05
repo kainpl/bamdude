@@ -2140,6 +2140,10 @@ function PrinterCard({
   // being online and not mid-print.
   const calibrationAvailable = isConnected === true && !isPrintingOrPaused;
   const needsPlateClear = requirePlateClear && status?.awaiting_plate_clear === true;
+  // Repeat needs a finished queue row to re-arm, and the gate can be armed
+  // over nothing — then the button only ever answered "nothing is waiting".
+  // An older backend does not send the field; then the button stays as before.
+  const repeatAvailable = status?.repeat_available !== false;
   // Share the same queue query PrinterQueueWidget already uses — react-query
   // dedupes, zero extra network. We only need to know whether the widget will
   // be rendering its green "Clear & Start Next" CTA so we can hide our yellow
@@ -3759,7 +3763,7 @@ function PrinterCard({
                       <p className="min-w-0 truncate text-xs text-bambu-gray">{getStatusDisplay(status.state, status.stg_cur_name)}</p>
                       {plateStatusPill}
                     </div>
-                    {showClearPlateButton && (
+                    {showClearPlateButton && repeatAvailable && (
                       <button
                         type="button"
                         onClick={() => repeatPrintMutation.mutate()}
@@ -3948,7 +3952,7 @@ function PrinterCard({
                 </div>
 
                 {/* Queue Widget - always visible when there are pending items */}
-                <PrinterQueueWidget printerId={printer.id} printerModel={printer.model} printerState={status.state} awaitingPlateClear={status.awaiting_plate_clear} requirePlateClear={printer.require_plate_clear} />
+                <PrinterQueueWidget printerId={printer.id} printerModel={printer.model} printerState={status.state} awaitingPlateClear={status.awaiting_plate_clear} repeatAvailable={repeatAvailable} requirePlateClear={printer.require_plate_clear} />
               </>
             )}
 
@@ -4087,20 +4091,22 @@ function PrinterCard({
                 rather than each button — on both it doubles the gap. */}
             {viewMode === 'expanded' && showClearPlateButton && (
               <div className="mt-2 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => repeatPrintMutation.mutate()}
-                  disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
-                  className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-400/40 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs font-medium disabled:opacity-50"
-                  title={!hasPermission('printers:clear_plate') ? t('printers.permission.noControl') : t('queue.repeatPrint')}
-                >
-                  {repeatPrintMutation.isPending ? (
-                    <Loader2 className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] animate-spin" />
-                  ) : (
-                    <RotateCcw className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                  )}
-                  {t('queue.repeatPrint')}
-                </button>
+                {repeatAvailable && (
+                  <button
+                    type="button"
+                    onClick={() => repeatPrintMutation.mutate()}
+                    disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
+                    className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-400/40 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs font-medium disabled:opacity-50"
+                    title={!hasPermission('printers:clear_plate') ? t('printers.permission.noControl') : t('queue.repeatPrint')}
+                  >
+                    {repeatPrintMutation.isPending ? (
+                      <Loader2 className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] animate-spin" />
+                    ) : (
+                      <RotateCcw className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                    )}
+                    {t('queue.repeatPrint')}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => clearPlateMutation.mutate()}
@@ -6655,6 +6661,7 @@ function PrinterCard({
         <HMSErrorModal
           printerName={printer.name}
           errors={status?.hms_errors || []}
+          mutedErrors={status?.hms_muted || []}
           onClose={() => setShowHMSModal(false)}
           printerId={printer.id}
           serialNumber={printer.serial_number}

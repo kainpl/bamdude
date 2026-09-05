@@ -824,15 +824,16 @@ async def _record_print_energy(archive_id: int, printer_id: int, *, approximate:
 
 
 async def _default_queue_id_for_printer(db, printer_id: int) -> int | None:
-    """Resolve a printer's single PrinterQueue row → its id, or None.
+    """Resolve a printer's single PrinterQueue row → its id, creating the row
+    when the printer has none (see ``services/printer_queues``).
 
     External / direct-dispatch archives use this to fill ``archive.queue_id``
     so the post-m019 archive-driven counters in ``GET /printer-queues/``
     include them under the printer's default queue.
     """
-    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.printer_queues import ensure_printer_queue
 
-    return (await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalar_one_or_none()
+    return (await ensure_printer_queue(db, printer_id)).id
 
 
 async def _energy_plug_for_printer(printer_id: int, db) -> SmartPlug | None:
@@ -1122,15 +1123,16 @@ async def mark_queue_printing_for_printer(
     not report back; they keep their defaults rather than a guess.
     """
     from backend.app.models.print_queue import PrintQueueItem
-    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.printer_queues import ensure_printer_queue
     from backend.app.services.queue_batch import claim_printer_for_direct_print
     from backend.app.services.queue_counters import set_queue_printing
 
     async with async_session() as db:
-        result = await db.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer_id))
-        queue = result.scalar_one_or_none()
-        if queue is None:
-            return
+        # ⚠️ Created when missing, never skipped. Returning here for a printer
+        # without a queue row left its print with no claim, its completion with
+        # nothing to close, and its plate gate armed over nothing — "Repeat" on
+        # the card, 409 from the route (2026-09-04).
+        queue = await ensure_printer_queue(db, printer_id)
 
         if item_id is None:
             existing = (
@@ -2011,9 +2013,25 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     await ws_manager.send_printer_status(
         printer_id,
         printer_state_to_dict(
-            state, printer_id, printer_manager.get_model(printer_id), printer_manager.get_drying_targets(printer_id)
+            state,
+            printer_id,
+            printer_manager.get_model(printer_id),
+            printer_manager.get_drying_targets(printer_id),
+            repeat_available=await _repeat_available_for(printer_id),
         ),
     )
+
+
+async def _repeat_available_for(printer_id: int) -> bool:
+    """``plate_hold.repeat_available`` for the status broadcasts — never a
+    reason for a broadcast to fail. Cheap: no query unless the gate is armed."""
+    try:
+        from backend.app.services.plate_hold import repeat_available
+
+        return await repeat_available(printer_id)
+    except Exception as e:  # noqa: BLE001 — a status push must go out regardless
+        logging.getLogger(__name__).debug("repeat_available lookup failed for printer %s: %s", printer_id, e)
+        return False
 
 
 def _is_bambu_uuid(tray_uuid: str) -> bool:
@@ -2103,6 +2121,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                     printer_id,
                     printer_manager.get_model(printer_id),
                     printer_manager.get_drying_targets(printer_id),
+                    repeat_available=await _repeat_available_for(printer_id),
                 ),
             )
     except Exception as e:
@@ -3338,7 +3357,7 @@ async def _close_stale_printing_rows(
         )
 
 
-async def _discard_provisional_archive(db, archive, logger) -> None:
+async def _discard_provisional_archive(db, archive, logger, *, adopted_archive_id: int | None = None) -> None:
     """Drop the print-start row after a later branch adopted an existing archive.
 
     ``on_print_start`` creates its row before downloading the 3MF, but two
@@ -3358,6 +3377,26 @@ async def _discard_provisional_archive(db, archive, logger) -> None:
     stale_id = archive.id
     for key in [k for k, v in _active_prints.items() if v == stale_id]:
         _active_prints.pop(key, None)
+    # ⚠️ The queue row claimed at start points at THIS archive, and
+    # ``mark_queue_printing_for_printer`` fills only an empty ``archive_id`` when
+    # it adopts the row for the adopted archive — so without this the row kept
+    # a dangling id, its completion held it, and Repeat refused it as "no file
+    # to send again" (2026-09-04). The row follows the archive that survives.
+    if adopted_archive_id is not None:
+        from sqlalchemy import update as _sql_update
+
+        from backend.app.models.print_queue import PrintQueueItem as _PQI
+
+        moved = await db.execute(
+            _sql_update(_PQI).where(_PQI.archive_id == stale_id).values(archive_id=adopted_archive_id)
+        )
+        if moved.rowcount:
+            logger.info(
+                "Re-pointed %d queue row(s) from discarded archive %s to adopted archive %s",
+                moved.rowcount,
+                stale_id,
+                adopted_archive_id,
+            )
     await db.delete(archive)
     await db.commit()
     logger.info("Discarded print-start archive %s — an existing archive was adopted instead", stale_id)
@@ -3373,6 +3412,25 @@ async def on_print_start(printer_id: int, data: dict):
 
     # Clear any stale user-stopped flag from previous print cycles
     _user_stopped_printers.discard(printer_id)
+
+    # A print starting on this bed answers the previous print's question: the
+    # part is off, or the operator decided it is. Left standing, the gate from
+    # the previous FINISH put Clear and Repeat on screen the instant this one
+    # ends — while the completion handler is still fetching the 3MF and tidying
+    # the card, minutes on a P1S — and Repeat, finding no completed row yet,
+    # answered 409 to the card's own button (2026-09-04). The held row goes the
+    # way Clear plate sends it, ``answer_by_clearing``: loading the next job is
+    # how the operator cleared the plate.
+    if printer_manager.is_awaiting_plate_clear(printer_id):
+        try:
+            from backend.app.services.plate_hold import answer_by_clearing
+
+            async with async_session() as _db:
+                await answer_by_clearing(_db, printer_id)
+        except Exception as e:  # noqa: BLE001 — never block a print start on tidying
+            logger.warning("[PLATE] Could not let go of the held row for printer %s: %s", printer_id, e)
+        printer_manager.set_awaiting_plate_clear(printer_id, False)
+        logger.info("[PLATE] Released the plate gate for printer %s — a print is starting on it", printer_id)
 
     # #1721: drop any leftover pre-captured finish frame from a prior print
     # so a never-consumed cache entry can't bleed into the new print's photo.
@@ -4455,7 +4513,7 @@ async def on_print_start(printer_id: int, data: dict):
                         # This print already had an archive; ours was a guess
                         # made before the file could prove it. Exactly one row
                         # per physical print — drop the guess.
-                        await _discard_provisional_archive(db, archive, logger)
+                        await _discard_provisional_archive(db, archive, logger, adopted_archive_id=hash_match.id)
                         # Re-seed the adopted archive's part rows (m158). It
                         # already has a 3MF, but a fresh seed here is cheap
                         # insurance against a row whose parts were never
@@ -5025,6 +5083,34 @@ async def _restore_usage_tracking_session(printer_id: int, state, db, logger) ->
         logger.exception("[RESTART] Failed to restore usage-tracking session for printer %s", printer_id)
 
 
+async def _live_archive_for_running_print(printer_id: int, data: dict) -> tuple[int | None, int | None]:
+    """The archive of the print this printer is running, for a print BamDude
+    did not see start: the newest ``printing`` archive on the printer whose
+    name agrees with the live subtask, when the printer names one. Returns
+    ``(archive_id, plate_index)`` or ``(None, None)``."""
+    from backend.app.models.archive import PrintArchive as _PA
+    from backend.app.services.print_reconciliation import _name_matches_subtask
+
+    subtask = (data.get("subtask_name") or "").strip()
+    async with async_session() as db:
+        candidates = (
+            (
+                await db.execute(
+                    select(_PA)
+                    .where(_PA.printer_id == printer_id, _PA.status == "printing")
+                    .order_by(_PA.id.desc())
+                    .limit(5)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    for archive in candidates:
+        if not subtask or _name_matches_subtask(archive, subtask):
+            return archive.id, archive.plate_index
+    return None, None
+
+
 async def on_print_running_observed(printer_id: int, data: dict):
     """Restart-recovery: capture a fresh timelapse baseline for a print that
     started before BamDude came up.
@@ -5056,6 +5142,30 @@ async def on_print_running_observed(printer_id: int, data: dict):
     # the printer's HMS status is not. Unseeded, it holds its fire — so this
     # must run on every restart-recovery, not only when a session was restored.
     await _seed_runout_detector_from_journal(printer_id, logger)
+
+    # A print already under way claims its queue row like any other print, and
+    # the gate armed before we joined — by the reconnect sweep, or left from the
+    # previous FINISH — is moot: this bed is printing. Without the claim the
+    # completion found no row to close and Repeat had nothing to re-arm
+    # (2026-09-04). Only a live archive earns a row: one without an archive
+    # could never be repeated and would sit in the queue for ever.
+    try:
+        live_archive_id, live_plate = await _live_archive_for_running_print(printer_id, data)
+        if live_archive_id is not None:
+            await mark_queue_printing_for_printer(
+                printer_id,
+                archive_id=live_archive_id,
+                options=_printer_reported_options(data, live_archive_id, live_plate),
+            )
+        if printer_manager.is_awaiting_plate_clear(printer_id):
+            from backend.app.services.plate_hold import answer_by_clearing
+
+            async with async_session() as db:
+                await answer_by_clearing(db, printer_id)
+            printer_manager.set_awaiting_plate_clear(printer_id, False)
+            logger.info("[PLATE] Released the plate gate for printer %s — it is printing", printer_id)
+    except Exception:  # noqa: BLE001 — restart recovery must never break the connect path
+        logger.exception("[QUEUE] Could not claim a row for the print already running on printer %s", printer_id)
 
     # Avoid double-capture: on_print_start may have run earlier in this process.
     if printer_id in _timelapse_baselines:
@@ -5274,6 +5384,28 @@ async def _completion_belongs_to_item(db, queue_item, data: dict) -> bool:
         archive.print_name or archive.filename,
     )
     return False
+
+
+async def _printing_rows_for_printer(db, printer_id: int) -> list:
+    """Rows in ``printing`` on this printer's queue, newest first.
+
+    ⚠️ By the queue's ``printer_id``, never ``queue_id == printer_id``: the two
+    are equal by construction and guaranteed by nothing (see
+    ``services/printer_queues``), and a completion that looked in the wrong
+    queue found no row to close — for ever. Newest first, so a stale row from
+    an earlier session cannot shadow the live one when the guard below
+    compares names.
+    """
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+
+    result = await db.execute(
+        select(PrintQueueItem)
+        .where(PrintQueueItem.queue_id.in_(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id)))
+        .where(PrintQueueItem.status == "printing")
+        .order_by(PrintQueueItem.started_at.desc().nullslast(), PrintQueueItem.id.desc())
+    )
+    return list(result.scalars().all())
 
 
 async def _auto_clean_completed_item(db, queue_item, *, queue_status: str, plate_auto_cleared: bool) -> bool:
@@ -6211,13 +6343,9 @@ async def on_print_complete(printer_id: int, data: dict):
     try:
         async with async_session() as db:
             from backend.app.models.print_queue import PrintQueueItem
+            from backend.app.models.printer_queue import PrinterQueue as _PQForCount
 
-            result = await db.execute(
-                select(PrintQueueItem)
-                .where(PrintQueueItem.queue_id == printer_id)
-                .where(PrintQueueItem.status == "printing")
-            )
-            printing_items = list(result.scalars().all())
+            printing_items = await _printing_rows_for_printer(db, printer_id)
             if len(printing_items) > 1:
                 logger.warning(
                     "BUG: Multiple queue items in 'printing' status for printer %s: %s",
@@ -6477,9 +6605,12 @@ async def on_print_complete(printer_id: int, data: dict):
 
                         printer_pending = await db.execute(
                             select(sa_func.count(PrintQueueItem.id)).where(
-                                # ``queue_id`` IS the printer id — enforced
-                                # invariant, see PrinterQueue creation.
-                                PrintQueueItem.queue_id == printer_id,
+                                # By the queue's printer_id — ``queue_id ==
+                                # printer_id`` is a preference, not a guarantee
+                                # (services/printer_queues).
+                                PrintQueueItem.queue_id.in_(
+                                    select(_PQForCount.id).where(_PQForCount.printer_id == printer_id)
+                                ),
                                 PrintQueueItem.status == "pending",
                             )
                         )
@@ -8733,6 +8864,17 @@ async def lifespan(app: FastAPI):
     # Rehydrate plate-clear gates from DB so an Auto Off power cycle during a
     # pending confirmation can't let the queue auto-dispatch onto a dirty plate (#961).
     await printer_manager.load_awaiting_plate_clear_from_db()
+
+    # Every printer has a queue. A guard for printers added by a path that never
+    # created one (the Telegram bot did not) and for databases restored from
+    # elsewhere — see services/printer_queues for what the gap cost.
+    try:
+        from backend.app.services.printer_queues import ensure_all_printer_queues
+
+        async with async_session() as _db:
+            await ensure_all_printer_queues(_db)
+    except Exception:  # noqa: BLE001 — a guard, never a reason not to start
+        logging.getLogger(__name__).exception("printer queue guard failed at startup")
 
     # Resume MQTT recordings the database says are running. Same reasoning as
     # the line above: the intent was persisted so it would survive a restart,

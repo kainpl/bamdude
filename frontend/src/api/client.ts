@@ -766,6 +766,9 @@ export interface PrinterStatus {
   } | null;
   cover_url: string | null;
   hms_errors: HMSError[];
+  // Stack entries the operator hid on this printer until the printer drops
+  // them — excluded from hms_errors, listed here so the modal can un-hide.
+  hms_muted?: HMSError[];
   // Pause classification (RUNNING→PAUSE edge, see hms_errors.classify_pause_reason).
   // pause_reason: normalised key for routing — 'user' | 'filament_runout' |
   //   'door_open' | 'presence_check' | 'file_pause_command' |
@@ -916,6 +919,12 @@ export interface PrinterStatus {
   // Queue plate-clear gate (#961): true means the printer is waiting on user
   // confirmation before the next auto-dispatch; false means the gate is released.
   awaiting_plate_clear: boolean;
+  // Whether "Repeat" has a finished queue row to re-arm. The gate can be armed
+  // with nothing behind it (a print on a queue-less printer, one already
+  // running when BamDude came up, a completion handler still fetching the
+  // 3MF), and Repeat then answered 409 to a button the card itself had drawn.
+  // Optional: an older backend does not send it, and then the button stays.
+  repeat_available?: boolean;
   // AMS drying support
   supports_drying: boolean;
   // AMS "Print While Drying" — drying that runs concurrently with an active print
@@ -2571,6 +2580,9 @@ export interface CamWallPrinter {
   layer_num: number | null;
   total_layers: number | null;
   hms_errors: HMSError[];
+  // Stack entries the operator hid on this printer until the printer drops
+  // them — excluded from hms_errors, listed here so the modal can un-hide.
+  hms_muted?: HMSError[];
 }
 
 // Streaming-overlay feed (upstream #2613). The subset of print state the
@@ -7065,6 +7077,19 @@ export const api = {
   // HMS Errors
   clearHMSErrors: (printerId: number) =>
     request<{ success: boolean; message: string }>(`/printers/${printerId}/hms/clear`, { method: 'POST' }),
+
+  // Hide / un-hide one hms[] stack entry on one printer, by its full 16-char
+  // code, until the printer itself drops it. Clear cannot touch the stack.
+  muteHMSError: (printerId: number, fullCode: string) =>
+    request<{ success: boolean }>(`/printers/${printerId}/hms/mute`, {
+      method: 'POST',
+      body: JSON.stringify({ full_code: fullCode }),
+    }),
+  unmuteHMSError: (printerId: number, fullCode: string) =>
+    request<{ success: boolean }>(`/printers/${printerId}/hms/unmute`, {
+      method: 'POST',
+      body: JSON.stringify({ full_code: fullCode }),
+    }),
 
   executeHMSAction: (printerId: number, data: HMSActionBody) =>
     request<{ success: boolean; message: string }>(`/printers/${printerId}/hms/execute-action`, {

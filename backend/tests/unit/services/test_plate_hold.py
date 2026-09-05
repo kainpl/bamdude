@@ -16,7 +16,7 @@ import pytest
 import backend.app.models.printer_location  # noqa: F401
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
-from backend.app.services.plate_hold import should_hold_for_plate_clear, waiting_row
+from backend.app.services.plate_hold import has_waiting_row, should_hold_for_plate_clear, waiting_row
 
 # ⚠️ No explicit asyncio mark: ``asyncio_mode = "auto"`` in pyproject already
 # runs the coroutines here, and marking the module would tag the synchronous
@@ -188,6 +188,20 @@ async def test_clearing_leaves_the_pending_queue_alone(db_session, printer_facto
     await answer_by_clearing(db_session, printer.id)
 
     assert (await db_session.get(PrintQueueItem, nxt_id)) is not None
+
+
+async def test_has_waiting_row_is_the_cards_question(db_session, printer_factory):
+    """The card must not offer Repeat when there is nothing to re-arm. The gate
+    alone is not enough: it arms whenever ``require_plate_clear`` says so, row
+    or no row — a print on a queue-less printer, or one already running when
+    BamDude came up, arms it with nothing behind — and then Repeat answered
+    409 to a button it had itself put on screen (2026-09-04)."""
+    printer, queue = await _queue(db_session, printer_factory, require_plate_clear=True)
+    assert await has_waiting_row(db_session, printer.id) is False
+
+    db_session.add(PrintQueueItem(queue_id=queue.id, status="completed", position=0, archive_id=1))
+    await db_session.commit()
+    assert await has_waiting_row(db_session, printer.id) is True
 
 
 def test_every_place_that_releases_the_gate_answers_the_row():

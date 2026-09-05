@@ -1010,7 +1010,7 @@ async def update_spool(db: AsyncSession, spool_id: int, spool_data: SpoolUpdate)
     # Lazy import: _validate_family_id/_safe_autolink have other callers still in
     # inventory.py, and that module imports this one at module level to call
     # list_spools/update_spool — a top-level import here would be circular.
-    from backend.app.api.routes.inventory import _safe_autolink, _validate_family_id
+    from backend.app.api.routes.inventory import _derive_family_from_slicer, _safe_autolink, _validate_family_id
 
     result = await db.execute(select(Spool).where(Spool.id == spool_id))
     spool = result.scalar_one_or_none()
@@ -1023,6 +1023,10 @@ async def update_spool(db: AsyncSession, spool_id: int, spool_data: SpoolUpdate)
     if "weight_used" in update_data and "weight_locked" not in update_data:
         update_data["weight_locked"] = True
 
+    # A payload with a slicer code and no family gets its family here, through
+    # the one resolver that understands every legacy format — the form used to
+    # derive it client-side and got the support families wrong (2026-09-04).
+    await _derive_family_from_slicer(db, update_data)
     await _validate_family_id(db, update_data.get("filament_family_id"))
     for field, value in update_data.items():
         setattr(spool, field, value)

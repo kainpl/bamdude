@@ -32,6 +32,7 @@ from backend.app.schemas.printer import (
     FilaSwitchResponse,
     HmsActionBody,
     HMSErrorResponse,
+    HmsMuteBody,
     MQTTRecordingRequest,
     NozzleInfoResponse,
     NozzleRackSlot,
@@ -60,6 +61,7 @@ from backend.app.services.bambu_mqtt import (
 )
 from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
+from backend.app.services.plate_hold import has_waiting_row as _has_waiting_row
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_location_service import load_tree, subtree_ids
@@ -243,11 +245,11 @@ async def create_printer(
     await db.commit()
     await db.refresh(printer)
 
-    # Auto-create printer queue
-    from backend.app.models.printer_queue import PrinterQueue
+    # Every printer has a queue, under its own id — the same guard the Telegram
+    # add path and startup use, so no path can forget it again.
+    from backend.app.services.printer_queues import ensure_printer_queue
 
-    queue = PrinterQueue(id=printer.id, printer_id=printer.id)
-    db.add(queue)
+    await ensure_printer_queue(db, printer.id)
     await db.commit()
 
     # Connect to the printer
@@ -970,6 +972,19 @@ async def get_printer_status(
         )
         for e in (state.hms_errors or [])
     ]
+    # Stack entries the operator hid on this printer (services/hms_mute).
+    hms_muted = [
+        HMSErrorResponse(
+            code=e.code,
+            attr=e.attr,
+            module=e.module,
+            severity=e.severity,
+            actions=e.actions,
+            job_id=e.job_id,
+            full_code=e.full_code,
+        )
+        for e in (getattr(state, "hms_muted", None) or [])
+    ]
 
     # Parse AMS data from raw_data
     ams_units = []
@@ -1249,6 +1264,7 @@ async def get_printer_status(
         temperatures=temperatures,
         cover_url=cover_url,
         hms_errors=hms_errors,
+        hms_muted=hms_muted,
         ams=ams_units,
         ams_exists=ams_exists,
         vt_tray=vt_tray,
@@ -1325,6 +1341,9 @@ async def get_printer_status(
         ams_auto_switch_filament=state.ams_auto_switch_filament if state else None,
         macro_executing=state.macro_executing if state else None,
         awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
+        repeat_available=(
+            printer_manager.is_awaiting_plate_clear(printer_id) and await _has_waiting_row(db, printer_id)
+        ),
         supports_drying=supports_drying(printer.model, state.firmware_version),
         supports_drying_while_printing=supports_drying_while_printing(printer.model, state.firmware_version),
         drying_screen_only=drying_screen_only(printer.model),
@@ -3878,6 +3897,52 @@ async def clear_hms_errors(
         raise HTTPException(500, "Failed to clear HMS errors")
 
     return {"success": True, "message": "HMS errors cleared"}
+
+
+@router.post("/{printer_id}/hms/mute")
+async def mute_hms_entry(
+    printer_id: int,
+    body: HmsMuteBody,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Hide one ``hms[]`` entry on this printer until the printer drops it.
+
+    The firmware owns the stack — ``/hms/clear`` empties the ``print_error``
+    register and nothing else, so an entry the printer keeps re-sending could
+    not be answered at all (a P2S code Bambu ships with no text, 2026-09-04).
+    The mute is per printer and per FULL code, persisted so a restart does not
+    ask the same question again, and it expires by itself when the entry leaves
+    the stack. See ``services/hms_mute``.
+    """
+    from backend.app.services.hms_mute import remember
+
+    if await db.get(Printer, printer_id) is None:
+        raise HTTPException(404, "Printer not found")
+    full_code = body.full_code.upper()
+    await remember(db, printer_id, full_code)
+    await db.commit()
+    printer_manager.apply_hms_mute(printer_id, full_code)
+    return {"success": True}
+
+
+@router.post("/{printer_id}/hms/unmute")
+async def unmute_hms_entry(
+    printer_id: int,
+    body: HmsMuteBody,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Show a hidden ``hms[]`` entry again — the operator changed their mind."""
+    from backend.app.services.hms_mute import forget
+
+    if await db.get(Printer, printer_id) is None:
+        raise HTTPException(404, "Printer not found")
+    full_code = body.full_code.upper()
+    await forget(db, printer_id, {full_code})
+    await db.commit()
+    printer_manager.apply_hms_unmute(printer_id, full_code)
+    return {"success": True}
 
 
 # Seconds the /hms/execute-action route waits for a printer status push before

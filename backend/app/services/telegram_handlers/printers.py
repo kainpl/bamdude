@@ -227,19 +227,26 @@ async def show_printer_detail(
         # \u26a0\ufe0f The buttons belong to the ARMED GATE, not to there being something
         # queued behind. They used to sit inside ``if next_job:``, so after the
         # last print in a queue Telegram offered no plate control at all \u2014
-        # exactly when repeating is most wanted.
-        btns.append(
-            [
+        # exactly when repeating is most wanted. Repeat, though, needs a
+        # finished row to re-arm, and the gate can be armed over nothing \u2014
+        # then the button only ever answered "nothing is waiting" (2026-09-04).
+        from backend.app.services.plate_hold import repeat_available
+
+        answers = []
+        if await repeat_available(printer_id):
+            answers.append(
                 InlineKeyboardButton(
                     text=f"\U0001f501 {t(lang, NS, 'printers.btn_repeat_print')}",
                     callback_data=f"action:repeat_print:{printer_id}",
-                ),
-                InlineKeyboardButton(
-                    text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
-                    callback_data=f"action:clear_plate:{printer_id}",
-                ),
-            ]
+                )
+            )
+        answers.append(
+            InlineKeyboardButton(
+                text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
+                callback_data=f"action:clear_plate:{printer_id}",
+            )
         )
+        btns.append(answers)
 
     # Maintenance
     maint_btns = []

@@ -86,6 +86,41 @@ describe('PrinterQueueWidget', () => {
     });
   });
 
+  describe('the two answers to a full plate', () => {
+    // The gate can be armed with nothing behind it — a print on a queue-less
+    // printer, one already running when BamDude came up, or a completion
+    // handler still fetching the 3MF — and Repeat then answered
+    // "No finished print is waiting" to a button this widget had itself drawn.
+    // The backend says whether a row waits; the button follows.
+    const armed = { printerState: 'FINISH', awaitingPlateClear: true, requirePlateClear: true } as const;
+
+    it('offers Repeat only when the backend says a finished row waits', async () => {
+      render(<PrinterQueueWidget printerId={1} {...armed} repeatAvailable={false} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Clear plate')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Repeat print')).not.toBeInTheDocument();
+    });
+
+    it('offers both when a row waits', async () => {
+      render(<PrinterQueueWidget printerId={1} {...armed} repeatAvailable={true} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Repeat print')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Clear plate')).toBeInTheDocument();
+    });
+
+    it('keeps Repeat when an older backend says nothing either way', async () => {
+      render(<PrinterQueueWidget printerId={1} {...armed} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Repeat print')).toBeInTheDocument();
+      });
+    });
+  });
+
   describe('empty state', () => {
     it('renders nothing when no pending items', async () => {
       const { container } = render(<PrinterQueueWidget printerId={999} />);

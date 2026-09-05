@@ -204,6 +204,16 @@ class HMSErrorResponse(BaseModel):
     full_code: str = ""
 
 
+class HmsMuteBody(BaseModel):
+    """Hide / un-hide one ``hms[]`` entry on one printer (services/hms_mute).
+
+    Only the 16-char stack key: an 8-char ``print_error`` fault is cleared by
+    the printer through ``/hms/clear``, never hidden by us.
+    """
+
+    full_code: str = Field(min_length=16, max_length=16, pattern=r"^[0-9A-Fa-f]{16}$")
+
+
 class HmsActionBody(BaseModel):
     # Canonical hex identifier (HMSErrorResponse.full_code): 8 chars for `print_error`
     # faults, 16 chars for `hms[]`-array faults. Length-bounded to those two valid shapes.
@@ -386,6 +396,10 @@ class PrinterStatus(BaseModel):
     temperatures: dict | None = None
     cover_url: str | None = None
     hms_errors: list[HMSErrorResponse] = []
+    # Stack entries the operator hid on this printer (services/hms_mute) —
+    # excluded from ``hms_errors`` so badges, notifications and the relay all
+    # go quiet together; carried here so the modal can list and un-hide them.
+    hms_muted: list[HMSErrorResponse] = []
     ams: list[AMSUnit] = []
     ams_exists: bool = False
     vt_tray: list[AMSTray] = []  # Virtual tray / external spool(s)
@@ -543,6 +557,11 @@ class PrinterStatus(BaseModel):
     # user confirmation before the next auto-dispatch. False means the gate
     # is released (either never armed, or user/swap cleared it).
     awaiting_plate_clear: bool = False
+    # Whether "Repeat" has a finished queue row to re-arm. The gate can be
+    # armed with nothing behind it (a print on a queue-less printer, one that
+    # was already running when BamDude came up, or a completion handler still
+    # busy fetching the 3MF); the card draws Repeat only when this is True.
+    repeat_available: bool = False
     # AMS drying support
     supports_drying: bool = False
     # AMS "Print While Drying" — drying mid-print. Verified per Bambu wiki release notes;

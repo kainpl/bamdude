@@ -1094,6 +1094,10 @@ class PrinterState:
     # be empty by the time anyone asks.
     last_project_url: str | None = None
     hms_errors: list = field(default_factory=list)  # List of HMSError
+    # ``hms[]`` entries the operator chose to hide on this printer, kept apart
+    # from ``hms_errors`` so every reader of that list goes quiet together while
+    # the modal can still show and un-hide them — see services/hms_mute.
+    hms_muted: list = field(default_factory=list)  # List of HMSError
     kprofiles: list = field(default_factory=list)  # List of KProfile
     # BS ``DevStorage::SdcardState`` — four states, not a bool:
     #   0 NO_SDCARD · 1 HAS_SDCARD_NORMAL · 2 HAS_SDCARD_ABNORMAL · 3 HAS_SDCARD_READONLY
@@ -1874,6 +1878,12 @@ class BambuMQTTClient:
         self.state = PrinterState()
         self._client: mqtt.Client | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Full 16-char ``hms[]`` codes the operator chose to hide on this
+        # printer (services/hms_mute). Loaded by the manager before the first
+        # push; a code drops out by itself when the printer stops reporting it,
+        # and ``on_hms_mute_expired`` tells the manager which ones did.
+        self.muted_hms_codes: set[str] = set()
+        self.on_hms_mute_expired: Callable[[set[str]], None] | None = None
         self._previous_gcode_state: str | None = None
         # Last time "device is busy" was cleared off this printer (see
         # _clear_device_busy). Per client, so a reconnect starts fresh.
@@ -5600,6 +5610,7 @@ class BambuMQTTClient:
                             )
                         )
             self._apply_mqtt_verify_state(verify_failed)
+            self._apply_hms_mutes_after_rebuild()
 
         # Parse print_error - this is a different error format than HMS
         # print_error is a 32-bit integer where:
@@ -8864,6 +8875,64 @@ class BambuMQTTClient:
             return
         command = {"print": {"command": "clean_print_error", "sequence_id": "0"}}
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+
+    # ── Hiding stack entries (services/hms_mute) ──────────────────────────
+    #
+    # The firmware owns ``hms[]``; an entry it keeps re-sending cannot be cleared
+    # from here. The operator can hide ONE entry on ONE printer, by its full
+    # 16-char code, for as long as the printer keeps reporting it. Hidden entries
+    # move from ``state.hms_errors`` to ``state.hms_muted`` so every reader of
+    # the first list goes quiet together and the modal can still show them.
+
+    def _split_hms_by_mute(self) -> None:
+        """Re-partition the current stack entries by the mute set, expiring nothing."""
+        entries = list(self.state.hms_errors) + list(self.state.hms_muted)
+        self.state.hms_muted = [e for e in entries if e.full_code in self.muted_hms_codes]
+        self.state.hms_errors = [e for e in entries if e.full_code not in self.muted_hms_codes]
+
+    def _apply_hms_mutes_after_rebuild(self) -> None:
+        """After ``hms[]`` was rebuilt from a push: let go of every mute whose
+        entry the printer no longer reports, then hide the rest.
+
+        ⚠️ Only here, on a push that carries the stack — a push without it says
+        nothing about what the printer still holds. Expiry is what makes the
+        same code later a NEW incident that is shown again."""
+        if not self.muted_hms_codes:
+            self.state.hms_muted = []
+            return
+        present = {e.full_code for e in self.state.hms_errors if len(e.full_code or "") == 16}
+        gone = self.muted_hms_codes - present
+        if gone:
+            self.muted_hms_codes -= gone
+            logger.info(
+                "[%s] Hidden HMS entries left the stack — no longer hidden: %s", self.serial_number, sorted(gone)
+            )
+            if self.on_hms_mute_expired is not None:
+                try:
+                    self.on_hms_mute_expired(gone)
+                except Exception as e:  # noqa: BLE001 — bookkeeping must never break a status push
+                    logger.warning("[%s] on_hms_mute_expired failed: %s", self.serial_number, e)
+        self.state.hms_muted = [e for e in self.state.hms_errors if e.full_code in self.muted_hms_codes]
+        self.state.hms_errors = [e for e in self.state.hms_errors if e.full_code not in self.muted_hms_codes]
+
+    def set_muted_hms_codes(self, codes: set[str]) -> None:
+        """Replace the mute set (what the manager loaded from the DB) and re-split now."""
+        self.muted_hms_codes = {c.upper() for c in codes if len(c or "") == 16}
+        self._split_hms_by_mute()
+
+    def mute_hms(self, full_code: str) -> bool:
+        """Hide a stack entry at once, without waiting for the next push. False for anything but a 16-char code."""
+        code = (full_code or "").upper()
+        if len(code) != 16:
+            return False
+        self.muted_hms_codes.add(code)
+        self._split_hms_by_mute()
+        return True
+
+    def unmute_hms(self, full_code: str) -> bool:
+        self.muted_hms_codes.discard((full_code or "").upper())
+        self._split_hms_by_mute()
+        return True
 
     def clear_hms_errors(self) -> bool:
         """Clear HMS/print errors on the printer and locally."""
