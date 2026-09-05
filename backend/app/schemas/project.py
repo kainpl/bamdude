@@ -284,6 +284,11 @@ class ProjectListResponse(BaseModel):
     lines_count: int
     ordered: int
     printed: int
+    # Kits this order took off its products' free stock, capped per line and
+    # summed — the same number the order page's figures carry, so a card and
+    # the page it opens cannot disagree about what is already done. Beside
+    # ``printed``, never inside it: one is prints, the other is the shelf.
+    from_stock_units: int = 0
     # 0.0–1.0, capped server-side (see ``ProjectLineResponse.progress``).
     # An overprinted order reports its excess through ``printed`` against
     # ``ordered``, which stay uncapped.

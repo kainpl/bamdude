@@ -274,13 +274,13 @@ async def order_candidates(db: AsyncSession, file: LibraryFile, plate_index: int
     matched: list[tuple[Project, ProjectLine, int]] = []
     for project in projects:
         lines = sorted(project.lines, key=lambda line: (line.sort_order, line.id))
-        seen: set[int] = set()  # a line resolved by two products of the same order is still one candidate
+        # No de-duplication by line: ``accepting_lines`` filters on
+        # ``line.product_id == product_id``, so a line belongs to exactly one
+        # product and cannot come back twice across the ``recipes`` loop. A
+        # ``seen`` set here read as a real risk being handled and was never
+        # anything but dead weight.
         for product_id in recipes:
-            for line in accepting_lines(lines, product_id, materials):
-                if line.id in seen:
-                    continue
-                seen.add(line.id)
-                matched.append((project, line, product_id))
+            matched.extend((project, line, product_id) for line in accepting_lines(lines, product_id, materials))
     if not matched:
         return []
 

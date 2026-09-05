@@ -14,7 +14,7 @@ vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
   return { ...actual, useAuth: () => ({ ...actual.useAuth(), hasPermission: () => true }) };
 });
 
-const base: OrderListItem = { id: 1, name: 'Ten flasks', customer_id: 2, customer_name: 'ACME', color: '#00ae42', status: 'active', due_date: null, priority: 'normal', price: 120, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z', lines_count: 2, ordered: 10, printed: 4, progress: 0.4, line_products: [{ product_id: 11, has_cover: true }, { product_id: 12, has_cover: false }] };
+const base: OrderListItem = { id: 1, name: 'Ten flasks', customer_id: 2, customer_name: 'ACME', color: '#00ae42', status: 'active', due_date: null, priority: 'normal', price: 120, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z', lines_count: 2, ordered: 10, printed: 4, from_stock_units: 0, progress: 0.4, line_products: [{ product_id: 11, has_cover: true }, { product_id: 12, has_cover: false }] };
 const noop = () => {};
 
 describe('OrderCard', () => {
@@ -31,23 +31,17 @@ describe('OrderCard', () => {
     expect(screen.getByTestId('product-cover')).toHaveAttribute('src', expect.stringContaining('/products/11/cover-image'));
     expect(screen.getAllByTestId('product-cover-placeholder')).toHaveLength(1);
   });
-  it('says nothing about the shelf when the list response omits the field', () => {
-    // Pass 8, Decision 5. ⚠️ The LIST response does not carry `from_stock_units`
-    // yet (the order DETAIL's figures do), so the field is optional and today
-    // the card renders nothing at all. That absence is this case.
-    render(<OrderCard order={base} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
-    expect(screen.queryByTestId('order-1-from-stock')).not.toBeInTheDocument();
-  });
-  it('shows what came off the shelf beside the printed count once the server sends it', () => {
-    // `printed` stays literal — the farm printed four — and this is the other
-    // half of "done".
+  it('shows what came off the shelf beside the printed count', () => {
+    // Pass 8, Decision 5 + Ruling 21: `ProjectListResponse` carries the order's
+    // own capped sum, so the card reads it directly. `printed` stays literal —
+    // the farm printed four — and this is the other half of "done".
     render(<OrderCard order={{ ...base, from_stock_units: 3 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
     expect(screen.getByTestId('order-1-from-stock')).toHaveTextContent('from stock 3');
   });
   it('shows nothing, and no bare zero, for an order that reserved none', () => {
     // A zero is not "no stock reserved, shown as 0" — it is nothing at all, and
     // a bare `&&` on the number would have rendered the 0 itself.
-    render(<OrderCard order={{ ...base, from_stock_units: 0 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    render(<OrderCard order={base} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
     expect(screen.queryByTestId('order-1-from-stock')).not.toBeInTheDocument();
     expect(strayZeroTextNodes(screen.getByTestId('order-1-card'))).toHaveLength(0);
   });

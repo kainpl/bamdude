@@ -76,6 +76,16 @@ SQLITE_ONLY_TOKENS = ("AUTOINCREMENT", "DATETIME", "WITHOUT ROWID")
 #: ``SERIAL`` and is listed anyway, because the point of the list is to be read.
 POSTGRES_AUTOINCREMENT_TOKENS = ("SERIAL", "BIGSERIAL", "IDENTITY")
 
+#: A key column declared as a plain integer and nothing else. On SQLite this is
+#: the rowid alias and numbers itself; on PostgreSQL it is an ordinary column
+#: with no default, so the first INSERT that omits it fails. The lookahead lets
+#: the SQLite spelling (``… PRIMARY KEY AUTOINCREMENT``) through — that twin is
+#: judged by :data:`SQLITE_ONLY_TOKENS`, not by this.
+BARE_INTEGER_PRIMARY_KEY_RE = re.compile(
+    r"\b(?:BIG)?INT(?:EGER)?\s+PRIMARY\s+KEY(?!\s+AUTOINCREMENT)",
+    re.IGNORECASE,
+)
+
 
 # ── Recording doubles ───────────────────────────────────────────────────────
 
@@ -337,23 +347,60 @@ def test_a_postgresql_twin_of_an_autoincrement_table_numbers_its_key_itself(mode
     So: wherever a migration creates an unmodelled table with ``AUTOINCREMENT``
     on one dialect, the DDL PostgreSQL actually reaches has to say ``SERIAL`` /
     ``BIGSERIAL`` / ``GENERATED … AS IDENTITY``.
+
+    Two widenings over the first version of this scan, both of them holes a real
+    change could have walked through:
+
+    * **The twin is looked for across the whole chain, not inside one module.**
+      m016 creates a table and m044 recreates it; a dialect pair split over two
+      migrations is the normal shape here, and a per-module ``numbering_itself``
+      set simply stopped asking about it.
+    * **The primary key itself is read**, via
+      :data:`BARE_INTEGER_PRIMARY_KEY_RE`, instead of only asking whether the
+      word ``SERIAL`` occurs anywhere in the statement. A table whose ``id`` is
+      a bare ``INTEGER PRIMARY KEY`` while some *other* column is ``SERIAL``
+      satisfied the token search and still cannot take a row.
     """
+    all_rows = [
+        (name, table, ddl, pg_reachable)
+        for name, tree in migration_modules
+        for table, ddl, pg_reachable in _unmodelled_creates(name, tree, modelled_tables)
+    ]
+    numbering_itself = {table for _name, table, ddl, _pg in all_rows if "AUTOINCREMENT" in ddl.upper()}
+
     checked: list[str] = []
     offenders: list[str] = []
-    for name, tree in migration_modules:
-        rows = _unmodelled_creates(name, tree, modelled_tables)
-        numbering_itself = {table for table, ddl, _pg in rows if "AUTOINCREMENT" in ddl.upper()}
-        for table, ddl, pg_reachable in rows:
-            upper = ddl.upper()
-            # The SQLite twin itself: it is not on the PostgreSQL path (the test
-            # above is what proves that) and it is not what this asks about.
-            if not pg_reachable or table not in numbering_itself or "AUTOINCREMENT" in upper:
-                continue
-            checked.append(f"{name}.{table}")
-            if not any(token in upper for token in POSTGRES_AUTOINCREMENT_TOKENS):
-                offenders.append(f"{name}: CREATE TABLE {table} reaches PostgreSQL with a key that numbers nothing")
+    for name, table, ddl, pg_reachable in all_rows:
+        upper = ddl.upper()
+        # The SQLite twin itself: it is not on the PostgreSQL path (the test
+        # above is what proves that) and it is not what this asks about.
+        if not pg_reachable or table not in numbering_itself or "AUTOINCREMENT" in upper:
+            continue
+        checked.append(f"{name}.{table}")
+        if BARE_INTEGER_PRIMARY_KEY_RE.search(ddl):
+            offenders.append(f"{name}: CREATE TABLE {table} reaches PostgreSQL with a bare INTEGER PRIMARY KEY")
+        elif not any(token in upper for token in POSTGRES_AUTOINCREMENT_TOKENS):
+            offenders.append(f"{name}: CREATE TABLE {table} reaches PostgreSQL with a key that numbers nothing")
     assert checked, "no AUTOINCREMENT table with a PostgreSQL twin was found — the scan is asserting nothing"
     assert not offenders, "a PostgreSQL primary key with no sequence behind it:\n  " + "\n  ".join(offenders)
+
+
+def test_the_bare_integer_key_pattern_reads_the_key_and_not_the_word_serial():
+    """The widening above is only worth what this regex is worth.
+
+    A statement can carry ``SERIAL`` on a column that is not the key, and the
+    token search would call it fixed. These four spellings are the ones the
+    migrations actually use.
+    """
+    assert BARE_INTEGER_PRIMARY_KEY_RE.search("CREATE TABLE t (id INTEGER PRIMARY KEY, seq SERIAL)")
+    assert BARE_INTEGER_PRIMARY_KEY_RE.search("CREATE TABLE t (\n  id  integer  primary  key,\n  n INT\n)")
+    assert not BARE_INTEGER_PRIMARY_KEY_RE.search("CREATE TABLE t (id SERIAL PRIMARY KEY)")
+    assert not BARE_INTEGER_PRIMARY_KEY_RE.search("CREATE TABLE t (id BIGSERIAL PRIMARY KEY)")
+    assert not BARE_INTEGER_PRIMARY_KEY_RE.search(
+        "CREATE TABLE t (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY)"
+    )
+    # The SQLite twin is not this test's business — the token scan above owns it.
+    assert not BARE_INTEGER_PRIMARY_KEY_RE.search("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)")
 
 
 def test_the_scan_still_sees_the_tables_m158_removed_from_the_models(modelled_tables, migration_modules):

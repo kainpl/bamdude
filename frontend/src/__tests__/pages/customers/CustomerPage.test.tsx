@@ -39,6 +39,7 @@ const orders = [
     customer_name: 'ACME',
     ordered: 10,
     printed: 5,
+    from_stock_units: 0,
     progress: 0.5,
     lines_count: 1,
     priority: 'normal',

@@ -189,10 +189,9 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
           {/* Beside the printed count, and only when there is something to say
               (pass 8, Decision 5). `printed` stays literal — the farm printed
               that many — and this is the other half of "done".
-              ⚠️ `?? 0` because the LIST response does not carry the field yet:
-              the order DETAIL's figures do, the list's do not, so today this
-              renders nothing. `> 0`, never a bare `&&` on the number. */}
-          {(order.from_stock_units ?? 0) > 0 && (
+              ⚠️ `> 0`, never a bare `&&` on the number: a zero is nothing to
+              say, and `&&` would render the 0 itself. */}
+          {order.from_stock_units > 0 && (
             <p className="text-xs text-bambu-gray" data-testid={`order-${order.id}-from-stock`}>
               {t('stock.order.fromStock', { n: order.from_stock_units })}
             </p>

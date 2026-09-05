@@ -1476,13 +1476,11 @@ export interface OrderListItem {
    * Kits taken off free stock across the order (pass 8, Decision 5) — shown on
    * the card beside `printed` when it is greater than zero.
    *
-   * ⚠️ **Optional because the LIST response does not carry it yet.**
-   * `ProjectFiguresOut` (the order DETAIL) gained the field in pass 8;
-   * `ProjectListResponse` did not, so today this is always `undefined` and the
-   * card renders nothing. Kept as the card's single reading of the number so
-   * that adding it server-side is one line there and none here.
+   * The order's own sum, CAPPED per line by the server (`project_figures`), so
+   * it is the same number the order page's figures tile shows. `printed` and
+   * `ordered` beside it stay literal: one is prints, the other is the shelf.
    */
-  from_stock_units?: number;
+  from_stock_units: number;
   /** One entry per line, in line order. The id is what the card's cover URL is
    *  built from, so a line whose product HAS a cover shows it and one that has
    *  none keeps its place as a placeholder. */

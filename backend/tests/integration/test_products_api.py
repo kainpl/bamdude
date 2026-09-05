@@ -1257,6 +1257,25 @@ async def test_the_movements_are_newest_first_with_their_order_named(committing_
 
 
 @pytest.mark.asyncio
+async def test_the_limit_shortens_the_ledger_and_leaves_the_shelf_alone(committing_client, db_session):
+    """``?limit`` is a window on the HISTORY, never on the balance.
+
+    The page pulls a bounded ledger because a busy product's is unbounded, and
+    the trap in that is a balance computed from the rows that came back: two
+    thirds of the shelf would vanish the moment the window filled up. The
+    balances and ``kits_available`` are their own SUM over every row, so a
+    one-row window still reports the whole shelf.
+    """
+    pid, _ids = await _lamp_with_stock(committing_client, db_session)
+
+    body = (await committing_client.get(f"/api/v1/products/{pid}/stock?limit=1")).json()
+
+    assert [(m["part_name"], m["delta"]) for m in body["movements"]] == [("base", 3)], "the newest row, and only it"
+    assert [(b["name"], b["balance"]) for b in body["balances"]] == [("lid", 5), ("base", 3)]
+    assert body["kits_available"] == 3
+
+
+@pytest.mark.asyncio
 async def test_a_movement_whose_line_was_detached_names_no_order(committing_client, db_session):
     """A deleted order line keeps its history and loses its link
     (``part_stock.detach_line``). The row still happened; it just has no order

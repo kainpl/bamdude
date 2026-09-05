@@ -2903,3 +2903,93 @@ async def test_the_order_page_reads_the_stock_ledger_once(committing_client, db_
 
     assert [line["from_stock_units"] for line in body["lines"]] == [2, 2, 2]
     assert len(statements) == 1, f"one ledger read for the whole page, got {len(statements)}: {statements}"
+
+
+@pytest.mark.asyncio
+async def test_the_orders_list_carries_the_capped_kits_off_the_shelf(
+    committing_client, db_session, test_engine, catalog
+):
+    """Ruling 21. The order CARD says "5 of 10 printed"; without this it says
+    nothing about the three that came off the shelf, and the card and the page
+    it opens disagree about the same order.
+
+    Two things are pinned here beyond the field existing:
+
+    * The number is **capped per line** exactly as ``project_figures`` caps it —
+      a line ordering one while holding two kits donates nothing to its
+      siblings, or the order reads more units done than were ever ordered.
+    * The list pays **no extra query** for it. It comes off the same batch that
+      already fills ``printed`` and ``progress``; a per-row read here is the
+      N+1 the whole grouped loader exists to prevent.
+
+    ⚠️ The over-reserved line is written onto the LEDGER rather than made
+    through the route: ``update_line`` clamps a quantity coming down past the
+    reservation (Ruling 16), so the API cannot produce this state. The ledger
+    still can — it is the authority, the route clamp is a courtesy — and the
+    cap in ``project_figures`` is what has to hold when it does.
+    """
+    product_id = catalog["product"].id
+    parts = await _shelf(db_session, product_id, kits=9)
+    counted = {part.id: part.qty_per_unit for part in parts.values() if part.kind == "printed"}
+    created = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Lamps",
+                "lines": [
+                    {"product_id": product_id, "quantity": 4, "from_stock_units": 2},
+                    {"product_id": product_id, "quantity": 1, "from_stock_units": 1},
+                ],
+            },
+        )
+    ).json()
+    order_id = created["id"]
+    over_reserved = created["lines"][1]["id"]
+    for part_id, qty_per_unit in counted.items():
+        await part_stock.move(
+            db_session,
+            part_id=part_id,
+            delta=-qty_per_unit,
+            reason="reserved_for_order",
+            project_line_id=over_reserved,
+        )
+    await db_session.commit()
+    bare = (await committing_client.post("/api/v1/projects/", json={"name": "No shelf"})).json()["id"]
+    detail = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()
+    assert [line["from_stock_units"] for line in detail["lines"]] == [2, 2], "the line keeps the honest reading"
+
+    with counting_statements(test_engine, match="product_part_stock_movements") as statements:
+        rows = (await committing_client.get("/api/v1/projects/")).json()
+
+    by_id = {row["id"]: row for row in rows}
+    assert by_id[order_id]["from_stock_units"] == 3, "2 + min(2, 1), not 2 + 2"
+    assert by_id[bare]["from_stock_units"] == 0
+    assert (by_id[order_id]["ordered"], by_id[order_id]["printed"]) == (5, 0), "both stay literal"
+    assert len(statements) == 1, f"one ledger read for the whole list, got {len(statements)}: {statements}"
+
+
+@pytest.mark.asyncio
+async def test_the_list_and_the_order_page_report_the_same_kits(committing_client, db_session, catalog):
+    """The card is drawn from the list and the tile from the detail. Two
+    responses computing the same figure separately is exactly how they start
+    disagreeing — both read ``ProjectFigures.from_stock_units``, and this says
+    so out loud."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=6)
+    order_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Lamps",
+                "lines": [
+                    {"product_id": product_id, "quantity": 3, "from_stock_units": 2},
+                    {"product_id": product_id, "quantity": 3, "from_stock_units": 1},
+                ],
+            },
+        )
+    ).json()["id"]
+
+    listed = next(row for row in (await committing_client.get("/api/v1/projects/")).json() if row["id"] == order_id)
+    detail = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()
+
+    assert listed["from_stock_units"] == detail["figures"]["from_stock_units"] == 3

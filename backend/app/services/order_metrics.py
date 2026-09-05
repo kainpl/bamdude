@@ -648,6 +648,13 @@ class GroupedOrderFigures:
     printed: int
     progress: float
     total_cost: float
+    #: The order's kits off the shelf, ALREADY CAPPED per line — literally
+    #: ``ProjectFigures.from_stock_units``, copied rather than re-summed here.
+    #: The cap (``min(from_stock_units, quantity)`` before the sum) is a rule
+    #: with a reason, spelled out in :func:`project_figures`; a caller adding
+    #: the lines up itself would be the second place it lives, and the first
+    #: one to forget it.
+    from_stock_units: int = 0
     lines: list[GroupedLineFigures] = field(default_factory=list)
 
 
@@ -820,6 +827,7 @@ async def grouped_figures(
                 printed=pf.printed,
                 progress=pf.progress,
                 total_cost=pf.total_cost,
+                from_stock_units=pf.from_stock_units,
                 lines=[
                     GroupedLineFigures(
                         line_id=figs.line_id,

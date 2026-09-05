@@ -14,7 +14,8 @@ A macro fires when **all** of:
 * ``macro.event == event``
 * ``macro.enabled is True``
 * The macro's ``printer_models`` list contains ``"*"`` or the printer's
-  exact model code.
+  model — spelled however the printer row spells it, because
+  :func:`macro_targets_model` normalises it first.
 * If ``macro.swap_mode_only`` is True, ``printer.swap_mode_enabled`` must
   also be True.
 * Swap profile match: either the macro has no ``swap_profile`` (acts as a
@@ -36,6 +37,7 @@ from collections.abc import Iterable
 
 from backend.app.models.macro import Macro
 from backend.app.models.printer import Printer
+from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,18 @@ def macro_targets_model(macro: Macro, model: str | None) -> bool:
     for a queue row that has not been dispatched yet: a second reading of the
     same column is exactly the drift that makes a macro fire at one door and not
     another.
+
+    ⚠️ **The model is NORMALISED here, so both doors ask the same question.**
+    ``macro.printer_models`` holds the short names the macro editor writes
+    ("X1C"), while a caller spells the model however its own source does: a
+    ``Printer`` row can hold the long marketing name ("Bambu Lab X1 Carbon"),
+    a 3MF says "C12". ``print_option_defaults`` normalised before calling and
+    the fire-time filter did not, so a long-name printer was offered every
+    macro at dispatch and then matched none of them when the event arrived —
+    silently, because "no macro targets this printer" and "this printer fired
+    nothing" look identical from outside. Normalising inside the shared filter
+    is what makes the two sides one rule; it is a no-op for the short names
+    ``normalize_model_name`` already returns unchanged.
     """
     try:
         models = json.loads(macro.printer_models or "[]")
@@ -62,7 +76,8 @@ def macro_targets_model(macro: Macro, model: str | None) -> bool:
         return False
     if "*" in models:
         return True
-    return bool(model) and model in models
+    normalized = normalize_model_name(model)
+    return bool(normalized) and normalized in models
 
 
 def find_macros_for_event(

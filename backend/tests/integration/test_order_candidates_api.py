@@ -273,6 +273,50 @@ async def test_the_material_rules_a_line_out_and_every_survivor_is_its_own_candi
 
 
 @pytest.mark.asyncio
+async def test_two_products_of_one_order_claim_the_same_plate_and_each_line_is_listed_once(
+    committing_client, db_session, lamp
+):
+    """The loop runs once per PRODUCT holding the plate, and one order can have
+    a line for each of them.
+
+    ``order_candidates`` used to carry a ``seen`` set of line ids "in case a line
+    is resolved by two products of the same order". It cannot be:
+    ``accepting_lines`` filters on ``line.product_id == product_id``, so a line
+    belongs to exactly one product and cannot come back on a second pass. The
+    guard was dead and read as a real risk being handled — this is what actually
+    happens, and it is one candidate per line, each naming its own product.
+    """
+    file_id = lamp["file"].id
+    sconce = Product(name="Sconce")
+    db_session.add(sconce)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            ProductPart(product_id=sconce.id, kind="printed", name="arm", name_key="arm", qty_per_unit=1),
+            ProductPlate(product_id=sconce.id, library_file_id=file_id, plate_index=0),
+        ]
+    )
+    await db_session.commit()
+
+    order_id, (lamp_line, sconce_line) = await _order(
+        committing_client,
+        lamp["product"].id,
+        2,
+        name="Both",
+        lines=[
+            {"product_id": lamp["product"].id, "quantity": 2, "material": "PETG"},
+            {"product_id": sconce.id, "quantity": 2, "material": "PETG"},
+        ],
+    )
+
+    rows = await _candidates(committing_client, file_id)
+
+    seen = [(r["project_line_id"], r["product_name"]) for r in rows if r["project_id"] == order_id]
+    assert sorted(seen) == sorted([(lamp_line, "Lamp"), (sconce_line, "Sconce")])
+    assert len(seen) == len({line_id for line_id, _name in seen}), f"a line was offered twice: {seen}"
+
+
+@pytest.mark.asyncio
 async def test_a_file_no_product_holds_has_no_candidates(committing_client, db_session, lamp):
     stray = _sliced("stray.gcode.3mf")
     db_session.add(stray)

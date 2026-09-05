@@ -253,6 +253,10 @@ async def list_projects(
                 lines_count=len(project.lines),
                 ordered=pf.ordered,
                 printed=pf.printed,
+                # Off the same batch as ``ordered``/``printed``/``progress``,
+                # already capped per line by ``project_figures`` — no second
+                # query and no second copy of the cap rule.
+                from_stock_units=pf.from_stock_units,
                 progress=pf.progress,
                 # ``(sort_order, id)`` — the order every figure path puts the
                 # lines in. The relationship's own order is the database's, so

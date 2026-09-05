@@ -12,8 +12,8 @@ import { api } from '../../../api/client';
 import { OrdersPage } from '../../../pages/orders/OrdersPage';
 
 const rows = [
-  { id: 1, name: 'A', status: 'active', customer_id: 1, customer_name: 'ACME', ordered: 2, printed: 1, progress: 0.5, lines_count: 1, priority: 'normal', line_products: [] },
-  { id: 2, name: 'B', status: 'completed', customer_id: null, customer_name: null, ordered: 1, printed: 1, progress: 1, lines_count: 1, priority: 'normal', line_products: [] },
+  { id: 1, name: 'A', status: 'active', customer_id: 1, customer_name: 'ACME', ordered: 2, printed: 1, from_stock_units: 0, progress: 0.5, lines_count: 1, priority: 'normal', line_products: [] },
+  { id: 2, name: 'B', status: 'completed', customer_id: null, customer_name: null, ordered: 1, printed: 1, from_stock_units: 0, progress: 1, lines_count: 1, priority: 'normal', line_products: [] },
 ];
 
 afterEach(() => {
