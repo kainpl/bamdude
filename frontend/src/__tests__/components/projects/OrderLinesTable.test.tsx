@@ -48,6 +48,21 @@ function ProductProbe({ id, onFetch }: { id: number; onFetch: () => void }) {
   return null;
 }
 
+/**
+ * The same stand-in for the shelf itself — `['product-stock', id]`, the key
+ * `useProductStock` owns and `ProductStock` renders off.
+ */
+function StockProbe({ id, onFetch }: { id: number; onFetch: () => void }) {
+  useQuery({
+    queryKey: ['product-stock', id],
+    queryFn: async () => {
+      onFetch();
+      return null;
+    },
+  });
+  return null;
+}
+
 const order = {
   id: 1,
   status: 'active',
@@ -343,6 +358,32 @@ describe('OrderLinesTable', () => {
       await waitFor(() => expect(mine).toHaveBeenCalledTimes(2));
       await waitFor(() => expect(other).toHaveBeenCalledTimes(2));
       expect(mine).toHaveBeenCalledTimes(2);
+    });
+
+    it('refetches the shelf after a deleted line hands its kits back', async () => {
+      // ⚠️ Ruling 29's other half, and the one nothing pinned: DELETING a line
+      // releases its reservation server-side, so the product's shelf moved
+      // without this table ever naming a product. The delete goes through the
+      // same `invalidate()` closure the edit does, which is exactly why it is
+      // worth a test of its own — that closure is one line away from being
+      // "scoped properly" again by somebody who only reads the save path.
+      const shelf = vi.fn();
+      vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
+      const del = vi.spyOn(api, 'deleteOrderLine').mockResolvedValue(order);
+
+      render(
+        <>
+          <StockProbe id={1} onFetch={shelf} />
+          <OrderLinesTable order={order} canEdit />
+        </>,
+      );
+      await waitFor(() => expect(shelf).toHaveBeenCalledTimes(1));
+
+      fireEvent.click(screen.getByTestId('line-10-delete'));
+      fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+
+      await waitFor(() => expect(del).toHaveBeenCalledWith(1, 10));
+      await waitFor(() => expect(shelf).toHaveBeenCalledTimes(2));
     });
 
     it('sends the number it is showing, clamped in the draft and not only on screen', async () => {

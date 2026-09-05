@@ -8,14 +8,15 @@ import { useEffect, useRef } from 'react';
  * the returned ref to the element that carries `role="dialog"`, give that
  * element `tabIndex={-1}` so it can hold focus, and pass whether it is open.
  *
- * The call sites, seven of them — **four dialogs**: the import dialog
+ * The call sites, eight of them — **five dialogs**: the import dialog
  * (`ImportProductDialog`), the product card dialog's shell
- * (`ProductCardDialog`) and the shells of BOTH halves of the model card modal
- * (`ModelCardModal` carries an archive card and a library-file card, each its
- * own component); and **three lightboxes**: one in each half of the model card
- * modal and the product gallery's own (`ProductGallery`). Counting them in the
- * comment at each call site is what made the number wrong; grep this file's
- * name instead.
+ * (`ProductCardDialog`), the stock correction dialog (`AdjustDialog`, in
+ * `components/products/ProductStock.tsx`) and the shells of BOTH halves of the
+ * model card modal (`ModelCardModal` carries an archive card and a library-file
+ * card, each its own component); and **three lightboxes**: one in each half of
+ * the model card modal and the product gallery's own (`ProductGallery`).
+ * Counting them in the comment at each call site is what made the number wrong;
+ * grep this file's name instead.
  *
  * ⚠️ **This is NOT a focus trap and must not be described as one.** Tab still
  * walks out of the overlay and into the page behind it; what the hook fixes is
