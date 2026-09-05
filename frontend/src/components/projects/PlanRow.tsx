@@ -122,7 +122,28 @@ export function PlanRow({
   // whose queue nothing will ever dispatch from — and the operator is told
   // nothing until they go looking. Same rule every other "available printer"
   // list applies.
-  const printers = useMemo(() => (allPrinters ?? []).filter((p) => p.is_active), [allPrinters]);
+  // ⚠️ And only the MODELS the row's files were sliced for. A part sliced for
+  // a P1S and an X2D has nothing to do on an A1 mini, and offering every active
+  // machine is how the operator was handed a menu full of minis for a two-file
+  // row. The set comes from the row's own plate and its alternatives — exactly
+  // the files that can close this row — normalised on both sides the way
+  // `fileForPrinter` compares them. A row whose files carry no model at all (an
+  // old 3MF without the metadata) filters nothing: when nothing is known, every
+  // printer beats none.
+  const models = useMemo(
+    () =>
+      new Set(
+        plateOptions(row)
+          .map((o) => normalizeModelName(o.printer_model).toLowerCase())
+          .filter(Boolean),
+      ),
+    [row],
+  );
+  const printers = useMemo(() => {
+    const active = (allPrinters ?? []).filter((p) => p.is_active);
+    if (models.size === 0) return active;
+    return active.filter((p) => models.has(normalizeModelName(p.model).toLowerCase()));
+  }, [allPrinters, models]);
 
   const tooMany = count > MAX_PER_PLATE;
   const atZero = count === 0;
@@ -310,6 +331,14 @@ export function PlanRow({
               className="px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded text-bambu-gray-light focus:border-bambu-green focus:outline-none"
             >
               <option value="">{t('orders.plan.row.toPrinter')}</option>
+              {/* The filter can leave nothing — the only X2D is in Maintenance
+                  Mode, say. An empty menu that says why beats falling back to
+                  every printer, which would be the menu full of minis again. */}
+              {printers.length === 0 && (
+                <option value="none" disabled>
+                  {t('orders.plan.row.noPrinterOfModel')}
+                </option>
+              )}
               {printers.map((printer) => (
                 <option key={printer.id} value={printer.id}>
                   {printer.model ? `${printer.name} (${printer.model})` : printer.name}

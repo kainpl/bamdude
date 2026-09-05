@@ -4843,6 +4843,7 @@ export default {
         toQueue_one: '× {{count}} to queue',
         toQueue_other: '× {{count}} to queue',
         toPrinter: 'To printer…',
+        noPrinterOfModel: 'No active printer of this model',
         tooMany: 'At most 999 per plate',
         atZero: 'Nothing to send at 0',
         decrease: 'Fewer',

@@ -4891,6 +4891,7 @@ export default {
         toQueue_many: '× {{count}} у чергу',
         toQueue_other: '× {{count}} у чергу',
         toPrinter: 'На принтер…',
+        noPrinterOfModel: 'Немає активного принтера цієї моделі',
         tooMany: 'Не більше 999 на пластину',
         atZero: 'При 0 нічого надсилати',
         decrease: 'Менше',

@@ -992,6 +992,90 @@ describe('PlanBlock', () => {
     expect(offered).toEqual(['To printer…', 'Carbon (X1C)']);
   });
 
+  it('offers only printers of the models the row was sliced for', async () => {
+    // ⚠️ The row stands for an X1C file and a P1S file — those two models are
+    // the whole set of machines that can close it. An A1 mini can hold a plate
+    // but not this one, and offering every active printer handed the operator a
+    // menu full of minis for a two-file row. Both sides go through the same
+    // normaliser, so a printer named the long way still qualifies.
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    vi.spyOn(api, 'getPrinters').mockResolvedValue([
+      { id: 1, name: 'Carbon', model: 'X1C', is_active: true },
+      { id: 2, name: 'Pea', model: 'P1S', is_active: true },
+      { id: 4, name: 'Mini', model: 'A1 Mini', is_active: true },
+      { id: 5, name: 'Longhand', model: 'Bambu Lab X1 Carbon', is_active: true },
+    ] as unknown as Printer[]);
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
+    const offered = [...pick.querySelectorAll('option')].map((o) => o.textContent);
+
+    expect(offered).toEqual([
+      'To printer…',
+      'Carbon (X1C)',
+      'Pea (P1S)',
+      'Longhand (Bambu Lab X1 Carbon)',
+    ]);
+  });
+
+  it("filters no printer when the row's files carry no model", async () => {
+    // An old 3MF without the metadata says nothing about its machine. When
+    // nothing is known, every active printer beats none.
+    const modelless: OrderPlan = {
+      ...planWithAlternative,
+      lines: [
+        {
+          ...planWithAlternative.lines[0],
+          rows: [
+            {
+              ...planWithAlternative.lines[0].rows[0],
+              printer_model: null,
+              alternatives: [{ ...otherModel, printer_model: null }],
+            },
+            planWithAlternative.lines[0].rows[1],
+          ],
+        },
+      ],
+    };
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(modelless);
+    vi.spyOn(api, 'getPrinters').mockResolvedValue([
+      { id: 1, name: 'Carbon', model: 'X1C', is_active: true },
+      { id: 4, name: 'Mini', model: 'A1 Mini', is_active: true },
+    ] as unknown as Printer[]);
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
+    const offered = [...pick.querySelectorAll('option')].map((o) => o.textContent);
+
+    expect(offered).toEqual(['To printer…', 'Carbon (X1C)', 'Mini (A1 Mini)']);
+  });
+
+  it('says so when no active printer of those models exists, instead of offering the rest', async () => {
+    // The only X2D is in Maintenance Mode and the P1S is archived: the honest
+    // answer is an empty menu that says why — not every mini on the farm.
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    vi.spyOn(api, 'getPrinters').mockResolvedValue([
+      { id: 4, name: 'Mini', model: 'A1 Mini', is_active: true },
+      { id: 2, name: 'Parked', model: 'P1S', is_active: false },
+    ] as unknown as Printer[]);
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
+    const options = [...pick.querySelectorAll('option')];
+
+    expect(options.map((o) => o.textContent)).toEqual([
+      'To printer…',
+      'No active printer of this model',
+    ]);
+    expect(options[1]).toBeDisabled();
+  });
+
   it('splits a row across the two files, and refuses a split that does not add up', async () => {
     // ⚠️ The auto-queue routes an item by its `target_model`, so a file only
     // ever reaches the printers it was sliced for — splitting the count is the
