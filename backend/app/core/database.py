@@ -217,25 +217,49 @@ async def get_db() -> AsyncSession:
                 pass
 
 
-async def init_db():
-    """Initialize the database: create tables, run migrations, seed data."""
-    # Import models to register them with SQLAlchemy
-    from backend.app.migrations import run_all_migrations
+def import_all_models() -> None:
+    """Import every module under ``backend.app.models`` so its tables land on ``Base.metadata``.
+
+    ``Base.metadata.create_all`` emits DDL only for tables the mapper has
+    actually seen, and a mapper sees a table only once the module defining it
+    has been imported. A model nobody imports is therefore invisible: the
+    application boots, the ORM statement is valid Python, and the database
+    answers "no such table" at the first query.
+
+    The list lives here and is called from two places — ``init_db`` for the
+    application and ``tests/conftest.py::test_engine`` for the test database —
+    because it used to be written out twice. The copies drifted: ``hms_mute``
+    (m163) was missing from the test one and surfaced only when the
+    printer-delete cascade grew to touch it, and ``printer_tag`` reached the
+    test metadata by accident, through a runtime import inside
+    ``models/printer.py``.
+
+    ``tests/unit/test_every_model_module_is_registered.py`` compares the names
+    below against the directory listing, so a new model module fails a test
+    rather than a query.
+
+    The imports are inside the function on purpose: every model module imports
+    ``Base`` from this one, so importing them at module scope would be a cycle.
+    """
     from backend.app.models import (  # noqa: F401
         active_print_session,
         active_print_spoolman,
         ams_history,
         ams_label,
+        ams_setting_audit,
         api_key,
         archive,
         archive_part,
         auth_ephemeral,
         auto_queue,
         bug_report,
+        calibration_audit,
+        calibration_session,
         cloud_link,
         color_catalog,
         customer,
         external_link,
+        filament_calibration,
         filament_sku_settings,
         firmware,
         git_backup,
@@ -265,6 +289,7 @@ async def init_db():
         printer_location,
         printer_queue,
         printer_sensor_history,
+        printer_setting_audit,
         printer_tag,
         product,
         project,
@@ -294,6 +319,14 @@ async def init_db():
         virtual_printer,
         zigbee_device,
     )
+
+
+async def init_db():
+    """Initialize the database: create tables, run migrations, seed data."""
+    from backend.app.migrations import run_all_migrations
+
+    # Register every model on Base.metadata before create_all — see the function.
+    import_all_models()
 
     await run_all_migrations(engine, async_session)
 

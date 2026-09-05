@@ -127,88 +127,14 @@ async def test_engine():
     """Create a test database engine."""
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 
-    # Import all models to register them
-    # ⚠️ Keep this in step with the block in ``core/database.py::init_db`` — it is
-    # the SAME registry, written twice, and a name missing here is a table the
-    # test database silently does not have. That cost a debugging round on the
-    # delete-printer fix: ``spoolman_slot_assignments`` and
-    # ``slot_preset_mappings`` were absent from the harness only, so a statement
-    # that is fine in production failed under test with "no such table".
-    from backend.app.models import (
-        active_print_session,
-        active_print_spoolman,
-        ams_history,
-        ams_label,
-        api_key,
-        archive,
-        archive_part,
-        auth_ephemeral,
-        auto_queue,
-        bug_report,
-        calibration_audit,
-        calibration_session,
-        cloud_link,
-        color_catalog,
-        customer,
-        external_link,
-        filament_calibration,
-        filament_sku_settings,
-        firmware,
-        git_backup,
-        group,
-        hms_mute,
-        kprofile_note,
-        label_device,
-        label_template,
-        library,
-        library_file_makerworld_meta,
-        library_file_note,
-        library_scan,
-        local_preset,
-        location,
-        long_lived_token,
-        macro,
-        maintenance,
-        notification,
-        notification_template,
-        oidc_provider,
-        orca_base_cache,
-        part_stock,
-        print_options_preference,
-        print_queue,
-        print_usage_event,
-        printer,
-        printer_location,
-        printer_queue,
-        printer_sensor_history,
-        printer_tag,
-        product,
-        project,
-        project_line,
-        settings,
-        shopping_list,
-        slicer_pipeline,
-        smart_plug,
-        smart_plug_energy_snapshot,
-        smart_plug_power_history,
-        smart_sensor,
-        smart_sensor_history,
-        smart_sensor_threshold,
-        spool,
-        spool_assignment,
-        spool_catalog,
-        spool_k_profile,
-        spool_usage_history,
-        spoolman_k_profile,
-        spoolman_slot_assignment,
-        telegram_chat,
-        user,
-        user_email_pref,
-        user_otp_code,
-        user_totp,
-        virtual_printer,
-        zigbee_device,
-    )
+    # The test database gets exactly the tables the application gets. The list
+    # of model modules lives in ``core/database.py::import_all_models`` — it used
+    # to be copied here too, and the copies drifted (a name missing here is a
+    # table the harness silently does not have, and a statement that is fine in
+    # production fails under test with "no such table").
+    from backend.app.core.database import import_all_models
+
+    import_all_models()
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
