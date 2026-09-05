@@ -388,6 +388,39 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
     return imported
 
 
+async def _local_sqlite_candidate(data_dir) -> Path | None:
+    """The local SQLite file this install may copy into an empty PostgreSQL.
+
+    ``bamdude.db`` when it is there. A *legacy-named* file counts only when it is
+    BamDude's own 3.0.1-era database, which ``_is_bamdude_301`` recognises by its
+    ``telegram_chats`` table.
+
+    The probe is the whole point. This path consumes what it accepts — the file
+    is renamed to ``.db.migrated`` and its WAL unlinked — so without the gate a
+    genuine upstream Bambuddy database dropped into the data directory would be
+    imported table-by-table on the strength of nothing more than sharing some
+    table names, and consumed in the process. That is precisely the one-time
+    import removed in 0.5.6, and it ran here *before* m000 was ever reached.
+
+    Imported inside the function: ``migrations`` reaches into this module during
+    startup, so importing it at module scope would close the cycle.
+    """
+    from backend.app.migrations import FOREIGN_BAMBUDDY_NOTICE, _find_legacy_database, _is_bamdude_301
+
+    primary = Path(data_dir) / "bamdude.db"
+    if primary.exists():
+        return primary
+
+    alt = _find_legacy_database(data_dir)
+    if alt is None:
+        return None
+    if await _is_bamdude_301(alt):
+        return alt
+
+    logger.warning(FOREIGN_BAMBUDDY_NOTICE, alt)
+    return None
+
+
 async def auto_migrate_sqlite_to_pg(engine, metadata) -> bool:
     """Auto-migrate local SQLite database to PostgreSQL on first PG start.
 
@@ -414,16 +447,9 @@ async def auto_migrate_sqlite_to_pg(engine, metadata) -> bool:
         return False  # Table doesn't exist yet or other error
 
     # Look for local SQLite database
-    sqlite_path = Path(settings.data_dir) / "bamdude.db"
-    if not sqlite_path.exists():
-        # Also check for legacy names
-        for name in ("bambuddy.db", "bambutrack.db"):
-            alt = Path(settings.data_dir) / name
-            if alt.exists():
-                sqlite_path = alt
-                break
-        else:
-            return False  # No local SQLite to migrate
+    sqlite_path = await _local_sqlite_candidate(settings.data_dir)
+    if sqlite_path is None:
+        return False  # No local SQLite to migrate
 
     logger.info("Found local SQLite database: %s - migrating to PostgreSQL...", sqlite_path)
 
