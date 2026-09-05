@@ -37,6 +37,7 @@ from backend.app.services.printer_location_service import (
     path_of,
     would_cycle,
 )
+from backend.app.services.stagger_groups import StaggerSplit
 
 router = APIRouter(prefix="/printer-locations", tags=["printer-locations"])
 
@@ -201,6 +202,14 @@ async def delete_location(
     row = await db.get(PrinterLocation, location_id)
     if row is None:
         raise HTTPException(status_code=404, detail="No such location.")
+    if location_id in (await StaggerSplit.from_settings(db)).location_ids:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This location is a staggered-start group. Un-choose it under "
+                "Settings → Printing → Queue & Scheduling → Staggered start first."
+            ),
+        )
     children = (
         await db.execute(
             select(func.count()).select_from(PrinterLocation).where(PrinterLocation.parent_id == location_id)

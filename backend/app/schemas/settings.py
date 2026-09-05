@@ -306,6 +306,20 @@ class AppSettings(BaseModel):
         default=True,
         description="Slot frees when bed reaches target temp (±1°C). When off, frees immediately after start.",
     )
+    # Staggered start by group — electrical phases. Design:
+    # docs/superpowers/specs/2026-09-05-stagger-groups-design.md. The id lists
+    # are JSON arrays kept as strings like every structured setting here;
+    # services/stagger_groups.py parses them.
+    stagger_split_by_tags: bool = Field(default=False, description="Cap concurrent starts per chosen printer tag")
+    stagger_group_tag_ids: str = Field(
+        default="[]", description="JSON array of printer tag ids that are stagger groups"
+    )
+    stagger_split_by_location: bool = Field(
+        default=False, description="Cap concurrent starts per chosen printer location (nearest picked ancestor)"
+    )
+    stagger_group_location_ids: str = Field(
+        default="[]", description="JSON array of printer location ids that are stagger groups"
+    )
 
     # Print modal settings
     per_printer_mapping_expanded: bool = Field(
@@ -660,6 +674,10 @@ class AppSettingsUpdate(BaseModel):
     stagger_concurrent: int | None = None
     stagger_interval_minutes: int | None = None
     stagger_wait_for_bed: bool | None = None
+    stagger_split_by_tags: bool | None = None
+    stagger_group_tag_ids: str | None = None
+    stagger_split_by_location: bool | None = None
+    stagger_group_location_ids: str | None = None
     per_printer_mapping_expanded: bool | None = None
     date_format: str | None = None
     time_format: str | None = None
@@ -820,6 +838,20 @@ class AppSettingsUpdate(BaseModel):
         if not isinstance(parsed, list) or not all(isinstance(item, int) for item in parsed):
             raise ValueError("obico_enabled_printers must be a JSON array of printer IDs (integers)")
         return v
+
+    @field_validator("stagger_group_tag_ids", "stagger_group_location_ids")
+    @classmethod
+    def validate_stagger_group_ids(cls, v: str | None) -> str | None:
+        """A JSON array of integers, stored sorted and de-duplicated."""
+        if v is None:
+            return v
+        try:
+            parsed = json.loads(v or "[]")
+        except json.JSONDecodeError:
+            raise ValueError("stagger group ids must be a JSON array of integers")
+        if not isinstance(parsed, list) or not all(isinstance(i, int) and not isinstance(i, bool) for i in parsed):
+            raise ValueError("stagger group ids must be a JSON array of integers")
+        return json.dumps(sorted(set(parsed)))
 
     @field_validator("obico_sensitivity")
     @classmethod

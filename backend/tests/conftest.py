@@ -181,6 +181,7 @@ async def test_engine():
         printer_location,
         printer_queue,
         printer_sensor_history,
+        printer_tag,
         product,
         project,
         project_line,

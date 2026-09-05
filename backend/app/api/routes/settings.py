@@ -111,6 +111,8 @@ async def get_settings(
                 "stagger_enabled",
                 "stagger_wait_for_bed",
                 "stagger_strict_for_direct_dispatch",
+                "stagger_split_by_tags",
+                "stagger_split_by_location",
                 "ldap_enabled",
                 "ldap_auto_provision",
                 "library_all_files_recursive",

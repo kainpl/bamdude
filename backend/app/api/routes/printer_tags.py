@@ -4,8 +4,9 @@ No new permissions — a label list is farm configuration, so reads ride
 ``PRINTERS_READ`` and writes ride ``PRINTERS_UPDATE``, exactly like locations.
 
 A tag deletes freely and takes its links with it — in code, because SQLite
-ignores ON DELETE. (The stagger-groups task adds the one refusal: a tag that
-Settings uses as a staggered-start group.)
+ignores ON DELETE. There is one refusal: a tag Settings uses as a
+staggered-start group is 409, because removing it would silently change which
+printers may heat at once. Un-choose it there first.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,6 +21,7 @@ from backend.app.models.printer_tag import PrinterTag, PrinterTagLink
 from backend.app.models.user import User
 from backend.app.schemas.printer_tag import PrinterTagCreate, PrinterTagListItem, PrinterTagOut, PrinterTagUpdate
 from backend.app.services.printer_tag_service import delete_links_for_tag, normalize_tag, tag_key
+from backend.app.services.stagger_groups import StaggerSplit
 
 router = APIRouter(prefix="/printer-tags", tags=["printer-tags"])
 
@@ -53,10 +55,16 @@ async def list_tags(
     _: User | None = RequirePermission(Permission.PRINTERS_READ),
 ):
     counts = await _printer_counts(db)
+    split = await StaggerSplit.from_settings(db)
     rows = (await db.execute(select(PrinterTag).order_by(PrinterTag.name_key))).scalars().all()
     return {
         "tags": [
-            PrinterTagListItem(id=row.id, name=row.name, printer_count=counts.get(row.id, 0), is_stagger_group=False)
+            PrinterTagListItem(
+                id=row.id,
+                name=row.name,
+                printer_count=counts.get(row.id, 0),
+                is_stagger_group=row.id in split.tag_ids,
+            )
             for row in rows
         ]
     }
@@ -109,6 +117,15 @@ async def delete_tag(
     row = await db.get(PrinterTag, tag_id)
     if row is None:
         raise HTTPException(status_code=404, detail="No such tag.")
+    if tag_id in (await StaggerSplit.from_settings(db)).tag_ids:
+        # Removing it would silently change which printers may heat at once.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This tag is a staggered-start group. Un-choose it under "
+                "Settings → Printing → Queue & Scheduling → Staggered start first."
+            ),
+        )
     await delete_links_for_tag(db, tag_id)
     await db.delete(row)
     await db.commit()
