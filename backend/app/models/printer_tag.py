@@ -26,7 +26,12 @@ class PrinterTag(Base):
     name: Mapped[str] = mapped_column(String(64))
     # Case-insensitive identity, unique across the farm: "Фаза 1" and "фаза 1"
     # are one tag — the condition this entity exists to end.
-    name_key: Mapped[str] = mapped_column(String(64))
+    #
+    # Wider than ``name`` because ``.lower()`` is not length-preserving in
+    # Unicode: "İ" (U+0130) lowers to two code points, so a 64-character name
+    # can fold to more than 64. SQLite ignores VARCHAR width, PostgreSQL
+    # enforces it and would reject the write.
+    name_key: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -331,5 +331,7 @@ def test_every_fk_to_printers_is_accounted_for():
     assert not unhandled, (
         f"these tables carry a NOT NULL printer_id with nothing to clean them up: {sorted(unhandled)}. "
         "Add the model to PRINTER_CASCADE_MODELS in routes/printers.py, or give Printer a cascading "
-        "relationship and list it here."
+        "relationship and list it here — or, if the rows are removed by the service that owns the "
+        "table rather than by the bulk list, add the table to by_owning_service above and name the "
+        "test that proves the rows actually go."
     )

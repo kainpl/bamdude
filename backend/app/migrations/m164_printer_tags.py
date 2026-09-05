@@ -5,8 +5,11 @@ Design: docs/superpowers/specs/2026-09-05-stagger-groups-design.md (Decision 7).
 Two tables, no seed, no backfill: a farm has no tags until an operator makes
 one. DDL is dialect-neutral (m162 is the pattern): ``create_all`` builds both
 tables on a fresh install before this runs and the guards then do nothing; the
-CREATE below is the path an EXISTING database walks, and on PostgreSQL that
-path must parse (``tests/unit/test_migration_ddl_dialects.py``).
+CREATE below is the path an EXISTING database walks.
+
+Written PostgreSQL-valid on principle; ``tests/unit/test_migration_ddl_dialects.py``
+scans only tables absent from ``Base.metadata``, and ``create_all`` precedes the
+chain on every install, so this branch is not exercised in practice.
 """
 
 from backend.app.core.db_dialect import is_sqlite
@@ -27,7 +30,10 @@ async def upgrade(conn):
             CREATE TABLE printer_tags (
                 id {pk},
                 name VARCHAR(64) NOT NULL,
-                name_key VARCHAR(64) NOT NULL,
+                -- Wider than ``name``: ``.lower()`` is not length-preserving in
+                -- Unicode ("İ" lowers to two code points), and PostgreSQL
+                -- enforces VARCHAR width where SQLite ignores it.
+                name_key VARCHAR(128) NOT NULL,
                 created_at {ts} NOT NULL,
                 updated_at {ts} NOT NULL
             )

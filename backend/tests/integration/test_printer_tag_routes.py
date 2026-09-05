@@ -131,6 +131,19 @@ async def test_an_unknown_tag_id_is_422_and_writes_nothing(async_client, db_sess
     assert await _link_count(db_session) == 0
 
 
+async def test_the_same_tag_sent_twice_makes_one_link(async_client, db_session):
+    """``replace_links`` folds through ``sorted(set(...))`` — the composite PK would
+    otherwise refuse the second insert and answer 500."""
+    tag = await _tag(async_client)
+    printer = await _printer(db_session)
+
+    rsp = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"tag_ids": [tag["id"], tag["id"]]})
+
+    assert rsp.status_code == 200, rsp.text
+    assert rsp.json()["tag_ids"] == [tag["id"]]
+    assert await _link_count(db_session) == 1
+
+
 async def test_an_explicit_null_clears_the_tags_instead_of_failing(async_client, db_session):
     """A GET → edit → PATCH client sends the field back; null reads as "no tags"."""
     from backend.app.services.printer_tag_service import replace_links
