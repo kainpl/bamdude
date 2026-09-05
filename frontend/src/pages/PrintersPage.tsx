@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
 import { useTranslation } from 'react-i18next';
 import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
+import { PrinterTagsSelect } from '../components/PrinterTagsSelect';
 import { UsageProjection } from '../components/UsageProjection';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { formatFileSize } from '../utils/file';
@@ -3094,6 +3095,26 @@ function PrinterCard({
                     );
                   })()}
                 </div>
+                {/* Tags, on a line of their own.
+                    ⚠️ Deliberately NOT inside the name row above: that row is
+                    `items-center` and carries the pause chip, the recording
+                    badge and the connection pip, and a wrapping strip of tags
+                    added there pushes all three around as soon as a printer
+                    wears more than one label. This `min-w-0 flex-1` column is
+                    the wrap the chips need — the name row keeps its badges,
+                    the tags get their own width. */}
+                {printer.tags?.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-0.5">
+                    {printer.tags.map((tag) => (
+                      <span
+                        key={tag.id}
+                        className="px-1.5 py-0.5 rounded-full bg-bambu-dark-tertiary text-bambu-gray text-[10px] leading-none"
+                      >
+                        {tag.name}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <p className="text-sm text-bambu-gray flex items-center gap-1.5 flex-wrap">
                   {printer.swap_mode_enabled && (
                     <span className="text-[length:var(--pc-t10,10px)] px-1 py-0.5 bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 rounded inline-flex items-center gap-0.5" title={t('printers.swapMode')}>
@@ -7087,6 +7108,7 @@ export function AddPrinterModal({
     access_code: '',
     model: '',
     location_id: null as number | null,
+    tag_ids: [] as number[],
     auto_archive: true,
     cleanup_after_print: false,
     // 0 = disabled, matching the backend default. Recycling a live MQTT link
@@ -7530,6 +7552,14 @@ export function AddPrinterModal({
                     allowCreate
                   />
                   <p className="text-xs text-bambu-gray mt-1">{t('printers.locationHelp')}</p>
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.tags')}</label>
+                  <PrinterTagsSelect
+                    value={form.tag_ids ?? []}
+                    onChange={(ids) => setForm({ ...form, tag_ids: ids })}
+                    allowCreate
+                  />
                 </div>
               </div>
 
@@ -8005,6 +8035,7 @@ function EditPrinterModal({
     access_code: '',
     model: printer.model || '',
     location_id: printer.location?.id ?? null,
+    tag_ids: printer.tags?.map((tag) => tag.id) ?? [],
     auto_archive: printer.auto_archive,
     is_active: printer.is_active,
     cleanup_after_print: printer.cleanup_after_print ?? false,
@@ -8054,6 +8085,7 @@ function EditPrinterModal({
       ip_address: form.ip_address,
       model: form.model || undefined,
       location_id: form.location_id,
+      tag_ids: form.tag_ids,
       auto_archive: form.auto_archive,
       is_active: form.is_active,
       cleanup_after_print: form.cleanup_after_print,
@@ -8201,6 +8233,14 @@ function EditPrinterModal({
                     allowCreate
                   />
                   <p className="text-xs text-bambu-gray mt-1">{t('printers.locationHelp')}</p>
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.tags')}</label>
+                  <PrinterTagsSelect
+                    value={form.tag_ids ?? []}
+                    onChange={(ids) => setForm({ ...form, tag_ids: ids })}
+                    allowCreate
+                  />
                 </div>
               </div>
 

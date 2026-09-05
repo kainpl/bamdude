@@ -191,6 +191,18 @@ export default {
       nameTaken: 'Розташування з такою назвою вже існує.',
       counts: '{{printers}} принтерів · {{sensors}} датчиків · {{queued}} у черзі'
     },
+    tags: {
+      title: 'Теги',
+      add: 'Додати тег',
+      addShort: '+ Новий',
+      pick: 'Додати тег…',
+      empty: 'Тегів ще немає. Додайте, щоб позначати принтери — фаза, ряд, замовник.',
+      nameTaken: 'Тег з такою назвою вже існує.',
+      inUse: 'Цей тег є групою поетапного запуску. Спершу зніміть його в «Черги та планування».',
+      counts: 'принтерів: {{count}}',
+      staggerGroup: 'група запуску',
+      remove: 'Зняти {{name}}'
+    },
     title: 'Принтери',
     addPrinter: 'Додати принтер',
     addPreflight: {
@@ -652,6 +664,7 @@ export default {
       selectModel: 'Оберіть модель...',
       locationGroup: 'Розташування / Група (необов\'язково)',
       locationPlaceholder: 'напр., Майстерня, Офіс, Підвал',
+      tags: 'Теги',
       cleanupAfterPrintLabel: 'Видалення файлів з SD-карти після друку',
       cleanupAfterPrintHint: 'За замовчуванням файли переміщуються в кеш-папку.',
       mqttConnectionTimeoutLabel: 'Тайм-аут з\'єднання MQTT',

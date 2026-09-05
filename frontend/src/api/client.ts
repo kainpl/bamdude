@@ -543,6 +543,18 @@ export interface PrinterLocationListItem extends PrinterLocation {
   queued_count: number;
 }
 
+/** A label a printer carries. Flat — a tag has no parent. */
+export interface PrinterTag {
+  id: number;
+  name: string;
+}
+
+export interface PrinterTagListItem extends PrinterTag {
+  printer_count: number;
+  /** Chosen as a staggered-start group in Settings; the backend refuses to delete it while true. */
+  is_stagger_group: boolean;
+}
+
 export interface Printer {
   id: number;
   name: string;
@@ -557,6 +569,9 @@ export interface Printer {
   // location changes it everywhere at once because everything points at the id.
   location: PrinterLocation | null;
   location_id: number | null;
+  // Labels, resolved. Objects for display; `tag_ids` is what a form posts back.
+  tags: PrinterTag[];
+  tag_ids: number[];
   nozzle_count: number;  // 1 or 2, auto-detected from MQTT
   is_active: boolean;
   // Soft-retire (#archived): archived printers are hidden from the whole app +
@@ -941,6 +956,7 @@ export interface PrinterCreate {
   access_code: string;
   model?: string;
   location_id?: number | null;
+  tag_ids?: number[];
   auto_archive?: boolean;
   // Maintenance Mode (#1476). Backend already gates MQTT, queue dispatch,
   // scheduler, metrics and the print picker on this; PATCH /printers/{id}
@@ -6821,6 +6837,12 @@ export const api = {
     request<PrinterLocation>(`/printer-locations/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deletePrinterLocation: (id: number) =>
     request<{ deleted: number }>(`/printer-locations/${id}`, { method: 'DELETE' }),
+  getPrinterTags: () => request<{ tags: PrinterTagListItem[] }>('/printer-tags'),
+  createPrinterTag: (name: string) =>
+    request<PrinterTag>('/printer-tags', { method: 'POST', body: JSON.stringify({ name }) }),
+  updatePrinterTag: (id: number, name: string) =>
+    request<PrinterTag>(`/printer-tags/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  deletePrinterTag: (id: number) => request<{ deleted: number }>(`/printer-tags/${id}`, { method: 'DELETE' }),
   getDeveloperModeWarnings: () =>
     request<{ printer_id: number; name: string }[]>('/printers/developer-mode-warnings'),
   getAvailableFilaments: (model: string, locationId?: number) => {

@@ -62,6 +62,7 @@ import { LabelTemplateEditor } from '../components/labels/LabelTemplateEditor';
 import { LabelSheetEditor } from '../components/labels/LabelSheetEditor';
 import { RetentionCard } from '../components/settings/RetentionCard';
 import { PrinterLocationsCard } from '../components/settings/PrinterLocationsCard';
+import { PrinterTagsCard } from '../components/settings/PrinterTagsCard';
 import { CloudLinkSettings } from '../components/settings/CloudLinkSettings';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
 import { adoptUntouchedServerChanges } from '../utils/settingsReconcile';
@@ -3208,6 +3209,25 @@ export function SettingsPage() {
               </CardHeader>
               <CardContent>
                 <PrinterLocationsCard />
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Tags — beside Locations because they answer the same kind of
+              question about a printer, and behind the same gate: the tags API
+              checks printers:update too. A place is where a printer stands and
+              it has exactly one; a tag is a label and it can carry several,
+              which is why these are two cards and not one. */}
+          {hasPermission('printers:update') && (
+            <Card id="card-printer-tags">
+              <CardHeader>
+                <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                  <Tag className="w-4 h-4 text-bambu-green" />
+                  {t('printers.tags.title')}
+                </h3>
+              </CardHeader>
+              <CardContent>
+                <PrinterTagsCard />
               </CardContent>
             </Card>
           )}

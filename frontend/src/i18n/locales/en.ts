@@ -191,6 +191,18 @@ export default {
       nameTaken: 'A location with this name already exists.',
       counts: '{{printers}} printers · {{sensors}} sensors · {{queued}} queued'
     },
+    tags: {
+      title: 'Tags',
+      add: 'Add tag',
+      addShort: '+ New',
+      pick: 'Add a tag…',
+      empty: 'No tags yet. Add one to label printers — a phase, a row, a customer.',
+      nameTaken: 'A tag with this name already exists.',
+      inUse: 'This tag is a staggered-start group. Un-choose it under Queue & Scheduling first.',
+      counts: '{{count}} printers',
+      staggerGroup: 'stagger group',
+      remove: 'Remove {{name}}'
+    },
     title: 'Printers',
     addPrinter: 'Add Printer',
     addPreflight: {
@@ -642,6 +654,7 @@ export default {
       selectModel: 'Select model...',
       locationGroup: 'Location / Group (optional)',
       locationPlaceholder: 'e.g., Workshop, Office, Basement',
+      tags: 'Tags',
       cleanupAfterPrintLabel: 'Delete print files from SD card after print',
       cleanupAfterPrintHint: 'By default files are moved to a cache folder.',
       mqttConnectionTimeoutLabel: 'MQTT Connection Timeout',
