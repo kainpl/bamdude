@@ -14,6 +14,9 @@ printer, sending another live printer's queue home — instead of creating the
 new queue under the next free id, which is what made the equality a hope.
 """
 
+import logging
+from datetime import datetime
+
 import pytest
 from sqlalchemy import delete as sa_delete, select
 
@@ -60,8 +63,21 @@ async def test_an_orphan_on_the_printers_id_is_adopted(db_session, printer_facto
     go, the row is reset, and the new printer takes it over."""
     orphan_owner = await printer_factory()
     printer = await printer_factory()
-    # An orphan queue on ``printer.id`` still claiming to belong to somebody else.
-    db_session.add(PrinterQueue(id=printer.id, printer_id=orphan_owner.id, status="printing", pending_count=3))
+    # An orphan queue on ``printer.id`` still claiming to belong to somebody else,
+    # carrying every scrap of the dead printer's live state.
+    db_session.add(
+        PrinterQueue(
+            id=printer.id,
+            printer_id=orphan_owner.id,
+            status="printing",
+            pending_count=3,
+            skipped_count=2,
+            is_paused=True,
+            auto_distribute_eligible=False,
+            last_activity_at=datetime(2026, 9, 1, 12, 0, 0),
+            current_item_id=99,
+        )
+    )
     await db_session.commit()
     db_session.add(PrintQueueItem(queue_id=printer.id, status="pending", position=0))
     await db_session.commit()
@@ -80,11 +96,54 @@ async def test_an_orphan_on_the_printers_id_is_adopted(db_session, printer_facto
     assert queue.printer_id == printer.id
     assert queue.status == "idle"
     assert queue.pending_count == 0
+    assert queue.skipped_count == 0
     assert queue.current_item_id is None
+    # Reset past what the brief listed: a pause or an auto-queue exclusion the dead
+    # printer was carrying would silently stop the new one ever being dispatched to.
+    assert queue.is_paused is False
+    assert queue.auto_distribute_eligible is True
+    assert queue.last_activity_at is None
     items = (await db_session.execute(select(PrintQueueItem))).scalars().all()
     assert items == []
     rows = (await db_session.execute(select(PrinterQueue))).scalars().all()
     assert [(q.id, q.printer_id) for q in rows] == [(printer.id, printer.id)]
+
+
+async def test_an_orphan_on_the_id_and_the_real_queue_elsewhere_are_reconciled(db_session, printer_factory):
+    """⚠️ Both at once is the state the removed next-free-id branch actually left:
+    it created the printer's queue somewhere else precisely BECAUSE an orphan was
+    sitting on the printer's id. Adopting the orphan here would write a
+    ``printer_id`` the real row already holds and ``UNIQUE`` would reject it — so
+    the real queue is re-keyed home first and the orphan goes with its items."""
+    orphan_owner = await printer_factory()
+    printer = await printer_factory()
+    wrong_id = printer.id + 100
+    db_session.add_all(
+        [
+            PrinterQueue(id=printer.id, printer_id=orphan_owner.id),
+            PrinterQueue(id=wrong_id, printer_id=printer.id),
+        ]
+    )
+    await db_session.commit()
+    stale = PrintQueueItem(queue_id=printer.id, status="pending", position=0)
+    live = PrintQueueItem(queue_id=wrong_id, status="pending", position=0)
+    db_session.add_all([stale, live])
+    await db_session.commit()
+    stale_id, live_id = stale.id, live.id
+    await db_session.execute(sa_delete(Printer).where(Printer.id == orphan_owner.id))
+    await db_session.commit()
+
+    queue = await ensure_printer_queue(db_session, printer.id)
+    await db_session.commit()
+
+    assert (queue.id, queue.printer_id) == (printer.id, printer.id)
+    rows = (await db_session.execute(select(PrinterQueue))).scalars().all()
+    assert [(q.id, q.printer_id) for q in rows] == [(printer.id, printer.id)]
+    items = {i.id: i.queue_id for i in (await db_session.execute(select(PrintQueueItem))).scalars().all()}
+    assert items == {live_id: printer.id}
+    assert stale_id not in items
+    # And the install is healthy afterwards — the sweep finds nothing left to do.
+    assert await ensure_all_printer_queues(db_session) == 0
 
 
 async def test_a_squatter_made_queue_is_moved_to_the_printers_id(db_session, printer_factory):
@@ -176,3 +235,29 @@ async def test_startup_repairs_a_misplaced_queue(db_session, printer_factory):
         (healthy.id, healthy.id),
         (misplaced.id, misplaced.id),
     }
+
+
+async def test_startup_survives_a_printer_it_cannot_repair(db_session, printer_factory, caplog):
+    """A and B's queues are on each other's ids — a ring nothing can unwind, since
+    every move wants the other id free first. It is logged and stepped over; C, who
+    has no queue at all, still gets one, and the sweep does not raise."""
+    printer_a = await printer_factory()
+    printer_b = await printer_factory()
+    printer_c = await printer_factory()
+    db_session.add_all(
+        [
+            PrinterQueue(id=printer_a.id, printer_id=printer_b.id),
+            PrinterQueue(id=printer_b.id, printer_id=printer_a.id),
+        ]
+    )
+    await db_session.commit()
+
+    with caplog.at_level(logging.ERROR, logger="backend.app.services.printer_queues"):
+        assert await ensure_all_printer_queues(db_session) == 1
+
+    assert "could not repair the queue of printer" in caplog.text
+    ids = {q.id: q.printer_id for q in (await db_session.execute(select(PrinterQueue))).scalars().all()}
+    assert ids[printer_c.id] == printer_c.id
+    # The ring is untouched, not half-unwound into something worse.
+    assert ids[printer_a.id] == printer_b.id
+    assert ids[printer_b.id] == printer_a.id

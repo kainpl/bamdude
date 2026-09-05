@@ -23,21 +23,41 @@ and an older build of this module answered that by creating the new queue under
 the next free id — which made the invariant a hope. The guard repairs instead
 of yielding:
 
-* the row on the printer's id owned by a printer that is **gone** is an orphan
-  — its stale items are dropped, the archives that referenced it are detached,
-  and the row is reset and adopted;
 * the row on the printer's id owned by a printer that **exists** is that
   printer's queue parked on the wrong id — it is moved home first
   (``_rekey_queue``), which frees the id;
 * a row that carries the printer's ``printer_id`` under some other id is moved
-  onto the printer's id, its queue items and archives following it.
+  onto the printer's id, its queue items and archives following it;
+* the row on the printer's id owned by a printer that is **gone** is an orphan
+  — its stale items are dropped, the archives that referenced it are detached,
+  and the row is reset and adopted.
+
+⚠️ Those last two are tried in that order, and the order is the whole point:
+the removed next-free-id branch produced installs holding BOTH at once — an
+orphan of a deleted printer on id X and printer X's real queue parked
+elsewhere. Adopting first would write ``printer_id = X`` onto the orphan while
+the real queue still carries it, and ``UNIQUE(printer_id)`` would reject it from
+every caller. Re-keying the real queue first drops the orphan on the way past.
+
+⚠️ A ring of misplaced rows (A's queue on B's id and B's on A's) cannot be
+repaired at all: every move needs the other id free first. ``_rekey_queue``
+raises ``RuntimeError`` on it rather than looping, and the startup sweep logs it
+and carries on to the other printers.
 
 ⚠️ The re-key updates a primary key with children still pointing at the old
 value, which only passes where the FK is not enforced statement-by-statement —
 SQLite, which is where these rows arise (PostgreSQL cascades the printer delete
-and never leaves an orphan behind). On PostgreSQL a re-key of a queue that
-still owns items would be refused by the FK; the startup sweep is wrapped in
-main.py's guard, so that is a logged failure to repair, never a failed start.
+and never leaves an orphan behind). ``print_archives.queue_id`` is an FK as
+well as ``print_queue.queue_id``, so on PostgreSQL the re-key is refused for any
+queue that has ever recorded an archive — practically every queue on a live
+farm, not merely one with items still on it. No reordering of the three
+statements helps: a child needs a parent that exists, a parent's key cannot move
+while a child references it, and ``UNIQUE NOT NULL printer_id`` forbids
+standing a second row up beside it in the meantime. The fix is a migration
+adding ``ON UPDATE CASCADE`` to those two FKs (preferred over making them
+DEFERRABLE, which would buy the same thing only inside one transaction);
+meanwhile the startup sweep logs the refusal per printer and main.py's guard
+keeps it away from startup.
 """
 
 from __future__ import annotations
@@ -63,10 +83,15 @@ async def ensure_printer_queue(
     """The printer's queue row — the row whose id IS ``printer_id``.
 
     Looks that row up first and repairs whatever it finds instead of stepping
-    aside: an orphan of a deleted printer is adopted, another live printer's
-    queue is moved home, and a row already carrying ``printer_id`` under some
-    other id is re-keyed onto it. Only when the id is genuinely free is a queue
+    aside: another live printer's queue is moved home, a row already carrying
+    ``printer_id`` under some other id is re-keyed onto it, and an orphan of a
+    deleted printer is adopted. Only when the id is genuinely free is a queue
     created, and then always as ``PrinterQueue(id=printer_id, ...)``.
+
+    ⚠️ Adoption is the LAST resort, not the first: an orphan on ``printer_id``
+    and the printer's real queue parked elsewhere occur together, and adopting
+    then writes a ``printer_id`` a live row already holds — ``UNIQUE`` rejects
+    it. Re-keying the real queue home drops the orphan on the way past.
 
     Flushes but does not commit — the caller owns the transaction, so the row
     lands together with whatever needed it (an archive, a claim, the printer).
@@ -80,21 +105,28 @@ async def ensure_printer_queue(
         raise RuntimeError(f"printer_queues form a re-keying cycle — printer {printer_id} was reached twice")
     visited.add(printer_id)
 
+    orphan: PrinterQueue | None = None
     row = await db.get(PrinterQueue, printer_id)
     if row is not None:
         if row.printer_id == printer_id:
             return row
         if await db.get(Printer, row.printer_id) is None:
-            return await _adopt_orphan(db, row, printer_id)
-        # A live printer's queue parked on somebody else's id (the old
-        # next-free-id branch made these). Moving it home frees ``printer_id``.
-        await _rekey_queue(db, row, new_id=row.printer_id, visited=visited)
+            # Held for the fall-through: the printer's real queue may still be
+            # out there, and it has the better claim on the id.
+            orphan = row
+        else:
+            # A live printer's queue parked on somebody else's id (the old
+            # next-free-id branch made these). Moving it home frees ``printer_id``.
+            await _rekey_queue(db, row, new_id=row.printer_id, visited=visited)
 
     misplaced = (
         await db.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer_id))
     ).scalar_one_or_none()
     if misplaced is not None:
+        # ``_rekey_queue`` clears an orphan occupying the target on its own.
         return await _rekey_queue(db, misplaced, new_id=printer_id, visited=visited)
+    if orphan is not None:
+        return await _adopt_orphan(db, orphan, printer_id)
 
     queue = PrinterQueue(id=printer_id, printer_id=printer_id)
     db.add(queue)
@@ -111,6 +143,13 @@ async def ensure_all_printer_queues(db: AsyncSession) -> int:
     printers had their queue created or repaired; a healthy install returns 0
     and logs nothing.
 
+    ⚠️ One printer that cannot be repaired must not take the rest of the farm
+    with it — a ring of misplaced rows is unrepairable by design, and on
+    PostgreSQL the re-key is refused outright — so each printer is guarded and
+    only the ones that came back count. (A refusal that poisons the transaction,
+    which is what PostgreSQL does with an IntegrityError, will still fail every
+    printer after it; the next call retries the lot.)
+
     ⚠️ The count is taken from a snapshot read BEFORE anything moves, not per
     iteration: repairing one printer can put another printer's row right on the
     way past (its queue was parked on this one's id), and by its own turn that
@@ -119,10 +158,16 @@ async def ensure_all_printer_queues(db: AsyncSession) -> int:
     printer_ids = (await db.execute(select(Printer.id).order_by(Printer.id))).scalars().all()
     placed = (await db.execute(select(PrinterQueue.id, PrinterQueue.printer_id))).all()
     correct = {printer_id for queue_id, printer_id in placed if queue_id == printer_id}
-    repaired = [printer_id for printer_id in printer_ids if printer_id not in correct]
+    needed = [printer_id for printer_id in printer_ids if printer_id not in correct]
 
+    failed: set[int] = set()
     for printer_id in printer_ids:
-        await ensure_printer_queue(db, printer_id)
+        try:
+            await ensure_printer_queue(db, printer_id)
+        except Exception:  # noqa: BLE001 — one unrepairable printer is not the others' problem
+            logger.exception("Startup: could not repair the queue of printer %s", printer_id)
+            failed.add(printer_id)
+    repaired = [printer_id for printer_id in needed if printer_id not in failed]
     if repaired:
         await db.commit()
         logger.info("Startup: created or repaired the queue of %d printer(s): %s", len(repaired), repaired)
