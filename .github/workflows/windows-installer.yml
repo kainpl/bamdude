@@ -7,9 +7,10 @@ name: Windows Installer
 #   - Manual dispatch (for testing the build pipeline)
 #
 # The installer ships unsigned — there is no code-signing certificate for
-# this project and nothing pending that would produce one. A signing step
-# belongs between ISCC and upload once that changes; see the Signing
-# section of installers/windows/README.md for what "changes" means here.
+# this project yet. An application to the SignPath Foundation OSS programme
+# is pending (submitted 2026-09-06); once approved, a signing step belongs
+# between ISCC and upload. See the Signing section of
+# installers/windows/README.md for what still has to change here first.
 
 on:
   push:
