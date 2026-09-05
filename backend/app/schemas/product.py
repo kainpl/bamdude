@@ -162,6 +162,12 @@ class ProductPartResponse(BaseModel):
     sourcing_url: str | None = None
     remarks: str | None = None
     sort_order: int = 0
+    # How many of this part are on the shelf (pass 8, Decision 6). A SUM over
+    # the ledger, never a column — ``models/part_stock`` says why — so every
+    # route answering with a part reads it, and ``0`` here means "no stock",
+    # not "not asked". A purchased part or one the product zeroed has no
+    # balance to have and reads 0 for good.
+    stock_balance: int = 0
 
     @field_validator("aliases", mode="before")
     @classmethod
@@ -270,6 +276,11 @@ class ProductListItem(BaseModel):
     parts_count: int = 0
     plates_count: int = 0
     lines_count: int = 0
+    # Whole units the free stock can already make (pass 8, Decision 6) — the
+    # scarcest counted part decides, because a kit is the unit the operator
+    # thinks in. On the LIST too, and read there for every product in one
+    # aggregated query: a per-product read would be an N+1 behind the catalog.
+    kits_available: int = 0
 
 
 class ProductResponse(ProductListItem):
@@ -362,3 +373,99 @@ class RereadResponse(BaseModel):
 
     product: ProductResponse
     notes: list[CardNote] = []
+
+
+# ---------- free stock (pass 8, Decision 6) ----------
+
+
+class StockBalanceOut(BaseModel):
+    """One counted part and what is on the shelf for it.
+
+    ``qty_per_unit`` rides along because the page's whole question is "how many
+    kits", and that is ``balance // qty_per_unit`` per part — sending the
+    balance alone would make the frontend ask for the product a second time to
+    divide by a number it already had.
+    """
+
+    part_id: int
+    name: str
+    qty_per_unit: int
+    balance: int
+
+
+class StockMovementOut(BaseModel):
+    """One row of the ledger, as the product page reads it.
+
+    ``order_id`` / ``order_name`` are RESOLVED here rather than left to the
+    client: a reservation names an order LINE, and the page has no way to turn
+    a line id into the order the operator recognises. Both are ``None`` for a
+    movement whose line was detached — a deleted line keeps its history but has
+    no order any more (``part_stock.detach_line``).
+
+    ``note`` is a TOKEN from ``part_stock.NOTE_TOKENS`` for everything the
+    backend writes and the operator's own words for a hand correction; the
+    frontend translates the first kind and prints the second (Ruling 17).
+    """
+
+    id: int
+    part_id: int
+    part_name: str
+    delta: int
+    reason: str
+    project_line_id: int | None = None
+    order_id: int | None = None
+    order_name: str | None = None
+    archive_id: int | None = None
+    note: str | None = None
+    created_by: int | None = None
+    created_at: datetime
+
+
+class ProductStockOut(BaseModel):
+    """``GET /products/{id}/stock`` — the shelf and how it got that way."""
+
+    balances: list[StockBalanceOut] = []
+    kits_available: int = 0
+    #: Newest first, capped by the request's ``limit`` (200 by default, 500 at
+    #: most). Deliberately NOT filtered to counted parts: a movement written
+    #: before a part was zeroed still happened, and a history that hides it is
+    #: not a history.
+    movements: list[StockMovementOut] = []
+
+
+class StockAdjustIn(BaseModel):
+    """``POST /products/{id}/stock/adjust`` — the operator's hand correction.
+
+    ``note`` is REQUIRED, unlike every other movement's: the backend's own
+    movements say what they were for by their reason, and a hand correction
+    says nothing at all unless the person making it does. It is the one note on
+    the wire that is prose rather than a token, because only the operator knows
+    why the shelf and the ledger disagreed.
+    """
+
+    part_id: int
+    delta: int
+    note: str = Field(min_length=1, max_length=500)
+
+    @field_validator("delta")
+    @classmethod
+    def _delta_moves_something(cls, v: int) -> int:
+        # ``move`` answers a zero delta with ``None`` and writes nothing, so a
+        # route that let one through would have to answer 200 with no movement
+        # — a shape the response model cannot even express.
+        if v == 0:
+            raise ValueError("delta cannot be zero")
+        return v
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def _note_is_clean(cls, v: Any) -> Any:
+        # Trimmed BEFORE ``min_length`` / ``max_length`` measure it, for the
+        # reason ``_clean_name`` gives: otherwise "   " passes a length rule it
+        # does not meet and a full-length note is refused over a trailing space.
+        if not isinstance(v, str):
+            return v
+        trimmed = v.strip()
+        if not trimmed:
+            raise ValueError("note cannot be blank")
+        return trimmed

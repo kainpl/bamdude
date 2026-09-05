@@ -1008,6 +1008,12 @@ async def test_the_kit_decision_is_made_with_every_part_locked(db_session, test_
     statements = [_normalise(s) for s in seen]
     balance = next(i for i, s in enumerate(statements) if "LEFT OUTER JOIN product_part_stock_movements" in s)
     assert statements[:balance].count(wanted) == 2, "both counted parts locked before the shelf was read"
+    # ⚠️ The shape above is SQLite's, and SQLite's dialect DROPS ``FOR UPDATE``
+    # — so on its own it would pass just as happily for a loop that had lost
+    # its ``.with_for_update()`` and taken no lock at all. The same statement
+    # compiled for PostgreSQL is the only place the lock is visible, and it is
+    # the same statement: ``wanted`` is built from ``lock_part_stmt`` too.
+    assert "FOR UPDATE" in str(lock_part_stmt(parts["lid"].id).compile(dialect=postgresql.dialect()))
 
 
 async def test_every_note_the_writer_writes_is_a_listed_token(db_session):

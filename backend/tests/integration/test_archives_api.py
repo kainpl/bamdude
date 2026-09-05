@@ -1374,6 +1374,9 @@ async def test_taking_a_print_back_out_of_an_order_puts_its_parts_back(
     rows = await _stock_rows(db_session)
     assert [row[1:3] for row in rows] == [("unfiled_print", 4), ("manual", -4), ("unfiled_print", 4)]
     assert sum(row[2] for row in rows) == 4, "the parts are back on the shelf"
+    # A TOKEN, not a sentence (Ruling 17): the product page renders the reason
+    # in the operator's language, and a note is written once and read forever.
+    assert rows[-1][4] == part_stock.NOTE_UNFILED_FROM_ORDER
 
 
 @pytest.mark.asyncio

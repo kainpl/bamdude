@@ -23,7 +23,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import delete, func, inspect as sqla_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,7 +35,9 @@ from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import Product, ProductPart, ProductPlate, product_files, product_folders
+from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
 from backend.app.schemas.product import (
@@ -57,8 +59,12 @@ from backend.app.schemas.product import (
     ProductPartResponse,
     ProductPartUpdate,
     ProductResponse,
+    ProductStockOut,
     ProductUpdate,
     RereadResponse,
+    StockAdjustIn,
+    StockBalanceOut,
+    StockMovementOut,
 )
 from backend.app.services import part_stock
 from backend.app.services.part_names import canonicalize, name_key
@@ -160,6 +166,27 @@ async def _timestamps(db: AsyncSession, product: Product) -> tuple[datetime, dat
     return row[0], row[1]
 
 
+def _with_balance(part: ProductPart, part_balances: dict[int, int]) -> ProductPartResponse:
+    """One part on the wire, carrying its free-stock balance.
+
+    ``stock_balance`` is a SUM over the ledger and never a column (see
+    ``models/part_stock``), so it has to be poured in from the outside. A part
+    absent from ``part_balances`` reads 0 and that is the right answer: only a
+    COUNTED part has a balance at all, and a purchased one never will.
+    """
+    return ProductPartResponse.model_validate(part).model_copy(update={"stock_balance": part_balances.get(part.id, 0)})
+
+
+async def _part_out(db: AsyncSession, part: ProductPart) -> ProductPartResponse:
+    """:func:`_with_balance` for a route that answers with ONE part.
+
+    Reads the ledger rather than defaulting to 0, because a merge moves stock
+    onto the surviving row — a part route that answered ``stock_balance: 0``
+    there would be telling the page the shelf had just been emptied.
+    """
+    return _with_balance(part, await part_stock.balances(db, part.product_id))
+
+
 async def _response(db: AsyncSession, product: Product, *, reload_links: bool = False) -> ProductResponse:
     links = ["parts", "plates", "library_files", "library_folders"]
     # ``reload_links`` — a sync ran, and it wrote ``product_files`` /
@@ -171,6 +198,10 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
     if reload_links or set(links) & sqla_inspect(product).unloaded:
         await db.refresh(product, links)
     created_at, updated_at = await _timestamps(db, product)
+    # ONE ledger read per response, feeding both the per-part balance and the
+    # kit count — the two are the same numbers asked twice, and reading them
+    # apart is how they would start to disagree on the same screen.
+    part_balances = await part_stock.balances(db, product.id)
     return ProductResponse(
         id=product.id,
         name=product.name,
@@ -187,9 +218,8 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
         source_url=product.source_url,
         design_id=product.design_id,
         attachments=sorted_attachments(product),
-        parts=[
-            ProductPartResponse.model_validate(p) for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))
-        ],
+        kits_available=part_stock.kits_available(part_balances, list(product.parts)),
+        parts=[_with_balance(p, part_balances) for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))],
         library_file_ids=sorted(f.id for f in product.library_files),
         library_folder_ids=sorted(f.id for f in product.library_folders),
         units_printed_total=await units_printed_total(db, product.id),
@@ -252,6 +282,10 @@ async def list_products(
         ).all()
     )
     plates = await _plates_count(db, [p.id for p in products])
+    # The ledger for the WHOLE page in one grouped read, exactly like the plate
+    # counts above it — ``kits_available`` per product is a per-row number and a
+    # per-row query for it would be an N+1 nobody notices until the catalog grows.
+    stock = await part_stock.balances_for_products(db, [p.id for p in products])
     return [
         ProductListItem(
             id=p.id,
@@ -262,6 +296,7 @@ async def list_products(
             parts_count=len(p.parts),
             plates_count=plates.get(p.id, 0),
             lines_count=counts.get(p.id, 0),
+            kits_available=part_stock.kits_available(stock.get(p.id, {}), list(p.parts)),
         )
         for p in products
     ]
@@ -634,7 +669,7 @@ async def create_part(
     db.add(part)
     await db.flush()
     await db.refresh(part)
-    return ProductPartResponse.model_validate(part)
+    return await _part_out(db, part)
 
 
 @router.patch("/{product_id}/parts/{part_id}", response_model=ProductPartResponse)
@@ -672,7 +707,7 @@ async def update_part(
         part.auto = False
     await db.flush()
     await db.refresh(part)
-    return ProductPartResponse.model_validate(part)
+    return await _part_out(db, part)
 
 
 @router.delete("/{product_id}/parts/{part_id}")
@@ -725,7 +760,7 @@ async def merge_part(
     await db.delete(source)
     await db.flush()
     await db.refresh(target)
-    return ProductPartResponse.model_validate(target)
+    return await _part_out(db, target)
 
 
 @router.post("/{product_id}/parts/{part_id}/aliases", response_model=ProductPartResponse)
@@ -749,7 +784,7 @@ async def add_part_alias(
         raise HTTPException(status_code=409, detail=str(e)) from e
     await db.flush()
     await db.refresh(part)
-    return ProductPartResponse.model_validate(part)
+    return await _part_out(db, part)
 
 
 @router.delete("/{product_id}/parts/{part_id}/aliases", response_model=ProductPartResponse)
@@ -768,7 +803,139 @@ async def remove_part_alias(
         raise HTTPException(status_code=400, detail=str(e)) from e
     await db.flush()
     await db.refresh(part)
-    return ProductPartResponse.model_validate(part)
+    return await _part_out(db, part)
+
+
+# ---------- free stock (pass 8, Decision 6) ----------
+
+
+async def _orders_of_lines(db: AsyncSession, line_ids: set[int]) -> dict[int, tuple[int, str]]:
+    """``line_id → (order id, order name)`` for the whole movements page, in ONE join.
+
+    A reservation names an order LINE and nothing else — the ledger has no
+    order column, because a line already has one and two would be able to
+    disagree. The page still has to show the order the operator recognises, so
+    the hop is made here, once for every line on the page rather than once per
+    movement.
+
+    A line id that resolves to nothing is simply absent: the caller reads
+    ``.get(...)`` and sends ``None``. That is a deleted line whose rows
+    ``part_stock.detach_line`` has not reached (PostgreSQL's ``SET NULL`` and
+    SQLite's silence differ here), and a movement with no order left is still a
+    movement that happened.
+    """
+    if not line_ids:
+        return {}
+    rows = await db.execute(
+        select(ProjectLine.id, Project.id, Project.name)
+        .join(Project, Project.id == ProjectLine.project_id)
+        .where(ProjectLine.id.in_(line_ids))
+    )
+    return {line_id: (order_id, name) for line_id, order_id, name in rows.all()}
+
+
+def _movement_out(
+    row: ProductPartStockMovement, names: dict[int, str], orders: dict[int, tuple[int, str]]
+) -> StockMovementOut:
+    """One ledger row on the wire, with its part named and its order resolved.
+
+    Both maps are the caller's — built once for a whole page — so this stays a
+    pure formatter with no query hidden in it.
+    """
+    order = orders.get(row.project_line_id) if row.project_line_id is not None else None
+    return StockMovementOut(
+        id=row.id,
+        part_id=row.product_part_id,
+        part_name=names[row.product_part_id],
+        delta=row.delta,
+        reason=row.reason,
+        project_line_id=row.project_line_id,
+        order_id=order[0] if order else None,
+        order_name=order[1] if order else None,
+        archive_id=row.archive_id,
+        note=row.note,
+        created_by=row.created_by,
+        created_at=row.created_at,
+    )
+
+
+@router.get("/{product_id}/stock", response_model=ProductStockOut)
+async def get_product_stock(
+    product_id: int,
+    limit: int = Query(200, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The product's free stock: what is on the shelf, how many kits, how it got there.
+
+    ``balances`` lists the COUNTED parts only (printed, wanted in a quantity
+    greater than zero) — a purchased part is procurement and has no shelf. The
+    movements below are deliberately not filtered that way: a row written
+    before a part was zeroed still happened.
+    """
+    product = await _get(db, product_id)
+    part_balances = await part_stock.balances(db, product.id)
+    rows = await part_stock.movements(db, product.id, limit=limit)
+    # Every movement's part is one of this product's own — ``part_stock.movements``
+    # joins ``product_parts`` on this very product — so the names cost nothing.
+    names = {part.id: part.name for part in product.parts}
+    orders = await _orders_of_lines(db, {r.project_line_id for r in rows if r.project_line_id is not None})
+    return ProductStockOut(
+        balances=[
+            StockBalanceOut(part_id=p.id, name=p.name, qty_per_unit=p.qty_per_unit, balance=part_balances[p.id])
+            for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))
+            if p.id in part_balances
+        ],
+        kits_available=part_stock.kits_available(part_balances, list(product.parts)),
+        movements=[_movement_out(row, names, orders) for row in rows],
+    )
+
+
+@router.post("/{product_id}/stock/adjust", response_model=StockMovementOut)
+async def adjust_product_stock(
+    product_id: int,
+    data: StockAdjustIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """A hand correction: the operator counted the shelf and it disagreed with us.
+
+    No new permission (Decision 7) — whoever may change an order's lines may
+    change the stock those lines draw on; the two are the same authority over
+    the same parts, and a separate one would only be a second place to forget.
+
+    ⚠️ Never commits. ``move`` flushes and ``get_db`` closes the transaction
+    after the response, exactly as the reservation path does, so the movement
+    and nothing else is what a failed request leaves behind.
+
+    Refusals, in the order they are asked: a part that is not this product's is
+    a 404 (``_part``), a correction that would take the shelf below zero is a
+    409 in the ledger's own words, and a part that has no shelf to correct is a
+    422. Only a reservation is ever clamped — a hand correction is refused,
+    because the operator counted something and being told a different number
+    was written would be worse than being told nothing was.
+    """
+    product = await _get(db, product_id)
+    part = await _part(db, product, data.part_id)
+    try:
+        movement = await part_stock.move(
+            db,
+            part_id=part.id,
+            delta=data.delta,
+            reason="manual",
+            note=data.note,
+            created_by=current_user.id if current_user else None,
+        )
+    except part_stock.PartStockError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail="only counted printed parts hold stock") from e
+    if movement is None:
+        # Unreachable: ``move`` answers ``None`` for a zero delta (the schema
+        # refuses one) or a clamped reservation (this is not one). Answered
+        # rather than dereferenced so a future clamp is a refusal, not a 500.
+        raise HTTPException(status_code=422, detail="a correction has to move something")
+    return _movement_out(movement, {part.id: part.name}, {})
 
 
 # ---------- plates ----------

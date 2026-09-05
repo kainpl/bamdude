@@ -19,7 +19,8 @@ from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import Product, ProductPlate, product_files, product_folders
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
-from backend.app.services.part_stock import move
+from backend.app.models.user import User
+from backend.app.services.part_stock import detach_line, move
 from backend.app.services.product_files import product_attachments_dir
 
 # One builder for the card 3MF, shared with the library-card tests, so the
@@ -35,6 +36,7 @@ from backend.tests.integration.test_library_card_api import (
 # The order fixture whose figures are written out by hand — the product page's
 # all-time count is asserted against the same numbers the order pages show.
 from backend.tests.unit.services.test_order_metrics import build_parity_fixture
+from backend.tests.unit.services.test_product_composition import counting_statements
 
 
 def _codes(notes: list[dict]) -> list[str]:
@@ -1175,3 +1177,198 @@ async def test_deleting_a_product_takes_every_parts_stock_movements_with_it(comm
     db_session.expire_all()
     rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
     assert [(r.product_part_id, r.delta) for r in rows] == [(kept, 7)], "the deleted product's ledger outlived it"
+
+
+# ---------- free stock (pass 8, Decision 6) ----------
+
+
+async def _lamp_with_stock(client, db, *, name="Lamp", lids=5, bases=3) -> tuple[int, dict[str, int]]:
+    """A product with two counted parts and one purchased one, its shelf stocked.
+
+    The default is the spec's own example: five lids and three bases are three
+    whole kits, and the two spare lids stay lids. The screw is there to be
+    ignored — a purchased part is procurement, not stock.
+    """
+    pid = (await client.post("/api/v1/products/", json={"name": name})).json()["id"]
+    ids: dict[str, int] = {}
+    for part, kind, qty in (("lid", "printed", 1), ("base", "printed", 1), ("screw", "purchased", 4)):
+        r = await client.post(f"/api/v1/products/{pid}/parts", json={"kind": kind, "name": part, "qty_per_unit": qty})
+        assert r.status_code == 200, r.text
+        ids[part] = r.json()["id"]
+    for part, on_hand in (("lid", lids), ("base", bases)):
+        await move(db, part_id=ids[part], delta=on_hand, reason="unfiled_print")
+    await db.commit()
+    return pid, ids
+
+
+async def _adjust(client, product_id: int, part_id: int, delta: int, note: str = "counted the shelf"):
+    return await client.post(
+        f"/api/v1/products/{product_id}/stock/adjust", json={"part_id": part_id, "delta": delta, "note": note}
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_stock_endpoint_lists_a_balance_for_every_counted_part(committing_client, db_session):
+    """The shelf, part by part, and the kits it adds up to — the scarcest part
+    decides, because a kit is the unit the operator thinks in."""
+    pid, _ids = await _lamp_with_stock(committing_client, db_session)
+
+    r = await committing_client.get(f"/api/v1/products/{pid}/stock")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [(b["name"], b["qty_per_unit"], b["balance"]) for b in body["balances"]] == [("lid", 1, 5), ("base", 1, 3)]
+    assert body["kits_available"] == 3
+
+
+@pytest.mark.asyncio
+async def test_a_purchased_part_has_no_shelf_to_stand_on(committing_client, db_session):
+    """``balances`` lists what has a balance. A purchased part is procurement —
+    listing it with 0 would invite an operator to correct a number that can
+    never move."""
+    pid, ids = await _lamp_with_stock(committing_client, db_session)
+
+    body = (await committing_client.get(f"/api/v1/products/{pid}/stock")).json()
+
+    assert ids["screw"] not in [b["part_id"] for b in body["balances"]]
+
+
+@pytest.mark.asyncio
+async def test_the_movements_are_newest_first_with_their_order_named(committing_client, db_session):
+    """A reservation names an order LINE and the ledger has no order column, so
+    the page would otherwise show the operator a number they cannot place."""
+    pid, ids = await _lamp_with_stock(committing_client, db_session)
+    project = Project(name="Lamps for Ann")
+    db_session.add(project)
+    await db_session.flush()
+    line = ProjectLine(project_id=project.id, product_id=pid, quantity=1)
+    db_session.add(line)
+    await db_session.flush()
+    order_id, line_id = project.id, line.id
+    await move(db_session, part_id=ids["lid"], delta=-2, reason="reserved_for_order", project_line_id=line_id)
+    await db_session.commit()
+
+    body = (await committing_client.get(f"/api/v1/products/{pid}/stock")).json()
+
+    assert [m["reason"] for m in body["movements"]] == ["reserved_for_order", "unfiled_print", "unfiled_print"]
+    newest = body["movements"][0]
+    assert (newest["part_name"], newest["delta"]) == ("lid", -2)
+    assert (newest["project_line_id"], newest["order_id"], newest["order_name"]) == (line_id, order_id, "Lamps for Ann")
+
+
+@pytest.mark.asyncio
+async def test_a_movement_whose_line_was_detached_names_no_order(committing_client, db_session):
+    """A deleted order line keeps its history and loses its link
+    (``part_stock.detach_line``). The row still happened; it just has no order
+    to name any more."""
+    pid, ids = await _lamp_with_stock(committing_client, db_session)
+    project = Project(name="Lamps for Ann")
+    db_session.add(project)
+    await db_session.flush()
+    line = ProjectLine(project_id=project.id, product_id=pid, quantity=1)
+    db_session.add(line)
+    await db_session.flush()
+    await move(db_session, part_id=ids["lid"], delta=-2, reason="reserved_for_order", project_line_id=line.id)
+    await detach_line(db_session, line.id)
+    await db_session.commit()
+
+    newest = (await committing_client.get(f"/api/v1/products/{pid}/stock")).json()["movements"][0]
+
+    assert newest["reason"] == "reserved_for_order"
+    assert (newest["project_line_id"], newest["order_id"], newest["order_name"]) == (None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_hand_correction_is_written_as_a_manual_movement_by_its_author(committing_client, db_session):
+    """The operator counted the shelf and it disagreed with us. Their words are
+    the note — the one movement on the ledger whose note is prose rather than a
+    token, because only they know why the two disagreed."""
+    pid, ids = await _lamp_with_stock(committing_client, db_session)
+    admin_id = await db_session.scalar(select(User.id).where(User.username == "test_admin"))
+
+    r = await _adjust(committing_client, pid, ids["lid"], -3, note="three were cracked")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["reason"], body["delta"], body["note"]) == ("manual", -3, "three were cracked")
+    assert (body["part_id"], body["part_name"], body["created_by"]) == (ids["lid"], "lid", admin_id)
+    assert (await committing_client.get(f"/api/v1/products/{pid}/stock")).json()["kits_available"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_correction_that_would_take_the_shelf_below_zero_is_refused(committing_client, db_session):
+    """Only a reservation is ever clamped. A correction is refused, because
+    being told a different number was written is worse than being told nothing
+    was — the operator counted something."""
+    pid, ids = await _lamp_with_stock(committing_client, db_session)
+
+    r = await _adjust(committing_client, pid, ids["base"], -4)
+
+    assert r.status_code == 409, r.text
+    assert "below 0" in r.json()["detail"]
+    assert (await committing_client.get(f"/api/v1/products/{pid}/stock")).json()["balances"][1]["balance"] == 3
+
+
+@pytest.mark.asyncio
+async def test_a_purchased_part_cannot_be_corrected(committing_client, db_session):
+    """It has no balance to correct — a row against it would be one no reader
+    ever joins back."""
+    pid, ids = await _lamp_with_stock(committing_client, db_session)
+
+    r = await _adjust(committing_client, pid, ids["screw"], 5)
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == "only counted printed parts hold stock"
+
+
+@pytest.mark.asyncio
+async def test_a_correction_wants_a_part_of_this_product(committing_client, db_session):
+    """``move`` is handed a part, not a product AND a part, so the route is the
+    only thing between a typo in the URL and stock moved on a stranger's shelf."""
+    pid, ids = await _lamp_with_stock(committing_client, db_session)
+    other = (await committing_client.post("/api/v1/products/", json={"name": "Vase"})).json()["id"]
+
+    r = await _adjust(committing_client, other, ids["lid"], 2)
+
+    assert r.status_code == 404, r.text
+    db_session.expire_all()
+    manual = (
+        await db_session.execute(select(ProductPartStockMovement).where(ProductPartStockMovement.reason == "manual"))
+    ).first()
+    assert manual is None, "the refused correction wrote a row anyway"
+
+
+@pytest.mark.asyncio
+async def test_a_correction_has_to_move_something(committing_client, db_session):
+    """``move`` answers a zero delta with no row at all, which is not a movement
+    the response model can describe — so the schema refuses it first."""
+    pid, ids = await _lamp_with_stock(committing_client, db_session)
+
+    assert (await _adjust(committing_client, pid, ids["lid"], 0)).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_the_product_detail_carries_its_kits_and_every_parts_balance(committing_client, db_session):
+    """``stock_balance`` is a SUM and never a column, so the detail has to pour
+    it in — and a part with no shelf reads 0 rather than going missing."""
+    pid, _ids = await _lamp_with_stock(committing_client, db_session)
+
+    body = (await committing_client.get(f"/api/v1/products/{pid}")).json()
+
+    assert body["kits_available"] == 3
+    assert {p["name"]: p["stock_balance"] for p in body["parts"]} == {"lid": 5, "base": 3, "screw": 0}
+
+
+@pytest.mark.asyncio
+async def test_the_products_list_reads_the_stock_ledger_once(committing_client, db_session, test_engine):
+    """Pass-6 discipline. ``kits_available`` is a per-row number, and a per-row
+    query for it is an N+1 nobody notices until the catalog grows."""
+    lamp, _a = await _lamp_with_stock(committing_client, db_session, name="Lamp")
+    sconce, _b = await _lamp_with_stock(committing_client, db_session, name="Sconce", lids=2, bases=2)
+    vase, _c = await _lamp_with_stock(committing_client, db_session, name="Vase", lids=0, bases=0)
+
+    with counting_statements(test_engine, match="product_part_stock_movements") as statements:
+        rows = (await committing_client.get("/api/v1/products/")).json()
+
+    assert len(statements) == 1, f"one ledger read for the whole page, got {len(statements)}: {statements}"
+    assert {r["id"]: r["kits_available"] for r in rows} == {lamp: 3, sconce: 2, vase: 0}

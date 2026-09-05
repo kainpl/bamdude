@@ -164,6 +164,47 @@ async def balances(db: AsyncSession, product_id: int) -> dict[int, int]:
     return {part_id: int(total or 0) for part_id, total in rows.all()}
 
 
+async def balances_for_products(db: AsyncSession, product_ids: Sequence[int]) -> dict[int, dict[int, int]]:
+    """:func:`balances` for MANY products at once — ``product_id → {part_id: Σ}``.
+
+    ⚠️ **One statement for the whole page.** The products list shows every
+    product's ``kits_available``, and calling :func:`balances` per row would put
+    an N+1 over the ledger behind the catalog — the pass-6 discipline that
+    ``_plates_count`` and the order loaders already follow. Chunked by
+    ``order_metrics.IN_CHUNK`` for the same reason every other ``IN (...)`` list
+    here is, so a farm with thousands of products does not build one enormous
+    statement; a page of products is one chunk and therefore one statement, and
+    ``test_the_products_list_reads_the_stock_ledger_once`` pins that.
+
+    Same filter as :func:`balances` — counted parts only, and every one of them
+    present with a 0 where nothing moved. A product whose parts are all
+    purchased is ABSENT from the answer rather than mapped to an empty dict:
+    the caller reads ``.get(product_id, {})`` and :func:`kits_available` says 0
+    to an empty map anyway.
+    """
+    if not product_ids:
+        return {}
+    per_product: dict[int, dict[int, int]] = {}
+    for start in range(0, len(product_ids), IN_CHUNK):
+        rows = await db.execute(
+            select(
+                ProductPart.product_id,
+                ProductPart.id,
+                func.coalesce(func.sum(ProductPartStockMovement.delta), 0),
+            )
+            .outerjoin(ProductPartStockMovement, ProductPartStockMovement.product_part_id == ProductPart.id)
+            .where(
+                ProductPart.product_id.in_(product_ids[start : start + IN_CHUNK]),
+                ProductPart.kind == "printed",
+                ProductPart.qty_per_unit > 0,
+            )
+            .group_by(ProductPart.product_id, ProductPart.id)
+        )
+        for product_id, part_id, total in rows.all():
+            per_product.setdefault(product_id, {})[part_id] = int(total or 0)
+    return per_product
+
+
 def kits_available(part_balances: dict[int, int], parts: list[ProductPart]) -> int:
     """How many whole units the free stock can already make.
 

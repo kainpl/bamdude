@@ -38,9 +38,6 @@ _RUNNING = "printing"
 #: module's loaders — two constants both spelled 500 would drift the first time
 #: somebody tuned one of them.
 IN_CHUNK = 500
-#: The private spelling this module used before pass 8, kept so nothing that
-#: reads it has to change; the two are the same number by construction.
-_IN_CHUNK = IN_CHUNK
 
 
 def archive_material_set(filament_type: str | None) -> set[str]:
@@ -728,12 +725,12 @@ async def batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[O
     # refuses past 32766 of them (``too many SQL variables``); PostgreSQL accepts
     # it and plans it badly. Slicing costs one extra statement per 500 archives
     # and bounds the worst case instead.
-    for start in range(0, len(archive_ids), _IN_CHUNK):
+    for start in range(0, len(archive_ids), IN_CHUNK):
         for row in (
             (
                 await db.execute(
                     select(PrintArchivePart)
-                    .where(PrintArchivePart.archive_id.in_(archive_ids[start : start + _IN_CHUNK]))
+                    .where(PrintArchivePart.archive_id.in_(archive_ids[start : start + IN_CHUNK]))
                     # The per-order loader's ordering, for the reason stated
                     # there: ``hand_out`` reads these in sequence. Each slice is
                     # ordered and the rows are bucketed per archive below, so the

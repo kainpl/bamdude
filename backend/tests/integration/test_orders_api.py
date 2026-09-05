@@ -2416,6 +2416,13 @@ async def test_removing_an_archive_from_an_order_puts_its_parts_back_on_the_shel
     assert await part_stock.unfiled_credit_net(db_session, archive_id) == 3, "one shade and two arms are back"
     rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
     assert Counter(row.reason for row in rows) == {"unfiled_print": 4, "manual": 2}
+    # A TOKEN, not a sentence (Ruling 17) — and the same one the archive
+    # editor's un-file path writes, because they are the same correction. The
+    # two ``manual`` rows above carry the filing's own token; the original
+    # credit carried none.
+    assert {row.note for row in rows if row.reason == "unfiled_print" and row.note} == {
+        part_stock.NOTE_UNFILED_FROM_ORDER
+    }
 
 
 # ---------- pass 8, Decision 4/5: a line reserves kits from free stock ----------
@@ -2740,6 +2747,9 @@ async def test_deleting_an_order_gives_every_line_its_kits_back(committing_clien
     assert await _kits(db_session, product_id) == 5
     rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
     assert {m.project_line_id for m in rows} == {None}
+    # A TOKEN, not a sentence (Ruling 17): the release says WHY the kits came
+    # back, and the product page renders that in the operator's language.
+    assert {m.note for m in rows if m.reason == "reservation_released"} == {part_stock.NOTE_PROJECT_DELETED}
 
 
 @pytest.mark.asyncio
