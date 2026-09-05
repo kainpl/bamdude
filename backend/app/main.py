@@ -64,6 +64,7 @@ from backend.app.api.routes import (
     printer_queues,
     printer_sensor_history,
     printer_settings as printer_settings_routes,
+    printer_tags,
     printers,
     products,
     projects,
@@ -9763,6 +9764,7 @@ app.include_router(groups.router, prefix=app_settings.api_prefix)
 app.include_router(printers.router, prefix=app_settings.api_prefix)
 app.include_router(hms_routes.router, prefix=app_settings.api_prefix)
 app.include_router(printer_locations.router, prefix=app_settings.api_prefix)
+app.include_router(printer_tags.router, prefix=app_settings.api_prefix)
 # No prefix of its own: its two paths belong to two existing namespaces.
 app.include_router(measurement_history.router, prefix=app_settings.api_prefix)
 # archive_purge must come BEFORE archives so its `/archives/trash/*` routes

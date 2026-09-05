@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
+from backend.app.schemas.printer_tag import PrinterTagOut
 
 
 class PrinterBase(BaseModel):
@@ -33,6 +34,7 @@ class PrinterBase(BaseModel):
     )
     model: str | None = None
     location_id: int | None = None
+    tag_ids: list[int] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -79,6 +81,7 @@ class PrinterUpdate(BaseModel):
     access_code: str | None = None
     model: str | None = None
     location_id: int | None = None
+    tag_ids: list[int] | None = None
     is_active: bool | None = None
 
     @model_validator(mode="before")
@@ -110,6 +113,9 @@ class PrinterResponse(PrinterBase):
     # form posts back; this is what anything displaying it reads, so neither has
     # to look the other up.
     location: PrinterLocationOut | None = None
+    # The labels, resolved — like ``location``, an object list for display and
+    # ``tag_ids`` (inherited) for what a form posts back.
+    tags: list[PrinterTagOut] = Field(default_factory=list)
     archived: bool = False
     # The persisted intent, not the live handler — which is what the support
     # bundle's checkbox list wants: "what did the operator switch on".
@@ -144,6 +150,8 @@ class PrinterResponse(PrinterBase):
             "model": printer.model,
             "location_id": printer.location_id,
             "location": (PrinterLocationOut.from_location(getattr(printer, "location", None))),
+            "tag_ids": [tag.id for tag in getattr(printer, "tags", None) or []],
+            "tags": [PrinterTagOut.model_validate(tag) for tag in getattr(printer, "tags", None) or []],
             "auto_archive": printer.auto_archive,
             "cleanup_after_print": printer.cleanup_after_print,
             "mqtt_connection_timeout": printer.mqtt_connection_timeout,

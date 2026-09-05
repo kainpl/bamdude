@@ -23,6 +23,7 @@ from backend.app.core.tasks import spawn_background_task
 from backend.app.models.ams_label import AmsLabel
 from backend.app.models.printer import Printer
 from backend.app.models.printer_location import PrinterLocation
+from backend.app.models.printer_tag import PrinterTag
 from backend.app.models.user import User
 from backend.app.schemas.printer import (
     AmsLabelBody,
@@ -83,6 +84,7 @@ from backend.app.services.printer_manager import (
     supports_drying_while_printing,
     uniform_tray_drying_hint,
 )
+from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import is_within, limits_for
@@ -199,6 +201,17 @@ async def _require_known_location(db, location_id: int | None) -> None:
         raise HTTPException(422, "No such location.")
 
 
+async def _require_known_tags(db, tag_ids: list[int]) -> None:
+    """Every id must name a tag, or the printer silently shows fewer labels than it was given."""
+    wanted = set(tag_ids)
+    if not wanted:
+        return
+    known = set((await db.execute(select(PrinterTag.id).where(PrinterTag.id.in_(wanted)))).scalars().all())
+    missing = sorted(wanted - known)
+    if missing:
+        raise HTTPException(422, f"No such tag: {', '.join(map(str, missing))}.")
+
+
 @router.post("/", response_model=PrinterResponse)
 async def create_printer(
     printer_data: PrinterCreate,
@@ -219,7 +232,10 @@ async def create_printer(
 
     await _require_known_location(db, printer_data.location_id)
 
-    printer = Printer(**printer_data.model_dump())
+    data = printer_data.model_dump()
+    tag_ids = data.pop("tag_ids", [])
+    await _require_known_tags(db, tag_ids)
+    printer = Printer(**data)
 
     # Probe MQTT connectivity BEFORE persisting so a mistyped access code or
     # wrong IP doesn't leave a permanently-empty card on the dashboard
@@ -242,6 +258,8 @@ async def create_printer(
         )
 
     db.add(printer)
+    await db.flush()
+    await replace_links(db, printer.id, tag_ids)
     await db.commit()
     await db.refresh(printer)
 
@@ -463,6 +481,14 @@ async def update_printer(
         raise HTTPException(404, "Printer not found")
 
     update_data = printer_data.model_dump(exclude_unset=True)
+    if "tag_ids" in update_data:
+        # ``or []`` because the field is optional and an explicit null is a
+        # thing a GET → edit → PATCH client sends. It reads as "no tags", the
+        # same as ``location_id: null`` reads as "no place" — and without it
+        # ``set(None)`` would answer 500 instead.
+        tag_ids = update_data.pop("tag_ids") or []
+        await _require_known_tags(db, tag_ids)
+        await replace_links(db, printer_id, tag_ids)
     if "location_id" in update_data:
         await _require_known_location(db, update_data["location_id"])
 
@@ -824,6 +850,10 @@ async def delete_printer(
     # already does.
     for model in PRINTER_CASCADE_MODELS:
         await db.execute(sql_delete(model).where(model.printer_id == printer_id))
+
+    # SQLite ignores ON DELETE CASCADE; the link rows go explicitly, like every
+    # other child row above.
+    await delete_links_for_printer(db, printer_id)
 
     await db.delete(printer)
     await db.commit()

@@ -13,6 +13,9 @@ from backend.app.core.database import Base
 # mapper registry. printer_location imports no models back, so no cycle.
 from backend.app.models.printer_location import PrinterLocation  # noqa: F401
 
+# Same reason: ``Printer.tags`` names "PrinterTag" as a string.
+from backend.app.models.printer_tag import PrinterTag  # noqa: F401
+
 
 class Printer(Base):
     __tablename__ = "printers"
@@ -31,6 +34,21 @@ class Printer(Base):
     # selectin, not lazy: the printer list is read on every dashboard poll, and
     # a lazy load would be one extra query per printer on every one of them.
     location: Mapped["PrinterLocation | None"] = relationship(lazy="selectin")
+
+    # Labels, resolved. selectin like ``location``: PrinterResponse.model_validate
+    # reads this synchronously and a lazy hop there raises MissingGreenlet.
+    # viewonly: the link rows are written by ``printer_tag_service.replace_links``,
+    # never through this collection, so the ORM has no cascade to reason about.
+    tags: Mapped[list["PrinterTag"]] = relationship(
+        "PrinterTag", secondary="printer_tag_links", lazy="selectin", viewonly=True, order_by="PrinterTag.name_key"
+    )
+
+    @property
+    def tag_ids(self) -> list[int]:
+        """What a form posts back. A property so ``model_validate(printer)`` finds it —
+        the list route validates straight off the ORM row."""
+        return [tag.id for tag in self.tags]
+
     nozzle_count: Mapped[int] = mapped_column(default=1)  # 1 or 2, auto-detected from MQTT
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     # Soft-retire: archived printers disappear from the whole app + MQTT while
