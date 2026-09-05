@@ -111,7 +111,8 @@ async def test_a_direct_print_is_refused_before_it_would_wait(service, job_facto
     patches.acquire.assert_not_awaited()
     service._run_reprint_archive.assert_not_awaited()
     assert job.outcome == {"success": False, "archive_id": None, "error": REASON, "cancelled": False}
-    service._release_direct_claim.assert_awaited_once_with(job, status="failed")
+    # queue_error=False: the item failed, the queue did not (Ruling 13).
+    service._release_direct_claim.assert_awaited_once_with(job, status="failed", queue_error=False)
     service._mark_job_finished.assert_awaited_once_with(job, failed=True, message=REASON)
     patches.report_failure.assert_awaited_once_with(job)
     assert job.completion_event.is_set()
@@ -173,6 +174,24 @@ async def test_a_broken_settings_read_never_refuses(service, job_factory, patche
 
 
 @pytest.mark.asyncio
+async def test_a_started_print_is_still_marked_complete(service, job_factory, patches):
+    """The guard's other direction: a runner that really printed must still be
+    marked finished, with the wrapper's own completion message."""
+    job = job_factory()
+    patches.strict("false")
+
+    async def _ran(_job):
+        _job.outcome = {"success": True, "archive_id": 7, "error": None, "cancelled": False}
+
+    service._run_reprint_archive = AsyncMock(side_effect=_ran)
+
+    with patch("backend.app.services.background_dispatch.ws_manager.broadcast", new_callable=AsyncMock):
+        await service._run_active_job(job)
+
+    service._mark_job_finished.assert_awaited_once_with(job, failed=False, message="Background dispatch complete")
+
+
+@pytest.mark.asyncio
 async def test_a_refused_job_is_not_also_marked_complete(service, job_factory, patches):
     """⚠️ ``_run_active_job`` marks the job finished after ``_process_job`` returns.
 
@@ -190,6 +209,71 @@ async def test_a_refused_job_is_not_also_marked_complete(service, job_factory, p
     service._mark_job_finished.assert_awaited_once_with(job, failed=True, message=REASON)
 
 
+@pytest.fixture
+def dispatch_db(monkeypatch, db_session):
+    """Point the release path's own session at the test engine."""
+
+    @asynccontextmanager
+    async def _session_ctx():
+        yield db_session
+
+    monkeypatch.setattr("backend.app.services.background_dispatch.async_session", _session_ctx)
+
+
+async def _real_claim(db_session, printer_factory):
+    """The claim a direct print actually takes at submit, through its own writer."""
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.queue_batch import claim_printer_for_direct_print
+
+    printer = await printer_factory()
+    item = await claim_printer_for_direct_print(db_session, printer_id=printer.id, origin="direct")
+    await db_session.commit()
+    queue = await db_session.get(PrinterQueue, item.queue_id)
+    job = PrintDispatchJob(
+        id=1,
+        kind="reprint_archive",
+        source_id=1,
+        source_name="gearbox.gcode.3mf",
+        printer_id=printer.id,
+        printer_name=printer.name,
+        queue_item_id=item.id,
+    )
+    job.outcome = {"success": False, "archive_id": None, "error": REASON, "cancelled": False}
+    return queue, item, job
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_refusal_fails_the_item_and_leaves_the_queue_idle(db_session, printer_factory, dispatch_db):
+    """⚠️ Ruling 13. ``check_queue`` skips every item in a queue whose status is
+    ``error``, so failing the queue for a refusal would freeze exactly the queue
+    strict mode exists to protect."""
+    service = BackgroundDispatchService()
+    queue, item, job = await _real_claim(db_session, printer_factory)
+
+    await service._release_direct_claim(job, status="failed", queue_error=False)
+
+    await db_session.refresh(item)
+    await db_session.refresh(queue)
+    assert item.status == "failed"
+    assert item.error_message == REASON
+    assert item.completed_at is not None
+    assert queue.status == "idle", "a 'not now' is not a hardware failure"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_real_failure_still_puts_the_queue_in_error(db_session, printer_factory, dispatch_db):
+    """The default did not move: a dispatch that broke still stops the queue."""
+    service = BackgroundDispatchService()
+    queue, item, job = await _real_claim(db_session, printer_factory)
+
+    await service._release_direct_claim(job, status="failed")
+
+    await db_session.refresh(queue)
+    assert queue.status == "error"
+
+
 def test_the_runners_no_longer_carry_a_strict_block():
     """The check lives in ``_process_job`` alone; the runners are back to printing."""
     from pathlib import Path
@@ -197,6 +281,8 @@ def test_the_runners_no_longer_carry_a_strict_block():
     import backend.app.services.background_dispatch as module
 
     source = Path(module.__file__).read_text(encoding="utf-8")
+    # A deletion guard for the two removed in-runner blocks, text-based on purpose — drop it if a
+    # second legitimate ``stagger_blocks(`` call site is ever added.
     assert source.count("_strict_stagger_refuses") == 2  # the definition and its one call
     assert source.count("stagger_blocks(") == 1  # only inside _strict_stagger_refuses
     assert source.count("stagger_strict_for_direct_dispatch") == 2  # the setting read and the refusal message

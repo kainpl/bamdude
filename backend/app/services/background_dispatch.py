@@ -697,13 +697,19 @@ class BackgroundDispatchService:
             return False
         return state.state in ("RUNNING", "PAUSE", "PAUSED") and bool(state.gcode_file)
 
-    async def _release_direct_claim(self, job: PrintDispatchJob, *, status: str) -> None:
+    async def _release_direct_claim(self, job: PrintDispatchJob, *, status: str, queue_error: bool = True) -> None:
         """Give the printer back after a direct dispatch that will not print.
 
         ⚠️ Gated on ``awaited_by_scheduler``: the scheduler owns the outcome of
         its own items — including the #2598 busy-refusal that returns one to
         ``pending`` instead of failing it — and a second writer here would
         overwrite that silently.
+
+        ⚠️ ``queue_error=False`` fails the item but leaves the QUEUE idle, for a
+        refusal rather than a breakage: a strict-mode "not now" is not a hardware
+        fault, and parking the queue in ``error`` — where ``check_queue`` skips
+        every item in it — would freeze the very queue strict mode exists to
+        protect, inverting the feature.
 
         Never raises. This runs on the way out of a dispatch that has already
         gone wrong, and losing the real error to a secondary one from the
@@ -726,7 +732,10 @@ class BackgroundDispatchService:
                 item.completed_at = datetime.now(timezone.utc)
                 if status == "failed":
                     item.error_message = str((job.outcome or {}).get("error") or "Dispatch failed")
-                    await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+                    if queue_error:
+                        await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+                    else:
+                        await set_queue_idle(db, item.queue_id)
                 else:
                     await set_queue_idle(db, item.queue_id)
                 await update_queue_counters(db, item.queue_id)
@@ -1476,10 +1485,13 @@ class BackgroundDispatchService:
         told, and the completion event fires for anyone awaiting it. Same four
         steps as the runner's ``except``/``finally``, because those are the only
         four places a failed dispatch becomes visible.
+
+        ⚠️ ``queue_error=False``: the item failed, the queue did not. See
+        ``_release_direct_claim``.
         """
         logger.info("Background dispatch job %s refused: %s", job.id, reason)
         job.outcome = {"success": False, "archive_id": None, "error": reason, "cancelled": False}
-        await self._release_direct_claim(job, status="failed")
+        await self._release_direct_claim(job, status="failed", queue_error=False)
         await self._mark_job_finished(job, failed=True, message=reason)
         await report_failure_if_unwatched(job)
         job.completion_event.set()
