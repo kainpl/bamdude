@@ -1903,9 +1903,11 @@ export interface Product extends ProductListItem {
   parts: ProductPart[];
   library_file_ids: number[];
   library_folder_ids: number[];
-  /** Units delivered against orders — every order status, capped at each
-   *  line's need. NOT "units ever printed": a print nobody ordered is not in
-   *  it, and neither is the eleventh of ten. */
+  /** Units made for orders — every order status, the usable units attributed
+   *  to each line, NOT capped at the line's need (an order that printed 3 of an
+   *  ordered 2 reports 3, exactly as its order page does — see
+   *  `order_metrics.units_delivered`). Still not "units ever printed": a print
+   *  nobody ordered is not in it. */
   units_printed_total: number;
   created_at: string;
   updated_at: string;
