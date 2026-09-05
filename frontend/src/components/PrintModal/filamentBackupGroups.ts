@@ -20,12 +20,16 @@
  * swap crosses nozzles. So an external tray is always alone here whatever it
  * carries, and two AMS units bound to different extruders never pool.
  *
- * ⚠️ **Two deliberate divergences from BS**, both in the direction of doing
- * this at all rather than not: BS gates the whole check on the printer
- * supporting accurate remain reporting, where we gate on
- * `ams_auto_switch_filament` alone; and BS never guesses a reel size, where an
- * unregistered tray here is weighed against a nominal 1 kg spool (see
- * `NOMINAL_SPOOL_GRAMS`). A warning we suppress on a guess is the cost.
+ * ⚠️ **A tray with no inventory spool contributes NOTHING to the pool.** It is
+ * unknown, not empty — and the operator's rule is the simple one: register the
+ * spool if it should count. The AMS reports a fill percentage, never a weight,
+ * and only for RFID spools at that, so guessing grams from it against an
+ * assumed reel size was never a general answer — it would have suppressed real
+ * warnings on the strength of a number nobody measured.
+ *
+ * ⚠️ **One deliberate divergence from BS**: it gates the whole check on the
+ * printer supporting accurate remain reporting, where we gate on
+ * `ams_auto_switch_filament` alone. Neither of us guesses a reel size.
  */
 
 import type { LoadedFilament } from '../../hooks/useFilamentMapping';
@@ -41,17 +45,6 @@ export type BackupGroup = {
   trayIds: number[];
   labels: string[];
 };
-
-/**
- * A nominal Bambu spool. The AMS reports a tray's fill as a PERCENTAGE and
- * never a weight — no Bambu AMS weighs anything — so a tray nobody registered
- * in inventory can only be converted to grams against an assumed reel size.
- * ⚠️ This is an assumption, not a measurement: 1 kg is what Bambu ships, and a
- * 250 g sample reel at 60 % would be over-counted four-fold. It is only ever
- * used to let an unregistered tray contribute to a backup pool — the registered
- * spool's own `label_weight` always wins when there is an assignment.
- */
-export const NOMINAL_SPOOL_GRAMS = 1000;
 
 /** The key of a group that contains exactly this tray and nothing else. */
 export function privateBackupGroup(globalTrayId: number, label: string): BackupGroup {
@@ -112,25 +105,4 @@ export function groupTraysForBackup(loaded: LoadedFilament[], backupOn: boolean)
     byTray.set(tray.globalTrayId, group);
   }
   return byTray;
-}
-
-/**
- * Grams left on a tray whose only reading is the AMS fill percentage.
- *
- * ⚠️ `0` is refused, and that is deliberate: the firmware hands out `0` (and
- * `-1`) whenever it has nothing to say far more often than it measures an empty
- * spool. Treating it as "empty" is the same mistake the backend's
- * `utils/filament_remaining.grams_remaining` exists to avoid — see the vault
- * invariant `inv-zero-remain-is-not-an-empty-spool`. Unknown contributes
- * nothing to the pool, which is the conservative direction.
- *
- * @returns grams, or `null` when the reading is not a usable percentage.
- */
-export function nominalGramsFromRemain(
-  remain: number | undefined,
-  nominalGrams: number = NOMINAL_SPOOL_GRAMS
-): number | null {
-  if (remain === undefined || !Number.isFinite(remain)) return null;
-  if (remain <= 0 || remain > 100) return null;
-  return (remain / 100) * nominalGrams;
 }

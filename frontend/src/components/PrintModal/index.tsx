@@ -31,12 +31,7 @@ import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
 import { getBedTypeInfo } from '../../utils/bedType';
 import { getGlobalTrayId, isPlaceholderDate } from '../../utils/amsHelpers';
 import { AutoModeOptions } from './AutoModeOptions';
-import {
-  groupTraysForBackup,
-  nominalGramsFromRemain,
-  privateBackupGroup,
-  type BackupGroup,
-} from './filamentBackupGroups';
+import { groupTraysForBackup, privateBackupGroup, type BackupGroup } from './filamentBackupGroups';
 import { FilamentMapping } from './FilamentMapping';
 import { PlateSelector } from './PlateSelector';
 import { PrinterSelector } from './PrinterSelector';
@@ -1309,7 +1304,6 @@ export function PrintModal({
 
           const loadedFilaments = buildLoadedFilaments(printerStatusForWarning);
           const slotLabelByTray = new Map(loadedFilaments.map((f) => [f.globalTrayId, f.label]));
-          const remainByTray = new Map(loadedFilaments.map((f) => [f.globalTrayId, f.remain]));
           // AMS Filament Backup makes a group of same-preset, same-colour trays
           // interchangeable, so the print draws on their combined filament and
           // the check must too. `null` is "we could not read the flag",
@@ -1350,29 +1344,21 @@ export function PrintModal({
           }
 
           for (const { group, requiredGrams } of demandByGroup.values()) {
-            // What the group has left: the registered spool's own weight
-            // wherever inventory knows the tray, and — only when backup is on
-            // and a pool is what we are weighing — a nominal reel scaled by the
-            // AMS fill percentage for a tray nobody registered. That fallback
-            // stays off with backup off, so the strict per-tray check is
-            // unchanged to the letter: a tray with no assigned spool is skipped
-            // there exactly as it always was.
+            // What the group has left: the registered spool's own weight,
+            // summed over the trays inventory knows. ⚠️ A tray with no assigned
+            // spool adds NOTHING — it is unknown, not empty, and the rule is
+            // the operator's: register the spool if it should count. The AMS
+            // offers a fill percentage and only for RFID spools, so grams
+            // guessed from it against an assumed reel would have suppressed
+            // real warnings on a number nobody measured.
             let remainingGrams = 0;
             let anyKnown = false;
             for (const trayId of group.trayIds) {
               const spool = assignments.get(trayId)?.spool;
               const assigned = spool ? getRemainingWeight(spool.label_weight, spool.weight_used) : null;
-              if (assigned !== null) {
-                remainingGrams += assigned;
-                anyKnown = true;
-                continue;
-              }
-              if (!backupOn) continue;
-              const nominal = nominalGramsFromRemain(remainByTray.get(trayId));
-              if (nominal !== null) {
-                remainingGrams += nominal;
-                anyKnown = true;
-              }
+              if (assigned === null) continue;
+              remainingGrams += assigned;
+              anyKnown = true;
             }
 
             // Nothing weighable in the whole group — same silence as before.

@@ -134,29 +134,15 @@ describe('the filament warning and AMS Filament Backup', () => {
     expect(reprints).toBe(0);
   });
 
-  it('lets an unregistered tray pay into the pool from its AMS fill percentage', async () => {
-    // Tray 1 is in no inventory; the AMS says 60 % of a nominal 1 kg reel, so
-    // the group holds 200 + 600 g against a 300 g plate.
+  it('⚠️ an unregistered backup tray pays NOTHING in, however full the AMS says it is', async () => {
+    // Tray 1 is in no inventory and the AMS calls it 60 % full. That figure
+    // buys nothing: unknown is not a quantity, and the operator's rule is to
+    // register the spool if it should count. So the pool is tray 0's 200 g
+    // against a 300 g plate, and the group line names both slots because both
+    // are in the pot the printer would draw on.
     server.use(
       http.get('/api/v1/printers/:id/status', () =>
         HttpResponse.json(twinTrays({ backup: true, remainB: 60 }))
-      ),
-      serveAssignments([assignment(1, 0, 200)])
-    );
-
-    await mountAndSubmit();
-
-    await waitFor(() => expect(reprints).toBe(1));
-    expect(screen.queryByText(/not enough filament/i)).not.toBeInTheDocument();
-  });
-
-  it('⚠️ warns — naming the whole group — when the unregistered tray reports nothing usable', async () => {
-    // `remain: 0` is the firmware's "no answer", never "empty" (backend
-    // `utils/filament_remaining`), so it pays in nothing and the pool is the
-    // 200 g of tray 0 alone.
-    server.use(
-      http.get('/api/v1/printers/:id/status', () =>
-        HttpResponse.json(twinTrays({ backup: true, remainB: 0 }))
       ),
       serveAssignments([assignment(1, 0, 200)])
     );
@@ -170,13 +156,13 @@ describe('the filament warning and AMS Filament Backup', () => {
     expect(reprints).toBe(0);
   });
 
-  it('⚠️ with backup OFF an unregistered tray is still silent — the fill percentage pays nothing', async () => {
-    // The nominal-reel fallback is pinned to backup-on. Without that pin it
-    // would fire here too and invent a warning nobody used to get: a farm that
-    // does not register every tray in inventory would start being told a slot
-    // is short on the strength of a guessed reel size. Trays 0 and 1 are the
-    // same filament and both unregistered; tray 2 carries the one assignment,
-    // which is what keeps the check running at all.
+  it('⚠️ with backup OFF an unregistered tray is still silent — not warned as empty', async () => {
+    // A group whose trays inventory does not know is skipped, never weighed as
+    // zero: unknown is not empty. This is the long-standing silence and it must
+    // survive the grouping rewrite — a tray at 45 % with no spool registered
+    // against a 500 g demand says nothing, exactly as before. Trays 0 and 1 are
+    // the same filament and both unregistered; tray 2 carries the one
+    // assignment, which is what keeps the check running at all.
     server.use(
       http.get('/api/v1/printers/:id/status', () =>
         HttpResponse.json({

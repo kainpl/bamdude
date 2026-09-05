@@ -8,9 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  NOMINAL_SPOOL_GRAMS,
   groupTraysForBackup,
-  nominalGramsFromRemain,
   privateBackupGroup,
 } from '../../../components/PrintModal/filamentBackupGroups';
 import type { LoadedFilament } from '../../../hooks/useFilamentMapping';
@@ -180,30 +178,5 @@ describe('groupTraysForBackup', () => {
 
     expect(group).toEqual({ key: 'tray:254', trayIds: [254], labels: ['External'] });
     expect(group.key).not.toContain('|');
-  });
-});
-
-describe('nominalGramsFromRemain', () => {
-  it('scales a nominal 1 kg reel by the AMS fill percentage', () => {
-    expect(nominalGramsFromRemain(45)).toBe(450);
-    expect(nominalGramsFromRemain(100)).toBe(NOMINAL_SPOOL_GRAMS);
-  });
-
-  it('⚠️ refuses 0 — the firmware says 0 when it has nothing to report, not when a spool is empty', () => {
-    expect(nominalGramsFromRemain(0)).toBeNull();
-  });
-
-  it('refuses the -1 the AMS sends for a tray it cannot measure', () => {
-    expect(nominalGramsFromRemain(-1)).toBeNull();
-  });
-
-  it('refuses an absent reading and an out-of-range one', () => {
-    expect(nominalGramsFromRemain(undefined)).toBeNull();
-    expect(nominalGramsFromRemain(101)).toBeNull();
-    expect(nominalGramsFromRemain(Number.NaN)).toBeNull();
-  });
-
-  it('takes a different reel size when one is known', () => {
-    expect(nominalGramsFromRemain(50, 250)).toBe(125);
   });
 });
