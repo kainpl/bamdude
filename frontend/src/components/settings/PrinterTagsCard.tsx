@@ -136,7 +136,18 @@ export function PrinterTagsCard() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => remove.mutate(tag.id)}
+                  onClick={() => {
+                    // Only when somebody wears it: removing a tag unpins it from
+                    // every printer at once, and that is not visible from here.
+                    // A tag nobody wears loses nothing, so it goes without a prompt.
+                    if (
+                      tag.printer_count > 0 &&
+                      !window.confirm(t('printers.tags.confirmDelete', { name: tag.name, count: tag.printer_count }))
+                    ) {
+                      return;
+                    }
+                    remove.mutate(tag.id);
+                  }}
                   className="p-1.5 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 hover:bg-bambu-dark-tertiary rounded"
                   title={t('common.delete')}
                 >

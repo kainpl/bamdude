@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useQuery } from '@tanstack/react-query';
@@ -46,6 +46,13 @@ function PrintersProbe({ onFetch }: { onFetch: () => void }) {
 }
 
 describe('PrinterTagsCard', () => {
+  // The delete button asks `window.confirm` for a worn tag, and jsdom's own
+  // `confirm` is a not-implemented stub that answers undefined — i.e. "no".
+  // Every test that expects a DELETE to reach the server has to answer it.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('lists tags with counts and badges a stagger group', async () => {
     server.use(http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })));
     render(<PrinterTagsCard />);
@@ -121,6 +128,7 @@ describe('PrinterTagsCard', () => {
   });
 
   it('shows the backend sentence when a stagger group cannot be deleted', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true); // Фаза 1 is worn by two printers
     server.use(
       http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })),
       http.delete('/api/v1/printer-tags/1', () =>
@@ -181,6 +189,66 @@ describe('PrinterTagsCard', () => {
     // The refusal line belongs to a refusal — a success must not print one.
     expect(screen.queryByText(/already exists|staggered-start/)).not.toBeInTheDocument();
     expect(screen.getByText('Фаза 1')).toBeInTheDocument();
+  });
+
+  it('asks before removing a tag printers wear, and does nothing when refused', async () => {
+    let deleteCalls = 0;
+    server.use(
+      http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })),
+      http.delete('/api/v1/printer-tags/1', () => {
+        deleteCalls += 1;
+        return HttpResponse.json({ deleted: 1 });
+      })
+    );
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<PrinterTagsCard />);
+    await screen.findByText('Фаза 1');
+    await userEvent.click(within(rowOf('Фаза 1')).getByTitle('Delete'));
+
+    expect(confirmSpy).toHaveBeenCalledWith('Remove the tag "Фаза 1" from 2 printers?');
+    // Not merely "no row disappeared" — the request must never have been sent.
+    expect(deleteCalls).toBe(0);
+    expect(screen.getByText('Фаза 1')).toBeInTheDocument();
+  });
+
+  it('removes the tag once the operator confirms', async () => {
+    let deleted = false;
+    server.use(
+      http.get('/api/v1/printer-tags', () =>
+        HttpResponse.json({ tags: deleted ? TAGS.filter((tag) => tag.id !== 1) : TAGS })
+      ),
+      http.delete('/api/v1/printer-tags/1', () => {
+        deleted = true;
+        return HttpResponse.json({ deleted: 1 });
+      })
+    );
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<PrinterTagsCard />);
+    await screen.findByText('Фаза 1');
+    await userEvent.click(within(rowOf('Фаза 1')).getByTitle('Delete'));
+
+    await waitFor(() => expect(screen.queryByText('Фаза 1')).not.toBeInTheDocument());
+  });
+
+  it('deletes a tag nobody wears without asking', async () => {
+    let deleted = false;
+    server.use(
+      http.get('/api/v1/printer-tags', () =>
+        HttpResponse.json({ tags: deleted ? TAGS.filter((tag) => tag.id !== 2) : TAGS })
+      ),
+      http.delete('/api/v1/printer-tags/2', () => {
+        deleted = true;
+        return HttpResponse.json({ deleted: 1 });
+      })
+    );
+    // Answering "no" proves the prompt is never reached: the row goes anyway.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<PrinterTagsCard />);
+    await screen.findByText('Замовник X');
+    await userEvent.click(within(rowOf('Замовник X')).getByTitle('Delete'));
+
+    await waitFor(() => expect(screen.queryByText('Замовник X')).not.toBeInTheDocument());
+    expect(confirmSpy).not.toHaveBeenCalled();
   });
 
   it('counts one printer in the singular', async () => {
