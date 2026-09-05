@@ -9,10 +9,23 @@
  * `SelectMachineDialog::CheckWarningFilamentRemain`, which decrements a local
  * remain map across the backup group rather than per tray.
  *
- * The grouping rule is the printer's own: same filament preset (`tray_info_idx`)
- * and same colour; where the preset is unknown, same type and colour. With
- * backup OFF every tray is its own group, which is exactly the strict per-tray
- * check this module replaced.
+ * The grouping rule is the printer's own: same extruder, same filament preset
+ * (`tray_info_idx`) and same colour; where the preset is unknown, same type and
+ * colour. With backup OFF every tray is its own group, which is exactly the
+ * strict per-tray check this module replaced.
+ *
+ * ⚠️ **Backup feeds from the AMS list only.** BS builds its remain map from the
+ * AMS trays and takes the group from `GetBackupAmsSlotInGroup`, which is
+ * extruder-scoped — the external spool holder is never a backup source, and no
+ * swap crosses nozzles. So an external tray is always alone here whatever it
+ * carries, and two AMS units bound to different extruders never pool.
+ *
+ * ⚠️ **Two deliberate divergences from BS**, both in the direction of doing
+ * this at all rather than not: BS gates the whole check on the printer
+ * supporting accurate remain reporting, where we gate on
+ * `ams_auto_switch_filament` alone; and BS never guesses a reel size, where an
+ * unregistered tray here is weighed against a nominal 1 kg spool (see
+ * `NOMINAL_SPOOL_GRAMS`). A warning we suppress on a guess is the cost.
  */
 
 import type { LoadedFilament } from '../../hooks/useFilamentMapping';
@@ -68,11 +81,27 @@ export function groupTraysForBackup(loaded: LoadedFilament[], backupOn: boolean)
 
   const byKey = new Map<string, BackupGroup>();
   for (const tray of loaded) {
-    // The preset identifies the filament variant (GFA00 is PLA Basic, GFA01
-    // PLA Matte), which is what the printer matches on; colour still has to
-    // agree or the swap would change the part's colour mid-print. Trays with
-    // no preset fall back to the type, which is all the AMS reported.
-    const key = tray.trayInfoIdx ? `${tray.trayInfoIdx}|${tray.color}` : `${tray.type}|${tray.color}`;
+    // ⚠️ The external holder is not a backup source — the printer never feeds a
+    // swap from it — so it is alone even when its preset and colour match an
+    // AMS tray exactly. `buildLoadedFilaments` appends `vt_tray` entries with a
+    // real `trayInfoIdx` and the same normalised colour, so without this they
+    // would join an AMS group and their weight would suppress a real warning.
+    if (tray.isExternal) {
+      byTray.set(tray.globalTrayId, privateBackupGroup(tray.globalTrayId, tray.label));
+      continue;
+    }
+    // The extruder leads the key: no swap crosses nozzles, so two AMS units
+    // bound to different extruders on dual-nozzle hardware are two pots, not
+    // one. `undefined` (single-nozzle, no `ams_extruder_map`) is its own bucket
+    // and groups with itself, which is the single-nozzle case.
+    //
+    // Then the preset, which identifies the filament variant (GFA00 is PLA
+    // Basic, GFA01 PLA Matte) and is what the printer matches on; colour still
+    // has to agree or the swap would change the part's colour mid-print. Trays
+    // with no preset fall back to the type, tagged so a preset that happens to
+    // read like a type name cannot collide with it.
+    const filament = tray.trayInfoIdx ? tray.trayInfoIdx : `type:${tray.type}`;
+    const key = `${tray.extruderId ?? 'x'}|${filament}|${tray.color}`;
     let group = byKey.get(key);
     if (!group) {
       group = { key, trayIds: [], labels: [] };

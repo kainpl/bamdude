@@ -38,7 +38,7 @@ describe('groupTraysForBackup', () => {
       true
     );
 
-    expect(groups.get(0)?.key).toBe('GFA00|#FF0000');
+    expect(groups.get(0)?.key).toBe('x|GFA00|#FF0000');
     expect(groups.get(0)).toBe(groups.get(1));
     expect(groups.get(0)?.trayIds).toEqual([0, 1]);
     expect(groups.get(0)?.labels).toEqual(['A1', 'A2']);
@@ -54,7 +54,7 @@ describe('groupTraysForBackup', () => {
     );
 
     expect(groups.get(0)).not.toBe(groups.get(1));
-    expect(groups.get(1)?.key).toBe('GFA00|#00FF00');
+    expect(groups.get(1)?.key).toBe('x|GFA00|#00FF00');
   });
 
   it('⚠️ keeps different presets apart even in the same colour — Basic is not Matte', () => {
@@ -79,7 +79,7 @@ describe('groupTraysForBackup', () => {
       true
     );
 
-    expect(groups.get(0)?.key).toBe('PETG|#FF0000');
+    expect(groups.get(0)?.key).toBe('x|type:PETG|#FF0000');
     expect(groups.get(0)).toBe(groups.get(1));
     expect(groups.get(2)).not.toBe(groups.get(0));
   });
@@ -94,6 +94,64 @@ describe('groupTraysForBackup', () => {
     );
 
     expect(groups.get(0)).not.toBe(groups.get(1));
+  });
+
+  it('⚠️ never lets the external spool join an AMS group — backup does not feed from it', () => {
+    // `buildLoadedFilaments` appends `vt_tray` with a real preset and the same
+    // normalised colour, so an external holder looked identical to a fourth AMS
+    // slot. BS builds its remain map from the AMS list alone; letting the
+    // external spool in would have paid its weight into a pool the printer
+    // cannot actually draw on, suppressing a real warning.
+    const groups = groupTraysForBackup(
+      [
+        tray({ globalTrayId: 0, trayInfoIdx: 'GFA00' }),
+        tray({ globalTrayId: 254, trayInfoIdx: 'GFA00', isExternal: true, amsId: -1, label: 'External' }),
+      ],
+      true
+    );
+
+    expect(groups.get(0)).not.toBe(groups.get(254));
+    expect(groups.get(254)).toEqual({ key: 'tray:254', trayIds: [254], labels: ['External'] });
+    expect(groups.get(0)?.trayIds).toEqual([0]);
+  });
+
+  it('⚠️ keeps two extruders apart — no swap crosses nozzles', () => {
+    const groups = groupTraysForBackup(
+      [
+        tray({ globalTrayId: 0, trayInfoIdx: 'GFA00', extruderId: 0 }),
+        tray({ globalTrayId: 4, trayInfoIdx: 'GFA00', extruderId: 1, label: 'B1' }),
+      ],
+      true
+    );
+
+    expect(groups.get(0)).not.toBe(groups.get(4));
+    expect(groups.get(0)?.key).toBe('0|GFA00|#FF0000');
+    expect(groups.get(4)?.key).toBe('1|GFA00|#FF0000');
+  });
+
+  it('pools two AMS units bound to the same extruder', () => {
+    const groups = groupTraysForBackup(
+      [
+        tray({ globalTrayId: 0, trayInfoIdx: 'GFA00', extruderId: 0 }),
+        tray({ globalTrayId: 4, trayInfoIdx: 'GFA00', extruderId: 0, label: 'B1' }),
+      ],
+      true
+    );
+
+    expect(groups.get(0)).toBe(groups.get(4));
+    expect(groups.get(0)?.trayIds).toEqual([0, 4]);
+  });
+
+  it('pools single-nozzle trays, where no tray has an extruder at all', () => {
+    const groups = groupTraysForBackup(
+      [
+        tray({ globalTrayId: 0, trayInfoIdx: 'GFA00' }),
+        tray({ globalTrayId: 4, trayInfoIdx: 'GFA00', label: 'B1' }),
+      ],
+      true
+    );
+
+    expect(groups.get(0)).toBe(groups.get(4));
   });
 
   it('gives every tray its own group when backup is off', () => {

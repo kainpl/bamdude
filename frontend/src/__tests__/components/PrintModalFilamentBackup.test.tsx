@@ -170,6 +170,46 @@ describe('the filament warning and AMS Filament Backup', () => {
     expect(reprints).toBe(0);
   });
 
+  it('⚠️ with backup OFF an unregistered tray is still silent — the fill percentage pays nothing', async () => {
+    // The nominal-reel fallback is pinned to backup-on. Without that pin it
+    // would fire here too and invent a warning nobody used to get: a farm that
+    // does not register every tray in inventory would start being told a slot
+    // is short on the strength of a guessed reel size. Trays 0 and 1 are the
+    // same filament and both unregistered; tray 2 carries the one assignment,
+    // which is what keeps the check running at all.
+    server.use(
+      http.get('/api/v1/printers/:id/status', () =>
+        HttpResponse.json({
+          connected: true,
+          state: 'IDLE',
+          ams_auto_switch_filament: false,
+          ams: [
+            {
+              id: 0,
+              tray: [
+                { id: 0, tray_type: 'PLA', tray_color: 'FF0000FF', tray_info_idx: 'GFA00', remain: 45 },
+                { id: 1, tray_type: 'PLA', tray_color: 'FF0000FF', tray_info_idx: 'GFA00', remain: 45 },
+                { id: 2, tray_type: 'PETG', tray_color: '00FF00FF', tray_info_idx: 'GFG00', remain: 100 },
+              ],
+            },
+          ],
+          vt_tray: [],
+        })
+      ),
+      http.get('/api/v1/archives/:id/filament-requirements', () =>
+        HttpResponse.json({
+          filaments: [{ slot_id: 1, type: 'PLA', color: '#FF0000', used_grams: 500, tray_info_idx: 'GFA00' }],
+        })
+      ),
+      serveAssignments([assignment(3, 2, 900)])
+    );
+
+    await mountAndSubmit();
+
+    await waitFor(() => expect(reprints).toBe(1));
+    expect(screen.queryByText(/not enough filament/i)).not.toBeInTheDocument();
+  });
+
   it('⚠️ sums two plates that both draw on the group — one pool, two demands', async () => {
     // 200 g per plate against a 350 g pool: either plate fits, the pair does
     // not, and a per-plate check would have passed both.

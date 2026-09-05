@@ -113,6 +113,7 @@ export function PrintModal({
 
   type FilamentWarningItem = {
     printerName: string;
+    /** Always `slotLabels[0]` — kept because the single-tray line reads better. */
     slotLabel: string;
     /**
      * Every tray whose filament was weighed together. One entry for the strict
@@ -1338,20 +1339,17 @@ export function PrintModal({
           // Demand pools per group. A demanded tray the status does not list
           // (an external spool the AMS never reported, say) is its own group —
           // there is nothing for the printer to swap it with.
-          const gramsByGroup = new Map<string, number>();
-          const groupsByKey = new Map<string, BackupGroup>();
+          const demandByGroup = new Map<string, { group: BackupGroup; requiredGrams: number }>();
           for (const [globalTrayId, requiredGrams] of gramsByTray) {
             const group =
               groupByTray.get(globalTrayId) ??
               privateBackupGroup(globalTrayId, slotLabelByTray.get(globalTrayId) ?? `Tray ${globalTrayId}`);
-            groupsByKey.set(group.key, group);
-            gramsByGroup.set(group.key, (gramsByGroup.get(group.key) ?? 0) + requiredGrams);
+            const pooled = demandByGroup.get(group.key);
+            if (pooled) pooled.requiredGrams += requiredGrams;
+            else demandByGroup.set(group.key, { group, requiredGrams });
           }
 
-          for (const [groupKey, requiredGrams] of gramsByGroup) {
-            const group = groupsByKey.get(groupKey);
-            if (!group) continue;
-
+          for (const { group, requiredGrams } of demandByGroup.values()) {
             // What the group has left: the registered spool's own weight
             // wherever inventory knows the tray, and — only when backup is on
             // and a pool is what we are weighing — a nominal reel scaled by the
@@ -1383,7 +1381,9 @@ export function PrintModal({
 
             warningItems.push({
               printerName,
-              slotLabel: group.labels[0] ?? `Tray ${group.trayIds[0]}`,
+              // Always the first of `slotLabels` — the two must not drift, and
+              // the single-tray line is exactly the group line's one label.
+              slotLabel: group.labels[0],
               slotLabels: group.labels,
               requiredGrams,
               remainingGrams,
