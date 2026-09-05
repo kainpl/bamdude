@@ -271,7 +271,10 @@ class TestFreshInstall:
                 pk = await conn.fetch(
                     "SELECT a.attname FROM pg_constraint c "
                     "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey) "
-                    "WHERE c.conrelid = 'public.printer_tag_links'::regclass AND c.contype = 'p'"
+                    "WHERE c.conrelid = 'public.printer_tag_links'::regclass AND c.contype = 'p' "
+                    # In declaration order: a (tag_id, printer_id) key would not serve a
+                    # printer_id lookup, and membership alone cannot tell the two apart.
+                    "ORDER BY array_position(c.conkey, a.attnum)"
                 )
                 fks = await conn.fetch(
                     "SELECT confrelid::regclass::text AS target FROM pg_constraint "
@@ -280,7 +283,7 @@ class TestFreshInstall:
                 return (
                     [r["indexdef"] for r in indexes],
                     {r["column_name"]: (r["data_type"], r["character_maximum_length"]) for r in columns},
-                    sorted(r["attname"] for r in pk),
+                    [r["attname"] for r in pk],
                     sorted(r["target"] for r in fks),
                 )
             finally:
@@ -295,7 +298,9 @@ class TestFreshInstall:
         assert columns.get("name") == ("character varying", 64), columns.get("name")
 
         assert pk_columns == ["printer_id", "tag_id"], pk_columns
-        assert "printers" in fk_targets, fk_targets
+        # Both parents: without the FK to printer_tags a tag row could be deleted
+        # out from under its links on PostgreSQL alone.
+        assert fk_targets == ["printer_tags", "printers"], fk_targets
 
 
 class TestSqliteMigration:
