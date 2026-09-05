@@ -49,6 +49,37 @@ class Printer(Base):
         the list route validates straight off the ORM row."""
         return [tag.id for tag in self.tags]
 
+    @property
+    def plate_detection_roi(self) -> dict[str, float] | None:
+        """The camera ROI as one object, or None when no component was ever set.
+
+        A property for the same reason as ``tag_ids``: every printer response is
+        validated straight off the row (``PrinterResponse.model_validate``), and
+        the row carries only the four flat columns — so without this the nested
+        field on the response was ``null`` for every printer that had one saved.
+        Kept as a plain dict so Pydantic builds ``PlateDetectionROI`` from it.
+
+        The per-component defaults are the ones the (now deleted)
+        ``PrinterResponse.from_orm_with_roi`` applied, so a partially saved ROI
+        keeps working. ``is not None`` rather than ``or``: a saved 0.0 is a
+        legitimate edge of the frame, not a missing component.
+        """
+        parts = (
+            self.plate_detection_roi_x,
+            self.plate_detection_roi_y,
+            self.plate_detection_roi_w,
+            self.plate_detection_roi_h,
+        )
+        if all(p is None for p in parts):
+            return None
+        x, y, w, h = parts
+        return {
+            "x": x if x is not None else 0.15,
+            "y": y if y is not None else 0.35,
+            "w": w if w is not None else 0.70,
+            "h": h if h is not None else 0.55,
+        }
+
     nozzle_count: Mapped[int] = mapped_column(default=1)  # 1 or 2, auto-detected from MQTT
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     # Soft-retire: archived printers disappear from the whole app + MQTT while

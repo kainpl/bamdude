@@ -53,6 +53,8 @@
 
 ### Fixed
 
+- **The saved camera ROI for plate detection is now returned by the printer endpoints** instead of always reading as empty; nothing about detection itself changes.
+
 - **The «not enough filament» warning now knows about AMS Filament Backup.** With backup on, a print whose slot maps to a spool with too little left is no longer flagged when another loaded spool of the same filament and colour covers the rest: the check pools what the print needs and what is left across the whole backup group, and when it does warn it names the group rather than one tray. A tray with no spool registered in the inventory adds nothing to the pool — register the spool if it should count. With backup off, the check behaves exactly as before.
 
 - **Strict mode for staggered start now does what its description says.** With it on, Print Now and Re-print are refused with a message when the printer's stagger group has no free slot, instead of quietly waiting for one; queued prints are never refused, and a refusal leaves the printer's queue running. Before, the check ran only after the print had already taken its slot and then counted that very slot against itself, so with a cap of one every direct print was refused and with a cap of N the last legitimate one was. A printer's own slot no longer counts against it anywhere.

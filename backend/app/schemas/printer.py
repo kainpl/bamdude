@@ -129,6 +129,8 @@ class PrinterResponse(PrinterBase):
     external_camera_snapshot_url: str | None = None  # upstream #1177
     camera_rotation: int = 0  # 0, 90, 180, 270 degrees
     plate_detection_enabled: bool = False
+    # Assembled from the four flat columns by ``Printer.plate_detection_roi`` — a
+    # model property, because this response is validated straight off the ORM row.
     plate_detection_roi: PlateDetectionROI | None = None
     stagger_interval_minutes: int = 0
     swap_mode_enabled: bool = False
@@ -138,55 +140,6 @@ class PrinterResponse(PrinterBase):
 
     class Config:
         from_attributes = True
-
-    @classmethod
-    def from_orm_with_roi(cls, printer) -> "PrinterResponse":
-        """Create response from ORM model, converting ROI fields to nested object."""
-        data = {
-            "id": printer.id,
-            "name": printer.name,
-            "serial_number": printer.serial_number,
-            "ip_address": printer.ip_address,
-            "model": printer.model,
-            "location_id": printer.location_id,
-            "location": (PrinterLocationOut.from_location(getattr(printer, "location", None))),
-            "tag_ids": [tag.id for tag in getattr(printer, "tags", None) or []],
-            "tags": [PrinterTagOut.model_validate(tag) for tag in getattr(printer, "tags", None) or []],
-            "auto_archive": printer.auto_archive,
-            "cleanup_after_print": printer.cleanup_after_print,
-            "mqtt_connection_timeout": printer.mqtt_connection_timeout,
-            "external_camera_url": printer.external_camera_url,
-            "external_camera_type": printer.external_camera_type,
-            "external_camera_enabled": printer.external_camera_enabled,
-            "external_camera_snapshot_url": printer.external_camera_snapshot_url,
-            "camera_rotation": printer.camera_rotation,
-            "is_active": printer.is_active,
-            "nozzle_count": printer.nozzle_count,
-            "print_hours_offset": printer.print_hours_offset,
-            "plate_detection_enabled": printer.plate_detection_enabled,
-            "stagger_interval_minutes": printer.stagger_interval_minutes,
-            "swap_mode_enabled": printer.swap_mode_enabled,
-            "swap_profile": printer.swap_profile,
-            "require_plate_clear": printer.require_plate_clear,
-            "created_at": printer.created_at,
-            "updated_at": printer.updated_at,
-        }
-        # Build ROI object if any ROI field is set
-        if any(
-            [
-                printer.plate_detection_roi_x is not None,
-                printer.plate_detection_roi_y is not None,
-                printer.plate_detection_roi_w is not None,
-                printer.plate_detection_roi_h is not None,
-            ]
-        ):
-            data["plate_detection_roi"] = PlateDetectionROI(
-                x=printer.plate_detection_roi_x or 0.15,
-                y=printer.plate_detection_roi_y or 0.35,
-                w=printer.plate_detection_roi_w or 0.70,
-                h=printer.plate_detection_roi_h or 0.55,
-            )
-        return cls(**data)
 
 
 class PrinterResponseWithSecret(PrinterResponse):
