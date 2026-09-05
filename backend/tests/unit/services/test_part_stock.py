@@ -24,6 +24,7 @@ from backend.app.services.part_stock import (
     NOTE_ORDER_CANCELLED,
     NOTE_RESERVATION_REWRITTEN,
     NOTE_TOKENS,
+    NOTE_UNFILED_FROM_ORDER,
     REASONS,
     PartStockError,
     balances,
@@ -31,8 +32,10 @@ from backend.app.services.part_stock import (
     delete_for_part,
     delete_for_parts,
     detach_archive,
+    detach_archives,
     detach_line,
     kits_available,
+    line_ledger_reads,
     lock_part_stmt,
     move,
     movements,
@@ -1040,3 +1043,116 @@ async def test_the_rewrite_note_is_the_token_the_writer_owns(db_session, kit):
 
     released = [m for m in await _line_rows(db_session, line.id) if m.reason == "reservation_released"]
     assert {m.note for m in released} == {NOTE_RESERVATION_REWRITTEN}
+
+
+async def test_a_partly_reversed_print_re_credits_only_the_parts_that_came_back(db_session, shelf):
+    """Ruling 28: idempotency is per PART, not per archive.
+
+    Filing a print under an order reverses what it put on the shelf — but only
+    what is still THERE. A part whose stock has been spent since is refused, so
+    the archive's total stays above zero while some of its parts hold nothing.
+    Read whole, that total said "already on the shelf" and un-filing credited
+    nothing at all: the reversed parts stayed lost. Read per part, the one that
+    came back comes back and the one still standing is not doubled.
+    """
+    product, parts, archive = shelf
+    await credit_unfiled_print(db_session, archive)
+    # The lids went out on another order; the bases are untouched.
+    await move(db_session, part_id=parts["lid"].id, delta=-3, reason="reserved_for_order")
+    with pytest.raises(PartStockError):
+        await reverse_unfiled_print(db_session, archive, note=NOTE_FILED_UNDER_ORDER)
+    assert await unfiled_credit_net(db_session, archive.id) == 3, "the lid's credit could not be taken back"
+
+    written = await credit_unfiled_print(db_session, archive, note=NOTE_UNFILED_FROM_ORDER)
+
+    assert [m.product_part_id for m in written] == [parts["base"].id], "only the part that was actually reversed"
+    assert await balances(db_session, product.id) == {parts["lid"].id: 0, parts["base"].id: 4}
+
+
+async def test_the_credit_locks_the_parts_before_it_reads_what_is_standing(db_session, test_engine, shelf):
+    """Finding M5. The decision "is this print's stock already on the shelf" is
+    read-then-write, so the lock has to be held across both — otherwise two
+    completion handlers for one archive each find nothing standing and each
+    credit it. The parts are known only after the print's rows are resolved
+    through the product index, which is why the lock is taken there and not at
+    the top."""
+    _product, parts, archive = shelf
+    wanted = _normalise(str(lock_part_stmt(parts["lid"].id).compile(dialect=sqlite.dialect())))
+
+    with counting_statements(test_engine) as seen:
+        await credit_unfiled_print(db_session, archive)
+
+    statements = [_normalise(s) for s in seen]
+    net_read = next(
+        i for i, s in enumerate(statements) if "product_part_stock_movements.archive_id = ?" in s and "GROUP BY" in s
+    )
+    assert statements[:net_read].count(wanted) == 2, "both credited parts locked before the nets were read"
+    assert "FOR UPDATE" in str(lock_part_stmt(parts["lid"].id).compile(dialect=postgresql.dialect()))
+
+
+async def test_detaching_a_batch_of_archives_keeps_every_shelf_intact(db_session, shelf):
+    """Finding I2's writer. The bulk hard-delete paths never reach
+    ``ArchiveService.delete_archive``, so this is what cuts the ledger loose
+    from a whole user's prints at once — the balances stand, the links go."""
+    product, parts, archive = shelf
+    await credit_unfiled_print(db_session, archive)
+
+    assert await detach_archives(db_session, [archive.id, 999_999]) == 2
+
+    assert await balances(db_session, product.id) == {parts["lid"].id: 3, parts["base"].id: 4}
+    assert {m.archive_id for m in await movements(db_session, product.id)} == {None}
+    assert await detach_archives(db_session, []) == 0
+
+
+async def test_the_never_fail_credit_swallows_what_the_ledger_refuses(db_session, shelf, monkeypatch):
+    """Ruling 27's shared wrapper. Both automatic doors — the completion hook
+    and the late 3MF attach — must let a print stand whatever the bookkeeping
+    thinks; a raise there would fail an attach that has already written the
+    file."""
+    _product, _parts, archive = shelf
+
+    async def _explode(*_args, **_kwargs):
+        raise PartStockError("the shelf says no")
+
+    monkeypatch.setattr(part_stock_module, "credit_unfiled_print", _explode)
+
+    assert await part_stock_module.credit_if_unfiled(db_session, archive) == []
+
+
+async def test_one_grouped_read_answers_both_the_reservation_and_the_banking(db_session, test_engine, kit):
+    """Ruling 30. ``already_banked`` rides on the SAME statement as the
+    reservation, because every order surface holds a spy pinning the movements
+    table to one read per response."""
+    product, parts = kit
+    line = await _line(db_session, product)
+    await reserve_for_line(db_session, line, 2)
+    await move(db_session, part_id=parts["lid"].id, delta=4, reason="surplus_banked", project_line_id=line.id)
+    qty = {part.id: part.qty_per_unit for part in parts.values()}
+
+    with counting_statements(test_engine, match="product_part_stock_movements") as statements:
+        reads = await line_ledger_reads(db_session, [line.id], qty)
+
+    assert reads.reserved_units == {line.id: 2}
+    assert reads.banked_by_part == {(line.id, parts["lid"].id): 4}
+    assert len(statements) == 1, f"one statement for both halves, got {len(statements)}: {statements}"
+
+
+async def test_a_part_banked_but_never_reserved_does_not_zero_the_line(db_session, kit):
+    """The trap in widening that one statement: a part with a ``surplus_banked``
+    row and no reservation row must not join the ``min`` over the kits as a
+    zero. Read that way, a line holding two kits would report none."""
+    product, parts = kit
+    line = await _line(db_session, product)
+    await reserve_for_line(db_session, line, 2)
+    # A part added to the product after the reservation was taken: it can be
+    # banked onto, and it has no reservation row of its own.
+    late = ProductPart(product_id=product.id, kind="printed", name="clip", name_key="clip", qty_per_unit=1)
+    db_session.add(late)
+    await db_session.flush()
+    await move(db_session, part_id=late.id, delta=3, reason="surplus_banked", project_line_id=line.id)
+    qty = {part.id: part.qty_per_unit for part in list(parts.values()) + [late]}
+
+    reads = await line_ledger_reads(db_session, [line.id], qty)
+
+    assert reads.reserved_units == {line.id: 2}
+    assert reads.banked_by_part == {(line.id, late.id): 3}

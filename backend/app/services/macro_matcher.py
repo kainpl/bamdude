@@ -56,17 +56,22 @@ def macro_targets_model(macro: Macro, model: str | None) -> bool:
     same column is exactly the drift that makes a macro fire at one door and not
     another.
 
-    ⚠️ **The model is NORMALISED here, so both doors ask the same question.**
-    ``macro.printer_models`` holds the short names the macro editor writes
-    ("X1C"), while a caller spells the model however its own source does: a
-    ``Printer`` row can hold the long marketing name ("Bambu Lab X1 Carbon"),
+    ⚠️ **BOTH sides are NORMALISED here, so both doors ask the same question.**
+    ``macro.printer_models`` normally holds the short names the macro editor
+    writes ("X1C"), while a caller spells the model however its own source does:
+    a ``Printer`` row can hold the long marketing name ("Bambu Lab X1 Carbon"),
     a 3MF says "C12". ``print_option_defaults`` normalised before calling and
     the fire-time filter did not, so a long-name printer was offered every
     macro at dispatch and then matched none of them when the event arrived —
     silently, because "no macro targets this printer" and "this printer fired
-    nothing" look identical from outside. Normalising inside the shared filter
-    is what makes the two sides one rule; it is a no-op for the short names
-    ``normalize_model_name`` already returns unchanged.
+    nothing" look identical from outside.
+
+    The STORED side is normalised too (finding M7). A macro whose column was
+    written by anything but today's editor — an import, an older build, an API
+    client, a hand-edited row — can hold "Bambu Lab X1 Carbon" itself, and
+    normalising only the incoming model left it matching no printer at all.
+    ``normalize_model_name`` returns what it does not recognise unchanged, so
+    this is a no-op for every short name already in the column.
     """
     try:
         models = json.loads(macro.printer_models or "[]")
@@ -77,7 +82,8 @@ def macro_targets_model(macro: Macro, model: str | None) -> bool:
     if "*" in models:
         return True
     normalized = normalize_model_name(model)
-    return bool(normalized) and normalized in models
+    targeted = {name for entry in models if (name := normalize_model_name(entry if isinstance(entry, str) else None))}
+    return bool(normalized) and normalized in targeted
 
 
 def find_macros_for_event(

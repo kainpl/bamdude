@@ -2541,6 +2541,25 @@ class ArchiveService:
             # a read error here would otherwise fail the entire attach.
             await seed_archive_parts(self.db, archive, source_file)
 
+            # ⚠️ The free-stock credit runs HERE too (Ruling 27), not only in
+            # the completion hook. An external print reaches ``completed``
+            # before its 3MF does — the hook fired against an archive with no
+            # part rows at all and credited nothing, and the four retry triggers
+            # that finally attach the file (startup sweep, reconnect, the
+            # last-chance call in ``on_print_complete``, the manual button) only
+            # seed the rows. Nothing re-ran the credit, so a print that arrived
+            # by that door never reached the shelf.
+            #
+            # ``credit_if_unfiled`` is the never-fail wrapper the hook uses:
+            # this whole method returns False on any exception, and losing an
+            # attached 3MF over a bookkeeping refusal would be the worse trade.
+            # It decides for itself whether this archive qualifies (completed,
+            # order-less, and not already standing per part).
+            if archive.status == "completed" and archive.project_id is None:
+                from backend.app.services import part_stock
+
+                await part_stock.credit_if_unfiled(self.db, archive)
+
             await self.db.commit()
             await self.db.refresh(archive)
             return True

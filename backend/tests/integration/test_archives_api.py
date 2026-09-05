@@ -1150,7 +1150,7 @@ async def _stock_rows(db_session) -> list[tuple]:
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_counting_an_old_order_less_print_into_stock(
-    async_client: AsyncClient, db_session, archive_factory, printer_factory
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
 ):
     """History is deliberately NOT backfilled — nobody knows which of last
     year's order-less prints were shipped. This is the operator vouching for
@@ -1159,7 +1159,7 @@ async def test_counting_an_old_order_less_print_into_stock(
     printer = await printer_factory()
     archive_id = await _print_of(db_session, printer.id, archive_factory)
 
-    r = await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    r = await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
 
     assert r.status_code == 200, r.text
     assert r.json() == [{"part_id": lid_id, "name": "lid", "delta": 4}]
@@ -1171,16 +1171,16 @@ async def test_counting_an_old_order_less_print_into_stock(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_counting_the_same_print_into_stock_twice_is_refused(
-    async_client: AsyncClient, db_session, archive_factory, printer_factory
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
 ):
     """409, not a silent no-op: the operator pressed a button and is entitled to
     be told the parts are already counted rather than left to wonder."""
     await _stocked_product(db_session)
     printer = await printer_factory()
     archive_id = await _print_of(db_session, printer.id, archive_factory)
-    assert (await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")).status_code == 200
+    assert (await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")).status_code == 200
 
-    r = await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    r = await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
 
     assert r.status_code == 409
     assert len(await _stock_rows(db_session)) == 1
@@ -1213,7 +1213,7 @@ async def test_a_print_filed_under_an_order_cannot_be_counted_into_stock(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_filing_a_counted_print_under_an_order_takes_its_stock_back(
-    async_client: AsyncClient, db_session, archive_factory, printer_factory
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
 ):
     """The archive editor's project change. Without the reversal the same parts
     would sit on the shelf AND count towards the order they were just filed
@@ -1228,9 +1228,9 @@ async def test_filing_a_counted_print_under_an_order_takes_its_stock_back(
     await db_session.commit()
     printer = await printer_factory()
     archive_id = await _print_of(db_session, printer.id, archive_factory)
-    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
 
-    r = await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+    r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
 
     assert r.status_code == 200, r.text
     assert await _stock_rows(db_session) == [
@@ -1242,7 +1242,7 @@ async def test_filing_a_counted_print_under_an_order_takes_its_stock_back(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_filing_a_print_a_second_time_reverses_nothing_more(
-    async_client: AsyncClient, db_session, archive_factory, printer_factory
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
 ):
     """Moving the print on to another order must not take the parts back twice —
     the first filing already zeroed what this archive put on the shelf."""
@@ -1253,10 +1253,10 @@ async def test_filing_a_print_a_second_time_reverses_nothing_more(
     await db_session.commit()
     printer = await printer_factory()
     archive_id = await _print_of(db_session, printer.id, archive_factory)
-    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
-    await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": 1})
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": 1})
 
-    r = await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": 2})
+    r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": 2})
 
     assert r.status_code == 200, r.text
     assert [row[1] for row in await _stock_rows(db_session)] == ["unfiled_print", "manual"]
@@ -1265,7 +1265,7 @@ async def test_filing_a_print_a_second_time_reverses_nothing_more(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_filing_a_print_whose_stock_is_already_spent_still_files_it(
-    async_client: AsyncClient, db_session, archive_factory, printer_factory
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
 ):
     """The stock went out to another order between the print and the filing, so
     the credit cannot be taken back. Re-filing a print corrects the print
@@ -1282,11 +1282,11 @@ async def test_filing_a_print_whose_stock_is_already_spent_still_files_it(
     await db_session.commit()
     printer = await printer_factory()
     archive_id = await _print_of(db_session, printer.id, archive_factory)
-    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
     await move(db_session, part_id=lid_id, delta=-4, reason="reserved_for_order")
     await db_session.commit()
 
-    r = await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+    r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
 
     assert r.status_code == 200, r.text
     assert r.json()["project_id"] == project_id
@@ -1297,7 +1297,7 @@ async def test_filing_a_print_whose_stock_is_already_spent_still_files_it(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_hard_deleting_an_archive_leaves_the_parts_on_the_shelf(
-    async_client: AsyncClient, db_session, archive_factory, printer_factory
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
 ):
     """``archive_id`` is ON DELETE SET NULL and SQLite honours no such clause.
     The print history goes; the parts it made are still in a drawer."""
@@ -1306,7 +1306,7 @@ async def test_hard_deleting_an_archive_leaves_the_parts_on_the_shelf(
     _product_id, lid_id = await _stocked_product(db_session)
     printer = await printer_factory()
     archive_id = await _print_of(db_session, printer.id, archive_factory)
-    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
 
     assert await ArchiveService(db_session).delete_archive(archive_id) is True
 
@@ -1325,7 +1325,7 @@ async def _admin_id(db_session) -> int:
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_counting_a_print_into_stock_records_who_asked(
-    async_client: AsyncClient, db_session, archive_factory, printer_factory
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
 ):
     """The button has an operator behind it, unlike the completion handler,
     which writes with no user (Decision 7). The product page's movements table
@@ -1339,7 +1339,7 @@ async def test_counting_a_print_into_stock_records_who_asked(
     archive_id = await _print_of(db_session, printer.id, archive_factory)
     admin_id = await _admin_id(db_session)
 
-    assert (await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")).status_code == 200
+    assert (await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")).status_code == 200
 
     db_session.expire_all()
     rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
@@ -1349,7 +1349,7 @@ async def test_counting_a_print_into_stock_records_who_asked(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_taking_a_print_back_out_of_an_order_puts_its_parts_back(
-    async_client: AsyncClient, db_session, archive_factory, printer_factory
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
 ):
     """Ruling 11. Filing reversed the credit because the order counted the
     parts; un-filing has to undo that, or a plate quietly disappears every time
@@ -1364,10 +1364,10 @@ async def test_taking_a_print_back_out_of_an_order_puts_its_parts_back(
     await db_session.commit()
     printer = await printer_factory()
     archive_id = await _print_of(db_session, printer.id, archive_factory)
-    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
-    await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
 
-    r = await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": None})
+    r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": None})
 
     assert r.status_code == 200, r.text
     assert r.json()["project_id"] is None
@@ -1382,7 +1382,7 @@ async def test_taking_a_print_back_out_of_an_order_puts_its_parts_back(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_a_re_credited_print_cannot_be_counted_into_stock_again(
-    async_client: AsyncClient, db_session, archive_factory, printer_factory
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
 ):
     """The 409 reads the archive's NET, the same function the writer's
     idempotency check reads — so it says "already counted" exactly while the
@@ -1397,11 +1397,11 @@ async def test_a_re_credited_print_cannot_be_counted_into_stock_again(
     await db_session.commit()
     printer = await printer_factory()
     archive_id = await _print_of(db_session, printer.id, archive_factory)
-    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
-    await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
-    await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": None})
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+    await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": None})
 
-    r = await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    r = await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
 
     assert r.status_code == 409
     assert "already been counted" in r.json()["detail"]
@@ -1411,7 +1411,7 @@ async def test_a_re_credited_print_cannot_be_counted_into_stock_again(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_filing_reverses_every_part_it_can_even_when_one_is_spent(
-    async_client: AsyncClient, db_session, archive_factory, printer_factory
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
 ):
     """Ruling 12a end to end: the lid's stock has gone out to another order and
     the base's has not. The base comes back off the shelf, the archive is
@@ -1441,11 +1441,11 @@ async def test_filing_reverses_every_part_it_can_even_when_one_is_spent(
         ]
     )
     await db_session.commit()
-    await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
     await move(db_session, part_id=lid_id, delta=-4, reason="reserved_for_order")
     await db_session.commit()
 
-    r = await async_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+    r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
 
     assert r.status_code == 200, r.text
     assert r.json()["project_id"] == project_id, "a refused reversal must never block the filing"

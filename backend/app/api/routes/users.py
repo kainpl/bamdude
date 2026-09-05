@@ -421,7 +421,23 @@ async def delete_user(
         )
 
     if delete_items:
-        # Delete all items created by this user
+        # Delete all items created by this user.
+        #
+        # ⚠️ The stock ledger is cut loose FIRST. This is a bulk Core DELETE, so
+        # it never reaches ``ArchiveService.delete_archive`` and never runs its
+        # ``part_stock.detach_archive`` — and ``product_part_stock_movements``
+        # declares ON DELETE SET NULL, which only PostgreSQL applies (this
+        # codebase never sets ``PRAGMA foreign_keys = ON``). Left attached, the
+        # movements keep an ``archive_id`` naming nothing; on SQLite the next
+        # print to inherit that rowid then finds its credit already standing and
+        # is silently never counted into stock. The movements themselves stay:
+        # the parts are on a shelf whatever happened to the print history.
+        from backend.app.services import part_stock
+
+        _doomed_archive_ids = (
+            (await db.execute(select(PrintArchive.id).where(PrintArchive.created_by_id == user_id))).scalars().all()
+        )
+        await part_stock.detach_archives(db, list(_doomed_archive_ids))
         await db.execute(delete(PrintArchive).where(PrintArchive.created_by_id == user_id))
         # Detach print_queue back-references before the bulk delete — SQLite
         # foreign_keys=OFF means ON DELETE clauses won't fire on their own.

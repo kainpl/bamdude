@@ -38,8 +38,8 @@ to it because there was nothing left to reserve — writes no row and returns
 **An archive's credit and its reversal are one pair, kept together.**
 :func:`credit_unfiled_print` and :func:`reverse_unfiled_print` live here rather
 than in the completion handler or the archive route because the two only make
-sense read against each other: the first is idempotent on "an ``unfiled_print``
-movement already names this archive", the second on "the sum of everything
+sense read against each other: the first is idempotent on "this PART's share of
+this archive is already on the shelf", the second on "the sum of everything
 naming it is already zero". Split across two modules, one of them would
 eventually be changed without the other and a print filed after the fact would
 count twice — which is the exact bug Decision 3 exists to prevent.
@@ -55,6 +55,7 @@ nothing can name any more.
 import logging
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -250,6 +251,28 @@ def lock_part_stmt(part_id: int):
     )
 
 
+async def lock_parts(db: AsyncSession, parts: Sequence[ProductPart]) -> None:
+    """Take :func:`lock_part_stmt` on every one of ``parts``, lowest id first.
+
+    Every caller that DECIDES something across several parts — how many kits a
+    line may reserve, how much of a surplus is still unbanked, whether an
+    archive's parts are already standing on the shelf — has to hold the lock
+    before it reads, or two transactions each decide against a shelf the other
+    is about to empty. ``move`` locks the one part it writes, which is too late
+    for a decision taken over all of them at once.
+
+    Id order is the whole safety of it: two of these loops can never take the
+    same two locks in opposite orders, so they queue instead of deadlocking.
+    Sorted here rather than trusted from the caller, because the callers get
+    their parts from three different queries.
+
+    A no-op on SQLite (its dialect emits no ``FOR UPDATE``), whose single write
+    lock already serialises what this is for.
+    """
+    for part in sorted(parts, key=lambda part: part.id):
+        await db.execute(lock_part_stmt(part.id))
+
+
 async def _balance_of(db: AsyncSession, part_id: int) -> int:
     total = await db.scalar(
         select(func.coalesce(func.sum(ProductPartStockMovement.delta), 0)).where(
@@ -362,23 +385,29 @@ async def movements(db: AsyncSession, product_id: int, *, limit: int = 200) -> l
     return list(rows.scalars().all())
 
 
-async def _counted_parts(db: AsyncSession, product_id: int) -> list[ProductPart]:
-    """The product's counted parts, lowest id first.
+async def counted_parts_of(db: AsyncSession, product_ids: Sequence[int]) -> list[ProductPart]:
+    """The counted parts of these products, lowest id first.
 
     Id order is what a reservation is written in — and what its locks are taken
-    in, so two transactions reserving the same product can never take them the
+    in, so two transactions touching the same products can never take them the
     other way round and deadlock.
 
     ``populate_existing`` because ``kind`` and ``qty_per_unit`` ARE
     :func:`is_counted`: a route that edited a part earlier in the same
     transaction must not have this question answered from the identity map's
     pre-edit copy.
+
+    Public because the banking route locks a whole ORDER's products before it
+    decides anything (finding M5), and it has no business spelling
+    :func:`is_counted` a second time to do it.
     """
+    if not product_ids:
+        return []
     rows = (
         (
             await db.execute(
                 select(ProductPart)
-                .where(ProductPart.product_id == product_id)
+                .where(ProductPart.product_id.in_(product_ids))
                 .order_by(ProductPart.id)
                 .execution_options(populate_existing=True)
             )
@@ -387,6 +416,11 @@ async def _counted_parts(db: AsyncSession, product_id: int) -> list[ProductPart]
         .all()
     )
     return [part for part in rows if is_counted(part)]
+
+
+async def _counted_parts(db: AsyncSession, product_id: int) -> list[ProductPart]:
+    """:func:`counted_parts_of` for the one-product callers."""
+    return await counted_parts_of(db, [product_id])
 
 
 async def _reserved_net_by_part(db: AsyncSession, line_id: int) -> list[tuple[int, int]]:
@@ -523,12 +557,8 @@ async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, c
     # transactions would each read the same shelf, each decide three kits are
     # free, and the clamp in ``move`` would fire per part on a decision already
     # taken. Locking here means the second transaction waits for the first to
-    # commit and then reads the true balances. ``parts`` is id-ordered
-    # (``_counted_parts``), so two of these loops can never take the same two
-    # locks in opposite orders — deadlock-safe by construction. A no-op on
-    # SQLite, whose single write lock already serialises this.
-    for part in parts:
-        await db.execute(lock_part_stmt(part.id))
+    # commit and then reads the true balances.
+    await lock_parts(db, parts)
     # After the release, so the shelf includes what this line was holding.
     take = min(units, line.quantity, kits_available(await balances(db, line.product_id), parts))
     if take <= 0:
@@ -550,50 +580,100 @@ async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, c
     return reserved
 
 
-async def reserved_units_by_line(
+@dataclass(slots=True)
+class LineStockReads:
+    """Everything the order figures need out of the ledger, from ONE read.
+
+    ``reserved_units`` is ``line_id → kits still held off the shelf``;
+    ``banked_by_part`` is ``(line_id, part_id) → Σ surplus_banked``, the number
+    the banking button subtracts from a line's surplus so a second press moves
+    only what has appeared since (Ruling 30).
+
+    The two travel together because they come out of one grouped statement over
+    ``product_part_stock_movements``, and they must keep doing so: the order
+    page, the orders list, the products list and the plan candidates each hold a
+    spy pinning that table to a single read per response (the pass-6 batch
+    discipline). Two "obviously independent" helpers here would be two reads.
+    """
+
+    reserved_units: dict[int, int]
+    banked_by_part: dict[tuple[int, int], int]
+
+
+async def line_ledger_reads(
     db: AsyncSession, line_ids: Sequence[int], qty_per_unit: Mapping[int, int]
-) -> dict[int, int]:
-    """``line_id → kits reserved from stock``, for many lines in ONE query.
+) -> LineStockReads:
+    """The reservation AND the banked surplus of many lines, in ONE query.
 
     The reservation has no column on ``project_lines`` (Decision 4): it IS the
     ledger, so every reader derives it the same way — ``−Σ delta`` over the
     line's reservation rows, divided by that part's ``qty_per_unit``, and the
-    scarcest part wins because a kit is the unit the operator reserves in.
+    scarcest part wins because a kit is the unit the operator reserves in. The
+    banked half is read the same way and for the same reason: the route that
+    banks used to run a private ``SELECT`` for it, which is a second answer to
+    "what has this line already put on the shelf" and one the button could not
+    see (Ruling 30 — it gated on a surplus that banking never lowered).
 
     ⚠️ **One query for every line of the page**, because both order loaders
     call this for a whole batch of orders (the pass-6 discipline). A per-line
     variant would put an N+1 under the orders list, the customer page and every
-    product endpoint at once.
+    product endpoint at once. ``GROUP BY (line, part, reason)`` and the split in
+    Python rather than CASE-sums, because "this part has no reservation row at
+    all" and "its reservation nets to zero" are different facts and only the
+    first must be kept out of the ``min`` below.
 
-    Only lines that actually hold something appear in the answer — a caller
-    reads ``.get(line_id, 0)``. ``qty_per_unit`` is the caller's own map of the
-    parts it has already loaded; a part missing from it is skipped rather than
-    guessed at, and a line left with no readable part reads 0.
+    Only lines that actually hold something appear in ``reserved_units`` — a
+    caller reads ``.get(line_id, 0)``. ``qty_per_unit`` is the caller's own map
+    of the parts it has already loaded; a part missing from it is skipped rather
+    than guessed at, and a line left with no readable part reads 0.
     """
     if not line_ids:
-        return {}
-    per_line: dict[int, list[int]] = defaultdict(list)
+        return LineStockReads(reserved_units={}, banked_by_part={})
+    reserved_net: dict[tuple[int, int], int] = defaultdict(int)
+    banked: dict[tuple[int, int], int] = defaultdict(int)
     for start in range(0, len(line_ids), IN_CHUNK):
         rows = (
             await db.execute(
                 select(
                     ProductPartStockMovement.project_line_id,
                     ProductPartStockMovement.product_part_id,
+                    ProductPartStockMovement.reason,
                     func.coalesce(func.sum(ProductPartStockMovement.delta), 0),
                 )
                 .where(
                     ProductPartStockMovement.project_line_id.in_(line_ids[start : start + IN_CHUNK]),
-                    ProductPartStockMovement.reason.in_(_RESERVATION_REASONS),
+                    ProductPartStockMovement.reason.in_((*_RESERVATION_REASONS, "surplus_banked")),
                 )
-                .group_by(ProductPartStockMovement.project_line_id, ProductPartStockMovement.product_part_id)
+                .group_by(
+                    ProductPartStockMovement.project_line_id,
+                    ProductPartStockMovement.product_part_id,
+                    ProductPartStockMovement.reason,
+                )
             )
         ).all()
-        for line_id, part_id, net in rows:
-            qty = qty_per_unit.get(part_id)
-            if not qty:
-                continue
-            per_line[line_id].append(max(0, -int(net or 0)) // qty)
-    return {line_id: kits for line_id, taken in per_line.items() if (kits := min(taken)) > 0}
+        for line_id, part_id, reason, net in rows:
+            if reason == "surplus_banked":
+                banked[(line_id, part_id)] += int(net or 0)
+            else:
+                reserved_net[(line_id, part_id)] += int(net or 0)
+    per_line: dict[int, list[int]] = defaultdict(list)
+    for (line_id, part_id), net in reserved_net.items():
+        qty = qty_per_unit.get(part_id)
+        if not qty:
+            continue
+        per_line[line_id].append(max(0, -net) // qty)
+    return LineStockReads(
+        reserved_units={line_id: kits for line_id, taken in per_line.items() if (kits := min(taken)) > 0},
+        banked_by_part={key: net for key, net in banked.items() if net > 0},
+    )
+
+
+async def reserved_units_by_line(
+    db: AsyncSession, line_ids: Sequence[int], qty_per_unit: Mapping[int, int]
+) -> dict[int, int]:
+    """The reservation half of :func:`line_ledger_reads`, for callers that ask
+    nothing about banking."""
+    return (await line_ledger_reads(db, line_ids, qty_per_unit)).reserved_units
 
 
 async def reserved_units_for_line(db: AsyncSession, line: ProjectLine) -> int:
@@ -687,6 +767,34 @@ async def detach_archive(db: AsyncSession, archive_id: int) -> int:
     return result.rowcount or 0
 
 
+async def detach_archives(db: AsyncSession, archive_ids: Sequence[int]) -> int:
+    """:func:`detach_archive` for a whole batch of archives at once.
+
+    For the BULK hard-delete paths, which never go through
+    ``ArchiveService.delete_archive`` and so never reach its single-archive
+    detach — deleting a user with ``delete_items`` is one Core ``DELETE`` over
+    every archive they created (finding I2). Left attached, those movements keep
+    an ``archive_id`` naming a row that no longer exists, and on SQLite the next
+    archive to inherit that rowid finds its own credit already "standing" and is
+    silently never counted into stock.
+
+    Chunked like every other ``IN (...)`` list here: a user who has been running
+    a farm for two years can own tens of thousands of prints, and SQLite refuses
+    past 32766 bound parameters.
+    """
+    if not archive_ids:
+        return 0
+    detached = 0
+    for start in range(0, len(archive_ids), IN_CHUNK):
+        result = await db.execute(
+            update(ProductPartStockMovement)
+            .where(ProductPartStockMovement.archive_id.in_(archive_ids[start : start + IN_CHUNK]))
+            .values(archive_id=None)
+        )
+        detached += result.rowcount or 0
+    return detached
+
+
 async def unfiled_credit_net(db: AsyncSession, archive_id: int) -> int:
     """How much free stock this archive is currently holding on the shelf.
 
@@ -711,6 +819,32 @@ async def unfiled_credit_net(db: AsyncSession, archive_id: int) -> int:
     )
 
 
+async def _net_by_part(db: AsyncSession, archive_id: int) -> dict[int, int]:
+    """``part_id → Σ delta`` of everything carrying this ``archive_id``.
+
+    :func:`unfiled_credit_net` split by part — the same sum, asked per part
+    because that is the grain both idempotency questions are decided at
+    (Ruling 28): which parts of this print are still standing on the shelf, and
+    which of them a reversal has anything to take back.
+
+    ⚠️ This counts EVERY row carrying the id, whatever its reason. Only
+    ``unfiled_print`` and its own reversals ever set that column — do not set it
+    on movements of another reason without revisiting both readers.
+    """
+    rows = (
+        await db.execute(
+            select(
+                ProductPartStockMovement.product_part_id,
+                func.coalesce(func.sum(ProductPartStockMovement.delta), 0),
+            )
+            .where(ProductPartStockMovement.archive_id == archive_id)
+            .group_by(ProductPartStockMovement.product_part_id)
+            .order_by(ProductPartStockMovement.product_part_id)
+        )
+    ).all()
+    return {part_id: int(net or 0) for part_id, net in rows}
+
+
 async def credit_unfiled_print(
     db: AsyncSession, archive: PrintArchive, *, created_by: int | None = None, note: str | None = None
 ) -> list[ProductPartStockMovement]:
@@ -725,13 +859,20 @@ async def credit_unfiled_print(
     part gets from attribution, because it is the same statement: the product
     does not measure this object.
 
-    **Idempotent by the archive's NET** (:func:`unfiled_credit_net`), not by a
-    row existing. A second completion event for the same print (an MQTT replay,
-    a reconnect flap) finds stock already standing against this archive and
-    writes nothing — and a print that was credited, FILED under an order (net
-    back to zero) and then un-filed again is credited afresh, which is the
-    whole point of Ruling 11. That check is why ``archive_id`` carries an index
-    of its own.
+    **Idempotent PER PART, by that part's net for this archive** (Ruling 28),
+    not by a row existing and not by the archive's total. A second completion
+    event for the same print (an MQTT replay, a reconnect flap) finds stock
+    already standing on every part and writes nothing — and a print that was
+    credited, FILED under an order (net back to zero) and then un-filed again is
+    credited afresh, which is the whole point of Ruling 11. That check is why
+    ``archive_id`` carries an index of its own.
+
+    ⚠️ Per part and not per archive because a reversal can be PARTIAL:
+    :func:`reverse_unfiled_print` writes back every part whose stock is still
+    there and refuses the ones already spent, so the archive's total stays above
+    zero while some of its parts hold nothing. Read whole, that total said "all
+    of it is already on the shelf" and the un-filing credited nothing at all —
+    the reversed parts stayed lost. Read per part, each one answers for itself.
 
     Silent (an empty list, not an exception) for a print this does not apply
     to: one filed under an order, one that did not finish, one whose file no
@@ -749,12 +890,6 @@ async def credit_unfiled_print(
     Flushes through :func:`move`; the caller commits.
     """
     if archive.project_id is not None or archive.status != _COMPLETED or archive.library_file_id is None:
-        return []
-    # ⚠️ Assumes completion events for ONE archive are handled sequentially (one
-    # process, one handler). A partial unique index is NOT the alternative: this
-    # writes one row per PART per archive, and an un-file/re-credit cycle adds
-    # another set on top — there is no column combination that is unique here.
-    if await unfiled_credit_net(db, archive.id) > 0:
         return []
 
     rows = (
@@ -808,9 +943,29 @@ async def credit_unfiled_print(
             logger.debug("part_stock: archive %s object %r resolves to no counted part", archive.id, row.name_key)
             continue
         wanted[owner.id] += row_quantity(row, archive.status)
+    if not wanted:
+        return []
+
+    # ⚠️ Lock, THEN read the nets, then decide (finding M5). The parts this
+    # print is about to credit are known only here — after its rows have been
+    # resolved through the product index — so this is the first moment the lock
+    # can be taken, and it has to be taken before the read or two completion
+    # handlers for the same archive would each find nothing standing and each
+    # write a credit.
+    #
+    # ⚠️ Still assumes completion events for ONE archive are handled
+    # sequentially (one process, one handler) on SQLite, where the lock is a
+    # no-op. A partial unique index is NOT the alternative: this writes one row
+    # per PART per archive, and an un-file/re-credit cycle adds another set on
+    # top — there is no column combination that is unique here.
+    await lock_parts(db, [part for part in parts if part.id in wanted])
+    standing = await _net_by_part(db, archive.id)
 
     written: list[ProductPartStockMovement] = []
     for part_id, quantity in wanted.items():
+        if standing.get(part_id, 0) > 0:
+            # This part's share of the print is already on the shelf.
+            continue
         movement = await move(
             db,
             part_id=part_id,
@@ -823,6 +978,29 @@ async def credit_unfiled_print(
         if movement is not None:
             written.append(movement)
     return written
+
+
+async def credit_if_unfiled(
+    db: AsyncSession, archive: PrintArchive, *, created_by: int | None = None, note: str | None = None
+) -> list[ProductPartStockMovement]:
+    """:func:`credit_unfiled_print` that can never fail its caller.
+
+    The two doors a print can arrive at without anybody asking for stock — the
+    completion hook and the late 3MF attach (Ruling 27) — have exactly the same
+    rule: the print happened, and the bookkeeping is a consequence of it, never
+    a condition on it. So everything the ledger might object to is caught and
+    logged here, in ONE place, rather than in two hooks that would each decide
+    what "best effort" means.
+
+    Flushes through :func:`move`; the caller commits. A caller that WANTS the
+    refusal — the operator's own «Порахувати в залишок», which answers 409 —
+    calls :func:`credit_unfiled_print` directly.
+    """
+    try:
+        return await credit_unfiled_print(db, archive, created_by=created_by, note=note)
+    except Exception as e:  # noqa: BLE001 — a print must never fail on its own bookkeeping
+        logger.warning("part_stock: free-stock credit failed for archive %s: %s", archive.id, e, exc_info=True)
+        return []
 
 
 async def reverse_unfiled_print(db: AsyncSession, archive: PrintArchive, note: str) -> list[ProductPartStockMovement]:
@@ -855,21 +1033,9 @@ async def reverse_unfiled_print(db: AsyncSession, archive: PrintArchive, note: s
     the named parts by hand from the product page.
     """
     # ⚠️ This negates EVERY row carrying this ``archive_id``, whatever its
-    # reason. Only ``unfiled_print`` and its own reversals ever set that column
-    # — do not set it on movements of another reason without revisiting this
-    # sum, which would otherwise take back stock that came from somewhere else.
-    totals = (
-        await db.execute(
-            select(
-                ProductPartStockMovement.product_part_id,
-                func.coalesce(func.sum(ProductPartStockMovement.delta), 0),
-            )
-            .where(ProductPartStockMovement.archive_id == archive.id)
-            .group_by(ProductPartStockMovement.product_part_id)
-            .order_by(ProductPartStockMovement.product_part_id)
-        )
-    ).all()
-    outstanding = {part_id: int(net or 0) for part_id, net in totals if int(net or 0) > 0}
+    # reason — see :func:`_net_by_part`, which is that sum and is also what the
+    # credit reads to decide a part is already standing.
+    outstanding = {part_id: net for part_id, net in (await _net_by_part(db, archive.id)).items() if net > 0}
     if not outstanding:
         return []
     parts = {

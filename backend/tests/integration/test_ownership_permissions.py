@@ -935,6 +935,61 @@ class TestUserItemsCountAndDeletion(TestOwnershipPermissionsSetup):
         )
         assert archive_response.status_code == 404
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_delete_user_with_items_detaches_the_stock_ledger(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """Finding I2: the parts stay on the shelf, the dead link goes.
+
+        This route hard-deletes the user's archives with one bulk statement, so
+        it never reaches ``ArchiveService.delete_archive`` and never runs its
+        ``part_stock.detach_archive``. ``product_part_stock_movements`` declares
+        ON DELETE SET NULL, which only PostgreSQL applies — on SQLite the
+        movements would keep an ``archive_id`` naming nothing, and the next
+        print to inherit that rowid would find its own credit already standing
+        and never be counted into stock.
+        """
+        from sqlalchemy import select
+
+        from backend.app.models.part_stock import ProductPartStockMovement
+        from backend.app.models.product import Product, ProductPart
+        from backend.app.services import part_stock
+
+        printer = await printer_factory()
+        user_id = (
+            await async_client.post(
+                "/api/v1/users/",
+                headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+                json={"username": "stockowner", "password": "Password123!"},
+            )
+        ).json()["id"]
+        archive = await archive_factory(printer.id, created_by_id=user_id)
+        archive_id = archive.id
+        product = Product(name="Lamp")
+        db_session.add(product)
+        await db_session.flush()
+        part = ProductPart(product_id=product.id, kind="printed", name="lid", name_key="lid", qty_per_unit=1)
+        db_session.add(part)
+        await db_session.flush()
+        part_id = part.id
+        await part_stock.move(db_session, part_id=part_id, delta=4, reason="unfiled_print", archive_id=archive_id)
+        await db_session.commit()
+
+        response = await async_client.delete(
+            f"/api/v1/users/{user_id}?delete_items=true",
+            headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+        )
+
+        assert response.status_code == 204
+        db_session.expire_all()
+        rows = (
+            (await db_session.execute(select(ProductPartStockMovement).where(ProductPartStockMovement.id.is_not(None))))
+            .scalars()
+            .all()
+        )
+        assert [(r.product_part_id, r.delta, r.archive_id) for r in rows] == [(part_id, 4, None)]
+
 
 # Every archive WRITE sub-resource route: (id, http method, path suffix, request kwargs).
 # The ownership gate (_ensure_archive_visible) fires immediately after the fetch,

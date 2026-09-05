@@ -76,3 +76,24 @@ class TestTheModelIsNormalisedBeforeItIsCompared:
 
     def test_a_printer_with_no_model_matches_no_targeted_macro(self) -> None:
         assert macro_targets_model(_macro("purge", ["X1C"]), None) is False
+
+    def test_a_macro_stored_with_a_long_name_fires_for_the_short_named_printer(self) -> None:
+        """Finding M7, the mirror image of the regression above. The column is
+        normally written by the macro editor, but an import, an older build, an
+        API client or a hand-edited row can put the marketing name in it — and
+        while only the incoming model was normalised, such a macro matched no
+        printer at all."""
+        macro = _macro("purge", ["Bambu Lab X1 Carbon"])
+
+        assert macro_targets_model(macro, "X1C") is True
+        assert macro_targets_model(macro, "Bambu Lab X1 Carbon") is True
+        assert macro_targets_model(macro, "P1S") is False
+
+    def test_a_stored_entry_that_is_not_a_string_is_ignored_rather_than_fatal(self) -> None:
+        """A list is still a list even with something odd in it; the entries
+        that ARE models keep working."""
+        macro = _macro("purge", ["X1C"])
+        macro.printer_models = json.dumps([None, 7, "Bambu Lab P1S"])
+
+        assert macro_targets_model(macro, "P1S") is True
+        assert macro_targets_model(macro, "X1C") is False

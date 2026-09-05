@@ -240,6 +240,10 @@ class ProjectFiguresOut(BaseModel):
     # printed this many, the customer ordered that many — and this is the third
     # number the order card shows beside them when it is not zero.
     from_stock_units: int = 0
+    # What «Списати надлишок» would still move, in parts (Ruling 30). The button
+    # is enabled on exactly this: it used to gate on the surplus, which banking
+    # never lowers, so it stayed lit for ever and answered "nothing to bank".
+    bankable_surplus: int = 0
 
 
 class ProjectResponse(BaseModel):

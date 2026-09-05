@@ -26,7 +26,6 @@ from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.customer import Customer
-from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.product import Product, ProductPart, ProductPlate
@@ -310,6 +309,21 @@ async def _release(db: AsyncSession, line: ProjectLine, note: str) -> None:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
 
+def _consumed_its_stock(status: str | None) -> bool:
+    """Has this order already EATEN the kits it took off the shelf (Ruling 25)?
+
+    A completed order shipped them: the kits left the building inside the units
+    the customer got, and the movements that took them off the shelf are the
+    record of it. Cancelling that order afterwards, deleting one of its lines or
+    deleting the whole thing must therefore NOT hand them back — the shelf would
+    grow by parts nobody can find on it, and the next order would be planned
+    against stock that is in a box on a lorry.
+
+    Every other status still owns them, so every other status releases.
+    """
+    return status == "completed"
+
+
 @router.post("", response_model=ProjectResponse)
 @router.post("/", response_model=ProjectResponse)
 async def create_project(
@@ -359,6 +373,9 @@ async def update_project(
 ):
     project = await _get_project(db, project_id)
     lines = list(project.lines)
+    # Read BEFORE the fields are written: cancelling asks what the order was,
+    # not what it is about to become (Ruling 25).
+    was_completed = _consumed_its_stock(project.status)
     if data.status is not None and data.status not in PROJECT_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid status")
     if data.priority is not None and data.priority not in PROJECT_PRIORITIES:
@@ -369,10 +386,15 @@ async def update_project(
     # field leaves the column alone (the tags/due_date/#2536 lesson, applied to all).
     for field_name in data.model_fields_set:
         setattr(project, field_name, getattr(data, field_name))
-    if data.status == "cancelled":
+    if data.status == "cancelled" and not was_completed:
         # Cancelling gives the shelf its kits back (pass 8, Decision 4) — the
         # order will never consume them. COMPLETING deliberately does not: the
         # stock was consumed, and the movements stand as the record of it.
+        #
+        # ⚠️ And cancelling an order that was already COMPLETED gives nothing
+        # back either (Ruling 25): the kits went out with it. The PREVIOUS
+        # status is what decides, which is why it is read before the fields are
+        # written above.
         # Cancelling an already-cancelled order releases nothing a second time,
         # because the release reads what the ledger still holds and finds zero.
         #
@@ -396,13 +418,38 @@ async def delete_project(
     # Its lines go with it, so they go through the same two steps a single
     # deleted line does (Ruling 10): the kits come back to the shelf, and the
     # history that named the line stops naming an id that will be reused.
+    #
+    # ⚠️ A COMPLETED order releases nothing (Ruling 25) — its kits shipped. The
+    # DETACH still runs whatever the status: the line row is going away either
+    # way, and a movement left naming a deleted line id would be handed to
+    # whichever line SQLite gives that rowid to next.
+    released = not _consumed_its_stock(project.status)
     for line in list(project.lines):
-        await _release(db, line, part_stock.NOTE_PROJECT_DELETED)
+        if released:
+            await _release(db, line, part_stock.NOTE_PROJECT_DELETED)
         await part_stock.detach_line(db, line.id)
+    # Read before the un-filing: after the UPDATE below, no archive names this
+    # order any more and there is nothing left to look them up by.
+    unfiled = (await db.execute(select(PrintArchive).where(PrintArchive.project_id == project_id))).scalars().all()
     for model in (PrintArchive, PrintQueueItem, AutoQueueItem):
         await db.execute(
             update(model).where(model.project_id == project_id).values(project_id=None, project_line_id=None)
         )
+    # ⚠️ Deleting an order UN-FILES its prints, and un-filing is un-filing
+    # (Ruling 26): the parts those prints made are on a shelf and now belong to
+    # no order, exactly as they do when «Прибрати архіви» or the archive editor
+    # lets one go. Without this, deleting an order was the one door that lost
+    # them. Bounded by this order's own archives, idempotent per part, and
+    # ordinarily a no-op for anything that did not finish.
+    #
+    # The two columns are cleared on the loaded rows as well as by the statement
+    # above: ``credit_unfiled_print`` refuses an archive whose ``project_id`` it
+    # can still see, and whether a bulk UPDATE happens to reach the identity map
+    # is a synchronisation strategy, not a promise.
+    for archive in unfiled:
+        archive.project_id = None
+        archive.project_line_id = None
+        await part_stock.credit_if_unfiled(db, archive, note=part_stock.NOTE_PROJECT_DELETED)
     await db.delete(project)
     return {"message": "Project deleted"}
 
@@ -475,9 +522,15 @@ async def delete_line(
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     line = await _get_line(db, project_id, line_id)
+    project = await _get_project(db, project_id)
     # Release BEFORE detaching, or the reservation becomes invisible to the
     # query that hands it back and the kits stay off the shelf for good.
-    await _release(db, line, part_stock.NOTE_LINE_DELETED)
+    #
+    # ⚠️ Unless the order is COMPLETED (Ruling 25): those kits shipped inside
+    # its units, and deleting the paperwork afterwards does not bring them back
+    # to the shelf. The detach below still runs — the line row goes either way.
+    if not _consumed_its_stock(project.status):
+        await _release(db, line, part_stock.NOTE_LINE_DELETED)
     # The prints stay, and stay in the order: only the line they were filed
     # under goes. Done explicitly because SQLite enforces nothing — this
     # codebase never sets ``PRAGMA foreign_keys = ON``, so the ON DELETE SET
@@ -487,7 +540,6 @@ async def delete_line(
     for model in (PrintArchive, PrintQueueItem, AutoQueueItem):
         await db.execute(update(model).where(model.project_line_id == line_id).values(project_line_id=None))
     await part_stock.detach_line(db, line_id)
-    project = await _get_project(db, project_id)
     project.lines.remove(line)  # delete-orphan turns this into the DELETE
     return await _response(db, project_id)
 
@@ -515,43 +567,44 @@ async def bank_surplus(
     A CANCELLED order banks too: the parts came off a bed regardless of what
     happened to the order afterwards, and they are exactly the ones most worth
     keeping.
+
+    ⚠️ **What moves is ``PartFigures.bankable``** — the surplus this line has
+    not banked yet, computed in ``order_metrics`` off the same grouped ledger
+    read the order page renders from (Ruling 30). This route used to run its own
+    ``SELECT`` for the "already banked" half, which was a second answer to the
+    question the BUTTON is enabled on; the button read ``surplus``, which
+    banking never lowers, and so stayed lit over an order with nothing left.
     """
+    # ⚠️ Lock before the figures are LOADED, not after (finding M5): the
+    # "already banked" half is read inside ``load_order_context``, so a lock
+    # taken afterwards would leave the read-decide-write of two operators
+    # pressing the button at once free to interleave. The order's products are
+    # therefore resolved first, in one cheap statement, and every counted part
+    # of them is locked in id order.
+    product_ids = (
+        (await db.execute(select(ProjectLine.product_id).where(ProjectLine.project_id == project_id).distinct()))
+        .scalars()
+        .all()
+    )
+    await part_stock.lock_parts(db, await part_stock.counted_parts_of(db, list(product_ids)))
+
     ctx = await load_order_context(db, project_id)
     if ctx is None:
         raise HTTPException(status_code=404, detail="Project not found")
     figures, _other = attribute(ctx)
-
-    banked = {
-        (line_id, part_id): int(total or 0)
-        for line_id, part_id, total in (
-            await db.execute(
-                select(
-                    ProductPartStockMovement.project_line_id,
-                    ProductPartStockMovement.product_part_id,
-                    func.coalesce(func.sum(ProductPartStockMovement.delta), 0),
-                )
-                .where(
-                    ProductPartStockMovement.project_line_id.in_([line.id for line in ctx.lines]),
-                    ProductPartStockMovement.reason == "surplus_banked",
-                )
-                .group_by(ProductPartStockMovement.project_line_id, ProductPartStockMovement.product_part_id)
-            )
-        ).all()
-    }
 
     # Per part, not per line: two lines of the same product feed one shelf, and
     # the toast says what landed on it.
     moved: dict[int, StockMovedOut] = {}
     for line in ctx.lines:
         for pf in figures[line.id].parts:
-            delta = pf.surplus - banked.get((line.id, pf.part_id), 0)
-            if delta <= 0:
+            if pf.bankable <= 0:
                 continue
             try:
                 movement = await part_stock.move(
                     db,
                     part_id=pf.part_id,
-                    delta=delta,
+                    delta=pf.bankable,
                     reason="surplus_banked",
                     project_line_id=line.id,
                     created_by=current_user.id if current_user else None,
@@ -569,7 +622,9 @@ async def bank_surplus(
                 moved[pf.part_id] = StockMovedOut(part_id=pf.part_id, name=pf.name, delta=movement.delta)
             else:
                 entry.delta += movement.delta
-    await db.commit()
+    # No commit here: ``get_db`` closes the transaction once, after the response
+    # is built (finding M6). The response is built from the movement rows above,
+    # before any commit could expire them.
     return BankSurplusResponse(moved=list(moved.values()), nothing_to_bank=not moved)
 
 

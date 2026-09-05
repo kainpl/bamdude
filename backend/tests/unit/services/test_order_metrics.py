@@ -25,7 +25,7 @@ from backend.app.services.order_metrics import (
 )
 
 
-def _ctx(lines, parts, archives, archive_parts, plate_product, procurement=None, reserved=None):
+def _ctx(lines, parts, archives, archive_parts, plate_product, procurement=None, reserved=None, banked=None):
     project = Project(name="O", price=100.0)
     project.id = 1
     products = {}
@@ -55,6 +55,9 @@ def _ctx(lines, parts, archives, archive_parts, plate_product, procurement=None,
         # it back out of the stock ledger (pass 8, Decision 4). Left empty by
         # default, which is what an order whose product has no stock looks like.
         reserved_by_line=reserved or {},
+        # ``(line_id, part_id) → Σ surplus_banked`` (Ruling 30), off the same
+        # grouped ledger read. Empty is "nothing banked yet".
+        banked_by_line_part=banked or {},
     )
 
 
@@ -649,16 +652,66 @@ def test_the_reservation_reaches_one_hundred_per_cent_at_the_reduced_need():
     assert figs.parts[0].remaining == 0 and figs.parts[0].surplus == 0
 
 
-def test_the_surplus_rises_by_what_came_off_the_shelf():
-    """Intended, not a bug: the kits came off the shelf, so the prints that
-    covered them ARE extra — and «Списати надлишок» can put them back."""
+def test_the_surplus_ignores_what_came_off_the_shelf():
+    """Ruling 24, and the inverse of what this test asserted through pass 8.
+
+    The reservation lowers ``need`` — those units are not printed twice — but
+    it must NOT raise ``surplus``: ten prints against a ten-unit line are ten
+    units of work, whatever the shelf lent it. While the two shared ``need``,
+    the four kits showed up as bankable surplus AND came back on release, so
+    banking then releasing put the same four kits on the shelf twice."""
     parts = [_part(1, 10, "a", 1)]
     lines = [_line(100, 10, 10)]
     archives = [_archive(1, file_id=5, plate=1)]
     ap = {1: [_ap(1, "a", 10)]}
     figs = attribute(_ctx(lines, parts, archives, ap, {(5, 1): 10}, reserved={100: 4}))[0][100]
 
-    assert figs.parts[0].need == 6 and figs.parts[0].surplus == 4
+    assert figs.parts[0].need == 6, "the reservation still lowers what is left to print"
+    assert figs.parts[0].surplus == 0, "ten printed against ten ordered is not a surplus"
+    assert figs.parts[0].bankable == 0
+
+
+def test_the_surplus_is_what_overshoots_the_whole_order():
+    """The other half of Ruling 24: an overprint IS surplus, reservation or no.
+    Twelve printed against a ten-unit line holding four kits reads two."""
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 10)]
+    archives = [_archive(1, file_id=5, plate=1)]
+    ap = {1: [_ap(1, "a", 12)]}
+    figs = attribute(_ctx(lines, parts, archives, ap, {(5, 1): 10}, reserved={100: 4}))[0][100]
+
+    assert (figs.parts[0].need, figs.parts[0].surplus, figs.parts[0].bankable) == (6, 2, 2)
+
+
+def test_what_a_line_has_already_banked_is_not_bankable_again():
+    """Ruling 30. ``already_banked`` comes off the same grouped ledger read as
+    the reservation, so the button's gate and the button's own arithmetic are
+    one number — it used to gate on ``surplus``, which banking never lowers."""
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 10)]
+    archives = [_archive(1, file_id=5, plate=1)]
+    ap = {1: [_ap(1, "a", 13)]}
+    ctx = _ctx(lines, parts, archives, ap, {(5, 1): 10}, banked={(100, 1): 2})
+    figs, other = attribute(ctx)
+    pf = project_figures(ctx, figs, other)
+
+    part = figs[100].parts[0]
+    assert (part.surplus, part.already_banked, part.bankable) == (3, 2, 1)
+    assert pf.bankable_surplus == 1, "Σ over the lines and parts — what the button would still move"
+
+
+def test_a_surplus_banked_in_full_leaves_nothing_to_bank():
+    """What turns the button dark. The surplus stays 3 for ever — it is a fact
+    about the prints — and only ``bankable`` falls to zero."""
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 10)]
+    archives = [_archive(1, file_id=5, plate=1)]
+    ap = {1: [_ap(1, "a", 13)]}
+    ctx = _ctx(lines, parts, archives, ap, {(5, 1): 10}, banked={(100, 1): 3})
+    figs, other = attribute(ctx)
+
+    assert figs[100].parts[0].surplus == 3
+    assert project_figures(ctx, figs, other).bankable_surplus == 0
 
 
 def test_a_line_edited_below_what_it_already_reserved_needs_nothing_rather_than_less_than_nothing():

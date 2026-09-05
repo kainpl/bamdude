@@ -1692,14 +1692,13 @@ async def count_archive_into_stock(
             await db.execute(select(ProductPart).where(ProductPart.id.in_([m.product_part_id for m in written])))
         ).scalars()
     }
-    # Built before the commit: a committed ORM object is expired, and reading an
-    # expired attribute back on the async session is a lazy load with no
-    # greenlet under it.
-    moved = [
+    # Built before the response is returned, and therefore before ``get_db``
+    # commits (finding M6 — this route used to commit for itself as well): a
+    # committed ORM object is expired, and reading an expired attribute back on
+    # the async session is a lazy load with no greenlet under it.
+    return [
         StockMovedOut(part_id=m.product_part_id, name=names.get(m.product_part_id, "?"), delta=m.delta) for m in written
     ]
-    await db.commit()
-    return moved
 
 
 @router.post("/{archive_id}/favorite", response_model=ArchiveResponse)

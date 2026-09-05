@@ -164,6 +164,104 @@ async def test_attach_seeds_rows_on_a_fallback_archive(db_session, tmp_path, pri
     assert [r.name_key for r in rows] == ["lid"]
 
 
+@pytest.mark.asyncio
+async def test_a_print_that_finished_before_its_3mf_arrived_still_reaches_the_shelf(
+    db_session, tmp_path, printer_factory
+):
+    """Ruling 27. An external print reaches ``completed`` before its file does:
+    the completion hook ran against an archive with no part rows at all and
+    credited nothing, and the four triggers that finally attach the 3MF only
+    seed the rows. Nothing re-ran the credit, so a print that arrived by that
+    door never reached the product's free stock.
+
+    The credit is idempotent per part, so attaching twice — a plate-corrected
+    re-download, a retry sweep landing on an archive the reconnect already
+    fixed — moves nothing the second time.
+    """
+    from backend.app.models.part_stock import ProductPartStockMovement
+    from backend.app.models.product import Product, ProductPart, ProductPlate
+    from backend.app.services import part_stock
+    from backend.app.services.archive import ArchiveService
+
+    printer = await printer_factory()
+    product = Product(name="Lamp")
+    db_session.add(product)
+    await db_session.flush()
+    lid = ProductPart(product_id=product.id, kind="printed", name="lid", name_key="lid", qty_per_unit=1)
+    db_session.add_all([lid, ProductPlate(product_id=product.id, library_file_id=901, plate_index=0)])
+    archive = PrintArchive(
+        printer_id=printer.id,
+        filename="late.3mf",
+        print_name="Late",
+        file_path="",
+        file_size=0,
+        status="completed",
+        library_file_id=901,
+        plate_index=1,
+        started_at=datetime.now(timezone.utc),
+        extra_data={"no_3mf_available": True},
+    )
+    db_session.add(archive)
+    await db_session.commit()
+    product_id, lid_id, archive_id = product.id, lid.id, archive.id
+    f = tmp_path / "late.gcode.3mf"
+    f.write_bytes(_3mf({5: "lid", 6: "lid"}))
+
+    assert await ArchiveService(db_session).attach_3mf_to_archive(archive_id, f)
+
+    assert await part_stock.balances(db_session, product_id) == {lid_id: 2}
+    assert await part_stock.unfiled_credit_net(db_session, archive_id) == 2
+
+    assert await ArchiveService(db_session).attach_3mf_to_archive(archive_id, f)
+
+    assert await part_stock.balances(db_session, product_id) == {lid_id: 2}, "a second attach credits nothing more"
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    assert [(r.reason, r.delta) for r in rows] == [("unfiled_print", 2)]
+
+
+@pytest.mark.asyncio
+async def test_attaching_a_3mf_to_a_print_filed_under_an_order_credits_nothing(db_session, tmp_path, printer_factory):
+    """The other half of the same guard: an order's print is counted by the
+    order, and putting it on the free shelf as well would count it twice."""
+    from backend.app.models.part_stock import ProductPartStockMovement
+    from backend.app.models.product import Product, ProductPart, ProductPlate
+    from backend.app.models.project import Project
+    from backend.app.services.archive import ArchiveService
+
+    printer = await printer_factory()
+    product = Product(name="Lamp")
+    project = Project(name="Order")
+    db_session.add_all([product, project])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            ProductPart(product_id=product.id, kind="printed", name="lid", name_key="lid", qty_per_unit=1),
+            ProductPlate(product_id=product.id, library_file_id=902, plate_index=0),
+        ]
+    )
+    archive = PrintArchive(
+        printer_id=printer.id,
+        project_id=project.id,
+        filename="filed.3mf",
+        print_name="Filed",
+        file_path="",
+        file_size=0,
+        status="completed",
+        library_file_id=902,
+        plate_index=1,
+        started_at=datetime.now(timezone.utc),
+    )
+    db_session.add(archive)
+    await db_session.commit()
+    archive_id = archive.id
+    f = tmp_path / "filed.gcode.3mf"
+    f.write_bytes(_3mf({5: "lid"}))
+
+    assert await ArchiveService(db_session).attach_3mf_to_archive(archive_id, f)
+
+    assert (await db_session.execute(select(ProductPartStockMovement))).scalars().all() == []
+
+
 def test_flat_defective_attributes_only_on_a_mono_part_plate():
     from backend.app.services.archive_parts import apply_flat_defective
 

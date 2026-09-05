@@ -5,6 +5,7 @@ from collections import Counter
 
 import pytest
 from sqlalchemy import delete, select
+from sqlalchemy.dialects import postgresql, sqlite
 
 from backend.app.api.routes import projects as projects_routes
 from backend.app.models.archive import PrintArchive
@@ -2993,3 +2994,236 @@ async def test_the_list_and_the_order_page_report_the_same_kits(committing_clien
     detail = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()
 
     assert listed["from_stock_units"] == detail["figures"]["from_stock_units"] == 3
+
+
+async def _balances_by_name(db, product_id: int) -> dict[str, int]:
+    """``part name → balance`` over the product's counted parts."""
+    db.expire_all()
+    parts = (await db.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars().all()
+    balances = await part_stock.balances(db, product_id)
+    return {part.name: balances[part.id] for part in parts if part.id in balances}
+
+
+@pytest.mark.asyncio
+async def test_the_surplus_is_measured_against_the_whole_order_not_what_is_left_to_print(
+    committing_client, db_session, catalog
+):
+    """Ruling 24, four steps, and the shelf asserted at each one against what is
+    PHYSICALLY there.
+
+    Nine kits on the shelf, a five-unit line holding two of them, five prints.
+    Those five prints cover the whole order: the two kits the shelf lent are a
+    LOAN that comes back through a release, not a surplus that is banked. While
+    ``surplus`` was measured against the reduced ``need``, it read two here —
+    and banking it and then releasing the reservation put the same two kits on
+    the shelf twice.
+    """
+    product_id = catalog["product"].id
+    # Read before the first ``expire_all`` below: a fixture object read after
+    # that is a lazy load with no greenlet under it.
+    file_id = catalog["file"].id
+    await _shelf(db_session, product_id, kits=9)
+    body = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Lamps", "lines": [{"product_id": product_id, "quantity": 5, "from_stock_units": 2}]},
+        )
+    ).json()
+    order_id, line_id = body["id"], body["lines"][0]["id"]
+
+    # 1. reserved: two kits off the shelf, seven left free.
+    assert await _balances_by_name(db_session, product_id) == {"shade": 7, "arm": 14}
+    assert body["figures"]["bankable_surplus"] == 0
+
+    # 2. five prints — exactly the whole order, so nothing overshoots it.
+    for _ in range(5):
+        await _completed_print(db_session, order_id, file_id, line_id=line_id)
+    body = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()
+    parts = {p["name"]: p for p in body["lines"][0]["parts"]}
+    assert (parts["shade"]["usable"], parts["shade"]["need"], parts["shade"]["surplus"]) == (5, 3, 0)
+    assert (parts["arm"]["usable"], parts["arm"]["need"], parts["arm"]["surplus"]) == (10, 6, 0)
+    assert body["figures"]["bankable_surplus"] == 0
+
+    # 3. the button has nothing to move.
+    r = await committing_client.post(f"/api/v1/projects/{order_id}/bank-surplus")
+    assert r.json() == {"moved": [], "nothing_to_bank": True}
+
+    # 4. releasing the loan leaves the shelf exactly as it started: nine kits on
+    #    it, five printed and shipped, nothing invented.
+    r = await committing_client.patch(f"/api/v1/projects/{order_id}/lines/{line_id}", json={"from_stock_units": 0})
+    assert r.status_code == 200, r.text
+    assert await _balances_by_name(db_session, product_id) == {"shade": 9, "arm": 18}
+    assert await _kits(db_session, product_id) == 9
+
+
+@pytest.mark.asyncio
+async def test_banking_an_overprint_and_then_releasing_the_loan_adds_up(committing_client, db_session, catalog):
+    """The same four steps with two prints more, which IS a surplus.
+
+    Nine kits, a five-unit line holding two, seven prints — sixteen kits have
+    existed in total and five go out with the order, so eleven end on the shelf
+    and not one more. Banking moves the two the prints overshot the ORDER by;
+    releasing the loan moves the two the line borrowed. Under the old reading
+    the button moved four and the release another two, and the shelf finished
+    at thirteen.
+    """
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=9)
+    body = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Lamps", "lines": [{"product_id": product_id, "quantity": 5, "from_stock_units": 2}]},
+        )
+    ).json()
+    order_id, line_id = body["id"], body["lines"][0]["id"]
+    for _ in range(7):
+        await _completed_print(db_session, order_id, catalog["file"].id, line_id=line_id)
+
+    figures = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()["figures"]
+    assert figures["bankable_surplus"] == 6, "two shades and four arms overshoot the whole five units"
+
+    r = await committing_client.post(f"/api/v1/projects/{order_id}/bank-surplus")
+    assert {m["name"]: m["delta"] for m in r.json()["moved"]} == {"shade": 2, "arm": 4}
+    assert await _balances_by_name(db_session, product_id) == {"shade": 9, "arm": 18}
+    figures = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()["figures"]
+    assert figures["bankable_surplus"] == 0, "Ruling 30: the button goes dark once the surplus has moved"
+    assert (await committing_client.post(f"/api/v1/projects/{order_id}/bank-surplus")).json()["nothing_to_bank"] is True
+
+    await committing_client.patch(f"/api/v1/projects/{order_id}/lines/{line_id}", json={"from_stock_units": 0})
+
+    assert await _balances_by_name(db_session, product_id) == {"shade": 11, "arm": 22}
+    assert await _kits(db_session, product_id) == 11, "9 on the shelf + 7 printed - 5 shipped"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_completed_order_keeps_its_kits_off_the_shelf(committing_client, db_session, catalog):
+    """Ruling 25. A completed order CONSUMED the kits — they left the building
+    inside the units the customer got. Cancelling the paperwork afterwards must
+    not grow the shelf by parts nobody can find on it."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=9)
+    order_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Lamps", "lines": [{"product_id": product_id, "quantity": 3, "from_stock_units": 3}]},
+        )
+    ).json()["id"]
+    await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "completed"})
+
+    r = await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "cancelled"})
+
+    assert r.status_code == 200, r.text
+    assert await _kits(db_session, product_id) == 6
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_line_of_a_completed_order_keeps_its_kits_off_the_shelf(
+    committing_client, db_session, catalog
+):
+    """The second of Ruling 25's three doors. The line row goes; the movements
+    that took its kits stay, and they stop naming a line id SQLite will reuse."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=9)
+    body = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Lamps", "lines": [{"product_id": product_id, "quantity": 3, "from_stock_units": 3}]},
+        )
+    ).json()
+    order_id, line_id = body["id"], body["lines"][0]["id"]
+    await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "completed"})
+
+    r = await committing_client.delete(f"/api/v1/projects/{order_id}/lines/{line_id}")
+
+    assert r.status_code == 200, r.text
+    assert await _kits(db_session, product_id) == 6
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    assert {m.reason for m in rows} == {"unfiled_print", "reserved_for_order"}, "no release was written"
+    assert {m.project_line_id for m in rows} == {None}, "detached anyway - the line row is gone"
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_completed_order_keeps_its_kits_off_the_shelf(committing_client, db_session, catalog):
+    """The third door. Same rule, whole order at once."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=9)
+    order_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Lamps", "lines": [{"product_id": product_id, "quantity": 3, "from_stock_units": 3}]},
+        )
+    ).json()["id"]
+    await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "completed"})
+
+    assert (await committing_client.delete(f"/api/v1/projects/{order_id}")).status_code == 200
+
+    assert await _kits(db_session, product_id) == 6
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_order_puts_its_finished_prints_back_on_the_shelf(committing_client, db_session, catalog):
+    """Ruling 26. Deleting an order UN-FILES its prints, and un-filing is
+    un-filing: the parts those prints made are on a shelf and now belong to no
+    order — exactly as they are when the order page's «Прибрати архіви» or the
+    archive editor lets one go. This was the one door that lost them."""
+    order_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Lamps", "lines": [{"product_id": catalog["product"].id, "quantity": 1}]},
+        )
+    ).json()["id"]
+    line_id = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()["lines"][0]["id"]
+    archive = await _completed_print(db_session, order_id, catalog["file"].id, line_id=line_id)
+    archive_id = archive.id
+    product_id = catalog["product"].id
+    assert await _kits(db_session, product_id) == 0
+
+    assert (await committing_client.delete(f"/api/v1/projects/{order_id}")).status_code == 200
+
+    db_session.expire_all()
+    assert await part_stock.unfiled_credit_net(db_session, archive_id) == 3, "one shade and two arms"
+    assert await _kits(db_session, product_id) == 1
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    assert {m.note for m in rows} == {part_stock.NOTE_PROJECT_DELETED}
+
+
+@pytest.mark.asyncio
+async def test_banking_decides_with_the_products_parts_locked(committing_client, db_session, test_engine, catalog):
+    """Finding M5. «Списати надлишок» is read-then-write — it reads what the
+    line has already banked and writes the difference — so the row locks have to
+    be held across both halves, or two operators pressing it at the same moment
+    each see nothing banked and each bank the whole surplus.
+
+    The read now happens inside ``load_order_context`` (Ruling 30 put
+    ``already_banked`` on the same grouped statement as the reservation), which
+    is why the lock is taken BEFORE the context is loaded and not after.
+    """
+    product_id = catalog["product"].id
+    file_id = catalog["file"].id
+    order_id, _first, _second = await _two_lines(committing_client, catalog)
+    for _ in range(7):
+        await _completed_print(db_session, order_id, file_id)
+    counted = [
+        part
+        for part in (await db_session.execute(select(ProductPart).where(ProductPart.product_id == product_id)))
+        .scalars()
+        .all()
+        if part.kind == "printed"
+    ]
+    wanted = [
+        " ".join(str(part_stock.lock_part_stmt(part.id).compile(dialect=sqlite.dialect())).split())
+        for part in sorted(counted, key=lambda part: part.id)
+    ]
+
+    with counting_statements(test_engine) as seen:
+        r = await committing_client.post(f"/api/v1/projects/{order_id}/bank-surplus")
+
+    assert r.status_code == 200, r.text
+    statements = [" ".join(s.split()) for s in seen]
+    ledger = next(i for i, s in enumerate(statements) if "product_part_stock_movements" in s)
+    for lock in wanted:
+        assert lock in statements[:ledger], "every counted part locked before the ledger was read"
+    # SQLite's dialect drops ``FOR UPDATE`` entirely, so the shape above would
+    # pass just as happily for a SELECT that had lost its lock. The PostgreSQL
+    # rendering of the same statement is where the lock is visible.
+    assert "FOR UPDATE" in str(part_stock.lock_part_stmt(counted[0].id).compile(dialect=postgresql.dialect()))

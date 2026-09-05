@@ -14,7 +14,7 @@ rather than looped, why its ``IN`` lists are chunked, and why its parity with
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
@@ -89,6 +89,20 @@ def products_for_print(
 
 @dataclass
 class PartFigures:
+    """One counted part of one line.
+
+    ``need`` is what is still to be PRINTED — the reservation lowers it
+    (Decision 5). ``surplus`` is measured against the FULL quantity instead
+    (Ruling 24): what the shelf lent this line is not surplus, it is a loan,
+    and it comes back through a release. Counting it in both places is what let
+    an operator bank the raised surplus and then release the reservation, ending
+    with two more kits than the farm ever made.
+
+    ``already_banked`` is Σ ``surplus_banked`` for this (line, part) and
+    ``bankable`` the part of the surplus still to move — one computation, read
+    by the button's gate and by the button itself (Ruling 30).
+    """
+
     part_id: int
     name: str
     kind: str
@@ -98,6 +112,8 @@ class PartFigures:
     in_progress: int = 0
     remaining: int = 0
     surplus: int = 0
+    already_banked: int = 0
+    bankable: int = 0
 
 
 @dataclass
@@ -152,6 +168,12 @@ class ProjectFigures:
     #: only; ``remaining``, ``progress``, ``complete`` and ``all_printed``
     #: count these as done, because they are.
     from_stock_units: int = 0
+    #: Σ over every line and part of ``PartFigures.bankable`` — what
+    #: «Списати надлишок» would move if it were pressed now (Ruling 30). The
+    #: button is enabled on exactly this, so the gate and the action cannot
+    #: disagree: it gated on ``surplus`` before, which banking never lowers, and
+    #: the button stayed lit for ever over a shelf nothing more was going onto.
+    bankable_surplus: int = 0
 
 
 @dataclass
@@ -181,6 +203,12 @@ class OrderContext:
     # as reserving nothing — which is exactly right for the tests that build
     # one by hand and for an order whose product has no stock.
     reserved_by_line: dict[int, int] = field(default_factory=dict)
+    # ``(line_id, part_id) → Σ surplus_banked`` (Ruling 30). Comes off the SAME
+    # grouped read as ``reserved_by_line`` — see ``part_stock.line_ledger_reads``
+    # — because the movements table is pinned to one statement per response.
+    # Empty means "nothing has been banked yet", which is what a hand-built
+    # context should read.
+    banked_by_line_part: dict[tuple[int, int], int] = field(default_factory=dict)
 
 
 def _counted_qty_per_unit(products: Iterable[Product]) -> dict[int, int]:
@@ -198,8 +226,9 @@ def _counted_qty_per_unit(products: Iterable[Product]) -> dict[int, int]:
     }
 
 
-async def _load_reserved(db: AsyncSession, line_ids: Sequence[int], qty_per_unit: dict[int, int]) -> dict[int, int]:
-    """:attr:`OrderContext.reserved_by_line`, in one query for every line given.
+async def _load_reserved(db: AsyncSession, line_ids: Sequence[int], qty_per_unit: dict[int, int]):
+    """:attr:`OrderContext.reserved_by_line` AND :attr:`OrderContext.banked_by_line_part`,
+    in one query for every line given.
 
     ⚠️ Imported inside the function on purpose: ``part_stock`` imports THIS
     module for ``index_plates`` / ``products_for_print`` / ``row_quantity``, so
@@ -208,11 +237,13 @@ async def _load_reserved(db: AsyncSession, line_ids: Sequence[int], qty_per_unit
 
     Both loaders go through this one helper, so "the batch loader loads the
     reservation the same way" is structural rather than a promise — the same
-    reason the archive-parts ordering is shared.
+    reason the archive-parts ordering is shared. It returns BOTH halves for the
+    same reason: one statement over ``product_part_stock_movements`` per
+    response, pinned by a spy on every list and detail endpoint that has one.
     """
-    from backend.app.services.part_stock import reserved_units_by_line
+    from backend.app.services.part_stock import line_ledger_reads
 
-    return await reserved_units_by_line(db, line_ids, qty_per_unit)
+    return await line_ledger_reads(db, line_ids, qty_per_unit)
 
 
 async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext | None:
@@ -276,6 +307,7 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
             await db.execute(select(ProjectProcurement).where(ProjectProcurement.project_id == project_id))
         ).scalars()
     }
+    reads = await _load_reserved(db, [line.id for line in lines], _counted_qty_per_unit(products))
     return OrderContext(
         project=project,
         lines=lines,
@@ -286,23 +318,32 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         archive_parts_by_archive=dict(by_archive),
         procurement_by_part=procurement,
         whole_file_product=whole_file_products,
-        reserved_by_line=await _load_reserved(db, [line.id for line in lines], _counted_qty_per_unit(products)),
+        reserved_by_line=reads.reserved_units,
+        banked_by_line_part=reads.banked_by_part,
     )
 
 
-def _new_line_figures(line: ProjectLine, parts: list[ProductPart], from_stock_units: int = 0) -> LineFigures:
+def _new_line_figures(
+    line: ProjectLine,
+    parts: list[ProductPart],
+    from_stock_units: int = 0,
+    banked: Mapping[tuple[int, int], int] | None = None,
+) -> LineFigures:
     """The line's parts, each with the number of them the ORDER still wants.
 
     ``need = (quantity − from_stock_units) × qty_per_unit`` (pass 8, Decision
     5): kits taken off the shelf are not printed twice, so every "still needed"
     figure downstream — ``remaining``, the plan's ``outstanding``, the greedy
-    hand-out's ``_room`` — drops with the reservation, and ``surplus`` rises by
-    it, which is the intended reading (the kits came off the shelf, so the
-    extra prints ARE extra).
+    hand-out's ``_room`` — drops with the reservation.
+
+    ⚠️ ``surplus`` deliberately does NOT rise with it (Ruling 24) — see
+    :func:`_finish`. It is measured against the full quantity, because the kits
+    the shelf lent this line go back to the shelf through a release and not
+    through the banking button.
 
     ⚠️ The ``max(0, …)`` is not decoration: a line edited down to a quantity
     below what it has already reserved is an ordinary state, and a negative
-    need would flow straight into ``surplus`` as a phantom.
+    need would make ``remaining`` lie.
     """
     figs = LineFigures(
         line_id=line.id,
@@ -322,6 +363,7 @@ def _new_line_figures(line: ProjectLine, parts: list[ProductPart], from_stock_un
                 kind=part.kind,
                 qty_per_unit=part.qty_per_unit,
                 need=part.qty_per_unit * to_print,
+                already_banked=(banked or {}).get((line.id, part.id), 0),
             )
         )
     return figs
@@ -334,9 +376,18 @@ def _units_printed(figs: LineFigures) -> int:
 
 
 def _finish(figs: LineFigures) -> None:
+    # ⚠️ ``surplus`` is measured against the FULL quantity and ``remaining``
+    # against ``need`` — the one figure the reservation does not move (Ruling
+    # 24). A kit off the shelf lowers what is left to print; it does not make a
+    # print that covers it "extra", because that kit is a loan the release gives
+    # back. While the two shared ``need``, banking the raised surplus and then
+    # releasing the reservation put the same kits on the shelf twice: 9 kits, a
+    # 5-unit line holding 2 and 7 prints, and the shelf ended at 13 of a farm's
+    # 16 with 5 shipped.
     for p in figs.parts:
         p.remaining = max(0, p.need - p.usable)
-        p.surplus = max(0, p.usable - p.need)
+        p.surplus = max(0, p.usable - p.qty_per_unit * figs.quantity)
+        p.bankable = max(0, p.surplus - p.already_banked)
     figs.units_printed = _units_printed(figs)
     # Capped on the wire: ``progress`` is what a bar fills from, and a bar
     # cannot be 300% full. The excess is not lost — ``units_printed`` and each
@@ -407,7 +458,10 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
     """
     figures = {
         line.id: _new_line_figures(
-            line, ctx.parts_by_product.get(line.product_id, []), ctx.reserved_by_line.get(line.id, 0)
+            line,
+            ctx.parts_by_product.get(line.product_id, []),
+            ctx.reserved_by_line.get(line.id, 0),
+            ctx.banked_by_line_part,
         )
         for line in ctx.lines
     }
@@ -582,6 +636,11 @@ def project_figures(
         from_stock = min(figs.from_stock_units, figs.quantity)
         pf.from_stock_units += from_stock
         printed_by_product[figs.product_id] += figs.units_printed + from_stock
+        # NOT capped, and nothing like ``from_stock_units``: this is a count of
+        # PARTS the button would move, summed exactly as ``bank_surplus`` writes
+        # them (Ruling 30). The two must be the same arithmetic or the button
+        # lights over an order it then reports "nothing to bank" for.
+        pf.bankable_surplus += sum(p.bankable for p in figs.parts)
     pf.complete = sum(_units_complete(ctx, pid, printed) for pid, printed in printed_by_product.items())
     pf.remaining = max(0, pf.ordered - pf.printed - pf.from_stock_units)
     for a in ctx.archives:
@@ -655,6 +714,11 @@ class GroupedOrderFigures:
     #: the lines up itself would be the second place it lives, and the first
     #: one to forget it.
     from_stock_units: int = 0
+    #: ``ProjectFigures.bankable_surplus``, copied for the same reason
+    #: ``from_stock_units`` is: the parts «Списати надлишок» would still move
+    #: (Ruling 30), computed once in :func:`project_figures` and never re-summed
+    #: by a second reader.
+    bankable_surplus: int = 0
     lines: list[GroupedLineFigures] = field(default_factory=list)
 
 
@@ -755,14 +819,15 @@ async def batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[O
         await db.execute(select(ProjectProcurement).where(ProjectProcurement.project_id.in_(project_ids)))
     ).scalars():
         procurement_by_project[row.project_id][row.product_part_id] = row.quantity_acquired
-    # One reservation read for every line of every order asked about — the same
+    # One ledger read for every line of every order asked about — the same
     # helper the per-order loader uses, so the two cannot drift about what a
-    # line has taken off the shelf.
-    reserved = await _load_reserved(
+    # line has taken off the shelf or already banked onto it.
+    reads = await _load_reserved(
         db,
         [line.id for lines in lines_by_project.values() for line in lines],
         _counted_qty_per_unit(products),
     )
+    reserved = reads.reserved_units
 
     out: list[OrderContext] = []
     for project in projects:
@@ -776,6 +841,7 @@ async def batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[O
             plate for product in own_products for plate in product.plates
         )
         archives = archives_by_project.get(project.id, [])
+        line_ids = {line.id for line in lines}
         out.append(
             OrderContext(
                 project=project,
@@ -788,6 +854,7 @@ async def batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[O
                 procurement_by_part=procurement_by_project.get(project.id, {}),
                 whole_file_product=whole_file_products,
                 reserved_by_line={line.id: reserved[line.id] for line in lines if line.id in reserved},
+                banked_by_line_part={key: net for key, net in reads.banked_by_part.items() if key[0] in line_ids},
             )
         )
     return out
@@ -828,6 +895,7 @@ async def grouped_figures(
                 progress=pf.progress,
                 total_cost=pf.total_cost,
                 from_stock_units=pf.from_stock_units,
+                bankable_surplus=pf.bankable_surplus,
                 lines=[
                     GroupedLineFigures(
                         line_id=figs.line_id,

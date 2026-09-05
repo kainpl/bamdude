@@ -5296,11 +5296,18 @@ async def _credit_free_stock(archive_id: int | None) -> None:
 
     ⚠️ **This can never fail a print.** Everything the ledger might object to —
     a product whose parts changed under it, a balance that will not go where it
-    is asked, a database that is briefly locked — is caught here and logged.
-    The print happened; the bookkeeping is a consequence of it, never a
-    condition on it. ``credit_unfiled_print`` is itself idempotent and silent
-    for a print this does not apply to (filed under an order, not completed, a
-    plate no product claims), so this is one call and no preconditions.
+    is asked, a database that is briefly locked — is caught and logged, here for
+    the session and inside ``part_stock.credit_if_unfiled`` for the ledger
+    itself. The print happened; the bookkeeping is a consequence of it, never a
+    condition on it. The credit is itself idempotent and silent for a print this
+    does not apply to (filed under an order, not completed, a plate no product
+    claims), so this is one call and no preconditions.
+
+    ⚠️ It is NOT the only door any more: an external print reaches ``completed``
+    before its 3MF arrives, so ``attach_3mf_to_archive`` runs the same credit
+    once the part rows exist (Ruling 27). Both go through
+    ``credit_if_unfiled``, and the per-part idempotency is what makes running it
+    twice a no-op rather than a double credit.
     """
     logger = logging.getLogger(__name__)
     if not archive_id:
@@ -5313,7 +5320,7 @@ async def _credit_free_stock(archive_id: int | None) -> None:
             archive = await db.get(PrintArchive, archive_id)
             if archive is None:
                 return
-            written = await part_stock.credit_unfiled_print(db, archive)
+            written = await part_stock.credit_if_unfiled(db, archive)
             if written:
                 await db.commit()
                 logger.info(
