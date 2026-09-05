@@ -2529,7 +2529,7 @@ export default {
     staggerWaitForBed: 'Wait for bed to heat',
     staggerWaitForBedDescription: 'Slot frees when bed reaches target temperature (±1°C). When off, slot frees immediately after print starts.',
     staggerStrictForDirect: 'Strict mode for direct dispatch',
-    staggerStrictForDirectDescription: 'When enabled, Print Now / Reprint respect the stagger cap and refuse to start if no slot is free. When off (default), direct dispatches bypass the cap but still occupy a slot afterwards.',
+    staggerStrictForDirectDescription: "When on, Print Now and Re-print are refused with a message while the printer's stagger group has no free slot. When off (default), they wait for a free slot exactly like queued prints.",
     staggerConcurrentPerGroup: 'Concurrent starts per group',
     staggerConcurrentPerGroupDescription: 'Max printers heating at the same time within one group — a phase, a room, or both',
     staggerSplitByTags: 'Split by printer tags',

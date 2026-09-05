@@ -1183,7 +1183,16 @@ class BackgroundDispatchService:
         # to the running print, for ``on_print_complete`` to close.
         try:
             await self._process_job(job)
-            await self._mark_job_finished(job, failed=False, message="Background dispatch complete")
+            # ⚠️ Guarded, not unconditional: a strict-mode refusal returns
+            # normally from ``_process_job`` having already walked the failure
+            # exits itself, and marking it finished a second time would count it
+            # in both batch tallies and leave "completed" as the last thing the
+            # dispatch panel heard about a print that never ran. Every other
+            # normal return comes from a runner, and a runner sets
+            # ``success: True`` as the last statement before its ``finally`` —
+            # so for them this reads exactly as the bare call did.
+            if (job.outcome or {}).get("success"):
+                await self._mark_job_finished(job, failed=False, message="Background dispatch complete")
         except DispatchJobCancelled:
             await self._release_direct_claim(job, status="cancelled")
             await self._mark_job_cancelled(job)
@@ -1409,12 +1418,26 @@ class BackgroundDispatchService:
         }
 
     async def _process_job(self, job: PrintDispatchJob):
+        # Lazy import — print_scheduler imports us back.
+        from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+        # Strict mode (opt-in): a DIRECT print whose printer's stagger group has
+        # no free slot is refused here, before it would otherwise wait for one.
+        # Queue-originated jobs are never refused — the queue waits by design and
+        # pre-registered its slot in ``_start_print``. Decided before the acquire
+        # below on purpose: after it the print has already waited and holds a
+        # slot, so a check there could only fire on a race (which is what the
+        # two old in-runner blocks did).
+        if not job.awaited_by_scheduler and await self._strict_stagger_refuses(job.printer_id):
+            await self._refuse_dispatch(
+                job, "Stagger cap reached — wait for a free slot or disable stagger_strict_for_direct_dispatch"
+            )
+            return
+
         # Stagger gate: applies to both direct prints (cold acquire — polls
         # until a slot frees) and queue dispatch (slot was pre-registered
         # synchronously by ``print_scheduler._start_print``, so this returns
-        # immediately). Lazy import — print_scheduler imports us back.
-        from backend.app.services.print_scheduler import scheduler as print_scheduler
-
+        # immediately).
         await print_scheduler.acquire_stagger_slot(job.printer_id)
 
         if job.kind == "reprint_archive":
@@ -1424,6 +1447,42 @@ class BackgroundDispatchService:
             await self._run_print_library_file(job)
             return
         raise RuntimeError(f"Unknown dispatch job kind: {job.kind}")
+
+    async def _strict_stagger_refuses(self, printer_id: int) -> bool:
+        """Strict mode on AND this printer's group(s) have no free slot right now.
+
+        Read every call — the toggle is a setting the operator may flip while
+        jobs are queued. Any failure here answers False: strictness is a
+        refinement, and a broken read must not refuse somebody's print.
+        """
+        try:
+            from backend.app.api.routes.settings import get_setting
+            from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+            async with async_session() as db:
+                strict_raw = await get_setting(db, "stagger_strict_for_direct_dispatch")
+            if (strict_raw or "false").lower() != "true":
+                return False
+            return await print_scheduler.stagger_blocks(printer_id)
+        except Exception as e:
+            logger.debug("Strict stagger check failed (non-fatal): %s", e)
+            return False
+
+    async def _refuse_dispatch(self, job: PrintDispatchJob, reason: str) -> None:
+        """Fail a job that never reached its runner, through the runner's own exits.
+
+        The direct claim taken at submit is released (or the printer stays
+        "busy"), the job row is marked failed with the reason, the operator is
+        told, and the completion event fires for anyone awaiting it. Same four
+        steps as the runner's ``except``/``finally``, because those are the only
+        four places a failed dispatch becomes visible.
+        """
+        logger.info("Background dispatch job %s refused: %s", job.id, reason)
+        job.outcome = {"success": False, "archive_id": None, "error": reason, "cancelled": False}
+        await self._release_direct_claim(job, status="failed")
+        await self._mark_job_finished(job, failed=True, message=reason)
+        await report_failure_if_unwatched(job)
+        job.completion_event.set()
 
     async def _run_reprint_archive(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print, withdraw_expected_print
@@ -1768,28 +1827,6 @@ class BackgroundDispatchService:
                 plate_id = self._resolve_plate_id(file_path, job.options.get("plate_id"))
 
                 self._raise_if_cancel_requested(job)
-
-                # Strict stagger check (optional, off by default): refuse to
-                # start when this printer's group(s) have no free slot, so Print
-                # Now respects the grid-load cap just like queue-driven
-                # dispatches. Group-aware, and the printer's own slot does not
-                # count against it.
-                try:
-                    from backend.app.api.routes.settings import get_setting
-                    from backend.app.services.print_scheduler import scheduler as print_scheduler
-
-                    async with async_session() as _sdb:
-                        _strict_raw = await get_setting(_sdb, "stagger_strict_for_direct_dispatch")
-                    if (_strict_raw or "false").lower() == "true" and await print_scheduler.stagger_blocks(
-                        job.printer_id
-                    ):
-                        raise RuntimeError(
-                            "Stagger cap reached — wait for a free slot or disable stagger_strict_for_direct_dispatch"
-                        )
-                except RuntimeError:
-                    raise
-                except Exception as _e:
-                    logger.debug("Strict stagger check failed (non-fatal): %s", _e)
 
                 # Swap-mode start macro — fires before the print starts.
                 await self._run_swap_macro_if_needed(
@@ -2381,28 +2418,6 @@ class BackgroundDispatchService:
                 plate_id = self._resolve_plate_id(file_path, job.options.get("plate_id"))
 
                 self._raise_if_cancel_requested(job)
-
-                # Strict stagger check (optional, off by default): refuse to
-                # start when this printer's group(s) have no free slot, so Print
-                # Now respects the grid-load cap just like queue-driven
-                # dispatches. Group-aware, and the printer's own slot does not
-                # count against it.
-                try:
-                    from backend.app.api.routes.settings import get_setting
-                    from backend.app.services.print_scheduler import scheduler as print_scheduler
-
-                    async with async_session() as _sdb:
-                        _strict_raw = await get_setting(_sdb, "stagger_strict_for_direct_dispatch")
-                    if (_strict_raw or "false").lower() == "true" and await print_scheduler.stagger_blocks(
-                        job.printer_id
-                    ):
-                        raise RuntimeError(
-                            "Stagger cap reached — wait for a free slot or disable stagger_strict_for_direct_dispatch"
-                        )
-                except RuntimeError:
-                    raise
-                except Exception as _e:
-                    logger.debug("Strict stagger check failed (non-fatal): %s", _e)
 
                 # Swap-mode start macro — fires before the print starts.
                 await self._run_swap_macro_if_needed(
