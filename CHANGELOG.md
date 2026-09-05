@@ -53,6 +53,8 @@
 
 ### Fixed
 
+- **The «not enough filament» warning now knows about AMS Filament Backup.** With backup on, a print whose slot maps to a spool with too little left is no longer flagged when another loaded spool of the same filament and colour covers the rest: the check pools what the print needs and what is left across the whole backup group, and when it does warn it names the group rather than one tray. A tray with no spool registered in the inventory counts by its AMS percentage against a nominal 1 kg reel. With backup off, the check behaves exactly as before.
+
 - **Strict mode for staggered start now does what its description says.** With it on, Print Now and Re-print are refused with a message when the printer's stagger group has no free slot, instead of quietly waiting for one; queued prints are never refused, and a refusal leaves the printer's queue running. Before, the check ran only after the print had already taken its slot and then counted that very slot against itself, so with a cap of one every direct print was refused and with a cap of N the last legitimate one was. A printer's own slot no longer counts against it anywhere.
 
 - **Plates sent to the queue from the plan block now carry the swap macros and calibration settings your print-options preference names, like the print dialog does.** The block sends work without opening the dialog, so it wrote the built-in defaults instead of your saved profile — a farm configured to run swap macros printed without them, and said nothing. Swap macros are still muted where they would fire twice: on a printer with swap mode off, or for a file that already carries them baked in.
