@@ -559,10 +559,11 @@ async def bank_surplus(
     sometimes shipped with the order and sometimes scrapped, and only the
     operator knows which. Pressing it a second time moves only what has
     appeared since — ``surplus`` as ``order_metrics`` computes it (``usable −
-    need`` per counted part, defective already excluded by ``row_quantity``)
-    minus what this line has already banked. So the ledger holds the line's
-    surplus once however many times the button is pressed, and a later print
-    that grows the surplus is still bankable.
+    qty_per_unit × quantity`` per counted part, defective already excluded by
+    ``row_quantity``, and measured against the FULL quantity rather than the
+    reservation-reduced need — Ruling 24) minus what this line has already
+    banked. So the ledger holds the line's surplus once however many times the
+    button is pressed, and a later print that grows it is still bankable.
 
     A CANCELLED order banks too: the parts came off a bed regardless of what
     happened to the order afterwards, and they are exactly the ones most worth
