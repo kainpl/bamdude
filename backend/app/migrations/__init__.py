@@ -5,7 +5,7 @@ Runner logic:
 2. Ensure _migrations table
 3. Run all pending migrations sequentially (m000, m001, m002...)
 
-m000 is special - handles Bambuddy 2.2.2 → BamDude import if legacy DB found.
+m000 is a stub since 0.5.6 (the Bambuddy import was removed); the version-0 record is kept for the bootstrap.
 m001 is baseline - FTS5 + seeds for BamDude 3.0.1.
 m002+ are incremental upgrades between BamDude versions.
 """
@@ -155,13 +155,15 @@ async def run_all_migrations(engine, session_factory) -> None:
     1. create_all() - ensures all tables exist from models
     2. Ensure _migrations table
     3. Handle BamDude 3.0.1 upgrade (rename + bootstrap)
-    4. Run all pending migrations (m000 handles legacy import if needed)
+    4. Run all pending migrations
+
+    A Bambuddy database found in the data directory is left where it is: the
+    import was removed in 0.5.6 and m000 only names the file in the log.
     """
     from backend.app.core.config import settings
     from backend.app.core.database import Base
     from backend.app.core.db_dialect import is_sqlite
 
-    legacy_path = None
     if is_sqlite():
         legacy_path = _find_legacy_database(settings.data_dir)
 
@@ -199,23 +201,6 @@ async def run_all_migrations(engine, session_factory) -> None:
 
     # Run all pending migrations sequentially
     await _run_pending(engine, session_factory)
-
-    # Rename legacy DB to .bak after successful migration (prevent re-import on next start)
-    # Only applicable for SQLite - PostgreSQL doesn't have local DB files
-    if legacy_path and legacy_path.exists():
-        bak_path = legacy_path.with_suffix(".db.bak")
-        try:
-            if bak_path.exists():
-                bak_path.unlink()
-            legacy_path.rename(bak_path)
-            # Also rename WAL/SHM
-            for suffix in ("-wal", "-shm"):
-                wal = legacy_path.parent / (legacy_path.name + suffix)
-                if wal.exists():
-                    wal.unlink()
-            logger.info("Renamed legacy database to %s", bak_path.name)
-        except OSError as e:
-            logger.warning("Could not rename legacy database: %s", e)
 
 
 async def _has_existing_data(engine) -> bool:

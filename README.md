@@ -448,13 +448,12 @@ See [`install/README.md`](install/README.md#windows-installer-exe-windows-1011) 
 
 ### Upgrading or migrating
 
-Full manual: **<https://docs.bamdude.top/getting-started/upgrading/>** ([source](https://github.com/kainpl/docs.bamdude.top)) — covers migration from Bambuddy 2.2.2, from Bambuddy-HE / BamDude 0.2.x, routine BamDude-to-BamDude updates, switching between self-install / Docker / GHCR, and rollback.
+Full manual: **<https://docs.bamdude.top/getting-started/upgrading/>** ([source](https://github.com/kainpl/docs.bamdude.top)) — covers migration from Bambuddy-HE / BamDude 0.2.x, routine BamDude-to-BamDude updates, switching between self-install / Docker / GHCR, and rollback.
 
 Short version:
 
-- **From Bambuddy 2.2.2** (tested & supported) — drop `bambuddy.db` into BamDude's `data/` and start. The `m000` migration imports automatically and renames the file to `bamdude.db`.
+- **From Bambuddy** — no longer supported since 0.5.6. BamDude forked at Bambuddy 2.2.2 and the two schemas have diverged too far for a one-time import; start BamDude with an empty data directory and re-add printers and spools.
 - **From Bambuddy-HE / BamDude 0.2.x / 0.3.x** (tested & supported) — Docker users run `install/migrate-volumes.sh` once to copy `bambuddy_he_*` → `bamdude_*`; native users just point the installer at the existing data dir.
-- **From Bambuddy 0.2.3 or newer** — ⚠️ not tested. BamDude diverged from upstream at 2.2.2 and applies its own migrations; newer upstream schemas may hit `no such column` errors on boot. Back up first, keep the Bambuddy data directory untouched, and file an issue if you hit a wall.
 
 ### Telegram Bot Setup
 
