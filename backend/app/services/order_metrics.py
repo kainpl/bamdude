@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,9 @@ from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.services.product_composition import part_index
+
+if TYPE_CHECKING:  # the runtime import would close the circle part_stock already opens
+    from backend.app.services.part_stock import LineStockReads
 
 _DONE = "completed"
 _RUNNING = "printing"
@@ -226,7 +230,7 @@ def _counted_qty_per_unit(products: Iterable[Product]) -> dict[int, int]:
     }
 
 
-async def _load_reserved(db: AsyncSession, line_ids: Sequence[int], qty_per_unit: dict[int, int]):
+async def _load_reserved(db: AsyncSession, line_ids: Sequence[int], qty_per_unit: dict[int, int]) -> LineStockReads:
     """:attr:`OrderContext.reserved_by_line` AND :attr:`OrderContext.banked_by_line_part`,
     in one query for every line given.
 

@@ -2555,6 +2555,15 @@ class ArchiveService:
             # attached 3MF over a bookkeeping refusal would be the worse trade.
             # It decides for itself whether this archive qualifies (completed,
             # order-less, and not already standing per part).
+            #
+            # ⚠️ The wrapper runs that credit inside a SAVEPOINT of its own,
+            # and this call site is why. Swallowing the exception is only half
+            # of "never fails its caller": a failure that reached the DATABASE
+            # rolls the session's transaction back with it, and by the time the
+            # polite empty list came back, the file copy and every field written
+            # above would be gone — lost to bookkeeping that is explicitly
+            # optional. The savepoint keeps the loss inside the ledger; the
+            # ``commit`` below still writes the attach.
             if archive.status == "completed" and archive.project_id is None:
                 from backend.app.services import part_stock
 

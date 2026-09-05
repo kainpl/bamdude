@@ -995,9 +995,21 @@ async def credit_if_unfiled(
     Flushes through :func:`move`; the caller commits. A caller that WANTS the
     refusal — the operator's own «Порахувати в залишок», which answers 409 —
     calls :func:`credit_unfiled_print` directly.
+
+    ⚠️ **The credit runs inside a SAVEPOINT**, and that is what makes "can never
+    fail its caller" true rather than merely intended. Catching the exception is
+    only half of it: a failure that reached the DATABASE — a constraint, a
+    serialisation failure, a lock — rolls the session's transaction back with
+    it, so the caller's own writes are gone by the time this returns its polite
+    empty list. The late 3MF attach is the case that matters: it has already
+    copied the file and updated the row, and losing all of that over optional
+    bookkeeping is exactly the trade this wrapper exists to refuse. The
+    savepoint gives the ledger its own scope to fail in; the swallow then lets
+    the caller carry on with everything it wrote before.
     """
     try:
-        return await credit_unfiled_print(db, archive, created_by=created_by, note=note)
+        async with db.begin_nested():
+            return await credit_unfiled_print(db, archive, created_by=created_by, note=note)
     except Exception as e:  # noqa: BLE001 — a print must never fail on its own bookkeeping
         logger.warning("part_stock: free-stock credit failed for archive %s: %s", archive.id, e, exc_info=True)
         return []

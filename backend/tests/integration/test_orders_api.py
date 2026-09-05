@@ -3188,6 +3188,40 @@ async def test_deleting_an_order_puts_its_finished_prints_back_on_the_shelf(comm
 
 
 @pytest.mark.asyncio
+async def test_deleting_a_completed_order_leaves_its_finished_prints_shipped(committing_client, db_session, catalog):
+    """Ruling 32, the other half of the test above. A COMPLETED order's prints
+    went out with it: the parts are in a box on a lorry, and putting them on the
+    shelf because somebody tidied the paperwork away would be the same mistake
+    as handing back its reservation (Ruling 25), made from the other end.
+
+    The un-filing itself still happens — the archive survives with no order —
+    and the two doors that un-file one print EXPLICITLY (the archive editor and
+    «Прибрати архіви») still credit whatever the status, because there the
+    operator is saying something about that print. Deleting an order says
+    nothing about any one of them.
+    """
+    order_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={"name": "Lamps", "lines": [{"product_id": catalog["product"].id, "quantity": 1}]},
+        )
+    ).json()["id"]
+    line_id = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()["lines"][0]["id"]
+    archive_id = (await _completed_print(db_session, order_id, catalog["file"].id, line_id=line_id)).id
+    product_id = catalog["product"].id
+    await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "completed"})
+
+    assert (await committing_client.delete(f"/api/v1/projects/{order_id}")).status_code == 200
+
+    db_session.expire_all()
+    assert await part_stock.unfiled_credit_net(db_session, archive_id) == 0, "nothing was credited"
+    assert await _kits(db_session, product_id) == 0
+    assert (await db_session.execute(select(ProductPartStockMovement))).scalars().all() == []
+    archive = await db_session.get(PrintArchive, archive_id)
+    assert archive is not None and archive.project_id is None, "un-filed all the same"
+
+
+@pytest.mark.asyncio
 async def test_banking_decides_with_the_products_parts_locked(committing_client, db_session, test_engine, catalog):
     """Finding M5. «Списати надлишок» is read-then-write — it reads what the
     line has already banked and writes the difference — so the row locks have to

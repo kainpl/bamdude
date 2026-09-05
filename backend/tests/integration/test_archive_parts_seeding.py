@@ -220,6 +220,67 @@ async def test_a_print_that_finished_before_its_3mf_arrived_still_reaches_the_sh
 
 
 @pytest.mark.asyncio
+async def test_a_credit_that_falls_over_leaves_the_attach_green(db_session, tmp_path, printer_factory, monkeypatch):
+    """The credit is optional; the file is not.
+
+    ``credit_if_unfiled`` swallows whatever the ledger objects to, but that is
+    only half of "never fails its caller": a failure that got as far as the
+    DATABASE takes the session's transaction down with it, and by the time the
+    polite empty list comes back, the copied file and every field written above
+    it are gone. So the credit runs inside a SAVEPOINT — the ledger fails in its
+    own scope, and the attach still commits.
+
+    The stand-in flushes a row BEFORE it raises, which is the whole point: a
+    credit that raised before touching the session would prove nothing.
+    """
+    from backend.app.models.part_stock import ProductPartStockMovement
+    from backend.app.models.product import Product, ProductPart, ProductPlate
+    from backend.app.services import part_stock
+    from backend.app.services.archive import ArchiveService
+
+    printer = await printer_factory()
+    product = Product(name="Lamp")
+    db_session.add(product)
+    await db_session.flush()
+    lid = ProductPart(product_id=product.id, kind="printed", name="lid", name_key="lid", qty_per_unit=1)
+    db_session.add_all([lid, ProductPlate(product_id=product.id, library_file_id=903, plate_index=0)])
+    archive = PrintArchive(
+        printer_id=printer.id,
+        filename="late.3mf",
+        print_name="Late",
+        file_path="",
+        file_size=0,
+        status="completed",
+        library_file_id=903,
+        plate_index=1,
+        started_at=datetime.now(timezone.utc),
+        extra_data={"no_3mf_available": True},
+    )
+    db_session.add(archive)
+    await db_session.commit()
+    product_id, lid_id, archive_id = product.id, lid.id, archive.id
+    f = tmp_path / "late.gcode.3mf"
+    f.write_bytes(_3mf({5: "lid"}))
+
+    async def _flush_then_explode(db, _archive, **_kwargs):
+        db.add(ProductPartStockMovement(product_part_id=lid_id, delta=1, reason="unfiled_print"))
+        await db.flush()
+        raise RuntimeError("the ledger fell over mid-write")
+
+    monkeypatch.setattr(part_stock, "credit_unfiled_print", _flush_then_explode)
+
+    assert await ArchiveService(db_session).attach_3mf_to_archive(archive_id, f)
+
+    db_session.expire_all()
+    attached = await db_session.get(PrintArchive, archive_id)
+    assert attached.file_path, "the attach committed"
+    assert await _rows(db_session, archive_id), "and seeded its parts"
+    assert await part_stock.balances(db_session, product_id) == {lid_id: 0}
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    assert rows == [], "the half-written credit went back with its savepoint"
+
+
+@pytest.mark.asyncio
 async def test_attaching_a_3mf_to_a_print_filed_under_an_order_credits_nothing(db_session, tmp_path, printer_factory):
     """The other half of the same guard: an order's print is counted by the
     order, and putting it on the free shelf as well would count it twice."""

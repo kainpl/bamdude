@@ -423,9 +423,12 @@ async def delete_project(
     # DETACH still runs whatever the status: the line row is going away either
     # way, and a movement left naming a deleted line id would be handed to
     # whichever line SQLite gives that rowid to next.
-    released = not _consumed_its_stock(project.status)
+    #
+    # The same answer decides the un-filing credit below (Ruling 32), which is
+    # why it is one variable and not two reads of the status.
+    still_owns_its_stock = not _consumed_its_stock(project.status)
     for line in list(project.lines):
-        if released:
+        if still_owns_its_stock:
             await _release(db, line, part_stock.NOTE_PROJECT_DELETED)
         await part_stock.detach_line(db, line.id)
     # Read before the un-filing: after the UPDATE below, no archive names this
@@ -442,6 +445,19 @@ async def delete_project(
     # them. Bounded by this order's own archives, idempotent per part, and
     # ordinarily a no-op for anything that did not finish.
     #
+    # ⚠️ …unless the order was COMPLETED (Ruling 32), which is the same
+    # ``_consumed_its_stock`` question the release above asks, answered the same
+    # way twelve lines later: those prints SHIPPED inside the units the customer
+    # got. Deleting the paperwork afterwards must not put them back on a shelf
+    # nobody can find them on — that is the identical mistake as handing back a
+    # completed order's reservation, made from the other end.
+    #
+    # The two explicit un-filing doors — the archive editor NULLing
+    # ``project_id`` and «Прибрати архіви» — keep crediting whatever the status,
+    # deliberately: there the operator is saying "this print was not part of
+    # that shipment", which is a statement about the print. Deleting an order
+    # says nothing at all about any one print.
+    #
     # The two columns are cleared on the loaded rows as well as by the statement
     # above: ``credit_unfiled_print`` refuses an archive whose ``project_id`` it
     # can still see, and whether a bulk UPDATE happens to reach the identity map
@@ -449,7 +465,8 @@ async def delete_project(
     for archive in unfiled:
         archive.project_id = None
         archive.project_line_id = None
-        await part_stock.credit_if_unfiled(db, archive, note=part_stock.NOTE_PROJECT_DELETED)
+        if still_owns_its_stock:
+            await part_stock.credit_if_unfiled(db, archive, note=part_stock.NOTE_PROJECT_DELETED)
     await db.delete(project)
     return {"message": "Project deleted"}
 
@@ -497,6 +514,15 @@ async def update_line(
     for field_name in data.model_fields_set - {"from_stock_units"}:
         setattr(line, field_name, getattr(data, field_name))
     if data.from_stock_units is not None:
+        # ⚠️ The fourth reservation door, and the one that is deliberately NOT
+        # gated on :func:`_consumed_its_stock` (Ruling 33). Cancelling, deleting
+        # a line and deleting the order all withhold the release from a
+        # completed order because none of them says anything about the kits —
+        # they dispose of paperwork, and the parts shipped. Typing a new number
+        # into this field DOES say something about them: it is the operator
+        # correcting what the order took off the shelf, and refusing it on a
+        # completed order would leave a mistake with no door to fix it through.
+        #
         # Rewritten, never adjusted by a difference: ``reserve_for_line``
         # releases what this line holds and takes the new number off the shelf
         # again, in this same transaction. Editing 3 → 3 must therefore still
