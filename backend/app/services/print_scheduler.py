@@ -1343,8 +1343,7 @@ class PrintScheduler:
             }
         """
         enabled, concurrent, interval_seconds, wait_for_bed = await self._get_stagger_settings(db)
-        split = await StaggerSplit.from_settings(db) if enabled else StaggerSplit()
-        resolver = await StaggerGroupResolver.load(db, split) if enabled else StaggerGroupResolver.global_only()
+        resolver = await self._load_stagger_resolver(db) if enabled else StaggerGroupResolver.global_only()
         now = time.monotonic()
 
         def _slot_info(slot: _StaggerSlot) -> dict:
