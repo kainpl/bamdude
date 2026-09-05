@@ -2381,7 +2381,9 @@ async def test_filing_an_order_less_print_under_an_order_takes_its_stock_back(co
     db_session.expire_all()
     rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
     assert sum(row.delta for row in rows) == 0
-    assert {row.note for row in rows if row.reason == "manual"} == {"filed under order Lamps"}
+    # A TOKEN, not a sentence (Ruling 17): the product page renders it in the
+    # operator's language, and a note is written once and read forever.
+    assert {row.note for row in rows if row.reason == "manual"} == {part_stock.NOTE_FILED_UNDER_ORDER}
 
 
 @pytest.mark.asyncio
@@ -2738,3 +2740,156 @@ async def test_deleting_an_order_gives_every_line_its_kits_back(committing_clien
     assert await _kits(db_session, product_id) == 5
     rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
     assert {m.project_line_id for m in rows} == {None}
+
+
+@pytest.mark.asyncio
+async def test_a_reservation_is_clamped_to_the_lines_quantity(committing_client, db_session, catalog):
+    """Ruling 16 on the wire: five kits on the shelf, two units ordered, two
+    reserved. Holding three kits the line cannot use would withhold them from
+    every other order for nothing."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=5)
+    order_id = (await committing_client.post("/api/v1/projects/", json={"name": "Lamps"})).json()["id"]
+
+    r = await committing_client.post(
+        f"/api/v1/projects/{order_id}/lines",
+        json={"product_id": product_id, "quantity": 2, "from_stock_units": 5},
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["lines"][0]["from_stock_units"] == 2
+    assert await _kits(db_session, product_id) == 3
+
+
+@pytest.mark.asyncio
+async def test_lowering_the_quantity_past_the_kits_held_releases_the_difference(committing_client, db_session, catalog):
+    """Ruling 16's other half. The quantity box moved and the stock box said
+    nothing — re-reserving AT the new quantity releases exactly the surplus."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=5)
+    order_id = (await committing_client.post("/api/v1/projects/", json={"name": "Lamps"})).json()["id"]
+    line_id = (
+        await committing_client.post(
+            f"/api/v1/projects/{order_id}/lines",
+            json={"product_id": product_id, "quantity": 10, "from_stock_units": 3},
+        )
+    ).json()["lines"][0]["id"]
+    assert await _kits(db_session, product_id) == 2
+
+    r = await committing_client.patch(f"/api/v1/projects/{order_id}/lines/{line_id}", json={"quantity": 1})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["lines"][0]["from_stock_units"] == 1
+    assert await _kits(db_session, product_id) == 4, "two of the three kits went back"
+    assert Counter(m.reason for m in await _line_movements(db_session, line_id)) == {
+        "reserved_for_order": 4,
+        "reservation_released": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_lowering_the_quantity_but_not_past_the_kits_held_changes_nothing(committing_client, db_session, catalog):
+    """The line still needs every kit it holds, so nothing moves — and the
+    ledger does not gain a release-and-retake pair that says the same thing."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=5)
+    order_id = (await committing_client.post("/api/v1/projects/", json={"name": "Lamps"})).json()["id"]
+    line_id = (
+        await committing_client.post(
+            f"/api/v1/projects/{order_id}/lines",
+            json={"product_id": product_id, "quantity": 10, "from_stock_units": 3},
+        )
+    ).json()["lines"][0]["id"]
+
+    r = await committing_client.patch(f"/api/v1/projects/{order_id}/lines/{line_id}", json={"quantity": 8})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["lines"][0]["from_stock_units"] == 3
+    assert await _kits(db_session, product_id) == 2
+    assert Counter(m.reason for m in await _line_movements(db_session, line_id)) == {"reserved_for_order": 2}
+
+
+@pytest.mark.asyncio
+async def test_raising_the_quantity_does_not_help_itself_to_more_of_the_shelf(committing_client, db_session, catalog):
+    """Only ever downwards: nobody asked this line for more stock, and taking it
+    silently would be the route bidding against every other order."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=5)
+    order_id = (await committing_client.post("/api/v1/projects/", json={"name": "Lamps"})).json()["id"]
+    line_id = (
+        await committing_client.post(
+            f"/api/v1/projects/{order_id}/lines",
+            json={"product_id": product_id, "quantity": 3, "from_stock_units": 3},
+        )
+    ).json()["lines"][0]["id"]
+
+    r = await committing_client.patch(f"/api/v1/projects/{order_id}/lines/{line_id}", json={"quantity": 9})
+
+    assert r.json()["lines"][0]["from_stock_units"] == 3
+    assert await _kits(db_session, product_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_release_notes_are_tokens_the_product_page_can_translate(committing_client, db_session, catalog):
+    """Ruling 17 across the three lifecycle paths that write one. A note is
+    written once and read for the life of the ledger, so an English sentence in
+    it is untranslatable forever."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=9)
+    order_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Lamps",
+                "lines": [
+                    {"product_id": product_id, "quantity": 5, "from_stock_units": 2},
+                    {"product_id": product_id, "quantity": 5, "from_stock_units": 2},
+                ],
+            },
+        )
+    ).json()["id"]
+    lines = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()["lines"]
+
+    # rewrite → line delete → order cancel, one token each
+    await committing_client.patch(f"/api/v1/projects/{order_id}/lines/{lines[0]['id']}", json={"from_stock_units": 1})
+    await committing_client.delete(f"/api/v1/projects/{order_id}/lines/{lines[0]['id']}")
+    await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "cancelled"})
+
+    db_session.expire_all()
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    notes = {row.note for row in rows if row.note is not None}
+    assert notes == {
+        part_stock.NOTE_RESERVATION_REWRITTEN,
+        part_stock.NOTE_LINE_DELETED,
+        part_stock.NOTE_ORDER_CANCELLED,
+    }
+    assert notes <= set(part_stock.NOTE_TOKENS)
+
+
+@pytest.mark.asyncio
+async def test_the_order_page_reads_the_stock_ledger_once(committing_client, db_session, test_engine, catalog):
+    """⚠️ The reservation is READ from the ledger, per line — and the order page
+    is the screen that renders every line at once. One query for all of them or
+    this is an N+1 that grows with the order (finding M3, the pass-6 discipline
+    applied to pass 8's new read)."""
+    product_id = catalog["product"].id
+    await _shelf(db_session, product_id, kits=9)
+    order_id = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Lamps",
+                "lines": [
+                    {"product_id": product_id, "quantity": 4, "from_stock_units": 2},
+                    {"product_id": product_id, "quantity": 4, "from_stock_units": 2},
+                    {"product_id": product_id, "quantity": 4, "from_stock_units": 2},
+                ],
+            },
+        )
+    ).json()["id"]
+
+    with counting_statements(test_engine, match="product_part_stock_movements") as statements:
+        body = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()
+
+    assert [line["from_stock_units"] for line in body["lines"]] == [2, 2, 2]
+    assert len(statements) == 1, f"one ledger read for the whole page, got {len(statements)}: {statements}"

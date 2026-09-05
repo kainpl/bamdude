@@ -6,6 +6,8 @@ Tests the full request/response cycle for /api/v1/archives/ endpoints.
 import pytest
 from httpx import AsyncClient
 
+from backend.app.services import part_stock
+
 
 class TestArchivesAPI:
     """Integration tests for /api/v1/archives/ endpoints."""
@@ -1161,7 +1163,9 @@ async def test_counting_an_old_order_less_print_into_stock(
 
     assert r.status_code == 200, r.text
     assert r.json() == [{"part_id": lid_id, "name": "lid", "delta": 4}]
-    assert await _stock_rows(db_session) == [(lid_id, "unfiled_print", 4, archive_id, None)]
+    assert await _stock_rows(db_session) == [
+        (lid_id, "unfiled_print", 4, archive_id, part_stock.NOTE_COUNTED_BY_OPERATOR)
+    ], "the note is a token the product page translates, never an English sentence (Ruling 17)"
 
 
 @pytest.mark.asyncio
@@ -1230,8 +1234,8 @@ async def test_filing_a_counted_print_under_an_order_takes_its_stock_back(
 
     assert r.status_code == 200, r.text
     assert await _stock_rows(db_session) == [
-        (lid_id, "unfiled_print", 4, archive_id, None),
-        (lid_id, "manual", -4, archive_id, "filed under order Lamps"),
+        (lid_id, "unfiled_print", 4, archive_id, part_stock.NOTE_COUNTED_BY_OPERATOR),
+        (lid_id, "manual", -4, archive_id, part_stock.NOTE_FILED_UNDER_ORDER),
     ], "the parts are counted by the order now, not by the shelf"
 
 
@@ -1306,7 +1310,7 @@ async def test_hard_deleting_an_archive_leaves_the_parts_on_the_shelf(
 
     assert await ArchiveService(db_session).delete_archive(archive_id) is True
 
-    assert await _stock_rows(db_session) == [(lid_id, "unfiled_print", 4, None, None)]
+    assert await _stock_rows(db_session) == [(lid_id, "unfiled_print", 4, None, part_stock.NOTE_COUNTED_BY_OPERATOR)]
 
 
 async def _admin_id(db_session) -> int:

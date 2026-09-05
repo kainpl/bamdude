@@ -371,8 +371,15 @@ async def update_project(
         # stock was consumed, and the movements stand as the record of it.
         # Cancelling an already-cancelled order releases nothing a second time,
         # because the release reads what the ledger still holds and finds zero.
+        #
+        # ⚠️ Ruling 18: REACTIVATING a cancelled order does NOT restore its
+        # reservations, and deliberately so. The kits went back on the shelf
+        # and another order may have taken them since; silently taking them
+        # again would be this route deciding, minutes or months later, that
+        # this order still outranks whoever is holding them now. The operator
+        # re-enters the number in the line dialog, which asks the shelf afresh.
         for line in lines:
-            await _release(db, line, "order cancelled")
+            await _release(db, line, part_stock.NOTE_ORDER_CANCELLED)
     return await _response(db, project.id)
 
 
@@ -386,7 +393,7 @@ async def delete_project(
     # deleted line does (Ruling 10): the kits come back to the shelf, and the
     # history that named the line stops naming an id that will be reused.
     for line in list(project.lines):
-        await _release(db, line, "order deleted")
+        await _release(db, line, part_stock.NOTE_PROJECT_DELETED)
         await part_stock.detach_line(db, line.id)
     for model in (PrintArchive, PrintQueueItem, AutoQueueItem):
         await db.execute(
@@ -445,6 +452,14 @@ async def update_line(
         # end at 3, which is why the release comes first — the product's
         # balance already has this line's own kits subtracted from it.
         await _reserve(db, line, data.from_stock_units, current_user)
+    elif "quantity" in data.model_fields_set and await part_stock.reserved_units_for_line(db, line) > line.quantity:
+        # Ruling 16: the quantity came down past what the line is holding, and
+        # the dialog said nothing about the stock. Re-reserving AT the new
+        # quantity releases exactly the difference — kits a line cannot use are
+        # withheld from every other order for nothing. Only ever downwards: a
+        # quantity going UP does not help itself to more of the shelf, because
+        # nobody asked it to.
+        await _reserve(db, line, line.quantity, current_user)
     return await _response(db, project_id)
 
 
@@ -458,7 +473,7 @@ async def delete_line(
     line = await _get_line(db, project_id, line_id)
     # Release BEFORE detaching, or the reservation becomes invisible to the
     # query that hands it back and the kits stay off the shelf for good.
-    await _release(db, line, "line deleted")
+    await _release(db, line, part_stock.NOTE_LINE_DELETED)
     # The prints stay, and stay in the order: only the line they were filed
     # under goes. Done explicitly because SQLite enforces nothing — this
     # codebase never sets ``PRAGMA foreign_keys = ON``, so the ON DELETE SET
@@ -639,7 +654,7 @@ async def add_archives_to_project(
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     """File existing prints under this order, optionally under one of its lines."""
-    project = await _get_project(db, project_id)
+    await _get_project(db, project_id)  # 404s an order that is not there
     if data.project_line_id is not None:
         await _get_line(db, project_id, data.project_line_id)
     updated = 0
@@ -655,7 +670,7 @@ async def add_archives_to_project(
             archive.project_line_id = data.project_line_id
             if was_unfiled:
                 try:
-                    await part_stock.reverse_unfiled_print(db, archive, note=f"filed under order {project.name}")
+                    await part_stock.reverse_unfiled_print(db, archive, note=part_stock.NOTE_FILED_UNDER_ORDER)
                 except part_stock.PartStockError as e:
                     # The stock has already gone out to someone. Filing the
                     # print is still right — the ledger keeps the truth and the
@@ -693,7 +708,12 @@ async def remove_archives_from_project(
             # unconditionally — ``credit_unfiled_print`` checks the status, the
             # (now NULL) project and the archive's own net, so a print that was
             # never free stock or is still holding some writes nothing.
-            await part_stock.credit_unfiled_print(db, archive, created_by=current_user.id if current_user else None)
+            await part_stock.credit_unfiled_print(
+                db,
+                archive,
+                created_by=current_user.id if current_user else None,
+                note=part_stock.NOTE_UNFILED_FROM_ORDER,
+            )
             updated += 1
     return {"message": f"Removed {updated} archives from project"}
 

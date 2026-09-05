@@ -431,3 +431,20 @@ async def test_three_candidate_orders_are_planned_in_one_batch(committing_client
         (row,) = [r for line in plan.lines if line.line_id == line_id for r in line.rows]
         one_at_a_time[line_id] = row.count
     assert {r["project_line_id"]: r["outstanding_prints"] for r in rows} == one_at_a_time
+
+
+@pytest.mark.asyncio
+async def test_the_candidates_endpoint_reads_the_stock_ledger_once(committing_client, db_session, lamp):
+    """Finding M3, the batch half. Pass 8 gave the batched context loader a new
+    read — how many kits each line has taken off the shelf — and the candidates
+    dialog loads a context per candidate ORDER. One statement for all of them,
+    or the read that pass 7 batched grew a per-order sibling."""
+    product_id, file_id = lamp["product"].id, lamp["file"].id
+    for n in (2, 3, 4):
+        await _order(committing_client, product_id, n, name=f"O{n}")
+
+    with _statement_spy("product_part_stock_movements") as statements:
+        rows = await _candidates(committing_client, file_id)
+
+    assert len(rows) == 3
+    assert len(statements) == 1, f"one batched reservation read, got {len(statements)}: {statements}"

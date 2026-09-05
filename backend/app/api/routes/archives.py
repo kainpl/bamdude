@@ -23,7 +23,6 @@ from backend.app.core.timezones import client_timezone, day_bounds
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.product import ProductPart
-from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.models.user import User
@@ -1604,11 +1603,12 @@ async def update_archive(
         archive.defective_count = sum(r.defective or 0 for r in rows)
 
     if filed_under_order:
-        order = await db.get(Project, update_data.project_id)
         try:
-            await part_stock.reverse_unfiled_print(
-                db, archive, note=f"filed under order {order.name if order else update_data.project_id}"
-            )
+            # A token, not a sentence naming the order (Ruling 17): the note is
+            # written once and read for the life of the ledger, so the product
+            # page renders it in the operator's language. WHICH order the print
+            # went to is the archive's own ``project_id``, which is right there.
+            await part_stock.reverse_unfiled_print(db, archive, note=part_stock.NOTE_FILED_UNDER_ORDER)
         except part_stock.PartStockError as e:
             # The stock has already been reserved or consumed, so there is
             # nothing left to take back. Refusing the FILING over that would be
@@ -1628,7 +1628,9 @@ async def update_archive(
         # (now NULL) project and the archive's own net, so a print that was
         # never free stock, never finished, or is still holding some, writes
         # nothing.
-        await part_stock.credit_unfiled_print(db, archive, created_by=user.id if user else None)
+        await part_stock.credit_unfiled_print(
+            db, archive, created_by=user.id if user else None, note=part_stock.NOTE_UNFILED_FROM_ORDER
+        )
 
     await db.commit()
 
@@ -1677,7 +1679,10 @@ async def count_archive_into_stock(
 
     try:
         written = await part_stock.credit_unfiled_print(
-            db, archive, created_by=current_user.id if current_user else None
+            db,
+            archive,
+            created_by=current_user.id if current_user else None,
+            note=part_stock.NOTE_COUNTED_BY_OPERATOR,
         )
     except part_stock.PartStockError as e:
         raise HTTPException(409, str(e)) from e

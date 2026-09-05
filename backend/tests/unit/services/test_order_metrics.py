@@ -669,7 +669,12 @@ def test_a_line_edited_below_what_it_already_reserved_needs_nothing_rather_than_
     figs = attribute(_ctx(lines, parts, [], {}, {}, reserved={100: 5}))[0][100]
 
     assert figs.parts[0].need == 0 and figs.parts[0].surplus == 0
-    assert figs.from_stock_units == 5, "the ledger reading is not capped at the quantity"
+    # The PER-LINE figure is the raw ledger reading — Ruling 16 means the routes
+    # can no longer produce this state (a reservation is clamped at the line's
+    # quantity when it is written, and lowering the quantity rewrites it down),
+    # so it survives only in a hand-built context like this one. The arithmetic
+    # must still floor rather than go negative if it ever does.
+    assert figs.from_stock_units == 5
     assert figs.progress == 1.0
 
 
@@ -768,3 +773,24 @@ async def test_grouped_figures_carry_the_reservation_per_line(db_session):
         assert {line.line_id: line.from_stock_units for line in grouped.lines} == {
             line_id: f.from_stock_units for line_id, f in figs.items()
         }
+
+
+def test_the_order_level_sum_caps_each_line_at_what_it_ordered():
+    """Finding C1. A line ordering ONE while holding five kits must not donate
+    its four spare ones to a sibling that has nothing — that read as five units
+    complete out of eleven ordered, with nothing printed and one kit usable.
+
+    Per LINE the raw ledger reading stands (it is what the shelf gave up); it is
+    the SUM that has to ask what each line can actually use.
+    """
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 1, sort=0), _line(101, 10, 10, sort=1)]
+    ctx = _ctx(lines, parts, [], {}, {}, reserved={100: 5})
+    figs, other = attribute(ctx)
+    pf = project_figures(ctx, figs, other)
+
+    assert figs[100].from_stock_units == 5, "the line still reports what the ledger holds"
+    assert (pf.ordered, pf.printed, pf.from_stock_units) == (11, 0, 1)
+    assert pf.complete == 1 and pf.remaining == 10
+    assert pf.progress == round(1 / 11, 4)
+    assert pf.all_printed is False, "the ten-unit line has printed nothing"

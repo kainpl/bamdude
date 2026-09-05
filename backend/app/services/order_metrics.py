@@ -34,7 +34,13 @@ _RUNNING = "printing"
 #: How many ids go into one ``IN (...)`` list. The same 500 the library scanner
 #: batches in (m148) and the same ``selectin`` uses for its parent chunking, so
 #: the batch loader's statement count is a multiple of one number and not two.
-_IN_CHUNK = 500
+#: Public because ``part_stock`` chunks the reservation read it does FOR this
+#: module's loaders — two constants both spelled 500 would drift the first time
+#: somebody tuned one of them.
+IN_CHUNK = 500
+#: The private spelling this module used before pass 8, kept so nothing that
+#: reads it has to change; the two are the same number by construction.
+_IN_CHUNK = IN_CHUNK
 
 
 def archive_material_set(filament_type: str | None) -> set[str]:
@@ -563,13 +569,22 @@ def project_figures(
     for figs in line_figures.values():
         pf.ordered += figs.quantity
         pf.printed += figs.units_printed
-        pf.from_stock_units += figs.from_stock_units
         # Kits off the shelf are units the order HAS, so they enter ``complete``
         # (still gated by the purchased parts — a kit with no screws assembles
         # into nothing) and every "still needed" figure below. Only ``printed``
         # and ``ordered`` stay literal: the customer ordered that many and the
         # farm printed this many.
-        printed_by_product[figs.product_id] += figs.units_printed + figs.from_stock_units
+        #
+        # ⚠️ CAPPED AT THE LINE before it is summed, unlike the per-line figure
+        # which stays the raw ledger reading. A line ordering ONE while holding
+        # five kits (the shelf was taken before the quantity was edited down)
+        # would otherwise donate its four spare kits to a sibling line that has
+        # nothing, and the order would report five units complete out of two
+        # ordered. Per line the honest number matters; summed, only what THIS
+        # line can use does.
+        from_stock = min(figs.from_stock_units, figs.quantity)
+        pf.from_stock_units += from_stock
+        printed_by_product[figs.product_id] += figs.units_printed + from_stock
     pf.complete = sum(_units_complete(ctx, pid, printed) for pid, printed in printed_by_product.items())
     pf.remaining = max(0, pf.ordered - pf.printed - pf.from_stock_units)
     for a in ctx.archives:
@@ -874,6 +889,7 @@ async def customer_figures(db: AsyncSession, customer_id: int) -> dict:
 
 
 __all__ = [
+    "IN_CHUNK",
     "GroupedLineFigures",
     "GroupedOrderFigures",
     "LineFigures",

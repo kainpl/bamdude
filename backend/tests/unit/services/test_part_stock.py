@@ -17,7 +17,13 @@ from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.app.services import part_stock as part_stock_module
 from backend.app.services.part_stock import (
+    NOTE_FILED_UNDER_ORDER,
+    NOTE_LINE_DELETED,
+    NOTE_ORDER_CANCELLED,
+    NOTE_RESERVATION_REWRITTEN,
+    NOTE_TOKENS,
     REASONS,
     PartStockError,
     balances,
@@ -34,6 +40,7 @@ from backend.app.services.part_stock import (
     repoint,
     reserve_for_line,
     reserved_units_by_line,
+    reserved_units_for_line,
     reverse_unfiled_print,
     unfiled_credit_net,
 )
@@ -497,10 +504,10 @@ async def test_filing_the_print_under_an_order_takes_the_credit_back(db_session,
     product, parts, archive = shelf
     await credit_unfiled_print(db_session, archive)
 
-    written = await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+    written = await reverse_unfiled_print(db_session, archive, note=NOTE_FILED_UNDER_ORDER)
 
     assert {m.reason for m in written} == {"manual"}
-    assert {m.note for m in written} == {"filed under order Lamps"}
+    assert {m.note for m in written} == {NOTE_FILED_UNDER_ORDER}
     assert {m.archive_id for m in written} == {archive.id}
     assert await balances(db_session, product.id) == {parts["lid"].id: 0, parts["base"].id: 0}
 
@@ -510,9 +517,9 @@ async def test_filing_the_same_print_twice_reverses_it_once(db_session, shelf):
     already zero, so there is nothing left to negate."""
     product, parts, archive = shelf
     await credit_unfiled_print(db_session, archive)
-    await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+    await reverse_unfiled_print(db_session, archive, note=NOTE_FILED_UNDER_ORDER)
 
-    assert await reverse_unfiled_print(db_session, archive, note="filed under order Lamps again") == []
+    assert await reverse_unfiled_print(db_session, archive, note=NOTE_FILED_UNDER_ORDER) == []
     assert await balances(db_session, product.id) == {parts["lid"].id: 0, parts["base"].id: 0}
 
 
@@ -526,7 +533,7 @@ async def test_reversing_a_credit_that_has_already_been_spent_is_refused(db_sess
     await move(db_session, part_id=parts["lid"].id, delta=-3, reason="reserved_for_order")
 
     with pytest.raises(PartStockError):
-        await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+        await reverse_unfiled_print(db_session, archive, note=NOTE_FILED_UNDER_ORDER)
 
 
 async def test_a_part_that_stopped_counting_is_skipped_by_the_reversal(db_session, shelf):
@@ -538,7 +545,7 @@ async def test_a_part_that_stopped_counting_is_skipped_by_the_reversal(db_sessio
     parts["lid"].qty_per_unit = 0
     await db_session.flush()
 
-    written = await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+    written = await reverse_unfiled_print(db_session, archive, note=NOTE_FILED_UNDER_ORDER)
 
     assert [m.product_part_id for m in written] == [parts["base"].id]
 
@@ -599,7 +606,7 @@ async def test_a_filed_print_holds_nothing_even_though_its_rows_remain(db_sessio
     archive still names four movements and holds none of the stock."""
     _product, _parts, archive = shelf
     await credit_unfiled_print(db_session, archive)
-    await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+    await reverse_unfiled_print(db_session, archive, note=NOTE_FILED_UNDER_ORDER)
 
     assert await unfiled_credit_net(db_session, archive.id) == 0
     assert len([m for m in await movements(db_session, _product.id) if m.archive_id == archive.id]) == 4
@@ -611,7 +618,7 @@ async def test_un_filing_a_print_puts_its_parts_back_on_the_shelf(db_session, sh
     corrected a filing."""
     product, parts, archive = shelf
     await credit_unfiled_print(db_session, archive)
-    await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+    await reverse_unfiled_print(db_session, archive, note=NOTE_FILED_UNDER_ORDER)
     assert await balances(db_session, product.id) == {parts["lid"].id: 0, parts["base"].id: 0}
 
     # …and the operator takes it back out of the order.
@@ -650,7 +657,7 @@ async def test_the_reversal_finishes_every_part_it_can_before_it_complains(db_se
     await move(db_session, part_id=parts["lid"].id, delta=-3, reason="reserved_for_order")
 
     with pytest.raises(PartStockError) as refusal:
-        await reverse_unfiled_print(db_session, archive, note="filed under order Lamps")
+        await reverse_unfiled_print(db_session, archive, note=NOTE_FILED_UNDER_ORDER)
 
     # The whole id list, so a second refused part would fail this rather than
     # hide inside a message that happens to contain the digit.
@@ -812,19 +819,19 @@ async def test_releasing_reads_the_ledger_and_not_the_line(db_session, kit):
     line.quantity = 99
     await db_session.flush()
 
-    await release_for_line(db_session, line, note="order cancelled")
+    await release_for_line(db_session, line, note=NOTE_ORDER_CANCELLED)
 
     assert await balances(db_session, product.id) == {parts["lid"].id: 5, parts["base"].id: 3}
     released = [m for m in await _line_rows(db_session, line.id) if m.reason == "reservation_released"]
     assert [m.delta for m in released] == [2, 2]
-    assert {m.note for m in released} == {"order cancelled"}
+    assert {m.note for m in released} == {NOTE_ORDER_CANCELLED}
 
 
 async def test_releasing_a_line_that_reserved_nothing_writes_nothing(db_session, kit):
     product, _parts = kit
     line = await _line(db_session, product)
 
-    await release_for_line(db_session, line, note="order cancelled")
+    await release_for_line(db_session, line, note=NOTE_ORDER_CANCELLED)
 
     assert await _line_rows(db_session, line.id) == []
 
@@ -836,9 +843,9 @@ async def test_releasing_twice_gives_the_shelf_its_kits_back_once(db_session, ki
     product, parts = kit
     line = await _line(db_session, product)
     await reserve_for_line(db_session, line, 3)
-    await release_for_line(db_session, line, note="order cancelled")
+    await release_for_line(db_session, line, note=NOTE_ORDER_CANCELLED)
 
-    await release_for_line(db_session, line, note="line deleted")
+    await release_for_line(db_session, line, note=NOTE_LINE_DELETED)
 
     assert await balances(db_session, product.id) == {parts["lid"].id: 5, parts["base"].id: 3}
     assert [m.reason for m in await _line_rows(db_session, line.id)].count("reservation_released") == 2
@@ -853,7 +860,7 @@ async def test_a_part_that_stopped_counting_keeps_its_reservation_out(db_session
     parts["lid"].kind = "purchased"
     await db_session.flush()
 
-    await release_for_line(db_session, line, note="order cancelled")
+    await release_for_line(db_session, line, note=NOTE_ORDER_CANCELLED)
 
     assert await balances(db_session, product.id) == {parts["base"].id: 3}
 
@@ -915,7 +922,7 @@ async def test_a_deleted_line_leaves_its_history_behind_with_no_line(db_session,
     await move(db_session, part_id=parts["lid"].id, delta=4, reason="surplus_banked", project_line_id=line.id)
     await reserve_for_line(db_session, line, 2)
 
-    await release_for_line(db_session, line, note="line deleted")
+    await release_for_line(db_session, line, note=NOTE_LINE_DELETED)
     assert await detach_line(db_session, line.id) == 5
 
     assert await _line_rows(db_session, line.id) == []
@@ -927,3 +934,103 @@ async def test_a_deleted_line_leaves_its_history_behind_with_no_line(db_session,
 
 async def test_detaching_a_line_nothing_ever_reserved_moves_no_row(db_session):
     assert await detach_line(db_session, 9999) == 0
+
+
+# ---------- fix round 1: Ruling 16, Ruling 17, finding I1 ----------
+
+
+async def test_a_reservation_never_exceeds_the_lines_quantity(db_session, kit):
+    """Ruling 16. Three kits are on the shelf and the line orders two, so two
+    is what it may hold — kits a line cannot use are stock withheld from every
+    other order for nothing."""
+    product, parts = kit
+    line = await _line(db_session, product, quantity=2)
+
+    assert await reserve_for_line(db_session, line, 5) == 2
+
+    assert await balances(db_session, product.id) == {parts["lid"].id: 3, parts["base"].id: 1}
+
+
+async def test_the_line_quantity_clamps_before_the_shelf_does(db_session, kit):
+    """Both clamps are live at once and the smaller wins whichever it is: five
+    on the shelf but only three kits' worth of bases, against a line of ten."""
+    product, _parts = kit
+    line = await _line(db_session, product, quantity=10)
+
+    assert await reserve_for_line(db_session, line, 10) == 3
+
+
+async def test_reserved_units_for_line_is_the_one_derivation_of_kits_held(db_session, kit):
+    """The route that lowers a quantity asks this; a private SELECT there would
+    be a second answer to "how many kits is this line holding"."""
+    product, parts = kit
+    line = await _line(db_session, product)
+
+    assert await reserved_units_for_line(db_session, line) == 0
+    await reserve_for_line(db_session, line, 2)
+    assert await reserved_units_for_line(db_session, line) == 2
+    await release_for_line(db_session, line, note=NOTE_LINE_DELETED)
+    assert await reserved_units_for_line(db_session, line) == 0
+    # …and it agrees with the batch reader it is a wrapper over.
+    qty = {part.id: part.qty_per_unit for part in parts.values()}
+    assert await reserved_units_by_line(db_session, [line.id], qty) == {}
+
+
+async def test_a_product_with_no_counted_part_holds_no_kits(db_session):
+    product, _parts = await _make_product(db_session, ("screw", "purchased", 4))
+    line = await _line(db_session, product)
+
+    assert await reserved_units_for_line(db_session, line) == 0
+
+
+def _normalise(sql: str) -> str:
+    return " ".join(sql.split())
+
+
+async def test_the_kit_decision_is_made_with_every_part_locked(db_session, test_engine, kit):
+    """Finding I1. ``move`` locks the ONE part it is about to write, but the kit
+    decision is taken across all of them at once — two transactions would
+    otherwise each read the same shelf, each decide three kits are free, and the
+    per-part clamp would fire on a decision already made.
+
+    The lock statements are ``lock_part_stmt``'s own, compiled: the loop must be
+    that statement and not a lookalike, or PostgreSQL emits no ``FOR UPDATE``.
+    They are taken in part-id order so two of these loops can never take the
+    same two locks the other way round.
+    """
+    product, parts = kit
+    line = await _line(db_session, product)
+    wanted = _normalise(str(lock_part_stmt(parts["lid"].id).compile(dialect=sqlite.dialect())))
+
+    with counting_statements(test_engine) as seen:
+        await reserve_for_line(db_session, line, 2)
+
+    statements = [_normalise(s) for s in seen]
+    balance = next(i for i, s in enumerate(statements) if "LEFT OUTER JOIN product_part_stock_movements" in s)
+    assert statements[:balance].count(wanted) == 2, "both counted parts locked before the shelf was read"
+
+
+async def test_every_note_the_writer_writes_is_a_listed_token(db_session):
+    """Ruling 17. The set is closed: a backend note is a token the product page
+    translates, never an English sentence written once and read forever. Both
+    directions, so neither an unlisted token nor a dead listing can survive."""
+    constants = {
+        name: value
+        for name, value in vars(part_stock_module).items()
+        if name.startswith("NOTE_") and name != "NOTE_TOKENS"
+    }
+    assert set(constants.values()) == set(NOTE_TOKENS)
+    assert len(NOTE_TOKENS) == len(set(NOTE_TOKENS)), "a token listed twice is a token nobody notices"
+    assert all(token.islower() and " " not in token for token in NOTE_TOKENS), "tokens, not sentences"
+
+
+async def test_the_rewrite_note_is_the_token_the_writer_owns(db_session, kit):
+    """``reserve_for_line`` writes its own release note; the route never sees it."""
+    product, _parts = kit
+    line = await _line(db_session, product)
+    await reserve_for_line(db_session, line, 3)
+
+    await reserve_for_line(db_session, line, 1)
+
+    released = [m for m in await _line_rows(db_session, line.id) if m.reason == "reservation_released"]
+    assert {m.note for m in released} == {NOTE_RESERVATION_REWRITTEN}

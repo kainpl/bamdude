@@ -64,7 +64,7 @@ from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import ProductPart, ProductPlate
 from backend.app.models.project_line import ProjectLine
-from backend.app.services.order_metrics import index_plates, products_for_print, row_quantity
+from backend.app.services.order_metrics import IN_CHUNK, index_plates, products_for_print, row_quantity
 from backend.app.services.product_composition import part_index
 
 logger = logging.getLogger(__name__)
@@ -74,10 +74,34 @@ logger = logging.getLogger(__name__)
 #: "what is still reserved" is ``−Σ(both)`` and never "the last row wins".
 _RESERVATION_REASONS = ("reserved_for_order", "reservation_released")
 
-#: How many ids go into one ``IN (...)`` list, matching ``order_metrics``' own
-#: chunk. The batch reader below is asked about every line of a whole page of
-#: orders, and SQLite refuses a statement past 32766 host parameters.
-_IN_CHUNK = 500
+#: Why the BACKEND wrote a movement — a closed set of tokens, never a sentence
+#: (Ruling 17). The product page renders each of these in the operator's own
+#: language, and an English sentence baked into the row is untranslatable
+#: forever: it is written once and read for the life of the ledger. The only
+#: free-text note is the operator's own ``manual`` adjustment, which is their
+#: sentence and not ours.
+#:
+#: ⚠️ Closed. A new backend-written note is a new constant here AND a new
+#: string in both locale files — a test pins that every ``NOTE_*`` constant in
+#: this module is a member and that every member has a constant, so an
+#: unlisted token cannot reach the table.
+NOTE_ORDER_CANCELLED = "order_cancelled"
+NOTE_LINE_DELETED = "line_deleted"
+NOTE_PROJECT_DELETED = "project_deleted"
+NOTE_RESERVATION_REWRITTEN = "reservation_rewritten"
+NOTE_FILED_UNDER_ORDER = "filed_under_order"
+NOTE_UNFILED_FROM_ORDER = "unfiled_from_order"
+NOTE_COUNTED_BY_OPERATOR = "counted_by_operator"
+
+NOTE_TOKENS = (
+    NOTE_ORDER_CANCELLED,
+    NOTE_LINE_DELETED,
+    NOTE_PROJECT_DELETED,
+    NOTE_RESERVATION_REWRITTEN,
+    NOTE_FILED_UNDER_ORDER,
+    NOTE_UNFILED_FROM_ORDER,
+    NOTE_COUNTED_BY_OPERATOR,
+)
 
 #: The one archive status a print may be credited from. Spelled here rather
 #: than imported from ``order_metrics._DONE`` because that name is private;
@@ -298,10 +322,26 @@ async def movements(db: AsyncSession, product_id: int, *, limit: int = 200) -> l
 
 
 async def _counted_parts(db: AsyncSession, product_id: int) -> list[ProductPart]:
-    """The product's counted parts, lowest id first — the order a reservation
-    is written in, so a ledger read back reads the same way twice."""
+    """The product's counted parts, lowest id first.
+
+    Id order is what a reservation is written in — and what its locks are taken
+    in, so two transactions reserving the same product can never take them the
+    other way round and deadlock.
+
+    ``populate_existing`` because ``kind`` and ``qty_per_unit`` ARE
+    :func:`is_counted`: a route that edited a part earlier in the same
+    transaction must not have this question answered from the identity map's
+    pre-edit copy.
+    """
     rows = (
-        (await db.execute(select(ProductPart).where(ProductPart.product_id == product_id).order_by(ProductPart.id)))
+        (
+            await db.execute(
+                select(ProductPart)
+                .where(ProductPart.product_id == product_id)
+                .order_by(ProductPart.id)
+                .execution_options(populate_existing=True)
+            )
+        )
         .scalars()
         .all()
     )
@@ -349,7 +389,8 @@ async def release_for_line(db: AsyncSession, line: ProjectLine, *, note: str) ->
 
     ``note`` is required and not defaulted because the product page shows it,
     and "why did these parts come back" is the only question that history
-    answers — "reservation rewritten", "order cancelled", "line deleted".
+    answers. It is a token from :data:`NOTE_TOKENS`, never a sentence — the
+    page renders it in the operator's language (Ruling 17).
 
     A part that has since stopped counting is skipped and logged: it has no
     balance to return to, and :func:`move` would refuse it as a caller error.
@@ -364,7 +405,16 @@ async def release_for_line(db: AsyncSession, line: ProjectLine, *, note: str) ->
     parts = {
         part.id: part
         for part in (
-            await db.execute(select(ProductPart).where(ProductPart.id.in_([pid for pid, _n in outstanding])))
+            await db.execute(
+                select(ProductPart)
+                .where(ProductPart.id.in_([pid for pid, _n in outstanding]))
+                # ``populate_existing`` for the same reason ``lock_part_stmt``
+                # carries it: ``kind`` and ``qty_per_unit`` ARE :func:`is_counted`,
+                # and a route that edited a part earlier in this transaction
+                # would otherwise be answered from the identity map with the
+                # pre-edit row.
+                .execution_options(populate_existing=True)
+            )
         ).scalars()
     }
     for part_id, units in outstanding:
@@ -397,13 +447,18 @@ async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, c
     release + reserve inside the caller's one transaction, which is why
     :func:`move` never commits.
 
-    **The answer may be smaller than the question** (Ruling 1): the line dialog
-    renders a default and the operator presses OK some minutes later, by which
-    time another order may have taken the shelf. Asking for 5 of 3 reserves 3
-    and returns 3 — the response tells the dialog what it got, and no balance
-    ever goes negative. Asking for more than the line ordered is NOT clamped
-    here: the ledger records what came off the shelf, and how many of them the
-    line still needs is ``order_metrics``' arithmetic, not the shelf's.
+    **The answer may be smaller than the question**, for two reasons:
+
+    * Ruling 1 — the line dialog renders a default and the operator presses OK
+      some minutes later, by which time another order may have taken the shelf.
+      Asking for 5 of 3 reserves 3 and returns 3: the response tells the dialog
+      what it got, and no balance ever goes negative.
+    * Ruling 16 — a reservation never exceeds ``line.quantity``. Holding kits a
+      line cannot use is stock withheld from every other order for nothing, and
+      it made the order-level ``complete`` count a spare kit of a one-unit line
+      as if a ten-unit sibling could assemble it.
+
+    So ``take = min(units, line.quantity, kits_available(...))``.
 
     Returns the kits actually reserved, read back from the movements written
     rather than from the number asked for — the same discipline the banking
@@ -417,12 +472,24 @@ async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, c
     """
     if units < 0:
         raise ValueError(f"cannot reserve {units} units for line {line.id}; a reservation is never negative")
-    await release_for_line(db, line, note="reservation rewritten")
+    await release_for_line(db, line, note=NOTE_RESERVATION_REWRITTEN)
     parts = await _counted_parts(db, line.product_id)
     if not parts or units == 0:
         return 0
+    # ⚠️ Lock every counted part BEFORE the balances are read (finding I1).
+    # ``move`` locks the one part it is about to write, but the KIT DECISION is
+    # made across all of them at once and one part at a time is too late: two
+    # transactions would each read the same shelf, each decide three kits are
+    # free, and the clamp in ``move`` would fire per part on a decision already
+    # taken. Locking here means the second transaction waits for the first to
+    # commit and then reads the true balances. ``parts`` is id-ordered
+    # (``_counted_parts``), so two of these loops can never take the same two
+    # locks in opposite orders — deadlock-safe by construction. A no-op on
+    # SQLite, whose single write lock already serialises this.
+    for part in parts:
+        await db.execute(lock_part_stmt(part.id))
     # After the release, so the shelf includes what this line was holding.
-    take = min(units, kits_available(await balances(db, line.product_id), parts))
+    take = min(units, line.quantity, kits_available(await balances(db, line.product_id), parts))
     if take <= 0:
         return 0
     reserved = take
@@ -465,7 +532,7 @@ async def reserved_units_by_line(
     if not line_ids:
         return {}
     per_line: dict[int, list[int]] = defaultdict(list)
-    for start in range(0, len(line_ids), _IN_CHUNK):
+    for start in range(0, len(line_ids), IN_CHUNK):
         rows = (
             await db.execute(
                 select(
@@ -474,7 +541,7 @@ async def reserved_units_by_line(
                     func.coalesce(func.sum(ProductPartStockMovement.delta), 0),
                 )
                 .where(
-                    ProductPartStockMovement.project_line_id.in_(line_ids[start : start + _IN_CHUNK]),
+                    ProductPartStockMovement.project_line_id.in_(line_ids[start : start + IN_CHUNK]),
                     ProductPartStockMovement.reason.in_(_RESERVATION_REASONS),
                 )
                 .group_by(ProductPartStockMovement.project_line_id, ProductPartStockMovement.product_part_id)
@@ -486,6 +553,22 @@ async def reserved_units_by_line(
                 continue
             per_line[line_id].append(max(0, -int(net or 0)) // qty)
     return {line_id: kits for line_id, taken in per_line.items() if (kits := min(taken)) > 0}
+
+
+async def reserved_units_for_line(db: AsyncSession, line: ProjectLine) -> int:
+    """How many kits ONE line is currently holding off the shelf.
+
+    A thin wrapper over :func:`reserved_units_by_line` and nothing else, so
+    "kits held" has exactly one derivation. The route that lowers a line's
+    quantity has to ask this question, and a private ``SELECT`` there would be
+    a second answer to it — which would disagree the first time a part was
+    merged or a release was half-written.
+    """
+    parts = await _counted_parts(db, line.product_id)
+    if not parts:
+        return 0
+    held = await reserved_units_by_line(db, [line.id], {part.id: part.qty_per_unit for part in parts})
+    return held.get(line.id, 0)
 
 
 async def detach_line(db: AsyncSession, line_id: int) -> int:
@@ -588,7 +671,7 @@ async def unfiled_credit_net(db: AsyncSession, archive_id: int) -> int:
 
 
 async def credit_unfiled_print(
-    db: AsyncSession, archive: PrintArchive, *, created_by: int | None = None
+    db: AsyncSession, archive: PrintArchive, *, created_by: int | None = None, note: str | None = None
 ) -> list[ProductPartStockMovement]:
     """Put a print that belongs to no order onto the shelf (Decision 3).
 
@@ -616,7 +699,11 @@ async def credit_unfiled_print(
 
     ``created_by`` is the operator who asked, when one did — the archive page's
     "count this into stock". The completion handler passes nothing: it writes
-    with no user (Decision 7).
+    with no user (Decision 7). ``note`` says WHICH of the three ways this print
+    reached the shelf, as a token from :data:`NOTE_TOKENS` (Ruling 17): the
+    completion handler passes none (an ordinary credit needs no explanation),
+    un-filing passes ``NOTE_UNFILED_FROM_ORDER`` and the archive page's manual
+    action ``NOTE_COUNTED_BY_OPERATOR``.
 
     Flushes through :func:`move`; the caller commits.
     """
@@ -689,6 +776,7 @@ async def credit_unfiled_print(
             delta=quantity,
             reason="unfiled_print",
             archive_id=archive.id,
+            note=note,
             created_by=created_by,
         )
         if movement is not None:
@@ -704,6 +792,9 @@ async def reverse_unfiled_print(db: AsyncSession, archive: PrintArchive, note: s
     them twice. The reversal is a ``manual`` movement with the negated balance
     and the same ``archive_id``, so the product's history reads as a pair
     rather than as a number that changed by itself.
+
+    ``note`` is a token from :data:`NOTE_TOKENS` (Ruling 17) — in practice
+    ``NOTE_FILED_UNDER_ORDER``, the only reason this reversal ever runs.
 
     **Idempotent by arithmetic, not by a flag**: the sum of everything carrying
     this ``archive_id`` is what gets negated, so a second filing finds zero and
