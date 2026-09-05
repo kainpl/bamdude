@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useQuery } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
@@ -23,6 +24,25 @@ function rowOf(name: string): HTMLElement {
   const row = screen.getByText(name).closest('li');
   if (!row) throw new Error(`no row for ${name}`);
   return row as HTMLElement;
+}
+
+/**
+ * A real `['printers']` consumer, mounted beside the card.
+ *
+ * The printer cards carry the resolved tag NAMES, so a rename that does not
+ * reach their cache leaves the old label on screen until something else
+ * happens to refetch. Asserting that this probe refetches is the effect that
+ * matters; spying on `invalidateQueries` would only assert the call.
+ */
+function PrintersProbe({ onFetch }: { onFetch: () => void }) {
+  useQuery({
+    queryKey: ['printers'],
+    queryFn: async () => {
+      onFetch();
+      return [];
+    },
+  });
+  return null;
 }
 
 describe('PrinterTagsCard', () => {
@@ -117,6 +137,60 @@ describe('PrinterTagsCard', () => {
     await screen.findByText('Фаза 1');
     await userEvent.click(within(rowOf('Фаза 1')).getByTitle('Delete'));
     await waitFor(() => expect(screen.getByText(/staggered-start group/)).toBeInTheDocument());
+  });
+
+  it('refreshes the printers cache after a rename, so no card keeps the old label', async () => {
+    server.use(
+      http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })),
+      http.patch('/api/v1/printer-tags/1', () => HttpResponse.json({ id: 1, name: 'Фаза A' }))
+    );
+    const onFetch = vi.fn();
+    render(
+      <>
+        <PrintersProbe onFetch={onFetch} />
+        <PrinterTagsCard />
+      </>
+    );
+    await screen.findByText('Фаза 1');
+    await waitFor(() => expect(onFetch).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(within(rowOf('Фаза 1')).getByTitle('Edit'));
+    const field = await screen.findByLabelText('Edit Фаза 1');
+    await userEvent.clear(field);
+    await userEvent.type(field, 'Фаза A{Enter}');
+
+    await waitFor(() => expect(onFetch).toHaveBeenCalledTimes(2));
+  });
+
+  it('drops the row once a delete succeeds', async () => {
+    let deleted = false;
+    server.use(
+      http.get('/api/v1/printer-tags', () =>
+        HttpResponse.json({ tags: deleted ? TAGS.filter((tag) => tag.id !== 2) : TAGS })
+      ),
+      http.delete('/api/v1/printer-tags/2', () => {
+        deleted = true;
+        return HttpResponse.json({ deleted: 1 });
+      })
+    );
+    render(<PrinterTagsCard />);
+    await screen.findByText('Замовник X');
+    await userEvent.click(within(rowOf('Замовник X')).getByTitle('Delete'));
+
+    await waitFor(() => expect(screen.queryByText('Замовник X')).not.toBeInTheDocument());
+    // The refusal line belongs to a refusal — a success must not print one.
+    expect(screen.queryByText(/already exists|staggered-start/)).not.toBeInTheDocument();
+    expect(screen.getByText('Фаза 1')).toBeInTheDocument();
+  });
+
+  it('counts one printer in the singular', async () => {
+    server.use(
+      http.get('/api/v1/printer-tags', () =>
+        HttpResponse.json({ tags: [{ id: 7, name: 'Ряд 1', printer_count: 1, is_stagger_group: false }] })
+      )
+    );
+    render(<PrinterTagsCard />);
+    expect(await screen.findByText('1 printer')).toBeInTheDocument();
   });
 
   it('invites the operator to add one when there are none', async () => {

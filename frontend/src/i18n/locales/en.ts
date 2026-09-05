@@ -199,7 +199,8 @@ export default {
       empty: 'No tags yet. Add one to label printers — a phase, a row, a customer.',
       nameTaken: 'A tag with this name already exists.',
       inUse: 'This tag is a staggered-start group. Un-choose it under Queue & Scheduling first.',
-      counts: '{{count}} printers',
+      counts_one: '{{count}} printer',
+      counts_other: '{{count}} printers',
       staggerGroup: 'stagger group',
       remove: 'Remove {{name}}'
     },

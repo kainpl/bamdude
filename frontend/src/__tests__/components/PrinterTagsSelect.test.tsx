@@ -46,6 +46,27 @@ describe('PrinterTagsSelect', () => {
     expect(onChange).toHaveBeenCalledWith([9]);
   });
 
+  it('tells the operator a duplicate name was refused, and keeps the draft', async () => {
+    server.use(
+      http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })),
+      http.post('/api/v1/printer-tags', () =>
+        HttpResponse.json({ detail: 'A tag with this name already exists.' }, { status: 409 })
+      )
+    );
+    const onChange = vi.fn();
+    render(<PrinterTagsSelect value={[]} onChange={onChange} allowCreate />);
+    await screen.findByLabelText('Add a tag…');
+    await userEvent.click(screen.getByRole('button', { name: '+ New' }));
+    const field = screen.getByPlaceholderText('Add tag');
+    await userEvent.type(field, 'Фаза 1');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('A tag with this name already exists.')).toBeInTheDocument();
+    // Nothing was added to the printer, and the name is still there to be edited.
+    expect(onChange).not.toHaveBeenCalled();
+    expect(field).toHaveValue('Фаза 1');
+  });
+
   it('offers no inline create without allowCreate', async () => {
     server.use(http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })));
     render(<PrinterTagsSelect value={[]} onChange={vi.fn()} />);
