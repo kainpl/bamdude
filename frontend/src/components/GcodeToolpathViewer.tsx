@@ -207,7 +207,10 @@ export function GcodeToolpathViewer({
         if (!response.ok) {
           if (response.status === 404) {
             const data = await response.json().catch(() => ({}));
-            if (typeof data.detail === 'string' && data.detail.includes('sliced')) {
+            // The server answers a not-yet-sliced file with a structured
+            // detail `{error: 'not_sliced', message}` — branch on the code,
+            // never on the message, which arrives in the system language.
+            if (data?.detail?.error === 'not_sliced') {
               setNotSliced(true);
               throw new Error('not_sliced');
             }

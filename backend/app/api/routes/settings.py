@@ -18,6 +18,7 @@ from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
+from backend.app.i18n.api_errors import json_error
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
@@ -1204,26 +1205,17 @@ async def update_virtual_printer_settings(
     #   "proxy"        — transparent TCP proxy to a real printer
     # m002 already migrated legacy ``immediate``/``review``/``queue`` rows.
     if new_mode not in ("print_queue", "file_manager", "proxy"):
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Mode must be 'print_queue', 'file_manager', or 'proxy'"},
-        )
+        return json_error(400, "Mode must be 'print_queue', 'file_manager', or 'proxy'")
 
     # Validate model
     if model is not None and model not in VIRTUAL_PRINTER_MODELS:
-        return JSONResponse(
-            status_code=400,
-            content={"detail": f"Invalid model. Must be one of: {', '.join(VIRTUAL_PRINTER_MODELS.keys())}"},
-        )
+        return json_error(400, f"Invalid model. Must be one of: {', '.join(VIRTUAL_PRINTER_MODELS.keys())}")
 
     # Validate archive_name_source (B.14 / #1152): only two values are
     # meaningful — anything else would silently fall back to 'metadata' on
     # the read side and confuse the user about whether their toggle stuck.
     if archive_name_source is not None and archive_name_source not in ("metadata", "filename"):
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "archive_name_source must be 'metadata' or 'filename'"},
-        )
+        return json_error(400, "archive_name_source must be 'metadata' or 'filename'")
 
     # Mode-specific validation and printer lookup
     target_printer_ip = ""
@@ -1235,20 +1227,14 @@ async def update_virtual_printer_settings(
             if enabled is None:
                 new_enabled = False
             else:
-                return JSONResponse(
-                    status_code=400,
-                    content={"detail": "Target printer is required for proxy mode"},
-                )
+                return json_error(400, "Target printer is required for proxy mode")
 
         # Look up printer IP and serial if we have a target
         if new_target_id:
             result = await db.execute(select(Printer).where(Printer.id == new_target_id))
             printer = result.scalar_one_or_none()
             if not printer:
-                return JSONResponse(
-                    status_code=400,
-                    content={"detail": f"Printer with ID {new_target_id} not found"},
-                )
+                return json_error(400, f"Printer with ID {new_target_id} not found")
             target_printer_ip = printer.ip_address
             target_printer_serial = printer.serial_number
         # Access code not required for proxy mode
@@ -1259,17 +1245,11 @@ async def update_virtual_printer_settings(
             if enabled is None:
                 new_enabled = False
             else:
-                return JSONResponse(
-                    status_code=400,
-                    content={"detail": "Access code is required when enabling virtual printer"},
-                )
+                return json_error(400, "Access code is required when enabling virtual printer")
 
         # Validate access code length (Bambu Studio requires exactly 8 characters)
         if access_code is not None and access_code and len(access_code) != 8:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Access code must be exactly 8 characters"},
-            )
+            return json_error(400, "Access code must be exactly 8 characters")
 
     # Save settings
     await set_setting(db, "virtual_printer_enabled", "true" if new_enabled else "false")
@@ -1300,16 +1280,10 @@ async def update_virtual_printer_settings(
         )
     except ValueError as e:
         logger.warning("Virtual printer configuration validation error: %s", e)
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Invalid virtual printer configuration. Check the provided values."},
-        )
+        return json_error(400, "Invalid virtual printer configuration. Check the provided values.")
     except Exception as e:
         logger.error("Failed to configure virtual printer: %s", e, exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Failed to configure virtual printer. Check server logs for details."},
-        )
+        return json_error(500, "Failed to configure virtual printer. Check server logs for details.")
 
     return await get_virtual_printer_settings(db)
 

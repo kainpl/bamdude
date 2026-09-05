@@ -92,6 +92,7 @@ from backend.app.core.config import APP_VERSION, settings as app_settings
 from backend.app.core.database import async_session, engine, init_db
 from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
+from backend.app.i18n.api_errors import install as install_api_error_translation
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_parts import refresh_archive_parts
@@ -9214,6 +9215,11 @@ app = FastAPI(
     version=APP_VERSION,
     lifespan=lifespan,
 )
+
+# Every ``HTTPException`` answers in the system language: the English sentence
+# raised at the site is looked up in ``data/api_errors_uk.json`` on the way out.
+# See ``backend/app/i18n/api_errors.py`` for what is deliberately never translated.
+install_api_error_translation(app)
 
 
 # =============================================================================

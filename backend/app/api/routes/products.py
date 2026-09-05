@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from sqlalchemy import delete, func, inspect as sqla_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -34,6 +34,7 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.i18n.api_errors import json_error
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import Product, ProductPart, ProductPlate, product_files, product_folders
@@ -1430,7 +1431,7 @@ async def get_product_cover_image(
                 a for a in (product.attachments or []) if not (isinstance(a, dict) and a.get("filename") == name)
             ]
         await db.flush()
-        return JSONResponse(status_code=404, content={"detail": "Cover image file not found"})
+        return json_error(404, "Cover image file not found")
     # ⚠️ ``no-cache`` — REVALIDATE, not "do not store". This URL is stable across
     # the cover being replaced, so an age-based cache shows the old picture after
     # an upload; ``private`` alone still let a browser reuse a heuristically

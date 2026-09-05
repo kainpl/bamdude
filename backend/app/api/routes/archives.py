@@ -2984,9 +2984,19 @@ async def get_gcode(
             # Bambu 3MF files store G-code in Metadata/plate_X.gcode
             gcode_files = [n for n in zf.namelist() if n.startswith("Metadata/") and n.endswith(".gcode")]
             if not gcode_files:
+                # Structured on purpose: the toolpath viewer branches on
+                # ``error`` to show its own "not sliced" state, while the
+                # generic toast shows ``message`` — which is translated, the
+                # code is not (``GcodeToolpathViewer.tsx``).
                 raise HTTPException(
                     404,
-                    "No G-code found. This file hasn't been sliced yet - G-code is only available after slicing in Bambu Studio.",
+                    {
+                        "error": "not_sliced",
+                        "message": (
+                            "No G-code found. This file hasn't been sliced yet - "
+                            "G-code is only available after slicing in Bambu Studio."
+                        ),
+                    },
                 )
 
             target_name: str | None = None

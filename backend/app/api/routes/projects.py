@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -23,6 +23,7 @@ from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.i18n.api_errors import json_error
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.customer import Customer
@@ -1114,7 +1115,7 @@ async def get_project_cover_image(
         logger.warning("Cover image file missing for project %s: %s", project_id, file_path)
         project.cover_image_filename = None
         await db.flush()
-        return JSONResponse(status_code=404, content={"detail": "Cover image file not found"})
+        return json_error(404, "Cover image file not found")
 
     ext = os.path.splitext(project.cover_image_filename)[1].lower()
     media_type = IMAGE_CONTENT_TYPES.get(ext, "application/octet-stream")
