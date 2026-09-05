@@ -8,6 +8,7 @@ scheduler's own dispatch reaches before it uploads, so the dispatch CAS
 """
 
 import pytest
+from sqlalchemy import select
 
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.queue_batch import claim_printer_for_direct_print
@@ -103,13 +104,19 @@ async def test_the_owner_is_carried(db_session, printer_factory):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_printer_with_no_queue_row_claims_nothing(db_session, printer_factory):
-    """⚠️ Returns None rather than raising: the caller must be able to carry on
-    dispatching. A printer without a queue row is a broken install, not a
-    reason to refuse someone's print."""
+async def test_a_printer_with_no_queue_row_gets_one_and_the_claim(db_session, printer_factory):
+    """d93977c8: every printer has a queue, created on demand under the printer's
+    own id — the Telegram add path never created one, and a direct print must not
+    be refused for it."""
     printer = await printer_factory()
 
-    assert await claim_printer_for_direct_print(db_session, printer_id=printer.id, origin="direct") is None
+    item = await claim_printer_for_direct_print(db_session, printer_id=printer.id, origin="direct")
+
+    assert item is not None
+    assert item.status == "printing"
+    queue = (await db_session.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer.id))).scalar_one()
+    assert queue.id == printer.id
+    assert item.queue_id == printer.id
 
 
 # ---- filing the print under the order's line (spec pass 7, Decision 4a) ----
