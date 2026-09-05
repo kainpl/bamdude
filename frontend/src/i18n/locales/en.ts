@@ -6530,6 +6530,7 @@ export default {
     insufficientFilamentTitle: 'Not enough filament',
     insufficientFilamentMessage: 'Some assigned spools have less filament remaining than this print needs:',
     insufficientFilamentLine: '{{printer}} - {{slot}}: needs {{required}}g, remaining {{remaining}}g',
+    insufficientFilamentGroupLine: '{{printer}} - {{slots}} (backup group): needs {{required}}g, remaining {{remaining}}g',
     printAnyway: 'Print anyway',
 
     // PrintOptions descriptions

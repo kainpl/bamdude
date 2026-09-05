@@ -6602,6 +6602,7 @@ export default {
     insufficientFilamentTitle: 'Недостатньо філаменту',
     insufficientFilamentMessage: 'Деякі призначені котушки мають менше філаменту, ніж потрібно для цього друку:',
     insufficientFilamentLine: '{{printer}} - {{slot}}: потрібно {{required}}г, залишилось {{remaining}}г',
+    insufficientFilamentGroupLine: '{{printer}} - {{slots}} (група бекапу): потрібно {{required}}г, залишилось {{remaining}}г',
     printAnyway: 'Друкувати все одно',
 
     // PrintOptions descriptions

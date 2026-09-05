@@ -31,6 +31,12 @@ import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
 import { getBedTypeInfo } from '../../utils/bedType';
 import { getGlobalTrayId, isPlaceholderDate } from '../../utils/amsHelpers';
 import { AutoModeOptions } from './AutoModeOptions';
+import {
+  groupTraysForBackup,
+  nominalGramsFromRemain,
+  privateBackupGroup,
+  type BackupGroup,
+} from './filamentBackupGroups';
 import { FilamentMapping } from './FilamentMapping';
 import { PlateSelector } from './PlateSelector';
 import { PrinterSelector } from './PrinterSelector';
@@ -108,6 +114,13 @@ export function PrintModal({
   type FilamentWarningItem = {
     printerName: string;
     slotLabel: string;
+    /**
+     * Every tray whose filament was weighed together. One entry for the strict
+     * per-tray check, several when AMS Filament Backup pooled a group — the
+     * message has to name all of them or "needs 300 g, remaining 200 g" reads
+     * as a lie about a slot that is not the one that is short.
+     */
+    slotLabels: string[];
     requiredGrams: number;
     remainingGrams: number;
   };
@@ -1078,12 +1091,19 @@ export function PrintModal({
   const filamentWarningMessage = useMemo(() => {
     if (!filamentWarningItems || filamentWarningItems.length === 0) return '';
     const lines = filamentWarningItems.map((item) =>
-      t('printModal.insufficientFilamentLine', {
-        printer: item.printerName,
-        slot: item.slotLabel,
-        required: Math.round(item.requiredGrams),
-        remaining: Math.round(item.remainingGrams),
-      })
+      item.slotLabels.length > 1
+        ? t('printModal.insufficientFilamentGroupLine', {
+            printer: item.printerName,
+            slots: item.slotLabels.join(', '),
+            required: Math.round(item.requiredGrams),
+            remaining: Math.round(item.remainingGrams),
+          })
+        : t('printModal.insufficientFilamentLine', {
+            printer: item.printerName,
+            slot: item.slotLabel,
+            required: Math.round(item.requiredGrams),
+            remaining: Math.round(item.remainingGrams),
+          })
     );
     return [t('printModal.insufficientFilamentMessage'), ...lines].join('\n');
   }, [filamentWarningItems, t]);
@@ -1288,6 +1308,13 @@ export function PrintModal({
 
           const loadedFilaments = buildLoadedFilaments(printerStatusForWarning);
           const slotLabelByTray = new Map(loadedFilaments.map((f) => [f.globalTrayId, f.label]));
+          const remainByTray = new Map(loadedFilaments.map((f) => [f.globalTrayId, f.remain]));
+          // AMS Filament Backup makes a group of same-preset, same-colour trays
+          // interchangeable, so the print draws on their combined filament and
+          // the check must too. `null` is "we could not read the flag",
+          // which is not consent to pool — only a literal `true` groups.
+          const backupOn = printerStatusForWarning?.ams_auto_switch_filament === true;
+          const groupByTray = groupTraysForBackup(loadedFilaments, backupOn);
           const assignments = spoolAssignmentsByPrinter.get(printerId);
           const printerName = printers?.find((p) => p.id === printerId)?.name ?? `Printer ${printerId}`;
 
@@ -1308,17 +1335,56 @@ export function PrintModal({
             });
           }
 
+          // Demand pools per group. A demanded tray the status does not list
+          // (an external spool the AMS never reported, say) is its own group —
+          // there is nothing for the printer to swap it with.
+          const gramsByGroup = new Map<string, number>();
+          const groupsByKey = new Map<string, BackupGroup>();
           for (const [globalTrayId, requiredGrams] of gramsByTray) {
-            const spool = assignments.get(globalTrayId)?.spool;
-            if (!spool) continue;
+            const group =
+              groupByTray.get(globalTrayId) ??
+              privateBackupGroup(globalTrayId, slotLabelByTray.get(globalTrayId) ?? `Tray ${globalTrayId}`);
+            groupsByKey.set(group.key, group);
+            gramsByGroup.set(group.key, (gramsByGroup.get(group.key) ?? 0) + requiredGrams);
+          }
 
-            const remainingGrams = getRemainingWeight(spool.label_weight, spool.weight_used);
-            if (remainingGrams === null) continue;
+          for (const [groupKey, requiredGrams] of gramsByGroup) {
+            const group = groupsByKey.get(groupKey);
+            if (!group) continue;
+
+            // What the group has left: the registered spool's own weight
+            // wherever inventory knows the tray, and — only when backup is on
+            // and a pool is what we are weighing — a nominal reel scaled by the
+            // AMS fill percentage for a tray nobody registered. That fallback
+            // stays off with backup off, so the strict per-tray check is
+            // unchanged to the letter: a tray with no assigned spool is skipped
+            // there exactly as it always was.
+            let remainingGrams = 0;
+            let anyKnown = false;
+            for (const trayId of group.trayIds) {
+              const spool = assignments.get(trayId)?.spool;
+              const assigned = spool ? getRemainingWeight(spool.label_weight, spool.weight_used) : null;
+              if (assigned !== null) {
+                remainingGrams += assigned;
+                anyKnown = true;
+                continue;
+              }
+              if (!backupOn) continue;
+              const nominal = nominalGramsFromRemain(remainByTray.get(trayId));
+              if (nominal !== null) {
+                remainingGrams += nominal;
+                anyKnown = true;
+              }
+            }
+
+            // Nothing weighable in the whole group — same silence as before.
+            if (!anyKnown) continue;
             if (remainingGrams >= requiredGrams) continue;
 
             warningItems.push({
               printerName,
-              slotLabel: slotLabelByTray.get(globalTrayId) ?? `Tray ${globalTrayId}`,
+              slotLabel: group.labels[0] ?? `Tray ${group.trayIds[0]}`,
+              slotLabels: group.labels,
               requiredGrams,
               remainingGrams,
             });
