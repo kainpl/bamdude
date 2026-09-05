@@ -1769,20 +1769,19 @@ class BackgroundDispatchService:
 
                 self._raise_if_cancel_requested(job)
 
-                # Strict stagger check (optional, off by default): if enabled,
-                # refuse to start if no free slot, so Print Now respects the
-                # grid-load cap just like queue-driven dispatches.
+                # Strict stagger check (optional, off by default): refuse to
+                # start when this printer's group(s) have no free slot, so Print
+                # Now respects the grid-load cap just like queue-driven
+                # dispatches. Group-aware, and the printer's own slot does not
+                # count against it.
                 try:
                     from backend.app.api.routes.settings import get_setting
                     from backend.app.services.print_scheduler import scheduler as print_scheduler
 
                     async with async_session() as _sdb:
                         _strict_raw = await get_setting(_sdb, "stagger_strict_for_direct_dispatch")
-                        _stagger_enabled, _stagger_concurrent, _, _ = await print_scheduler._get_stagger_settings(_sdb)
-                    if (
-                        _stagger_enabled
-                        and (_strict_raw or "false").lower() == "true"
-                        and not print_scheduler._can_start_staggered(_stagger_concurrent)
+                    if (_strict_raw or "false").lower() == "true" and await print_scheduler.stagger_blocks(
+                        job.printer_id
                     ):
                         raise RuntimeError(
                             "Stagger cap reached — wait for a free slot or disable stagger_strict_for_direct_dispatch"
@@ -2383,20 +2382,19 @@ class BackgroundDispatchService:
 
                 self._raise_if_cancel_requested(job)
 
-                # Strict stagger check (optional, off by default): if enabled,
-                # refuse to start if no free slot, so Print Now respects the
-                # grid-load cap just like queue-driven dispatches.
+                # Strict stagger check (optional, off by default): refuse to
+                # start when this printer's group(s) have no free slot, so Print
+                # Now respects the grid-load cap just like queue-driven
+                # dispatches. Group-aware, and the printer's own slot does not
+                # count against it.
                 try:
                     from backend.app.api.routes.settings import get_setting
                     from backend.app.services.print_scheduler import scheduler as print_scheduler
 
                     async with async_session() as _sdb:
                         _strict_raw = await get_setting(_sdb, "stagger_strict_for_direct_dispatch")
-                        _stagger_enabled, _stagger_concurrent, _, _ = await print_scheduler._get_stagger_settings(_sdb)
-                    if (
-                        _stagger_enabled
-                        and (_strict_raw or "false").lower() == "true"
-                        and not print_scheduler._can_start_staggered(_stagger_concurrent)
+                    if (_strict_raw or "false").lower() == "true" and await print_scheduler.stagger_blocks(
+                        job.printer_id
                     ):
                         raise RuntimeError(
                             "Stagger cap reached — wait for a free slot or disable stagger_strict_for_direct_dispatch"

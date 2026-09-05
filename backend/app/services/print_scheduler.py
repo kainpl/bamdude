@@ -35,6 +35,7 @@ from backend.app.services.printer_manager import (
     supports_drying_while_printing,
 )
 from backend.app.services.smart_plug_manager import smart_plug_manager
+from backend.app.services.stagger_groups import GroupKey, StaggerGroupResolver, StaggerSplit
 from backend.app.utils.filament_types import canonical_filament_type
 from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 
@@ -436,6 +437,9 @@ class PrintScheduler:
             if stagger_enabled:
                 self._update_stagger_temps()
                 self._cleanup_stagger_slots(stagger_wait_bed)
+                stagger_resolver = await self._load_stagger_resolver(db)
+            else:
+                stagger_resolver = StaggerGroupResolver.global_only()
 
             # Log skip reasons once per queue check (not per item)
             skip_reasons: dict[str, int] = {}
@@ -577,8 +581,10 @@ class PrintScheduler:
                     continue
 
                 # Staggered start: check if we have a free slot
-                if stagger_enabled and not self._can_start_staggered(stagger_concurrent):
-                    stagger_reason = self._stagger_reason(stagger_wait_bed)
+                if stagger_enabled and not self._can_start_staggered(stagger_concurrent, printer_id, stagger_resolver):
+                    stagger_reason = self._stagger_reason(
+                        stagger_wait_bed, stagger_concurrent, printer_id, stagger_resolver
+                    )
                     if item.waiting_reason != stagger_reason:
                         item.waiting_reason = stagger_reason
                         await db.commit()
@@ -1319,26 +1325,31 @@ class PrintScheduler:
               "concurrent": int,
               "interval_minutes": int,
               "wait_for_bed": bool,
-              "slots": [
-                {"printer_id": int, "printer_name": str,
-                 "started_at": float, "temp_reached_at": float | None,
-                 "state": "heating" | "interval_wait",
-                 "seconds_to_free": int},
+              "split": {"by_tags": bool, "by_location": bool},
+              "groups": [
+                {"tag_id": int | None, "location_id": int | None,
+                 "label": str | None, "occupied": int, "free_slots": int,
+                 "next_free_in_seconds": int | None,
+                 "slots": [
+                   {"printer_id": int, "printer_name": str,
+                    "started_at": float, "temp_reached_at": float | None,
+                    "state": "heating" | "interval_wait",
+                    "seconds_to_free": int, "interval_seconds": int,
+                    "wildcard": bool},
+                   ...
+                 ]},
                 ...
               ],
-              "free_slots": int,
-              "next_free_in_seconds": int | None,
             }
         """
         enabled, concurrent, interval_seconds, wait_for_bed = await self._get_stagger_settings(db)
+        split = await StaggerSplit.from_settings(db) if enabled else StaggerSplit()
+        resolver = await StaggerGroupResolver.load(db, split) if enabled else StaggerGroupResolver.global_only()
         now = time.monotonic()
 
-        slots: list[dict] = []
-        times_to_free: list[int] = []
-        for slot in self._stagger_slots:
+        def _slot_info(slot: _StaggerSlot) -> dict:
             info = printer_manager.get_printer(slot.printer_id)
             name = info.name if info else f"Printer #{slot.printer_id}"
-
             if wait_for_bed:
                 if slot.temp_reached_at is None:
                     slot_state = "heating"
@@ -1349,31 +1360,42 @@ class PrintScheduler:
             else:
                 slot_state = "interval_wait"
                 seconds_to_free = max(0, int(slot.interval_seconds - (now - slot.started_at)))
+            return {
+                "printer_id": slot.printer_id,
+                "printer_name": name,
+                "started_at": slot.started_at,
+                "temp_reached_at": slot.temp_reached_at,
+                "state": slot_state,
+                "seconds_to_free": seconds_to_free,
+                "interval_seconds": slot.interval_seconds,
+                # In every group at once — its phase is unknown (spec decision 3).
+                "wildcard": resolver.is_wildcard(slot.printer_id),
+            }
 
-            slots.append(
+        groups: list[dict] = []
+        for key in sorted(resolver.universe, key=lambda k: (resolver.label(k) or "", k[0] or 0, k[1] or 0)):
+            members = [_slot_info(s) for s in self._stagger_slots if key in resolver.groups_for(s.printer_id)]
+            free_slots = max(0, concurrent - len(members))
+            times = [m["seconds_to_free"] for m in members]
+            groups.append(
                 {
-                    "printer_id": slot.printer_id,
-                    "printer_name": name,
-                    "started_at": slot.started_at,
-                    "temp_reached_at": slot.temp_reached_at,
-                    "state": slot_state,
-                    "seconds_to_free": seconds_to_free,
-                    "interval_seconds": slot.interval_seconds,
+                    "tag_id": key[0],
+                    "location_id": key[1],
+                    "label": resolver.label(key),
+                    "occupied": len(members),
+                    "free_slots": free_slots,
+                    "next_free_in_seconds": None if free_slots > 0 or not times else min(times),
+                    "slots": members,
                 }
             )
-            times_to_free.append(seconds_to_free)
-
-        free_slots = max(0, concurrent - len(self._stagger_slots))
-        next_free = None if free_slots > 0 or not times_to_free else min(times_to_free)
 
         return {
             "enabled": enabled,
             "concurrent": concurrent,
             "interval_minutes": interval_seconds // 60,
             "wait_for_bed": wait_for_bed,
-            "slots": slots,
-            "free_slots": free_slots,
-            "next_free_in_seconds": next_free,
+            "split": {"by_tags": resolver.tags_split, "by_location": resolver.location_split},
+            "groups": groups,
         }
 
     async def _get_stagger_settings(self, db: AsyncSession) -> tuple[bool, int, int, bool]:
@@ -1452,9 +1474,37 @@ class PrintScheduler:
                     active.append(slot)  # interval not elapsed
         self._stagger_slots = active
 
-    def _can_start_staggered(self, concurrent: int) -> bool:
-        """Check if there's a free stagger slot."""
-        return len(self._stagger_slots) < concurrent
+    async def _load_stagger_resolver(self, db: AsyncSession) -> StaggerGroupResolver:
+        """The groups printers heat in, as Settings describe them right now."""
+        return await StaggerGroupResolver.load(db, await StaggerSplit.from_settings(db))
+
+    def _occupied(self, group: GroupKey, resolver: StaggerGroupResolver, *, excluding: int | None) -> int:
+        return sum(
+            1 for s in self._stagger_slots if s.printer_id != excluding and group in resolver.groups_for(s.printer_id)
+        )
+
+    def _full_groups(self, concurrent: int, printer_id: int | None, resolver: StaggerGroupResolver) -> list[GroupKey]:
+        """The groups of ``printer_id`` (all groups when None) that have no free slot for it."""
+        groups = resolver.groups_for(printer_id) if printer_id is not None else resolver.universe
+        return [g for g in groups if self._occupied(g, resolver, excluding=printer_id) >= concurrent]
+
+    def _can_start_staggered(
+        self,
+        concurrent: int,
+        printer_id: int | None = None,
+        resolver: StaggerGroupResolver | None = None,
+    ) -> bool:
+        """A free slot in EVERY group this printer heats in.
+
+        With the global resolver and no printer this is ``len(slots) < concurrent``,
+        as it always was. A wildcard printer is in every group, so one full group
+        anywhere holds it back — its phase is unknown. A printer never blocks
+        itself: its own slot is excluded, because ``_register_stagger_start``
+        replaces it anyway and the strict-mode check runs after the slot was
+        taken (without this, cap 1 refused every direct print).
+        """
+        resolver = resolver or StaggerGroupResolver.global_only()
+        return not self._full_groups(concurrent, printer_id, resolver)
 
     def _register_stagger_start(self, printer_id: int, interval_seconds: int) -> None:
         """Register a printer as occupying a stagger slot."""
@@ -1491,6 +1541,7 @@ class PrintScheduler:
                 else 0
             )
             interval_seconds = per_printer_iv or stagger_interval
+            resolver = await self._load_stagger_resolver(db)
 
         while True:
             async with self._stagger_acquire_lock:
@@ -1500,23 +1551,50 @@ class PrintScheduler:
                 self._cleanup_stagger_slots(stagger_wait_bed)
                 if any(s.printer_id == printer_id for s in self._stagger_slots):
                     return  # already registered (queue pre-register, or prior loop)
-                if self._can_start_staggered(stagger_concurrent):
+                if self._can_start_staggered(stagger_concurrent, printer_id, resolver):
                     self._register_stagger_start(printer_id, interval_seconds)
                     return
             await asyncio.sleep(2.0)
 
-    def _stagger_reason(self, wait_for_bed: bool) -> str:
-        """Get waiting reason for stagger-blocked items."""
+    def _stagger_reason(
+        self,
+        wait_for_bed: bool,
+        concurrent: int | None = None,
+        printer_id: int | None = None,
+        resolver: StaggerGroupResolver | None = None,
+    ) -> str:
+        """Waiting reason for a stagger-blocked item — naming the full group(s) when there are groups."""
+        resolver = resolver or StaggerGroupResolver.global_only()
+        full = (
+            self._full_groups(concurrent, printer_id, resolver) if concurrent is not None else list(resolver.universe)
+        )
+        labels = sorted(label for label in (resolver.label(g) for g in full) if label)
+        where = f" [{', '.join(labels)}]" if labels else ""
         if wait_for_bed:
             heating = []
             for s in self._stagger_slots:
-                if s.temp_reached_at is None:
+                if s.temp_reached_at is None and any(g in resolver.groups_for(s.printer_id) for g in full):
                     info = printer_manager.get_printer(s.printer_id)
-                    name = info.name if info else f"#{s.printer_id}"
-                    heating.append(name)
+                    heating.append(info.name if info else f"#{s.printer_id}")
             if heating:
-                return f"Staggered start: waiting for {', '.join(heating)} to heat up"
-        return "Staggered start: waiting for interval"
+                return f"Staggered start{where}: waiting for {', '.join(heating)} to heat up"
+        return f"Staggered start{where}: waiting for interval"
+
+    async def stagger_blocks(self, printer_id: int) -> bool:
+        """Whether a direct dispatch to ``printer_id`` would exceed the cap right now.
+
+        For the strict-mode check in ``background_dispatch``: settings, resolver,
+        cleanup and count in one call, so the two duplicated blocks there need
+        no knowledge of groups.
+        """
+        async with async_session() as db:
+            enabled, concurrent, _, wait_for_bed = await self._get_stagger_settings(db)
+            if not enabled:
+                return False
+            resolver = await self._load_stagger_resolver(db)
+        self._update_stagger_temps()
+        self._cleanup_stagger_slots(wait_for_bed)
+        return not self._can_start_staggered(concurrent, printer_id, resolver)
 
     def _mark_printer_dispatched(
         self,

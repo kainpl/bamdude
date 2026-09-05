@@ -29,6 +29,18 @@ async def test_a_non_array_is_422(async_client, key, bad):
     assert (await async_client.put("/api/v1/settings/", json={key: bad})).status_code == 422
 
 
+async def test_the_state_route_reports_the_global_group_when_stagger_is_off(async_client):
+    """Off is one group, not none — the UI renders the same card either way, and
+    the flat ``slots``/``free_slots`` pair is gone from the top level."""
+    body = (await async_client.get("/api/v1/queue/stagger-state")).json()
+
+    assert body["enabled"] is False
+    assert body["split"] == {"by_tags": False, "by_location": False}
+    assert len(body["groups"]) == 1
+    assert body["groups"][0]["label"] is None
+    assert "slots" not in body and "free_slots" not in body
+
+
 async def test_a_tag_that_is_a_group_is_badged_and_cannot_be_deleted(async_client):
     tag = (await async_client.post("/api/v1/printer-tags", json={"name": "Фаза 1"})).json()
     await async_client.put("/api/v1/settings/", json={"stagger_group_tag_ids": f"[{tag['id']}]"})
