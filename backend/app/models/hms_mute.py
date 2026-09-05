@@ -6,12 +6,9 @@ the code leaves the stack, and the manager deletes the row. Nothing is muted by
 short code or by "no description" — see ``HMSErrorModal.filterKnownHMSErrors``
 for what hiding by absence of text cost once.
 
-⚠️ No migration on purpose. ``init_db`` runs ``Base.metadata.create_all`` on
-every startup, which creates this table on fresh and existing installs alike
-(SQLite and PostgreSQL), and there is nothing to seed. A numbered migration
-would have collided with the m157–m162 block a parallel branch was carrying at
-the time (2026-09-05), and under ``DEBUG=true`` the runner re-runs the highest
-number on every start — which would have hijacked that branch's iteration loop.
+Created by ``create_all`` on a fresh install and by m163 on an existing one;
+the two name their constraint and index the same so they describe one table.
+Nothing to seed — a mute is an operator's decision about one incident.
 """
 
 from datetime import datetime

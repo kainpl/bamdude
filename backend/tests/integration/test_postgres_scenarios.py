@@ -204,6 +204,38 @@ class TestFreshInstall:
         }
         assert wanted <= indexes, f"missing {sorted(wanted - indexes)}; the table has {sorted(indexes)}"
 
+    def test_the_hidden_hms_entries_table_has_its_unique_pair_and_index(self, result):
+        """m163's table, with the constraint and the index the model also
+        declares — ``create_all`` builds them on a fresh install and the
+        migration's ``CREATE INDEX IF NOT EXISTS`` must find that one already
+        there rather than trip over it; the constraint name is what makes a
+        second Hide of the same entry idempotent at the storage level.
+        """
+        assert "hms_muted_entries" in result["tables"]
+
+        psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
+        import asyncio
+
+        url = _pg_url()
+
+        async def go() -> tuple[list[str], list[str]]:
+            conn = await psycopg.connect(url, timeout=20)
+            try:
+                indexes = await conn.fetch(
+                    "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = $1",
+                    "hms_muted_entries",
+                )
+                constraints = await conn.fetch(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = 'public.hms_muted_entries'::regclass"
+                )
+                return sorted(r["indexname"] for r in indexes), sorted(r["conname"] for r in constraints)
+            finally:
+                await conn.close()
+
+        indexes, constraints = asyncio.run(go())
+        assert "ix_hms_muted_entries_printer_id" in indexes, indexes
+        assert "uq_hms_muted_printer_code" in constraints, constraints
+
 
 class TestSqliteMigration:
     """An existing SQLite install must carry its rows across."""
