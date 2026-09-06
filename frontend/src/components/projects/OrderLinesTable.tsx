@@ -356,6 +356,11 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                   </td>
                   <td className="p-2">
                     <ProgressBar value={line.units_printed} max={line.quantity} testId={`line-${line.id}-progress`} />
+                    {(line.prints_in_progress > 0 || line.prints_queued > 0) && (
+                      <p className="text-xs text-bambu-gray mt-1" data-testid={`line-${line.id}-live`}>
+                        {t('orders.lines.live', { printing: line.prints_in_progress, queued: line.prints_queued })}
+                      </p>
+                    )}
                   </td>
                   <td className="p-2">
                     <div className="flex items-center justify-end gap-0.5">

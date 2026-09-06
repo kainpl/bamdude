@@ -64,6 +64,32 @@ describe('OrderFigures', () => {
     expect(screen.getByText('123.5')).toBeInTheDocument();
     expect(screen.getByText(/other prints/i)).toBeInTheDocument();
   });
+  it('shows what is printing and queued right now', () => {
+    render(
+      <OrderFigures
+        figures={{
+          ordered: 10,
+          printed: 4,
+          complete: 3,
+          remaining: 6,
+          total_time_seconds: 5400,
+          total_filament_grams: 123.45,
+          total_cost: 12.5,
+          defective: 1,
+          from_stock_units: 0,
+          bankable_surplus: 0,
+          margin: -3,
+          progress: 0.4,
+          other_prints_count: 2,
+          all_printed: false,
+          prints_in_progress: 2,
+          prints_queued: 3,
+        }}
+      />,
+    );
+    expect(screen.getByText('Printing').nextSibling).toHaveTextContent('2');
+    expect(screen.getByText('Queued').nextSibling).toHaveTextContent('3');
+  });
   it('shows what came off the shelf beside the printed count, and only when there is any', () => {
     // Pass 8, Decision 5. `ordered` and `printed` stay literal — the customer
     // asked for ten and the farm printed four — and this is the third number.

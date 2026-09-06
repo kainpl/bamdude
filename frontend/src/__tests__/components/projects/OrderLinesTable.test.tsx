@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { useQuery } from '@tanstack/react-query';
 import { render } from '../../utils';
+import { strayZeroTextNodes } from '../../domHelpers';
 import { api } from '../../../api/client';
 import type { Order } from '../../../api/client';
 import { OrderLinesTable } from '../../../components/projects/OrderLinesTable';
@@ -229,6 +230,20 @@ describe('OrderLinesTable', () => {
     await waitFor(() => expect(screen.queryByTestId('line-10-save')).not.toBeInTheDocument());
     expect(patch).not.toHaveBeenCalled();
     expect(screen.getByTestId('line-10-edit')).toBeInTheDocument();
+  });
+
+  it('shows what is printing and queued under the bar, and nothing for a line with none', () => {
+    const withLive = {
+      ...order,
+      lines: order.lines.map((l) =>
+        l.id === 10 ? { ...l, prints_in_progress: 1, prints_queued: 1 } : { ...l, prints_in_progress: 0, prints_queued: 0 },
+      ),
+    } as unknown as Order;
+    render(<OrderLinesTable order={withLive} canEdit />);
+    expect(screen.getByTestId('line-10-live')).toHaveTextContent('printing 1 · queued 1');
+    const row11 = screen.getByTestId('line-11-expand').closest('tr') as HTMLElement;
+    expect(screen.queryByTestId('line-11-live')).not.toBeInTheDocument();
+    expect(strayZeroTextNodes(row11)).toHaveLength(0);
   });
 
   it('no longer offers a print of its own — the plan block owns that', async () => {

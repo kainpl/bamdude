@@ -55,6 +55,8 @@ export function OrderFigures({ figures }: { figures: ProjectFigures }) {
         )}
         <Tile label={t('orders.figures.complete')} value={figures.complete} />
         <Tile label={t('orders.figures.remaining')} value={figures.remaining} />
+        <Tile label={t('orders.figures.printing')} value={figures.prints_in_progress} />
+        <Tile label={t('orders.figures.queued')} value={figures.prints_queued} />
         <Tile label={t('orders.figures.time')} value={hoursMinutes(figures.total_time_seconds)} />
         <Tile label={t('orders.figures.grams')} value={figures.total_filament_grams.toFixed(1)} />
         <Tile label={t('orders.figures.cost')} value={formatMoney(figures.total_cost, settings?.currency)} />

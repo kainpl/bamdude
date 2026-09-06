@@ -9,12 +9,14 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ProjectsTabs } from '../../components/projects/ProjectsTabs';
 import { OrderCard } from '../../components/projects/OrderCard';
+import { OrdersTable } from '../../components/projects/OrdersTable';
 import { OrderModal } from '../../components/projects/OrderModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 
 const GROUP_STORAGE_KEY = 'projects.groupByCustomer';
+const VIEW_STORAGE_KEY = 'projects.view';
 
 /** How many placeholder cards the first fetch draws. Enough to fill the top of
  *  a normal window without pretending to know how many orders there are. */
@@ -100,6 +102,13 @@ export function OrdersPage() {
       return false;
     }
   });
+  const [view, setView] = useState<'cards' | 'table'>(() => {
+    try {
+      return localStorage.getItem(VIEW_STORAGE_KEY) === 'table' ? 'table' : 'cards';
+    } catch {
+      return 'cards';
+    }
+  });
   const [editing, setEditing] = useState<OrderListItem | null | 'new'>(null);
   const [deleting, setDeleting] = useState<OrderListItem | null>(null);
 
@@ -162,6 +171,15 @@ export function OrdersPage() {
     setGroupByCustomer(value);
     try {
       localStorage.setItem(GROUP_STORAGE_KEY, value ? '1' : '0');
+    } catch {
+      // Private browsing / storage disabled — the toggle still works this session.
+    }
+  };
+
+  const setViewPersisted = (value: 'cards' | 'table') => {
+    setView(value);
+    try {
+      localStorage.setItem(VIEW_STORAGE_KEY, value);
     } catch {
       // Private browsing / storage disabled — the toggle still works this session.
     }
@@ -240,6 +258,14 @@ export function OrdersPage() {
           />
           {t('orders.list.groupByCustomer')}
         </label>
+
+        <div role="group" aria-label={t('orders.list.viewCards')} className="flex rounded-lg border border-bambu-dark-tertiary overflow-hidden text-sm">
+          {(['cards', 'table'] as const).map((v) => (
+            <button key={v} type="button" aria-pressed={view === v} onClick={() => setViewPersisted(v)} className={`px-3 py-1.5 ${view === v ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'}`}>
+              {t(v === 'cards' ? 'orders.list.viewCards' : 'orders.list.viewTable')}
+            </button>
+          ))}
+        </div>
       </div>
 
       {!isLoading && visible.length === 0 && <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>}
@@ -251,10 +277,16 @@ export function OrdersPage() {
           {[...groups.entries()].map(([customerName, group]) => (
             <section key={customerName}>
               <h2 className="text-lg font-medium text-white mb-2">{customerName}</h2>
-              <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{group.map(renderCard)}</div>
+              {view === 'table' ? (
+                <OrdersTable orders={group} />
+              ) : (
+                <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{group.map(renderCard)}</div>
+              )}
             </section>
           ))}
         </div>
+      ) : view === 'table' ? (
+        <OrdersTable orders={visible} />
       ) : (
         <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{visible.map(renderCard)}</div>
       )}

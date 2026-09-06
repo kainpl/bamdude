@@ -197,6 +197,12 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
             </p>
           )}
 
+          {(order.prints_in_progress > 0 || order.prints_queued > 0) && (
+            <p className="text-xs text-bambu-gray" data-testid={`order-${order.id}-live`}>
+              {t('orders.card.live', { printing: order.prints_in_progress, queued: order.prints_queued })}
+            </p>
+          )}
+
           <p className="text-xs text-bambu-gray">{t('orders.card.lines', { count: order.lines_count })}</p>
         </div>
       </div>

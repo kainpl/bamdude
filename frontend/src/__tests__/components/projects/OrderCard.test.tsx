@@ -60,6 +60,13 @@ describe('OrderCard', () => {
     render(<OrderCard order={{ ...base, due_date: '2020-01-01' }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
     expect(screen.getByText(/overdue/i)).toBeInTheDocument();
   });
+  it('shows what is printing and queued right now, and nothing when both are zero', () => {
+    const { rerender } = render(<OrderCard order={{ ...base, prints_in_progress: 2, prints_queued: 3 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    expect(screen.getByTestId('order-1-live')).toHaveTextContent('printing 2 · queued 3');
+
+    rerender(<OrderCard order={{ ...base, prints_in_progress: 0, prints_queued: 0 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    expect(screen.queryByText(/printing/)).not.toBeInTheDocument();
+  });
 
   describe('actions menu', () => {
     /**
