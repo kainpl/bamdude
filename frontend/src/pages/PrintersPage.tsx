@@ -9227,17 +9227,24 @@ export function PrintersPage() {
       }));
     }
     if (sortBy === 'tag') {
-      return groupByTag(sortedPrinters, (printer) => printer.tags, t('printers.noTag')).map((g) => ({
+      const groups = groupByTag(sortedPrinters, (printer) => printer.tags, t('printers.noTag')).map((g) => ({
         key: `tag:${g.tagId ?? 'none'}`,
         label: g.label,
         color: g.color,
         locationId: undefined as number | null | undefined,
         items: g.items,
       }));
+      // `groupByTag` always orders its groups by name with «No tag» last, so
+      // the direction toggle has to be applied here — the location branch gets
+      // it for free, because its groups follow the item order that
+      // `sortedPrinters` has already reversed. Without this, descending would
+      // show headers A→Z with the printers inside them Z→A.
+      if (!sortAsc) groups.reverse();
+      return groups;
     }
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- t is stable; listing it re-groups on every i18n tick
-  }, [sortBy, sortedPrinters]);
+  }, [sortBy, sortedPrinters, sortAsc]);
 
   // ResizeObserver for the responsive toolbar: re-measure on layout changes
   // (window resize, printer list grows/shrinks, smart-plug power dropdown

@@ -22,7 +22,10 @@ const mockPrinters = [
     nozzle_diameter: 0.4,
     nozzle_type: 'hardened_steel',
     location: 'Workshop',
-    tags: [{ id: 1, name: 'Phase 1', color: '#f59e0b' }],
+    tags: [
+      { id: 1, name: 'Phase 1', color: '#f59e0b' },
+      { id: 2, name: 'Phase 2', color: null },
+    ],
     auto_archive: true,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
@@ -42,6 +45,25 @@ const mockPrinters = [
     auto_archive: true,
     created_at: '2024-01-02T00:00:00Z',
     updated_at: '2024-01-02T00:00:00Z',
+  },
+  {
+    // Wears ONE of the two tags. That is what makes "all of the selected tags"
+    // testable at all: with a single tag in the fixture, `every` and `some`
+    // narrow to exactly the same set and a regression between them passes.
+    id: 3,
+    name: 'A1 Spare',
+    ip_address: '192.168.1.102',
+    serial_number: '00X00A987654321',
+    access_code: '11112222',
+    model: 'A1',
+    enabled: true,
+    nozzle_diameter: 0.4,
+    nozzle_type: 'stainless_steel',
+    location: null,
+    tags: [{ id: 1, name: 'Phase 1', color: '#f59e0b' }],
+    auto_archive: true,
+    created_at: '2024-01-03T00:00:00Z',
+    updated_at: '2024-01-03T00:00:00Z',
   },
 ];
 
@@ -76,14 +98,19 @@ describe('PrintersPage', () => {
       }),
       http.get('/api/v1/printer-tags', () => {
         return HttpResponse.json({
-          tags: [{ id: 1, name: 'Phase 1', color: '#f59e0b', printer_count: 1, is_stagger_group: false }],
+          tags: [
+            { id: 1, name: 'Phase 1', color: '#f59e0b', printer_count: 2, is_stagger_group: false },
+            { id: 2, name: 'Phase 2', color: null, printer_count: 1, is_stagger_group: false },
+          ],
         });
       })
     );
-    // The page persists this one, so a test that ticks a box must not hand its
-    // selection to the next test. (Not `clear()` — the synthetic auth token
-    // from the render helper lives here too.)
+    // The page persists all three, so a test that ticks a box or picks a sort
+    // must not hand it to the next test. (Not `clear()` — the synthetic auth
+    // token from the render helper lives here too.)
     localStorage.removeItem('printerTagFilter');
+    localStorage.removeItem('printerSortBy');
+    localStorage.removeItem('printerSortAsc');
   });
 
   describe('rendering', () => {
@@ -129,12 +156,17 @@ describe('PrintersPage', () => {
     // into the compact overflow menus (inert, and therefore unreachable).
     // Report a desktop width so the filter row renders where a user on a
     // normal screen actually finds it.
-    const realClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+    //
+    // ⚠️ `clientWidth` is defined on `Element.prototype`, NOT on
+    // `HTMLElement.prototype` — stub the wrong one and the restore below finds
+    // no descriptor to put back, leaving a 1600 px prototype behind for every
+    // later test in the file.
+    const realClientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth')!;
     beforeEach(() => {
-      Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 1600 });
+      Object.defineProperty(Element.prototype, 'clientWidth', { configurable: true, get: () => 1600 });
     });
     afterEach(() => {
-      if (realClientWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', realClientWidth);
+      Object.defineProperty(Element.prototype, 'clientWidth', realClientWidth);
     });
 
     it('narrows to printers wearing every selected tag', async () => {
@@ -142,16 +174,38 @@ describe('PrintersPage', () => {
       await screen.findByText('X1 Carbon');
       await userEvent.click(await screen.findByRole('button', { name: /Tags/ }));
       await userEvent.click(screen.getByRole('checkbox', { name: 'Phase 1' }));
-      await waitFor(() => expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument());
+      // Both tags now: only the printer wearing BOTH survives. "A1 Spare"
+      // wears Phase 1 alone, so it is what tells `every` apart from `some`.
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Phase 2' }));
+      await waitFor(() => expect(screen.queryByText('A1 Spare')).not.toBeInTheDocument());
+      expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument();
       expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
     });
 
     it('finds a printer by its tag name in the search box', async () => {
       render(<PrintersPage />);
       await screen.findByText('X1 Carbon');
-      await userEvent.type(screen.getByPlaceholderText(/search/i), 'Phase 1');
+      await userEvent.type(screen.getByPlaceholderText(/search/i), 'Phase 2');
       await waitFor(() => expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument());
+      expect(screen.queryByText('A1 Spare')).not.toBeInTheDocument();
       expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+    });
+
+    it('reverses the tag group headers when the sort direction is descending', async () => {
+      // The location branch gets this for free — its groups follow the item
+      // order, which is already reversed. `groupByTag` orders its groups by
+      // name unconditionally, so descending has to reverse them at the page,
+      // or the headers read A→Z over printers listed Z→A.
+      localStorage.setItem('printerSortBy', 'tag');
+      localStorage.setItem('printerSortAsc', 'false');
+      render(<PrintersPage />);
+      // Twice, once per tag it wears — the duplication a per-tag view exists for.
+      expect(await screen.findAllByText('X1 Carbon')).toHaveLength(2);
+      await waitFor(() =>
+        expect(
+          screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent?.replace(/\(\d+\)$/, '')),
+        ).toEqual(['No tag', 'Phase 2', 'Phase 1']),
+      );
     });
   });
 
