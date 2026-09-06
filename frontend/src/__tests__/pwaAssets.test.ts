@@ -19,7 +19,7 @@ describe('PWA assets', () => {
     const icons = [
       ...manifest.icons.map((i: { src: string }) => i.src),
       ...manifest.shortcuts.flatMap((s: { icons: { src: string }[] }) => s.icons.map((i) => i.src)),
-      ...manifest.screenshots.map((s: { src: string }) => s.src),
+      ...(manifest.screenshots ?? []).map((s: { src: string }) => s.src),
     ];
     assertOnDisk(icons);
   });

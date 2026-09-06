@@ -16,22 +16,6 @@
     { "src": "/img/brand/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
     { "src": "/img/brand/mark-adaptive.svg", "sizes": "any", "type": "image/svg+xml" }
   ],
-  "screenshots": [
-    {
-      "src": "/img/screenshot-mobile.png",
-      "sizes": "1080x1920",
-      "type": "image/png",
-      "form_factor": "narrow",
-      "label": "BamDude on mobile"
-    },
-    {
-      "src": "/img/screenshot-desktop.png",
-      "sizes": "1920x1080",
-      "type": "image/png",
-      "form_factor": "wide",
-      "label": "BamDude on desktop"
-    }
-  ],
   "categories": ["utilities", "productivity"],
   "shortcuts": [
     {

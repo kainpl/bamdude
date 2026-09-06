@@ -68,7 +68,7 @@
 
 - **Order, customer and product pages are counted in one pass instead of one per row.** Working out what an order has printed means walking its lines, its products' parts and every print that named them — right for one order, wrong once per row of a list, and the orders list, a customer's page and every answer carrying a product each did it in a loop. It is one grouped query for the whole page now: measured on the developer's farm (5 orders, 876 archives) the orders list went from 44 database queries to 12 and a customer page from 42 to 10, both about a third faster — on a farm with hundreds of orders it is the difference between a page and a wait. The numbers are unchanged; the same accounting runs over the batched result, pinned against the old one field by field. A product's plate count also stops counting plates of files you have moved to the trash, so it matches the plate list beneath it.
 
-- **New identity.** The bar mark replaces the mascot everywhere: browser tab and PWA icons (adaptive SVG, maskable Android tile, Apple touch icon), the sidebar, sign-in and setup pages, the stream overlay, the Windows installer and the README. The PWA theme colour follows the brand ink. The full pack is published at [bamdude.top/brand](https://bamdude.top/brand/README.md).
+- **New identity.** The bar mark replaces the mascot everywhere: browser tab and PWA icons (adaptive SVG, maskable Android tile, Apple touch icon), the sidebar, sign-in and setup pages, the stream overlay, the Windows installer and the README. The PWA theme colour follows the brand ink. The full pack is published at [bamdude.top/brand](https://bamdude.top/brand/README.md). The two Bambuddy splash screenshots that the PWA install dialog used to show are gone.
 
 ### Fixed
 
