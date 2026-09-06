@@ -48,6 +48,7 @@ import {
   Cog,
   ExternalLink,
   Tag as TagIcon,
+  ClipboardList,
 } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type {
@@ -85,6 +86,7 @@ import { FileTagBadges } from '../components/FileTagBadges';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
 import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { getTagStyle, is3mf, isPrintable, isSliceable, isMultiPlate } from '../lib/fileTags';
+import { PlanFromFilesModal } from '../components/library/PlanFromFilesModal';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
@@ -1409,6 +1411,9 @@ export function FileManagerPage() {
   const [queueSequence, setQueueSequence] = useState<
     { files: LibraryFileListItem[]; fromSelection: boolean } | null
   >(null);
+  // The library wizard's file set — «Розрахувати». Just the ids: the modal
+  // re-fetches everything it needs about them from `parts-preview`.
+  const [planFiles, setPlanFiles] = useState<number[] | null>(null);
   const [sliceFile, setSliceFile] = useState<LibraryFileListItem | null>(null);
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
@@ -2085,6 +2090,14 @@ export function FileManagerPage() {
     if (!files) return [];
     return files.filter((f) => selectedFiles.includes(f.id) && isPrintable(f));
   }, [files, selectedFiles]);
+
+  // Files the library wizard can turn into an order — any selected .3mf
+  // container, sliced or not (`parts-preview` reads plate metadata off
+  // whichever ones already have it).
+  const selectedPlannable = useMemo(
+    () => (files ?? []).filter((f) => selectedFiles.includes(f.id) && is3mf(f)),
+    [files, selectedFiles],
+  );
 
   // Schedule one file from its own ⋮ menu — a run over one file, which leaves
   // the selection alone like Move and Tags do from there. Single-plate it looks
@@ -2990,6 +3003,16 @@ export function FileManagerPage() {
                         <span className="hidden sm:inline">{t('fileManager.schedulePrint')}</span>
                       </Button>
                     )}
+                    {selectedPlannable.length > 0 && hasPermission('projects:create') && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setPlanFiles(selectedPlannable.map((f) => f.id))}
+                      >
+                        <ClipboardList className="w-4 h-4 sm:mr-1" />
+                        <span className="hidden sm:inline">{t('fileManager.computeOrder')}</span>
+                      </Button>
+                    )}
                     <Button
                       variant="secondary"
                       size="sm"
@@ -3679,6 +3702,8 @@ export function FileManagerPage() {
           }}
         />
       )}
+
+      {planFiles && <PlanFromFilesModal fileIds={planFiles} onClose={() => setPlanFiles(null)} />}
 
       {modelCardFile && (
         <ModelCardModal
