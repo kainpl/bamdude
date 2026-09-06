@@ -34,6 +34,7 @@ from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
 from backend.app.schemas.auto_queue import AutoQueueItemCreate
+from backend.app.schemas.order_from_files import OrderFromFilesRequest
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
     PROJECT_STATUSES,
@@ -65,7 +66,7 @@ from backend.app.schemas.project import (
     StockMovedOut,
     TimelineEvent,
 )
-from backend.app.services import part_stock, product_delete
+from backend.app.services import order_from_files, part_stock, product_delete
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.order_metrics import (
     attribute,
@@ -359,6 +360,53 @@ async def create_project(
     for row, units in wanted:
         if units:
             await _reserve(db, row, units, current_user)
+    return await _response(db, project.id)
+
+
+@router.post("/from-files", response_model=ProjectResponse)
+async def create_project_from_files(
+    data: OrderFromFilesRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+):
+    """Product + order out of library files, with nobody authoring either
+    (spec 2026-09-06, Slice C). One request, one transaction: a refusal after
+    the product was created rolls the product back with it. Three shapes by
+    ``kind``: ``job`` (the wizard, targets per part), ``catalog`` (the wizard
+    over the one catalogue product linking every file), ``plates`` (the print
+    dialog, copies per plate)."""
+    try:
+        if data.kind == "job":
+            project = await order_from_files.create_job_order(
+                db, name=data.name, file_ids=data.file_ids, targets=data.targets
+            )
+        elif data.kind == "catalog":
+            project = await order_from_files.create_catalog_order(
+                db, name=data.name, product_id=data.product_id, file_ids=data.file_ids, quantity=data.quantity
+            )
+        else:
+            project = await order_from_files.create_plates_order(
+                db,
+                library_file_id=data.library_file_id,
+                plates=[(p.plate_index, p.copies) for p in data.plates],
+                name=data.name,
+            )
+    except order_from_files.FileNotFound:
+        raise HTTPException(status_code=404, detail="Library file not found")
+    except order_from_files.NotPlannable:
+        raise HTTPException(status_code=400, detail="Only 3MF files can be planned")
+    except order_from_files.NoTargets:
+        raise HTTPException(status_code=400, detail="No part has a target")
+    except order_from_files.UnknownPartKey as e:
+        raise HTTPException(status_code=400, detail=f"Unknown part key: {e.key}")
+    except order_from_files.PlateNotFound:
+        raise HTTPException(status_code=404, detail="Plate not found")
+    except order_from_files.DuplicatePlate:
+        raise HTTPException(status_code=400, detail="Duplicate plate")
+    except order_from_files.NotACatalogProduct:
+        raise HTTPException(status_code=400, detail="Product is not a catalogue product")
+    except order_from_files.FilesNotLinked:
+        raise HTTPException(status_code=400, detail="Every file must be linked to the product")
     return await _response(db, project.id)
 
 
