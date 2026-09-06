@@ -3436,7 +3436,22 @@ async def test_the_order_and_its_list_row_carry_the_live_counters(committing_cli
         json={"name": "Live", "lines": [{"product_id": catalog["product"].id, "quantity": 5}]},
     )
     pid, line_id = r.json()["id"], r.json()["lines"][0]["id"]
-    await _queue_rows(db_session, pid, catalog["file"].id, line_id)  # one row per queue tier, on the line
+    # one row per queue tier, on the line
+    item_id, _auto_id = await _queue_rows(db_session, pid, catalog["file"].id, line_id)
+    # A THIRD auto-queue row already handed to a printer item must not be
+    # double-counted with the printer-queue row it was handed to — pins the
+    # ``AutoQueueItem.assigned_to_item_id.is_(None)`` exclusion in
+    # ``order_metrics.py::_load_queued``.
+    db_session.add(
+        AutoQueueItem(
+            project_id=pid,
+            project_line_id=line_id,
+            library_file_id=catalog["file"].id,
+            status="pending",
+            assigned_to_item_id=item_id,
+        )
+    )
+    await db_session.commit()
     running = PrintArchive(
         project_id=pid,
         project_line_id=line_id,

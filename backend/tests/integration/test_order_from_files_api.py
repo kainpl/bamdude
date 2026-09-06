@@ -1,14 +1,18 @@
 """Orders from files (spec 2026-09-06): the parts preview and the three order shapes."""
 
 import pytest
+from httpx import AsyncClient
 from sqlalchemy import select
 
+from backend.app.core.auth import create_access_token
 from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate, product_files
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 
 pytestmark = pytest.mark.integration
+
+_PW = "Str0ng-Passw0rd!"
 
 P1S = {
     "sliced_for_model": "P1S",
@@ -108,6 +112,50 @@ async def test_preview_refuses_a_geometry_file_and_an_unknown_id(committing_clie
     assert r.status_code == 400 and r.json()["detail"] == "Only 3MF files can be planned"
     r = await committing_client.post("/api/v1/library/files/parts-preview", json={"file_ids": [999999]})
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_preview_honours_the_library_ownership_read_split(async_client: AsyncClient, db_session):
+    """The same gate ``order-candidates`` enforces (``test_order_candidates_api.py::
+    test_a_read_own_caller_only_sees_their_own_files_candidates``): a caller
+    holding only ``library:read_own`` must not enumerate another user's file
+    through this batch endpoint. 404 (not 403), so an id can't be probed;
+    ``read_all`` (the admin client) sees it."""
+    admin = {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
+    grp = await async_client.post(
+        "/api/v1/groups/",
+        headers=admin,
+        json={"name": "pf_read_own", "permissions": ["library:read_own", "projects:read"]},
+    )
+    assert grp.status_code == 201, grp.text
+    created = await async_client.post(
+        "/api/v1/users/",
+        headers=admin,
+        json={"username": "pf_own", "password": _PW, "role": "user", "group_ids": [grp.json()["id"]]},
+    )
+    assert created.status_code == 201, created.text
+    login = await async_client.post("/api/v1/auth/login", json={"username": "pf_own", "password": _PW})
+    assert login.status_code == 200, login.text
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    other = await async_client.post(
+        "/api/v1/users/",
+        headers=admin,
+        json={"username": "pf_other", "password": _PW, "role": "user", "group_ids": [grp.json()["id"]]},
+    )
+    assert other.status_code == 201, other.text
+    other_uid = other.json()["id"]
+
+    foreign = await _file(db_session, "foreign.gcode.3mf", P1S)
+    foreign.created_by_id = other_uid
+    await db_session.commit()
+
+    r = await async_client.post("/api/v1/library/files/parts-preview", json={"file_ids": [foreign.id]}, headers=headers)
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "Library file not found"
+
+    r = await async_client.post("/api/v1/library/files/parts-preview", json={"file_ids": [foreign.id]}, headers=admin)
+    assert r.status_code == 200, r.text
 
 
 @pytest.mark.asyncio

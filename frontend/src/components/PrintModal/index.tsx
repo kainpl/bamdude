@@ -926,12 +926,17 @@ export function PrintModal({
   // go stale against.
   const orderFiling = useMemo<OrderFilingValue>(() => {
     if (!orderFilingTouched) return proposedOrderFiling;
+    // A silent sequencer member inherits the leader's seeded answer, including
+    // «New order for this batch» — but the offer itself only exists for a
+    // batch (Decision 6). A single-plate member must never mint a one-print
+    // order just because it carried forward a choice made for the whole run.
+    if (chosenOrderFiling.kind === 'new' && !offerNewOrder) return proposedOrderFiling;
     if (chosenOrderFiling.kind !== 'order') return chosenOrderFiling;
     const stillOffered = orderCandidates?.some(
       (c) => c.project_id === chosenOrderFiling.projectId && c.project_line_id === chosenOrderFiling.projectLineId,
     );
     return stillOffered ? chosenOrderFiling : proposedOrderFiling;
-  }, [orderFilingTouched, chosenOrderFiling, orderCandidates, proposedOrderFiling]);
+  }, [orderFilingTouched, chosenOrderFiling, orderCandidates, proposedOrderFiling, offerNewOrder]);
 
   // While the answer is in flight there is nothing to file yet, and nothing to
   // show either.

@@ -23,6 +23,13 @@ import { server } from '../mocks/server';
 import { render } from '../utils';
 import { PrintModal } from '../../components/PrintModal';
 import { api, type Order, type OrderCandidate } from '../../api/client';
+import {
+  DEFAULT_AUTO_MODE_OPTIONS,
+  DEFAULT_PRINT_OPTIONS,
+  DEFAULT_SCHEDULE_OPTIONS,
+  DEFAULT_SWAP_MACROS_OPTIONS,
+  type PrintModalAnswer,
+} from '../../components/PrintModal/types';
 
 /**
  * Every path that queues from this dialog must mark the proposal stale.
@@ -940,5 +947,56 @@ describe('a batch proposes a new order for itself (Decision 6)', () => {
     render(<PrintModal mode="add-to-queue" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />);
     await screen.findByText('lamp.gcode.3mf');
     expect(screen.queryByRole('combobox', { name: 'Order' })).not.toBeInTheDocument();
+  });
+
+  it('a silent member that inherited "new" from the leader never mints a one-print order', async () => {
+    // ⚠️ A sequencer run led by a multi-plate file seeds every silent member
+    // with the leader's `orderFilingKind: 'new'` — but the offer itself only
+    // exists for a batch (Decision 6). A single-plate member must not honour
+    // an inherited answer the dialog would never have proposed for itself:
+    // that mints a real order for exactly one print, with no field ever shown.
+    server.use(http.get('/api/v1/library/files/:id/order-candidates', () => HttpResponse.json([])));
+    const created = vi.fn();
+    const queued = vi.fn();
+    server.use(
+      http.post('/api/v1/projects/from-files', async ({ request }) => {
+        created(await request.json());
+        return HttpResponse.json({ ...ORDER_STUB, id: 77 });
+      }),
+      http.post('/api/v1/queue/', async ({ request }) => {
+        queued(await request.json());
+        return HttpResponse.json({ id: 1, created_item_ids: [1] });
+      }),
+    );
+    const seededAnswer: PrintModalAnswer = {
+      selectedPrinterIds: [1], // X1 Carbon, the one mocked printer
+      dispatchMode: 'specific',
+      autoModeOptions: DEFAULT_AUTO_MODE_OPTIONS,
+      scheduleOptions: DEFAULT_SCHEDULE_OPTIONS,
+      quantity: 1,
+      printOptions: DEFAULT_PRINT_OPTIONS,
+      swapMacros: DEFAULT_SWAP_MACROS_OPTIONS,
+      selectedMacroIds: [],
+      orderFilingKind: 'new',
+    };
+    const user = userEvent.setup();
+
+    render(
+      <PrintModal
+        mode="add-to-queue"
+        libraryFileId={5}
+        archiveName="lamp.gcode.3mf"
+        seededAnswer={seededAnswer}
+        onClose={() => {}}
+      />,
+    );
+
+    const submit = await screen.findByRole('button', { name: /^add to queue$/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
+
+    await waitFor(() => expect(queued).toHaveBeenCalled());
+    expect(created).not.toHaveBeenCalled();
+    expect(queued.mock.calls[0][0].project_id).toBeUndefined();
   });
 });

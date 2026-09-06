@@ -25,7 +25,6 @@ from sqlalchemy.orm import selectinload
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import (
     RequireCameraStreamToken,
-    RequirePermission,
     require_ownership_permission,
     require_permission,
 )
@@ -4536,13 +4535,28 @@ async def get_library_file_order_candidates(
 async def preview_parts_of_files(
     data: PartsPreviewRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.LIBRARY_READ, Permission.PROJECTS_READ),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
+    _: User | None = Depends(require_permission(Permission.PROJECTS_READ)),
 ):
     """What the selected files make, unified by part — step 1 of the library
     wizard (spec 2026-09-06, Slice C). Read-only. ``PROJECTS_READ`` beside the
-    library read because the answer names a catalogue product."""
+    library read because the answer names a catalogue product.
+
+    Same ownership-scoped read split as ``/files/{file_id}/order-candidates``:
+    a ``read_own`` caller must not enumerate another user's files through this
+    batch endpoint, so each loaded file is re-checked with
+    ``_library_file_visible`` and a rejected one is a 404, exactly as a
+    single-file route would answer."""
+    user, can_read_all = auth_result
     try:
-        preview = await order_from_files.parts_preview(db, data.file_ids)
+        preview = await order_from_files.parts_preview(
+            db, data.file_ids, visible=lambda f: _library_file_visible(f, user, can_read_all)
+        )
     except order_from_files.FileNotFound:
         raise HTTPException(status_code=404, detail="Library file not found")
     except order_from_files.NotPlannable:

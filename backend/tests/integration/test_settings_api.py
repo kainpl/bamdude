@@ -660,6 +660,7 @@ class TestSettingsAPI:
         assert result["ha_url"] == "http://192.168.1.100:8123"
         assert result["ha_token"] == "my-long-lived-token"
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_auto_order_for_batches_defaults_on_and_persists(self, async_client: AsyncClient):
         assert (await async_client.get("/api/v1/settings/")).json()["auto_order_for_batches"] is True

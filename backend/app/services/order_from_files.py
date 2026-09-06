@@ -8,6 +8,7 @@ translates.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import reduce
 from math import gcd
@@ -105,24 +106,38 @@ def file_stem(filename: str) -> str:
     return stem
 
 
-async def _active_files(db: AsyncSession, file_ids: list[int]) -> list[LibraryFile]:
+async def _active_files(
+    db: AsyncSession, file_ids: list[int], *, visible: Callable[[LibraryFile], bool] | None = None
+) -> list[LibraryFile]:
     """The files in the ORDER asked for; a missing (or trashed) id is a refusal,
-    not a silently shorter answer."""
+    not a silently shorter answer.
+
+    ``visible`` is the ownership-scoped read split, when a caller needs it: a
+    loaded file the predicate rejects is treated exactly like a missing one —
+    ``FileNotFound``, never a quieter refusal that would tell an unauthorised
+    caller the row exists."""
     rows = {f.id: f for f in (await db.execute(LibraryFile.active().where(LibraryFile.id.in_(file_ids)))).scalars()}
     out: list[LibraryFile] = []
     for file_id in dict.fromkeys(file_ids):
-        if file_id not in rows:
+        f = rows.get(file_id)
+        if f is None or (visible is not None and not visible(f)):
             raise FileNotFound(file_id)
-        out.append(rows[file_id])
+        out.append(f)
     return out
 
 
-async def parts_preview(db: AsyncSession, file_ids: list[int]) -> PartsPreview:
+async def parts_preview(
+    db: AsyncSession, file_ids: list[int], *, visible: Callable[[LibraryFile], bool] | None = None
+) -> PartsPreview:
     """Read-only: what the selected files make, unified by canonical part key
     (the SAME canonicalisation the sync seeds parts with, so a key sent back to
     ``create_job_order`` matches the part the sync will create), and the one
-    catalogue product that links every one of them, if exactly one does."""
-    files = await _active_files(db, file_ids)
+    catalogue product that links every one of them, if exactly one does.
+
+    ``visible`` is the caller's ownership-scoped predicate (see
+    ``routes/library.py::_library_file_visible``) — a file it rejects is a 404
+    ``FileNotFound``, the same as a missing id."""
+    files = await _active_files(db, file_ids, visible=visible)
     for f in files:
         if not is_plan_eligible(f.file_type):
             raise NotPlannable(f.id)
