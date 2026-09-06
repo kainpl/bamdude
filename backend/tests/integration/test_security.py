@@ -872,7 +872,17 @@ class TestCspNonceAndPwaRoutes:
         assert len(set(nonces)) == len(nonces), f"nonces should be unique per request: {nonces}"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("path", ["/manifest.json", "/sw.js", "/sw-register.js"])
+    @pytest.mark.parametrize("path", ["/manifest.json", "/sw.js", "/sw-register.js", "/favicon.ico"])
     async def test_pwa_routes_accept_head(self, async_client: AsyncClient, path: str):
         resp = await async_client.head(path)
         assert resp.status_code != 405, f"HEAD {path} should not be 405"
+
+    @pytest.mark.asyncio
+    async def test_favicon_is_an_ico_or_a_404(self, async_client: AsyncClient):
+        # Clients that ignore <link rel="icon"> (bookmark bars, feed readers)
+        # ask the root; before this route the SPA catch-all answered with HTML.
+        resp = await async_client.get("/favicon.ico")
+        assert resp.status_code in (200, 404)
+        if resp.status_code == 200:
+            assert resp.headers["content-type"].startswith("image/")
+        assert "text/html" not in resp.headers.get("content-type", "")

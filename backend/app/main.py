@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, or_, select, text
 
@@ -9925,6 +9925,19 @@ async def serve_manifest():
     if manifest_file.exists():
         return FileResponse(manifest_file, media_type="application/manifest+json")
     return {"error": "Manifest not found"}
+
+
+@app.api_route("/favicon.ico", methods=["GET", "HEAD"])
+async def serve_favicon():
+    """Root favicon for clients that never read ``<link rel="icon">``.
+
+    Without this the SPA catch-all returned ``index.html`` for it. The file is
+    the pack's multi-size ``.ico`` shipped under ``static/img/brand/``.
+    """
+    ico = app_settings.static_dir / "img" / "brand" / "favicon.ico"
+    if ico.exists():
+        return FileResponse(ico, media_type="image/x-icon")
+    return Response(status_code=404)
 
 
 @app.api_route("/sw.js", methods=["GET", "HEAD"])
