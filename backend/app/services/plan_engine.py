@@ -606,6 +606,12 @@ async def queued_yield_by_line(
         # Two products of the same order each claiming a line of their own is as
         # unanswerable as two lines of one product; both end here, counting
         # nowhere.
+        # Decision 7 in the engine's own terms: the engine holds recipes, not
+        # parts, and "this line counts a part of the plate" is a non-empty
+        # counted yield. Same narrowing the writers apply; same fallback.
+        counting = {lid: r for lid, r in hits.items() if line_yield(r, counted_by_line.get(lid) or set())}
+        if counting:
+            hits = counting
         if len(hits) != 1:
             continue
         ((line_id, recipe),) = hits.items()

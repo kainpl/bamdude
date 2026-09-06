@@ -25,6 +25,7 @@ from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.schemas.print_options_preference import PrintOptionsPreferenceData
 from backend.app.services import part_stock, plan_engine
+from backend.app.services.order_filing import order_candidates, resolve_line_id
 from backend.app.services.order_metrics import attribute, load_order_context
 from backend.app.services.plan_engine import queued_yield_by_line
 from backend.app.services.product_composition import recipes_for_product
@@ -3319,3 +3320,110 @@ async def test_an_adhoc_product_still_ordered_elsewhere_survives(committing_clie
     await db_session.commit()
     await committing_client.delete(f"/api/v1/projects/{project.id}")
     assert (await db_session.execute(select(Product).where(Product.id == adhoc.id))).scalar_one_or_none() is not None
+
+
+async def _two_plate_products(db):
+    """One MULTI file; plate 1 → product A (bracket ×2, lid ×1), plate 2 → product B (clip ×10)."""
+    f = LibraryFile(
+        filename="m.gcode.3mf",
+        file_path="m",
+        file_size=1,
+        file_type="gcode",
+        file_metadata={
+            "plates": [
+                {
+                    "index": 1,
+                    "printable_objects": {"1": "bracket", "2": "bracket_2", "3": "lid"},
+                    "print_time_seconds": 10,
+                    "filaments": [{"slot_id": 1, "type": "PETG"}],
+                },
+                {
+                    "index": 2,
+                    "printable_objects": {str(i): f"clip_{i}" for i in range(1, 11)},
+                    "print_time_seconds": 20,
+                    "filaments": [{"slot_id": 1, "type": "PETG"}],
+                },
+            ]
+        },
+    )
+    db.add(f)
+    await db.flush()
+    products = []
+    for idx in (1, 2):
+        p = Product(
+            name=f"m · plate {idx}", origin=ProductOrigin.ADHOC_PLATE.value, origin_file_id=f.id, origin_plate_index=idx
+        )
+        db.add(p)
+        await db.flush()
+        products.append(p)
+    a, b = products
+    db.add_all(
+        [
+            ProductPart(
+                product_id=a.id, kind="printed", name="bracket", name_key="bracket", qty_per_unit=2, aliases=["bracket"]
+            ),
+            ProductPart(product_id=a.id, kind="printed", name="lid", name_key="lid", qty_per_unit=1, aliases=["lid"]),
+            ProductPart(
+                product_id=a.id, kind="printed", name="clip", name_key="clip", qty_per_unit=0, aliases=["clip"]
+            ),
+            ProductPart(
+                product_id=b.id, kind="printed", name="bracket", name_key="bracket", qty_per_unit=0, aliases=["bracket"]
+            ),
+            ProductPart(product_id=b.id, kind="printed", name="lid", name_key="lid", qty_per_unit=0, aliases=["lid"]),
+            ProductPart(
+                product_id=b.id, kind="printed", name="clip", name_key="clip", qty_per_unit=10, aliases=["clip"]
+            ),
+        ]
+    )
+    for p in products:
+        for idx in (1, 2):
+            db.add(ProductPlate(product_id=p.id, library_file_id=f.id, plate_index=idx))
+    project = Project(name="m ×5")
+    project.lines.append(ProjectLine(product_id=a.id, quantity=5, sort_order=0))
+    project.lines.append(ProjectLine(product_id=b.id, quantity=3, sort_order=1))
+    db.add(project)
+    await db.commit()
+    await db.refresh(project, ["lines"])
+    return f, project, a, b
+
+
+@pytest.mark.asyncio
+async def test_each_plate_files_under_its_own_plate_product_line(db_session):
+    f, project, a, b = await _two_plate_products(db_session)
+    line_a = next(line.id for line in project.lines if line.product_id == a.id)
+    line_b = next(line.id for line in project.lines if line.product_id == b.id)
+    assert await resolve_line_id(db_session, project_id=project.id, library_file_id=f.id, plate_index=1) == line_a
+    assert await resolve_line_id(db_session, project_id=project.id, library_file_id=f.id, plate_index=2) == line_b
+    plate1 = await order_candidates(db_session, f, 1)
+    assert [c.project_line_id for c in plate1] == [line_a]
+
+
+@pytest.mark.asyncio
+async def test_the_plan_counts_an_unfiled_plate_product_row(db_session):
+    f, project, a, b = await _two_plate_products(db_session)
+    queue = PrinterQueue(id=1, printer_id=1)
+    db_session.add(queue)
+    await db_session.flush()
+    db_session.add(
+        PrintQueueItem(
+            queue_id=1, project_id=project.id, project_line_id=None, library_file_id=f.id, plate_id=2, status="pending"
+        )
+    )
+    await db_session.commit()
+    plan = await plan_engine.plan_for_order(db_session, project.id)
+    line_b_id = next(ln.id for ln in project.lines if ln.product_id == b.id)
+    line_b = next(lp for lp in plan.lines if lp.line_id == line_b_id)
+    clip = next(
+        p.id
+        for p in (
+            await db_session.execute(
+                select(ProductPart).where(ProductPart.product_id == b.id, ProductPart.name_key == "clip")
+            )
+        ).scalars()
+    )
+    # ``LinePlan`` has no ``queued`` field (grepped — none exists); the only
+    # attribute built from the same map is ``outstanding_before``, net of it.
+    # Line B needs 10 (qty_per_unit) × 3 (quantity) = 30 clips with nothing
+    # printed or in progress; landing at 20 rather than 30 is the unfiled
+    # plate-2 row's 10 clips being counted through the fixed implicit branch.
+    assert line_b.outstanding_before.get(clip) == 20

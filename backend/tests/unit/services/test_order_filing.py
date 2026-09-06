@@ -12,14 +12,19 @@ engine's implicit branch) are exercised in ``test_order_candidates_api.py`` and
 ``test_orders_api.py``, where the rows exist.
 """
 
+from backend.app.models.product import ProductPart
 from backend.app.models.project_line import ProjectLine
-from backend.app.services.order_filing import accepting_lines, line_for_plate
+from backend.app.services.order_filing import accepting_lines, line_for_plate, lines_counting_plate
 
 
 def _line(lid, product_id, material=None, sort=0):
     line = ProjectLine(project_id=1, product_id=product_id, quantity=1, material=material, sort_order=sort)
     line.id = lid
     return line
+
+
+def _part(product_id, key, qty):
+    return ProductPart(product_id=product_id, kind="printed", name=key, name_key=key, qty_per_unit=qty, aliases=[key])
 
 
 def test_the_only_line_of_that_product_takes_the_plate():
@@ -100,3 +105,19 @@ def test_accepting_lines_is_ordered_and_filtered_like_the_resolver():
     assert accepting_lines([petg, pla, other_product], 10, {"PETG"}) == [petg]
     assert line_for_plate([petg, pla, other_product], 10, {"PETG"}) is petg
     assert accepting_lines([], 10, {"PETG"}) == []
+
+
+def test_narrowing_keeps_the_lines_whose_product_counts_a_part_of_the_plate():
+    """Decision 7: two plate products of one file both hold every plate; only
+    the one that COUNTS this plate's parts is the line the print is for."""
+    plate1_line, plate2_line = _line(1, 10), _line(2, 20, sort=1)
+    parts = {10: [_part(10, "bracket", 2), _part(10, "clip", 0)], 20: [_part(20, "bracket", 0), _part(20, "clip", 10)]}
+    assert lines_counting_plate([plate1_line, plate2_line], parts, {"bracket"}) == [plate1_line]
+    assert lines_counting_plate([plate1_line, plate2_line], parts, {"clip"}) == [plate2_line]
+
+
+def test_an_empty_narrowing_keeps_todays_answer():
+    a, b = _line(1, 10), _line(2, 20, sort=1)
+    parts = {10: [_part(10, "x", 0)], 20: [_part(20, "x", 0)]}
+    assert lines_counting_plate([a, b], parts, {"x"}) == [a, b]
+    assert lines_counting_plate([a, b], parts, set()) == [a, b]

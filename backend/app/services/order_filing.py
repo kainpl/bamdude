@@ -30,6 +30,7 @@ here — the writers call :func:`resolve_line_id` only where the line is absent.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -38,12 +39,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.models.library import LibraryFile
-from backend.app.models.product import Product, ProductPlate
+from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.schemas.project import PROJECT_PRIORITIES
 from backend.app.services.order_metrics import line_accepts_materials
-from backend.app.services.product_composition import PlateRecipe, plate_materials, recipe_for
+from backend.app.services.product_composition import (
+    PlateRecipe,
+    part_index,
+    plate_key_counts,
+    plate_materials,
+    recipe_for,
+)
 
 #: An order in one of these takes no more work; every other status is open. The
 #: two words are spelled here rather than derived from
@@ -130,6 +137,32 @@ def line_for_plate(lines: list[ProjectLine], product_id: int, materials: set[str
     """
     accepting = accepting_lines(lines, product_id, materials)
     return accepting[0] if len(accepting) == 1 else None
+
+
+def lines_counting_plate(
+    lines: list[ProjectLine], parts_by_product: Mapping[int, Iterable[ProductPart]], plate_keys: Iterable[str]
+) -> list[ProjectLine]:
+    """The lines whose product COUNTS at least one part of this plate (spec
+    2026-09-06, Decision 7) — or every line, when none does.
+
+    Two ``adhoc_plate`` products of one file both hold every plate of it in
+    ``product_plates``, so a print of plate 1 sees two candidate lines and, by
+    the "several survivors is never a pick" rule, files under nothing. The
+    product that measures plate 1's parts is the one the print is for; the
+    other zeroes them. A catalogue plate whose parts are all zero narrows to
+    nothing, and then today's answer stands.
+    """
+    keys = set(plate_keys)
+    if not keys:
+        return list(lines)
+    indexes = {pid: part_index(parts) for pid, parts in parts_by_product.items()}
+
+    def counts(product_id: int) -> bool:
+        idx = indexes.get(product_id, {})
+        return any((part := idx.get(key)) is not None and part.qty_per_unit > 0 for key in keys)
+
+    narrowed = [line for line in lines if counts(line.product_id)]
+    return narrowed or list(lines)
 
 
 def _prints_for_plate(recipe: PlateRecipe, outstanding: dict[int, int]) -> int:
@@ -284,6 +317,17 @@ async def order_candidates(db: AsyncSession, file: LibraryFile, plate_index: int
     if not matched:
         return []
 
+    # Decision 7, the same narrowing the writers apply: a line whose product
+    # zeroes every part of this plate is not offered, unless no line counts it.
+    keys = plate_key_counts(file.file_metadata, index)[0].keys()
+    kept = {
+        line.id
+        for line in lines_counting_plate(
+            [line for _project, line, _pid in matched], {pid: list(p.parts or []) for pid, p in products.items()}, keys
+        )
+    }
+    matched = [m for m in matched if m[1].id in kept]
+
     plans = await plan_for_orders(db, sorted({project.id for project, _line, _pid in matched}))
     outstanding_by_line: dict[int, dict[int, int]] = {
         lp.line_id: lp.outstanding_before for plan in plans.values() for lp in plan.lines
@@ -338,6 +382,7 @@ class LineFiler:
     lines: list[ProjectLine]
     file: LibraryFile | None
     plates: list[ProductPlate]
+    parts_by_product: dict[int, list[ProductPart]]
 
     def for_plate(self, plate_index: int | None) -> int | None:
         """The unambiguous line for this plate index, or ``None``.
@@ -355,11 +400,18 @@ class LineFiler:
         index = plate_index or 0
         materials = plate_materials(self.file.file_metadata, index)
         ordered = sorted(self.lines, key=lambda line: (line.sort_order, line.id))
-        resolved: set[int] = set()
+        resolved: dict[int, ProjectLine] = {}
         for product_id in _plates_by_product(self.plates, index):
             line = line_for_plate(ordered, product_id, materials)
             if line is not None:
-                resolved.add(line.id)
+                resolved[line.id] = line
+        if len(resolved) > 1:
+            # Two PRODUCTS each resolved a line. Before guessing nothing, ask
+            # which of them counts this plate's parts (Decision 7).
+            keys = plate_key_counts(self.file.file_metadata, index)[0].keys()
+            resolved = {
+                line.id: line for line in lines_counting_plate(list(resolved.values()), self.parts_by_product, keys)
+            }
         return next(iter(resolved)) if len(resolved) == 1 else None
 
 
@@ -379,14 +431,14 @@ async def line_filer(
     matches; a mismatch re-reads rather than filing against the wrong file.
     """
     if library_file_id is None:
-        return LineFiler(lines=[], file=None, plates=[])
+        return LineFiler(lines=[], file=None, plates=[], parts_by_product={})
     lines = list((await db.execute(select(ProjectLine).where(ProjectLine.project_id == project_id))).scalars().all())
     if not lines:
-        return LineFiler(lines=[], file=None, plates=[])
+        return LineFiler(lines=[], file=None, plates=[], parts_by_product={})
     if file is None or file.id != library_file_id:
         file = (await db.execute(select(LibraryFile).where(LibraryFile.id == library_file_id))).scalar_one_or_none()
     if file is None:
-        return LineFiler(lines=lines, file=None, plates=[])
+        return LineFiler(lines=lines, file=None, plates=[], parts_by_product={})
     plates = list(
         (
             await db.execute(
@@ -399,7 +451,12 @@ async def line_filer(
         .scalars()
         .all()
     )
-    return LineFiler(lines=lines, file=file, plates=plates)
+    parts_by_product: dict[int, list[ProductPart]] = {}
+    for part in (
+        await db.execute(select(ProductPart).where(ProductPart.product_id.in_({line.product_id for line in lines})))
+    ).scalars():
+        parts_by_product.setdefault(part.product_id, []).append(part)
+    return LineFiler(lines=lines, file=file, plates=plates, parts_by_product=parts_by_product)
 
 
 async def resolve_line_id(
@@ -432,6 +489,7 @@ __all__ = [
     "accepting_lines",
     "line_filer",
     "line_for_plate",
+    "lines_counting_plate",
     "order_candidates",
     "resolve_line_id",
 ]
