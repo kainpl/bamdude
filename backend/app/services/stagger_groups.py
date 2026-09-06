@@ -165,6 +165,7 @@ class StaggerGroupResolver:
         *,
         tags_by_printer: dict[int, frozenset[int]],
         tag_names: dict[int, str],
+        tag_colors: dict[int, str | None] | None = None,
         location_by_printer: dict[int, int | None],
         parent_by_location: dict[int, int | None],
         location_names: dict[int, str],
@@ -181,6 +182,7 @@ class StaggerGroupResolver:
         )
         self._tags_by_printer = tags_by_printer
         self._tag_names = tag_names
+        self._tag_colors = tag_colors or {}
         self._location_by_printer = location_by_printer
         self._parent_by_location = parent_by_location
         self._location_names = location_names
@@ -204,6 +206,7 @@ class StaggerGroupResolver:
 
         tags_by_printer: dict[int, set[int]] = {}
         tag_names: dict[int, str] = {}
+        tag_colors: dict[int, str | None] = {}
         location_by_printer: dict[int, int | None] = {}
         parent_by_location: dict[int, int | None] = {}
         location_names: dict[int, str] = {}
@@ -211,10 +214,13 @@ class StaggerGroupResolver:
         if split.tags_active:
             from backend.app.models.printer_tag import PrinterTag, PrinterTagLink
 
-            for tag_id, name in (
-                await db.execute(select(PrinterTag.id, PrinterTag.name).where(PrinterTag.id.in_(split.tag_ids)))
+            for tag_id, name, color in (
+                await db.execute(
+                    select(PrinterTag.id, PrinterTag.name, PrinterTag.color).where(PrinterTag.id.in_(split.tag_ids))
+                )
             ).all():
                 tag_names[tag_id] = name
+                tag_colors[tag_id] = color
             for printer_id, tag_id in (
                 await db.execute(
                     select(PrinterTagLink.printer_id, PrinterTagLink.tag_id).where(
@@ -240,6 +246,7 @@ class StaggerGroupResolver:
             split,
             tags_by_printer={k: frozenset(v) for k, v in tags_by_printer.items()},
             tag_names=tag_names,
+            tag_colors=tag_colors,
             location_by_printer=location_by_printer,
             parent_by_location=parent_by_location,
             location_names=location_names,
@@ -309,12 +316,21 @@ class StaggerGroupResolver:
         present = [p for p in parts if p]
         return " · ".join(present) if present else None
 
+    def color_for(self, key: GroupKey) -> str | None:
+        """The colour of the group's tag, for the banner. A location-only group has none."""
+        return self._tag_colors.get(key[0]) if key[0] is not None else None
+
     def cap_for(self, key: GroupKey, global_cap: int) -> int:
         """The cap this group starts under: the global number, lowered by an override on its tag or its location.
 
         An override never raises the cap above the global one, and an override
         on an id that is not a picked, existing group is simply not asked for —
         the universe already dropped that id.
+
+        Not floored at 1: the snapshot asks for the global group with
+        ``concurrent=0`` while stagger is off, and a floor would answer with a
+        free slot nobody has. The enabled path already guarantees a global cap
+        and every override are at least 1.
         """
         tag_id, location_id = key
         caps = [global_cap]
@@ -322,4 +338,4 @@ class StaggerGroupResolver:
             caps.append(self.split.tag_limits[tag_id])
         if location_id is not None and location_id in self._location_ids and location_id in self.split.location_limits:
             caps.append(self.split.location_limits[location_id])
-        return max(1, min(caps))
+        return min(caps)

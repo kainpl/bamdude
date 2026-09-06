@@ -45,11 +45,11 @@ async def test_create_list_and_rename(async_client):
     tag = await _tag(async_client)
 
     listed = (await async_client.get("/api/v1/printer-tags")).json()["tags"]
-    assert listed == [{"id": tag["id"], "name": "Фаза 1", "printer_count": 0, "is_stagger_group": False}]
+    assert listed == [{"id": tag["id"], "name": "Фаза 1", "color": None, "printer_count": 0, "is_stagger_group": False}]
 
     renamed = await async_client.patch(f"/api/v1/printer-tags/{tag['id']}", json={"name": " Фаза A "})
     assert renamed.status_code == 200
-    assert renamed.json() == {"id": tag["id"], "name": "Фаза A"}
+    assert renamed.json() == {"id": tag["id"], "name": "Фаза A", "color": None}
 
 
 async def test_a_duplicate_differing_only_in_case_or_spacing_is_409(async_client):
@@ -73,7 +73,7 @@ async def test_a_printer_carries_its_tags_and_is_written_by_ids(async_client, db
     await db_session.commit()
 
     listed = (await async_client.get("/api/v1/printers/")).json()
-    assert listed[0]["tags"] == [{"id": tag["id"], "name": "Фаза 1"}]
+    assert listed[0]["tags"] == [{"id": tag["id"], "name": "Фаза 1", "color": None}]
     assert listed[0]["tag_ids"] == [tag["id"]]
 
     other = await _tag(async_client, "Фаза 2")
@@ -103,7 +103,7 @@ async def test_a_printer_can_be_created_with_tags(async_client, _connection_prob
     )
 
     assert rsp.status_code == 200, rsp.text
-    assert rsp.json()["tags"] == [{"id": tag["id"], "name": "Фаза 1"}]
+    assert rsp.json()["tags"] == [{"id": tag["id"], "name": "Фаза 1", "color": None}]
     assert (await async_client.get("/api/v1/printer-tags")).json()["tags"][0]["printer_count"] == 1
 
 
@@ -202,3 +202,38 @@ async def test_an_archived_printer_is_not_counted(async_client, db_session):
 async def test_a_missing_tag_is_404(async_client):
     assert (await async_client.patch("/api/v1/printer-tags/42", json={"name": "x"})).status_code == 404
     assert (await async_client.delete("/api/v1/printer-tags/42")).status_code == 404
+
+
+async def test_a_tag_carries_a_colour_and_the_list_returns_it(async_client):
+    made = (await async_client.post("/api/v1/printer-tags", json={"name": "Фаза 1", "color": "#F59E0B"})).json()
+    assert made["color"] == "#f59e0b", "normalised to lowercase"
+    listed = (await async_client.get("/api/v1/printer-tags")).json()["tags"]
+    assert listed[0]["color"] == "#f59e0b"
+
+
+async def test_patch_keeps_the_colour_unless_told_and_clears_it_on_null(async_client):
+    tag = (await async_client.post("/api/v1/printer-tags", json={"name": "Фаза 1", "color": "#f59e0b"})).json()
+    renamed = (await async_client.patch(f"/api/v1/printer-tags/{tag['id']}", json={"name": "Фаза I"})).json()
+    assert renamed["color"] == "#f59e0b", "a rename alone does not touch the colour"
+    cleared = (
+        await async_client.patch(f"/api/v1/printer-tags/{tag['id']}", json={"name": "Фаза I", "color": None})
+    ).json()
+    assert cleared["color"] is None
+    recoloured = (
+        await async_client.patch(f"/api/v1/printer-tags/{tag['id']}", json={"name": "Фаза I", "color": "#22c55e"})
+    ).json()
+    assert recoloured["color"] == "#22c55e"
+
+
+@pytest.mark.parametrize("bad", ["red", "#fff", "#GGGGGG", "f59e0b", "#f59e0b00"])
+async def test_a_colour_that_is_not_six_hex_digits_is_422(async_client, bad):
+    r = await async_client.post("/api/v1/printer-tags", json={"name": "Фаза 1", "color": bad})
+    assert r.status_code == 422, r.text
+
+
+async def test_a_printer_read_embeds_the_tag_colour(async_client, db_session):
+    tag = (await async_client.post("/api/v1/printer-tags", json={"name": "Фаза 1", "color": "#f59e0b"})).json()
+    printer = await _printer(db_session)
+    await async_client.patch(f"/api/v1/printers/{printer.id}", json={"tag_ids": [tag["id"]]})
+    got = (await async_client.get(f"/api/v1/printers/{printer.id}")).json()
+    assert got["tags"] == [{"id": tag["id"], "name": "Фаза 1", "color": "#f59e0b"}]

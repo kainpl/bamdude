@@ -1,4 +1,4 @@
-"""Printer tags: list, create, rename, delete.
+"""Printer tags: list, create, update, delete.
 
 No new permissions — a label list is farm configuration, so reads ride
 ``PRINTERS_READ`` and writes ride ``PRINTERS_UPDATE``, exactly like locations.
@@ -62,6 +62,7 @@ async def list_tags(
             PrinterTagListItem(
                 id=row.id,
                 name=row.name,
+                color=row.color,
                 printer_count=counts.get(row.id, 0),
                 is_stagger_group=row.id in split.tag_ids,
             )
@@ -79,7 +80,7 @@ async def create_tag(
     name = normalize_tag(payload.name)
     if await _name_is_taken(db, name):
         raise HTTPException(status_code=409, detail=_NAME_TAKEN)
-    row = PrinterTag(name=name, name_key=tag_key(name))
+    row = PrinterTag(name=name, name_key=tag_key(name), color=payload.color)
     db.add(row)
     await db.commit()
     await db.refresh(row)
@@ -87,7 +88,7 @@ async def create_tag(
 
 
 @router.patch("/{tag_id}", response_model=PrinterTagOut)
-async def rename_tag(
+async def update_tag(
     tag_id: int,
     payload: PrinterTagUpdate,
     db: AsyncSession = Depends(get_db),
@@ -103,6 +104,9 @@ async def rename_tag(
     # Rewritten with the name, always — see rename_location for the duplicate
     # that slips through when the key keeps the old spelling.
     row.name_key = tag_key(name)
+    # Absent = keep; explicit null = clear. A rename alone must not strip the colour.
+    if "color" in payload.model_fields_set:
+        row.color = payload.color
     await db.commit()
     await db.refresh(row)
     return PrinterTagOut.model_validate(row)

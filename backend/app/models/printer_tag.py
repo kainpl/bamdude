@@ -32,6 +32,10 @@ class PrinterTag(Base):
     # can fold to more than 64. SQLite ignores VARCHAR width, PostgreSQL
     # enforces it and would reject the write.
     name_key: Mapped[str] = mapped_column(String(128))
+    # ``#rrggbb`` or NULL (spec 2026-09-06, decision 2). The palette is a frontend
+    # convention; the API accepts any six-digit hex so a future picker is not a
+    # schema change.
+    color: Mapped[str | None] = mapped_column(String(7), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -221,8 +221,38 @@ async def test_the_snapshot_reports_each_groups_own_cap(scheduler, monkeypatch):
 
     monkeypatch.setattr(scheduler, "_get_stagger_settings", _settings)
     monkeypatch.setattr(scheduler, "_load_stagger_resolver", _resolver)
+    # One printer of the limited phase is heating, so ``free_slots`` is derived
+    # from a non-zero ``occupied`` rather than trivially equalling the cap.
+    scheduler._register_stagger_start(next(pid for pid, tags in LINKS.items() if first_tag in tags), 120)
     snapshot = await scheduler.get_stagger_state_snapshot(db=None)
-    caps = {g["tag_id"]: g["cap"] for g in snapshot["groups"]}
-    assert caps[first_tag] == 1
-    assert all(cap == 2 for tag_id, cap in caps.items() if tag_id != first_tag)
+    by_tag = {g["tag_id"]: g for g in snapshot["groups"]}
+    assert by_tag[first_tag]["cap"] == 1
+    assert by_tag[first_tag]["occupied"] == 1 and by_tag[first_tag]["free_slots"] == 0
+    assert all(g["cap"] == 2 for tag_id, g in by_tag.items() if tag_id != first_tag)
     assert all(g["free_slots"] == g["cap"] - g["occupied"] for g in snapshot["groups"])
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_carries_the_tag_colour_of_a_group(scheduler, monkeypatch):
+    first_tag = min(TAGS)
+    r = StaggerGroupResolver(
+        StaggerSplit(by_tags=True, tag_ids=frozenset(TAGS)),
+        tags_by_printer={k: frozenset(v) for k, v in LINKS.items()},
+        tag_names=TAGS,
+        tag_colors={first_tag: "#f59e0b"},
+        location_by_printer={},
+        parent_by_location={},
+        location_names={},
+    )
+
+    async def _settings(_db):
+        return True, 2, 120, True
+
+    async def _resolver(_db):
+        return r
+
+    monkeypatch.setattr(scheduler, "_get_stagger_settings", _settings)
+    monkeypatch.setattr(scheduler, "_load_stagger_resolver", _resolver)
+    colors = {g["tag_id"]: g["color"] for g in (await scheduler.get_stagger_state_snapshot(db=None))["groups"]}
+    assert colors[first_tag] == "#f59e0b"
+    assert all(c is None for tag_id, c in colors.items() if tag_id != first_tag)

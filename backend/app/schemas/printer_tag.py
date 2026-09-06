@@ -1,14 +1,20 @@
-"""A label, and the one rule about how it is written.
+"""A label, its colour, and the two rules about how they are written.
 
-Reads carry ``{id, name}``; writes carry ``tag_ids``. Same shape as
+Reads carry ``{id, name, color}``; writes carry ``tag_ids``. Same shape as
 ``schemas/printer_location.py`` so the frontend learns one contract.
 """
 
+import re
+
 from pydantic import BaseModel, Field, field_validator
+
+_HEX_COLOUR = re.compile(r"^#[0-9a-f]{6}$")
 
 
 class PrinterTagCreate(BaseModel):
     name: str = Field(min_length=1, max_length=64)
+    # ``#rrggbb`` or null. Lower-cased so two spellings of one colour compare equal.
+    color: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -17,16 +23,27 @@ class PrinterTagCreate(BaseModel):
             raise ValueError("A tag needs a name.")
         return value
 
+    @field_validator("color")
+    @classmethod
+    def _six_hex_digits(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().lower()
+        if not _HEX_COLOUR.match(value):
+            raise ValueError("Colour must be a hex value like #ffcc00.")
+        return value
+
 
 class PrinterTagUpdate(PrinterTagCreate):
-    """Rename only — a tag has nothing else to change."""
+    """Name and colour. ``color`` absent keeps the current one; ``color: null`` clears it (the route reads ``model_fields_set``)."""
 
 
 class PrinterTagOut(BaseModel):
-    """What every response embeds. Nothing else travels with a tag."""
+    """What every response embeds: id, name, colour."""
 
     id: int
     name: str
+    color: str | None = None
 
     model_config = {"from_attributes": True}
 

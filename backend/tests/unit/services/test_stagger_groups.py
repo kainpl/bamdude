@@ -177,3 +177,8 @@ class TestCapFor:
     def test_a_limit_on_an_unpicked_or_unknown_id_is_ignored(self):
         split = StaggerSplit(by_tags=True, tag_ids=frozenset({1}), tag_limits={2: 1, 999: 1})
         assert _resolver(split, tags_by_printer={10: {1}}).cap_for((1, None), 3) == 3
+
+    def test_a_global_cap_of_zero_stays_zero(self):
+        """With stagger disabled the snapshot asks for the global group with
+        ``concurrent=0``; a floor of 1 would report a free slot nobody has."""
+        assert StaggerGroupResolver.global_only().cap_for(GLOBAL, 0) == 0

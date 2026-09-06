@@ -1328,7 +1328,7 @@ class PrintScheduler:
               "split": {"by_tags": bool, "by_location": bool},
               "groups": [
                 {"tag_id": int | None, "location_id": int | None,
-                 "label": str | None, "cap": int,
+                 "label": str | None, "color": str | None, "cap": int,
                  "occupied": int, "free_slots": int,
                  "next_free_in_seconds": int | None,
                  "slots": [
@@ -1383,6 +1383,8 @@ class PrintScheduler:
                     "tag_id": key[0],
                     "location_id": key[1],
                     "label": resolver.label(key),
+                    # The tag's colour, so the banner can badge the group like the manager does.
+                    "color": resolver.color_for(key),
                     # The cap THIS group starts under — the global number unless overridden.
                     "cap": cap,
                     "occupied": len(members),

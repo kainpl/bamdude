@@ -21,6 +21,35 @@ async def test_defaults_and_round_trip(async_client):
     assert after["stagger_group_tag_ids"] == "[1, 3]"  # sorted, de-duplicated
 
 
+async def test_from_settings_reads_all_six_rows(async_client, db_session):
+    """The one round-trip that feeds every scheduler tick. Six keys, one query —
+    a key dropped from the ``IN`` list reads as its default and nothing else notices.
+    """
+    from backend.app.services.stagger_groups import StaggerSplit
+
+    rsp = await async_client.put(
+        "/api/v1/settings/",
+        json={
+            "stagger_split_by_tags": True,
+            "stagger_group_tag_ids": "[5]",
+            "stagger_split_by_location": True,
+            "stagger_group_location_ids": "[7]",
+            "stagger_tag_limits": '{"5": 2}',
+            "stagger_location_limits": '{"7": 1}',
+        },
+    )
+    assert rsp.status_code == 200, rsp.text
+
+    # The route committed on its own session; end this one's read transaction.
+    await db_session.commit()
+    split = await StaggerSplit.from_settings(db_session)
+
+    assert split.by_tags is True and split.tag_ids == frozenset({5})
+    assert split.by_location is True and split.location_ids == frozenset({7})
+    assert split.tag_limits == {5: 2}
+    assert split.location_limits == {7: 1}
+
+
 # Both keys, because the validator is registered on both names and a
 # single-key test would pass with either one of them left out.
 @pytest.mark.parametrize("key", ["stagger_group_tag_ids", "stagger_group_location_ids"])
