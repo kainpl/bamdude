@@ -7,8 +7,8 @@ import { server } from '../mocks/server';
 import { PrinterTagsSelect } from '../../components/PrinterTagsSelect';
 
 const TAGS = [
-  { id: 1, name: 'Фаза 1', printer_count: 0, is_stagger_group: false },
-  { id: 2, name: 'Фаза 2', printer_count: 0, is_stagger_group: false },
+  { id: 1, name: 'Фаза 1', color: null, printer_count: 0, is_stagger_group: false },
+  { id: 2, name: 'Фаза 2', color: null, printer_count: 0, is_stagger_group: false },
 ];
 
 describe('PrinterTagsSelect', () => {
@@ -21,6 +21,29 @@ describe('PrinterTagsSelect', () => {
     expect(Array.from(select.options).map((o) => o.textContent)).toEqual(['Add a tag…', 'Фаза 2']);
     await userEvent.selectOptions(select, '2');
     expect(onChange).toHaveBeenCalledWith([1, 2]);
+  });
+
+  /**
+   * The colour is carried by the chip, not by a class: `tagChipStyle` builds an
+   * inline tint from the stored hex, so a swatch picked in the manager shows on
+   * the printer form without either place knowing the other's palette.
+   */
+  it('tints a chosen chip with its colour', async () => {
+    server.use(
+      http.get('/api/v1/printer-tags', () =>
+        HttpResponse.json({ tags: [{ ...TAGS[0], color: '#f59e0b' }, TAGS[1]] })
+      )
+    );
+    render(<PrinterTagsSelect value={[1]} onChange={vi.fn()} />);
+    const chip = (await screen.findByText('Фаза 1')).closest('span') as HTMLElement;
+    expect(chip.style.color).toBe('rgb(245, 158, 11)');
+  });
+
+  it('leaves a colourless chip neutral', async () => {
+    server.use(http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })));
+    render(<PrinterTagsSelect value={[1]} onChange={vi.fn()} />);
+    const chip = (await screen.findByText('Фаза 1')).closest('span') as HTMLElement;
+    expect(chip.style.color).toBe('');
   });
 
   it('removes a chip', async () => {

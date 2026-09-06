@@ -208,7 +208,22 @@ export default {
       counts_many: '{{count}} принтерів',
       counts_other: '{{count}} принтерів',
       staggerGroup: 'група запуску',
-      remove: 'Зняти {{name}}'
+      remove: 'Зняти {{name}}',
+      colorOf: 'Колір тегу {{name}}',
+      pickColor: 'Колір тегу',
+      noColor: 'Без кольору',
+      colors: {
+        amber: 'Янтарний',
+        orange: 'Помаранчевий',
+        red: 'Червоний',
+        rose: 'Рожевий',
+        violet: 'Фіолетовий',
+        blue: 'Синій',
+        cyan: 'Бірюзовий',
+        green: 'Зелений',
+        lime: 'Лаймовий',
+        slate: 'Сірий'
+      }
     },
     title: 'Принтери',
     addPrinter: 'Додати принтер',

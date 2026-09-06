@@ -547,6 +547,8 @@ export interface PrinterLocationListItem extends PrinterLocation {
 export interface PrinterTag {
   id: number;
   name: string;
+  /** `#rrggbb` from the fixed palette, or null for the neutral chip. */
+  color: string | null;
 }
 
 export interface PrinterTagListItem extends PrinterTag {
@@ -3981,6 +3983,8 @@ export interface StaggerGroup {
   location_id: number | null;
   /** "Фаза 1 · Цех 2"; null for the single global group when nothing is split. */
   label: string | null;
+  /** The tag's own colour when the group is one tag; null otherwise. */
+  color: string | null;
   /** The cap THIS group starts under — the global number unless a per-tag or per-location override lowers it. */
   cap: number;
   occupied: number;
@@ -6863,10 +6867,16 @@ export const api = {
   deletePrinterLocation: (id: number) =>
     request<{ deleted: number }>(`/printer-locations/${id}`, { method: 'DELETE' }),
   getPrinterTags: () => request<{ tags: PrinterTagListItem[] }>('/printer-tags'),
-  createPrinterTag: (name: string) =>
-    request<PrinterTag>('/printer-tags', { method: 'POST', body: JSON.stringify({ name }) }),
-  updatePrinterTag: (id: number, name: string) =>
-    request<PrinterTag>(`/printer-tags/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  createPrinterTag: (name: string, color: string | null = null) =>
+    request<PrinterTag>('/printer-tags', { method: 'POST', body: JSON.stringify({ name, color }) }),
+  /**
+   * `color` absent keeps the current one; `color: null` clears it.
+   *
+   * ⚠️ `name` is required by the backend schema (the patch model inherits the
+   * create one), so a colour change sends the name the tag already has.
+   */
+  updatePrinterTag: (id: number, patch: { name?: string; color?: string | null }) =>
+    request<PrinterTag>(`/printer-tags/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deletePrinterTag: (id: number) => request<{ deleted: number }>(`/printer-tags/${id}`, { method: 'DELETE' }),
   getDeveloperModeWarnings: () =>
     request<{ printer_id: number; name: string }[]>('/printers/developer-mode-warnings'),

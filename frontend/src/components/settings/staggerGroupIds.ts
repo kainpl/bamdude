@@ -44,8 +44,15 @@ export function parseLimitMap(raw: string | undefined | null): Record<number, nu
 
 /**
  * The map with `id` set to `value`, or removed when `value` is null, back as
- * the JSON string the setting stores. Keys ascend numerically — the backend
- * normalises the same way, so a round trip is not a change.
+ * the JSON string the setting stores. Keys ascend numerically, which is the
+ * order the backend normalises to as well.
+ *
+ * ⚠️ The ORDER matches; the SPACING does not. Python's `json.dumps` writes
+ * `{"5": 1, "10": 2}` and `JSON.stringify` writes `{"5":1,"10":2}`, so the
+ * settings page — which compares the raw strings — can read a value that came
+ * back from the server as dirty and re-save the identical map. Harmless, and
+ * exactly what the id lists already do; noted so the next reader does not go
+ * looking for a lost edit.
  */
 export function setLimit(raw: string | undefined | null, id: number, value: number | null): string {
   const map = parseLimitMap(raw);

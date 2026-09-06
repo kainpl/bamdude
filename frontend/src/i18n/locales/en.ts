@@ -204,7 +204,22 @@ export default {
       counts_one: '{{count}} printer',
       counts_other: '{{count}} printers',
       staggerGroup: 'stagger group',
-      remove: 'Remove {{name}}'
+      remove: 'Remove {{name}}',
+      colorOf: 'Colour of {{name}}',
+      pickColor: 'Tag colour',
+      noColor: 'No colour',
+      colors: {
+        amber: 'Amber',
+        orange: 'Orange',
+        red: 'Red',
+        rose: 'Rose',
+        violet: 'Violet',
+        blue: 'Blue',
+        cyan: 'Cyan',
+        green: 'Green',
+        lime: 'Lime',
+        slate: 'Slate'
+      }
     },
     title: 'Printers',
     addPrinter: 'Add Printer',

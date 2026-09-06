@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Zap, Info } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -37,9 +38,7 @@ export function StaggerBanner() {
 
   if (!data || !data.enabled) return null;
 
-  const line = data.groups.length === 1 && data.groups[0].label === null
-    ? t('queue.stagger.slots', { occupied: data.groups[0].occupied, capacity: data.groups[0].cap })
-    : data.groups.map((g) => t('queue.stagger.group', { label: g.label ?? '—', occupied: g.occupied, capacity: g.cap })).join(' · ');
+  const farmWide = data.groups.length === 1 && data.groups[0].label === null;
 
   const nextFree = data.groups
     .map((g) => g.next_free_in_seconds)
@@ -66,7 +65,27 @@ export function StaggerBanner() {
       title={tooltip}
     >
       <Zap className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
-      <span className="text-white">{line}</span>
+      {/* ⚠️ The separators and the segment texts stay DIRECT text children of
+          this span: only the dots are elements. A segment wrapped in its own
+          span would split the line into pieces, and the line is asserted — and
+          read — as one sentence. */}
+      <span className="text-white">
+        {farmWide
+          ? t('queue.stagger.slots', { occupied: data.groups[0].occupied, capacity: data.groups[0].cap })
+          : data.groups.map((g, index) => (
+              <Fragment key={`${g.tag_id ?? 'x'}:${g.location_id ?? 'x'}`}>
+                {index > 0 && ' · '}
+                {g.color && (
+                  <span
+                    className="inline-block w-2 h-2 rounded-full align-middle mr-1"
+                    style={{ backgroundColor: g.color }}
+                    aria-hidden
+                  />
+                )}
+                {t('queue.stagger.group', { label: g.label ?? '—', occupied: g.occupied, capacity: g.cap })}
+              </Fragment>
+            ))}
+      </span>
       {soonest !== null && (
         <span className="text-bambu-gray">· {t('queue.stagger.nextFreeIn', { duration: formatDuration(soonest) })}</span>
       )}

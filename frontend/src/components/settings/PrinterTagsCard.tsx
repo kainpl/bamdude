@@ -3,6 +3,8 @@ import { Pencil, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
+import { PrinterTagChip } from '../PrinterTagChip';
+import { TAG_PALETTE } from '../../utils/tagColors';
 import { byLocationName } from '../../utils/locationOrder';
 
 /**
@@ -20,6 +22,7 @@ export function PrinterTagsCard() {
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingName, setEditingName] = useState('');
+  const [colorPickerId, setColorPickerId] = useState<number | null>(null);
 
   const { data } = useQuery({ queryKey: ['printer-tags'], queryFn: api.getPrinterTags });
   const invalidate = () => {
@@ -46,9 +49,27 @@ export function PrinterTagsCard() {
    * saves on blur, and a blur is how you leave a row you opened by mistake.
    */
   const rename = useMutation({
-    mutationFn: ({ id, name: next }: { id: number; name: string }) => api.updatePrinterTag(id, next),
+    mutationFn: ({ id, name: next }: { id: number; name: string }) => api.updatePrinterTag(id, { name: next }),
     onSuccess: () => {
       setEditingId(null);
+      setError(null);
+      invalidate();
+    },
+    onError: (e: Error) => setError(e.message || t('printers.tags.nameTaken')),
+  });
+
+  /**
+   * Recolour, from the swatch grid.
+   *
+   * ⚠️ The CURRENT name travels with the colour: the backend's patch schema
+   * inherits the create one, so `name` is required and a `{color}`-only body is
+   * a 422. "No colour" is an explicit `null` — an empty string is refused too.
+   */
+  const recolor = useMutation({
+    mutationFn: ({ id, name: current, color }: { id: number; name: string; color: string | null }) =>
+      api.updatePrinterTag(id, { name: current, color }),
+    onSuccess: () => {
+      setColorPickerId(null);
       setError(null);
       invalidate();
     },
@@ -107,14 +128,51 @@ export function PrinterTagsCard() {
                     onBlur={() => commitRename(tag.id, tag.name)}
                   />
                 ) : (
-                  <span className="flex items-center gap-2 text-white truncate">
-                    {tag.name}
-                    {tag.is_stagger_group && (
-                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-500">
-                        {t('printers.tags.staggerGroup')}
-                      </span>
+                  <div className="min-w-0">
+                    <span className="flex items-center gap-2 text-white truncate">
+                      {/* The swatch is both the state and the control: it shows
+                          the colour the tag wears and opens the palette. */}
+                      <button
+                        type="button"
+                        aria-label={t('printers.tags.colorOf', { name: tag.name })}
+                        onClick={() => setColorPickerId(colorPickerId === tag.id ? null : tag.id)}
+                        className="w-4 h-4 rounded-full border border-bambu-dark-tertiary shrink-0"
+                        style={{ backgroundColor: tag.color ?? 'transparent' }}
+                      />
+                      <PrinterTagChip tag={tag} />
+                      {tag.is_stagger_group && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-500">
+                          {t('printers.tags.staggerGroup')}
+                        </span>
+                      )}
+                    </span>
+                    {colorPickerId === tag.id && (
+                      <div
+                        role="group"
+                        aria-label={t('printers.tags.pickColor')}
+                        className="mt-2 flex flex-wrap items-center gap-1.5 p-2 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary"
+                      >
+                        {TAG_PALETTE.map((swatch) => (
+                          <button
+                            key={swatch.hex}
+                            type="button"
+                            aria-label={t(`printers.tags.colors.${swatch.nameKey}`)}
+                            title={t(`printers.tags.colors.${swatch.nameKey}`)}
+                            onClick={() => recolor.mutate({ id: tag.id, name: tag.name, color: swatch.hex })}
+                            className={`w-5 h-5 rounded-full border-2 ${tag.color === swatch.hex ? 'border-white' : 'border-transparent'}`}
+                            style={{ backgroundColor: swatch.hex }}
+                          />
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => recolor.mutate({ id: tag.id, name: tag.name, color: null })}
+                          className="text-xs text-bambu-gray hover:text-white px-1"
+                        >
+                          {t('printers.tags.noColor')}
+                        </button>
+                      </div>
                     )}
-                  </span>
+                  </div>
                 )}
               </div>
               <div className={cell}>

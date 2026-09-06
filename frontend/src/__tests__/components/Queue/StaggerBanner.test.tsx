@@ -57,6 +57,27 @@ describe('StaggerBanner', () => {
     expect(banner.getAttribute('title')).toContain('Phase 1 — 1/1');
   });
 
+  /**
+   * The dots are decoration beside the sentence, never instead of it: the line
+   * still reads as one string, so a screen reader and the assertions above both
+   * keep working while the eye gets the colour.
+   */
+  it('marks a group with its tag colour and leaves the line one sentence', async () => {
+    server.use(http.get('/api/v1/queue/stagger-state', () => HttpResponse.json({
+      enabled: true, concurrent: 1, interval_minutes: 5, wait_for_bed: true, split: { by_tags: true, by_location: false },
+      groups: [
+        { tag_id: 1, location_id: null, label: 'Phase 1', color: '#f59e0b', cap: 1, occupied: 1, free_slots: 0, next_free_in_seconds: null, slots: [slot(1, 'P1')] },
+        { tag_id: 2, location_id: null, label: 'Phase 2', color: null, cap: 1, occupied: 0, free_slots: 1, next_free_in_seconds: null, slots: [] },
+      ],
+    })));
+    render(<StaggerBanner />);
+    const line = await screen.findByText('Phase 1: 1/1 · Phase 2: 0/1');
+    const dots = line.querySelectorAll('span[aria-hidden]');
+    // One dot, for the one group that has a colour.
+    expect(dots).toHaveLength(1);
+    expect((dots[0] as HTMLElement).style.backgroundColor).toBe('rgb(245, 158, 11)');
+  });
+
   it('renders nothing while disabled', async () => {
     let served = false;
     server.use(http.get('/api/v1/queue/stagger-state', () => {

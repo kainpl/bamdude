@@ -105,6 +105,12 @@ export function StaggerGroupPickers({ byTags, tagIds, tagLimits: tagLimitsRaw, b
                     // Unpicking clears the override, or a stale limit would silently return with the next pick.
                     if (wasPicked && tag.id in tagLimits) onChange('stagger_tag_limits', setLimit(tagLimitsRaw, tag.id, null));
                   }} />
+                {/* The tag's own colour, so the phase reads the same here as it
+                    does on a printer card and in the queue banner. A colourless
+                    tag keeps an outlined placeholder rather than jumping left. */}
+                <span className="w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: tag.color ?? 'transparent', border: tag.color ? 'none' : '1px solid currentColor' }}
+                  aria-hidden />
                 {tag.name}
                 {pickedTags.includes(tag.id) && (
                   <LimitField name={tag.name} value={tagLimits[tag.id]} globalCap={globalCap}

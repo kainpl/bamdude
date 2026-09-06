@@ -49,6 +49,24 @@ describe('StaggerGroupPickers', () => {
     expect(screen.getByLabelText('Ряд 1').closest('label')).toHaveStyle({ paddingLeft: '16px' });
   });
 
+  /**
+   * The picker is where a phase is chosen, so it has to show the colour the
+   * phase already wears — otherwise the operator picks blind and only finds
+   * out on the queue banner which dot is which.
+   */
+  it('marks each tag with its own colour', async () => {
+    server.use(http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: [
+      { id: 1, name: 'Фаза 1', color: '#f59e0b', printer_count: 0, is_stagger_group: true },
+      { id: 2, name: 'Фаза 2', color: null, printer_count: 0, is_stagger_group: false },
+    ] })));
+    render(<StaggerGroupPickers byTags tagIds="[1]" tagLimits="{}" byLocation={false} locationIds="[]" locationLimits="{}" globalCap={2} onChange={vi.fn()} />);
+    const coloured = (await screen.findByLabelText('Фаза 1')).closest('label')!.querySelector('span[aria-hidden]') as HTMLElement;
+    expect(coloured.style.backgroundColor).toBe('rgb(245, 158, 11)');
+    // A colourless tag keeps the outlined placeholder, so the names stay aligned.
+    const plain = screen.getByLabelText('Фаза 2').closest('label')!.querySelector('span[aria-hidden]') as HTMLElement;
+    expect(plain.style.backgroundColor).toBe('transparent');
+  });
+
   it('says the cap stays farm-wide while nothing is picked', async () => {
     server.use(http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: [] })));
     render(<StaggerGroupPickers byTags tagIds="[]" tagLimits="{}" byLocation={false} locationIds="[]" locationLimits="{}" globalCap={2} onChange={vi.fn()} />);
@@ -75,6 +93,17 @@ describe('per-group limits in the pickers', () => {
     { id: 1, name: 'Phase 1', color: null, printer_count: 2, is_stagger_group: true },
     { id: 2, name: 'Phase 2', color: null, printer_count: 1, is_stagger_group: false },
   ];
+
+  /**
+   * ⚠️ The harness below enables BOTH axes, so both queries run.
+   *
+   * Serving only the endpoint a test cares about leaves the other request to
+   * msw's `onUnhandledRequest: 'bypass'`, where it fails and renders the empty
+   * branch by accident — an empty list that looks intended but is really a
+   * broken request. Every such test states the empty side explicitly.
+   */
+  const noLocations = http.get('/api/v1/printer-locations', () => HttpResponse.json({ locations: [] }));
+  const noTags = http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: [] }));
 
   it('offers a limit field only for a picked tag, placeholder = the global cap', async () => {
     server.use(http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags })));
@@ -114,7 +143,7 @@ describe('per-group limits in the pickers', () => {
   }
 
   it('writes a limit and clears it when the tag is unpicked', async () => {
-    server.use(http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags })));
+    server.use(http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags })), noLocations);
     const onChange = vi.fn();
     render(<Harness onChange={onChange} />);
     const field = await screen.findByLabelText('Limit for Phase 1');
@@ -132,7 +161,7 @@ describe('per-group limits in the pickers', () => {
   it('writes the location limit under its own key and clears it on unpick', async () => {
     server.use(http.get('/api/v1/printer-locations', () => HttpResponse.json({ locations: [
       { id: 1, name: 'Room A', parent_id: null, path: 'Room A', depth: 1, printer_count: 1, sensor_count: 0, queued_count: 0 },
-    ] })));
+    ] })), noTags);
     const onChange = vi.fn();
     render(<Harness onChange={onChange} />);
     const field = await screen.findByLabelText('Limit for Room A');

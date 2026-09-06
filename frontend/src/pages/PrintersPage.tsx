@@ -4,6 +4,7 @@ import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
 import { useTranslation } from 'react-i18next';
 import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
 import { PrinterTagsSelect } from '../components/PrinterTagsSelect';
+import { PrinterTagChip } from '../components/PrinterTagChip';
 import { UsageProjection } from '../components/UsageProjection';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { formatFileSize } from '../utils/file';
@@ -3106,12 +3107,7 @@ function PrinterCard({
                 {printer.tags?.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-0.5">
                     {printer.tags.map((tag) => (
-                      <span
-                        key={tag.id}
-                        className="px-1.5 py-0.5 rounded-full bg-bambu-dark-tertiary text-bambu-gray text-[10px] leading-none"
-                      >
-                        {tag.name}
-                      </span>
+                      <PrinterTagChip key={tag.id} tag={tag} size="xs" />
                     ))}
                   </div>
                 )}

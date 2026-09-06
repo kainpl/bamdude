@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
+import { PrinterTagChip } from './PrinterTagChip';
 import { byLocationName } from '../utils/locationOrder';
 
 interface Props {
@@ -66,20 +66,14 @@ export function PrinterTagsSelect({ value, onChange, allowCreate = false }: Prop
       {chosen.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {chosen.map((tag) => (
-            <span
+            <PrinterTagChip
               key={tag.id}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-bambu-dark-tertiary text-white text-xs"
-            >
-              {tag.name}
-              <button
-                type="button"
-                className="text-bambu-gray hover:text-white"
-                aria-label={t('printers.tags.remove', { name: tag.name })}
-                onClick={() => onChange(value.filter((id) => id !== tag.id))}
-              >
-                <X className="w-3 h-3" />
-              </button>
-            </span>
+              tag={tag}
+              onRemove={{
+                label: t('printers.tags.remove', { name: tag.name }),
+                onClick: () => onChange(value.filter((id) => id !== tag.id)),
+              }}
+            />
           ))}
         </div>
       )}

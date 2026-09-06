@@ -8,8 +8,8 @@ import { server } from '../mocks/server';
 import { PrinterTagsCard } from '../../components/settings/PrinterTagsCard';
 
 const TAGS = [
-  { id: 1, name: 'Фаза 1', printer_count: 2, is_stagger_group: true },
-  { id: 2, name: 'Замовник X', printer_count: 0, is_stagger_group: false },
+  { id: 1, name: 'Фаза 1', color: null, printer_count: 2, is_stagger_group: true },
+  { id: 2, name: 'Замовник X', color: null, printer_count: 0, is_stagger_group: false },
 ];
 
 /**
@@ -125,6 +125,48 @@ describe('PrinterTagsCard', () => {
     await userEvent.click(screen.getByPlaceholderText('Add tag'));
     await waitFor(() => expect(screen.queryByLabelText('Edit Фаза 1')).not.toBeInTheDocument());
     expect(patchCalls).toBe(0);
+  });
+
+  /**
+   * ⚠️ The recolour PATCH carries the CURRENT name beside the colour.
+   *
+   * The backend's patch schema inherits the create one, so `name` is required —
+   * a body of `{color}` alone is a 422. Sending the name the row already has is
+   * what keeps that contract untouched while a colour changes.
+   */
+  it('picks a colour from the palette and sends it', async () => {
+    const patched: unknown[] = [];
+    server.use(
+      http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })),
+      http.patch('/api/v1/printer-tags/1', async ({ request }) => {
+        patched.push(await request.json());
+        return HttpResponse.json({ id: 1, name: 'Фаза 1', color: '#f59e0b' });
+      })
+    );
+    render(<PrinterTagsCard />);
+    await screen.findByText('Фаза 1');
+    await userEvent.click(screen.getByRole('button', { name: 'Colour of Фаза 1' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Amber' }));
+    await waitFor(() => expect(patched).toEqual([{ name: 'Фаза 1', color: '#f59e0b' }]));
+  });
+
+  /** "No colour" is an explicit null — an empty string is a 422 at the backend. */
+  it('clears the colour', async () => {
+    const patched: unknown[] = [];
+    server.use(
+      http.get('/api/v1/printer-tags', () =>
+        HttpResponse.json({ tags: [{ ...TAGS[0], color: '#f59e0b' }, TAGS[1]] })
+      ),
+      http.patch('/api/v1/printer-tags/1', async ({ request }) => {
+        patched.push(await request.json());
+        return HttpResponse.json({ id: 1, name: 'Фаза 1', color: null });
+      })
+    );
+    render(<PrinterTagsCard />);
+    await screen.findByText('Фаза 1');
+    await userEvent.click(screen.getByRole('button', { name: 'Colour of Фаза 1' }));
+    await userEvent.click(screen.getByRole('button', { name: 'No colour' }));
+    await waitFor(() => expect(patched).toEqual([{ name: 'Фаза 1', color: null }]));
   });
 
   it('shows the backend sentence when a stagger group cannot be deleted', async () => {
