@@ -225,6 +225,19 @@ async def test_patch_keeps_the_colour_unless_told_and_clears_it_on_null(async_cl
     assert recoloured["color"] == "#22c55e"
 
 
+async def test_a_padded_colour_is_trimmed_rather_than_refused(async_client):
+    """A colour pasted with a trailing space is still that colour.
+
+    The validator strips before it matches, and none of the refusal cases below
+    would notice if that ``.strip()`` were dropped — they are all invalid with
+    or without it. This is the only case that fails when the trim goes.
+    """
+    rsp = await async_client.post("/api/v1/printer-tags", json={"name": "Фаза 1", "color": "#FFCC00 "})
+
+    assert rsp.status_code == 201, rsp.text
+    assert rsp.json()["color"] == "#ffcc00"
+
+
 @pytest.mark.parametrize("bad", ["red", "#fff", "#GGGGGG", "f59e0b", "#f59e0b00"])
 async def test_a_colour_that_is_not_six_hex_digits_is_422(async_client, bad):
     r = await async_client.post("/api/v1/printer-tags", json={"name": "Фаза 1", "color": bad})
@@ -234,6 +247,7 @@ async def test_a_colour_that_is_not_six_hex_digits_is_422(async_client, bad):
 async def test_a_printer_read_embeds_the_tag_colour(async_client, db_session):
     tag = (await async_client.post("/api/v1/printer-tags", json={"name": "Фаза 1", "color": "#f59e0b"})).json()
     printer = await _printer(db_session)
-    await async_client.patch(f"/api/v1/printers/{printer.id}", json={"tag_ids": [tag["id"]]})
+    attached = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"tag_ids": [tag["id"]]})
+    assert attached.status_code == 200, attached.text
     got = (await async_client.get(f"/api/v1/printers/{printer.id}")).json()
     assert got["tags"] == [{"id": tag["id"], "name": "Фаза 1", "color": "#f59e0b"}]

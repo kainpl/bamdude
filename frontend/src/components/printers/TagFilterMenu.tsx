@@ -21,14 +21,27 @@ export function TagFilterMenu({ tags, selected, onChange, fullWidth }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const close = (e: MouseEvent) => {
       if (root.current && !root.current.contains(e.target as Node)) setOpen(false);
     };
+    // Escape is the other way out of a popover — and it has to hand focus back
+    // to the button, or a keyboard user closes the list onto `document.body`
+    // and starts again from the top of the page.
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      button.current?.focus();
+    };
     document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', onKeyDown);
+    };
   }, [open]);
 
   const toggle = (id: number) => onChange(selected.includes(id) ? selected.filter((v) => v !== id) : [...selected, id]);
@@ -37,6 +50,7 @@ export function TagFilterMenu({ tags, selected, onChange, fullWidth }: Props) {
     <div ref={root} className={`relative ${fullWidth ? 'w-full' : ''}`}>
       <button
         type="button"
+        ref={button}
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="true"

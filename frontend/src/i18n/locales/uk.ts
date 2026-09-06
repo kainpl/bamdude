@@ -214,6 +214,7 @@ export default {
       colorOf: 'Колір тегу {{name}}',
       pickColor: 'Колір тегу',
       noColor: 'Без кольору',
+      colorFailed: 'Не вдалося змінити колір',
       colors: {
         amber: 'Янтарний',
         orange: 'Помаранчевий',

@@ -182,6 +182,21 @@ describe('PrintersPage', () => {
       expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
     });
 
+    it('closes the tag filter on Escape and hands focus back to its button', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      const button = await screen.findByRole('button', { name: /Tags/ });
+      await userEvent.click(button);
+      expect(await screen.findByRole('checkbox', { name: 'Phase 1' })).toBeInTheDocument();
+
+      await userEvent.keyboard('{Escape}');
+
+      await waitFor(() => expect(screen.queryByRole('checkbox', { name: 'Phase 1' })).not.toBeInTheDocument());
+      // Closing onto `document.body` would send a keyboard user back to the top
+      // of the page; the button that opened the list is where focus belongs.
+      expect(button).toHaveFocus();
+    });
+
     it('finds a printer by its tag name in the search box', async () => {
       render(<PrintersPage />);
       await screen.findByText('X1 Carbon');

@@ -210,6 +210,7 @@ export default {
       colorOf: 'Colour of {{name}}',
       pickColor: 'Tag colour',
       noColor: 'No colour',
+      colorFailed: 'Could not change the colour',
       colors: {
         amber: 'Amber',
         orange: 'Orange',

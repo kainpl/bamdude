@@ -1,10 +1,18 @@
 import type { CSSProperties } from 'react';
 
 /**
- * The colours a printer tag may wear. Fixed, not free: each swatch is legible
- * as a tinted chip in both themes, and "Фаза 1 is yellow" is a choice the
- * operator makes once — not a hash that changes when a tag is renamed.
- * `nameKey` indexes `printers.tags.colors.*` in the locales.
+ * The colours a printer tag may wear. Fixed, not free: ten swatches mean the
+ * same tag looks the same everywhere it is drawn, and "Фаза 1 is yellow" is a
+ * choice the operator makes once — not a hash that changes when a tag is
+ * renamed. `nameKey` indexes `printers.tags.colors.*` in the locales.
+ *
+ * ⚠️ This is NOT a promise of contrast. The tint formula below paints
+ * full-strength swatch text on a 15 % fill of the same hue, which on a light
+ * background leaves the pale swatches (amber, lime, cyan) near 2:1 — under
+ * WCAG AA. The formula is what the spec asked for and the chip is decoration
+ * beside a name that is always spelled out, so the shortfall is accepted, not
+ * unnoticed. Fix it by darkening the text per swatch, never by silently
+ * dropping a colour operators have already assigned.
  */
 export const TAG_PALETTE: ReadonlyArray<{ hex: string; nameKey: string }> = [
   { hex: '#f59e0b', nameKey: 'amber' },

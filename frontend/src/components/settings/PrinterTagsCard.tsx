@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pencil, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -23,6 +23,39 @@ export function PrinterTagsCard() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingName, setEditingName] = useState('');
   const [colorPickerId, setColorPickerId] = useState<number | null>(null);
+  // Only one palette is ever open, so one ref each is enough — they are bound
+  // to whichever row is open and are the toggle Escape hands focus back to.
+  const swatchRef = useRef<HTMLButtonElement | null>(null);
+  const paletteRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Dismiss the open palette the two ways a popover is dismissed.
+   *
+   * Same `mousedown` + ref shape as `components/printers/TagFilterMenu.tsx`.
+   * Escape additionally returns focus to the swatch that opened it — closing a
+   * popover that stole focus and leaving it on `document.body` strands a
+   * keyboard user at the top of the page.
+   */
+  useEffect(() => {
+    if (colorPickerId === null) return;
+    const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (paletteRef.current?.contains(target) || swatchRef.current?.contains(target)) return;
+      setColorPickerId(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setColorPickerId(null);
+      // Still attached: the ref is only detached on the re-render this schedules.
+      swatchRef.current?.focus();
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [colorPickerId]);
 
   const { data } = useQuery({ queryKey: ['printer-tags'], queryFn: api.getPrinterTags });
   const invalidate = () => {
@@ -73,8 +106,23 @@ export function PrinterTagsCard() {
       setError(null);
       invalidate();
     },
-    onError: (e: Error) => setError(e.message || t('printers.tags.nameTaken')),
+    /**
+     * ⚠️ The server's sentence is deliberately NOT shown here, unlike create and
+     * rename. Those carry a refusal the operator can act on (the name is taken);
+     * a recolour cannot — the palette only ever sends a known-good hex beside the
+     * name the row already has, so every failure is the server's, not the click's.
+     * What reaches this handler is either a sentence about a name nobody typed or
+     * the client's bare `HTTP 500` placeholder. Neither is worth showing.
+     */
+    onError: () => setError(t('printers.tags.colorFailed')),
   });
+
+  /** Opening a rename takes the row over; a palette left open under it is stale chrome. */
+  const startRename = (id: number, current: string) => {
+    setColorPickerId(null);
+    setEditingId(id);
+    setEditingName(current);
+  };
 
   const commitRename = (id: number, current: string) => {
     const next = editingName.trim();
@@ -88,6 +136,9 @@ export function PrinterTagsCard() {
   const remove = useMutation({
     mutationFn: (id: number) => api.deletePrinterTag(id),
     onSuccess: () => {
+      // The row that owned the palette is gone; the id would outlive it and
+      // re-open the palette on whichever tag lands on that id next.
+      setColorPickerId(null);
       setError(null);
       invalidate();
     },
@@ -134,7 +185,10 @@ export function PrinterTagsCard() {
                           the colour the tag wears and opens the palette. */}
                       <button
                         type="button"
+                        ref={colorPickerId === tag.id ? swatchRef : null}
                         aria-label={t('printers.tags.colorOf', { name: tag.name })}
+                        aria-expanded={colorPickerId === tag.id}
+                        aria-haspopup="true"
                         onClick={() => setColorPickerId(colorPickerId === tag.id ? null : tag.id)}
                         className="w-4 h-4 rounded-full border border-bambu-dark-tertiary shrink-0"
                         style={{ backgroundColor: tag.color ?? 'transparent' }}
@@ -148,6 +202,7 @@ export function PrinterTagsCard() {
                     </span>
                     {colorPickerId === tag.id && (
                       <div
+                        ref={paletteRef}
                         role="group"
                         aria-label={t('printers.tags.pickColor')}
                         className="mt-2 flex flex-wrap items-center gap-1.5 p-2 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary"
@@ -183,10 +238,7 @@ export function PrinterTagsCard() {
               <div className={`${cell} flex items-center gap-1 justify-self-end`}>
                 <button
                   type="button"
-                  onClick={() => {
-                    setEditingId(tag.id);
-                    setEditingName(tag.name);
-                  }}
+                  onClick={() => startRename(tag.id, tag.name)}
                   className="p-1.5 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded"
                   title={t('common.edit')}
                 >

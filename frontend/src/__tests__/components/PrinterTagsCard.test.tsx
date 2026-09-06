@@ -169,6 +169,83 @@ describe('PrinterTagsCard', () => {
     await waitFor(() => expect(patched).toEqual([{ name: 'Фаза 1', color: null }]));
   });
 
+  it('closes the palette on Escape and hands focus back to the swatch', async () => {
+    server.use(http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })));
+    render(<PrinterTagsCard />);
+    await screen.findByText('Фаза 1');
+    const swatch = screen.getByRole('button', { name: 'Colour of Фаза 1' });
+    await userEvent.click(swatch);
+    expect(await screen.findByRole('group', { name: 'Tag colour' })).toBeInTheDocument();
+
+    await userEvent.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Tag colour' })).not.toBeInTheDocument());
+    // Not merely "the palette went": closing onto `document.body` would strand a
+    // keyboard user at the top of the page.
+    expect(swatch).toHaveFocus();
+    expect(swatch).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('closes the palette when the operator clicks outside it', async () => {
+    server.use(http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })));
+    render(<PrinterTagsCard />);
+    await screen.findByText('Фаза 1');
+    await userEvent.click(screen.getByRole('button', { name: 'Colour of Фаза 1' }));
+    await screen.findByRole('group', { name: 'Tag colour' });
+
+    await userEvent.click(screen.getByPlaceholderText('Add tag'));
+
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Tag colour' })).not.toBeInTheDocument());
+  });
+
+  /**
+   * ⚠️ Driven from the KEYBOARD, and asserted on the way BACK.
+   *
+   * Two traps, and the test is worth nothing if it steps into either. A mouse
+   * click on Edit fires a `mousedown` the palette's own outside-click handler
+   * already answers, so a card that never cleared `colorPickerId` would look
+   * cured; keyboard activation fires no `mousedown`, which is what leaves the
+   * stale id behind. And the rename branch replaces the whole cell, so the
+   * palette is off-screen either way while the field is up — the bug is what
+   * the operator sees on LEAVING it: a palette they never re-opened.
+   */
+  it('does not bring the palette back after the row was taken over by a rename', async () => {
+    server.use(http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })));
+    render(<PrinterTagsCard />);
+    await screen.findByText('Фаза 1');
+    await userEvent.click(screen.getByRole('button', { name: 'Colour of Фаза 1' }));
+    await screen.findByRole('group', { name: 'Tag colour' });
+
+    within(rowOf('Фаза 1')).getByTitle('Edit').focus();
+    await userEvent.keyboard('{Enter}');
+    await screen.findByLabelText('Edit Фаза 1');
+    // Enter on the name the row already has: commits nothing, sends no PATCH,
+    // and — unlike Escape — is not a key the palette listens for either.
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => expect(screen.queryByLabelText('Edit Фаза 1')).not.toBeInTheDocument());
+    expect(screen.queryByRole('group', { name: 'Tag colour' })).not.toBeInTheDocument();
+  });
+
+  /**
+   * A recolour cannot clash with a name — it sends the one the row already has.
+   * The card used to print the name-clash sentence for any recolour failure,
+   * which named a problem the operator did not have and could not fix.
+   */
+  it('says the colour could not be changed when the recolour fails', async () => {
+    server.use(
+      http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })),
+      http.patch('/api/v1/printer-tags/1', () => new HttpResponse(null, { status: 500 }))
+    );
+    render(<PrinterTagsCard />);
+    await screen.findByText('Фаза 1');
+    await userEvent.click(screen.getByRole('button', { name: 'Colour of Фаза 1' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Amber' }));
+
+    expect(await screen.findByText('Could not change the colour')).toBeInTheDocument();
+    expect(screen.queryByText(/name already exists/)).not.toBeInTheDocument();
+  });
+
   it('shows the backend sentence when a stagger group cannot be deleted', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true); // Фаза 1 is worn by two printers
     server.use(
