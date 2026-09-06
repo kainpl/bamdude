@@ -179,6 +179,8 @@ export default {
   // Printers page
   printers: {
     ungrouped: 'Без розташування',
+    noTag: 'Без тегу',
+    tagGroupHint: 'Принтер із кількома тегами показаний у кожному з них',
     locations: {
       parent: 'Усередині',
       noParent: 'Верхній рівень',
@@ -413,6 +415,7 @@ export default {
       status: 'Статус',
       model: 'Модель',
       location: 'Розташування',
+      tag: 'Тег',
       eta: 'ETA',
       ascending: 'Сортувати за зростанням',
       descending: 'Сортувати за спаданням'
@@ -434,7 +437,9 @@ export default {
     noSearchResults: 'Жоден принтер не відповідає пошуку чи фільтрам',
     filter: {
       allStatuses: 'Усі статуси',
-      allLocations: 'Усі локації'
+      allLocations: 'Усі локації',
+      tags: 'Теги',
+      clearTags: 'Скинути теги'
     },
     toolbar: {
       filters: 'Фільтри',

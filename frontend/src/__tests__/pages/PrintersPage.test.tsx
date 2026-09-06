@@ -2,8 +2,9 @@
  * Tests for the PrintersPage component.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { PrintersPage } from '../../pages/PrintersPage';
 import { http, HttpResponse } from 'msw';
@@ -21,6 +22,7 @@ const mockPrinters = [
     nozzle_diameter: 0.4,
     nozzle_type: 'hardened_steel',
     location: 'Workshop',
+    tags: [{ id: 1, name: 'Phase 1', color: '#f59e0b' }],
     auto_archive: true,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
@@ -36,6 +38,7 @@ const mockPrinters = [
     nozzle_diameter: 0.4,
     nozzle_type: 'stainless_steel',
     location: null,
+    tags: [],
     auto_archive: true,
     created_at: '2024-01-02T00:00:00Z',
     updated_at: '2024-01-02T00:00:00Z',
@@ -70,8 +73,17 @@ describe('PrintersPage', () => {
       }),
       http.get('/api/v1/queue/', () => {
         return HttpResponse.json([]);
+      }),
+      http.get('/api/v1/printer-tags', () => {
+        return HttpResponse.json({
+          tags: [{ id: 1, name: 'Phase 1', color: '#f59e0b', printer_count: 1, is_stagger_group: false }],
+        });
       })
     );
+    // The page persists this one, so a test that ticks a box must not hand its
+    // selection to the next test. (Not `clear()` — the synthetic auth token
+    // from the render helper lives here too.)
+    localStorage.removeItem('printerTagFilter');
   });
 
   describe('rendering', () => {
@@ -108,6 +120,38 @@ describe('PrintersPage', () => {
         // Status should be shown - may vary based on state
         expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('tags', () => {
+    // jsdom measures every element as zero-wide, so the page's responsive
+    // toolbar concludes its inline controls have overflowed and folds them
+    // into the compact overflow menus (inert, and therefore unreachable).
+    // Report a desktop width so the filter row renders where a user on a
+    // normal screen actually finds it.
+    const realClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+    beforeEach(() => {
+      Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 1600 });
+    });
+    afterEach(() => {
+      if (realClientWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', realClientWidth);
+    });
+
+    it('narrows to printers wearing every selected tag', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      await userEvent.click(await screen.findByRole('button', { name: /Tags/ }));
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Phase 1' }));
+      await waitFor(() => expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument());
+      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+    });
+
+    it('finds a printer by its tag name in the search box', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      await userEvent.type(screen.getByPlaceholderText(/search/i), 'Phase 1');
+      await waitFor(() => expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument());
+      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
     });
   });
 

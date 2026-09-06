@@ -179,6 +179,8 @@ export default {
   // Printers page
   printers: {
     ungrouped: 'Ungrouped',
+    noTag: 'No tag',
+    tagGroupHint: 'A printer with several tags is listed under each of them',
     locations: {
       parent: 'Inside',
       noParent: 'Top level',
@@ -401,6 +403,7 @@ export default {
       status: 'Status',
       model: 'Model',
       location: 'Location',
+      tag: 'Tag',
       eta: 'ETA',
       ascending: 'Sort ascending',
       descending: 'Sort descending'
@@ -422,7 +425,9 @@ export default {
     noSearchResults: 'No printers match your search or filters',
     filter: {
       allStatuses: 'All statuses',
-      allLocations: 'All locations'
+      allLocations: 'All locations',
+      tags: 'Tags',
+      clearTags: 'Clear tags'
     },
     toolbar: {
       filters: 'Filters',

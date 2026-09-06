@@ -191,6 +191,9 @@ import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { getColorName, parseFilamentColor, isLightColor, resolveMultiColorName } from '../utils/colors';
 import { formatSpoolDisplayName, DEFAULT_SPOOL_DISPLAY_TEMPLATE } from '../utils/spoolName';
 import { groupByLocation } from '../utils/locationGroups';
+import { groupByTag } from '../utils/tagGroups';
+import { TagFilterMenu } from '../components/printers/TagFilterMenu';
+import { parseIdList } from '../components/settings/staggerGroupIds';
 import { LocationConditions } from '../components/zigbee/LocationConditions';
 import { PrinterConditions } from '../components/zigbee/PrinterConditions';
 import { AirductModal } from '../components/AirductModal';
@@ -1134,7 +1137,7 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
   );
 }
 
-type SortOption = 'name' | 'status' | 'model' | 'location' | 'eta';
+type SortOption = 'name' | 'status' | 'model' | 'location' | 'eta' | 'tag';
 type ViewMode = 'expanded' | 'compact';
 
 // Toolbar building blocks (upstream PR #1203). The Printers page header
@@ -8537,6 +8540,23 @@ export function PrintersPage() {
   const [locationFilter, setLocationFilter] = useState<string>(
     () => localStorage.getItem('printerLocationFilter') || 'all',
   );
+  // Tag filter: ALL selected tags must be worn. Persisted like the other two
+  // filters and validated against the loaded tag list below — a tag deleted
+  // since the last visit must not strand the page on an empty grid.
+  const [tagFilter, setTagFilter] = useState<number[]>(() => parseIdList(localStorage.getItem('printerTagFilter')));
+  const handleTagFilterChange = (ids: number[]) => {
+    setTagFilter(ids);
+    localStorage.setItem('printerTagFilter', JSON.stringify(ids));
+  };
+  const { data: tagRows } = useQuery({ queryKey: ['printer-tags'], queryFn: api.getPrinterTags });
+  useEffect(() => {
+    // Waits for the query, as the location effect does: acting on an empty
+    // in-flight list would throw the saved filter away on every load.
+    if (!tagRows || tagFilter.length === 0) return;
+    const known = new Set(tagRows.tags.map((tag) => tag.id));
+    const kept = tagFilter.filter((id) => known.has(id));
+    if (kept.length !== tagFilter.length) handleTagFilterChange(kept);
+  }, [tagRows, tagFilter]);
   const [statusCacheVersion, setStatusCacheVersion] = useState(0);
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -9004,7 +9024,8 @@ export function PrintersPage() {
         p.name.toLowerCase().includes(q) ||
         (p.model || '').toLowerCase().includes(q) ||
         (p.location?.name || '').toLowerCase().includes(q) ||
-        (p.serial_number || '').toLowerCase().includes(q)
+        (p.serial_number || '').toLowerCase().includes(q) ||
+        (p.tags ?? []).some((tag) => tag.name.toLowerCase().includes(q))
       );
     }
 
@@ -9014,6 +9035,10 @@ export function PrintersPage() {
       // exist under two workshops.
       const wanted = locationIndex.descendantsOf(Number(locationFilter));
       result = result.filter(p => p.location != null && wanted.has(p.location.id));
+    }
+
+    if (tagFilter.length > 0) {
+      result = result.filter((p) => tagFilter.every((id) => (p.tags ?? []).some((tag) => tag.id === id)));
     }
 
     if (statusFilter !== 'all') {
@@ -9037,7 +9062,7 @@ export function PrintersPage() {
 
     return result;
   // eslint-disable-next-line react-hooks/exhaustive-deps -- statusCacheVersion is intentional: it forces recompute when WebSocket updates printer status cache
-  }, [printers, search, statusFilter, locationFilter, locationIndex, queryClient, statusCacheVersion]);
+  }, [printers, search, statusFilter, locationFilter, tagFilter, locationIndex, queryClient, statusCacheVersion]);
 
   // Modifier-aware single-printer selection. Behaves like a file-manager:
   //
@@ -9073,6 +9098,21 @@ export function PrintersPage() {
           return compareLocationNames(locA, locB) || a.name.localeCompare(b.name);
         });
         break;
+      case 'tag': {
+        // By the alphabetically-first tag a printer wears, untagged last. The
+        // grouped view below lists a multi-tagged printer under each of its
+        // tags; this flat order is what the ungrouped fallback and the
+        // Shift-range selection read.
+        const firstTag = (p: Printer) => [...(p.tags ?? [])].map((tag) => tag.name).sort((a, b) => a.localeCompare(b))[0] ?? '';
+        sorted.sort((a, b) => {
+          const ta = firstTag(a);
+          const tb = firstTag(b);
+          if (!ta && tb) return 1;
+          if (ta && !tb) return -1;
+          return ta.localeCompare(tb) || a.name.localeCompare(b.name);
+        });
+        break;
+      }
       case 'status':
         // Sort by status: HMS errors > printing > idle > offline
         sorted.sort((a, b) => {
@@ -9169,13 +9209,33 @@ export function PrintersPage() {
     [lastSelectedId, sortedPrinters],
   );
 
-  // Group printers by location when sorted by location. Keyed on the location
-  // ID, which is what the header's sensors are matched against — an object
-  // keyed by that id would be reordered by the engine into ascending numeric
-  // order and would throw away the name sort applied above, hence an array.
+  // Group printers by location when sorted by location, by tag when sorted by
+  // tag. Keyed on the location ID, which is what the header's sensors are
+  // matched against — an object keyed by that id would be reordered by the
+  // engine into ascending numeric order and would throw away the name sort
+  // applied above, hence an array. Both shapes are normalised to one so the
+  // renderer below stays a single block; `locationId` is left `undefined` for
+  // tag groups, which is how the renderer knows not to ask for sensors.
   const groupedPrinters = useMemo(() => {
-    if (sortBy !== 'location') return null;
-    return groupByLocation(sortedPrinters, printer => printer.location, t('printers.ungrouped'));
+    if (sortBy === 'location') {
+      return groupByLocation(sortedPrinters, (printer) => printer.location, t('printers.ungrouped')).map((g) => ({
+        key: `location:${g.locationId ?? 'none'}`,
+        label: g.label,
+        color: null as string | null,
+        locationId: g.locationId as number | null | undefined,
+        items: g.items,
+      }));
+    }
+    if (sortBy === 'tag') {
+      return groupByTag(sortedPrinters, (printer) => printer.tags, t('printers.noTag')).map((g) => ({
+        key: `tag:${g.tagId ?? 'none'}`,
+        label: g.label,
+        color: g.color,
+        locationId: undefined as number | null | undefined,
+        items: g.items,
+      }));
+    }
+    return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- t is stable; listing it re-groups on every i18n tick
   }, [sortBy, sortedPrinters]);
 
@@ -9211,6 +9271,10 @@ export function PrintersPage() {
     measureToolbar,
     printers?.length,
     availableLocations.length,
+    // The tag filter appears with the farm's first tag and grows a count badge
+    // as tags are picked — both change the width the inline row needs.
+    tagRows?.tags.length,
+    tagFilter.length,
     hideDisconnected,
     smartPlugCount,
   ]);
@@ -9247,6 +9311,14 @@ export function PrintersPage() {
         />
       )}
 
+      {/* Tag filter — only shown once the farm has at least one tag. Gated on
+          the printers too, like the two filters above it: with none on screen
+          the search box and both dropdowns go away, and a lone Tags button
+          left standing over "No printers configured yet" filters nothing. */}
+      {printers && printers.length > 0 && (tagRows?.tags.length ?? 0) > 0 && (
+        <TagFilterMenu tags={tagRows!.tags} selected={tagFilter} onChange={handleTagFilterChange} fullWidth={inMenu} />
+      )}
+
       <button
         type="button"
         onClick={toggleHideDisconnected}
@@ -9275,6 +9347,7 @@ export function PrintersPage() {
             { value: 'status', label: t('printers.sort.status') },
             { value: 'model', label: t('printers.sort.model') },
             { value: 'location', label: t('printers.sort.location') },
+            { value: 'tag', label: t('printers.sort.tag') },
             { value: 'eta', label: t('printers.sort.eta') },
           ]}
         />
@@ -9549,7 +9622,7 @@ export function PrintersPage() {
             </Button>
           </CardContent>
         </Card>
-      ) : sortedPrinters.length === 0 && (search.trim() || statusFilter !== 'all' || locationFilter !== 'all') ? (
+      ) : sortedPrinters.length === 0 && (search.trim() || statusFilter !== 'all' || locationFilter !== 'all' || tagFilter.length > 0) ? (
         <Card>
           <CardContent className="text-center py-12">
             <p className="text-bambu-gray">{t('printers.noSearchResults')}</p>
@@ -9592,15 +9665,18 @@ export function PrintersPage() {
           }}
         />
       ) : groupedPrinters ? (
-        /* Grouped by location view */
+        /* Grouped by location or by tag */
         <div className="space-y-4">
           {groupedPrinters.map((group) => (
-            <div key={group.locationId ?? 'ungrouped'}>
-              <h2 className="text-lg font-semibold text-white mb-3 flex items-center gap-2 flex-wrap">
-                <span className="w-2 h-2 rounded-full bg-bambu-green" />
+            <div key={group.key}>
+              <h2
+                className="text-lg font-semibold text-white mb-3 flex items-center gap-2 flex-wrap"
+                title={sortBy === 'tag' ? t('printers.tagGroupHint') : undefined}
+              >
+                <span className="w-2 h-2 rounded-full bg-bambu-green" style={group.color ? { backgroundColor: group.color } : undefined} />
                 {group.label}
                 <span className="text-sm font-normal text-bambu-gray">({group.items.length})</span>
-                <LocationConditions locationId={group.locationId} />
+                {group.locationId !== undefined && <LocationConditions locationId={group.locationId} />}
               </h2>
               <div className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
                 {group.items.map((printer) => (
