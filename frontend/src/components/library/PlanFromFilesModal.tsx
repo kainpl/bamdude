@@ -8,6 +8,7 @@ import type { Order, PartsPreview } from '../../api/client';
 import { Button } from '../Button';
 import { PlanBlock } from '../projects/PlanBlock';
 import { useToast } from '../../contexts/ToastContext';
+import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface PlanFromFilesModalProps {
@@ -76,23 +77,17 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
     onSuccess: (order: Order) => {
       queryClient.setQueryData(['project', order.id], order);
       invalidateOrderViews(queryClient);
-      queryClient.invalidateQueries({ queryKey: ['products'] });
       setOrderId(order.id);
     },
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
-  const order = useQuery<Order>({
-    queryKey: ['project', orderId],
-    queryFn: () => api.getOrder(orderId as number),
-    enabled: orderId !== null,
-  });
+  const order = useOrderDetail(orderId);
 
   const cancel = useMutation({
     mutationFn: () => api.deleteOrder(orderId as number),
     onSuccess: () => {
       invalidateOrderViews(queryClient);
-      queryClient.invalidateQueries({ queryKey: ['products'] });
       onClose();
     },
     onError: (e: Error) => showToast(e.message, 'error'),
