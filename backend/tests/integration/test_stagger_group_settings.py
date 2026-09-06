@@ -67,6 +67,9 @@ async def test_the_state_route_reports_the_global_group_when_stagger_is_off(asyn
     assert body["split"] == {"by_tags": False, "by_location": False}
     assert len(body["groups"]) == 1
     assert body["groups"][0]["label"] is None
+    assert body["groups"][0]["color"] is None  # no tag, so no colour to badge it with
+    # Off means no slot at all. A floor of 1 on the cap would advertise one.
+    assert body["groups"][0]["cap"] == 0 and body["groups"][0]["free_slots"] == 0
     assert "slots" not in body and "free_slots" not in body
 
 
