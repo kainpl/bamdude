@@ -8,9 +8,10 @@ file that happened to introduce them.
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.models.product import Product, ProductPart, ProductPlate, product_files
+from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate, product_files
 from backend.app.services.product_sync import (
     apply_folder_products,
     inherit_folder_products,
@@ -235,3 +236,33 @@ async def test_applying_products_to_a_folder_mirrors_onto_every_child_file(db_se
 
     with pytest.raises(ValueError, match="9999"):
         await apply_folder_products(db_session, folder_id=folder.id, product_ids=[9999])
+
+
+@pytest.mark.asyncio
+async def test_two_plate_products_cannot_share_a_file_and_plate(db_session):
+    """Decision 3: a plate product is identified by (file, plate). Two of them
+    would make filing ambiguous for ever, so the database refuses the second."""
+    f = await _file(db_session, "m.gcode.3mf", MULTI)
+    first = Product(
+        name="m · plate 1", origin=ProductOrigin.ADHOC_PLATE.value, origin_file_id=f.id, origin_plate_index=1
+    )
+    db_session.add(first)
+    await db_session.flush()
+    second = Product(name="dup", origin=ProductOrigin.ADHOC_PLATE.value, origin_file_id=f.id, origin_plate_index=1)
+    db_session.add(second)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_catalog_products_are_not_bound_by_the_plate_index(db_session):
+    """The index is PARTIAL: only ``adhoc_plate`` rows carry the identity, so a
+    catalogue product that happens to remember a file is free to repeat it."""
+    f = await _file(db_session, "m.gcode.3mf", MULTI)
+    for name in ("a", "b"):
+        db_session.add(
+            Product(name=name, origin=ProductOrigin.CATALOG.value, origin_file_id=f.id, origin_plate_index=1)
+        )
+    await db_session.flush()
+    assert (await _product(db_session)).origin == "catalog"

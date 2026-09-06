@@ -9,6 +9,7 @@ both FKs — PostgreSQL enforces, SQLite paths clean up explicitly.
 """
 
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     JSON,
@@ -17,12 +18,14 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Table,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -43,8 +46,33 @@ product_folders = Table(
 )
 
 
+class ProductOrigin(StrEnum):
+    """Who made this product exist (spec Decision 2).
+
+    ``catalog`` — a person; everything that existed before m166. ``adhoc_job`` —
+    the library wizard, over N files. ``adhoc_plate`` — the print dialog, for
+    ONE plate of ONE file; ``origin_file_id`` + ``origin_plate_index`` are its
+    identity and the partial unique index below keeps it unique. Promotion to
+    ``catalog`` is one-way and clears nothing.
+    """
+
+    CATALOG = "catalog"
+    ADHOC_JOB = "adhoc_job"
+    ADHOC_PLATE = "adhoc_plate"
+
+
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        Index(
+            "ux_products_origin_plate",
+            "origin_file_id",
+            "origin_plate_index",
+            unique=True,
+            sqlite_where=text("origin = 'adhoc_plate'"),
+            postgresql_where=text("origin = 'adhoc_plate'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
@@ -63,6 +91,13 @@ class Product(Base):
     attachments: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Catalog flag: an inactive product is not offered for new order lines.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+    # Spec 2026-09-06 (orders from files), Decision 2. Never ``is_active``:
+    # "deactivated" is an operator's statement about a catalogue product.
+    origin: Mapped[str] = mapped_column(String(16), nullable=False, default="catalog", server_default="catalog")
+    # Identity of an ``adhoc_plate`` product. No DB cascade — SQLite ignores it
+    # anyway; ``product_sync.purge_file_product_links`` nulls it in code.
+    origin_file_id: Mapped[int | None] = mapped_column(ForeignKey("library_files.id"), nullable=True)
+    origin_plate_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
