@@ -6,6 +6,12 @@
 
 ### Added
 
+- **«Розрахувати» in the library: a plan from files without authoring a product.** Select the sliced files of a job — different printer models, different parts per plate — press **Calculate**, and the dialog lists the parts they make, unified across files, with where each comes from. Set a target per part (or, when all the files already belong to one catalogue product, a number of units), and the order page's own plan appears in the dialog: which plates, how many prints, the file switch per printer model, the split between them, hours and filament. **To queue** sends it to the auto-queue; **Keep the order** leaves it for later; **Cancel** removes it. The product behind such an order is one-off — it never appears in the catalogue or the pickers — and disappears with the order; **Add to catalogue** on its page keeps it.
+
+- **A batch from the print dialog can be an order.** When a submission makes two or more prints — copies, plates or printers — the **Order** field offers **New order for this batch**, and proposes it by default when no open order needs the plate (Settings → Printing → Queue: *A batch from the print dialog becomes an order*). Each plate becomes a line of the order, so the order page reads «plate 2: 3/5 · printing 1 · queued 1».
+
+- **The orders list is a farm roll-up.** Every order card and the new **Table** view show how many prints are running and how many wait in the queues, beside ordered, printed and remaining; the table sorts by any of them and by due date. The same two numbers sit on the order page's figures and on every line.
+
 - **A staggered-start group can carry its own limit.** Beside each tag or location picked as a group, Settings → Printing → Queue & Scheduling now takes a number: that group starts at most that many beds at once, while the others keep the farm-wide value. Two workshops on different circuit breakers no longer have to share one number. The queue banner shows every group's own `occupied/cap`.
 
 - **Printer tags have colours.** Settings → Printing → Tags offers a ten-swatch palette per tag; the chip then wears that colour on the printer card, in the printer form, in the staggered-start pickers and in the queue banner — "Phase 1" is yellow from across the room.
