@@ -312,8 +312,11 @@ async def create_plates_order(
     wanted = wanted_plate_indices(file.file_metadata)
     copies_by_plate: dict[int, int] = {}
     for plate_index, copies in plates:
-        idx = 0 if wanted == {0} else plate_index
-        if idx != 0 and idx not in wanted:
+        if wanted == {0}:
+            idx = 0  # a single-plate file: whatever the dialog said, it is the whole file
+        elif plate_index in wanted:
+            idx = plate_index
+        else:
             raise PlateNotFound(plate_index)
         if idx in copies_by_plate:
             raise DuplicatePlate(plate_index)

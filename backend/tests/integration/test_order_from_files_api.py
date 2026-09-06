@@ -286,6 +286,23 @@ async def test_plates_order_normalises_a_single_plate_file_to_plate_zero(committ
         json={"kind": "plates", "library_file_id": p1s.id, "plates": [{"plate_index": 9, "copies": 1}]},
     )
     assert r.status_code == 404 and r.json()["detail"] == "Plate not found"
+    # Plate 0 is never in a MULTI-plate file's set — the normalisation that maps
+    # any index to 0 fires only for a single-plate file. A client-supplied 0
+    # here must not slip past the membership check and create a phantom plate.
+    r = await committing_client.post(
+        "/api/v1/projects/from-files",
+        json={"kind": "plates", "library_file_id": p1s.id, "plates": [{"plate_index": 0, "copies": 1}]},
+    )
+    assert r.status_code == 404 and r.json()["detail"] == "Plate not found"
+    assert (
+        await db_session.execute(
+            select(Product).where(
+                Product.origin == ProductOrigin.ADHOC_PLATE.value,
+                Product.origin_file_id == p1s.id,
+                Product.origin_plate_index == 0,
+            )
+        )
+    ).scalars().all() == []
 
 
 @pytest.mark.asyncio
