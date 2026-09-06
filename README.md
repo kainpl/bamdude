@@ -249,7 +249,8 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - **Per-printer Maintenance Mode** — park a printer out of service (drops out of dispatch, scheduler, auto-drying, and metrics, and disconnects MQTT) without deleting it
 - **Archive a printer** — soft-retire a sold/decommissioned printer: it disappears from the Printers page, every picker, queues, dispatch, the scheduler, and MQTT, while its full print history is kept. Blocked while printing; cancels the printer's pending queue items. Restore or permanently delete it under Settings → Printing → Archived printers. Distinct from Maintenance Mode, which only parks a printer temporarily and keeps its card visible
 - Auto error-pause on print failure (queue stops, user decides next step)
-- Staggered start for farms (limit concurrent heating — farm-wide or per electrical phase and room via printer tags and locations; bed temp monitoring)
+- Staggered start for farms (limit concurrent heating — farm-wide or per electrical phase and room via printer tags and locations, each group with its own cap if needed; bed temp monitoring)
+- Printer tags with colours; the Printers page filters and groups by tag
 - **Swap Mode** — A1 Mini / A1 plate swapper with multi-profile support (Kit, STL, JobOx), auto-detect swap files, per-job event selection (start sequence / change table), plate-clear auto-bypass
 - **Swap macro auto-execution** — `swap_mode_start` before print, `swap_mode_change_table` after print, with ACK + stg_cur completion tracking, queue pause on failure
 - **Quick Vibration Check toggle** — per-job toggle; when disabled, 3MF gcode post-processor comments out `M970` commands, recalculates MD5 sidecars, repacks archive
