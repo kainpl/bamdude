@@ -1271,8 +1271,10 @@ export function SettingsPage() {
       (baseline.stagger_strict_for_direct_dispatch ?? false) !== (localSettings.stagger_strict_for_direct_dispatch ?? false) ||
       (baseline.stagger_split_by_tags ?? false) !== (localSettings.stagger_split_by_tags ?? false) ||
       (baseline.stagger_group_tag_ids ?? '[]') !== (localSettings.stagger_group_tag_ids ?? '[]') ||
+      (baseline.stagger_tag_limits ?? '{}') !== (localSettings.stagger_tag_limits ?? '{}') ||
       (baseline.stagger_split_by_location ?? false) !== (localSettings.stagger_split_by_location ?? false) ||
       (baseline.stagger_group_location_ids ?? '[]') !== (localSettings.stagger_group_location_ids ?? '[]') ||
+      (baseline.stagger_location_limits ?? '{}') !== (localSettings.stagger_location_limits ?? '{}') ||
       (baseline.preheat_enabled ?? false) !== (localSettings.preheat_enabled ?? false) ||
       (baseline.preheat_filament_targets ?? '') !== (localSettings.preheat_filament_targets ?? '') ||
       (baseline.preheat_max_wait_seconds ?? 900) !== (localSettings.preheat_max_wait_seconds ?? 900) ||
@@ -1374,8 +1376,10 @@ export function SettingsPage() {
         stagger_strict_for_direct_dispatch: localSettings.stagger_strict_for_direct_dispatch,
         stagger_split_by_tags: localSettings.stagger_split_by_tags,
         stagger_group_tag_ids: localSettings.stagger_group_tag_ids,
+        stagger_tag_limits: localSettings.stagger_tag_limits,
         stagger_split_by_location: localSettings.stagger_split_by_location,
         stagger_group_location_ids: localSettings.stagger_group_location_ids,
+        stagger_location_limits: localSettings.stagger_location_limits,
         preheat_enabled: localSettings.preheat_enabled,
         preheat_filament_targets: localSettings.preheat_filament_targets,
         preheat_max_wait_seconds: localSettings.preheat_max_wait_seconds,
@@ -3642,8 +3646,11 @@ export function SettingsPage() {
                     <StaggerGroupPickers
                       byTags={localSettings.stagger_split_by_tags ?? false}
                       tagIds={localSettings.stagger_group_tag_ids ?? '[]'}
+                      tagLimits={localSettings.stagger_tag_limits ?? '{}'}
                       byLocation={localSettings.stagger_split_by_location ?? false}
                       locationIds={localSettings.stagger_group_location_ids ?? '[]'}
+                      locationLimits={localSettings.stagger_location_limits ?? '{}'}
+                      globalCap={localSettings.stagger_concurrent ?? 2}
                       onChange={(key, value) => updateSetting(key, value)}
                     />
                   </>

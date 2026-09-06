@@ -18,10 +18,13 @@ function formatDuration(seconds: number): string {
  *
  * One segment per group: with no split the backend sends a single unlabelled
  * group and the line reads farm-wide, exactly as it always did; with a split
- * on, each phase / room gets its own `label: occupied/capacity`.  The tooltip
- * lists every printer holding a slot with its state (heating / interval_wait)
- * and time to free, grouped under its label, and marks a wildcard printer —
- * one with no chosen tag or location, which therefore counts in every group.
+ * on, each phase / room gets its own `label: occupied/cap` — the cap being
+ * the group's own, which a per-tag or per-location limit may have lowered.
+ *
+ * The tooltip lists every printer holding a slot with its state (heating /
+ * interval_wait) and time to free, grouped under its label and cap, and marks
+ * a wildcard printer — one with no chosen tag or location, which therefore
+ * counts in every group.
  */
 export function StaggerBanner() {
   const { t } = useTranslation();
@@ -34,10 +37,9 @@ export function StaggerBanner() {
 
   if (!data || !data.enabled) return null;
 
-  const capacity = data.concurrent;
   const line = data.groups.length === 1 && data.groups[0].label === null
-    ? t('queue.stagger.slots', { occupied: data.groups[0].occupied, capacity })
-    : data.groups.map((g) => t('queue.stagger.group', { label: g.label ?? '—', occupied: g.occupied, capacity })).join(' · ');
+    ? t('queue.stagger.slots', { occupied: data.groups[0].occupied, capacity: data.groups[0].cap })
+    : data.groups.map((g) => t('queue.stagger.group', { label: g.label ?? '—', occupied: g.occupied, capacity: g.cap })).join(' · ');
 
   const nextFree = data.groups
     .map((g) => g.next_free_in_seconds)
@@ -54,7 +56,7 @@ export function StaggerBanner() {
             const wild = s.wildcard ? ` (${t('queue.stagger.wildcard')})` : '';
             return `  ${s.printer_name}${wild}: ${stateLabel}, ${formatDuration(s.seconds_to_free)}`;
           });
-          return g.label ? [g.label, ...rows].join('\n') : rows.join('\n');
+          return g.label ? [`${g.label} — ${g.occupied}/${g.cap}`, ...rows].join('\n') : rows.join('\n');
         })
         .join('\n');
 

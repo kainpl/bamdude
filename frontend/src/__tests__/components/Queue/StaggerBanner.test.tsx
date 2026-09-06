@@ -19,7 +19,7 @@ describe('StaggerBanner', () => {
   it('keeps the farm-wide line when nothing is split', async () => {
     server.use(http.get('/api/v1/queue/stagger-state', () => HttpResponse.json({
       enabled: true, concurrent: 2, interval_minutes: 5, wait_for_bed: true, split: { by_tags: false, by_location: false },
-      groups: [{ tag_id: null, location_id: null, label: null, occupied: 1, free_slots: 1, next_free_in_seconds: null, slots: [slot(1, 'P1')] }],
+      groups: [{ tag_id: null, location_id: null, label: null, cap: 2, occupied: 1, free_slots: 1, next_free_in_seconds: null, slots: [slot(1, 'P1')] }],
     })));
     render(<StaggerBanner />);
     expect(await screen.findByText('Stagger: 1/2 slots occupied')).toBeInTheDocument();
@@ -29,9 +29,9 @@ describe('StaggerBanner', () => {
     server.use(http.get('/api/v1/queue/stagger-state', () => HttpResponse.json({
       enabled: true, concurrent: 1, interval_minutes: 5, wait_for_bed: true, split: { by_tags: true, by_location: false },
       groups: [
-        { tag_id: 1, location_id: null, label: 'Фаза 1', occupied: 1, free_slots: 0, next_free_in_seconds: 90, slots: [slot(1, 'P1')] },
-        { tag_id: 2, location_id: null, label: 'Фаза 2', occupied: 1, free_slots: 0, next_free_in_seconds: 40, slots: [slot(9, 'P9', true)] },
-        { tag_id: 3, location_id: null, label: 'Фаза 3', occupied: 0, free_slots: 1, next_free_in_seconds: null, slots: [] },
+        { tag_id: 1, location_id: null, label: 'Фаза 1', cap: 1, occupied: 1, free_slots: 0, next_free_in_seconds: 90, slots: [slot(1, 'P1')] },
+        { tag_id: 2, location_id: null, label: 'Фаза 2', cap: 1, occupied: 1, free_slots: 0, next_free_in_seconds: 40, slots: [slot(9, 'P9', true)] },
+        { tag_id: 3, location_id: null, label: 'Фаза 3', cap: 1, occupied: 0, free_slots: 1, next_free_in_seconds: null, slots: [] },
       ],
     })));
     render(<StaggerBanner />);
@@ -39,6 +39,22 @@ describe('StaggerBanner', () => {
     expect(screen.getByText('· next free in 40s')).toBeInTheDocument();
     const banner = screen.getByText(/Фаза 1: 1\/1/).closest('div')!;
     expect(banner.getAttribute('title')).toContain('P9 (no group, counts everywhere)');
+  });
+
+  it('reads each group’s own cap, not the farm-wide number', async () => {
+    server.use(http.get('/api/v1/queue/stagger-state', () => HttpResponse.json({
+      // concurrent 5 is deliberately neither cap: a banner still reading the
+      // farm-wide number would print 1/5 and 0/5 here.
+      enabled: true, concurrent: 5, interval_minutes: 5, wait_for_bed: true, split: { by_tags: true, by_location: false },
+      groups: [
+        { tag_id: 1, location_id: null, label: 'Phase 1', cap: 1, occupied: 1, free_slots: 0, next_free_in_seconds: 90, slots: [slot(1, 'P1')] },
+        { tag_id: 2, location_id: null, label: 'Phase 2', cap: 2, occupied: 0, free_slots: 2, next_free_in_seconds: null, slots: [] },
+      ],
+    })));
+    render(<StaggerBanner />);
+    expect(await screen.findByText('Phase 1: 1/1 · Phase 2: 0/2')).toBeInTheDocument();
+    const banner = screen.getByText(/Phase 1: 1\/1/).closest('div')!;
+    expect(banner.getAttribute('title')).toContain('Phase 1 — 1/1');
   });
 
   it('renders nothing while disabled', async () => {

@@ -2503,8 +2503,10 @@ export interface AppSettings {
   // kept as strings on the wire, like every structured setting here.
   stagger_split_by_tags: boolean;
   stagger_group_tag_ids: string;
+  stagger_tag_limits: string;
   stagger_split_by_location: boolean;
   stagger_group_location_ids: string;
+  stagger_location_limits: string;
   // LDAP authentication
   ldap_enabled: boolean;
   ldap_server_url: string;
@@ -3979,6 +3981,8 @@ export interface StaggerGroup {
   location_id: number | null;
   /** "Фаза 1 · Цех 2"; null for the single global group when nothing is split. */
   label: string | null;
+  /** The cap THIS group starts under — the global number unless a per-tag or per-location override lowers it. */
+  cap: number;
   occupied: number;
   free_slots: number;
   next_free_in_seconds: number | null;

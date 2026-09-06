@@ -25,3 +25,32 @@ export function parseIdList(raw: string | undefined | null): number[] {
 export function toggleId(list: number[], id: number): string {
   return JSON.stringify(list.includes(id) ? list.filter((v) => v !== id) : [...list, id].sort((a, b) => a - b));
 }
+
+/** The JSON object a limits setting holds (`{"5": 2}`), or nothing — malformed is empty, never thrown. */
+export function parseLimitMap(raw: string | undefined | null): Record<number, number> {
+  try {
+    const parsed: unknown = JSON.parse(raw || '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<number, number> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const id = Number(key);
+      if (Number.isInteger(id) && typeof value === 'number' && Number.isInteger(value) && value >= 1) out[id] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The map with `id` set to `value`, or removed when `value` is null, back as
+ * the JSON string the setting stores. Keys ascend numerically — the backend
+ * normalises the same way, so a round trip is not a change.
+ */
+export function setLimit(raw: string | undefined | null, id: number, value: number | null): string {
+  const map = parseLimitMap(raw);
+  if (value === null) delete map[id];
+  else map[id] = value;
+  const keys = Object.keys(map).map(Number).sort((a, b) => a - b);
+  return JSON.stringify(Object.fromEntries(keys.map((k) => [String(k), map[k]])));
+}
