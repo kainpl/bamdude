@@ -59,4 +59,16 @@ describe('selectableProducts', () => {
     expect(selectableProducts(undefined)).toEqual([]);
     expect(selectableProducts(null)).toEqual([]);
   });
+
+  it('hides adhoc products unless the row already links them', () => {
+    const products = [
+      { id: 1, is_active: true, origin: 'catalog' as const },
+      { id: 2, is_active: true, origin: 'adhoc_job' as const },
+      { id: 3, is_active: true, origin: 'adhoc_plate' as const },
+    ];
+    expect(selectableProducts(products).map((p) => p.id)).toEqual([1]);
+    expect(selectableProducts(products, [3]).map((p) => p.id)).toEqual([1, 3]);
+    // A row from an older server carries no origin and stays selectable.
+    expect(selectableProducts([{ id: 4, is_active: true }]).map((p) => p.id)).toEqual([4]);
+  });
 });

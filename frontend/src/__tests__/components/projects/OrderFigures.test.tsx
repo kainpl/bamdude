@@ -23,6 +23,8 @@ describe('OrderFigures', () => {
           progress: 0,
           other_prints_count: 0,
           all_printed: false,
+          prints_in_progress: 0,
+          prints_queued: 0,
         }}
       />,
     );
@@ -51,6 +53,8 @@ describe('OrderFigures', () => {
           progress: 0.4,
           other_prints_count: 2,
           all_printed: false,
+          prints_in_progress: 0,
+          prints_queued: 0,
         }}
       />,
     );
@@ -80,6 +84,8 @@ describe('OrderFigures', () => {
       progress: 0.7,
       other_prints_count: 0,
       all_printed: false,
+      prints_in_progress: 0,
+      prints_queued: 0,
     };
     const { rerender } = render(<OrderFigures figures={figures} />);
     expect(screen.getByText('From stock')).toBeInTheDocument();

@@ -1401,6 +1401,8 @@ export interface ProjectLine {
   /** Archives attributed to this line, in processing order. One archive can
    *  appear under two lines — this is not a partition of the order's prints. */
   archive_ids: number[];
+  prints_in_progress: number;
+  prints_queued: number;
 }
 
 export interface ProjectLineCreate {
@@ -1461,6 +1463,8 @@ export interface ProjectFigures {
    *  the surplus before, which banking never lowers, so it stayed lit for ever
    *  over an order that answered "nothing to bank". */
   bankable_surplus: number;
+  prints_in_progress: number;
+  prints_queued: number;
 }
 
 export interface Order {
@@ -1518,6 +1522,8 @@ export interface OrderListItem {
    *  built from, so a line whose product HAS a cover shows it and one that has
    *  none keeps its place as a placeholder. */
   line_products: LineProduct[];
+  prints_in_progress: number;
+  prints_queued: number;
 }
 
 /** An order line's product, reduced to what a card strip needs. */
@@ -1713,6 +1719,29 @@ export interface PlanEnqueueItem {
   line_id: number;
 }
 
+// ---- orders from files (spec 2026-09-06) ----
+
+export interface PartsPreviewPlate { plate_index: number; sliced: boolean; print_time_seconds: number | null }
+export interface PartsPreviewFile { id: number; filename: string; sliced_for_model: string | null; plates: PartsPreviewPlate[] }
+export interface PartsPreviewYield { library_file_id: number; plate_index: number; count: number }
+export interface PartsPreviewPart { name_key: string; name: string; yields: PartsPreviewYield[] }
+export interface PartsPreviewCatalogProduct {
+  id: number;
+  name: string;
+  parts: { id: number; name: string; qty_per_unit: number }[];
+}
+export interface PartsPreview {
+  files: PartsPreviewFile[];
+  parts: PartsPreviewPart[];
+  /** The one catalogue product linking EVERY selected file, else null. */
+  catalog_product: PartsPreviewCatalogProduct | null;
+}
+
+export type OrderFromFilesRequest =
+  | { kind: 'job'; name: string; file_ids: number[]; targets: Record<string, number> }
+  | { kind: 'catalog'; name: string; product_id: number; file_ids: number[]; quantity: number }
+  | { kind: 'plates'; library_file_id: number; plates: { plate_index: number; copies: number }[]; name?: string };
+
 /** `auto` = the auto-queue distributor picks the printer; `printer` = that
  *  printer's own queue. Naming a printer is a ROUTING choice, never a dispatch
  *  one — nothing here or downstream asks whether it is ready.
@@ -1901,10 +1930,16 @@ export interface ProductAttachment {
   uploaded_at: string | null;
 }
 
+/** Who made the product exist — see backend `models.product.ProductOrigin`. */
+export type ProductOrigin = 'catalog' | 'adhoc_job' | 'adhoc_plate';
+
 export interface ProductListItem {
   id: number;
   name: string;
   is_active: boolean;
+  origin: ProductOrigin;
+  origin_file_id: number | null;
+  origin_plate_index: number | null;
   cover_image_filename: string | null;
   /** The EFFECTIVE cover — the explicit column OR the first picture. A card
    *  renders `GET /products/{id}/cover-image` on this and never on the column,
@@ -2165,12 +2200,14 @@ export interface ProductCreate {
  *  optional on a PATCH. */
 export interface ProductUpdate extends Partial<ProductCreate> {
   is_active?: boolean;
+  origin?: 'catalog';
 }
 
 export interface ProductListParams {
   /** Unset = both; `false` is a real filter, so it is sent as `active=false`. */
   active?: boolean;
   q?: string;
+  include_adhoc?: boolean;
 }
 
 // API Key types
@@ -2403,6 +2440,7 @@ export interface AppSettings {
   ams_humidity_thresholds: string;  // JSON blob of per-filament humidity thresholds (#1605)
   // Auto-queue routing
   queue_shortest_first: boolean;  // SJF + been_jumped guard for the auto-queue scheduler
+  auto_order_for_batches: boolean;  // A multi-print batch from the print dialog proposes a new order when nothing open needs the plate
   prefer_lowest_filament: boolean;  // Drain the emptiest compatible spool first — honoured by AutoQueue AND by the Print dialog's auto-match
   // Preheat & heat-soak before queued prints (#1468)
   preheat_enabled: boolean;  // Master toggle / default for new queue items (false = dispatch immediately)
@@ -9849,6 +9887,7 @@ export const api = {
     // `!= null`, not truthiness: `active=false` is a filter, not an absence.
     if (params.active != null) qs.set('active', String(params.active));
     if (params.q) qs.set('q', params.q);
+    if (params.include_adhoc) qs.set('include_adhoc', 'true');
     return request<ProductListItem[]>(`/products/?${qs}`);
   },
   getProduct: (id: number) => request<Product>(`/products/${id}`),
@@ -9991,6 +10030,10 @@ export const api = {
    *  the whole file. */
   getOrderCandidates: (fileId: number, plateIndex: number) =>
     request<OrderCandidate[]>(`/library/files/${fileId}/order-candidates?plate_index=${plateIndex}`),
+  previewPartsOfFiles: (fileIds: number[]) =>
+    request<PartsPreview>('/library/files/parts-preview', { method: 'POST', body: JSON.stringify({ file_ids: fileIds }) }),
+  createOrderFromFiles: (body: OrderFromFilesRequest) =>
+    request<Order>('/projects/from-files', { method: 'POST', body: JSON.stringify(body) }),
   getLibraryFileCard: (fileId: number) => request<CardData>(`/library/files/${fileId}/card`),
   /**
    * The whole product as a ZIP, saved through the blob dance.

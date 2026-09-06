@@ -1,3 +1,5 @@
+import type { ProductOrigin } from '../api/client';
+
 /**
  * Which orders may be OFFERED for binding.
  *
@@ -42,12 +44,19 @@ export function selectableProjects<T extends { id: number; status?: string | nul
  * shapes (list item, detail, an embedded `ProductRef`), and an absent field is
  * "not told" rather than "retired" — defaulting the other way would empty a
  * picker whenever a lighter payload is what happens to be in hand.
+ *
+ * ⚠️ **An adhoc product is one the catalogue never saw** (spec 2026-09-06,
+ * Decision 2) — created for one job or one plate rather than picked from the
+ * catalogue. It is offered only where the row already links it, exactly like
+ * an inactive one. No `origin` on the row (an older server) means catalogue.
  */
-export function selectableProducts<T extends { id: number; is_active?: boolean }>(
+export function selectableProducts<T extends { id: number; is_active?: boolean; origin?: ProductOrigin }>(
   products: T[] | undefined | null,
   keepIds?: Iterable<number> | null,
 ): T[] {
   if (!products) return [];
   const keep = keepIds ? new Set(keepIds) : null;
-  return products.filter((p) => p.is_active !== false || keep?.has(p.id));
+  return products.filter(
+    (p) => (p.is_active !== false && (p.origin == null || p.origin === 'catalog')) || keep?.has(p.id),
+  );
 }
