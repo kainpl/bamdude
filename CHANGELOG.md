@@ -68,6 +68,8 @@
 
 - **Order, customer and product pages are counted in one pass instead of one per row.** Working out what an order has printed means walking its lines, its products' parts and every print that named them — right for one order, wrong once per row of a list, and the orders list, a customer's page and every answer carrying a product each did it in a loop. It is one grouped query for the whole page now: measured on the developer's farm (5 orders, 876 archives) the orders list went from 44 database queries to 12 and a customer page from 42 to 10, both about a third faster — on a farm with hundreds of orders it is the difference between a page and a wait. The numbers are unchanged; the same accounting runs over the batched result, pinned against the old one field by field. A product's plate count also stops counting plates of files you have moved to the trash, so it matches the plate list beneath it.
 
+- **New identity.** The bar mark replaces the mascot everywhere: browser tab and PWA icons (adaptive SVG, maskable Android tile, Apple touch icon), the sidebar, sign-in and setup pages, the stream overlay, the Windows installer and the README. The PWA theme colour follows the brand ink. The full pack is published at [bamdude.top/brand](https://bamdude.top/brand/README.md).
+
 ### Fixed
 
 - **A file named only by its extension no longer leaves a finished print stuck in the queue.** A library file called just `.gcode.3mf` went to the printer as `.3mf`, and when it finished the completion was refused as belonging to some other job: both names shrink to nothing once the sliced-file extensions are stripped, and "nothing" was read as "a printer between jobs". The printer was released, but its queue row stayed in `printing` for good — the queue's list view kept showing a print that had ended the night before while the card view showed nothing, and the row could not be deleted, because a printing row cannot. Such a name now matches itself, so the row is closed and tidied like any other; the same blind spot would have closed the running print as completed at the first reconnect. The stale-archive cleanup at print start no longer touches the archive of a job that was just dispatched either, whatever it is called.
@@ -189,10 +191,6 @@
 ### Removed
 
 - **Importing a Bambuddy database is gone.** Dropping a Bambuddy 2.2.2 `bambuddy.db` into the data directory used to import it on first boot. BamDude forked at that version and has since diverged too far for a one-time import to be safe, so the importer is removed; a Bambuddy file found in the data directory is now left untouched (it used to be renamed to `.bak` after import) and named in the log on every start. BamDude's own older databases (a `bambuddy.db` written by BamDude 3.0.1) are still renamed and upgraded as before.
-
-### Changed
-
-- **New identity.** The bar mark replaces the mascot everywhere: browser tab and PWA icons (adaptive SVG, maskable Android tile, Apple touch icon), the sidebar, sign-in and setup pages, the stream overlay, the Windows installer and the README. The PWA theme colour follows the brand ink. The full pack is published at [bamdude.top/brand](https://bamdude.top/brand/README.md).
 
 ## [0.5.5] - 2026-08-28
 
