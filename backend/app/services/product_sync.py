@@ -47,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.models.product import Product, ProductPart, ProductPlate, product_files, product_folders
+from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate, product_files, product_folders
 from backend.app.services.product_composition import part_index, plate_key_counts
 
 
@@ -66,13 +66,25 @@ def wanted_plate_indices(file_metadata: dict | None) -> set[int]:
 
 
 async def seed_parts_for_product(
-    db: AsyncSession, *, product_id: int, meta: dict | None, plate_indices: Iterable[int]
+    db: AsyncSession,
+    *,
+    product_id: int,
+    meta: dict | None,
+    plate_indices: Iterable[int],
+    origin_plate_index: int | None = None,
 ) -> int:
     """Create a printed part for every object key on the given plates that no
-    existing part (own key or alias) covers. Returns the number created."""
+    existing part (own key or alias) covers. Returns the number created.
+
+    ``origin_plate_index`` is set for an ``adhoc_plate`` product (spec Decision
+    4): a new part is seeded with its count on THAT plate, and 0 when it is not
+    on it — the product measures one print of its plate and nothing else. An
+    existing part is never re-counted here, whatever plate it came from.
+    """
     existing = (await db.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars().all()
     idx = part_index(existing)
     next_sort = max((p.sort_order for p in existing), default=-1) + 1
+    origin_counts = plate_key_counts(meta, origin_plate_index)[0] if origin_plate_index is not None else None
     created = 0
     for plate_index in sorted(plate_indices):
         counts, display = plate_key_counts(meta, plate_index)
@@ -84,7 +96,7 @@ async def seed_parts_for_product(
                 kind="printed",
                 name=display[key],
                 name_key=key,
-                qty_per_unit=n,
+                qty_per_unit=n if origin_counts is None else origin_counts.get(key, 0),
                 aliases=[key],
                 auto=True,
                 sort_order=next_sort,
@@ -161,6 +173,10 @@ async def sync_product_for_file(db: AsyncSession, *, library_file_id: int, produ
     for plate in existing:
         by_product.setdefault(plate.product_id, {})[plate.plate_index] = plate
 
+    origins = {
+        product.id: product.origin_plate_index if product.origin == ProductOrigin.ADHOC_PLATE.value else None
+        for product in (await db.execute(select(Product).where(Product.id.in_(desired)))).scalars()
+    }
     for product_id in desired:
         have = by_product.get(product_id, {})
         for plate_index, plate in have.items():
@@ -168,7 +184,9 @@ async def sync_product_for_file(db: AsyncSession, *, library_file_id: int, produ
                 await db.delete(plate)
         for plate_index in sorted(wanted - have.keys()):
             db.add(ProductPlate(product_id=product_id, library_file_id=library_file_id, plate_index=plate_index))
-        await seed_parts_for_product(db, product_id=product_id, meta=meta, plate_indices=wanted)
+        await seed_parts_for_product(
+            db, product_id=product_id, meta=meta, plate_indices=wanted, origin_plate_index=origins.get(product_id)
+        )
     await db.flush()
 
 

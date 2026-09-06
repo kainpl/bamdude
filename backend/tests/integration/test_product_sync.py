@@ -266,3 +266,25 @@ async def test_catalog_products_are_not_bound_by_the_plate_index(db_session):
         )
     await db_session.flush()
     assert (await _product(db_session)).origin == "catalog"
+
+
+@pytest.mark.asyncio
+async def test_a_plate_product_counts_only_its_own_plate(db_session):
+    """Decision 4: unit = one print of the plate. Parts of the OTHER plates of
+    the file are seeded at 0 ("do not measure"), so the line's progress is the
+    number of full plate yields — i.e. prints of that plate."""
+    f = await _file(db_session, "m.gcode.3mf", MULTI)
+    p = Product(name="m · plate 2", origin=ProductOrigin.ADHOC_PLATE.value, origin_file_id=f.id, origin_plate_index=2)
+    db_session.add(p)
+    await db_session.flush()
+    await sync_product_for_file(db_session, library_file_id=f.id, product_ids=[p.id])
+    parts = await _parts(db_session, p.id)
+    assert {k: v.qty_per_unit for k, v in parts.items()} == {"bracket.stl": 0, "lid.stl": 0, "clip.stl": 10}
+    # A catalogue product on the same file keeps today's seed.
+    c = await _product(db_session, "Cat")
+    await sync_product_for_file(db_session, library_file_id=f.id, product_ids=[p.id, c.id])
+    assert {k: v.qty_per_unit for k, v in (await _parts(db_session, c.id)).items()} == {
+        "bracket.stl": 2,
+        "lid.stl": 1,
+        "clip.stl": 10,
+    }
