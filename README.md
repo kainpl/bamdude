@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="static/img/bamdude_logo_dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="static/img/bamdude_logo_light.png">
-    <img src="static/img/bamdude_logo_dark.png" alt="BamDude Logo" width="300">
+    <source media="(prefers-color-scheme: dark)" srcset="static/img/brand/readme-banner-1600x400.png">
+    <source media="(prefers-color-scheme: light)" srcset="static/img/brand/lockup-on-light.png">
+    <img src="static/img/brand/readme-banner-1600x400.png" alt="BamDude" width="640">
   </picture>
 </p>
 

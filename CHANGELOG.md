@@ -190,6 +190,10 @@
 
 - **Importing a Bambuddy database is gone.** Dropping a Bambuddy 2.2.2 `bambuddy.db` into the data directory used to import it on first boot. BamDude forked at that version and has since diverged too far for a one-time import to be safe, so the importer is removed; a Bambuddy file found in the data directory is now left untouched (it used to be renamed to `.bak` after import) and named in the log on every start. BamDude's own older databases (a `bambuddy.db` written by BamDude 3.0.1) are still renamed and upgraded as before.
 
+### Changed
+
+- **New identity.** The bar mark replaces the mascot everywhere: browser tab and PWA icons (adaptive SVG, maskable Android tile, Apple touch icon), the sidebar, sign-in and setup pages, the stream overlay, the Windows installer and the README. The PWA theme colour follows the brand ink. The full pack is published at [bamdude.top/brand](https://bamdude.top/brand/README.md).
+
 ## [0.5.5] - 2026-08-28
 
 Image: `ghcr.io/kainpl/bamdude:0.5.5` / `kainpl/bamdude:0.5.5` (`:latest` tracks this).

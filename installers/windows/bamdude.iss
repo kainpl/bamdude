@@ -49,13 +49,11 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; Admin required: we register a Windows service and write to ProgramData
 PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=
-; BamDude branding — bamdude.ico is a multi-resolution .ico (16/24/32/48/
-; 64/128/256) generated from frontend/public/img/android-chrome-512x512.png
-; (the shipped file once carried the upstream Bambuddy logo — the comment
-; claimed our identity while the pixels disagreed; regenerated 2026-08-25);
-; lives next
-; to this .iss so the SourcePath-relative reference works during compile
-; and the [Files] entry stages it into {app} for Add/Remove Programs.
+; BamDude branding — bamdude.ico is the brand pack's app-icon.ico (16/32/48/
+; 64/128/256, dark tile), copied from bamdude.top/public/brand/; regenerate
+; from the pack, never edit here. Lives next to this .iss so the
+; SourcePath-relative reference works during compile, and the [Files] entry
+; stages it into {app} for Add/Remove Programs.
 SetupIconFile=bamdude.ico
 UninstallDisplayIcon={app}\bamdude.ico
 ; Don't allow installing to a network drive — service won't start cleanly
