@@ -65,7 +65,7 @@ from backend.app.schemas.project import (
     StockMovedOut,
     TimelineEvent,
 )
-from backend.app.services import part_stock
+from backend.app.services import part_stock, product_delete
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.order_metrics import (
     attribute,
@@ -468,7 +468,11 @@ async def delete_project(
         archive.project_line_id = None
         if still_owns_its_stock:
             await part_stock.credit_if_unfiled(db, archive, note=part_stock.NOTE_PROJECT_DELETED)
+    line_products = {line.product_id for line in project.lines}
     await db.delete(project)
+    await db.flush()
+    # Decision 5: an adhoc product lives exactly as long as a line references it.
+    await product_delete.delete_orphaned_adhoc_products(db, line_products)
     return {"message": "Project deleted"}
 
 
@@ -568,6 +572,8 @@ async def delete_line(
         await db.execute(update(model).where(model.project_line_id == line_id).values(project_line_id=None))
     await part_stock.detach_line(db, line_id)
     project.lines.remove(line)  # delete-orphan turns this into the DELETE
+    await db.flush()
+    await product_delete.delete_orphaned_adhoc_products(db, [line.product_id])
     return await _response(db, project_id)
 
 

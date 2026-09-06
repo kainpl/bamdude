@@ -19,7 +19,7 @@ from backend.app.models.print_options_preference import PrintOptionsPreference
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
-from backend.app.models.product import Product, ProductPart, ProductPlate
+from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
@@ -3261,3 +3261,61 @@ async def test_banking_decides_with_the_products_parts_locked(committing_client,
     # pass just as happily for a SELECT that had lost its lock. The PostgreSQL
     # rendering of the same statement is where the lock is visible.
     assert "FOR UPDATE" in str(part_stock.lock_part_stmt(counted[0].id).compile(dialect=postgresql.dialect()))
+
+
+async def _adhoc_order(db, file_id, origin=ProductOrigin.ADHOC_JOB.value):
+    product = Product(name="Job", origin=origin)
+    db.add(product)
+    await db.flush()
+    db.add(
+        ProductPart(
+            product_id=product.id, kind="printed", name="hook", name_key="hook", qty_per_unit=1, aliases=["hook"]
+        )
+    )
+    db.add(ProductPlate(product_id=product.id, library_file_id=file_id, plate_index=0))
+    project = Project(name="Batch")
+    project.lines.append(ProjectLine(product_id=product.id, quantity=3, sort_order=0))
+    db.add(project)
+    await db.commit()
+    return project, product
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_order_takes_its_adhoc_product_and_leaves_catalogue_ones(
+    committing_client, db_session, catalog
+):
+    project, adhoc = await _adhoc_order(db_session, catalog["file"].id)
+    project.lines.append(ProjectLine(product_id=catalog["product"].id, quantity=1, sort_order=1))
+    await db_session.commit()
+    r = await committing_client.delete(f"/api/v1/projects/{project.id}")
+    assert r.status_code == 200, r.text
+    # A plain select, not ``db_session.get`` — the delete ran in the route's own
+    # session, and ``.get()`` would answer from ``db_session``'s identity map
+    # (which still holds the pre-delete instance) instead of asking the DB.
+    assert (await db_session.execute(select(Product).where(Product.id == adhoc.id))).scalar_one_or_none() is None
+    assert (
+        await db_session.execute(select(Product).where(Product.id == catalog["product"].id))
+    ).scalar_one_or_none() is not None
+    assert (
+        await db_session.execute(select(ProductPart).where(ProductPart.product_id == adhoc.id))
+    ).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_last_line_takes_the_adhoc_product_too(committing_client, db_session, catalog):
+    project, adhoc = await _adhoc_order(db_session, catalog["file"].id)
+    line_id = project.lines[0].id
+    r = await committing_client.delete(f"/api/v1/projects/{project.id}/lines/{line_id}")
+    assert r.status_code == 200, r.text
+    assert (await db_session.execute(select(Product).where(Product.id == adhoc.id))).scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_an_adhoc_product_still_ordered_elsewhere_survives(committing_client, db_session, catalog):
+    project, adhoc = await _adhoc_order(db_session, catalog["file"].id)
+    other = Project(name="Other")
+    other.lines.append(ProjectLine(product_id=adhoc.id, quantity=1, sort_order=0))
+    db_session.add(other)
+    await db_session.commit()
+    await committing_client.delete(f"/api/v1/projects/{project.id}")
+    assert (await db_session.execute(select(Product).where(Product.id == adhoc.id))).scalar_one_or_none() is not None

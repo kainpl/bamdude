@@ -15,6 +15,7 @@ from backend.app.models.product import Product, ProductOrigin, ProductPart, Prod
 from backend.app.services.product_sync import (
     apply_folder_products,
     inherit_folder_products,
+    purge_file_product_links,
     resync_file_products,
     sync_product_for_file,
     wanted_plate_indices,
@@ -288,3 +289,14 @@ async def test_a_plate_product_counts_only_its_own_plate(db_session):
         "lid.stl": 1,
         "clip.stl": 10,
     }
+
+
+@pytest.mark.asyncio
+async def test_purging_a_file_forgets_it_as_an_origin(db_session):
+    f = await _file(db_session, "m.gcode.3mf", MULTI)
+    p = Product(name="m · plate 1", origin=ProductOrigin.ADHOC_PLATE.value, origin_file_id=f.id, origin_plate_index=1)
+    db_session.add(p)
+    await db_session.flush()
+    await purge_file_product_links(db_session, [f.id])
+    await db_session.refresh(p)
+    assert p.origin_file_id is None and p.origin == "adhoc_plate"

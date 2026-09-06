@@ -42,7 +42,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 
-from sqlalchemy import delete, insert, inspect as sqla_inspect, select
+from sqlalchemy import delete, insert, inspect as sqla_inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -279,6 +279,9 @@ async def purge_file_product_links(db: AsyncSession, library_file_ids: Sequence[
     ids = list(library_file_ids)
     if not ids:
         return
+    await db.execute(
+        update(Product).where(Product.origin_file_id.in_(list(library_file_ids))).values(origin_file_id=None)
+    )
     await db.execute(delete(ProductPlate).where(ProductPlate.library_file_id.in_(ids)))
     await db.execute(delete(product_files).where(product_files.c.library_file_id.in_(ids)))
 

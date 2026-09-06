@@ -67,7 +67,7 @@ from backend.app.schemas.product import (
     StockBalanceOut,
     StockMovementOut,
 )
-from backend.app.services import part_stock
+from backend.app.services import part_stock, product_delete
 from backend.app.services.part_names import canonicalize, name_key
 from backend.app.services.product_card import (
     export_zip,
@@ -478,30 +478,7 @@ async def delete_product(
     product = await _get(db, product_id)
     if await _lines_count(db, product_id):
         raise HTTPException(status_code=409, detail="Product is used by an order line; remove the lines first")
-    # SQLite honours no FK cascade, so nothing here leans on one: the pivot rows
-    # and the procurement rows hanging off this product's parts are dropped by
-    # hand, and the ORM cascades parts and plates.
-    #
-    # ⚠️ The pivots go through the COLLECTIONS, not a core DELETE. ``_get`` loads
-    # both eagerly, so SQLAlchemy emits its own secondary DELETEs at flush; a
-    # core DELETE racing them finds the row already gone and raises
-    # ``StaleDataError`` — from the flush, far from the line that caused it.
-    product.library_files = []
-    product.library_folders = []
-    await db.execute(
-        delete(ProjectProcurement).where(
-            ProjectProcurement.product_part_id.in_(select(ProductPart.id).where(ProductPart.product_id == product_id))
-        )
-    )
-    # The stock ledger of every part going with the product, for the same
-    # reason and through its own writer — ``delete_part`` does this one part at
-    # a time and the whole product is no different. Worse, in fact: SQLite
-    # REUSES rowids, so an orphaned ledger does not just linger, it eventually
-    # attaches itself to whichever part inherits the id.
-    part_ids = (await db.execute(select(ProductPart.id).where(ProductPart.product_id == product_id))).scalars().all()
-    await part_stock.delete_for_parts(db, list(part_ids))
-    await db.flush()
-    await db.delete(product)
+    await product_delete.delete_product(db, product)
     return {"message": "Product deleted"}
 
 
