@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Security
+
+- **Frontend dependencies bumped on Dependabot security advisories:** `@tiptap/core` 3.19 → 3.31, `fflate` 0.8.2 → 0.8.3, `@humanfs/node` 0.16.7 → 0.16.8 (transitive; the rich-text editor and the 3MF reader keep working as before).
+
 ### Added
 
 - **A staggered-start group can carry its own limit.** Beside each tag or location picked as a group, Settings → Printing → Queue & Scheduling now takes a number: that group starts at most that many beds at once, while the others keep the farm-wide value. Two workshops on different circuit breakers no longer have to share one number. The queue banner shows every group's own `occupied/cap`.
