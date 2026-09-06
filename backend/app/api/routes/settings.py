@@ -105,6 +105,7 @@ async def get_settings(
                 "user_notifications_enabled",
                 "prefer_lowest_filament",
                 "queue_shortest_first",
+                "auto_order_for_batches",
                 "queue_drying_enabled",
                 "queue_drying_block",
                 "ambient_drying_enabled",

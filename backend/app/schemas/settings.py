@@ -204,6 +204,10 @@ class AppSettings(BaseModel):
         default=False,
         description="Auto-queue: prefer shorter print jobs first (with been_jumped starvation guard)",
     )
+    auto_order_for_batches: bool = Field(
+        default=True,
+        description="Print dialog: a submission of two or more prints proposes a new order for the batch (spec 2026-09-06, Decision 6)",
+    )
     # Preheat / heat-soak before queued prints (#1468). The scheduler stage runs on the
     # idle printer between FTP upload and start_print. Three hardware tiers: chamber heater
     # (H2C/H2D/H2D Pro/H2S/X2D/X1E) set_ctt → wait for chamber sensor → soak; chamber sensor
@@ -664,6 +668,7 @@ class AppSettingsUpdate(BaseModel):
     printer_sensor_history_retention_days: int | None = None
     prefer_lowest_filament: bool | None = None
     queue_shortest_first: bool | None = None
+    auto_order_for_batches: bool | None = None
     preheat_enabled: bool | None = None
     preheat_filament_targets: str | None = None
     preheat_max_wait_seconds: int | None = Field(default=None, ge=60, le=3600)
