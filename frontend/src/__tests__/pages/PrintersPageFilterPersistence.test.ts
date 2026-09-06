@@ -55,6 +55,17 @@ describe('a saved filter cannot strand the page', () => {
     expect(source).toContain('STATUS_FILTER_OPTIONS.map((option) => ({ value: option.value');
   });
 
+  it('validates a saved sort against the very list the dropdown offers', () => {
+    // Same trap as the status filter, and the same cure: the sort was read out
+    // of storage with a bare cast, so a value no option carries would leave the
+    // grid in whatever order the sort switch falls through to with nothing
+    // picked in the dropdown — and no way to see why.
+    expect(source).toContain('const SORT_OPTIONS');
+    expect(source).toContain('isKnownSortOption(saved)');
+    expect(source).toContain('SORT_OPTIONS.map((option) => ({ value: option.value');
+    expect(source).not.toContain("localStorage.getItem('printerSortBy') as SortOption");
+  });
+
   it('resets a location that no longer exists', () => {
     const guard = source.slice(source.indexOf('A saved location can outlive'));
     expect(guard).toContain("setLocationFilter('all')");

@@ -208,6 +208,7 @@ export default {
       staggerGroup: 'stagger group',
       remove: 'Remove {{name}}',
       colorOf: 'Colour of {{name}}',
+      colorOfNew: 'Colour of the new tag',
       pickColor: 'Tag colour',
       noColor: 'No colour',
       colorFailed: 'Could not change the colour',

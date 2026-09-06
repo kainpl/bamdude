@@ -212,6 +212,7 @@ export default {
       staggerGroup: 'група запуску',
       remove: 'Зняти {{name}}',
       colorOf: 'Колір тегу {{name}}',
+      colorOfNew: 'Колір нового тегу',
       pickColor: 'Колір тегу',
       noColor: 'Без кольору',
       colorFailed: 'Не вдалося змінити колір',

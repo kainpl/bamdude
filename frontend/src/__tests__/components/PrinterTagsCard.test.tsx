@@ -83,6 +83,44 @@ describe('PrinterTagsCard', () => {
     expect(await screen.findByText('Ряд 2')).toBeInTheDocument();
   });
 
+  /**
+   * ⚠️ The create row carries a swatch of its own, and the POST carries what it
+   * picked.
+   *
+   * A colour chosen before the tag exists has nowhere to be stored but the
+   * request that creates it — a card that dropped it here would look like it
+   * worked (the palette closes, the tag appears) and quietly produce a
+   * colourless tag, which is exactly the failure the per-row swatch was added
+   * to end.
+   */
+  it('creates a tag with the colour picked on the create row', async () => {
+    const posted: unknown[] = [];
+    server.use(
+      http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags: TAGS })),
+      http.post('/api/v1/printer-tags', async ({ request }) => {
+        posted.push(await request.json());
+        return HttpResponse.json({ id: 3, name: 'Ряд 2', color: '#f59e0b' }, { status: 201 });
+      })
+    );
+    render(<PrinterTagsCard />);
+    await screen.findByText('Фаза 1');
+    await userEvent.type(screen.getByPlaceholderText('Add tag'), 'Ряд 2');
+    const swatch = screen.getByRole('button', { name: 'Colour of the new tag' });
+    await userEvent.click(swatch);
+    await userEvent.click(screen.getByRole('button', { name: 'Amber' }));
+    // Picking closes the palette and the swatch wears the choice, so the
+    // operator can see what the tag is about to be created with.
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Tag colour' })).not.toBeInTheDocument());
+    expect(swatch.style.backgroundColor).toBe('rgb(245, 158, 11)');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Add tag' }));
+
+    await waitFor(() => expect(posted).toEqual([{ name: 'Ряд 2', color: '#f59e0b' }]));
+    // The row is for the NEXT tag: a colour left behind would be inherited by
+    // whatever is typed after it.
+    await waitFor(() => expect(swatch.style.backgroundColor).toBe('transparent'));
+  });
+
   it('renames a tag in place', async () => {
     let renamed = false;
     const patched: string[] = [];

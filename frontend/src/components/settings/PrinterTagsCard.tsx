@@ -7,6 +7,109 @@ import { PrinterTagChip } from '../PrinterTagChip';
 import { TAG_PALETTE } from '../../utils/tagColors';
 import { byLocationName } from '../../utils/locationOrder';
 
+interface ColorPaletteProps {
+  /** The colour worn now: the swatch shows it, and the palette rings it. */
+  value: string | null;
+  open: boolean;
+  /** The swatch was clicked — the CARD decides which palette that leaves open. */
+  onToggle: () => void;
+  onPick: (color: string | null) => void;
+  /** Escape or a click outside: dismissal, as opposed to a pick. */
+  onClose: () => void;
+  /** Accessible name of the swatch — the only thing saying whose colour it is. */
+  anchorLabel: string;
+}
+
+/**
+ * The swatch that opens the ten-colour palette, and the palette itself.
+ *
+ * One component for both callers — a tag's row and the create row ask the very
+ * same question, and a second copy of this markup is exactly where the wiring
+ * below (`aria-expanded`, Escape returning focus, the outside click) would have
+ * been left out.
+ *
+ * ⚠️ WHICH palette is open belongs to the card, not here: only one may be open
+ * at a time, and a rename taking a row over has to close one it does not own.
+ * ⚠️ The popover is `w-full order-last` inside the caller's `flex-wrap` row, so
+ * it drops onto a line of its own below whatever sits beside the swatch rather
+ * than stretching the row it opened from.
+ */
+function ColorPalette({ value, open, onToggle, onPick, onClose, anchorLabel }: ColorPaletteProps) {
+  const { t } = useTranslation();
+  // Bound to this palette alone, and only the open one listens at all.
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
+  const paletteRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Dismiss the open palette the two ways a popover is dismissed.
+   *
+   * Same `mousedown` + ref shape as `components/printers/TagFilterMenu.tsx`.
+   * Escape additionally returns focus to the swatch that opened it — closing a
+   * popover that stole focus and leaving it on `document.body` strands a
+   * keyboard user at the top of the page.
+   */
+  useEffect(() => {
+    if (!open) return;
+    const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (paletteRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
+      onClose();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      onClose();
+      // Still attached: the ref is only detached on the re-render this schedules.
+      anchorRef.current?.focus();
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open, onClose]);
+
+  return (
+    <>
+      {/* The swatch is both the state and the control: it shows the colour worn
+          and it opens the palette. */}
+      <button
+        type="button"
+        ref={anchorRef}
+        aria-label={anchorLabel}
+        aria-expanded={open}
+        aria-haspopup="true"
+        onClick={onToggle}
+        className="w-4 h-4 rounded-full border border-bambu-dark-tertiary shrink-0"
+        style={{ backgroundColor: value ?? 'transparent' }}
+      />
+      {open && (
+        <div
+          ref={paletteRef}
+          role="group"
+          aria-label={t('printers.tags.pickColor')}
+          className="w-full order-last flex flex-wrap items-center gap-1.5 p-2 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary"
+        >
+          {TAG_PALETTE.map((swatch) => (
+            <button
+              key={swatch.hex}
+              type="button"
+              aria-label={t(`printers.tags.colors.${swatch.nameKey}`)}
+              title={t(`printers.tags.colors.${swatch.nameKey}`)}
+              onClick={() => onPick(swatch.hex)}
+              className={`w-5 h-5 rounded-full border-2 ${value === swatch.hex ? 'border-white' : 'border-transparent'}`}
+              style={{ backgroundColor: swatch.hex }}
+            />
+          ))}
+          <button type="button" onClick={() => onPick(null)} className="text-xs text-bambu-gray hover:text-white px-1">
+            {t('printers.tags.noColor')}
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 /**
  * Manage the labels printers carry.
  *
@@ -22,40 +125,13 @@ export function PrinterTagsCard() {
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingName, setEditingName] = useState('');
-  const [colorPickerId, setColorPickerId] = useState<number | null>(null);
-  // Only one palette is ever open, so one ref each is enough — they are bound
-  // to whichever row is open and are the toggle Escape hands focus back to.
-  const swatchRef = useRef<HTMLButtonElement | null>(null);
-  const paletteRef = useRef<HTMLDivElement | null>(null);
-
-  /**
-   * Dismiss the open palette the two ways a popover is dismissed.
-   *
-   * Same `mousedown` + ref shape as `components/printers/TagFilterMenu.tsx`.
-   * Escape additionally returns focus to the swatch that opened it — closing a
-   * popover that stole focus and leaving it on `document.body` strands a
-   * keyboard user at the top of the page.
-   */
-  useEffect(() => {
-    if (colorPickerId === null) return;
-    const onMouseDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (paletteRef.current?.contains(target) || swatchRef.current?.contains(target)) return;
-      setColorPickerId(null);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      setColorPickerId(null);
-      // Still attached: the ref is only detached on the re-render this schedules.
-      swatchRef.current?.focus();
-    };
-    document.addEventListener('mousedown', onMouseDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onMouseDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [colorPickerId]);
+  // Which palette is open — a tag's row, the create row ('new'), or none. One
+  // at a time across the whole card: two open palettes are two answers to the
+  // same question on screen.
+  const [openPaletteFor, setOpenPaletteFor] = useState<number | 'new' | null>(null);
+  // The colour the create row is holding. A tag that does not exist yet has
+  // nowhere to keep one but the request that creates it.
+  const [newColor, setNewColor] = useState<string | null>(null);
 
   const { data } = useQuery({ queryKey: ['printer-tags'], queryFn: api.getPrinterTags });
   const invalidate = () => {
@@ -66,9 +142,12 @@ export function PrinterTagsCard() {
   };
 
   const create = useMutation({
-    mutationFn: () => api.createPrinterTag(name.trim()),
+    mutationFn: () => api.createPrinterTag(name.trim(), newColor),
     onSuccess: () => {
       setName('');
+      // The row is for the NEXT tag: a colour left behind would be inherited by
+      // whatever is typed after it.
+      setNewColor(null);
       setError(null);
       invalidate();
     },
@@ -102,7 +181,7 @@ export function PrinterTagsCard() {
     mutationFn: ({ id, name: current, color }: { id: number; name: string; color: string | null }) =>
       api.updatePrinterTag(id, { name: current, color }),
     onSuccess: () => {
-      setColorPickerId(null);
+      setOpenPaletteFor(null);
       setError(null);
       invalidate();
     },
@@ -119,7 +198,7 @@ export function PrinterTagsCard() {
 
   /** Opening a rename takes the row over; a palette left open under it is stale chrome. */
   const startRename = (id: number, current: string) => {
-    setColorPickerId(null);
+    setOpenPaletteFor(null);
     setEditingId(id);
     setEditingName(current);
   };
@@ -138,7 +217,7 @@ export function PrinterTagsCard() {
     onSuccess: () => {
       // The row that owned the palette is gone; the id would outlive it and
       // re-open the palette on whichever tag lands on that id next.
-      setColorPickerId(null);
+      setOpenPaletteFor(null);
       setError(null);
       invalidate();
     },
@@ -179,20 +258,18 @@ export function PrinterTagsCard() {
                     onBlur={() => commitRename(tag.id, tag.name)}
                   />
                 ) : (
-                  <div className="min-w-0">
-                    <span className="flex items-center gap-2 text-white truncate">
-                      {/* The swatch is both the state and the control: it shows
-                          the colour the tag wears and opens the palette. */}
-                      <button
-                        type="button"
-                        ref={colorPickerId === tag.id ? swatchRef : null}
-                        aria-label={t('printers.tags.colorOf', { name: tag.name })}
-                        aria-expanded={colorPickerId === tag.id}
-                        aria-haspopup="true"
-                        onClick={() => setColorPickerId(colorPickerId === tag.id ? null : tag.id)}
-                        className="w-4 h-4 rounded-full border border-bambu-dark-tertiary shrink-0"
-                        style={{ backgroundColor: tag.color ?? 'transparent' }}
-                      />
+                  <div className="min-w-0 flex flex-wrap items-center gap-2">
+                    {/* Wrapping, so the palette can take a line of its own under
+                        the name rather than stretching it. */}
+                    <ColorPalette
+                      value={tag.color ?? null}
+                      open={openPaletteFor === tag.id}
+                      onToggle={() => setOpenPaletteFor(openPaletteFor === tag.id ? null : tag.id)}
+                      onPick={(color) => recolor.mutate({ id: tag.id, name: tag.name, color })}
+                      onClose={() => setOpenPaletteFor(null)}
+                      anchorLabel={t('printers.tags.colorOf', { name: tag.name })}
+                    />
+                    <span className="flex items-center gap-2 text-white truncate min-w-0">
                       <PrinterTagChip tag={tag} />
                       {tag.is_stagger_group && (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-500">
@@ -200,33 +277,6 @@ export function PrinterTagsCard() {
                         </span>
                       )}
                     </span>
-                    {colorPickerId === tag.id && (
-                      <div
-                        ref={paletteRef}
-                        role="group"
-                        aria-label={t('printers.tags.pickColor')}
-                        className="mt-2 flex flex-wrap items-center gap-1.5 p-2 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary"
-                      >
-                        {TAG_PALETTE.map((swatch) => (
-                          <button
-                            key={swatch.hex}
-                            type="button"
-                            aria-label={t(`printers.tags.colors.${swatch.nameKey}`)}
-                            title={t(`printers.tags.colors.${swatch.nameKey}`)}
-                            onClick={() => recolor.mutate({ id: tag.id, name: tag.name, color: swatch.hex })}
-                            className={`w-5 h-5 rounded-full border-2 ${tag.color === swatch.hex ? 'border-white' : 'border-transparent'}`}
-                            style={{ backgroundColor: swatch.hex }}
-                          />
-                        ))}
-                        <button
-                          type="button"
-                          onClick={() => recolor.mutate({ id: tag.id, name: tag.name, color: null })}
-                          className="text-xs text-bambu-gray hover:text-white px-1"
-                        >
-                          {t('printers.tags.noColor')}
-                        </button>
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
@@ -269,9 +319,22 @@ export function PrinterTagsCard() {
         })}
       </ul>
 
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <ColorPalette
+          value={newColor}
+          open={openPaletteFor === 'new'}
+          onToggle={() => setOpenPaletteFor(openPaletteFor === 'new' ? null : 'new')}
+          // Held, not sent: there is no tag to PATCH yet, so the pick travels
+          // with the POST that creates one.
+          onPick={(color) => {
+            setNewColor(color);
+            setOpenPaletteFor(null);
+          }}
+          onClose={() => setOpenPaletteFor(null)}
+          anchorLabel={t('printers.tags.colorOfNew')}
+        />
         <input
-          className="flex-1 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+          className="flex-1 min-w-0 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder={t('printers.tags.add')}

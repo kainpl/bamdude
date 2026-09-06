@@ -1138,6 +1138,25 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
 }
 
 type SortOption = 'name' | 'status' | 'model' | 'location' | 'eta' | 'tag';
+
+// The sort dropdown's options, and the only values the saved sort may hold. ⚠️
+// One list, the way STATUS_FILTER_OPTIONS is one list: a sort read back from
+// storage with a bare cast is how a value no option carries survives there
+// forever — the grid then sits in whatever order the sort switch falls through
+// to, with nothing picked in the dropdown to explain it.
+const SORT_OPTIONS: { value: SortOption; labelKey: string }[] = [
+  { value: 'name', labelKey: 'printers.sort.name' },
+  { value: 'status', labelKey: 'printers.sort.status' },
+  { value: 'model', labelKey: 'printers.sort.model' },
+  { value: 'location', labelKey: 'printers.sort.location' },
+  { value: 'tag', labelKey: 'printers.sort.tag' },
+  { value: 'eta', labelKey: 'printers.sort.eta' },
+];
+
+function isKnownSortOption(value: string | null): value is SortOption {
+  return SORT_OPTIONS.some((option) => option.value === value);
+}
+
 type ViewMode = 'expanded' | 'compact';
 
 // Toolbar building blocks (upstream PR #1203). The Printers page header
@@ -8491,7 +8510,10 @@ export function PrintersPage() {
   const [showPowerDropdown, setShowPowerDropdown] = useState(false);
   const [poweringOn, setPoweringOn] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>(() => {
-    return (localStorage.getItem('printerSortBy') as SortOption) || 'name';
+    // Validated on read, as the status filter is: a cast would take whatever
+    // string storage happens to hold.
+    const saved = localStorage.getItem('printerSortBy');
+    return isKnownSortOption(saved) ? saved : 'name';
   });
   const [sortAsc, setSortAsc] = useState<boolean>(() => {
     return localStorage.getItem('printerSortAsc') !== 'false';
@@ -8544,10 +8566,11 @@ export function PrintersPage() {
   // filters and validated against the loaded tag list below — a tag deleted
   // since the last visit must not strand the page on an empty grid.
   const [tagFilter, setTagFilter] = useState<number[]>(() => parseIdList(localStorage.getItem('printerTagFilter')));
-  const handleTagFilterChange = (ids: number[]) => {
+  // Stable: the pruning effect below lists it, and TagFilterMenu takes it as a prop.
+  const handleTagFilterChange = useCallback((ids: number[]) => {
     setTagFilter(ids);
     localStorage.setItem('printerTagFilter', JSON.stringify(ids));
-  };
+  }, []);
   const { data: tagRows } = useQuery({ queryKey: ['printer-tags'], queryFn: api.getPrinterTags });
   useEffect(() => {
     // Waits for the query, as the location effect does: acting on an empty
@@ -8556,7 +8579,7 @@ export function PrintersPage() {
     const known = new Set(tagRows.tags.map((tag) => tag.id));
     const kept = tagFilter.filter((id) => known.has(id));
     if (kept.length !== tagFilter.length) handleTagFilterChange(kept);
-  }, [tagRows, tagFilter]);
+  }, [tagRows, tagFilter, handleTagFilterChange]);
   const [statusCacheVersion, setStatusCacheVersion] = useState(0);
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -9349,14 +9372,7 @@ export function PrintersPage() {
           value={sortBy}
           onChange={handleSortChange}
           fullWidth={inMenu}
-          options={[
-            { value: 'name', label: t('printers.sort.name') },
-            { value: 'status', label: t('printers.sort.status') },
-            { value: 'model', label: t('printers.sort.model') },
-            { value: 'location', label: t('printers.sort.location') },
-            { value: 'tag', label: t('printers.sort.tag') },
-            { value: 'eta', label: t('printers.sort.eta') },
-          ]}
+          options={SORT_OPTIONS.map((option) => ({ value: option.value, label: t(option.labelKey) }))}
         />
         <button
           type="button"

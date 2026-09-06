@@ -158,6 +158,29 @@ describe('per-group limits in the pickers', () => {
     expect(onChange).toHaveBeenCalledWith('stagger_tag_limits', '{}');
   });
 
+  /**
+   * ⚠️ A cap above the farm-wide one is not a bigger cap — it is a number the
+   * scheduler ignores.
+   *
+   * `cap_for` takes the min of the group's limit and the global one, so a "9"
+   * typed against a global of 3 would sit in Settings looking like nine beds
+   * while three ever heat. The field refuses to write it rather than letting
+   * the two disagree.
+   */
+  it('clamps a limit typed above the global cap down to the global', async () => {
+    server.use(http.get('/api/v1/printer-tags', () => HttpResponse.json({ tags })), noLocations);
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    const field = (await screen.findByLabelText('Limit for Phase 1')) as HTMLInputElement;
+    expect(field.max).toBe('3');
+    await userEvent.clear(field);
+    await userEvent.type(field, '9');
+    expect(onChange).toHaveBeenCalledWith('stagger_tag_limits', '{"1":3}');
+    // Written AND shown: a field that kept displaying 9 would be the same lie
+    // one keystroke later.
+    expect(field.value).toBe('3');
+  });
+
   it('writes the location limit under its own key and clears it on unpick', async () => {
     server.use(http.get('/api/v1/printer-locations', () => HttpResponse.json({ locations: [
       { id: 1, name: 'Room A', parent_id: null, path: 'Room A', depth: 1, printer_count: 1, sensor_count: 0, queued_count: 0 },
@@ -166,8 +189,8 @@ describe('per-group limits in the pickers', () => {
     render(<Harness onChange={onChange} />);
     const field = await screen.findByLabelText('Limit for Room A');
     await userEvent.clear(field);
-    await userEvent.type(field, '4');
-    expect(onChange).toHaveBeenCalledWith('stagger_location_limits', '{"1":4}');
+    await userEvent.type(field, '3');
+    expect(onChange).toHaveBeenCalledWith('stagger_location_limits', '{"1":3}');
 
     onChange.mockClear();
     await userEvent.click(screen.getByRole('checkbox', { name: /Room A/ }));
