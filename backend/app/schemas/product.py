@@ -78,6 +78,10 @@ class ProductUpdate(BaseModel):
     source_url: str | None = None
     design_id: str | None = None
     is_active: bool | None = None
+    # One-way promotion (spec Decision 2): the only value accepted is
+    # ``catalog``; an adhoc product never becomes adhoc again, and the
+    # Literal is what makes 422 the answer to anything else.
+    origin: Literal["catalog"] | None = None
 
     @field_validator("name", mode="before")
     @classmethod
@@ -88,6 +92,11 @@ class ProductUpdate(BaseModel):
     @classmethod
     def _flag_is_never_null(cls, v: bool | None) -> bool | None:
         return _never_null(v, "is_active")
+
+    @field_validator("origin")
+    @classmethod
+    def _origin_is_never_null(cls, v: str | None) -> str | None:
+        return _never_null(v, "origin")
 
     @field_validator("source_url")
     @classmethod
@@ -281,6 +290,10 @@ class ProductListItem(BaseModel):
     # thinks in. On the LIST too, and read there for every product in one
     # aggregated query: a per-product read would be an N+1 behind the catalog.
     kits_available: int = 0
+    # ``catalog`` | ``adhoc_job`` | ``adhoc_plate`` (models.product.ProductOrigin).
+    origin: str = "catalog"
+    origin_file_id: int | None = None
+    origin_plate_index: int | None = None
 
 
 class ProductResponse(ProductListItem):

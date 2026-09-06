@@ -16,7 +16,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.part_stock import ProductPartStockMovement
-from backend.app.models.product import Product, ProductPlate, product_files, product_folders
+from backend.app.models.product import Product, ProductOrigin, ProductPlate, product_files, product_folders
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
@@ -1391,3 +1391,32 @@ async def test_the_products_list_reads_the_stock_ledger_once(committing_client, 
 
     assert len(statements) == 1, f"one ledger read for the whole page, got {len(statements)}: {statements}"
     assert {r["id"]: r["kits_available"] for r in rows} == {lamp: 3, sconce: 2, vase: 0}
+
+
+@pytest.mark.asyncio
+async def test_adhoc_products_hide_from_the_catalogue_until_asked(committing_client, db_session):
+    db_session.add_all(
+        [
+            Product(name="Shown", origin=ProductOrigin.CATALOG.value),
+            Product(name="Job", origin=ProductOrigin.ADHOC_JOB.value),
+        ]
+    )
+    await db_session.commit()
+    names = [p["name"] for p in (await committing_client.get("/api/v1/products/")).json()]
+    assert names == ["Shown"]
+    everything = (await committing_client.get("/api/v1/products/?include_adhoc=true")).json()
+    assert sorted((p["name"], p["origin"]) for p in everything) == [("Job", "adhoc_job"), ("Shown", "catalog")]
+
+
+@pytest.mark.asyncio
+async def test_promotion_to_the_catalogue_is_one_way(committing_client, db_session):
+    job = Product(name="Job", origin=ProductOrigin.ADHOC_JOB.value)
+    db_session.add(job)
+    await db_session.commit()
+    # Opens by id whatever its origin — the order page links here.
+    assert (await committing_client.get(f"/api/v1/products/{job.id}")).json()["origin"] == "adhoc_job"
+    r = await committing_client.patch(f"/api/v1/products/{job.id}", json={"origin": "catalog"})
+    assert r.status_code == 200 and r.json()["origin"] == "catalog"
+    assert [p["name"] for p in (await committing_client.get("/api/v1/products/")).json()] == ["Job"]
+    r = await committing_client.patch(f"/api/v1/products/{job.id}", json={"origin": "adhoc_job"})
+    assert r.status_code == 422

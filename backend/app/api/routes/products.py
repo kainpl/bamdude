@@ -37,7 +37,7 @@ from backend.app.core.permissions import Permission
 from backend.app.i18n.api_errors import json_error
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.part_stock import ProductPartStockMovement
-from backend.app.models.product import Product, ProductPart, ProductPlate, product_files, product_folders
+from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate, product_files, product_folders
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
@@ -224,6 +224,9 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
         library_file_ids=sorted(f.id for f in product.library_files),
         library_folder_ids=sorted(f.id for f in product.library_folders),
         units_printed_total=await units_printed_total(db, product.id),
+        origin=product.origin,
+        origin_file_id=product.origin_file_id,
+        origin_plate_index=product.origin_plate_index,
         created_at=created_at,
         updated_at=updated_at,
     )
@@ -266,10 +269,15 @@ async def _apply_folder(db: AsyncSession, folder_id: int, product_ids: set[int])
 async def list_products(
     active: bool | None = None,
     q: str | None = None,
+    include_adhoc: bool = False,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
     query = select(Product).options(selectinload(Product.parts), selectinload(Product.plates)).order_by(Product.name)
+    # The catalogue never saw an adhoc product (spec Decision 2); only a
+    # caller that asks by name gets them.
+    if not include_adhoc:
+        query = query.where(Product.origin == ProductOrigin.CATALOG.value)
     if active is not None:
         query = query.where(Product.is_active.is_(active))
     if q:
@@ -298,6 +306,9 @@ async def list_products(
             plates_count=plates.get(p.id, 0),
             lines_count=counts.get(p.id, 0),
             kits_available=part_stock.kits_available(stock.get(p.id, {}), list(p.parts)),
+            origin=p.origin,
+            origin_file_id=p.origin_file_id,
+            origin_plate_index=p.origin_plate_index,
         )
         for p in products
     ]
