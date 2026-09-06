@@ -25,6 +25,7 @@ from sqlalchemy.orm import selectinload
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import (
     RequireCameraStreamToken,
+    RequirePermission,
     require_ownership_permission,
     require_permission,
 )
@@ -70,7 +71,18 @@ from backend.app.schemas.library import (
     ZipExtractResponse,
     ZipExtractResult,
 )
+from backend.app.schemas.order_from_files import (
+    PartsPreviewRequest,
+    PartsPreviewResponse,
+    PreviewCatalogPartOut,
+    PreviewCatalogProductOut,
+    PreviewFileOut,
+    PreviewPartOut,
+    PreviewPlateOut,
+    PreviewYieldOut,
+)
 from backend.app.schemas.plate_objects import PlateObjectsResponse
+from backend.app.services import order_from_files
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.design_settings import (
     apply_design_overrides,
@@ -4518,6 +4530,52 @@ async def get_library_file_order_candidates(
         # the row, and the service would otherwise SELECT it a second time.
         for c in await order_candidates(db, lib_file, plate_index)
     ]
+
+
+@router.post("/files/parts-preview", response_model=PartsPreviewResponse)
+async def preview_parts_of_files(
+    data: PartsPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.LIBRARY_READ, Permission.PROJECTS_READ),
+):
+    """What the selected files make, unified by part — step 1 of the library
+    wizard (spec 2026-09-06, Slice C). Read-only. ``PROJECTS_READ`` beside the
+    library read because the answer names a catalogue product."""
+    try:
+        preview = await order_from_files.parts_preview(db, data.file_ids)
+    except order_from_files.FileNotFound:
+        raise HTTPException(status_code=404, detail="Library file not found")
+    except order_from_files.NotPlannable:
+        raise HTTPException(status_code=400, detail="Only 3MF files can be planned")
+    catalog = preview.catalog_product
+    return PartsPreviewResponse(
+        files=[
+            PreviewFileOut(
+                id=f.id,
+                filename=f.filename,
+                sliced_for_model=f.sliced_for_model,
+                plates=[PreviewPlateOut(**p.__dict__) for p in f.plates],
+            )
+            for f in preview.files
+        ],
+        parts=[
+            PreviewPartOut(name_key=p.name_key, name=p.name, yields=[PreviewYieldOut(**y.__dict__) for y in p.yields])
+            for p in preview.parts
+        ],
+        catalog_product=(
+            PreviewCatalogProductOut(
+                id=catalog.id,
+                name=catalog.name,
+                parts=[
+                    PreviewCatalogPartOut(id=part.id, name=part.name, qty_per_unit=part.qty_per_unit)
+                    for part in sorted(catalog.parts, key=lambda p: (p.sort_order, p.id))
+                    if part.kind == "printed" and part.qty_per_unit > 0
+                ],
+            )
+            if catalog is not None
+            else None
+        ),
+    )
 
 
 @router.get("/files/{file_id}/card", response_model=CardResponse)
