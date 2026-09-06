@@ -9,6 +9,10 @@ type SortKey = 'name' | 'due' | 'progress' | 'remaining' | 'printing' | 'queued'
 
 const remaining = (o: OrderListItem) => Math.max(0, o.ordered - o.printed - o.from_stock_units);
 
+/** A fresh click on one of these sorts most-first; `name` and `due` sort
+ *  ascending instead — A→Z, soonest due first. */
+const DESC_FIRST: ReadonlySet<SortKey> = new Set(['printing', 'queued', 'remaining', 'progress']);
+
 /**
  * The orders list as a table — the farm's roll-up (spec 2026-09-06, Slice F).
  * Every number is the server's; the only arithmetic is `remaining`, which is
@@ -33,14 +37,14 @@ export function OrdersTable({ orders }: { orders: OrderListItem[] }) {
     };
     return [...orders].sort((a, b) => {
       const av = value(a), bv = value(b);
-      const cmp = av < bv ? -1 : av > bv ? 1 : a.name.localeCompare(b.name);
-      return sort.desc ? -cmp : cmp;
+      const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return (sort.desc ? -cmp : cmp) || a.name.localeCompare(b.name);
     });
   }, [orders, sort]);
 
   const header = (key: SortKey, label: string) => (
     <th className="font-normal p-2 text-left">
-      <button type="button" onClick={() => setSort((s) => ({ key, desc: s.key === key ? !s.desc : true }))} className="hover:text-white">
+      <button type="button" onClick={() => setSort((s) => ({ key, desc: s.key === key ? !s.desc : DESC_FIRST.has(key) }))} className="hover:text-white">
         {label}
         {sort.key === key && <span aria-hidden> {sort.desc ? '▼' : '▲'}</span>}
       </button>
