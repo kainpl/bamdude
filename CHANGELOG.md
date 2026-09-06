@@ -2,6 +2,12 @@
 
 ### Added
 
+- **A staggered-start group can carry its own limit.** Beside each tag or location picked as a group, Settings → Printing → Queue & Scheduling now takes a number: that group starts at most that many beds at once, while the others keep the farm-wide value. Two workshops on different circuit breakers no longer have to share one number. The queue banner shows every group's own `occupied/cap`.
+
+- **Printer tags have colours.** Settings → Printing → Tags offers a ten-swatch palette per tag; the chip then wears that colour on the printer card, in the printer form, in the staggered-start pickers and in the queue banner — "Phase 1" is yellow from across the room.
+
+- **The Printers page filters and groups by tag.** A Tags control in the toolbar narrows the grid to printers wearing every selected tag (persisted like the other filters), search matches tag names, and sorting by **Tag** renders collapsible sections per tag — a printer with several tags appears under each of them.
+
 - **Staggered start can now cap per group — one cap per electrical phase, per room, or both.** A farm fed from three phases wants three printers heating at once, one on each phase, not two anywhere. Under Settings → Printing → Queue & Scheduling → Staggered start, tick **Split by printer tags** and choose the tags that are your phases, or **Split by location** and choose the rooms or rows that have their own supply; with both on, every phase × room pair gets its own cap. The number of concurrent starts then applies within each group. A printer with none of the chosen tags counts in every group and starts only when all of them have room — its phase is unknown, so it is treated as if it could be on any — which also means nothing changes until you have tagged a printer. The queue's stagger banner shows every group's occupancy, and a waiting item names the group it is waiting on. A tag or location that is a group cannot be deleted until it is un-chosen.
 
 - **Printer tags.** Free labels on a printer — a phase, a row, a customer — managed in Settings → Printing beside Locations, picked on the printer form and shown on its card. Tags are one list for the whole farm, matched without regard to case, so the same label cannot be typed two ways.
