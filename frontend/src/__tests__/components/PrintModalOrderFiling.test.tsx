@@ -15,14 +15,14 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { delay, http, HttpResponse } from 'msw';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { server } from '../mocks/server';
 import { render } from '../utils';
 import { PrintModal } from '../../components/PrintModal';
-import { api, type OrderCandidate } from '../../api/client';
+import { api, type Order, type OrderCandidate } from '../../api/client';
 
 /**
  * Every path that queues from this dialog must mark the proposal stale.
@@ -90,6 +90,48 @@ const MULTI_PLATE = {
   ],
 };
 
+/** A minimal `Order`, shaped like Task 13's own stub — only `id` varies per test. */
+const ORDER_STUB: Order = {
+  id: 42,
+  name: 'Batch order',
+  customer_id: null,
+  customer_name: null,
+  description: null,
+  color: null,
+  status: 'active',
+  notes: null,
+  attachments: null,
+  tags: null,
+  due_date: null,
+  priority: 'normal',
+  price: null,
+  url: null,
+  cover_image_filename: null,
+  created_at: '2026-09-06T10:00:00',
+  updated_at: '2026-09-06T10:00:00',
+  lines: [],
+  procurement: [],
+  figures: {
+    ordered: 0,
+    printed: 0,
+    complete: 0,
+    remaining: 0,
+    total_time_seconds: 0,
+    total_filament_grams: 0,
+    total_cost: 0,
+    defective: 0,
+    margin: null,
+    progress: 0,
+    other_prints_count: 0,
+    all_printed: false,
+    from_stock_units: 0,
+    bankable_surplus: 0,
+    prints_in_progress: 0,
+    prints_queued: 0,
+  },
+  other_archive_ids: [],
+};
+
 /** Serve a candidate list per plate, recording which plates were asked about. */
 function serveCandidates(byPlate: Record<number, OrderCandidate[]>, seen?: number[]) {
   server.use(
@@ -103,7 +145,7 @@ function serveCandidates(byPlate: Record<number, OrderCandidate[]>, seen?: numbe
 
 beforeEach(() => {
   vi.restoreAllMocks();
-  auth.granted = new Set(['projects:read', 'printers:control']);
+  auth.granted = new Set(['projects:read', 'projects:create', 'printers:control']);
   invalidatedCandidates.mockClear();
   server.use(
     http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),
@@ -119,6 +161,22 @@ beforeEach(() => {
       HttpResponse.json({ is_multi_plate: false, plates: [] }),
     ),
     http.get('/api/v1/library/files/:id/filament-requirements', () => HttpResponse.json({ filaments: [] })),
+    // Decision 6: the batch-order proposal reads this setting; every other test
+    // in this file stays a single print or a batch a needy candidate already
+    // covers, so turning it on file-wide changes nothing else here.
+    http.get('/api/v1/settings/', () =>
+      HttpResponse.json({
+        save_thumbnails: true,
+        capture_finish_photo: true,
+        default_filament_cost: 25.0,
+        currency: 'USD',
+        ams_humidity_good: 40,
+        ams_humidity_fair: 60,
+        ams_temp_good: 30,
+        ams_temp_fair: 35,
+        auto_order_for_batches: true,
+      }),
+    ),
   );
 });
 
@@ -835,5 +893,52 @@ describe('an answer given by the caller', () => {
     // dialog had no proposal to slip in.
     expect(add.mock.calls[0][0]).toMatchObject({ project_id: undefined, project_line_id: null });
     expect(seen).toEqual([]);
+  });
+});
+
+describe('a batch proposes a new order for itself (Decision 6)', () => {
+  it('proposes a new order for a batch of two copies and creates it before queueing', async () => {
+    // ⚠️ ONE active printer, so it self-selects and the test never has to click
+    // one — the point here is the batch coming from QUANTITY alone. And a real
+    // plate at index 1, so the auto-select-plate effect fires and `plate_index`
+    // in the created order is not the placeholder 0 an unselected plate would be.
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([mockPrinters[0]])),
+      http.get('/api/v1/library/files/:id/plates', () =>
+        HttpResponse.json({ is_multi_plate: false, plates: [MULTI_PLATE.plates[0]] }),
+      ),
+    );
+    const created = vi.fn();
+    const queued = vi.fn();
+    server.use(
+      http.get('/api/v1/library/files/:id/order-candidates', () => HttpResponse.json([])),
+      http.post('/api/v1/projects/from-files', async ({ request }) => {
+        created(await request.json());
+        return HttpResponse.json({ ...ORDER_STUB, id: 77 });
+      }),
+      http.post('/api/v1/queue/', async ({ request }) => {
+        queued(await request.json());
+        return HttpResponse.json({ id: 1, created_item_ids: [1, 2] });
+      }),
+    );
+    render(<PrintModal mode="add-to-queue" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />);
+    // ⚠️ Not `userEvent.clear` + `userEvent.type`: the gap between those two
+    // `await`s lets a query resolving in between (order-candidates, the
+    // auto-selected plate/printer) re-render and resync the controlled input
+    // from its still-1 state, so the keystroke lands as "12". One atomic change
+    // has nothing to race.
+    fireEvent.change(await screen.findByLabelText(/quantity/i), { target: { value: '2' } });
+    expect(await screen.findByRole('combobox', { name: 'Order' })).toHaveValue('new');
+    await userEvent.click(screen.getByRole('button', { name: /add to queue/i }));
+    await waitFor(() => expect(created).toHaveBeenCalledWith({ kind: 'plates', library_file_id: 5, plates: [{ plate_index: 1, copies: 2 }] }));
+    await waitFor(() => expect(queued).toHaveBeenCalled());
+    expect(queued.mock.calls[0][0]).toMatchObject({ project_id: 77, project_line_id: null, quantity: 2 });
+  });
+
+  it('does not offer a new order for a single print', async () => {
+    server.use(http.get('/api/v1/library/files/:id/order-candidates', () => HttpResponse.json([])));
+    render(<PrintModal mode="add-to-queue" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />);
+    await screen.findByText('lamp.gcode.3mf');
+    expect(screen.queryByRole('combobox', { name: 'Order' })).not.toBeInTheDocument();
   });
 });

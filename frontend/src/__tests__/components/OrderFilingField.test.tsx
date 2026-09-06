@@ -34,7 +34,7 @@ describe('OrderFilingField', () => {
   it('offers «Without an order» first, then the candidates in the order given', async () => {
     render(
       <OrderFilingField
-        value={null}
+        value={{ kind: 'none' }}
         onChange={vi.fn()}
         candidates={[
           candidate(),
@@ -58,7 +58,7 @@ describe('OrderFilingField', () => {
     // the material the two options are the same words twice.
     render(
       <OrderFilingField
-        value={null}
+        value={{ kind: 'none' }}
         onChange={vi.fn()}
         candidates={[
           candidate({ line_material: 'PETG' }),
@@ -78,7 +78,13 @@ describe('OrderFilingField', () => {
   });
 
   it('uses the singular form for a line that needs one more print', () => {
-    render(<OrderFilingField value={null} onChange={vi.fn()} candidates={[candidate({ outstanding_prints: 1 })]} />);
+    render(
+      <OrderFilingField
+        value={{ kind: 'none' }}
+        onChange={vi.fn()}
+        candidates={[candidate({ outstanding_prints: 1 })]}
+      />,
+    );
 
     expect(
       screen.getByRole('option', { name: 'Kickstarter batch — Desk Lamp · still needs 1 print' }),
@@ -90,7 +96,7 @@ describe('OrderFilingField', () => {
     const user = userEvent.setup();
     render(
       <OrderFilingField
-        value={null}
+        value={{ kind: 'none' }}
         onChange={onChange}
         candidates={[candidate(), candidate({ project_id: 6, project_line_id: 12, project_name: 'Spare stock' })]}
       />,
@@ -98,15 +104,15 @@ describe('OrderFilingField', () => {
 
     await user.selectOptions(screen.getByLabelText('Order'), '6:12');
 
-    expect(onChange).toHaveBeenCalledWith({ projectId: 6, projectLineId: 12 });
+    expect(onChange).toHaveBeenCalledWith({ kind: 'order', projectId: 6, projectLineId: 12 });
   });
 
-  it('carries null back when the operator picks «Without an order»', async () => {
+  it('carries «none» back when the operator picks «Without an order»', async () => {
     const onChange = vi.fn();
     const user = userEvent.setup();
     render(
       <OrderFilingField
-        value={{ projectId: 4, projectLineId: 9 }}
+        value={{ kind: 'order', projectId: 4, projectLineId: 9 }}
         onChange={onChange}
         candidates={[candidate()]}
       />,
@@ -114,13 +120,13 @@ describe('OrderFilingField', () => {
 
     await user.selectOptions(screen.getByLabelText('Order'), '');
 
-    expect(onChange).toHaveBeenCalledWith(null);
+    expect(onChange).toHaveBeenCalledWith({ kind: 'none' });
   });
 
   it('shows the current value as the selected option', () => {
     render(
       <OrderFilingField
-        value={{ projectId: 6, projectLineId: 12 }}
+        value={{ kind: 'order', projectId: 6, projectLineId: 12 }}
         onChange={vi.fn()}
         candidates={[candidate(), candidate({ project_id: 6, project_line_id: 12, project_name: 'Spare stock' })]}
       />,
@@ -130,21 +136,41 @@ describe('OrderFilingField', () => {
   });
 
   it('renders nothing at all when no order wants this plate', () => {
-    render(<OrderFilingField value={null} onChange={vi.fn()} candidates={[]} />);
+    render(<OrderFilingField value={{ kind: 'none' }} onChange={vi.fn()} candidates={[]} />);
 
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
     expect(screen.queryByText('Order')).not.toBeInTheDocument();
   });
 
   it('renders nothing while the candidates are still being fetched', () => {
-    render(<OrderFilingField value={null} onChange={vi.fn()} candidates={undefined} loading />);
+    render(<OrderFilingField value={{ kind: 'none' }} onChange={vi.fn()} candidates={undefined} loading />);
 
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
   });
 
   it('leaves no stray zero where a count of 0 is rendered', () => {
-    render(<OrderFilingField value={null} onChange={vi.fn()} candidates={[candidate({ outstanding_prints: 0 })]} />);
+    render(
+      <OrderFilingField
+        value={{ kind: 'none' }}
+        onChange={vi.fn()}
+        candidates={[candidate({ outstanding_prints: 0 })]}
+      />,
+    );
 
     expect(strayZeroTextNodes()).toHaveLength(0);
+  });
+
+  it('offers «New order for this batch» when asked, even with no candidates', async () => {
+    const onChange = vi.fn();
+    render(<OrderFilingField value={{ kind: 'none' }} onChange={onChange} candidates={[]} offerNewOrder />);
+    const options = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(options).toEqual(['Without an order', 'New order for this batch']);
+    await userEvent.selectOptions(screen.getByRole('combobox'), 'new');
+    expect(onChange).toHaveBeenCalledWith({ kind: 'new' });
+  });
+
+  it('renders nothing for a single print with no candidates', () => {
+    render(<OrderFilingField value={{ kind: 'none' }} onChange={vi.fn()} candidates={[]} />);
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
   });
 });

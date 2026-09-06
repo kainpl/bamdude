@@ -25,7 +25,7 @@ import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hoo
 import { useOrderCandidates } from '../../hooks/useOrderCandidates';
 import { OrderFilingField, type OrderFilingValue } from '../OrderFilingField';
 import { canQueueWithoutAsking } from '../../utils/bulkQueueEligibility';
-import { invalidateOrderCandidates } from '../../utils/queryInvalidation';
+import { invalidateOrderCandidates, invalidateOrderViews } from '../../utils/queryInvalidation';
 import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
 import { getBedTypeInfo } from '../../utils/bedType';
@@ -586,40 +586,6 @@ export function PrintModal({
       });
   }, [effectivePrinterModel, mode, printOptions, swapMacros, applicableMacros, selectedMacroIds, queryClient]);
 
-  /**
-   * Hand the caller what this dialog was answered with, on a successful submit.
-   *
-   * ⚠️ Fired beside `persistPreference` and for the same reason — this is the
-   * moment the answer is known to be an answer — but it is the opposite kind of
-   * carry, and both are needed. The preference is per (user, printer MODEL) and
-   * survives the dialog; this is per RUN and dies with it. Only the run-scoped
-   * half can carry a printer, a schedule or a quantity, none of which belong to
-   * a model, and only it is immune to the preference write being
-   * fire-and-forget behind a 60-second cache.
-   */
-  const reportAnswer = useCallback(() => {
-    onAnswered?.({
-      selectedPrinterIds: [...selectedPrinters],
-      dispatchMode,
-      autoModeOptions,
-      scheduleOptions,
-      quantity,
-      printOptions,
-      swapMacros,
-      selectedMacroIds: [...selectedMacroIds],
-    });
-  }, [
-    onAnswered,
-    selectedPrinters,
-    dispatchMode,
-    autoModeOptions,
-    scheduleOptions,
-    quantity,
-    printOptions,
-    swapMacros,
-    selectedMacroIds,
-  ]);
-
   const { data: spoolAssignments } = useQuery({
     queryKey: ['spool-assignments'],
     queryFn: () => api.getAssignments(),
@@ -754,6 +720,17 @@ export function PrintModal({
   const selectedPlateIds = useMemo(() => [...selectedPlates].sort((a, b) => a - b), [selectedPlates]);
   const isMultiPlateSelection = selectedPlates.size > 1;
 
+  // Decision 6: a BATCH is a submission that makes two or more prints — copies,
+  // plates, printers — whatever the mode. The count is prints, not rows.
+  const plannedPrints = useMemo(() => {
+    const plateIds = selectedPlateIds.length > 0 ? selectedPlateIds : [selectedPlate ?? 0];
+    const perTarget = plateIds.reduce((sum, i) => sum + quantityForPlate(i), 0);
+    const targets = isAutoMode ? 1 : Math.max(1, selectedPrinters.length);
+    return perTarget * targets;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPlateIds, selectedPlate, plateQuantities, quantity, isAutoMode, selectedPrinters]);
+  const isBatch = plannedPrints >= 2;
+
   const perPlateReqQueries = useQueries({
     queries: (isMultiPlateSelection ? selectedPlateIds : []).map((plateId) => ({
       queryKey: isLibraryFile
@@ -859,11 +836,13 @@ export function PrintModal({
   // DIFFERENT order than the one the caller opened it for. An archive carries
   // the original print's own binding, and `reprintArchive` deliberately sends
   // neither id — so the question would have nowhere to go.
-  const [chosenOrderFiling, setChosenOrderFiling] = useState<OrderFilingValue | null>(null);
+  const [chosenOrderFiling, setChosenOrderFiling] = useState<OrderFilingValue>(() =>
+    seededAnswer?.orderFilingKind ? { kind: seededAnswer.orderFilingKind } : { kind: 'none' },
+  );
   // Once the operator has answered, the answer stands. Without this, switching
   // plates — which legitimately re-asks the server — would quietly overwrite a
   // deliberate "Without an order" with whatever the next plate needs.
-  const [orderFilingTouched, setOrderFilingTouched] = useState(false);
+  const [orderFilingTouched, setOrderFilingTouched] = useState(() => seededAnswer?.orderFilingKind !== undefined);
   // ⚠️ `projects:read` is part of ASKING, not just of answering. The candidates
   // endpoint requires it beside the library read (it names orders and how much
   // of them is left), so without it the request is a guaranteed 403 — a round
@@ -911,6 +890,10 @@ export function PrintModal({
     isPlaceholderData: orderCandidatesPlaceholder,
   } = useOrderCandidates(libraryFileId, orderPlateIndex, candidatesEnabled);
 
+  // Decision 6: offered only for a batch, and only to an operator who can
+  // actually create the order this would file itself under.
+  const offerNewOrder = asksAboutOrder && isBatch && hasPermission('projects:create');
+
   // ⚠️ **The proposal is DERIVED, never synced into state by an effect.** The
   // silent members of a grouped run submit from an effect of their own, and
   // effects in one commit run in declaration order: a `setState` here would
@@ -920,10 +903,16 @@ export function PrintModal({
   // The first candidate that still NEEDS prints. The list already sorts those
   // first, but the rule is the dialog's own: an order that is already covered
   // is never proposed by itself, only chosen.
-  const proposedOrderFiling = useMemo<OrderFilingValue | null>(() => {
+  //
+  // ⚠️ **A needy candidate always wins over «New order».** Decision 6 proposes
+  // a new order only when NOTHING open already wants the plate — printing into
+  // an order that is already short of it is the better default, batch or not.
+  const proposedOrderFiling = useMemo<OrderFilingValue>(() => {
     const needy = orderCandidates?.find((c) => c.outstanding_prints > 0);
-    return needy ? { projectId: needy.project_id, projectLineId: needy.project_line_id } : null;
-  }, [orderCandidates]);
+    if (needy) return { kind: 'order', projectId: needy.project_id, projectLineId: needy.project_line_id };
+    if (offerNewOrder && settings?.auto_order_for_batches) return { kind: 'new' };
+    return { kind: 'none' };
+  }, [orderCandidates, offerNewOrder, settings?.auto_order_for_batches]);
 
   // ⚠️ **A choice the current plate does not offer is not an answer about this
   // plate.** Switching plates re-asks, and the new list need not contain the
@@ -931,15 +920,15 @@ export function PrintModal({
   // to showing «Without an order» while the payload would still carry the old
   // order and line, and when the new plate has no candidates at all the field
   // is not even on screen to be doubted. So a stale choice is dropped and the
-  // untouched rule takes over. A deliberate «Without an order» (touched, null)
-  // is not stale — it is an answer about every plate, and it survives.
-  const orderFiling = useMemo<OrderFilingValue | null>(() => {
+  // untouched rule takes over. A deliberate «Without an order» (touched,
+  // `{ kind: 'none' }`) is not stale — it is an answer about every plate, and
+  // it survives. So does «New order for this batch» — it names no candidate to
+  // go stale against.
+  const orderFiling = useMemo<OrderFilingValue>(() => {
     if (!orderFilingTouched) return proposedOrderFiling;
-    if (chosenOrderFiling === null) return null;
+    if (chosenOrderFiling.kind !== 'order') return chosenOrderFiling;
     const stillOffered = orderCandidates?.some(
-      (c) =>
-        c.project_id === chosenOrderFiling.projectId &&
-        c.project_line_id === chosenOrderFiling.projectLineId,
+      (c) => c.project_id === chosenOrderFiling.projectId && c.project_line_id === chosenOrderFiling.projectLineId,
     );
     return stillOffered ? chosenOrderFiling : proposedOrderFiling;
   }, [orderFilingTouched, chosenOrderFiling, orderCandidates, proposedOrderFiling]);
@@ -975,10 +964,12 @@ export function PrintModal({
 
   // What the payloads carry. When the dialog asked, its answer is the whole
   // truth — including "no order", which must not fall back to a prop.
-  const filedProjectId = asksAboutOrder ? orderFiling?.projectId : projectId;
+  // ⚠️ «New order for this batch» carries no id yet: `ensureBatchOrder` (in the
+  // submit handler) creates it and the writes below carry ITS id, never this one.
+  const filedProjectId = asksAboutOrder ? (orderFiling.kind === 'order' ? orderFiling.projectId : undefined) : projectId;
   // The line as answered: by the dialog's own field, or by the caller.
   const answeredProjectLineId = asksAboutOrder
-    ? (orderFiling?.projectLineId ?? null)
+    ? (orderFiling.kind === 'order' ? orderFiling.projectLineId : null)
     : (projectLineId ?? null);
   // ⚠️ **Several plates ticked: the ORDER travels, the LINE does not.** The
   // answer is about ONE plate, and the rows this submit creates are one per
@@ -999,6 +990,47 @@ export function PrintModal({
   // on a slightly wrong line beats every row on nothing.
   const filedProjectLineId =
     isMultiPlateSelection && filedProjectId != null ? null : answeredProjectLineId;
+
+  /**
+   * Hand the caller what this dialog was answered with, on a successful submit.
+   *
+   * ⚠️ Fired beside `persistPreference` and for the same reason — this is the
+   * moment the answer is known to be an answer — but it is the opposite kind of
+   * carry, and both are needed. The preference is per (user, printer MODEL) and
+   * survives the dialog; this is per RUN and dies with it. Only the run-scoped
+   * half can carry a printer, a schedule or a quantity, none of which belong to
+   * a model, and only it is immune to the preference write being
+   * fire-and-forget behind a 60-second cache.
+   *
+   * ⚠️ **Below the order-filing block, not beside `persistPreference` where it
+   * used to live** — it now reads `orderFiling`, and hoisting it back above
+   * that `useMemo` would read the binding before its own initializer runs.
+   */
+  const reportAnswer = useCallback(() => {
+    onAnswered?.({
+      selectedPrinterIds: [...selectedPrinters],
+      dispatchMode,
+      autoModeOptions,
+      scheduleOptions,
+      quantity,
+      printOptions,
+      swapMacros,
+      selectedMacroIds: [...selectedMacroIds],
+      // A specific order never travels to a silent member — only the KIND does.
+      orderFilingKind: orderFiling.kind === 'order' ? undefined : orderFiling.kind,
+    });
+  }, [
+    onAnswered,
+    selectedPrinters,
+    dispatchMode,
+    autoModeOptions,
+    scheduleOptions,
+    quantity,
+    printOptions,
+    swapMacros,
+    selectedMacroIds,
+    orderFiling,
+  ]);
 
   // Auto-select first printer when only one available
   useEffect(() => {
@@ -1173,6 +1205,25 @@ export function PrintModal({
     // tier stopped.
     const announces = !autoSubmitWhenUnambiguous || autoSubmitRefused;
 
+    // Decision 6: «New order for this batch» creates the order FIRST, then the
+    // usual writes carry its id — and no line: the server files each plate
+    // under its own plate product's line (Decision 7).
+    let submitProjectId = filedProjectId;
+    let submitProjectLineId = filedProjectLineId;
+    const ensureBatchOrder = async () => {
+      if (!(asksAboutOrder && orderFiling.kind === 'new' && libraryFileId != null)) return;
+      const plateIds = selectedPlateIds.length > 0 ? selectedPlateIds : [selectedPlate ?? 0];
+      const targets = isAutoMode ? 1 : Math.max(1, selectedPrinters.length);
+      const created = await api.createOrderFromFiles({
+        kind: 'plates',
+        library_file_id: libraryFileId,
+        plates: plateIds.map((i) => ({ plate_index: i, copies: quantityForPlate(i) * targets })),
+      });
+      submitProjectId = created.id;
+      submitProjectLineId = null;
+      invalidateOrderViews(queryClient);
+    };
+
     // Edit of a pending auto-queue row (or its whole batch): one PUT, no
     // dispatch. Position is deliberately not sent — the reorder flow owns it.
     if (mode === 'edit-auto-item' && autoQueueItem) {
@@ -1222,13 +1273,14 @@ export function PrintModal({
     if (isAutoMode) {
       setIsSubmitting(true);
       try {
+        await ensureBatchOrder();
         const platesToQueue =
           selectedPlates.size > 0 ? [...selectedPlates] : selectedPlate !== null ? [selectedPlate] : [];
         const payload: AutoQueueItemCreate = {
           archive_id: isLibraryFile ? undefined : archiveId,
           library_file_id: isLibraryFile ? libraryFileId : undefined,
-          project_id: filedProjectId,
-          project_line_id: filedProjectLineId,
+          project_id: submitProjectId,
+          project_line_id: submitProjectLineId,
           target_model: autoModeOptions.target_model ?? undefined,
           target_location_id: autoModeOptions.target_location_id ?? undefined,
           force_color_match: autoModeOptions.force_color_match,
@@ -1395,6 +1447,13 @@ export function PrintModal({
     }
 
     setIsSubmitting(true);
+    try {
+      await ensureBatchOrder();
+    } catch (err) {
+      showToast(t('printModal.failedPrefix', { error: (err as Error).message }), 'error');
+      setIsSubmitting(false);
+      return;
+    }
     // Calculate total API calls: plates × printers
     const platesToQueue = selectedPlates.size > 1
       ? plates.filter(p => selectedPlates.has(p.index))
@@ -1455,8 +1514,8 @@ export function PrintModal({
       ...printOptions,
       ...getSwapPayloadForPrinter(printerId),
       quantity: mode === 'edit-queue-item' ? 1 : quantityForPlate(plateId),
-      project_id: filedProjectId,
-      project_line_id: filedProjectLineId,
+      project_id: submitProjectId,
+      project_line_id: submitProjectLineId,
       };
     };
 
@@ -1484,8 +1543,8 @@ export function PrintModal({
                 ...swapPayload,
                 selected_macro_ids: selectedMacroIds,
                 quantity,
-                project_id: filedProjectId,
-                project_line_id: filedProjectLineId,
+                project_id: submitProjectId,
+                project_line_id: submitProjectLineId,
                 cleanup_library_after_dispatch: cleanupLibraryAfterDispatch,
               });
             } else {
@@ -2029,12 +2088,13 @@ export function PrintModal({
             {/* Which order this print counts against. Below the plate picker
                 because the answer depends on the plate — a different plate
                 yields different parts and so answers to a different line. */}
-            {asksAboutOrder && (
+            {asksAboutOrder && (offerNewOrder || (orderCandidates?.length ?? 0) > 0) && (
               <OrderFilingField
                 value={orderFiling}
                 onChange={(v) => { setOrderFilingTouched(true); setChosenOrderFiling(v); }}
                 candidates={orderCandidates}
                 loading={orderCandidatesLoading}
+                offerNewOrder={offerNewOrder}
               />
             )}
 
@@ -2210,6 +2270,7 @@ export function PrintModal({
                       const v = parseInt(e.target.value, 10);
                       if (Number.isFinite(v)) { setQuantity(Math.min(999, Math.max(1, v))); setPlateQuantities({}); }
                     }}
+                    aria-label={t('printModal.quantity')}
                     className="w-14 text-center bg-bambu-dark border border-bambu-dark-tertiary rounded text-white py-1"
                   />
                   <button

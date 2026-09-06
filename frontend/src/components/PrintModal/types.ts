@@ -45,6 +45,9 @@ export interface PrintModalAnswer {
   printOptions: PrintOptions;
   swapMacros: SwapMacrosOptions;
   selectedMacroIds: number[];
+  /** The KIND of the order answer — inherited by silent members; a specific
+   *  order never is. */
+  orderFilingKind?: 'none' | 'new';
 }
 
 /**
