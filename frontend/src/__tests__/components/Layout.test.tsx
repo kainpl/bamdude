@@ -76,6 +76,17 @@ describe('Layout', () => {
         expect(links.length).toBeGreaterThan(0);
       });
     });
+
+    it('renders the brand lock-up from the pack, never the old mascot', async () => {
+      render(<Layout />);
+      await waitFor(() => {
+        const logos = document.querySelectorAll<HTMLImageElement>('img[alt="BamDude"]');
+        expect(logos.length).toBeGreaterThan(0);
+        for (const img of logos) {
+          expect(img.getAttribute('src')).toMatch(/^\/img\/brand\/(lockup-compact-on-(dark|light)\.svg|mark-on-(dark|light)-64\.png)$/);
+        }
+      });
+    });
   });
 
   describe('navigation', () => {

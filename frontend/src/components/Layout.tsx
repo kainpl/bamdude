@@ -797,9 +797,9 @@ export function Layout() {
             title="BamDude"
           >
             <img
-              src={resolvedMode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png'}
+              src={resolvedMode === 'dark' ? '/img/brand/lockup-compact-on-dark.svg' : '/img/brand/lockup-compact-on-light.svg'}
               alt="BamDude"
-              className="h-8"
+              className="h-8 w-auto"
             />
           </a>
           {/* Bug report — the compact-layout home of the floating bubble. */}
@@ -831,10 +831,8 @@ export function Layout() {
         }`}
       >
         {/* Logo (clickable — opens the public landing page in a new tab).
-            Collapsed sidebar uses the standalone icon (favicon-style,
-            android-chrome-192 — pre-cropped square, no wordmark to
-            partial-letter-clip); expanded uses the theme-aware wordmark
-            PNG. */}
+            Expanded: the compact lock-up (mark + wordmark, no tagline).
+            Collapsed rail: the mark alone — the lock-up would clip mid-letter. */}
         <div className={`border-b border-bambu-dark-tertiary flex items-center justify-center ${isSidebarCompact || sidebarExpanded ? 'p-4' : 'p-2'}`}>
           <a
             href={LANDING_URL}
@@ -846,11 +844,11 @@ export function Layout() {
             <img
               src={
                 isSidebarCompact || sidebarExpanded
-                  ? (resolvedMode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png')
-                  : '/img/android-chrome-192x192.png'
+                  ? (resolvedMode === 'dark' ? '/img/brand/lockup-compact-on-dark.svg' : '/img/brand/lockup-compact-on-light.svg')
+                  : (resolvedMode === 'dark' ? '/img/brand/mark-on-dark-64.png' : '/img/brand/mark-on-light-64.png')
               }
               alt="BamDude"
-              className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-12 w-12 rounded'}
+              className={isSidebarCompact || sidebarExpanded ? 'h-12 w-auto' : 'h-10 w-10'}
             />
           </a>
         </div>
