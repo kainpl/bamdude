@@ -422,3 +422,41 @@ async def test_no_stale_rows_no_op(db_session, printer_factory):
         logging.getLogger("test"),
     )
     # Nothing to assert — just verify no exception was raised.
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_just_dispatched_archive_is_not_stale_whatever_its_name(db_session, printer_factory):
+    """A job that has been sent but not started is not an orphan.
+
+    The dispatcher registers its archive in ``_expected_prints`` before the print
+    command goes out, and the adoption block right after this cleanup claims it.
+    Its name can still fail the check-name rule: on 2026-09-06 a library file
+    called just ``.gcode.3mf`` went up as ``/.3mf``, the X2D reported
+    ``subtask: .3mf``, and the cleanup closed the live print's own archive as
+    "cancelled" two milliseconds before adoption reopened it — leaving a false
+    ``recovered_by_cleanup`` flag and a log line that said a live print was stale.
+    """
+    from backend.app.main import register_expected_print, withdraw_expected_print
+
+    printer = await printer_factory()
+    now = datetime.now(timezone.utc)
+    dispatched = _make_archive(
+        printer_id=printer.id,
+        filename=".gcode.3mf",
+        started_at=now - timedelta(seconds=20),
+        print_time_seconds=24786,
+    )
+    db_session.add(dispatched)
+    await db_session.commit()
+    await db_session.refresh(dispatched)
+
+    register_expected_print(printer.id, ".3mf", dispatched.id)
+    try:
+        await _close_stale_printing_rows(printer.id, ".3mf", db_session, logging.getLogger("test"))
+    finally:
+        withdraw_expected_print(printer.id, ".3mf")
+
+    await db_session.refresh(dispatched)
+    assert dispatched.status == "printing"
+    assert not (dispatched.extra_data or {}).get("recovered_by_cleanup")

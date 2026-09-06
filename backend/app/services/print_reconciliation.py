@@ -162,9 +162,17 @@ def _name_matches_subtask(archive: PrintArchive, live_subtask_name: str) -> bool
     as ``PrintArchive.print_name`` (and the sliced ``filename`` stem) — match on
     that.
 
-    Requires both sides non-empty: an empty live subtask is ambiguous (printer
-    between jobs) and must fall through to the state-based classification, never
-    force a spurious match.
+    Requires both sides to have SAID something: an empty live subtask is
+    ambiguous (printer between jobs) and must fall through to the state-based
+    classification, never force a spurious match; an archive that recorded no
+    name offers nothing to agree with.
+
+    ⚠️ **Emptiness is decided on the raw string, not the normalised one.** A file
+    called only ``.gcode.3mf`` (farm, 2026-09-06) goes up as ``/.3mf`` and is
+    echoed as ``.3mf``; both normalise to ``""``. Reading that as "printer
+    between jobs" refused a live print's own completion — the queue row stayed
+    in ``printing`` for good, and one reconnect during the seven-hour job would
+    have closed it as completed. Two extension-only names are one file, not none.
 
     ⚠️ **``filename`` is the candidate that actually carries the weight**;
     ``print_name`` is checked first only because it is the cheaper identity when
@@ -175,11 +183,13 @@ def _name_matches_subtask(archive: PrintArchive, live_subtask_name: str) -> bool
     suffix: a file may legitimately be named that way, and the filename match
     (see :func:`_subtask_norm` on space folding) already answers it correctly.
     """
-    live = _subtask_norm(live_subtask_name)
-    if not live:
+    if not (live_subtask_name or "").strip():
         return False
+    live = _subtask_norm(live_subtask_name)
     return any(
-        _norm_names_match(_subtask_norm(candidate or ""), live) for candidate in (archive.print_name, archive.filename)
+        _norm_names_match(_subtask_norm(candidate), live)
+        for candidate in (archive.print_name, archive.filename)
+        if (candidate or "").strip()
     )
 
 
@@ -203,11 +213,16 @@ def _norm_names_match(candidate: str, live: str) -> bool:
     #2829). Either side can be the truncated one: the printer truncates what it
     echoes, and an archive whose own name was recorded from an earlier truncated
     echo carries the marker too.
+
+    ⚠️ Two empty strings are equal here, on purpose. The caller has already
+    refused a side that said nothing, so an empty *normalised* name is a name
+    made only of the extensions :func:`_subtask_norm` strips — ``.gcode.3mf``
+    uploaded as ``.3mf`` and echoed as ``.3mf`` (2026-09-06). Same file.
     """
-    if not candidate or not live:
-        return False
     if candidate == live:
         return True
+    if not candidate or not live:
+        return False
     for full, cut in ((candidate, live), (live, candidate)):
         if cut.endswith(_TRUNCATION_MARKER) and full.startswith(cut[: -len(_TRUNCATION_MARKER)]):
             return True

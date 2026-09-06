@@ -3327,6 +3327,22 @@ async def _close_stale_printing_rows(
             same_name[0].id,
         )
 
+    # A job that has been sent but not started is not an orphan. The dispatcher
+    # registers its archive in ``_expected_prints`` before the print command goes
+    # out, and the adoption block right after this cleanup claims it — yet its
+    # name can still fail the check-name rule above. A file called only
+    # ``.gcode.3mf`` did (farm, 2026-09-06): uploaded as ``/.3mf``, echoed as
+    # ``.3mf``, sorted here as "other-name" and closed as cancelled two
+    # milliseconds before adoption reopened it, leaving a false
+    # ``recovered_by_cleanup`` flag and a log line that said a live print was
+    # stale. Filtered at the close, not at the sort, so an older same-name
+    # sibling of the dispatched job is still closed as before.
+    expected_ids = {aid for (pid, _name), aid in _expected_prints.items() if pid == printer_id}
+    for row in rows_to_close:
+        if row.id in expected_ids:
+            logger.info("[cleanup] row #%s is the just-dispatched print (expected) — not stale", row.id)
+    rows_to_close = [r for r in rows_to_close if r.id not in expected_ids]
+
     closed_count = 0
     for row in rows_to_close:
         if row.started_at is None or row.print_time_seconds is None:

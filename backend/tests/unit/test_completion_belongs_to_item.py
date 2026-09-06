@@ -86,6 +86,15 @@ class TestItRefusesOnlyOnDisagreement:
 
         assert await _completion_belongs_to_item(db, _item(), {"subtask_name": "Bracket_v3"}) is True
 
+    async def test_a_file_named_only_by_its_extension_closes_its_own_row(self):
+        """Live incident 2026-09-06: a library file called just ``.gcode.3mf``,
+        uploaded as ``/.3mf``, echoed back as ``.3mf``. Both normalise to the
+        empty string — equal, not different — yet the row was left in
+        ``printing`` for good, with only the printer's claim released."""
+        db = _DB(_archive(print_name="", filename=".gcode.3mf"))
+
+        assert await _completion_belongs_to_item(db, _item(), {"subtask_name": ".3mf"}) is True
+
 
 @pytest.mark.asyncio
 class TestUnverifiableIsNotWrong:
