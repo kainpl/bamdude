@@ -878,11 +878,10 @@ class TestCspNonceAndPwaRoutes:
         assert resp.status_code != 405, f"HEAD {path} should not be 405"
 
     @pytest.mark.asyncio
-    async def test_favicon_is_an_ico_or_a_404(self, async_client: AsyncClient):
+    async def test_root_favicon_is_served_as_an_image(self, async_client: AsyncClient):
         # Clients that ignore <link rel="icon"> (bookmark bars, feed readers)
-        # ask the root; before this route the SPA catch-all answered with HTML.
+        # ask the root; the pack's .ico ships in the tracked bundle, so this is
+        # a 200 or a regression — the SPA catch-all used to answer with HTML.
         resp = await async_client.get("/favicon.ico")
-        assert resp.status_code in (200, 404)
-        if resp.status_code == 200:
-            assert resp.headers["content-type"].startswith("image/")
-        assert "text/html" not in resp.headers.get("content-type", "")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("image/")
