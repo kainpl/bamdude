@@ -1328,7 +1328,8 @@ class PrintScheduler:
               "split": {"by_tags": bool, "by_location": bool},
               "groups": [
                 {"tag_id": int | None, "location_id": int | None,
-                 "label": str | None, "occupied": int, "free_slots": int,
+                 "label": str | None, "cap": int,
+                 "occupied": int, "free_slots": int,
                  "next_free_in_seconds": int | None,
                  "slots": [
                    {"printer_id": int, "printer_name": str,
@@ -1374,13 +1375,16 @@ class PrintScheduler:
         groups: list[dict] = []
         for key in sorted(resolver.universe, key=lambda k: (resolver.label(k) or "", k[0] or 0, k[1] or 0)):
             members = [_slot_info(s) for s in self._stagger_slots if key in resolver.groups_for(s.printer_id)]
-            free_slots = max(0, concurrent - len(members))
+            cap = resolver.cap_for(key, concurrent)
+            free_slots = max(0, cap - len(members))
             times = [m["seconds_to_free"] for m in members]
             groups.append(
                 {
                     "tag_id": key[0],
                     "location_id": key[1],
                     "label": resolver.label(key),
+                    # The cap THIS group starts under — the global number unless overridden.
+                    "cap": cap,
                     "occupied": len(members),
                     "free_slots": free_slots,
                     "next_free_in_seconds": None if free_slots > 0 or not times else min(times),
@@ -1483,9 +1487,17 @@ class PrintScheduler:
         )
 
     def _full_groups(self, concurrent: int, printer_id: int | None, resolver: StaggerGroupResolver) -> list[GroupKey]:
-        """The groups of ``printer_id`` (all groups when None) that have no free slot for it."""
+        """The groups of ``printer_id`` (all groups when None) that have no free slot for it.
+
+        Each group is judged by ITS OWN cap (``resolver.cap_for``): the global
+        number, lowered by a per-tag or per-location override. This is the one
+        comparison site — the queue gate, the strict refusal and the direct-print
+        acquire all come through here, so they cannot disagree.
+        """
         groups = resolver.groups_for(printer_id) if printer_id is not None else resolver.universe
-        return [g for g in groups if self._occupied(g, resolver, excluding=printer_id) >= concurrent]
+        return [
+            g for g in groups if self._occupied(g, resolver, excluding=printer_id) >= resolver.cap_for(g, concurrent)
+        ]
 
     def _can_start_staggered(
         self,

@@ -27,7 +27,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from itertools import product
 
 from sqlalchemy import select
@@ -42,6 +43,8 @@ SETTING_BY_TAGS = "stagger_split_by_tags"
 SETTING_TAG_IDS = "stagger_group_tag_ids"
 SETTING_BY_LOCATION = "stagger_split_by_location"
 SETTING_LOCATION_IDS = "stagger_group_location_ids"
+SETTING_TAG_LIMITS = "stagger_tag_limits"
+SETTING_LOCATION_LIMITS = "stagger_location_limits"
 
 
 def parse_id_list(raw: str | None) -> frozenset[int]:
@@ -59,14 +62,47 @@ def parse_id_list(raw: str | None) -> frozenset[int]:
     return frozenset(parsed)
 
 
+def parse_limit_map(raw: str | None) -> dict[int, int]:
+    """The JSON object a limits row holds (``{"5": 2}``), or nothing. Malformed → nothing, said in the log.
+
+    Lenient on purpose — this runs on every scheduler tick, where a bad row must
+    degrade to "no override", never to a stalled queue. The settings validator is
+    the strict half; it refuses the shapes this drops.
+    """
+    if not raw or raw == "None":
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Stagger limit map is not JSON, ignoring: %r", raw)
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("Stagger limit map is not an object, ignoring: %r", raw)
+        return {}
+    limits: dict[int, int] = {}
+    for key, value in parsed.items():
+        try:
+            ident = int(key)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+            limits[ident] = value
+    return limits
+
+
 @dataclass(frozen=True)
 class StaggerSplit:
-    """The four settings, parsed. ``active`` is what the scheduler branches on."""
+    """The six settings, parsed. ``active`` is what the scheduler branches on."""
 
     by_tags: bool = False
     tag_ids: frozenset[int] = frozenset()
     by_location: bool = False
     location_ids: frozenset[int] = frozenset()
+    # Per-group cap overrides (spec 2026-09-06, decision 1): id → cap. A missing
+    # id means the global ``stagger_concurrent``. Plain dicts: nothing hashes a
+    # split, and a frozen dataclass only fails on hash, not on construction.
+    tag_limits: Mapping[int, int] = field(default_factory=dict)
+    location_limits: Mapping[int, int] = field(default_factory=dict)
 
     @property
     def tags_active(self) -> bool:
@@ -82,10 +118,10 @@ class StaggerSplit:
 
     @classmethod
     async def from_settings(cls, db: AsyncSession) -> StaggerSplit:
-        """The four rows in ONE round-trip.
+        """The six rows in ONE round-trip.
 
         This runs on every scheduler tick, so the keys are read with a single
-        ``IN`` query rather than four separate ``get_setting`` calls. A key with
+        ``IN`` query rather than six separate ``get_setting`` calls. A key with
         no row reads as None — exactly what ``get_setting`` returned for it — so
         the parsing below is unchanged.
         """
@@ -96,7 +132,16 @@ class StaggerSplit:
 
         rows = await db.execute(
             select(Settings.key, Settings.value).where(
-                Settings.key.in_([SETTING_BY_TAGS, SETTING_TAG_IDS, SETTING_BY_LOCATION, SETTING_LOCATION_IDS])
+                Settings.key.in_(
+                    [
+                        SETTING_BY_TAGS,
+                        SETTING_TAG_IDS,
+                        SETTING_BY_LOCATION,
+                        SETTING_LOCATION_IDS,
+                        SETTING_TAG_LIMITS,
+                        SETTING_LOCATION_LIMITS,
+                    ]
+                )
             )
         )
         values: dict[str, str | None] = dict(rows.all())
@@ -106,6 +151,8 @@ class StaggerSplit:
             tag_ids=parse_id_list(values.get(SETTING_TAG_IDS)),
             by_location=_bool(values.get(SETTING_BY_LOCATION)),
             location_ids=parse_id_list(values.get(SETTING_LOCATION_IDS)),
+            tag_limits=parse_limit_map(values.get(SETTING_TAG_LIMITS)),
+            location_limits=parse_limit_map(values.get(SETTING_LOCATION_LIMITS)),
         )
 
 
@@ -261,3 +308,18 @@ class StaggerGroupResolver:
         ]
         present = [p for p in parts if p]
         return " · ".join(present) if present else None
+
+    def cap_for(self, key: GroupKey, global_cap: int) -> int:
+        """The cap this group starts under: the global number, lowered by an override on its tag or its location.
+
+        An override never raises the cap above the global one, and an override
+        on an id that is not a picked, existing group is simply not asked for —
+        the universe already dropped that id.
+        """
+        tag_id, location_id = key
+        caps = [global_cap]
+        if tag_id is not None and tag_id in self._tag_ids and tag_id in self.split.tag_limits:
+            caps.append(self.split.tag_limits[tag_id])
+        if location_id is not None and location_id in self._location_ids and location_id in self.split.location_limits:
+            caps.append(self.split.location_limits[location_id])
+        return max(1, min(caps))

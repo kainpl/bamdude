@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from backend.app.services.stagger_groups import GLOBAL, StaggerGroupResolver, StaggerSplit, parse_id_list
+from backend.app.services.stagger_groups import (
+    GLOBAL,
+    StaggerGroupResolver,
+    StaggerSplit,
+    parse_id_list,
+    parse_limit_map,
+)
 
 TAGS = {1: "Фаза 1", 2: "Фаза 2", 3: "Фаза 3"}
 LOCS = {10: "Цех A", 11: "Ряд 1", 12: "Полиця", 20: "Цех B"}
@@ -127,3 +133,47 @@ class TestParse:
         assert parse_id_list('{"a": 1}') == frozenset()
         assert parse_id_list("[true]") == frozenset()
         assert parse_id_list('["1"]') == frozenset()
+
+
+class TestLimitMap:
+    def test_reads_an_object_of_id_to_cap_and_nothing_else(self):
+        assert parse_limit_map('{"5": 2, "7": 1}') == {5: 2, 7: 1}
+        assert parse_limit_map(None) == {}
+        assert parse_limit_map("None") == {}
+        assert parse_limit_map("not json") == {}
+        assert parse_limit_map("[1, 2]") == {}
+
+    def test_drops_entries_that_are_not_an_int_id_with_a_cap_of_at_least_one(self):
+        assert parse_limit_map('{"x": 2, "5": 0, "6": true, "7": "3", "8": 4}') == {8: 4}
+
+
+class TestCapFor:
+    def test_no_limits_means_the_global_cap(self):
+        r = _resolver(StaggerSplit(by_tags=True, tag_ids=frozenset({1, 2})), tags_by_printer={10: {1}})
+        assert r.cap_for((1, None), 3) == 3
+
+    def test_a_tag_limit_lowers_the_cap_for_that_tag_only(self):
+        split = StaggerSplit(by_tags=True, tag_ids=frozenset({1, 2}), tag_limits={1: 1})
+        r = _resolver(split, tags_by_printer={10: {1}, 11: {2}})
+        assert r.cap_for((1, None), 3) == 1
+        assert r.cap_for((2, None), 3) == 3
+
+    def test_both_axes_take_the_tightest(self):
+        split = StaggerSplit(
+            by_tags=True,
+            tag_ids=frozenset({1}),
+            tag_limits={1: 2},
+            by_location=True,
+            location_ids=frozenset({20}),
+            location_limits={20: 1},
+        )
+        r = _resolver(split, tags_by_printer={10: {1}}, location_by_printer={10: 20})
+        assert r.cap_for((1, 20), 5) == 1
+
+    def test_a_limit_never_raises_the_cap_above_the_global(self):
+        split = StaggerSplit(by_tags=True, tag_ids=frozenset({1}), tag_limits={1: 9})
+        assert _resolver(split, tags_by_printer={10: {1}}).cap_for((1, None), 2) == 2
+
+    def test_a_limit_on_an_unpicked_or_unknown_id_is_ignored(self):
+        split = StaggerSplit(by_tags=True, tag_ids=frozenset({1}), tag_limits={2: 1, 999: 1})
+        assert _resolver(split, tags_by_printer={10: {1}}).cap_for((1, None), 3) == 3

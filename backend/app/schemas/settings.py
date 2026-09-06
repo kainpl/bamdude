@@ -320,6 +320,13 @@ class AppSettings(BaseModel):
     stagger_group_location_ids: str = Field(
         default="[]", description="JSON array of printer location ids that are stagger groups"
     )
+    # Per-group cap overrides (spec 2026-09-06): JSON objects of id → cap. An
+    # absent id means the global ``stagger_concurrent``. Kept beside the id
+    # lists because the override is a stagger concern, not a property of the tag.
+    stagger_tag_limits: str = Field(default="{}", description="JSON object: printer tag id → max concurrent starts")
+    stagger_location_limits: str = Field(
+        default="{}", description="JSON object: printer location id → max concurrent starts"
+    )
 
     # Print modal settings
     per_printer_mapping_expanded: bool = Field(
@@ -678,6 +685,8 @@ class AppSettingsUpdate(BaseModel):
     stagger_group_tag_ids: str | None = None
     stagger_split_by_location: bool | None = None
     stagger_group_location_ids: str | None = None
+    stagger_tag_limits: str | None = None
+    stagger_location_limits: str | None = None
     per_printer_mapping_expanded: bool | None = None
     date_format: str | None = None
     time_format: str | None = None
@@ -852,6 +861,28 @@ class AppSettingsUpdate(BaseModel):
         if not isinstance(parsed, list) or not all(isinstance(i, int) and not isinstance(i, bool) for i in parsed):
             raise ValueError("stagger group ids must be a JSON array of integers")
         return json.dumps(sorted(set(parsed)))
+
+    @field_validator("stagger_tag_limits", "stagger_location_limits")
+    @classmethod
+    def validate_stagger_limits(cls, v: str | None) -> str | None:
+        """A JSON object of id → cap. Entries that are not ``int id: int >= 1`` are dropped; a non-object is refused."""
+        if v is None:
+            return v
+        try:
+            parsed = json.loads(v or "{}")
+        except json.JSONDecodeError:
+            raise ValueError("stagger limits must be a JSON object of id: cap")
+        if not isinstance(parsed, dict):
+            raise ValueError("stagger limits must be a JSON object of id: cap")
+        kept: dict[int, int] = {}
+        for key, value in parsed.items():
+            try:
+                ident = int(key)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+                kept[ident] = value
+        return json.dumps({str(k): kept[k] for k in sorted(kept)})
 
     @field_validator("obico_sensitivity")
     @classmethod

@@ -177,3 +177,52 @@ async def test_stagger_blocks_answers_for_the_printer_asked(scheduler):
         assert await scheduler.stagger_blocks(4) is True  # phase 1 is full
         assert await scheduler.stagger_blocks(2) is False  # phase 2 is free
         assert await scheduler.stagger_blocks(1) is False  # its own slot
+
+
+def _phases_with_limits(tag_limits: dict[int, int]) -> StaggerGroupResolver:
+    return StaggerGroupResolver(
+        StaggerSplit(by_tags=True, tag_ids=frozenset(TAGS), tag_limits=tag_limits),
+        tags_by_printer={k: frozenset(v) for k, v in LINKS.items()},
+        tag_names=TAGS,
+        location_by_printer={},
+        parent_by_location={},
+        location_names={},
+    )
+
+
+class TestPerGroupLimit:
+    def test_a_tag_limit_below_the_global_cap_holds_that_phase_only(self, scheduler):
+        first_tag = min(TAGS)
+        r = _phases_with_limits({first_tag: 1})
+        on_first = [pid for pid, tags in LINKS.items() if first_tag in tags]
+        # Two printers of the limited phase: only one starts; a printer of another phase still starts.
+        other = next(pid for pid, tags in LINKS.items() if first_tag not in tags)
+        started = _gate(scheduler, r, 2, [on_first[0], on_first[1], other])
+        assert started == [on_first[0], other]
+
+    def test_a_wildcard_is_held_by_the_tightest_group(self, scheduler):
+        first_tag = min(TAGS)
+        r = _phases_with_limits({first_tag: 1})
+        on_first = next(pid for pid, tags in LINKS.items() if first_tag in tags)
+        untagged = max(LINKS) + 1000  # no links → wildcard
+        assert _gate(scheduler, r, 2, [on_first, untagged]) == [on_first]
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_reports_each_groups_own_cap(scheduler, monkeypatch):
+    first_tag = min(TAGS)
+    r = _phases_with_limits({first_tag: 1})
+
+    async def _settings(_db):
+        return True, 2, 120, True
+
+    async def _resolver(_db):
+        return r
+
+    monkeypatch.setattr(scheduler, "_get_stagger_settings", _settings)
+    monkeypatch.setattr(scheduler, "_load_stagger_resolver", _resolver)
+    snapshot = await scheduler.get_stagger_state_snapshot(db=None)
+    caps = {g["tag_id"]: g["cap"] for g in snapshot["groups"]}
+    assert caps[first_tag] == 1
+    assert all(cap == 2 for tag_id, cap in caps.items() if tag_id != first_tag)
+    assert all(g["free_slots"] == g["cap"] - g["occupied"] for g in snapshot["groups"])
