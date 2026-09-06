@@ -18,12 +18,14 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
+from backend.app.models.auto_queue import AutoQueueItem
+from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
@@ -142,6 +144,10 @@ class LineFigures:
     progress: float = 0.0
     parts: list[PartFigures] = field(default_factory=list)
     archive_ids: list[int] = field(default_factory=list)
+    # Live counters (spec 2026-09-06, Slice C): running archives attributed to
+    # this line, and pending queue rows stamped with this line.
+    prints_in_progress: int = 0
+    prints_queued: int = 0
 
 
 @dataclass
@@ -178,6 +184,10 @@ class ProjectFigures:
     #: disagree: it gated on ``surplus`` before, which banking never lowers, and
     #: the button stayed lit for ever over a shelf nothing more was going onto.
     bankable_surplus: int = 0
+    #: Archives in ``printing`` under this order, and pending rows of both queue
+    #: tiers under it — rows on a line AND rows filed under the order alone.
+    prints_in_progress: int = 0
+    prints_queued: int = 0
 
 
 @dataclass
@@ -213,6 +223,11 @@ class OrderContext:
     # Empty means "nothing has been banked yet", which is what a hand-built
     # context should read.
     banked_by_line_part: dict[tuple[int, int], int] = field(default_factory=dict)
+    # ``line_id → pending queue rows on that line`` and the rows under the order
+    # with no line, both tiers summed (an auto row already handed to a printer
+    # item is counted through that item — ``queued_yield_by_line``'s rule).
+    queued_by_line: dict[int, int] = field(default_factory=dict)
+    queued_unfiled: int = 0
 
 
 def _counted_qty_per_unit(products: Iterable[Product]) -> dict[int, int]:
@@ -248,6 +263,37 @@ async def _load_reserved(db: AsyncSession, line_ids: Sequence[int], qty_per_unit
     from backend.app.services.part_stock import line_ledger_reads
 
     return await line_ledger_reads(db, line_ids, qty_per_unit)
+
+
+async def _load_queued(db: AsyncSession, project_ids: Sequence[int]) -> dict[int, dict[int | None, int]]:
+    """``project_id → {line_id or None → pending rows}`` over both queue tiers,
+    one statement per tier for every order asked about. The per-order loader
+    and the batch loader both come through here, so a list row and the page it
+    opens cannot disagree about what is waiting."""
+    out: dict[int, dict[int | None, int]] = defaultdict(lambda: defaultdict(int))
+    if not project_ids:
+        return out
+    for project_id, line_id, n in (
+        await db.execute(
+            select(PrintQueueItem.project_id, PrintQueueItem.project_line_id, func.count(PrintQueueItem.id))
+            .where(PrintQueueItem.project_id.in_(project_ids), PrintQueueItem.status == "pending")
+            .group_by(PrintQueueItem.project_id, PrintQueueItem.project_line_id)
+        )
+    ).all():
+        out[project_id][line_id] += n
+    for project_id, line_id, n in (
+        await db.execute(
+            select(AutoQueueItem.project_id, AutoQueueItem.project_line_id, func.count(AutoQueueItem.id))
+            .where(
+                AutoQueueItem.project_id.in_(project_ids),
+                AutoQueueItem.status == "pending",
+                AutoQueueItem.assigned_to_item_id.is_(None),
+            )
+            .group_by(AutoQueueItem.project_id, AutoQueueItem.project_line_id)
+        )
+    ).all():
+        out[project_id][line_id] += n
+    return out
 
 
 async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext | None:
@@ -312,6 +358,7 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         ).scalars()
     }
     reads = await _load_reserved(db, [line.id for line in lines], _counted_qty_per_unit(products))
+    queued = (await _load_queued(db, [project_id])).get(project_id, {})
     return OrderContext(
         project=project,
         lines=lines,
@@ -324,6 +371,8 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         whole_file_product=whole_file_products,
         reserved_by_line=reads.reserved_units,
         banked_by_line_part=reads.banked_by_part,
+        queued_by_line={lid: n for lid, n in queued.items() if lid is not None},
+        queued_unfiled=queued.get(None, 0),
     )
 
 
@@ -555,6 +604,8 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         for line_id, figs in figures.items():
             if line_id in fed:
                 figs.archive_ids.append(archive.id)
+                if archive.status == _RUNNING:
+                    figs.prints_in_progress += 1
 
     other: list[PrintArchive] = []
     # Explicit filings first, oldest first within each group, so a hand-filed
@@ -584,6 +635,8 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         # candidate its rows point at instead of being reported as a stranger's.
         rows = ctx.archive_parts_by_archive.get(archive.id, [])
         list_under(archive, hand_out(archive, rows, lines) or {uncounted_home(rows, lines).id})
+    for line_id, figs in figures.items():
+        figs.prints_queued = ctx.queued_by_line.get(line_id, 0)
     for figs in figures.values():
         _finish(figs)
     return figures, other
@@ -655,6 +708,8 @@ def project_figures(
     pf.total_filament_grams = round(pf.total_filament_grams, 2)
     pf.total_cost = round(pf.total_cost, 2)
     pf.margin = round(ctx.project.price - pf.total_cost, 2) if ctx.project.price is not None else None
+    pf.prints_in_progress = sum(1 for a in ctx.archives if a.status == _RUNNING)
+    pf.prints_queued = sum(ctx.queued_by_line.values()) + ctx.queued_unfiled
     # Capped for the same reason a line's is (see ``_finish``): ``printed`` and
     # ``ordered`` sit beside it uncapped, so an overprinted order still reads
     # "5 of 3" while its bar stays full rather than overflowing its track.
@@ -723,6 +778,8 @@ class GroupedOrderFigures:
     #: (Ruling 30), computed once in :func:`project_figures` and never re-summed
     #: by a second reader.
     bankable_surplus: int = 0
+    prints_in_progress: int = 0
+    prints_queued: int = 0
     lines: list[GroupedLineFigures] = field(default_factory=list)
 
 
@@ -832,10 +889,14 @@ async def batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[O
         _counted_qty_per_unit(products),
     )
     reserved = reads.reserved_units
+    # Same helper the per-order loader uses, so a list row and the page it opens
+    # cannot disagree about what is waiting in either queue tier.
+    queued_all = await _load_queued(db, list(project_ids))
 
     out: list[OrderContext] = []
     for project in projects:
         lines = lines_by_project[project.id]
+        queued = queued_all.get(project.id, {})
         # Built from THIS order's products only, exactly as the per-order loader
         # does. A shared index over every order's products would answer the same
         # (``candidates`` filters on the order's own lines) but it would be a
@@ -859,6 +920,8 @@ async def batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[O
                 whole_file_product=whole_file_products,
                 reserved_by_line={line.id: reserved[line.id] for line in lines if line.id in reserved},
                 banked_by_line_part={key: net for key, net in reads.banked_by_part.items() if key[0] in line_ids},
+                queued_by_line={lid: n for lid, n in queued.items() if lid is not None},
+                queued_unfiled=queued.get(None, 0),
             )
         )
     return out
@@ -900,6 +963,8 @@ async def grouped_figures(
                 total_cost=pf.total_cost,
                 from_stock_units=pf.from_stock_units,
                 bankable_surplus=pf.bankable_surplus,
+                prints_in_progress=pf.prints_in_progress,
+                prints_queued=pf.prints_queued,
                 lines=[
                     GroupedLineFigures(
                         line_id=figs.line_id,

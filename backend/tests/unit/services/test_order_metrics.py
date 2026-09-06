@@ -25,7 +25,18 @@ from backend.app.services.order_metrics import (
 )
 
 
-def _ctx(lines, parts, archives, archive_parts, plate_product, procurement=None, reserved=None, banked=None):
+def _ctx(
+    lines,
+    parts,
+    archives,
+    archive_parts,
+    plate_product,
+    procurement=None,
+    reserved=None,
+    banked=None,
+    queued=None,
+    queued_unfiled=0,
+):
     project = Project(name="O", price=100.0)
     project.id = 1
     products = {}
@@ -58,6 +69,8 @@ def _ctx(lines, parts, archives, archive_parts, plate_product, procurement=None,
         # ``(line_id, part_id) → Σ surplus_banked`` (Ruling 30), off the same
         # grouped ledger read. Empty is "nothing banked yet".
         banked_by_line_part=banked or {},
+        queued_by_line=queued or {},
+        queued_unfiled=queued_unfiled,
     )
 
 
@@ -847,3 +860,25 @@ def test_the_order_level_sum_caps_each_line_at_what_it_ordered():
     assert pf.complete == 1 and pf.remaining == 10
     assert pf.progress == round(1 / 11, 4)
     assert pf.all_printed is False, "the ten-unit line has printed nothing"
+
+
+def test_a_running_print_counts_as_in_progress_on_its_line_and_its_order():
+    line = ProjectLine(project_id=1, product_id=1, quantity=4, sort_order=0)
+    line.id = 1
+    part = ProductPart(product_id=1, kind="printed", name="hook", name_key="hook", qty_per_unit=1, aliases=["hook"])
+    part.id = 1
+    running = PrintArchive(
+        id=1, project_id=1, project_line_id=1, library_file_id=7, plate_index=1, status="printing", quantity=1
+    )
+    done = PrintArchive(
+        id=2, project_id=1, project_line_id=1, library_file_id=7, plate_index=1, status="completed", quantity=1
+    )
+    rows = {
+        1: [PrintArchivePart(archive_id=1, name="hook", name_key="hook", quantity=1)],
+        2: [PrintArchivePart(archive_id=2, name="hook", name_key="hook", quantity=1)],
+    }
+    ctx = _ctx([line], [part], [running, done], rows, {(7, 1): 1}, queued={1: 2}, queued_unfiled=1)
+    figures, other = attribute(ctx)
+    assert figures[1].prints_in_progress == 1 and figures[1].prints_queued == 2
+    pf = project_figures(ctx, figures, other)
+    assert pf.prints_in_progress == 1 and pf.prints_queued == 3

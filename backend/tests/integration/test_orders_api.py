@@ -3427,3 +3427,46 @@ async def test_the_plan_counts_an_unfiled_plate_product_row(db_session):
     # printed or in progress; landing at 20 rather than 30 is the unfiled
     # plate-2 row's 10 clips being counted through the fixed implicit branch.
     assert line_b.outstanding_before.get(clip) == 20
+
+
+@pytest.mark.asyncio
+async def test_the_order_and_its_list_row_carry_the_live_counters(committing_client, db_session, catalog):
+    r = await committing_client.post(
+        "/api/v1/projects/",
+        json={"name": "Live", "lines": [{"product_id": catalog["product"].id, "quantity": 5}]},
+    )
+    pid, line_id = r.json()["id"], r.json()["lines"][0]["id"]
+    await _queue_rows(db_session, pid, catalog["file"].id, line_id)  # one row per queue tier, on the line
+    running = PrintArchive(
+        project_id=pid,
+        project_line_id=line_id,
+        library_file_id=catalog["file"].id,
+        plate_index=1,
+        filename="lamp",
+        file_path="",
+        file_size=0,
+        status="printing",
+        quantity=1,
+    )
+    db_session.add(running)
+    await db_session.commit()
+    body = (await committing_client.get(f"/api/v1/projects/{pid}")).json()
+    assert body["figures"]["prints_in_progress"] == 1 and body["figures"]["prints_queued"] == 2
+    assert body["lines"][0]["prints_in_progress"] == 1 and body["lines"][0]["prints_queued"] == 2
+    row = next(o for o in (await committing_client.get("/api/v1/projects/")).json() if o["id"] == pid)
+    assert row["prints_in_progress"] == 1 and row["prints_queued"] == 2
+
+
+@pytest.mark.asyncio
+async def test_the_list_reads_the_queues_once_for_every_order(committing_client, db_session, catalog, test_engine):
+    for i in range(3):
+        await committing_client.post(
+            "/api/v1/projects/", json={"name": f"O{i}", "lines": [{"product_id": catalog["product"].id, "quantity": 1}]}
+        )
+    with (
+        counting_statements(test_engine, match="FROM print_queue") as pq,
+        counting_statements(test_engine, match="FROM auto_queue_items") as aq,
+    ):
+        r = await committing_client.get("/api/v1/projects/")
+    assert r.status_code == 200
+    assert len(pq) == 1 and len(aq) == 1

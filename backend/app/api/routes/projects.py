@@ -148,6 +148,8 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
                 for p in figs[line.id].parts
             ],
             archive_ids=list(figs[line.id].archive_ids),
+            prints_in_progress=figs[line.id].prints_in_progress,
+            prints_queued=figs[line.id].prints_queued,
         )
         for line in ctx.lines
     ]
@@ -257,6 +259,8 @@ async def list_projects(
                 # already capped per line by ``project_figures`` — no second
                 # query and no second copy of the cap rule.
                 from_stock_units=pf.from_stock_units,
+                prints_in_progress=pf.prints_in_progress,
+                prints_queued=pf.prints_queued,
                 progress=pf.progress,
                 # ``(sort_order, id)`` — the order every figure path puts the
                 # lines in. The relationship's own order is the database's, so

@@ -210,6 +210,10 @@ class ProjectLineResponse(BaseModel):
     # may appear under two lines — a plate carrying parts of both products, or a
     # file both hold — so these lists are not a partition of the order's prints.
     archive_ids: list[int] = []
+    #: Archives in ``printing`` attributed to this line, and pending queue rows
+    #: (both tiers) stamped with this line's id.
+    prints_in_progress: int = 0
+    prints_queued: int = 0
 
 
 class ProcurementOut(BaseModel):
@@ -244,6 +248,10 @@ class ProjectFiguresOut(BaseModel):
     # is enabled on exactly this: it used to gate on the surplus, which banking
     # never lowers, so it stayed lit for ever and answered "nothing to bank".
     bankable_surplus: int = 0
+    # Archives in ``printing`` under this order, and pending rows of both queue
+    # tiers under it — rows on a line AND rows filed under the order alone.
+    prints_in_progress: int = 0
+    prints_queued: int = 0
 
 
 class ProjectResponse(BaseModel):
@@ -293,6 +301,10 @@ class ProjectListResponse(BaseModel):
     # the page it opens cannot disagree about what is already done. Beside
     # ``printed``, never inside it: one is prints, the other is the shelf.
     from_stock_units: int = 0
+    # Off the same batch as ``ordered``/``printed`` — archives in ``printing``
+    # under this order, and pending queue rows of both tiers under it.
+    prints_in_progress: int = 0
+    prints_queued: int = 0
     # 0.0–1.0, capped server-side (see ``ProjectLineResponse.progress``).
     # An overprinted order reports its excess through ``printed`` against
     # ``ordered``, which stay uncapped.
