@@ -12,6 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { Routes, Route } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
@@ -58,6 +59,9 @@ const product = {
   units_printed_total: 12,
   created_at: '2026-09-01T00:00:00Z',
   updated_at: '2026-09-01T00:00:00Z',
+  origin: 'catalog',
+  origin_file_id: null,
+  origin_plate_index: null,
 };
 
 afterEach(() => {
@@ -291,5 +295,19 @@ describe('ProductPage', () => {
       expect(screen.queryByTestId('product-stock')).not.toBeInTheDocument();
       expect(api.getProductStock).not.toHaveBeenCalled();
     });
+  });
+
+  it('shows the adhoc banner and promotes to the catalogue', async () => {
+    const adhocProduct = { ...product, id: 9, origin: 'adhoc_job' as const };
+    const patched = vi.fn();
+    vi.spyOn(api, 'getProduct').mockResolvedValue(adhocProduct as never);
+    vi.spyOn(api, 'updateProduct').mockImplementation(async (_pid, data) => {
+      patched(data);
+      return { ...adhocProduct, ...data, origin: 'catalog' } as never;
+    });
+    mountAt(9);
+    expect(await screen.findByText(/one-off product/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Add to catalogue' }));
+    await waitFor(() => expect(patched).toHaveBeenCalledWith({ origin: 'catalog' }));
   });
 });

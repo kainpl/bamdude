@@ -6,6 +6,7 @@ import { Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
+import { Button } from '../../components/Button';
 import { ProductGallery } from '../../components/products/ProductGallery';
 import { ProductHeader } from '../../components/products/ProductHeader';
 import { CompositionTable } from '../../components/products/CompositionTable';
@@ -66,6 +67,16 @@ export function ProductPage() {
     onSuccess: (saved) => {
       invalidate();
       showToast(saved.is_active ? t('products.toast.shown') : t('products.toast.hidden'));
+    },
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
+
+  const promote = useMutation({
+    mutationFn: () => api.updateProduct(id, { origin: 'catalog' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['product', id] });
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      showToast(t('products.toast.promoted'));
     },
     onError: (e: Error) => showToast(e.message, 'error'),
   });
@@ -171,6 +182,17 @@ export function ProductPage() {
         onDelete={() => setDeleting(true)}
         onToggleActive={(next) => toggleActive.mutate(next)}
       />
+
+      {product.origin !== 'catalog' && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200" data-testid="product-adhoc-banner">
+          <span>{t('products.page.adhocBanner')}</span>
+          {hasPermission('projects:update') && (
+            <Button size="sm" variant="secondary" onClick={() => promote.mutate()} disabled={promote.isPending}>
+              {t('products.page.promote')}
+            </Button>
+          )}
+        </div>
+      )}
 
       <div className="order-first">
         <ProductGallery product={product} canEdit={canEdit} />
