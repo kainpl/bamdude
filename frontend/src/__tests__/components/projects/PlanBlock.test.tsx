@@ -13,6 +13,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, onlineManager, useQuery, useQueryClient } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
@@ -1216,5 +1217,19 @@ describe('PlanBlock', () => {
     // Back to the plan the server sent: one print of the row's own file.
     expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(1);
     expect(screen.getByTestId('plan-totals-time')).toHaveTextContent('1h 30m');
+  });
+
+  it('drops the page heading in the dialog variant', () => {
+    render(<PlanBlock order={order} canEdit variant="dialog" />);
+    expect(screen.queryByRole('heading', { name: /what to print next/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId('plan-block')).toBeInTheDocument();
+  });
+
+  it('reports a successful enqueue to the caller', async () => {
+    const onEnqueued = vi.fn();
+    vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({ created: [{ line_id: 10, plate_id: 100, queue_item_ids: [77] }] });
+    render(<PlanBlock order={order} canEdit variant="dialog" onEnqueued={onEnqueued} />);
+    await userEvent.click(await screen.findByTestId('plan-enqueue-all'));
+    await waitFor(() => expect(onEnqueued).toHaveBeenCalledTimes(1));
   });
 });

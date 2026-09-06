@@ -39,7 +39,19 @@ import { invalidateOrderViews } from '../../utils/queryInvalidation';
  * filament — stays `check_queue`'s question, asked again at dispatch. There is
  * deliberately no printer hint, badge or ordering anywhere in this block.
  */
-export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }) {
+export function PlanBlock({
+  order,
+  canEdit,
+  variant = 'page',
+  onEnqueued,
+}: {
+  order: Order;
+  canEdit: boolean;
+  /** `dialog` drops the page heading — the wizard has its own title. */
+  variant?: 'page' | 'dialog';
+  /** Fired once per successful enqueue, after the invalidations. */
+  onEnqueued?: () => void;
+}) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const { showToast } = useToast();
@@ -194,6 +206,7 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
       const created = result.created.reduce((sum, row) => sum + row.queue_item_ids.length, 0);
       showToast(t('orders.plan.toast.enqueued', { count: created }), 'success');
       invalidate();
+      onEnqueued?.();
     },
     onError: (e: Error) => showToast(e.message, 'error'),
   });
@@ -282,12 +295,13 @@ export function PlanBlock({ order, canEdit }: { order: Order; canEdit: boolean }
   const setRowSplit = (lineId: number, rowPlateId: number, next: Record<number, number>) =>
     setSplit((prev) => ({ ...prev, [lineId]: { ...(prev[lineId] ?? {}), [rowPlateId]: next } }));
 
-  const heading = (
-    <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-      <ClipboardList className="w-5 h-5" />
-      {t('orders.plan.title')}
-    </h2>
-  );
+  const heading =
+    variant === 'dialog' ? null : (
+      <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+        <ClipboardList className="w-5 h-5" />
+        {t('orders.plan.title')}
+      </h2>
+    );
 
   // ⚠️ `plan-block` marks THE BLOCK, on every branch — it answers "is the plan
   // on this page", not "has the plan arrived". Carrying it on the loaded and
