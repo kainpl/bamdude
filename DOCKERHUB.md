@@ -1,5 +1,7 @@
 # BamDude
 
+![BamDude](https://raw.githubusercontent.com/kainpl/bamdude/main/static/img/brand/readme-banner-1600x400.png)
+
 **Self-hosted print archive, management and automation system for Bambu Lab 3D printers.**
 
 Hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) by maziggy, with Telegram bot, multi-chat auth, and print farm automation.
