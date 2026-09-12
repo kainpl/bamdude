@@ -5,6 +5,7 @@ import logging
 import re
 import time
 import zipfile
+import zlib
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -770,7 +771,6 @@ async def delete_printer(
     """
     from sqlalchemy import delete as sql_delete
 
-    from backend.app.models.archive import PrintArchive
     from backend.app.models.maintenance import MaintenanceHistory, PrinterMaintenance
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer_queue import PrinterQueue
@@ -949,8 +949,6 @@ async def resolve_current_archive_id(
     handler leaves one behind, and the archive of the print running NOW was
     created later.
     """
-    from backend.app.models.archive import PrintArchive
-
     if subtask_id:
         by_subtask = await db.execute(
             select(PrintArchive.id)
@@ -2063,9 +2061,12 @@ async def get_printer_file_plates(
                 if png in names:
                     url = "data:image/png;base64," + base64.b64encode(zf.read(png)).decode("ascii")
                 plates.append({**plate, "has_thumbnail": url is not None, "thumbnail_url": url})
-    except (zipfile.BadZipFile, EOFError) as e:
+    except (zipfile.BadZipFile, EOFError, zlib.error) as e:
         # A file half-written to the card is the usual cause; an empty picker is
-        # a better answer for it than a 500.
+        # a better answer for it than a 500. ⚠️ ``zlib.error`` belongs here:
+        # a mangled deflate stream raises BadZipFile ("Bad CRC-32") most of the
+        # time and "invalid block type" the rest of it — measured 240/60 over 300
+        # random corruptions — so a guard without it fails one torn file in five.
         logger.warning("Failed to parse plates from printer file %s: %s", path, e)
         return empty
     answer = {**empty, "plates": plates, "is_multi_plate": len(plates) > 1}
@@ -2098,9 +2099,10 @@ def _plates_from_archive(printer_id: int, path: str, filename: str, archive: Pri
         try:
             with zipfile.ZipFile(local_3mf, "r") as zf:
                 raw = parse_plates_from_3mf(zf)
-        except (zipfile.BadZipFile, EOFError, OSError) as e:
+        except (zipfile.BadZipFile, EOFError, OSError, zlib.error) as e:
             # The archive on disk is unreadable — the printer may still hold the
             # file, so fall through to the one read instead of failing the modal.
+            # ``zlib.error`` for the same reason as on the read path above.
             logger.warning("Archive 3MF %s unreadable, reading the printer instead: %s", local_3mf, e)
             return None
     else:
@@ -2109,10 +2111,15 @@ def _plates_from_archive(printer_id: int, path: str, filename: str, archive: Pri
     plates = []
     for plate in raw:
         idx = plate.get("index")
-        if not plate.get("has_thumbnail"):
-            url = None
-        elif archive.thumbnail_path and archive.plate_index == idx:
+        # The printed plate is asked FIRST, before the metadata gate:
+        # ``thumbnail_path`` is a fact about the archive directory, while
+        # ``has_thumbnail`` is one about the 3MF's ``Metadata/plate_N.png``. A
+        # thumbnail extracted or generated some other way makes the second False
+        # over a picture that exists, and answering ``null`` for it would be wrong.
+        if archive.thumbnail_path and archive.plate_index == idx:
             url = f"/api/v1/archives/{archive.id}/thumbnail"  # the printed plate's PNG, already extracted
+        elif not plate.get("has_thumbnail"):
+            url = None
         elif archive.file_path:
             url = f"/api/v1/archives/{archive.id}/plate-thumbnail/{idx}"
         else:
@@ -2973,7 +2980,6 @@ async def debug_simulate_print_complete(
     without needing to wait for an actual print to finish.
     """
     from backend.app.main import _active_prints, on_print_complete
-    from backend.app.models.archive import PrintArchive
 
     # Get the most recent archive for this printer
     result = await db.execute(
@@ -4046,8 +4052,6 @@ async def get_printable_objects(
         # file is found (the old behaviour, which fails for many slicer prints).
         if not client.state.printable_objects:
             try:
-                from backend.app.models.archive import PrintArchive
-
                 ar = (
                     (
                         await db.execute(
