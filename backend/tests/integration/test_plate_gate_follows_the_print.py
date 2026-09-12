@@ -167,21 +167,50 @@ class TestAPrintAlreadyRunningClaimsItsRow:
         # A print is running on this bed: the gate from before the restart is moot.
         pm.set_awaiting_plate_clear.assert_any_call(printer_id, False)
 
-    async def test_nothing_is_claimed_without_a_live_archive(self, db_session, printer_factory, main_db):
+    async def test_without_a_live_archive_the_print_is_adopted_and_claims_the_row(
+        self, db_session, printer_factory, main_db
+    ):
+        """No archive means the print started while BamDude was down, and since
+        spec 2026-09-12 that is adopted rather than ignored: ``on_print_start``'s
+        row is created here and the queue row claimed for it.
+
+        This used to assert that NOTHING was claimed, on the reasoning that a
+        print with no archive could never be repeated and would sit in the queue
+        for ever. That reasoning still holds — it is the reason the row is
+        created first, and the shape of what gets claimed is pinned in
+        ``test_adopt_print_started_while_down.py``.
+        """
         from backend.app.main import on_print_running_observed
 
         printer_id = await _printer_with_queue(db_session, printer_factory)
         pm = MagicMock()
         pm.get_status.return_value = None
+        pm.get_client.return_value = None
         pm.is_awaiting_plate_clear.return_value = False
+        ws = MagicMock()
+        for name in ("send_archive_created", "send_archive_updated", "broadcast"):
+            setattr(ws, name, AsyncMock())
         with (
             patch("backend.app.main.printer_manager", pm),
+            patch("backend.app.main.ws_manager", ws),
+            patch("backend.app.main.mqtt_relay", MagicMock(on_archive_created=AsyncMock())),
+            # The adoption's 3MF fetch is a tracked background task; left to run
+            # it opens a real FTP session to the fixture's IP address.
+            patch("backend.app.main.spawn_background_task", MagicMock()),
             patch("backend.app.main._restore_usage_tracking_session", new_callable=AsyncMock),
             patch("backend.app.main._capture_timelapse_baseline_at_start", new_callable=AsyncMock),
         ):
-            await on_print_running_observed(printer_id, {"subtask_name": "cube"})
+            await on_print_running_observed(
+                printer_id, {"subtask_name": "cube", "filename": "/data/Metadata/plate_2.gcode"}
+            )
 
-        assert (await db_session.execute(select(PrintQueueItem))).scalars().all() == []
+        db_session.expire_all()
+        archives = (await db_session.execute(select(PrintArchive))).scalars().all()
+        assert len(archives) == 1, f"the running print was not adopted: {len(archives)} archive rows"
+        adopted = archives[0]
+        assert adopted.file_path == "" and adopted.started_at is None
+        rows = (await db_session.execute(select(PrintQueueItem))).scalars().all()
+        assert [(r.status, r.archive_id, r.plate_id) for r in rows] == [("printing", adopted.id, 2)]
 
 
 class TestADiscardedArchiveTakesNoRowWithIt:

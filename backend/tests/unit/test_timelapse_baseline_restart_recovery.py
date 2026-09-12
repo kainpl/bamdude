@@ -62,6 +62,11 @@ async def test_running_observed_captures_baseline_on_restart_recovery():
             "backend.app.main._list_timelapse_videos",
             new=AsyncMock(return_value=(existing_videos, "/timelapse")),
         ),
+        # A print running with no archive is ADOPTED since spec 2026-09-12, and
+        # that creates a row, claims the queue and spawns an FTP download. All of
+        # it is covered in test_adopt_print_started_while_down.py; here it would
+        # only drive a whole write path through this test's mock session.
+        patch("backend.app.main._adopt_running_print", new=AsyncMock(return_value=None)),
     ):
         mock_session_maker.return_value = mock_session
 
@@ -118,6 +123,11 @@ async def test_running_observed_skips_when_baseline_already_present():
             "backend.app.main._live_archive_for_running_print",
             new=AsyncMock(return_value=(None, None)),
         ),
+        # …and since spec 2026-09-12 "no live archive" means the print is
+        # adopted, which opens a session of its own before the baseline
+        # early-return below. Pinned away for the same reason: this test is
+        # about the TIMELAPSE half.
+        patch("backend.app.main._adopt_running_print", new=AsyncMock(return_value=None)),
     ):
         from backend.app.main import on_print_running_observed
 
