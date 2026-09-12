@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import React from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQueries } from '@tanstack/react-query';
 import { ToastProvider } from '../../contexts/ToastContext';
 import { ORDER_VIEW_KEYS } from '../../utils/queryInvalidation';
 
@@ -172,6 +172,44 @@ describe('useWebSocket hook', () => {
     vi.restoreAllMocks();
     // Restore original WebSocket
     globalThis.WebSocket = originalWebSocket;
+  });
+
+  it('applies all 50 WS states and acknowledges them while every REST request is still pending', async () => {
+    const { useWebSocket } = await import('../../hooks/useWebSocket');
+    const reads = vi.fn(() => new Promise<Record<string, unknown>>(() => {}));
+    const { result, unmount } = renderHook(() => {
+      useWebSocket();
+      return useQueries({ queries: Array.from({ length: 50 }, (_, i) => ({
+        queryKey: ['printerStatus', i + 1], queryFn: reads,
+      })) });
+    }, { wrapper: createWrapper(queryClient) });
+    const ws = await waitForWs();
+    act(() => {
+      ws.open();
+      for (let id = 1; id <= 50; id++) {
+        ws.simulateMessage({ type: 'printer_status', printer_id: id, data: { connected: true, state: 'RUNNING', progress: id } });
+      }
+      ws.simulateMessage({ type: 'initial_status_complete', bootstrap_id: 'test-bootstrap' });
+    });
+    await waitFor(() => expect(result.current.every(q => q.data?.state === 'RUNNING')).toBe(true));
+    expect(result.current.every(q => q.isFetching && !q.isLoading)).toBe(true);
+    expect(ws.send.mock.calls.map(([data]) => JSON.parse(data))).toContainEqual(expect.objectContaining({
+      type: 'initial_status_applied', bootstrap_id: 'test-bootstrap', connect_ms: expect.any(Number),
+    }));
+    unmount();
+  });
+
+  it('does not refetch inactive pages when the tab becomes visible', async () => {
+    const { useWebSocket } = await import('../../hooks/useWebSocket');
+    const readInactive = vi.fn().mockResolvedValue([]);
+    await queryClient.fetchQuery({ queryKey: ['archives'], queryFn: readInactive });
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+    await waitForWs();
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(readInactive).toHaveBeenCalledTimes(1);
+    unmount();
   });
 
   describe('WebSocket Mock', () => {

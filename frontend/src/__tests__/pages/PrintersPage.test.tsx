@@ -3,7 +3,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { PrintersPage } from '../../pages/PrintersPage';
@@ -114,6 +116,47 @@ describe('PrintersPage', () => {
   });
 
   describe('rendering', () => {
+    it('renders 50 live cards while the REST status snapshot is held back', async () => {
+      const fleet = Array.from({ length: 50 }, (_, i) => ({ ...mockPrinters[0], id: i + 1, name: `Farm printer ${i + 1}` }));
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      let requests = 0;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json(fleet)),
+        http.get('/api/v1/printers/status/batch', async ({ request }) => {
+          requests++;
+          await held;
+          return HttpResponse.json(Object.fromEntries(new URL(request.url).searchParams.getAll('ids').map(id => [id, mockPrinterStatus])));
+        }),
+      );
+      let cache!: QueryClient;
+      function CaptureCache() {
+        const client = useQueryClient();
+        useEffect(() => { cache = client; }, [client]);
+        return null;
+      }
+      const view = render(<><CaptureCache /><PrintersPage /></>);
+      try {
+        await screen.findByText('Farm printer 50');
+        await waitFor(() => expect(requests).toBe(1));
+        act(() => {
+          for (let id = 1; id <= 50; id++) {
+            // Same key and shape written by useWebSocket; the hook's 50-printer
+            // test exercises the transport-to-cache half of this contract.
+            cache.setQueryData(['printerStatus', id], {
+              ...mockPrinterStatus, state: 'RUNNING', progress: 42,
+              current_print: `LiveJob-${id}`, subtask_name: `LiveJob-${id}`,
+            });
+          }
+        });
+        await waitFor(() => expect(screen.getAllByText(/^LiveJob-\d+$/)).toHaveLength(50));
+        expect(cache.getQueryState(['printerStatus', 50])?.fetchStatus).toBe('fetching');
+      } finally {
+        release();
+        view.unmount();
+      }
+    }, 20_000);
+
     it('renders the page title', async () => {
       render(<PrintersPage />);
 

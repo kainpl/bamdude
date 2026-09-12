@@ -12,6 +12,8 @@ close(4401)``); these tests pin the token round-trip it depends on and the
 auth on the mint endpoint.
 """
 
+import asyncio
+
 import pytest
 from httpx import AsyncClient
 
@@ -88,10 +90,13 @@ async def test_broadcast_to_user_targets_only_the_owner():
     await mgr.connect(b, user_id=2)
 
     await mgr.broadcast_to_user(1, {"type": "spool_assignment_verified"})
+    await asyncio.sleep(0)  # the per-client writer owns socket I/O
     assert len(a.sent) == 1 and len(b.sent) == 0  # only user 1's connection
 
     await mgr.broadcast_to_user(None, {"type": "global"})  # None → global fallback
+    await asyncio.sleep(0)
     assert len(a.sent) == 2 and len(b.sent) == 1
+    await mgr.shutdown()
 
 
 @pytest.mark.asyncio
@@ -108,3 +113,29 @@ async def test_ws_token_resolves_to_minting_user(async_client: AsyncClient):
 
     assert await resolve_websocket_token_user(await create_websocket_token()) is None  # userless
     assert await resolve_websocket_token_user("not-a-real-token") is None
+
+
+@pytest.mark.asyncio
+async def test_upgrade_authenticates_and_resolves_owner_in_one_query(async_client, db_session):
+    from sqlalchemy import event
+
+    from backend.app.core.auth import authenticate_websocket_token, create_camera_stream_token, create_websocket_token
+
+    token = (await async_client.post("/api/v1/auth/ws-token")).json()["token"]
+    calls = []
+
+    def counted(*args):
+        calls.append(1)
+
+    engine = db_session.bind.sync_engine
+    event.listen(engine, "before_cursor_execute", counted)
+    try:
+        valid, uid = await authenticate_websocket_token(token)
+    finally:
+        event.remove(engine, "before_cursor_execute", counted)
+    assert valid and isinstance(uid, int)
+    assert len(calls) == 1
+    assert await authenticate_websocket_token(await create_websocket_token()) == (True, None)
+    assert await authenticate_websocket_token(await create_websocket_token("deleted-owner")) == (False, None)
+    assert await authenticate_websocket_token(await create_camera_stream_token()) == (False, None)
+    assert await authenticate_websocket_token("") == (False, None)

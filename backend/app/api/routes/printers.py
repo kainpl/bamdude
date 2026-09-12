@@ -96,6 +96,7 @@ from backend.app.services.printer_manager import (
     supports_drying_while_printing,
     uniform_tray_drying_hint,
 )
+from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
 from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.printer_storage import storage_capability_for
@@ -983,6 +984,51 @@ async def get_printer_status(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
+    return await _build_printer_status(printer, db)
+
+
+@router.get("/status/batch", response_model=dict[int, PrinterStatus])
+async def get_printer_status_batch(
+    ids: list[int] = Query(min_length=1, max_length=100),
+    _=RequirePermission(Permission.PRINTERS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """One bounded REST snapshot for a fleet view, including WS-unavailable clients.
+
+    Missing IDs are omitted; each client caller can handle its own 404 without
+    failing the other cards. Uses the single-printer response builder verbatim.
+    """
+    started = time.monotonic()
+    printers = list((await db.scalars(select(Printer).where(Printer.id.in_(set(ids))))).all())
+    subtasks = {}
+    held = []
+    for printer in printers:
+        state = printer_manager.get_status(printer.id)
+        if state and state.state in ("RUNNING", "PAUSE"):
+            subtasks[printer.id] = state.subtask_id or None
+        if printer_manager.is_awaiting_plate_clear(printer.id):
+            held.append(printer.id)
+    archives = await current_archive_ids(db, subtasks)
+    waiting = await printers_with_waiting_rows(db, held)
+    statuses = {p.id: await _build_printer_status(p, db, archive_ids=archives, waiting_ids=waiting) for p in printers}
+    logger.debug(
+        "Printer status batch: requested=%s returned=%s elapsed=%.3fs",
+        len(ids),
+        len(statuses),
+        time.monotonic() - started,
+    )
+    return statuses
+
+
+async def _build_printer_status(
+    printer: Printer,
+    db: AsyncSession,
+    *,
+    archive_ids: dict[int, int | None] | None = None,
+    waiting_ids: set[int] | None = None,
+) -> PrinterStatus:
+    printer_id = printer.id
+
     state = printer_manager.get_status(printer_id)
     if not state:
         return PrinterStatus(
@@ -1288,7 +1334,11 @@ async def get_printer_status(
     current_plate_id: int | None = None
     if state.state in ("RUNNING", "PAUSE"):
         current_plate_id = resolve_plate_id(state)
-        current_archive_id = await resolve_current_archive_id(db, printer_id, state.subtask_id)
+        current_archive_id = (
+            await resolve_current_archive_id(db, printer_id, state.subtask_id)
+            if archive_ids is None
+            else archive_ids.get(printer_id)
+        )
 
     return PrinterStatus(
         id=printer_id,
@@ -1383,7 +1433,8 @@ async def get_printer_status(
         macro_executing=state.macro_executing if state else None,
         awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
         repeat_available=(
-            printer_manager.is_awaiting_plate_clear(printer_id) and await _has_waiting_row(db, printer_id)
+            printer_manager.is_awaiting_plate_clear(printer_id)
+            and (await _has_waiting_row(db, printer_id) if waiting_ids is None else printer_id in waiting_ids)
         ),
         supports_drying=supports_drying(printer.model, state.firmware_version),
         supports_drying_while_printing=supports_drying_while_printing(printer.model, state.firmware_version),

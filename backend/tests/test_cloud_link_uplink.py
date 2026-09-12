@@ -32,6 +32,7 @@ because both frames now come back from the SAME tick, in order.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -222,7 +223,10 @@ async def test_a_listener_that_raises_never_reaches_the_browsers():
 
     await manager.broadcast({"type": "printer_status", "printer_id": 1, "data": {}})
 
+    await asyncio.sleep(0)  # browser writes are isolated from the publisher
+
     assert json.loads(browser.sent[0])["type"] == "printer_status"
+    await manager.shutdown()
     assert seen == [{"type": "printer_status", "printer_id": 1, "data": {}}], (
         "one listener failing must not rob the next one of the message"
     )
