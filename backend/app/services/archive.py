@@ -1305,9 +1305,14 @@ async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: s
     ).all()
     for archive_id, file_path, thumbnail_path in candidates:
         # ``base_dir / ""`` is base_dir itself — a directory, so is_file() is
-        # False — but check the column first and say so out loud.
-        has_3mf = bool(file_path) and (settings.base_dir / file_path).is_file()
-        has_png = bool(thumbnail_path) and (settings.base_dir / thumbnail_path).is_file()
+        # False — but check the column first and say so out loud. Both columns
+        # are persisted server-owned relative paths, written only by
+        # archive_print / attach_3mf_to_archive / the thumbnail extractor — never
+        # by a request; the card-name input selects rows, it never enters the join.
+        local_3mf = settings.base_dir / file_path if file_path else None  # SEC-PATH-OK: server-owned column
+        local_png = settings.base_dir / thumbnail_path if thumbnail_path else None  # SEC-PATH-OK: server-owned column
+        has_3mf = local_3mf is not None and local_3mf.is_file()
+        has_png = local_png is not None and local_png.is_file()
         if has_3mf or has_png:
             return await db.get(PrintArchive, archive_id)
     return None
