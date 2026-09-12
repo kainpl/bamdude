@@ -2098,9 +2098,10 @@ def _plates_from_archive(printer_id: int, path: str, filename: str, archive: Pri
     extra = archive.extra_data if isinstance(archive.extra_data, dict) else {}
     cached = extra.get("plates")
     local_3mf = settings.base_dir / archive.file_path if archive.file_path else None
+    local_3mf_on_disk = local_3mf is not None and local_3mf.is_file()  # one stat; the loop asks the same question
     if isinstance(cached, list) and cached:
         raw = cached
-    elif local_3mf is not None and local_3mf.is_file():
+    elif local_3mf_on_disk:
         try:
             with zipfile.ZipFile(local_3mf, "r") as zf:
                 raw = parse_plates_from_3mf(zf)
@@ -2125,7 +2126,7 @@ def _plates_from_archive(printer_id: int, path: str, filename: str, archive: Pri
             url = f"/api/v1/archives/{archive.id}/thumbnail"  # the printed plate's PNG, already extracted
         elif not plate.get("has_thumbnail"):
             url = None
-        elif local_3mf is not None and local_3mf.is_file():
+        elif local_3mf_on_disk:
             url = f"/api/v1/archives/{archive.id}/plate-thumbnail/{idx}"
         else:
             # The 3MF that URL would open is not there: ``file_path`` blanked is
