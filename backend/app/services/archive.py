@@ -1182,7 +1182,7 @@ def sd_stem(sd_name: str) -> str:
             return stem
 
 
-def _reconstruct_recovered_start(archive) -> bool:
+def _reconstruct_recovered_start(archive: PrintArchive) -> bool:
     """Set ``started_at`` for a print adopted mid-flight (spec 2026-09-12 §3.3).
 
     The row was created when BamDude joined the print, with the remaining time
@@ -1192,6 +1192,14 @@ def _reconstruct_recovered_start(archive) -> bool:
     floor is ``observed_at``. Missing inputs leave the start unknown — nothing
     downstream banks a fictitious duration for a row without ``started_at``.
     Returns True when it wrote the field.
+
+    ⚠️ Every refusal is a no-op, never an exception. The only caller is
+    ``attach_3mf_to_archive``, whose broad ``except`` rolls the session back and
+    returns False — so a record this could not read would cost the whole attach
+    and orphan the 3MF folder already copied to disk, to save a timestamp.
+    A ``remaining_seconds`` that is a bool is treated as missing: ``True`` is an
+    ``int`` in Python, and reading a flag as "one second left" would invent a
+    whole print's worth of elapsed time.
     """
     extra = archive.extra_data if isinstance(archive.extra_data, dict) else {}
     rec = extra.get("recovered_start")
@@ -1199,9 +1207,23 @@ def _reconstruct_recovered_start(archive) -> bool:
         return False
     remaining = rec.get("remaining_seconds")
     estimate = archive.print_time_seconds
-    if not isinstance(remaining, (int, float)) or not estimate or estimate <= 0:
+    if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
         return False
-    observed_at = datetime.fromisoformat(rec["observed_at"])
+    if not estimate or estimate <= 0:
+        return False
+    try:
+        observed_at = datetime.fromisoformat(rec.get("observed_at"))
+    except (TypeError, ValueError):
+        logger.warning(
+            "recovered_start for archive %s has an unreadable observed_at (%r) — leaving started_at unknown",
+            archive.id,
+            rec.get("observed_at"),
+        )
+        return False
+    # The records are written in UTC; a value that lost its offset on the way
+    # through the database is still that instant, not a local-time one.
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
     elapsed = max(0, int(estimate) - int(remaining))
     archive.started_at = observed_at - timedelta(seconds=elapsed)
     archive.extra_data = {**extra, "started_at_reconstructed": True}
