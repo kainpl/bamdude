@@ -1182,6 +1182,32 @@ def sd_stem(sd_name: str) -> str:
             return stem
 
 
+def _reconstruct_recovered_start(archive) -> bool:
+    """Set ``started_at`` for a print adopted mid-flight (spec 2026-09-12 §3.3).
+
+    The row was created when BamDude joined the print, with the remaining time
+    the printer reported at that moment; the slicer's estimate arrives with the
+    3MF. ``started_at = observed_at − (estimate − remaining)``; when the printer
+    claims more remaining than the whole estimate (firmware drift) the honest
+    floor is ``observed_at``. Missing inputs leave the start unknown — nothing
+    downstream banks a fictitious duration for a row without ``started_at``.
+    Returns True when it wrote the field.
+    """
+    extra = archive.extra_data if isinstance(archive.extra_data, dict) else {}
+    rec = extra.get("recovered_start")
+    if not isinstance(rec, dict) or archive.started_at is not None:
+        return False
+    remaining = rec.get("remaining_seconds")
+    estimate = archive.print_time_seconds
+    if not isinstance(remaining, (int, float)) or not estimate or estimate <= 0:
+        return False
+    observed_at = datetime.fromisoformat(rec["observed_at"])
+    elapsed = max(0, int(estimate) - int(remaining))
+    archive.started_at = observed_at - timedelta(seconds=elapsed)
+    archive.extra_data = {**extra, "started_at_reconstructed": True}
+    return True
+
+
 async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: str) -> PrintArchive | None:
     """The archive that still has something to show for a file on the card — or None.
 
@@ -2368,9 +2394,11 @@ class ArchiveService:
         with ``file_path=""`` + ``extra_data["no_3mf_available"]=True``;
         the retry service later manages to grab the file from SD.
 
-        Does NOT touch ``status``, ``started_at``, ``completed_at``,
-        ``project_id``, ``project_line_id``, or ``created_by_id`` — those were
-        set when the archive was originally created.
+        Does NOT touch ``status``, ``completed_at``, ``project_id``,
+        ``project_line_id``, or ``created_by_id`` — those were set when the
+        archive was originally created; never **overwrites** ``started_at`` —
+        fills it only for a row adopted mid-flight
+        (``extra_data['recovered_start']``, spec 2026-09-12 §3.3) that has none.
 
         Returns True on success, False on parse/copy failure.
         """
@@ -2580,6 +2608,17 @@ class ArchiveService:
             # The fallback row was created with no 3MF, so it defaulted to
             # False. Now that the file has landed we know the real answer.
             archive.skip_objects_supported = skip_objects_supported_from_metadata(metadata)
+
+            # The estimate needed to place a mid-flight adoption's start time
+            # only exists once the file has been parsed — here, and after
+            # ``extra_data`` has taken its merged value, which the rule writes
+            # its flag into. A no-op for every row that has a start.
+            if _reconstruct_recovered_start(archive):
+                logger.info(
+                    "Reconstructed started_at for adopted archive %s: %s",
+                    archive.id,
+                    archive.started_at,
+                )
 
             # Backfill cost + quantity — fallback creation seeded them with
             # NULL / 1, and without this the archive stays stuck there even

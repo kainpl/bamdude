@@ -3439,6 +3439,50 @@ async def _discard_provisional_archive(db, archive, logger, *, adopted_archive_i
     await ws_manager.send_archive_updated({"id": stale_id, "deleted": True})
 
 
+async def _find_live_hash_twin(db, printer_id: int, exclude_id: int, content_hash: str, plate_index: int | None):
+    """This printer's live archive that already holds these bytes — the print
+    BamDude dispatched (or adopted) under a name the lookup could not see. One
+    predicate for on_print_start's restart-recovery download and for
+    _adopt_running_print (spec 2026-09-12 §3.4): ``status='printing'`` on this
+    printer, not us, a 3MF on record, ``content_hash`` or
+    ``source_content_hash`` equal, and for a multi-plate file the same plate.
+
+    Only rows STILL in flight here answer. Terminal-status rows
+    (completed/failed/cancelled) are NEVER touched: when a user reprints the
+    same file from the printer screen, the prior history must stay intact and
+    the new run must get its own archive row. The earlier "flip terminal back
+    to printing" behaviour ate users' history when one file was reprinted
+    across several printers from the screen.
+
+    ``exclude_id`` is the caller's own row. It has no file yet, so
+    ``file_path != ""`` already excludes it — stated explicitly because "adopt
+    yourself, then delete yourself" is the one outcome here that would be
+    silently catastrophic.
+
+    Multi-plate disambiguation: the hash is identical across plates of the same
+    container (the whole 3MF sits on disk and on the card), so the live plate
+    index is the only thing that distinguishes a plate-5 row from a stuck
+    plate-1 sibling on the same printer. Legacy archives (pre-m038) carry
+    ``plate_index = NULL``; they stay plate-agnostic so this never excludes a
+    legitimate candidate from an older install.
+    """
+    from backend.app.models.archive import PrintArchive as _PA
+
+    stmt = (
+        select(_PA)
+        .where(_PA.printer_id == printer_id)
+        .where(_PA.status == "printing")
+        .where(_PA.completed_at.is_(None))
+        .where(_PA.file_path != "")
+        .where(_PA.id != exclude_id)
+        .where(or_(_PA.content_hash == content_hash, _PA.source_content_hash == content_hash))
+        .order_by(_PA.created_at.desc())
+    )
+    if plate_index is not None:
+        stmt = stmt.where(or_(_PA.plate_index == plate_index, _PA.plate_index.is_(None)))
+    return (await db.execute(stmt.limit(1))).scalar_one_or_none()
+
+
 async def on_print_start(printer_id: int, data: dict):
     """Handle print start - archive the 3MF file immediately."""
     logger = logging.getLogger(__name__)
@@ -4492,46 +4536,20 @@ async def on_print_start(printer_id: int, data: dict):
                 # Post-download content-hash adoption: secondary safety net for the
                 # mid-print recovery case (BamDude restarted while a print was active
                 # → MQTT replay fires on_print_start, but pre-download name lookup
-                # missed because of a name normalisation quirk). Only adopts archives
-                # that are STILL in-flight on this printer (status="printing" with no
-                # completed_at). Terminal-status rows (completed/failed/cancelled) are
-                # NEVER touched: when a user reprints the same file from the printer
-                # screen, the prior history must stay intact and the new run must get
-                # its own archive row. The earlier "flip terminal back to printing"
-                # behaviour ate users' history when one file was reprinted across
-                # multiple printers from the screen.
+                # missed because of a name normalisation quirk). The predicate — and
+                # every reason behind it — lives in ``_find_live_hash_twin``, which
+                # the adoption path shares.
                 if temp_path:
                     from backend.app.services.archive import ArchiveService as _ArchiveSvc
 
                     temp_hash = _ArchiveSvc.compute_file_hash(temp_path)
-                    hash_query = (
-                        select(PrintArchive)
-                        .where(PrintArchive.printer_id == printer_id)
-                        .where(PrintArchive.status == "printing")
-                        .where(PrintArchive.completed_at.is_(None))
-                        .where(PrintArchive.file_path != "")
-                        # Never match the row this handler just created: it has
-                        # no file yet, so ``file_path != ""`` already excludes
-                        # it — stated explicitly because "adopt yourself, then
-                        # delete yourself" is the one outcome here that would
-                        # be silently catastrophic.
-                        .where(PrintArchive.id != archive.id)
-                        .where(
-                            or_(
-                                PrintArchive.content_hash == temp_hash,
-                                PrintArchive.source_content_hash == temp_hash,
-                            )
-                        )
+                    hash_match = await _find_live_hash_twin(
+                        db,
+                        printer_id,
+                        exclude_id=archive.id,
+                        content_hash=temp_hash,
+                        plate_index=live_plate_id,
                     )
-                    # Multi-plate disambiguation: ``temp_hash`` is identical across
-                    # plates of the same container (whole 3MF on disk + on SD), so
-                    # the live plate index is the only thing that distinguishes a
-                    # plate-5 row from a stuck plate-1 sibling on the same printer.
-                    _pf = _plate_filter()
-                    if _pf is not None:
-                        hash_query = hash_query.where(_pf)
-                    hash_match_result = await db.execute(hash_query.order_by(PrintArchive.created_at.desc()).limit(1))
-                    hash_match = hash_match_result.scalar_one_or_none()
                     if hash_match is not None:
                         logger.info(
                             "Adopting in-flight archive %s by content_hash match",
