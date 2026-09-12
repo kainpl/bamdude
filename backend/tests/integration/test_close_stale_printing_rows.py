@@ -514,3 +514,50 @@ async def test_a_just_dispatched_archive_is_not_stale_whatever_its_name(db_sessi
     await db_session.refresh(dispatched)
     assert dispatched.status == "printing"
     assert not (dispatched.extra_data or {}).get("recovered_by_cleanup")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_an_adopted_row_without_a_start_is_the_newest_sibling_not_the_oldest(db_session, printer_factory):
+    """A row adopted mid-flight (2026-09-12) can carry ``started_at=None`` for good when
+    its 3MF never lands. SQLite sorts NULLs first and PostgreSQL last, so ordering the
+    siblings by ``started_at`` alone would call the adopted row the OLDEST on one backend
+    and the newest on the other. The closer ages it from ``created_at``, and so must the
+    ordering: the older sibling with a real start closes, the adopted row is kept."""
+    printer = await printer_factory()
+    now = datetime.now(timezone.utc)
+
+    older = _make_archive(
+        printer_id=printer.id,
+        filename="recurring.gcode.3mf",
+        started_at=now - timedelta(hours=10),
+        print_time_seconds=3600,
+        created_at=(now - timedelta(hours=10)).replace(tzinfo=None),
+    )
+    adopted = _make_archive(
+        printer_id=printer.id,
+        filename="recurring.gcode.3mf",
+        started_at=None,
+        print_time_seconds=2 * 3600,
+        created_at=(now - timedelta(minutes=5)).replace(tzinfo=None),
+    )
+    db_session.add_all([older, adopted])
+    await db_session.commit()
+    for row in (older, adopted):
+        await db_session.refresh(row)
+
+    await _close_stale_printing_rows(
+        printer.id,
+        "recurring",
+        db_session,
+        logging.getLogger("test"),
+    )
+
+    await db_session.refresh(older)
+    await db_session.refresh(adopted)
+
+    assert older.status == "completed"
+    assert older.extra_data == {"recovered_by_cleanup": True}
+    assert adopted.status == "printing"
+    assert adopted.completed_at is None
+    assert adopted.extra_data is None

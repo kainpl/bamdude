@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import delete, or_, select, text
+from sqlalchemy import delete, func, or_, select, text
 
 from backend.app.api.routes import (
     ams_history,
@@ -3297,7 +3297,11 @@ async def _close_stale_printing_rows(
                 .where(PrintArchive.printer_id == printer_id)
                 .where(PrintArchive.status == "printing")
                 .where(PrintArchive.completed_at.is_(None))
-                .order_by(PrintArchive.started_at.asc())
+                # ``started_at`` is NULL for a row adopted mid-flight whose 3MF never
+                # landed (2026-09-12); SQLite sorts NULLs first, PostgreSQL last, so a
+                # bare ``started_at`` ordering would pick a different "newest" sibling
+                # per backend. Age such a row from its creation, as the closer does.
+                .order_by(func.coalesce(PrintArchive.started_at, PrintArchive.created_at).asc())
             )
         )
         .scalars()
