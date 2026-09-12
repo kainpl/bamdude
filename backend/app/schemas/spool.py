@@ -391,6 +391,11 @@ class SpoolAssignmentResponse(BaseModel):
     # for unloaded slots (no filament context for cali_idx to attach to), so
     # pre-load assignment must skip the publish and arm a replay.
     pending_config: bool = False
+    # The spool this assignment displaced on the slot (spec 2026-09-13 §3.3);
+    # None on a first assignment and on an idempotent re-assign of the same
+    # spool. Assigning over an occupied slot has always replaced it — this only
+    # reports the fact, so the UI can offer Replace without an unassign first.
+    replaced_spool_id: int | None = None
     ams_label: str | None = None  # User-defined friendly name for the AMS unit
 
     class Config:
