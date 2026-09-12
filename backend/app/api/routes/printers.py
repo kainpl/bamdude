@@ -1,6 +1,9 @@
 import asyncio
+import base64
+import io
 import logging
 import re
+import time
 import zipfile
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,6 +24,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.ams_label import AmsLabel
+from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.printer_tag import PrinterTag
@@ -51,7 +55,7 @@ from backend.app.schemas.printer import (
 )
 from backend.app.schemas.timelapse import TimelapseStorage
 from backend.app.services import archive_parts
-from backend.app.services.archive import find_archive_for_sd_file, sd_stem
+from backend.app.services.archive import find_archive_for_sd_file, parse_plates_from_3mf, sd_stem
 from backend.app.services.archive_defects import DefectsResult, DefectsWrite, record_defects
 from backend.app.services.bambu_ftp import (
     clear_sdcard_async,
@@ -1610,6 +1614,37 @@ def clear_cover_cache(printer_id: int) -> None:
     _cover_cache.pop(printer_id, None)
 
 
+# Plates + PNGs of a printer file that has NO archive: one FTP read per
+# (printer, storage, path) for five minutes, at most 32 entries. A file that
+# was printed never lands here — it is answered from the archive on disk.
+#
+# Like ``_cover_cache`` above this holds bytes (base64 inside the answer dict),
+# never on-disk paths, so clearing it can never reach the filesystem. The TTL is
+# short on purpose: a file on the card can be overwritten in place under the
+# same name, and nothing tells us when.
+_PLATES_CACHE_TTL = 300.0
+_PLATES_CACHE_MAX = 32
+_plates_cache: dict[tuple[int, str, str], tuple[float, dict]] = {}
+
+
+def _plates_cache_get(key: tuple[int, str, str]) -> dict | None:
+    hit = _plates_cache.get(key)
+    if hit is None:
+        return None
+    stamp, answer = hit
+    if time.monotonic() - stamp > _PLATES_CACHE_TTL:
+        _plates_cache.pop(key, None)
+        return None
+    return answer
+
+
+def _plates_cache_put(key: tuple[int, str, str], answer: dict) -> None:
+    if len(_plates_cache) >= _PLATES_CACHE_MAX:
+        oldest = min(_plates_cache, key=lambda k: _plates_cache[k][0])
+        _plates_cache.pop(oldest, None)
+    _plates_cache[key] = (time.monotonic(), answer)
+
+
 @router.get("/{printer_id}/camera-cover")
 async def get_printer_cover(
     printer_id: int,
@@ -1703,7 +1738,7 @@ async def get_printer_cover(
     #    wants to see), so we can short-circuit before the scan-fallback.
     if archive.thumbnail_path and view != "top":
         thumb_path = settings.base_dir / archive.thumbnail_path
-        if thumb_path.exists():
+        if thumb_path.is_file():
             image_data = thumb_path.read_bytes()
             if printer_id not in _cover_cache:
                 _cover_cache[printer_id] = {}
@@ -1723,7 +1758,9 @@ async def get_printer_cover(
         # first: ``base_dir / ""`` IS ``base_dir``, a directory that ``exists()``
         # — the old check let ``zipfile`` open it and answered 500 to the Skip
         # Objects modal, which requests ?view=top on every open.
-        raise HTTPException(404, f"Archive file missing on disk: {archive.file_path}")
+        # The stem, not ``archive.file_path``: a cleaned row's path is empty and
+        # the sentence rendered with nothing after the colon.
+        raise HTTPException(404, f"Archive file missing on disk: {subtask_base}")
 
     try:
         with zipfile.ZipFile(local_3mf, "r") as zf:
@@ -1970,268 +2007,125 @@ async def get_printer_file_plates(
     storage: str | None = None,
     _=RequirePermission(Permission.PRINTERS_FILES),
 ):
-    """Get available plates from a multi-plate 3MF file stored on a printer."""
-    import io
-    import json
+    """Plates of a 3MF on the printer's card — from the ARCHIVE when the file has
+    been printed, from ONE read of the printer otherwise.
 
-    import defusedxml.ElementTree as ET
-
+    Every print that ran on this printer left a ``print_archives`` row with the
+    3MF on disk and the printed plate's PNG beside it (``thumbnail_path``), so
+    for those files there is nothing to fetch: plates come from the archive's
+    cached ``extra_data["plates"]`` or its local file, and every
+    ``thumbnail_url`` points at the anonymous archive routes a plain ``<img>``
+    can load. A file that never printed is read once; its PNGs ride in this
+    answer as data URLs (the modal fetches it with its bearer token) and the
+    answer is cached briefly. There is deliberately no per-plate image route:
+    the old one re-downloaded the whole 3MF per plate and ``<img>`` could not
+    authenticate against it anyway.
+    """
     printer = await _load_printer_or_404(printer_id)
-    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
-
     filename = path.split("/")[-1]
+    empty = {
+        "printer_id": printer_id,
+        "path": path,
+        "filename": filename,
+        "plates": [],
+        "is_multi_plate": False,
+        "archive_id": None,
+    }
     if not filename.lower().endswith(".3mf"):
-        return {
-            "printer_id": printer_id,
-            "path": path,
-            "filename": filename,
-            "plates": [],
-            "is_multi_plate": False,
-        }
+        return empty
+
+    # A short-lived session, not ``Depends(get_db)``: the fallback below talks
+    # FTP, and holding the request's session across that is exactly the pool
+    # exhaustion #2572 / ``_load_printer_or_404`` exist to prevent. The answer is
+    # built while the session is open, so nothing reads a detached row later.
+    async with database.async_session() as db:
+        archive = await find_archive_for_sd_file(db, printer_id, filename)
+        answer = None if archive is None else _plates_from_archive(printer_id, path, filename, archive)
+    if answer is not None:
+        return answer
+
+    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
+    key = (printer_id, resolved, path)
+    cached = _plates_cache_get(key)
+    if cached is not None:
+        return cached
 
     data = await transport_for(printer, resolved).read_bytes(path)
     if data is None:
         raise HTTPException(404, f"File not found: {path}")
-
-    plates = []
-
+    plates: list[dict] = []
     try:
         with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
-            namelist = zf.namelist()
-
-            # Find all plate gcode files to determine available plates
-            gcode_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".gcode")]
-
-            # If no gcode is present (source-only or unsliced), fall back to plate JSON/PNG
-            plate_indices: list[int] = []
-            if gcode_files:
-                for gf in gcode_files:
-                    try:
-                        plate_str = gf[15:-6]  # Remove "Metadata/plate_" and ".gcode"
-                        plate_indices.append(int(plate_str))
-                    except ValueError:
-                        pass  # Skip gcode files with non-numeric plate indices
-            else:
-                plate_json_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".json")]
-                plate_png_files = [
-                    n
-                    for n in namelist
-                    if n.startswith("Metadata/plate_")
-                    and n.endswith(".png")
-                    and "_small" not in n
-                    and "no_light" not in n
-                ]
-                plate_name_candidates = plate_json_files + plate_png_files
-                plate_re = re.compile(r"^Metadata/plate_(\d+)\.(json|png)$")
-                seen_indices: set[int] = set()
-                for name in plate_name_candidates:
-                    match = plate_re.match(name)
-                    if match:
-                        try:
-                            index = int(match.group(1))
-                        except ValueError:
-                            continue
-                        if index in seen_indices:
-                            continue
-                        seen_indices.add(index)
-                        plate_indices.append(index)
-
-            if not plate_indices:
-                return {
-                    "printer_id": printer_id,
-                    "path": path,
-                    "filename": filename,
-                    "plates": [],
-                    "is_multi_plate": False,
-                }
-
-            plate_indices.sort()
-
-            # Parse model_settings.config for plate names
-            plate_names = {}
-            if "Metadata/model_settings.config" in namelist:
-                try:
-                    model_content = zf.read("Metadata/model_settings.config").decode()
-                    model_root = ET.fromstring(model_content)
-                    for plate_elem in model_root.findall(".//plate"):
-                        plater_id = None
-                        plater_name = None
-                        for meta in plate_elem.findall("metadata"):
-                            key = meta.get("key")
-                            value = meta.get("value")
-                            if key == "plater_id" and value:
-                                try:
-                                    plater_id = int(value)
-                                except ValueError:
-                                    pass  # Skip plate with unparseable ID
-                            elif key == "plater_name" and value:
-                                plater_name = value.strip()
-                        if plater_id is not None and plater_name:
-                            plate_names[plater_id] = plater_name
-                except Exception:
-                    pass  # Plate names are optional; continue without them
-
-            # Parse slice_info.config for plate metadata
-            plate_metadata = {}
-            if "Metadata/slice_info.config" in namelist:
-                content = zf.read("Metadata/slice_info.config").decode()
-                root = ET.fromstring(content)
-
-                for plate_elem in root.findall(".//plate"):
-                    plate_info = {"filaments": [], "prediction": None, "weight": None, "name": None, "objects": []}
-
-                    plate_index = None
-                    for meta in plate_elem.findall("metadata"):
-                        key = meta.get("key")
-                        value = meta.get("value")
-                        if key == "index" and value:
-                            try:
-                                plate_index = int(value)
-                            except ValueError:
-                                pass  # Skip plate with unparseable index
-                        elif key == "prediction" and value:
-                            try:
-                                plate_info["prediction"] = int(value)
-                            except ValueError:
-                                pass  # Skip unparseable prediction; leave as None
-                        elif key == "weight" and value:
-                            try:
-                                plate_info["weight"] = float(value)
-                            except ValueError:
-                                pass  # Skip unparseable weight; leave as None
-
-                    # Get filaments used in this plate
-                    for filament_elem in plate_elem.findall("filament"):
-                        filament_id = filament_elem.get("id")
-                        filament_type = filament_elem.get("type", "")
-                        filament_color = filament_elem.get("color", "")
-                        used_g = filament_elem.get("used_g", "0")
-                        used_m = filament_elem.get("used_m", "0")
-
-                        try:
-                            used_grams = float(used_g)
-                        except (ValueError, TypeError):
-                            used_grams = 0
-
-                        if used_grams > 0 and filament_id:
-                            plate_info["filaments"].append(
-                                {
-                                    "slot_id": int(filament_id),
-                                    "type": filament_type,
-                                    "color": filament_color,
-                                    "used_grams": round(used_grams, 1),
-                                    "used_meters": float(used_m) if used_m else 0,
-                                }
-                            )
-
-                    plate_info["filaments"].sort(key=lambda x: x["slot_id"])
-
-                    # Collect object names
-                    for obj_elem in plate_elem.findall("object"):
-                        obj_name = obj_elem.get("name")
-                        if obj_name and obj_name not in plate_info["objects"]:
-                            plate_info["objects"].append(obj_name)
-
-                    # Set plate name
-                    if plate_index is not None:
-                        custom_name = plate_names.get(plate_index)
-                        if custom_name:
-                            plate_info["name"] = custom_name
-                        elif plate_info["objects"]:
-                            plate_info["name"] = plate_info["objects"][0]
-                        plate_metadata[plate_index] = plate_info
-
-            # Parse plate_*.json for object lists when slice_info is missing
-            plate_json_objects: dict[int, list[str]] = {}
-            for name in namelist:
-                match = re.match(r"^Metadata/plate_(\d+)\.json$", name)
-                if not match:
-                    continue
-                try:
-                    plate_index = int(match.group(1))
-                except ValueError:
-                    continue
-                try:
-                    payload = json.loads(zf.read(name).decode())
-                    bbox_objects = payload.get("bbox_objects", [])
-                    names: list[str] = []
-                    for obj in bbox_objects:
-                        obj_name = obj.get("name") if isinstance(obj, dict) else None
-                        if obj_name and obj_name not in names:
-                            names.append(obj_name)
-                    if names:
-                        plate_json_objects[plate_index] = names
-                except Exception:
-                    continue
-
-            # Build plate list
-            for idx in plate_indices:
-                meta = plate_metadata.get(idx, {})
-                has_thumbnail = f"Metadata/plate_{idx}.png" in namelist
-                objects = meta.get("objects", [])
-                if not objects:
-                    objects = plate_json_objects.get(idx, [])
-
-                plate_name = meta.get("name")
-                if not plate_name:
-                    plate_name = plate_names.get(idx)
-                if not plate_name and objects:
-                    plate_name = objects[0]
-
-                plates.append(
-                    {
-                        "index": idx,
-                        "name": plate_name,
-                        "objects": objects,
-                        "object_count": len(objects),
-                        "has_thumbnail": has_thumbnail,
-                        "thumbnail_url": f"/api/v1/printers/{printer_id}/files/plate-thumbnail/{idx}?path={path}",
-                        "print_time_seconds": meta.get("prediction"),
-                        "filament_used_grams": meta.get("weight"),
-                        "filaments": meta.get("filaments", []),
-                    }
-                )
-
-    except Exception as e:
+            names = set(zf.namelist())
+            for plate in parse_plates_from_3mf(zf):
+                png = f"Metadata/plate_{plate['index']}.png"
+                url = None
+                if png in names:
+                    url = "data:image/png;base64," + base64.b64encode(zf.read(png)).decode("ascii")
+                plates.append({**plate, "has_thumbnail": url is not None, "thumbnail_url": url})
+    except (zipfile.BadZipFile, EOFError) as e:
+        # A file half-written to the card is the usual cause; an empty picker is
+        # a better answer for it than a 500.
         logger.warning("Failed to parse plates from printer file %s: %s", path, e)
+        return empty
+    answer = {**empty, "plates": plates, "is_multi_plate": len(plates) > 1}
+    _plates_cache_put(key, answer)
+    return answer
 
+
+def _plates_from_archive(printer_id: int, path: str, filename: str, archive: PrintArchive) -> dict | None:
+    """The answer for a file whose archive is on disk — no transport call, ever.
+
+    ``None`` means the archive has nothing to offer and the caller must read the
+    printer as if there were none: a retention-*cleaned* row (3MF deleted,
+    ``file_path`` blanked, only its extracted PNG kept) with no cached plates
+    cannot describe the plates at all, and ``base_dir / ""`` is a directory, not
+    a 3MF. For a cleaned row that DOES carry cached plates only the printed
+    plate has a picture — the per-plate route would open the file retention
+    deleted, so its siblings answer ``None``.
+
+    ``has_thumbnail`` therefore means "a picture you can load", not "the 3MF had
+    one": it is recomputed from the URL, the same as on the read-the-printer
+    path, so a caller can key its placeholder off either field and never render
+    an ``<img>`` with a null source.
+    """
+    extra = archive.extra_data if isinstance(archive.extra_data, dict) else {}
+    cached = extra.get("plates")
+    local_3mf = settings.base_dir / archive.file_path if archive.file_path else None
+    if isinstance(cached, list) and cached:
+        raw = cached
+    elif local_3mf is not None and local_3mf.is_file():
+        try:
+            with zipfile.ZipFile(local_3mf, "r") as zf:
+                raw = parse_plates_from_3mf(zf)
+        except (zipfile.BadZipFile, EOFError, OSError) as e:
+            # The archive on disk is unreadable — the printer may still hold the
+            # file, so fall through to the one read instead of failing the modal.
+            logger.warning("Archive 3MF %s unreadable, reading the printer instead: %s", local_3mf, e)
+            return None
+    else:
+        return None
+
+    plates = []
+    for plate in raw:
+        idx = plate.get("index")
+        if not plate.get("has_thumbnail"):
+            url = None
+        elif archive.thumbnail_path and archive.plate_index == idx:
+            url = f"/api/v1/archives/{archive.id}/thumbnail"  # the printed plate's PNG, already extracted
+        elif archive.file_path:
+            url = f"/api/v1/archives/{archive.id}/plate-thumbnail/{idx}"
+        else:
+            url = None
+        plates.append({**plate, "has_thumbnail": url is not None, "thumbnail_url": url})
     return {
         "printer_id": printer_id,
         "path": path,
         "filename": filename,
         "plates": plates,
         "is_multi_plate": len(plates) > 1,
+        "archive_id": archive.id,
     }
-
-
-@router.get("/{printer_id}/files/plate-thumbnail/{plate_index}")
-async def get_printer_file_plate_thumbnail(
-    printer_id: int,
-    plate_index: int,
-    path: str = Query(..., description="Full path to the 3MF file on the printer"),
-    storage: str | None = None,
-    _=RequirePermission(Permission.PRINTERS_FILES),
-):
-    """Get a plate thumbnail image from a printer-stored 3MF file."""
-    import io
-
-    printer = await _load_printer_or_404(printer_id)
-    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
-
-    data = await transport_for(printer, resolved).read_bytes(path)
-    if data is None:
-        raise HTTPException(404, f"File not found: {path}")
-
-    try:
-        with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
-            thumb_path = f"Metadata/plate_{plate_index}.png"
-            if thumb_path in zf.namelist():
-                image_data = zf.read(thumb_path)
-                return Response(content=image_data, media_type="image/png")
-    except Exception:
-        pass  # Corrupt or unreadable 3MF; fall through to 404
-
-    raise HTTPException(status_code=404, detail=f"Thumbnail for plate {plate_index} not found")
 
 
 @router.post("/{printer_id}/files/download-zip")
