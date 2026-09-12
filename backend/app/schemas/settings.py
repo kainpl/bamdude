@@ -31,7 +31,7 @@ class AppSettings(BaseModel):
 
     save_thumbnails: bool = Field(default=True, description="Extract and save preview images from 3MF files")
     capture_finish_photo: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Capture photo from printer camera when print completes. BamDude records a "
             "brief timelapse during the print so the photo can be sourced from the moment "

@@ -2973,7 +2973,7 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
         async with async_session() as db:
             capture_enabled = await get_setting(db, "capture_finish_photo")
 
-        if capture_enabled is not None and capture_enabled.lower() != "true":
+        if capture_enabled is None or capture_enabled.lower() != "true":
             return None
 
         # Try external camera first
@@ -5705,7 +5705,7 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
             from backend.app.models.printer import Printer
 
             capture_setting = await get_setting(db, "capture_finish_photo")
-            if capture_setting is not None and capture_setting.lower() != "true":
+            if capture_setting is None or capture_setting.lower() != "true":
                 logger.info("[FINISH-PHOTO-MOMENT] capture_finish_photo disabled — skipping pre-capture")
                 return
 
@@ -7511,7 +7511,7 @@ async def on_print_complete(printer_id: int, data: dict):
                 from backend.app.models.printer import Printer
 
                 capture_enabled = await get_setting(db, "capture_finish_photo")
-                if capture_enabled is not None and capture_enabled.lower() != "true":
+                if capture_enabled is None or capture_enabled.lower() != "true":
                     return None
                 if not archive_id:
                     return None
