@@ -448,7 +448,7 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --loop asyncio
 
 See [`install/README.md`](install/README.md#windows-installer-exe-windows-1011) for options, or [`installers/windows/`](installers/windows/) to build the installer yourself.
 
-> **SmartScreen:** the installer is not code-signed yet, so Windows shows "Windows protected your PC" on first run — click **More info → Run anyway**. See [Code signing policy](#code-signing-policy) for the status of the SignPath application.
+> **SmartScreen:** the installer is not code-signed, so Windows shows "Windows protected your PC" on first run — click **More info → Run anyway**.
 
 ### Choosing a database
 
@@ -546,14 +546,9 @@ AGPL-3.0 License — see [LICENSE](LICENSE) for details.
 
 ---
 
-## Code signing policy
+## Privacy
 
-Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
-
-- **What is signed.** The Windows installer (`bamdude-<version>-windows-x64-setup.exe`) attached to each tagged release. The source tree and the Docker images are not signed; the upstream binaries bundled inside the installer (embedded Python, NSSM, ffmpeg) carry their own vendors' signatures or none.
-- **Roles.** Committers and reviewers: [@kainpl](https://github.com/kainpl). Approvers: [@kainpl](https://github.com/kainpl). Every signing request is approved by hand for a tagged release; nothing is signed automatically.
-- **Status.** The application to SignPath Foundation was submitted on 2026-09-06 and is under review. Installers published before approval are unsigned: Windows SmartScreen shows "Windows protected your PC" on first run (**More info → Run anyway**). The first signed release will be noted here and in the release notes.
-- **Privacy policy.** <https://docs.bamdude.top/privacy/>. BamDude talks to your printers on your own network. The only data it sends out is anonymised usage telemetry (on by default; opt out in Settings or with `TELEMETRY_DISABLED=true`) and the bug reports you file explicitly. Optional integrations you enable yourself (Telegram, Spoolman, Obico, an OIDC provider, …) send data to the services you configure, under those services' own policies.
+<https://docs.bamdude.top/privacy/>. BamDude talks to your printers on your own network. The only data it sends out is anonymised usage telemetry (on by default; opt out in Settings or with `TELEMETRY_DISABLED=true`) and the bug reports you file explicitly. Optional integrations you enable yourself (Telegram, Spoolman, Obico, an OIDC provider, …) send data to the services you configure, under those services' own policies.
 
 ---
 

@@ -53,24 +53,21 @@ Output: `installers\windows\build\output\bamdude-windows-setup.exe`
 
 ## Signing
 
-**Every build is unsigned so far, release builds included.** Windows
+**Every build is unsigned, release builds included.** Windows
 SmartScreen shows "Windows protected your PC" on first run; **More
-info** → **Run anyway** proceeds. There is no signing step in CI yet and
-no certificate to add one with.
+info** → **Run anyway** proceeds. There is no signing step in CI and no
+certificate to add one with. (An earlier version of this file repeated
+upstream Bambuddy's "SignPath application in flight", which came along
+with the port of their installer pipeline and covered *their* project;
+BamDude's own application was withdrawn in 2026-09 — the programme asks
+for a publication footprint the project does not have yet, and nothing
+here depends on it.)
 
-BamDude applied to the SignPath Foundation OSS programme on 2026-09-06
-(the project's own application — an earlier version of this file
-repeated upstream Bambuddy's "in flight as of 2026-06-10", which came
-along with the port of their installer pipeline and covered *their*
-project, not this one). The public policy lives in the root README under
-**Code signing policy**. Once approved, the signing step goes between
-ISCC and the release upload; SignPath signs a GitHub *artifact*, so the
-unsigned `.exe` is uploaded first and the signed copy is pulled back
-into place. Two of SignPath's conditions still need work in this folder
-before the first signed build: the installer must show the privacy
-policy and offer to disable telemetry at install time, and the `.exe`
-needs explicit `VersionInfo*` metadata (Inno defaults the binary version
-to `0.0.0.0`, which SignPath's metadata restrictions reject).
+If a certificate ever arrives, the signing step goes between ISCC and
+the release upload, and two things in this folder have to change first:
+the installer must show the privacy policy and offer to disable
+telemetry at install time, and the `.exe` needs explicit `VersionInfo*`
+metadata (Inno defaults the binary version to `0.0.0.0`).
 
 ## CI build
 
