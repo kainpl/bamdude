@@ -14,6 +14,9 @@ vi.mock('../../api/client', () => ({
     getSettings: vi.fn().mockResolvedValue({}),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
     getReplacementWindow: vi.fn().mockResolvedValue({ mode: 'none', pause_layer: null }),
+    getSpoolmanInventorySpools: vi.fn().mockResolvedValue([]),
+    getSpoolmanSlotAssignments: vi.fn().mockResolvedValue([]),
+    assignSpoolmanSlot: vi.fn(),
   },
 }));
 
@@ -242,6 +245,119 @@ describe('AssignSpoolModal', () => {
       expect(screen.getByText(/No spools available/i)).toBeInTheDocument();
     });
     expect(screen.queryByText(/Archived/)).not.toBeInTheDocument();
+  });
+
+  // Replace mode (spec 2026-09-13 §3.2). The dialog is the same dialog; being
+  // told what is currently on the slot is what turns it into a replace.
+  describe('opened over an assigned slot', () => {
+    // Deliberately NOT the string the list composes for spool 7 — the page
+    // passes the name the hover card shows, and keeping it distinct is how
+    // "the current spool is not in the list" can be asserted at all.
+    const currentSpool = { id: 7, displayName: 'PLA Red #7', source: 'inventory' as const };
+    const onSlotSpool = { ...manualSpool, id: 7, brand: 'Polymaker', color_name: 'Red' };
+    const freeSpool = { ...manualSpool, id: 8, brand: 'Overture', color_name: 'Black' };
+
+    beforeEach(() => {
+      (api.getReplacementWindow as ReturnType<typeof vi.fn>).mockResolvedValue({ mode: 'none', pause_layer: null });
+      (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([onSlotSpool, freeSpool]);
+      (api.getAssignments as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: 1, spool_id: 7, printer_id: 1, ams_id: 0, tray_id: 0 },
+      ]);
+      (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: 2,
+        spool_id: 8,
+        printer_id: 1,
+        ams_id: 0,
+        tray_id: 0,
+        replaced_spool_id: 7,
+      });
+    });
+
+    it('names the current spool and offers Replace instead of Assign', async () => {
+      render(<AssignSpoolModal {...defaultProps} currentSpool={currentSpool} />);
+
+      await waitFor(() => expect(screen.getByText(/Overture/)).toBeInTheDocument());
+
+      expect(screen.getByRole('heading', { name: 'Replace spool' })).toBeInTheDocument();
+      expect(screen.getByText(/Currently assigned/)).toBeInTheDocument();
+      expect(screen.getByText('PLA Red #7')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Replace spool/ })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Assign Spool/ })).not.toBeInTheDocument();
+    });
+
+    it('hides the spool it would replace — re-picking it is a no-op', async () => {
+      // The slot's own spool is normally KEPT in the list (a re-assign of the
+      // same spool is idempotent), so this exclusion is replace-mode only.
+      render(<AssignSpoolModal {...defaultProps} currentSpool={currentSpool} />);
+
+      await waitFor(() => expect(screen.getByText(/Overture/)).toBeInTheDocument());
+
+      expect(screen.queryByText(/Polymaker/)).not.toBeInTheDocument();
+    });
+
+    it('keeps the current spool hidden even with "Show all spools" on', async () => {
+      const { fireEvent } = await import('@testing-library/react');
+      render(<AssignSpoolModal {...defaultProps} currentSpool={currentSpool} />);
+
+      await waitFor(() => expect(screen.getByText(/Overture/)).toBeInTheDocument());
+      fireEvent.click(screen.getByLabelText(/Show all spools/i));
+
+      await waitFor(() => expect(screen.getByText(/Overture/)).toBeInTheDocument());
+      expect(screen.queryByText(/Polymaker/)).not.toBeInTheDocument();
+    });
+
+    it('confirming sends one plain assign and reports both names', async () => {
+      const { fireEvent } = await import('@testing-library/react');
+      render(<AssignSpoolModal {...defaultProps} currentSpool={currentSpool} />);
+
+      await waitFor(() => expect(screen.getByText(/Overture/)).toBeInTheDocument());
+      fireEvent.click(screen.getByText(/Overture/));
+      fireEvent.click(screen.getByRole('button', { name: /Replace spool/ }));
+
+      await waitFor(() =>
+        expect(api.assignSpool).toHaveBeenCalledWith({
+          spool_id: 8,
+          printer_id: 1,
+          ams_id: 0,
+          tray_id: 0,
+          mid_print_replacement: false,
+        })
+      );
+      expect(api.assignSpool).toHaveBeenCalledTimes(1);
+      await waitFor(() =>
+        expect(screen.getByText('PLA Red #7 replaced with Overture PLA Black')).toBeInTheDocument()
+      );
+    });
+
+    it('excludes the current Spoolman spool from the Spoolman list', async () => {
+      (api.getSpoolmanInventorySpools as ReturnType<typeof vi.fn>).mockResolvedValue([onSlotSpool, freeSpool]);
+      (api.getSpoolmanSlotAssignments as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+      render(
+        <AssignSpoolModal
+          {...defaultProps}
+          spoolmanEnabled
+          currentSpool={{ ...currentSpool, source: 'spoolman' }}
+        />
+      );
+
+      await waitFor(() => expect(screen.getByText(/Overture/)).toBeInTheDocument());
+
+      expect(screen.queryByText(/Polymaker/)).not.toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Replace spool' })).toBeInTheDocument();
+    });
+
+    it('without a current spool it is still the assign dialog', async () => {
+      render(<AssignSpoolModal {...defaultProps} />);
+
+      await waitFor(() => expect(screen.getByText(/Overture/)).toBeInTheDocument());
+
+      expect(screen.getByRole('heading', { name: 'Assign Spool' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Assign Spool/ })).toBeInTheDocument();
+      expect(screen.queryByText(/Currently assigned/)).not.toBeInTheDocument();
+      // The slot's own spool stays pickable — that is the pre-existing rule.
+      expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
+    });
   });
 
   it('asks about ITS OWN slot, not just the printer', async () => {

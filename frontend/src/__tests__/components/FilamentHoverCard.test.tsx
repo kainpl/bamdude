@@ -310,4 +310,91 @@ describe('FilamentHoverCard', () => {
     expect(assign.compareDocumentPosition(configure)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
+  // An operator putting a new spool into an occupied slot had to Unassign
+  // first and only then got an Assign button — a click and a wait per slot,
+  // on every printer of the farm. The servers have always replaced on an
+  // occupied slot (spec 2026-09-13 §1), so the only missing piece was this
+  // button. It reuses `onAssignSpool`: the assign dialog, opened over an
+  // assigned slot, IS the replace dialog.
+  describe('replace the assigned spool', () => {
+    const assignedSpool = {
+      id: 7,
+      material: 'PLA',
+      brand: 'Polymaker',
+      color_name: 'Red',
+      displayName: 'Polymaker PLA Red',
+    };
+
+    it('offers Replace before Unassign on an assigned slot', async () => {
+      const onAssignSpool = vi.fn();
+      const onUnassignSpool = vi.fn();
+      renderWithHover(
+        <FilamentHoverCard
+          data={baseFilamentData}
+          inventory={{ assignedSpool, onAssignSpool, onUnassignSpool }}
+        >
+          <div>trigger</div>
+        </FilamentHoverCard>
+      );
+      vi.advanceTimersByTime(100);
+      await waitFor(() => expect(screen.getByText(/replace spool/i)).toBeInTheDocument());
+
+      const replace = screen.getByText(/replace spool/i);
+      const unassign = screen.getByText(/^unassign$/i);
+      expect(replace.compareDocumentPosition(unassign)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+
+    it('clicking Replace opens the assign dialog and unassigns nothing', async () => {
+      const onAssignSpool = vi.fn();
+      const onUnassignSpool = vi.fn();
+      renderWithHover(
+        <FilamentHoverCard
+          data={baseFilamentData}
+          inventory={{ assignedSpool, onAssignSpool, onUnassignSpool }}
+        >
+          <div>trigger</div>
+        </FilamentHoverCard>
+      );
+      vi.advanceTimersByTime(100);
+      await waitFor(() => expect(screen.getByText(/replace spool/i)).toBeInTheDocument());
+
+      fireEvent.click(screen.getByText(/replace spool/i));
+
+      expect(onAssignSpool).toHaveBeenCalledTimes(1);
+      expect(onUnassignSpool).not.toHaveBeenCalled();
+      // Same dismiss-before-the-dialog rule as every other button here: the
+      // card sits above the z-50 dialog it opens.
+      await waitFor(() => expect(screen.queryByText(/replace spool/i)).not.toBeInTheDocument());
+    });
+
+    it('offers no Replace where Assign would not be offered either', async () => {
+      // The internal branch's `filamentData.vendor !== 'Bambu Lab'` gate on the
+      // page leaves `onAssignSpool` undefined; Replace must follow it exactly.
+      const onUnassignSpool = vi.fn();
+      renderWithHover(
+        <FilamentHoverCard data={baseFilamentData} inventory={{ assignedSpool, onUnassignSpool }}>
+          <div>trigger</div>
+        </FilamentHoverCard>
+      );
+      vi.advanceTimersByTime(100);
+      await waitFor(() => expect(screen.getByText(/^unassign$/i)).toBeInTheDocument());
+
+      expect(screen.queryByText(/replace spool/i)).not.toBeInTheDocument();
+    });
+
+    it('an empty slot still offers Assign and no Replace', async () => {
+      const onAssignSpool = vi.fn();
+      renderWithHover(
+        <FilamentHoverCard data={baseFilamentData} inventory={{ assignedSpool: null, onAssignSpool }}>
+          <div>trigger</div>
+        </FilamentHoverCard>
+      );
+      vi.advanceTimersByTime(100);
+      await waitFor(() => expect(screen.getByText(/assign spool/i)).toBeInTheDocument());
+
+      expect(screen.queryByText(/replace spool/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/^unassign$/i)).not.toBeInTheDocument();
+    });
+  });
+
 });

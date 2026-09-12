@@ -1909,6 +1909,10 @@ function PrinterCard({
     amsId: number;
     trayId: number;
     trayInfo: { type: string; color: string; location: string; material?: string; profile?: string };
+    /** Set when the dialog was opened over a slot that already holds a spool
+     *  (the hover card's Replace button) — this page decides WHAT is currently
+     *  assigned, the dialog only presents it. Undefined on an empty slot. */
+    currentSpool?: { id: number; displayName: string; source: 'inventory' | 'spoolman' };
   } | null>(null);
   const [configureSlotModal, setConfigureSlotModal] = useState<{
     amsId: number;
@@ -5127,6 +5131,11 @@ function PrinterCard({
                                                   color: filamentData.colorHex || '',
                                                   location: `${getAmsLabel(ams.id, ams.tray.length)} Slot ${slotIdx + 1}`,
                                                 },
+                                                currentSpool: spoolmanSpool ? {
+                                                  id: spoolmanSpool.id,
+                                                  displayName: formatSpoolDisplayName(spoolmanSpool, effectiveSpoolTemplate),
+                                                  source: 'spoolman',
+                                                } : undefined,
                                               }),
                                               onUnassignSpool: spoolmanSpool ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
                                             };
@@ -5152,6 +5161,11 @@ function PrinterCard({
                                                 color: filamentData.colorHex || '',
                                                 location: `${getAmsLabel(ams.id, ams.tray.length)} Slot ${slotIdx + 1}`,
                                               },
+                                              currentSpool: assignment?.spool ? {
+                                                id: assignment.spool.id,
+                                                displayName: formatSpoolDisplayName(assignment.spool, effectiveSpoolTemplate),
+                                                source: 'inventory',
+                                              } : undefined,
                                             }) : undefined,
                                             onUnassignSpool: assignment && filamentData.vendor !== 'Bambu Lab' ? () => onUnassignSpool?.(printer.id, ams.id, slotIdx) : undefined,
                                           };
@@ -5530,6 +5544,11 @@ function PrinterCard({
                                               color: filamentData.colorHex || '',
                                               location: getAmsLabel(ams.id, ams.tray.length),
                                             },
+                                            currentSpool: spoolmanSpool ? {
+                                              id: spoolmanSpool.id,
+                                              displayName: formatSpoolDisplayName(spoolmanSpool, effectiveSpoolTemplate),
+                                              source: 'spoolman',
+                                            } : undefined,
                                           }),
                                           onUnassignSpool: spoolmanSpool ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
                                         };
@@ -5555,6 +5574,11 @@ function PrinterCard({
                                             color: filamentData.colorHex || '',
                                             location: getAmsLabel(ams.id, ams.tray.length),
                                           },
+                                          currentSpool: assignment?.spool ? {
+                                            id: assignment.spool.id,
+                                            displayName: formatSpoolDisplayName(assignment.spool, effectiveSpoolTemplate),
+                                            source: 'inventory',
+                                          } : undefined,
                                         }) : undefined,
                                         onUnassignSpool: assignment && filamentData.vendor !== 'Bambu Lab' ? () => onUnassignSpool?.(printer.id, ams.id, htSlotId) : undefined,
                                       };
@@ -5841,6 +5865,11 @@ function PrinterCard({
                                                 color: extFilamentData.colorHex || '',
                                                 location: extLabel || t('printers.external'),
                                               },
+                                              currentSpool: spoolmanSpool ? {
+                                                id: spoolmanSpool.id,
+                                                displayName: formatSpoolDisplayName(spoolmanSpool, effectiveSpoolTemplate),
+                                                source: 'spoolman',
+                                              } : undefined,
                                             }),
                                             onUnassignSpool: spoolmanSpool ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
                                           };
@@ -5866,6 +5895,11 @@ function PrinterCard({
                                               color: extFilamentData.colorHex || '',
                                               location: extLabel || t('printers.external'),
                                             },
+                                            currentSpool: assignment?.spool ? {
+                                              id: assignment.spool.id,
+                                              displayName: formatSpoolDisplayName(assignment.spool, effectiveSpoolTemplate),
+                                              source: 'inventory',
+                                            } : undefined,
                                           }),
                                           onUnassignSpool: assignment ? () => onUnassignSpool?.(printer.id, 255, slotTrayId) : undefined,
                                         };
@@ -6979,6 +7013,7 @@ function PrinterCard({
           amsId={assignSpoolModal.amsId}
           trayId={assignSpoolModal.trayId}
           trayInfo={assignSpoolModal.trayInfo}
+          currentSpool={assignSpoolModal.currentSpool}
           spoolmanEnabled={!!spoolmanEnabled}
         />
       )}
