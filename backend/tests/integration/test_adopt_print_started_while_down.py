@@ -297,6 +297,28 @@ class TestTheHookAdoptsThePrintItFound:
         spies["energy_start"].assert_not_awaited()
         assert spawned.names == [], "and no second FTP session for a file already accounted for"
 
+    async def test_the_key_the_adoption_itself_writes_is_a_guard_key_too(self, db_session, printer_factory, main_db):
+        """The printer reports no ``filename`` and a ``subtask_name`` carrying the
+        ``.gcode.3mf`` suffix — so the row the earlier adoption created is named
+        ``Кронштейн.3mf`` and registered under that key. None of the forms built
+        from ``filename``/``subtask_name`` is that string, so the guard has to
+        derive the row's own name form as well, or the adoption cannot see the
+        row it wrote itself.
+        """
+        from backend.app.main import _active_prints
+
+        _pid, rows, spies, spawned = await _drive_hook(
+            db_session=db_session,
+            printer_factory=printer_factory,
+            data={**RUNNING, "filename": "", "subtask_name": "Кронштейн.gcode.3mf"},
+            pre_seed=lambda pid: _active_prints.__setitem__((pid, "Кронштейн.3mf"), 4242),
+        )
+
+        assert rows == [], "already tracked as 4242 under the name the adoption writes — a second row is a duplicate"
+        spies["queue_claim"].assert_not_awaited()
+        spies["energy_start"].assert_not_awaited()
+        assert spawned.names == []
+
 
 def _provisional(printer_id: int, *, plate: int | None = 1) -> PrintArchive:
     """The row the adoption created: named from MQTT, nothing on disk yet."""
@@ -367,16 +389,20 @@ async def _seed_download_case(
     return printer_id, provisional_id, twin_id, temp_path, content_hash
 
 
-async def _run_download(*, printer_id, archive_id, download_result, attach=None):
+async def _run_download(*, printer_id, archive_id, download_result=None, download_error=None, attach=None):
     """Run ``_download_for_adopted_print`` with the FTP fetch stubbed.
 
     Returns the spies for everything the task is supposed to drive, so a test
-    can assert on the whole tail and not just on the attach.
+    can assert on the whole tail and not just on the attach. ``download_error``
+    makes the fetch raise instead of answering.
     """
     from contextlib import ExitStack
 
     from backend.app.main import _download_for_adopted_print
 
+    download = (
+        AsyncMock(side_effect=download_error) if download_error is not None else AsyncMock(return_value=download_result)
+    )
     spies = {
         "attach": AsyncMock(return_value=True) if attach is None else attach,
         "colors": AsyncMock(),
@@ -387,7 +413,7 @@ async def _run_download(*, printer_id, archive_id, download_result, attach=None)
         "ws_updated": AsyncMock(),
     }
     patches = [
-        patch("backend.app.services.archive_download.try_download_3mf", AsyncMock(return_value=download_result)),
+        patch("backend.app.services.archive_download.try_download_3mf", download),
         patch.object(ArchiveService, "attach_3mf_to_archive", spies["attach"]),
         patch("backend.app.main.ws_manager", MagicMock(send_archive_updated=spies["ws_updated"])),
         patch("backend.app.main.refresh_archive_parts", spies["parts"]),
@@ -431,6 +457,10 @@ class TestTheDownloadDecidesWhoOwnsThePrint:
         assert _active_prints.get((printer_id, "Кронштейн")) == twin_id
         assert _active_prints.get((printer_id, "Кронштейн.3mf")) == twin_id
         assert not temp_path.exists(), "the temp file outlived the download"
+        # The twin is the one path that does NOT get a tracking row from here:
+        # it has had its own since it was dispatched, and the row we would have
+        # named no longer exists.
+        assert not spies["spoolman"].called
 
     async def test_no_twin_attaches_the_file(self, db_session, printer_factory, main_db, tmp_path):
         printer_id, provisional_id, _twin, temp_path, _hash = await _seed_download_case(
@@ -458,7 +488,18 @@ class TestTheDownloadDecidesWhoOwnsThePrint:
 
         assert not spies["attach"].called
         assert not spies["colors"].called, "nothing was attached — there are no slicer colours to outrank"
-        assert not spies["spoolman"].called
+        # ⚠️ The tracking row follows the download's OUTCOME, not the attach's
+        # success. ``on_print_start`` calls ``store_print_data`` whatever its own
+        # 3MF did, and the print here is running just the same: with the row's
+        # empty ``file_path`` the store takes its degraded remain%-delta path —
+        # which is the reason the call waits for the download, not a reason for a
+        # Spoolman install to get no row at all.
+        spies["spoolman"].assert_awaited_once()
+        assert spies["spoolman"].await_args.args[1] == provisional_id
+        assert spies["spoolman"].await_args.args[2] == "", "the empty file_path is what selects the degraded path"
+        assert spies["spoolman"].await_args.kwargs["ams_mapping"] == [0, 1], (
+            "the mapping comes from the row's own ``_print_data``"
+        )
         db_session.expire_all()
         row = await db_session.get(PrintArchive, provisional_id)
         assert row is not None
@@ -467,6 +508,71 @@ class TestTheDownloadDecidesWhoOwnsThePrint:
         assert (row.extra_data or {}).get("recovered_start") is not None, (
             "the marker must not overwrite the record the reconstruction reads"
         )
+
+    async def test_a_failed_attach_keeps_the_row_and_still_tracks_the_print(
+        self, db_session, printer_factory, main_db, tmp_path
+    ):
+        """The bytes arrived and could not be attached. The row keeps its empty
+        ``file_path`` so the four retry triggers come back to it — and the
+        Spoolman row is written anyway, for the same reason a failed download
+        gets one: the print is running either way."""
+        printer_id, provisional_id, _twin, temp_path, _hash = await _seed_download_case(
+            db_session, printer_factory, tmp_path, with_twin=False
+        )
+
+        spies = await _run_download(
+            printer_id=printer_id,
+            archive_id=provisional_id,
+            download_result=(temp_path, "p.3mf"),
+            attach=AsyncMock(return_value=False),
+        )
+
+        spies["attach"].assert_awaited_once()
+        assert not spies["colors"].called, "nothing was attached — there are no slicer colours to outrank"
+        assert not spies["objects"].called, "and no objects to put into state"
+        spies["spoolman"].assert_awaited_once()
+        assert spies["spoolman"].await_args.args[2] == "", "the row never got a file — the degraded path again"
+        db_session.expire_all()
+        row = await db_session.get(PrintArchive, provisional_id)
+        assert row is not None
+        assert row.file_path == "", "a failed attach must not read as a finished one"
+        assert not temp_path.exists(), "the temp file outlived the download"
+
+    async def test_a_download_that_raises_is_contained(self, db_session, printer_factory, main_db, tmp_path, caplog):
+        """The task runs unattended on the connect path, so its own outer
+        ``except`` is the only thing between a bug in it and a traceback nobody
+        reads.
+
+        ⚠️ The row comes out untouched — in particular WITHOUT
+        ``no_3mf_available``: that flag means "we asked the printer and it had
+        nothing", and it raises a user-facing banner. An error on our side is
+        not that answer. Nor is it an outcome the tracking row can follow, so
+        the Spoolman store — which every real outcome gets — is not reached.
+        """
+        printer_id, provisional_id, _twin, _temp, _hash = await _seed_download_case(
+            db_session, printer_factory, tmp_path, with_twin=False
+        )
+
+        with caplog.at_level(logging.ERROR, logger="test"):
+            spies = await _run_download(
+                printer_id=printer_id,
+                archive_id=provisional_id,
+                download_error=RuntimeError("the FTP socket died mid-LIST"),
+            )
+
+        assert not spies["attach"].called
+        assert not spies["spoolman"].called
+        assert any(record.levelno >= logging.ERROR for record in caplog.records), (
+            "a swallowed exception that is not logged is an invisible one"
+        )
+        db_session.expire_all()
+        row = await db_session.get(PrintArchive, provisional_id)
+        assert row is not None
+        assert row.file_path == "", "the row still waits for its file"
+        assert (row.extra_data or {}).get("no_3mf_available") is None, (
+            "the banner says 'the printer has no 3MF for this print' — an error of ours must not raise it"
+        )
+        assert row.status == "printing"
 
 
 class TestTheAdoptedAttachMirrorsOnPrintStartsTail:

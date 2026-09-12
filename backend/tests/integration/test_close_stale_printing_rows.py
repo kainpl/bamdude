@@ -35,8 +35,15 @@ def _make_archive(
     print_time_seconds: int | None,
     status: str = "printing",
     completed_at: datetime | None = None,
+    created_at: datetime | None = None,
 ) -> PrintArchive:
-    """Helper to build an in-flight ``PrintArchive`` row with sensible defaults."""
+    """Helper to build an in-flight ``PrintArchive`` row with sensible defaults.
+
+    ``created_at`` is left to the server default unless a test needs the row to
+    look old: the column is NOT NULL, so passing ``None`` explicitly would
+    insert a NULL instead of letting the default fire. It is a naive UTC column.
+    """
+    aged = {"created_at": created_at} if created_at is not None else {}
     return PrintArchive(
         printer_id=printer_id,
         filename=filename,
@@ -48,6 +55,7 @@ def _make_archive(
         completed_at=completed_at,
         print_time_seconds=print_time_seconds,
         content_hash=f"hash-{filename}",
+        **aged,
     )
 
 
@@ -213,15 +221,25 @@ async def test_same_filename_older_siblings_closed(db_session, printer_factory):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_null_started_at_preserved(db_session, printer_factory):
-    """Rows with NULL ``started_at`` can't be reasoned about → left alone."""
+async def test_null_started_at_is_aged_from_created_at(db_session, printer_factory):
+    """A row with NULL ``started_at`` is aged by ``created_at`` instead.
+
+    An adopted print (spec 2026-09-12) is the first ``status='printing'`` row
+    that can carry no ``started_at`` at all: the start is reconstructed from the
+    3MF, and a malformed record leaves it unknown. Such a row used to be
+    invisible here and could sit in ``printing`` for ever. ``created_at`` is
+    when BamDude joined the print, so the age it gives is at most the true one.
+    """
     printer = await printer_factory()
+    # Naive UTC — the column is a plain DateTime, like ``func.now()`` writes it.
+    joined = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=10)
 
     stale = _make_archive(
         printer_id=printer.id,
-        filename="incomplete_data.gcode.3mf",
+        filename="adopted_mid_print.gcode.3mf",
         started_at=None,
-        print_time_seconds=3600,
+        print_time_seconds=3600,  # 1h job, joined 10h ago → predicted_end 9h ago
+        created_at=joined,
     )
     db_session.add(stale)
     await db_session.commit()
@@ -235,8 +253,44 @@ async def test_null_started_at_preserved(db_session, printer_factory):
     )
 
     await db_session.refresh(stale)
-    assert stale.status == "printing"  # untouched
-    assert stale.extra_data is None
+    assert stale.status == "completed"
+    assert stale.extra_data == {"recovered_by_cleanup": True}
+    expected_end = joined.replace(tzinfo=timezone.utc) + timedelta(seconds=3600)
+    completed_at_aware = (
+        stale.completed_at if stale.completed_at.tzinfo else stale.completed_at.replace(tzinfo=timezone.utc)
+    )
+    assert abs((completed_at_aware - expected_end).total_seconds()) < 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_null_started_at_with_a_future_predicted_end_is_cancelled(db_session, printer_factory):
+    """Same fallback, other side of the gate: the printer is starting a
+    different file, so a row joined minutes ago whose predicted end is still
+    ahead was interrupted — cancelled, never a synthetic completion."""
+    printer = await printer_factory()
+
+    stale = _make_archive(
+        printer_id=printer.id,
+        filename="incomplete_data.gcode.3mf",
+        started_at=None,
+        print_time_seconds=3600,  # created just now → predicted_end an hour out
+    )
+    db_session.add(stale)
+    await db_session.commit()
+    await db_session.refresh(stale)
+
+    await _close_stale_printing_rows(
+        printer.id,
+        "different",
+        db_session,
+        logging.getLogger("test"),
+    )
+
+    await db_session.refresh(stale)
+    assert stale.status == "cancelled"
+    assert stale.completed_at is None
+    assert stale.extra_data == {"recovered_by_cleanup": True}
 
 
 @pytest.mark.asyncio

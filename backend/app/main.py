@@ -3362,9 +3362,15 @@ async def _close_stale_printing_rows(
 
     closed_count = 0
     for row in rows_to_close:
-        if row.started_at is None or row.print_time_seconds is None:
+        # ⚠️ An adopted print (spec 2026-09-12) is the first ``printing`` row that
+        # can carry NO ``started_at``: the start is reconstructed from the 3MF,
+        # and a malformed record leaves it unknown for good. Age such a row by
+        # ``created_at`` — the moment BamDude joined the print, so at most the
+        # true age — instead of leaving it in ``printing`` for ever.
+        started = row.started_at or row.created_at
+        if started is None or row.print_time_seconds is None:
             continue
-        started = row.started_at if row.started_at.tzinfo else row.started_at.replace(tzinfo=timezone.utc)
+        started = started if started.tzinfo else started.replace(tzinfo=timezone.utc)
         predicted_end = started + timedelta(seconds=row.print_time_seconds)
         if predicted_end < now:
             row.status = "completed"
@@ -5214,6 +5220,14 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
             )
             return None
 
+        # Named before the duplicate guard below, which needs the row's own
+        # ``filename`` form as one of its keys.
+        print_name = subtask_name or filename
+        print_name = print_name.split("/")[-1]
+        print_name = print_name.replace(".gcode.3mf", "").replace(".gcode", "").replace(".3mf", "")
+        if not print_name:
+            print_name = "Unknown Print"
+
         # ⚠️ ``_live_archive_for_running_print`` inspects only the 5 newest
         # ``printing`` rows on the printer, so its miss is not proof that no row
         # exists — and a miss HERE cuts a second archive for a print BamDude is
@@ -5223,6 +5237,13 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
         tracked_keys = [(printer_id, filename)] if filename else []
         if subtask_name:
             tracked_keys += [(printer_id, subtask_name), (printer_id, f"{subtask_name}.3mf")]
+        # ⚠️ The fourth form is the row's OWN ``filename`` — what the adoption
+        # registers when the printer reported none (``f"{print_name}.3mf"``). A
+        # printer that names the job only in ``subtask_name``, suffix included
+        # (``X.gcode.3mf``), gets a row called ``X.3mf``, and none of the three
+        # forms above is that string: the guard would miss the row it wrote
+        # itself and adopt the same print twice.
+        tracked_keys.append((printer_id, f"{print_name}.3mf"))
         for key in tracked_keys:
             tracked = _active_prints.get(key)
             if tracked:
@@ -5233,12 +5254,6 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
                     key,
                 )
                 return None
-
-        print_name = subtask_name or filename
-        print_name = print_name.split("/")[-1]
-        print_name = print_name.replace(".gcode.3mf", "").replace(".gcode", "").replace(".3mf", "")
-        if not print_name:
-            print_name = "Unknown Print"
 
         # From the live state, exactly as the fallback row gets it — the attach
         # parser reads this column back to decide which plate to describe.
@@ -5385,6 +5400,37 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
         return None
 
 
+async def _store_spoolman_for_adopted_print(printer_id: int, archive, db, ams_mapping, logger) -> None:
+    """The adopted print's Spoolman tracking row, written once the download
+    outcome is known — and whatever that outcome was.
+
+    ``on_print_start`` stores it "with whatever ``file_path`` the row ended up
+    carrying", and an adopted print is the same print: it is running, the
+    operator's spools are being consumed now. The ``CLAUDE.md`` rule is about
+    TIMING — given an empty ``file_path`` ``store_print_data`` falls through to
+    its degraded remain%-delta path, which is why the call waits for the
+    download instead of preceding it — never about omission. Hanging it off the
+    attach instead left a Spoolman install with no row for the WHOLE print
+    whenever the firmware locks the file mid-print (no 3MF to fetch) or the
+    attach failed.
+
+    The hash twin is the one path that does not come here: that row has had its
+    own tracking since it was dispatched, and ours no longer exists.
+    """
+    try:
+        await _store_spoolman_print_data(
+            printer_id,
+            archive.id,
+            archive.file_path,
+            db,
+            printer_manager,
+            ams_mapping=ams_mapping,
+            plate_id=archive.plate_index,
+        )
+    except Exception as e:
+        logger.warning("[SPOOLMAN] Failed to store tracking data for adopted archive %s: %s", archive.id, e)
+
+
 async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) -> None:
     """Fetch the adopted print's 3MF and attach it — or discover, by content
     hash, that this print already had a row (spec 2026-09-12 §3.4). The hash
@@ -5410,6 +5456,10 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                 print_data = meta.get("_print_data") or {}
                 subtask_name = print_data.get("subtask_name") or meta.get("original_subtask")
                 filename = print_data.get("filename") or archive.filename
+                # Read here, not in the attach branch below: every outcome of the
+                # download needs it for the tracking row, and it comes from the
+                # row's own record of the print, never from what is loaded now.
+                ams_mapping = _get_start_ams_mapping(print_data, archive_id)
 
             result = await try_download_3mf(printer, subtask_name, filename, app_settings.archive_dir / "temp")
             if result is None:
@@ -5418,9 +5468,15 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                 logger.warning("[ADOPT] No 3MF on printer %s for adopted archive %s yet", printer_id, archive_id)
                 async with async_session() as db:
                     archive = await db.get(PrintArchive, archive_id)
-                    if archive is not None and not archive.file_path:
-                        archive.extra_data = {**(archive.extra_data or {}), "no_3mf_available": True}
-                        await db.commit()
+                    if archive is not None:
+                        if not archive.file_path:
+                            archive.extra_data = {**(archive.extra_data or {}), "no_3mf_available": True}
+                            await db.commit()
+                        # Locked-file firmware never hands the 3MF over, and the
+                        # print still runs to the end — so the tracking row is
+                        # written now, on the degraded path the empty
+                        # ``file_path`` selects.
+                        await _store_spoolman_for_adopted_print(printer_id, archive, db, ams_mapping, logger)
                 return
 
             temp_path, downloaded_filename = result
@@ -5463,19 +5519,19 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                             _active_prints[(printer_id, subtask_name)] = twin.id
                         return
                     ok = await ArchiveService(db).attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)
+                    refreshed = await db.get(PrintArchive, archive_id)
                     if ok:
                         logger.info("[ADOPT] Attached %s to adopted archive %s", downloaded_filename, archive_id)
                         # ⚠️ From here the tail is ``on_print_start``'s, not the
                         # retry service's: the retry service fills a row somebody
                         # else already wired up, while this task owns the adopted
                         # print end to end. Both calls below are silent losses
-                        # when skipped. The mapping comes from the row's own
-                        # ``_print_data``, never from what is loaded now.
+                        # when skipped — and they are the half of the tail that
+                        # needs the file: there are no slicer colours to outrank
+                        # and no objects to load when nothing was attached.
                         from backend.app.services.archive import load_objects_from_archive_into_state
                         from backend.app.services.archive_colors import apply_loaded_spool_colors
 
-                        ams_mapping = _get_start_ams_mapping(print_data, archive_id)
-                        refreshed = await db.get(PrintArchive, archive_id)
                         if refreshed is not None:
                             # The attach has just overwritten filament_color with
                             # the slicer's own colours, and a loaded inventory
@@ -5484,24 +5540,6 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                             await db.commit()
                             load_objects_from_archive_into_state(refreshed, printer_id)
                         await ws_manager.send_archive_updated({"id": archive_id, "recovered_3mf": True})
-                        # ⚠️ AFTER the attach, and it has to happen: given an
-                        # empty ``file_path`` ``store_print_data`` falls through
-                        # to its degraded remain%-delta path, which is why it
-                        # waits — not a reason to leave a Spoolman install with
-                        # no tracking row for the print at all.
-                        if refreshed is not None:
-                            try:
-                                await _store_spoolman_print_data(
-                                    printer_id,
-                                    archive_id,
-                                    refreshed.file_path,
-                                    db,
-                                    printer_manager,
-                                    ams_mapping=ams_mapping,
-                                    plate_id=refreshed.plate_index,
-                                )
-                            except Exception as e:
-                                logger.warning("[SPOOLMAN] Failed to store tracking data: %s", e)
                     else:
                         # The bytes arrived but could not be attached. The row
                         # keeps its empty ``file_path``, so the retry triggers
@@ -5510,6 +5548,12 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                         logger.warning(
                             "[ADOPT] Could not attach %s to adopted archive %s", downloaded_filename, archive_id
                         )
+                    # The other half of the tail follows the download's OUTCOME,
+                    # not the attach's success: on a failed attach the row keeps
+                    # its empty ``file_path`` and the store takes the degraded
+                    # path, exactly as it does when there was no 3MF at all.
+                    if refreshed is not None:
+                        await _store_spoolman_for_adopted_print(printer_id, refreshed, db, ams_mapping, logger)
             finally:
                 try:
                     if temp_path.exists():
@@ -5564,7 +5608,9 @@ async def on_print_running_observed(printer_id: int, data: dict):
     try:
         live_archive_id, live_plate = await _live_archive_for_running_print(printer_id, data)
         if live_archive_id is None:
-            live_archive_id = await _adopt_running_print(printer_id, data, logger)
+            # Nothing below reads the new id: the adoption claims the queue row
+            # itself, and the plate-gate release keys off the printer.
+            await _adopt_running_print(printer_id, data, logger)
         else:
             await mark_queue_printing_for_printer(
                 printer_id,
