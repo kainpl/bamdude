@@ -1164,7 +1164,14 @@ def sd_stem(sd_name: str) -> str:
     The same strip loop as ``utils.filename.derive_remote_filename``, minus the
     re-append of a single ``.3mf`` — the two must agree on where the stem ends,
     because that function computes the very name on the card this one takes apart.
+
+    Raises ``TypeError`` on non-string input rather than entering the loop, for
+    the reason that function records: a duck-typed object whose ``endswith``
+    returns a truthy sentinel never escapes, and the unbounded allocation that
+    follows has cgroup-OOM'd the test runner under mocks.
     """
+    if not isinstance(sd_name, str):
+        raise TypeError(f"sd_stem requires str, got {type(sd_name).__name__}")
     stem = sd_name
     while True:
         if stem.endswith(".gcode.3mf"):
@@ -1176,7 +1183,7 @@ def sd_stem(sd_name: str) -> str:
 
 
 async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: str) -> PrintArchive | None:
-    """The archive that holds the 3MF a file on the printer's card came from — or None.
+    """The archive that still has something to show for a file on the card — or None.
 
     One owner for "printer file name → archive" (spec 2026-09-12 §3.1): the
     printer-card cover and the file manager both ask here. An archive's
@@ -1184,41 +1191,69 @@ async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: s
     the name it found) and DERIVES the card name for a dispatched one
     (``derive_remote_filename``: suffixes collapsed, spaces → underscores), so
     the match folds spaces on both sides and accepts ``{stem}.3mf`` /
-    ``{stem}.gcode.3mf`` / the raw name / ``print_name == stem``. Only rows with
-    a 3MF on disk count — a provisional row (``file_path == ""``) must never
-    shadow a populated one, and a row whose file has since vanished yields to
-    the next-newest. No content hash: that would need the bytes, and not
-    fetching them is the point.
+    ``{stem}.gcode.3mf`` / the raw name / ``print_name == stem``. No content
+    hash: that would need the bytes, and not fetching them is the point.
+
+    A candidate counts when it still has **something on disk to show** — its
+    3MF, or failing that its extracted ``thumbnail_path``. Two kinds of row have
+    no 3MF and they are not the same thing:
+
+    * *pending* — the row is created at print start with ``file_path=""`` and no
+      thumbnail yet, while the 3MF is still being fetched. It has nothing to
+      show and must never shadow an older populated row; having neither a path
+      nor a thumbnail, it is already excluded in SQL.
+    * *cleaned* — retention (``archive_cleanup_service``) deleted the 3MF and
+      blanked ``file_path`` but deliberately KEPT ``thumbnail_path``, because
+      the row is print history. Amended 2026-09-12: that surviving picture is a
+      valid answer and gets used.
+
+    Newest ``created_at`` first, and a row whose files have since vanished
+    yields to the next — so the walk reads light ``(id, file_path,
+    thumbnail_path)`` tuples and loads only the winner as an entity. No blind
+    ``LIMIT``: the eleventh row can be the only one still on disk.
 
     Deliberately no status filter: the printer can be FINISH (the archive
     already flipped to ``completed``) while the UI still asks for the picture.
+
+    **Callers decide what they can serve from the answer.** The cover serves
+    ``thumbnail_path`` when the row has one and opens the 3MF otherwise; the
+    plates route serves the cached ``extra_data["plates"]`` plus the printed
+    plate's PNG, and falls through to one read from the printer when a cleaned
+    row has no cached plates either.
+
+    ⚠️ Known hole, recorded rather than fixed: a #1542 doubled-suffix filename
+    (``Model.gcode.3mf.gcode.3mf`` stored on the row) matches no arm — the stem
+    of the card name is ``Model``, and folding spaces does not collapse the
+    extra suffix. The inline query this was lifted from had the same hole, and
+    the consequence is graceful: the plates route reads the file once, as it
+    does for a file that never printed.
     """
     stem = sd_stem(sd_name)
     stem_us = stem.replace(" ", "_")
     filename_us = func.replace(PrintArchive.filename, " ", "_")
-    rows = (
-        (
-            await db.execute(
-                select(PrintArchive)
-                .where(PrintArchive.printer_id == printer_id)
-                .where(PrintArchive.file_path != "")
-                .where(
-                    or_(
-                        PrintArchive.print_name == stem,
-                        PrintArchive.filename == sd_name,
-                        filename_us == f"{stem_us}.3mf",
-                        filename_us == f"{stem_us}.gcode.3mf",
-                    )
+    candidates = (
+        await db.execute(
+            select(PrintArchive.id, PrintArchive.file_path, PrintArchive.thumbnail_path)
+            .where(PrintArchive.printer_id == printer_id)
+            .where(or_(PrintArchive.file_path != "", PrintArchive.thumbnail_path.is_not(None)))
+            .where(
+                or_(
+                    PrintArchive.print_name == stem,
+                    PrintArchive.filename == sd_name,
+                    filename_us == f"{stem_us}.3mf",
+                    filename_us == f"{stem_us}.gcode.3mf",
                 )
-                .order_by(PrintArchive.created_at.desc())
             )
+            .order_by(PrintArchive.created_at.desc())
         )
-        .scalars()
-        .all()
-    )
-    for archive in rows:
-        if (settings.base_dir / archive.file_path).is_file():
-            return archive
+    ).all()
+    for archive_id, file_path, thumbnail_path in candidates:
+        # ``base_dir / ""`` is base_dir itself — a directory, so is_file() is
+        # False — but check the column first and say so out loud.
+        has_3mf = bool(file_path) and (settings.base_dir / file_path).is_file()
+        has_png = bool(thumbnail_path) and (settings.base_dir / thumbnail_path).is_file()
+        if has_3mf or has_png:
+            return await db.get(PrintArchive, archive_id)
     return None
 
 

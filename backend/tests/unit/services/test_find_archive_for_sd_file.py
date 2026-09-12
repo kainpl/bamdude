@@ -14,11 +14,20 @@ from backend.app.models.printer import Printer
 from backend.app.services.archive import find_archive_for_sd_file, sd_stem
 
 
-def _archive(printer_id: int, filename: str, *, file_path: str, print_name: str | None = None, minutes_ago: int = 0):
+def _archive(
+    printer_id: int,
+    filename: str,
+    *,
+    file_path: str,
+    thumbnail_path: str | None = None,
+    print_name: str | None = None,
+    minutes_ago: int = 0,
+):
     return PrintArchive(
         printer_id=printer_id,
         filename=filename,
         file_path=file_path,
+        thumbnail_path=thumbnail_path,
         file_size=7,
         print_name=print_name or sd_stem(filename),
         source_content_hash="a" * 64,
@@ -47,6 +56,12 @@ class TestStem:
         assert sd_stem("part.3mf") == "part"
         assert sd_stem("part.gcode.3mf.3mf") == "part"
         assert sd_stem("part") == "part"
+
+    def test_a_non_string_is_refused_before_the_loop(self):
+        """A duck-typed ``endswith`` never escapes the loop — derive_remote_filename
+        carries the same guard because that allocation OOM'd the test runner."""
+        with pytest.raises(TypeError):
+            sd_stem(None)
 
 
 @pytest.mark.asyncio
@@ -93,6 +108,56 @@ async def test_a_row_whose_file_is_gone_yields_to_the_next(db_session, tmp_path,
     await db_session.commit()
     found = await find_archive_for_sd_file(db_session, p.id, "part.3mf")
     assert found is not None and found.file_path == older
+
+
+@pytest.mark.asyncio
+async def test_a_retention_cleaned_row_answers_with_its_surviving_png(db_session, tmp_path, monkeypatch):
+    """Retention deletes the 3MF and blanks ``file_path`` but keeps the PNG,
+    because the row is print history — so the picture is still an answer."""
+    p = await _printer(db_session, "S7")
+    png = _on_disk(tmp_path, monkeypatch, "archive/1/cleaned/part.png")
+    db_session.add(_archive(p.id, "part.3mf", file_path="", thumbnail_path=png))
+    await db_session.commit()
+    found = await find_archive_for_sd_file(db_session, p.id, "part.3mf")
+    assert found is not None and found.thumbnail_path == png
+
+
+@pytest.mark.asyncio
+async def test_a_pending_row_with_nothing_on_disk_yet_is_not_an_answer(db_session, tmp_path, monkeypatch):
+    """The other kind of empty ``file_path``: created at print start, 3MF still
+    being fetched, no thumbnail either. Nothing to show, so it is not the answer."""
+    monkeypatch.setattr(settings, "base_dir", tmp_path)
+    p = await _printer(db_session, "S8")
+    db_session.add(_archive(p.id, "part.3mf", file_path=""))
+    await db_session.commit()
+    assert (await find_archive_for_sd_file(db_session, p.id, "part.3mf")) is None
+
+
+@pytest.mark.asyncio
+async def test_a_cleaned_newer_row_beats_a_populated_older_one(db_session, tmp_path, monkeypatch):
+    """Newest still wins: the cover shows the last print's picture, not an older
+    print's 3MF that happens to have survived retention."""
+    p = await _printer(db_session, "S9")
+    old_3mf = _on_disk(tmp_path, monkeypatch, "archive/1/older/part.3mf")
+    new_png = tmp_path / "archive/1/newer/part.png"
+    new_png.parent.mkdir(parents=True)
+    new_png.write_bytes(b"\x89PNG")
+    db_session.add(_archive(p.id, "part.3mf", file_path=old_3mf, minutes_ago=60))
+    db_session.add(_archive(p.id, "part.3mf", file_path="", thumbnail_path="archive/1/newer/part.png", minutes_ago=1))
+    await db_session.commit()
+    found = await find_archive_for_sd_file(db_session, p.id, "part.3mf")
+    assert found is not None and found.thumbnail_path == "archive/1/newer/part.png"
+
+
+@pytest.mark.asyncio
+async def test_the_print_name_arm_matches_what_no_filename_arm_can(db_session, tmp_path, monkeypatch):
+    """A dispatched file renamed on the card: only ``print_name == stem`` can see it."""
+    p = await _printer(db_session, "S10")
+    rel = _on_disk(tmp_path, monkeypatch, "archive/1/unrelated.gcode.3mf")
+    db_session.add(_archive(p.id, "unrelated.gcode.3mf", file_path=rel, print_name="part"))
+    await db_session.commit()
+    found = await find_archive_for_sd_file(db_session, p.id, "part.3mf")
+    assert found is not None and found.print_name == "part"
 
 
 @pytest.mark.asyncio

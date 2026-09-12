@@ -1682,9 +1682,10 @@ async def get_printer_cover(
             return Response(content=_cover_cache[printer_id][cache_key], media_type="image/png")
 
     # Resolve the printing archive for this printer. The match (spaces folded,
-    # suffix variants, no status filter, newest row with the 3MF on disk) lives
-    # in find_archive_for_sd_file — read its docstring for why each part is
-    # there; the file manager asks the same question through it.
+    # suffix variants, no status filter, newest row with its 3MF *or* its
+    # retention-surviving PNG on disk) lives in find_archive_for_sd_file — read
+    # its docstring for why each part is there; the file manager asks the same
+    # question through it.
     subtask_base = sd_stem(subtask_name)
     archive = await find_archive_for_sd_file(db, printer_id, subtask_name)
     if archive is None:
@@ -1707,6 +1708,10 @@ async def get_printer_cover(
     #    for the requested plate + view.
     local_3mf = settings.base_dir / archive.file_path
     if not local_3mf.exists():
+        # Defence in depth, not a live branch: the resolver only returns rows
+        # with something on disk. Reachable when the file goes between its check
+        # and this open, or on ?view=top for a retention-cleaned row (step 1
+        # skips the ¾ PNG for a top view, and the 3MF it wants is gone).
         raise HTTPException(404, f"Archive file missing on disk: {archive.file_path}")
 
     try:
