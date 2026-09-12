@@ -5214,6 +5214,26 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
             )
             return None
 
+        # ⚠️ ``_live_archive_for_running_print`` inspects only the 5 newest
+        # ``printing`` rows on the printer, so its miss is not proof that no row
+        # exists — and a miss HERE cuts a second archive for a print BamDude is
+        # already tracking, where before it cost only a skipped queue claim.
+        # ``_active_prints`` is the same guard ``on_print_start`` keeps at the top
+        # of its own handler, and it is what survives a lookup window too small.
+        tracked_keys = [(printer_id, filename)] if filename else []
+        if subtask_name:
+            tracked_keys += [(printer_id, subtask_name), (printer_id, f"{subtask_name}.3mf")]
+        for key in tracked_keys:
+            tracked = _active_prints.get(key)
+            if tracked:
+                logger.info(
+                    "[ADOPT] Printer %s is already tracking archive %s via %r — not adopting again",
+                    printer_id,
+                    tracked,
+                    key,
+                )
+                return None
+
         print_name = subtask_name or filename
         print_name = print_name.split("/")[-1]
         print_name = print_name.replace(".gcode.3mf", "").replace(".gcode", "").replace(".3mf", "")
@@ -5424,6 +5444,15 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                             twin.id,
                             archive_id,
                         )
+                        # ⚠️ BEFORE the discard: the provisional row's plug
+                        # reading dies with it, and the twin — created before
+                        # BamDude could take one — would be left with no
+                        # baseline at all, so the print's energy would be lost
+                        # rather than merely approximate. Never re-read a twin
+                        # that has one: that moves the baseline forward and
+                        # silently drops everything drawn before now.
+                        if twin.energy_start_kwh is None:
+                            await _record_energy_start(twin, printer_id, db, context="hash-adoption")
                         # Commits on its own; it also clears our _active_prints
                         # keys by value and re-points the queue row.
                         await _discard_provisional_archive(db, archive, logger, adopted_archive_id=twin.id)
@@ -5436,12 +5465,43 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                     ok = await ArchiveService(db).attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)
                     if ok:
                         logger.info("[ADOPT] Attached %s to adopted archive %s", downloaded_filename, archive_id)
+                        # ⚠️ From here the tail is ``on_print_start``'s, not the
+                        # retry service's: the retry service fills a row somebody
+                        # else already wired up, while this task owns the adopted
+                        # print end to end. Both calls below are silent losses
+                        # when skipped. The mapping comes from the row's own
+                        # ``_print_data``, never from what is loaded now.
+                        from backend.app.services.archive import load_objects_from_archive_into_state
+                        from backend.app.services.archive_colors import apply_loaded_spool_colors
+
+                        ams_mapping = _get_start_ams_mapping(print_data, archive_id)
                         refreshed = await db.get(PrintArchive, archive_id)
                         if refreshed is not None:
-                            from backend.app.services.archive import load_objects_from_archive_into_state
-
+                            # The attach has just overwritten filament_color with
+                            # the slicer's own colours, and a loaded inventory
+                            # spool outranks those.
+                            await apply_loaded_spool_colors(db, refreshed, printer_id, ams_mapping)
+                            await db.commit()
                             load_objects_from_archive_into_state(refreshed, printer_id)
                         await ws_manager.send_archive_updated({"id": archive_id, "recovered_3mf": True})
+                        # ⚠️ AFTER the attach, and it has to happen: given an
+                        # empty ``file_path`` ``store_print_data`` falls through
+                        # to its degraded remain%-delta path, which is why it
+                        # waits — not a reason to leave a Spoolman install with
+                        # no tracking row for the print at all.
+                        if refreshed is not None:
+                            try:
+                                await _store_spoolman_print_data(
+                                    printer_id,
+                                    archive_id,
+                                    refreshed.file_path,
+                                    db,
+                                    printer_manager,
+                                    ams_mapping=ams_mapping,
+                                    plate_id=refreshed.plate_index,
+                                )
+                            except Exception as e:
+                                logger.warning("[SPOOLMAN] Failed to store tracking data: %s", e)
                     else:
                         # The bytes arrived but could not be attached. The row
                         # keeps its empty ``file_path``, so the retry triggers

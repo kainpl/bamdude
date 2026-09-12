@@ -112,6 +112,7 @@ async def _drive_hook(
     live_archive=(None, None),
     extra_patches=(),
     data=None,
+    pre_seed=None,
 ):
     """Run ``on_print_running_observed`` against the real test database with
     every outbound effect either spied on or stubbed."""
@@ -126,6 +127,8 @@ async def _drive_hook(
     # attribute including the PK, and reading one back in a sync assertion is a
     # lazy load with no greenlet to run it in.
     printer_id = printer.id
+    if pre_seed is not None:
+        pre_seed(printer_id)
 
     pm = MagicMock()
     pm.get_status.return_value = None
@@ -227,7 +230,9 @@ class TestTheHookAdoptsThePrintItFound:
         assert spies["energy_start"].await_args.kwargs["context"] == "recovered-start"
         assert spies["energy_start"].await_args.args[0].id == row.id
 
-        spies["usage_session"].assert_awaited_once(), "on_ams_change would keep syncing remain% without the session"
+        # Without the session ``on_ams_change`` keeps running the remain%-based
+        # weight sync until completion and the final write-off double-counts.
+        spies["usage_session"].assert_awaited_once()
 
         assert spawned.names == ["adopt-running-print-download"], f"download task not scheduled: {spawned.names}"
         assert spawned.locals[0].get("archive_id") == row.id
@@ -260,10 +265,37 @@ class TestTheHookAdoptsThePrintItFound:
         )
 
         assert rows == [], "a half-built row is worse than none"
-        spies["baseline"].assert_awaited_once(), "the hook gave up before its own job"
+        # The hook must not have given up before its own job.
+        spies["baseline"].assert_awaited_once()
+        # The old rule survives the failure: no archive ⇒ no queue claim, or the
+        # completion finds a row it can neither close nor repeat.
+        spies["queue_claim"].assert_not_awaited()
         assert spawned.names == []
         for name in SILENT:
             assert not spies[name].called
+
+    async def test_a_print_already_tracked_is_not_adopted_twice(self, db_session, printer_factory, main_db):
+        """⚠️ ``_live_archive_for_running_print`` inspects only the 5 newest
+        ``printing`` rows on the printer, so a miss is not proof there is no row.
+
+        Before the adoption existed, such a miss cost nothing but a skipped
+        queue claim; now it would cut a SECOND archive for a print BamDude is
+        already tracking. ``_active_prints`` is the same guard
+        ``on_print_start`` keeps at the top of its handler, and it is the one
+        thing that survives a lookup window too small.
+        """
+        from backend.app.main import _active_prints
+
+        _pid, rows, spies, spawned = await _drive_hook(
+            db_session=db_session,
+            printer_factory=printer_factory,
+            pre_seed=lambda pid: _active_prints.__setitem__((pid, "Кронштейн"), 4242),
+        )
+
+        assert rows == [], "the print is already tracked as archive 4242 — a second row is a duplicate"
+        spies["queue_claim"].assert_not_awaited()
+        spies["energy_start"].assert_not_awaited()
+        assert spawned.names == [], "and no second FTP session for a file already accounted for"
 
 
 def _provisional(printer_id: int, *, plate: int | None = 1) -> PrintArchive:
@@ -278,7 +310,9 @@ def _provisional(printer_id: int, *, plate: int | None = 1) -> PrintArchive:
         plate_index=plate,
         extra_data={
             "original_subtask": "Кронштейн",
-            "_print_data": dict(RUNNING),
+            # A real mapping: the attach tail must take it from HERE (the row's
+            # own record of the print), not invent one from what is loaded now.
+            "_print_data": {**RUNNING, "ams_mapping": [0, 1]},
             "recovered_start": {"observed_at": datetime.now(timezone.utc).isoformat(), "remaining_seconds": 1800},
             "energy_is_approximate": True,
             "energy_start_partial": True,
@@ -286,7 +320,9 @@ def _provisional(printer_id: int, *, plate: int | None = 1) -> PrintArchive:
     )
 
 
-async def _seed_download_case(db_session, printer_factory, tmp_path, *, with_twin: bool):
+async def _seed_download_case(
+    db_session, printer_factory, tmp_path, *, with_twin: bool, twin_energy: float | None = None
+):
     """A provisional row (+ optionally the live twin holding the same bytes) and
     the temp file the download would have produced."""
     from backend.app.main import _active_prints
@@ -309,6 +345,7 @@ async def _seed_download_case(db_session, printer_factory, tmp_path, *, with_twi
             plate_index=1,
             status="printing",
             started_at=datetime.now(timezone.utc),
+            energy_start_kwh=twin_energy,
         )
         db_session.add(twin)
 
@@ -331,25 +368,39 @@ async def _seed_download_case(db_session, printer_factory, tmp_path, *, with_twi
 
 
 async def _run_download(*, printer_id, archive_id, download_result, attach=None):
-    """Run ``_download_for_adopted_print`` with the FTP fetch stubbed."""
+    """Run ``_download_for_adopted_print`` with the FTP fetch stubbed.
+
+    Returns the spies for everything the task is supposed to drive, so a test
+    can assert on the whole tail and not just on the attach.
+    """
     from contextlib import ExitStack
 
     from backend.app.main import _download_for_adopted_print
 
-    attach_spy = AsyncMock(return_value=True) if attach is None else attach
-    ws = MagicMock(send_archive_updated=AsyncMock())
+    spies = {
+        "attach": AsyncMock(return_value=True) if attach is None else attach,
+        "colors": AsyncMock(),
+        "spoolman": AsyncMock(),
+        "energy_start": AsyncMock(return_value=True),
+        "parts": AsyncMock(),
+        "objects": MagicMock(return_value=True),
+        "ws_updated": AsyncMock(),
+    }
     patches = [
         patch("backend.app.services.archive_download.try_download_3mf", AsyncMock(return_value=download_result)),
-        patch.object(ArchiveService, "attach_3mf_to_archive", attach_spy),
-        patch("backend.app.main.ws_manager", ws),
-        patch("backend.app.main.refresh_archive_parts", AsyncMock()),
-        patch("backend.app.services.archive.load_objects_from_archive_into_state", MagicMock(return_value=True)),
+        patch.object(ArchiveService, "attach_3mf_to_archive", spies["attach"]),
+        patch("backend.app.main.ws_manager", MagicMock(send_archive_updated=spies["ws_updated"])),
+        patch("backend.app.main.refresh_archive_parts", spies["parts"]),
+        patch("backend.app.main._record_energy_start", spies["energy_start"]),
+        patch("backend.app.main._store_spoolman_print_data", spies["spoolman"]),
+        patch("backend.app.services.archive_colors.apply_loaded_spool_colors", spies["colors"]),
+        patch("backend.app.services.archive.load_objects_from_archive_into_state", spies["objects"]),
     ]
     with ExitStack() as stack:
         for p in patches:
             stack.enter_context(p)
         await _download_for_adopted_print(printer_id, archive_id, logging.getLogger("test"))
-    return attach_spy
+    return spies
 
 
 class TestTheDownloadDecidesWhoOwnsThePrint:
@@ -363,11 +414,11 @@ class TestTheDownloadDecidesWhoOwnsThePrint:
             db_session, printer_factory, tmp_path, with_twin=True
         )
 
-        attach_spy = await _run_download(
+        spies = await _run_download(
             printer_id=printer_id, archive_id=provisional_id, download_result=(temp_path, "p.3mf")
         )
 
-        assert not attach_spy.called, (
+        assert not spies["attach"].called, (
             "attached before asking — _discard_provisional_archive may only delete a row with nothing on disk"
         )
         db_session.expire_all()
@@ -386,11 +437,11 @@ class TestTheDownloadDecidesWhoOwnsThePrint:
             db_session, printer_factory, tmp_path, with_twin=False
         )
 
-        attach_spy = await _run_download(
+        spies = await _run_download(
             printer_id=printer_id, archive_id=provisional_id, download_result=(temp_path, "p.3mf")
         )
 
-        attach_spy.assert_awaited_once_with(provisional_id, temp_path, "p.3mf")
+        spies["attach"].assert_awaited_once_with(provisional_id, temp_path, "p.3mf")
         db_session.expire_all()
         rows = (await db_session.execute(select(PrintArchive.id))).scalars().all()
         assert rows == [provisional_id], "the row that was announced at adoption is the row that gets the file"
@@ -403,9 +454,11 @@ class TestTheDownloadDecidesWhoOwnsThePrint:
             db_session, printer_factory, tmp_path, with_twin=False
         )
 
-        attach_spy = await _run_download(printer_id=printer_id, archive_id=provisional_id, download_result=None)
+        spies = await _run_download(printer_id=printer_id, archive_id=provisional_id, download_result=None)
 
-        assert not attach_spy.called
+        assert not spies["attach"].called
+        assert not spies["colors"].called, "nothing was attached — there are no slicer colours to outrank"
+        assert not spies["spoolman"].called
         db_session.expire_all()
         row = await db_session.get(PrintArchive, provisional_id)
         assert row is not None
@@ -414,3 +467,85 @@ class TestTheDownloadDecidesWhoOwnsThePrint:
         assert (row.extra_data or {}).get("recovered_start") is not None, (
             "the marker must not overwrite the record the reconstruction reads"
         )
+
+
+class TestTheAdoptedAttachMirrorsOnPrintStartsTail:
+    """Spec §3.4 as amended 2026-09-12: after the adopted row gets its file the
+    task does what ``on_print_start`` does after ITS attach — not what the retry
+    service does. The retry service fills a row somebody else already wired up;
+    this task owns the print end to end, and the two things it would otherwise
+    drop are both silent losses.
+    """
+
+    async def test_the_loaded_spools_colours_outrank_the_slicers(self, db_session, printer_factory, main_db, tmp_path):
+        """``attach_3mf_to_archive`` has just overwritten ``filament_color`` with
+        the slicer's own, and a loaded inventory spool outranks those — the same
+        order the dispatch path applies them in."""
+        printer_id, provisional_id, _twin, temp_path, _hash = await _seed_download_case(
+            db_session, printer_factory, tmp_path, with_twin=False
+        )
+
+        spies = await _run_download(
+            printer_id=printer_id, archive_id=provisional_id, download_result=(temp_path, "p.3mf")
+        )
+
+        spies["colors"].assert_awaited_once()
+        args = spies["colors"].await_args.args
+        assert args[1].id == provisional_id, "the colours were re-applied to some other row"
+        assert args[2] == printer_id
+        assert args[3] == [0, 1], (
+            "the mapping must come from the row's own ``_print_data``, not from whatever is loaded now"
+        )
+
+    async def test_spoolman_gets_its_tracking_row_once_the_file_is_there(
+        self, db_session, printer_factory, main_db, tmp_path
+    ):
+        """⚠️ The ``CLAUDE.md`` rule is about TIMING, not omission: with an empty
+        ``file_path`` ``store_print_data`` takes its degraded remain%-delta path,
+        so the call waits for the attach — and then has to happen, or a Spoolman
+        install gets no row at all for an adopted print."""
+        printer_id, provisional_id, _twin, temp_path, _hash = await _seed_download_case(
+            db_session, printer_factory, tmp_path, with_twin=False
+        )
+
+        spies = await _run_download(
+            printer_id=printer_id, archive_id=provisional_id, download_result=(temp_path, "p.3mf")
+        )
+
+        spies["spoolman"].assert_awaited_once()
+        call = spies["spoolman"].await_args
+        assert call.args[0] == printer_id
+        assert call.args[1] == provisional_id
+        assert call.kwargs["ams_mapping"] == [0, 1]
+        assert call.kwargs["plate_id"] == 1, "plate authority is PrintArchive.plate_index"
+
+    async def test_the_adopted_twin_keeps_an_energy_baseline(self, db_session, printer_factory, main_db, tmp_path):
+        """The provisional row's plug reading dies with the row, and the twin was
+        created before BamDude could take one — so without this the print's
+        energy figure is lost rather than merely approximate."""
+        printer_id, provisional_id, twin_id, temp_path, _hash = await _seed_download_case(
+            db_session, printer_factory, tmp_path, with_twin=True
+        )
+
+        spies = await _run_download(
+            printer_id=printer_id, archive_id=provisional_id, download_result=(temp_path, "p.3mf")
+        )
+
+        spies["energy_start"].assert_awaited_once()
+        assert spies["energy_start"].await_args.args[0].id == twin_id
+        assert spies["energy_start"].await_args.kwargs["context"] == "hash-adoption"
+
+    async def test_a_twin_that_already_has_a_baseline_is_left_alone(
+        self, db_session, printer_factory, main_db, tmp_path
+    ):
+        """Re-reading the counter mid-print would move the baseline forward and
+        silently discard every watt-hour drawn before now."""
+        printer_id, provisional_id, _twin, temp_path, _hash = await _seed_download_case(
+            db_session, printer_factory, tmp_path, with_twin=True, twin_energy=12.5
+        )
+
+        spies = await _run_download(
+            printer_id=printer_id, archive_id=provisional_id, download_result=(temp_path, "p.3mf")
+        )
+
+        spies["energy_start"].assert_not_awaited()
