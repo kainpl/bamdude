@@ -9,6 +9,9 @@ import { render } from '../utils';
 import { FileManagerModal } from '../../components/FileManagerModal';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
+// Type-only: the plates fixture below is annotated with this client method's
+// return type, so the fixture and the wire shape cannot drift apart silently.
+import type { api } from '../../api/client';
 
 // The 3D-view modal mounts these; keep WebGL / Three.js out of jsdom.
 vi.mock('../../components/ModelViewer', () => ({
@@ -553,9 +556,12 @@ describe('FileManagerModal', () => {
       { name: 'My_Model.3mf', path: '/cache/My_Model.3mf', size: 1024, is_directory: false },
     ];
 
+    // Typed against the wire shape: `archive_id` and every plate field below are
+    // checked by `npm run typecheck`, so a fixture that drifts from the client's
+    // return type fails the gate instead of only the assertions.
     const platesAnswer = (
       thumbnails: Array<string | null>,
-    ) => ({
+    ): Awaited<ReturnType<typeof api.getPrinterFilePlates>> => ({
       printer_id: 1,
       path: '/cache/My_Model.3mf',
       filename: 'My_Model.3mf',

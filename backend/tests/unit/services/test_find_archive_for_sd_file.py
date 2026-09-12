@@ -22,6 +22,7 @@ def _archive(
     thumbnail_path: str | None = None,
     print_name: str | None = None,
     minutes_ago: int = 0,
+    deleted_at: datetime | None = None,
 ):
     return PrintArchive(
         printer_id=printer_id,
@@ -32,6 +33,7 @@ def _archive(
         print_name=print_name or sd_stem(filename),
         source_content_hash="a" * 64,
         created_at=datetime.now(timezone.utc) - timedelta(minutes=minutes_ago),
+        deleted_at=deleted_at,
     )
 
 
@@ -147,6 +149,46 @@ async def test_a_cleaned_newer_row_beats_a_populated_older_one(db_session, tmp_p
     await db_session.commit()
     found = await find_archive_for_sd_file(db_session, p.id, "part.3mf")
     assert found is not None and found.thumbnail_path == "archive/1/newer/part.png"
+
+
+@pytest.mark.asyncio
+async def test_a_trashed_row_yields_to_the_live_one_even_when_it_is_newer(db_session, tmp_path, monkeypatch):
+    """Trashed rows never answer, newest or not.
+
+    ``PrintArchive.active()`` exists so trashed archives don't leak into normal
+    flows, and the sibling URL this resolver's callers hand out
+    (``/archives/{id}/plate-thumbnail/{n}``) refuses a trashed row anyway — so a
+    trashed row here would only buy a picture-less answer over a live row that
+    still has one. It falls through to the next candidate instead.
+    """
+    p = await _printer(db_session, "S11")
+    live = _on_disk(tmp_path, monkeypatch, "archive/1/live/part.3mf")
+    trashed = tmp_path / "archive/1/trashed/part.3mf"
+    trashed.parent.mkdir(parents=True)
+    trashed.write_bytes(b"PK")  # on disk, newer, and still not an answer
+    db_session.add(_archive(p.id, "part.3mf", file_path=live, minutes_ago=60))
+    db_session.add(
+        _archive(
+            p.id,
+            "part.3mf",
+            file_path="archive/1/trashed/part.3mf",
+            minutes_ago=1,
+            deleted_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+    found = await find_archive_for_sd_file(db_session, p.id, "part.3mf")
+    assert found is not None and found.file_path == live
+
+
+@pytest.mark.asyncio
+async def test_a_lone_trashed_row_is_not_an_answer(db_session, tmp_path, monkeypatch):
+    """Nothing live to fall through to: the answer is None, not the trashed row."""
+    p = await _printer(db_session, "S12")
+    rel = _on_disk(tmp_path, monkeypatch, "archive/1/part.3mf")
+    db_session.add(_archive(p.id, "part.3mf", file_path=rel, deleted_at=datetime.now(timezone.utc)))
+    await db_session.commit()
+    assert (await find_archive_for_sd_file(db_session, p.id, "part.3mf")) is None
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,9 @@ One question each:
   lived in the deleted 3MF);
 * a cleaned archive with no cached plates — the archive has nothing to offer and
   the route falls through exactly as if no archive existed;
+* a row whose 3MF vanished while ``file_path`` still names it (pruned or moved,
+  not retention) — the printed plate's surviving PNG answers and its siblings get
+  ``null``, never a URL that would 404;
 * the printed plate's extracted PNG answers even when the container never had a
   ``Metadata/plate_N.png`` — two different facts, asked in the right order;
 * a never-printed file — read once, PNGs ride in the JSON as data URLs, and the
@@ -269,6 +272,46 @@ async def test_a_retention_cleaned_archive_without_cached_plates_falls_through_t
     assert transport.reads == 1
 
 
+async def test_a_row_whose_3mf_vanished_offers_only_the_printed_plates_png(
+    committing_client, db_session, transport, tmp_path
+):
+    """``file_path`` still names a 3MF that is no longer there.
+
+    Not retention — retention blanks the column. A prune, a move or a restore
+    that missed the archive directory leaves the path set and the file gone, and
+    a sibling plate's ``/archives/{id}/plate-thumbnail/{n}`` would open exactly
+    that missing file. So the siblings answer ``null`` and the modal draws its
+    placeholder, while the printed plate's already-extracted PNG still answers.
+    """
+    p = await _printer(db_session)
+    (tmp_path / "archive/1").mkdir(parents=True)
+    (tmp_path / "archive/1/thumb.png").write_bytes(PNG)  # the 3MF is deliberately NOT written
+    db_session.add(
+        PrintArchive(
+            printer_id=p.id,
+            filename="Vanished.gcode.3mf",
+            file_path="archive/1/Vanished.gcode.3mf",
+            file_size=1,
+            print_name="Vanished",
+            source_content_hash="f" * 64,
+            thumbnail_path="archive/1/thumb.png",
+            plate_index=2,
+            extra_data={"plates": _cached_plates(2)},
+        )
+    )
+    await db_session.commit()
+    archive_id = await _archive_id(db_session)
+
+    r = await committing_client.get(f"/api/v1/printers/{p.id}/files/plates?path=/cache/Vanished.3mf")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["archive_id"] == archive_id
+    urls = {pl["index"]: pl["thumbnail_url"] for pl in body["plates"]}
+    assert urls == {1: None, 2: f"/api/v1/archives/{archive_id}/thumbnail"}
+    assert {pl["index"]: pl["has_thumbnail"] for pl in body["plates"]} == {1: False, 2: True}
+    assert transport.reads == 0
+
+
 async def test_a_never_printed_file_is_read_once_and_carries_its_pictures(committing_client, db_session, transport):
     p = await _printer(db_session)
     r = await committing_client.get(f"/api/v1/printers/{p.id}/files/plates?path=/cache/new.3mf")
@@ -410,6 +453,19 @@ async def test_a_non_3mf_path_answers_empty_without_a_read(committing_client, db
 
 
 async def test_the_token_less_thumbnail_route_is_gone(committing_client, db_session, transport):
+    """Absent from the schema, not merely unreachable.
+
+    A 404 is also what a typo'd path, a renamed prefix or a wrong method answers,
+    so the discriminating assertion is the OpenAPI one. The sibling
+    ``/files/plates`` path is asserted present alongside it: that pins the key
+    form the schema actually uses, so "not in paths" cannot pass by misspelling.
+    """
+    from backend.app.main import app
+
+    paths = app.openapi()["paths"]
+    assert "/api/v1/printers/{printer_id}/files/plates" in paths
+    assert "/api/v1/printers/{printer_id}/files/plate-thumbnail/{plate_index}" not in paths
+
     p = await _printer(db_session)
     r = await committing_client.get(f"/api/v1/printers/{p.id}/files/plate-thumbnail/1?path=/cache/new.3mf")
     assert r.status_code in (404, 405)

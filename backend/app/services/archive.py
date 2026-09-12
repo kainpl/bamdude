@@ -1207,6 +1207,12 @@ async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: s
       the row is print history. Amended 2026-09-12: that surviving picture is a
       valid answer and gets used.
 
+    A **trashed** row (``deleted_at`` set) never answers either, newest or not:
+    it falls through to the next candidate exactly as a vanished file does.
+    ``PrintArchive.active()`` is the rule — trash must not leak into a normal
+    flow — and the sibling URL the plates route hands out
+    (``/archives/{id}/plate-thumbnail/{n}``) refuses a trashed row anyway.
+
     Newest ``created_at`` first, and a row whose files have since vanished
     yields to the next — so the walk reads light ``(id, file_path,
     thumbnail_path)`` tuples and loads only the winner as an entity. No blind
@@ -1235,6 +1241,7 @@ async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: s
         await db.execute(
             select(PrintArchive.id, PrintArchive.file_path, PrintArchive.thumbnail_path)
             .where(PrintArchive.printer_id == printer_id)
+            .where(PrintArchive.deleted_at.is_(None))
             .where(or_(PrintArchive.file_path != "", PrintArchive.thumbnail_path.is_not(None)))
             .where(
                 or_(

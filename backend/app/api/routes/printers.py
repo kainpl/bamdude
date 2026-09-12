@@ -2034,11 +2034,14 @@ async def get_printer_file_plates(
 
     # A short-lived session, not ``Depends(get_db)``: the fallback below talks
     # FTP, and holding the request's session across that is exactly the pool
-    # exhaustion #2572 / ``_load_printer_or_404`` exist to prevent. The answer is
-    # built while the session is open, so nothing reads a detached row later.
+    # exhaustion #2572 / ``_load_printer_or_404`` exist to prevent. ⚠️ The zip
+    # parse inside ``_plates_from_archive`` is file I/O for the same reason, so it
+    # runs AFTER the block: the session maker is ``expire_on_commit=False`` and
+    # nothing commits here, so the row's loaded columns still read once it is
+    # detached — and the pooled connection is back before the parse starts.
     async with database.async_session() as db:
         archive = await find_archive_for_sd_file(db, printer_id, filename)
-        answer = None if archive is None else _plates_from_archive(printer_id, path, filename, archive)
+    answer = None if archive is None else _plates_from_archive(printer_id, path, filename, archive)
     if answer is not None:
         return answer
 
@@ -2081,9 +2084,11 @@ def _plates_from_archive(printer_id: int, path: str, filename: str, archive: Pri
     printer as if there were none: a retention-*cleaned* row (3MF deleted,
     ``file_path`` blanked, only its extracted PNG kept) with no cached plates
     cannot describe the plates at all, and ``base_dir / ""`` is a directory, not
-    a 3MF. For a cleaned row that DOES carry cached plates only the printed
-    plate has a picture — the per-plate route would open the file retention
-    deleted, so its siblings answer ``None``.
+    a 3MF. When cached plates DO describe a row whose 3MF is not on disk, only
+    the printed plate has a picture — the per-plate route would open that missing
+    file, so its siblings answer ``None``. The gate is the file, not the column:
+    retention blanks ``file_path``, but a prune or a move leaves it naming a 3MF
+    that is gone, and a URL that 404s is worse than an honest ``null``.
 
     ``has_thumbnail`` therefore means "a picture you can load", not "the 3MF had
     one": it is recomputed from the URL, the same as on the read-the-printer
@@ -2120,9 +2125,12 @@ def _plates_from_archive(printer_id: int, path: str, filename: str, archive: Pri
             url = f"/api/v1/archives/{archive.id}/thumbnail"  # the printed plate's PNG, already extracted
         elif not plate.get("has_thumbnail"):
             url = None
-        elif archive.file_path:
+        elif local_3mf is not None and local_3mf.is_file():
             url = f"/api/v1/archives/{archive.id}/plate-thumbnail/{idx}"
         else:
+            # The 3MF that URL would open is not there: ``file_path`` blanked is
+            # retention, set-but-gone is a prune or a move. Either way ``null``
+            # draws the modal's placeholder instead of an <img> that 404s.
             url = None
         plates.append({**plate, "has_thumbnail": url is not None, "thumbnail_url": url})
     return {
