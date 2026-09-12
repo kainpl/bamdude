@@ -6362,6 +6362,7 @@ export default {
     replaceSpool: 'Замінити котушку',
     currentlyAssigned: 'Зараз призначено',
     replaceSuccess: '{{old}} замінено на {{new}}',
+    replacePendingInsert: '{{old}} замінено на {{new}}. Слот налаштується, коли ви вставите філамент.',
     assignSuccess: 'Котушку призначено та слот AMS налаштовано',
     assignPendingInsert: 'Котушку призначено. Слот налаштується, коли ви вставите філамент.',
     assignFailed: 'Не вдалося призначити котушку',

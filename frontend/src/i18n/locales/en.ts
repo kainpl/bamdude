@@ -6271,6 +6271,7 @@ export default {
     replaceSpool: 'Replace spool',
     currentlyAssigned: 'Currently assigned',
     replaceSuccess: '{{old}} replaced with {{new}}',
+    replacePendingInsert: '{{old}} replaced with {{new}}. The slot will be configured when you insert the filament.',
     assignSuccess: 'Spool assigned and AMS slot configured',
     assignPendingInsert: 'Spool assigned. The slot will be configured when you insert the filament.',
     assignFailed: 'Failed to assign spool',

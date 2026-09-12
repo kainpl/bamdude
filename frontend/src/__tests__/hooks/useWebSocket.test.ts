@@ -605,6 +605,52 @@ describe('useWebSocket hook', () => {
       vi.unstubAllGlobals();
     });
 
+    // Both inventory backends broadcast this one event, so it has to refresh
+    // both sets of cards. It used to touch only ['spool-assignments'] — the
+    // internal key — so once the Spoolman assign route learned to broadcast
+    // (spec 2026-09-13 §3.3) the message arrived and refreshed nothing on a
+    // Spoolman install. The two Spoolman keys are exactly the ones the printer
+    // page's own assign/unassign mutations invalidate.
+    it('a slot assignment change refreshes BOTH inventories', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket, INVALIDATION_DEBOUNCE_MS, INVALIDATION_STAGGER_MS } = await import(
+        '../../hooks/useWebSocket'
+      );
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'spool_assignment_changed',
+          printer_id: 1,
+          ams_id: 0,
+          tray_id: 1,
+        });
+      });
+
+      // One stagger step per key, plus one to clear the last.
+      await act(async () => {
+        vi.advanceTimersByTime(INVALIDATION_DEBOUNCE_MS + 4 * INVALIDATION_STAGGER_MS);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-slot-assignments'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-inventory-spools'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
     it('handles malformed JSON gracefully', async () => {
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 

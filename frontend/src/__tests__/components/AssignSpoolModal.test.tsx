@@ -302,6 +302,10 @@ describe('AssignSpoolModal', () => {
       await waitFor(() => expect(screen.getByText(/Overture/)).toBeInTheDocument());
       fireEvent.click(screen.getByLabelText(/Show all spools/i));
 
+      // Pin that the toggle actually went on — otherwise a click that silently
+      // stopped reaching the checkbox would leave this test asserting the
+      // default state and passing for the wrong reason.
+      expect(screen.getByLabelText(/Show all spools/i)).toBeChecked();
       await waitFor(() => expect(screen.getByText(/Overture/)).toBeInTheDocument());
       expect(screen.queryByText(/Polymaker/)).not.toBeInTheDocument();
     });
@@ -326,6 +330,37 @@ describe('AssignSpoolModal', () => {
       expect(api.assignSpool).toHaveBeenCalledTimes(1);
       await waitFor(() =>
         expect(screen.getByText('PLA Red #7 replaced with Overture PLA Black')).toBeInTheDocument()
+      );
+    });
+
+    it('keeps the pending-config hint when the slot is empty right now', async () => {
+      // Replacing a LINK over a slot whose filament is not loaded yet is still
+      // a pending assignment — the toast must say so, or the operator reads
+      // "replaced" and expects the AMS to be configured already. Replace mode
+      // used to drop that half of the message entirely.
+      const { fireEvent } = await import('@testing-library/react');
+      (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: 2,
+        spool_id: 8,
+        printer_id: 1,
+        ams_id: 0,
+        tray_id: 0,
+        replaced_spool_id: 7,
+        pending_config: true,
+      });
+
+      render(<AssignSpoolModal {...defaultProps} currentSpool={currentSpool} />);
+
+      await waitFor(() => expect(screen.getByText(/Overture/)).toBeInTheDocument());
+      fireEvent.click(screen.getByText(/Overture/));
+      fireEvent.click(screen.getByRole('button', { name: /Replace spool/ }));
+
+      await waitFor(() =>
+        expect(
+          screen.getByText(
+            'PLA Red #7 replaced with Overture PLA Black. The slot will be configured when you insert the filament.'
+          )
+        ).toBeInTheDocument()
       );
     });
 

@@ -4,9 +4,10 @@
 slot's row is updated in place when it already holds another spool. Spec
 2026-09-13 §3.3 makes that visible: the response carries
 ``replaced_spoolman_spool_id`` (``None`` when nothing was displaced) and the
-route broadcasts ``spool_assignment_changed``, the event the internal assign
-and both unassigns already send and this one never did — which is why a
-Spoolman card only refreshed on the next poll.
+route broadcasts ``spool_assignment_changed``, the event the internal assign and
+the internal unassign already send and neither Spoolman route did — which is why
+a Spoolman card only refreshed on the next poll. The Spoolman unassign sends it
+now too, for the same reason (its own class below).
 
 Nothing about the replace semantics changes here: an occupied slot is never
 refused, and the usage journal is told exactly as before.
@@ -53,7 +54,6 @@ def _mock_spoolman_client(spool: dict) -> MagicMock:
     # #1457 stale-fallback-tag cleanup enumerates Spoolman's spools; nothing
     # in these tests holds this slot's fallback tag.
     client.get_spools = AsyncMock(return_value=[])
-    client.merge_spool_extra = AsyncMock(return_value=None)
     return client
 
 
@@ -110,14 +110,38 @@ async def _assign(async_client: AsyncClient, printer_id: int, spoolman_spool_id:
     return response, broadcast
 
 
+async def _unassign(async_client: AsyncClient, spoolman_spool_id: int):
+    """DELETE the slot assignment with the Spoolman client stubbed; returns
+    (response, broadcast spy)."""
+    client = _mock_spoolman_client(_spoolman_spool(spoolman_spool_id))
+    with (
+        patch(
+            "backend.app.api.routes.spoolman_inventory._get_client",
+            new=AsyncMock(return_value=client),
+        ),
+        patch("backend.app.core.websocket.ws_manager.broadcast", new_callable=AsyncMock) as broadcast,
+    ):
+        response = await async_client.delete(
+            f"/api/v1/spoolman/inventory/slot-assignments/{spoolman_spool_id}",
+        )
+    return response, broadcast
+
+
+def _slot_change_payloads(broadcast) -> list[dict]:
+    return [
+        call.args[0]
+        for call in broadcast.await_args_list
+        if call.args and call.args[0].get("type") == "spool_assignment_changed"
+    ]
+
+
 def _assert_slot_change_broadcast(broadcast, printer_id: int) -> None:
-    payloads = [call.args[0] for call in broadcast.await_args_list if call.args]
     assert {
         "type": "spool_assignment_changed",
         "printer_id": printer_id,
         "ams_id": AMS_ID,
         "tray_id": TRAY_ID,
-    } in payloads
+    } in _slot_change_payloads(broadcast)
 
 
 class TestSpoolmanAssignSaysWhatItReplaced:
@@ -171,3 +195,41 @@ class TestSpoolmanAssignSaysWhatItReplaced:
         assert response.status_code == 200
         assert response.json()["replaced_spoolman_spool_id"] is None
         assert await _slot_spool_ids(db_session, printer.id) == [12]
+
+
+class TestSpoolmanUnassignBroadcastsTheSlotItCleared:
+    """Symmetry with the assign route: a card that refreshes when a spool lands
+    on a slot must refresh when it leaves too, and only one of the two ends used
+    to say so.
+
+    The route is addressed by SPOOL, so the slot is only knowable from the row —
+    read before the delete, broadcast after the commit.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_removing_an_assignment_broadcasts_its_slot(
+        self, async_client: AsyncClient, printer_factory, db_session: AsyncSession
+    ):
+        printer = await printer_factory(name="X1C")
+        await _seed_row(db_session, printer.id, 11)
+
+        response, broadcast = await _unassign(async_client, 11)
+
+        assert response.status_code == 200
+        assert await _slot_spool_ids(db_session, printer.id) == []
+        _assert_slot_change_broadcast(broadcast, printer.id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unassigning_nothing_broadcasts_nothing(
+        self, async_client: AsyncClient, printer_factory, db_session: AsyncSession
+    ):
+        """No row deleted, no slot changed — a card refresh would be noise, and
+        the payload could not name a slot anyway."""
+        await printer_factory(name="X1C")
+
+        response, broadcast = await _unassign(async_client, 11)
+
+        assert response.status_code == 200
+        assert _slot_change_payloads(broadcast) == []

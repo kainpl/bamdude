@@ -184,7 +184,12 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
       queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
       showToast(
         currentSpool
-          ? t('inventory.replaceSuccess', {
+          ? // A replace over a slot whose filament is not loaded is still a
+            // pending assignment, so replace mode keeps that hint — as its own
+            // string, not `replaceSuccess` + `assignPendingInsert`, which opens
+            // with "Spool assigned." and would contradict the sentence before
+            // it.
+            t(newAssignment.pending_config ? 'inventory.replacePendingInsert' : 'inventory.replaceSuccess', {
               old: currentSpool.displayName,
               new: pickedDisplayName(variables.spoolId, spools),
             })
@@ -299,6 +304,19 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     && (disableFiltering || !assignedSpoolIds.has(spool.id))
     && !(currentSpool?.source === 'inventory' && spool.id === currentSpool.id)
   );
+
+  // The replaced spool is a fourth reason a row can be missing, and the only
+  // one the counter below could not name: its assignment is THIS slot, which
+  // `assignedSpoolIds` deliberately skips, so it is counted by neither of the
+  // other two terms and the numbers would add up to fewer removals than were
+  // actually made. Counted only when it is genuinely the row that went (a
+  // spool that is also archived is already explained by that term).
+  const replacedFromList = (spools || []).filter((spool: InventorySpool) =>
+    currentSpool?.source === 'inventory'
+    && spool.id === currentSpool.id
+    && !spool.archived_at
+    && !assignedSpoolIds.has(spool.id)
+  ).length;
 
   // Stage 1: Filter by tray profile match (unless disabled).
   // Show a spool if EITHER the slicer profile matches exactly (qualifier stripped)
@@ -528,11 +546,15 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                     immediately answerable: if `total fetched` is 0 the
                     backend / cache returned nothing; if it's > 0 then
                     the archived / assigned-elsewhere filter ate the
-                    spool and the toggle is the right escape hatch. */}
+                    spool and the toggle is the right escape hatch.
+                    Every reason a row is gone gets a term, replace mode's
+                    own exclusion included, or the numbers explain fewer
+                    removals than were made. */}
                 {spools && (
                   <p className="text-[10px] mt-2 opacity-60">
                     {spools.length} fetched · {spools.filter(s => s.archived_at).length} archived ·{' '}
                     {spools.filter(s => assignedSpoolIds.has(s.id)).length} assigned to other slots
+                    {replacedFromList > 0 && ` · ${replacedFromList} being replaced`}
                   </p>
                 )}
               </div>

@@ -1719,6 +1719,22 @@ async def unassign_spoolman_slot(
     """
     client = await _get_client(db)
 
+    # This route is addressed by SPOOL, not by slot, so the slot the card has to
+    # refresh is knowable only from the row — read it BEFORE the delete, as
+    # plain values (after the commit the instances are expired and their rows
+    # are gone). Normally exactly one; the loop covers nothing more exotic than
+    # a database that somehow holds two.
+    removed_slots = [
+        (row.printer_id, row.ams_id, row.tray_id)
+        for row in (
+            await db.execute(
+                select(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.spoolman_spool_id == spoolman_spool_id)
+            )
+        )
+        .scalars()
+        .all()
+    ]
+
     try:
         await db.execute(
             delete(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.spoolman_spool_id == spoolman_spool_id)
@@ -1728,6 +1744,20 @@ async def unassign_spoolman_slot(
         await db.rollback()
         logger.error("Failed to delete slot assignment: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to remove slot assignment") from exc
+
+    # Symmetry with the assign route (spec 2026-09-13 §3.3): a card that
+    # refreshes when a spool lands on a slot must refresh when it leaves. Only
+    # for rows that actually went — with nothing deleted there is no slot to
+    # name and nothing changed.
+    for printer_id, ams_id, tray_id in removed_slots:
+        await ws_manager.broadcast(
+            {
+                "type": "spool_assignment_changed",
+                "printer_id": printer_id,
+                "ams_id": ams_id,
+                "tray_id": tray_id,
+            }
+        )
 
     # Fetch the spool from Spoolman to return in InventorySpool format.
     # If the spool no longer exists in Spoolman, the local unassignment still succeeded.
