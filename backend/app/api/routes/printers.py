@@ -1636,6 +1636,12 @@ async def get_printer_cover(
     retry-download / reconnect / manual-retry flow fills the archive,
     the next cover request succeeds.
 
+    A 404 therefore means **nothing on disk at all** for this print: an
+    archive whose 3MF retention deleted still answers, from the PNG that
+    retention deliberately kept.  The exception is ``?view=top``, which
+    needs the 3MF — a ¾ render must never answer a top-down request — and
+    refuses for a cleaned row.
+
     Args:
         view: Optional view type. Use "top" for top-down build plate view (useful for skip objects).
               Default returns angled 3D perspective view.
@@ -1707,11 +1713,16 @@ async def get_printer_cover(
     # 2. Otherwise open the 3MF from archive_dir and extract the thumbnail
     #    for the requested plate + view.
     local_3mf = settings.base_dir / archive.file_path
-    if not local_3mf.exists():
-        # Defence in depth, not a live branch: the resolver only returns rows
-        # with something on disk. Reachable when the file goes between its check
-        # and this open, or on ?view=top for a retention-cleaned row (step 1
-        # skips the ¾ PNG for a top view, and the 3MF it wants is gone).
+    if not archive.file_path or not local_3mf.is_file():
+        # Two ways here, both a refusal rather than a failure:
+        #   * a retention-cleaned winner (3MF deleted, ``file_path=""``, only the
+        #     PNG left) asked with ?view=top — step 1 rightly refuses to answer a
+        #     top-down request with the ¾ render, and there is no 3MF to open;
+        #   * the file went between the resolver's check and this open (TOCTOU).
+        # ⚠️ ``is_file()``, matching the resolver, and the empty-path check
+        # first: ``base_dir / ""`` IS ``base_dir``, a directory that ``exists()``
+        # — the old check let ``zipfile`` open it and answered 500 to the Skip
+        # Objects modal, which requests ?view=top on every open.
         raise HTTPException(404, f"Archive file missing on disk: {archive.file_path}")
 
     try:

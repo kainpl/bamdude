@@ -377,3 +377,59 @@ async def test_the_printer_cover_lives_on_its_own_segment_and_takes_a_stream_tok
 
     assert served.status_code == 200, served.text
     assert served.content == b"\x89PNG-cover"
+
+
+@pytest.mark.asyncio
+async def test_a_retention_cleaned_cover_serves_the_png_and_refuses_the_top_view(
+    async_client, printer_factory, db_session, tmp_path, monkeypatch
+):
+    """Beside the test above because this is the only file that drives the route.
+
+    A *cleaned* archive — retention deleted the 3MF and blanked ``file_path``,
+    keeping the extracted PNG, which ``find_archive_for_sd_file`` accepts as an
+    answer since 2026-09-12. The angled cover is that PNG. ``?view=top``
+    (``SkipObjectsModal``) may NOT be answered with a ¾ render, so it falls
+    through to the 3MF branch, where there is no 3MF — and must refuse with the
+    404 the UI already handles. ⚠️ ``base_dir / ""`` IS ``base_dir``, a
+    directory that ``exists()``, so an existence check let ``zipfile`` open a
+    directory and answered 500.
+    """
+    from backend.app.api.routes import printers as printer_routes
+    from backend.app.core.auth import create_camera_stream_token
+    from backend.app.core.config import settings
+    from backend.app.models.archive import PrintArchive
+    from backend.app.services.bambu_mqtt import PrinterState
+
+    monkeypatch.setattr(settings, "base_dir", tmp_path)
+    png = tmp_path / "archive/1/cleaned/job.png"
+    png.parent.mkdir(parents=True)
+    png.write_bytes(b"\x89PNG-cleaned")
+
+    printer = await printer_factory(name="Cleaned", serial_number="COVER0002")
+    db_session.add(
+        PrintArchive(
+            printer_id=printer.id,
+            filename="job.3mf",
+            file_path="",  # retention deleted the 3MF and blanked the path
+            thumbnail_path="archive/1/cleaned/job.png",  # the PNG it deliberately kept
+            file_size=7,
+            print_name="job",
+            source_content_hash="b" * 64,
+        )
+    )
+    await db_session.commit()
+
+    state = PrinterState(connected=True, state="RUNNING", subtask_name="job")
+    monkeypatch.setattr(printer_routes.printer_manager, "get_status", lambda pid: state)
+    # The route caches what it serves; keep that out of the next test's way.
+    monkeypatch.setitem(printer_routes._cover_cache, printer.id, {})
+
+    url = f"/api/v1/printers/{printer.id}/camera-cover"
+    token = await create_camera_stream_token()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as anonymous:
+        top = await anonymous.get(url, params={"token": token, "view": "top"})
+        angled = await anonymous.get(url, params={"token": token})
+
+    assert top.status_code == 404, f"a cleaned row on ?view=top must refuse, not fail: {top.text}"
+    assert angled.status_code == 200, angled.text
+    assert angled.content == b"\x89PNG-cleaned"
