@@ -17,8 +17,8 @@ Stages
    RTSPS models, 6000 for the chamber-image-protocol A1 / P1 family).
    Distinguishes "printer down" / "firewall" / "LAN-only off" from
    stream-content problems.
-2. **first_frame** — call the existing ``capture_camera_frame_bytes``
-   pipeline (same code that powers /camera/snapshot) and verify at
+2. **first_frame** — call the existing camera-capture pipeline (the
+   same transport code that powers /camera/snapshot) and verify at
    least one JPEG comes back within the model's profile-derived
    timeout. Combines auth + protocol handshake + first keyframe into
    one stage because splitting RTSP's ``ffmpeg`` invocation is heavy
@@ -45,11 +45,12 @@ import time
 from dataclasses import dataclass, field
 
 from backend.app.services.camera import (
-    capture_camera_frame_bytes,
+    capture_camera_frame_with_provenance,
     get_camera_port,
     is_chamber_image_model,
 )
 from backend.app.services.camera_profiles import DEFAULT_PROFILE, get_camera_profile
+from backend.app.utils.printer_configs import camera_capability_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,10 @@ class CameraDiagnoseStage:
     # Optional machine-readable code for failures so the frontend can
     # render a stage-specific hint without parsing free-text errors.
     code: str | None = None
+    # A successful first-frame test may reuse a concurrent capture rather than
+    # opening another camera socket. This is correct and protects one-reader
+    # firmware; expose it so support does not mistake it for a fresh probe.
+    source: str | None = None
 
 
 @dataclass
@@ -87,6 +92,9 @@ class CameraDiagnoseResult:
     stages: list[CameraDiagnoseStage] = field(default_factory=list)
     # i18n key. Frontend maps to a translated remediation hint.
     summary_code: str = ""
+    # Declarative Bambu Studio model metadata. This explains what the catalog
+    # says without treating it as proof that a live firmware supports a path.
+    catalog_capabilities: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -96,9 +104,17 @@ class CameraDiagnoseResult:
             "profile": self.profile,
             "overall_status": self.overall_status,
             "stages": [
-                {"name": s.name, "status": s.status, "duration_ms": s.duration_ms, "code": s.code} for s in self.stages
+                {
+                    "name": s.name,
+                    "status": s.status,
+                    "duration_ms": s.duration_ms,
+                    "code": s.code,
+                    "source": s.source,
+                }
+                for s in self.stages
             ],
             "summary_code": self.summary_code,
+            "catalog_capabilities": self.catalog_capabilities,
         }
 
 
@@ -167,14 +183,14 @@ async def _check_first_frame(
     handshake + first keyframe; either it works or it doesn't."""
     started = time.monotonic()
     try:
-        jpeg = await capture_camera_frame_bytes(
+        capture = await capture_camera_frame_with_provenance(
             ip_address=ip_address,
             access_code=access_code,
             model=model,
             timeout=timeout,
         )
     except Exception as exc:  # noqa: BLE001 — see camera_profiles.py rationale
-        # capture_camera_frame_bytes can raise from many layers (ffmpeg
+        # The camera-capture pipeline can raise from many layers (ffmpeg
         # spawn, TLS proxy startup, asyncio.open_connection). For the
         # user-facing answer, any exception during the capture path is
         # "first frame failed" — drilling down is for the support log.
@@ -185,11 +201,12 @@ async def _check_first_frame(
             duration_ms=int((time.monotonic() - started) * 1000),
             code="capture_exception",
         )
-    if jpeg:
+    if capture.frame:
         return CameraDiagnoseStage(
             name="first_frame",
             status="ok",
             duration_ms=int((time.monotonic() - started) * 1000),
+            source=capture.source,
         )
     return CameraDiagnoseStage(
         name="first_frame",
@@ -248,6 +265,7 @@ async def diagnose_camera(
         profile=_profile_label(model),
         overall_status="ok",
         stages=[],
+        catalog_capabilities=camera_capability_catalog(model),
     )
 
     # Shortcut: the camera is currently streaming with a fresh frame.

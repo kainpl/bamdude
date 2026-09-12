@@ -1,4 +1,5 @@
 import logging
+import time
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
@@ -30,6 +31,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
     ``Permission.WEBSOCKET_CONNECT``) is required before ``accept()`` — an
     unauthenticated caller is closed with 4401 and never joins the fan-out.
     """
+    started = time.monotonic()
     # Authenticate BEFORE ws_manager.connect() so an unauth caller never enters
     # the broadcast set.
     if not await verify_websocket_token(token or ""):
@@ -43,9 +45,11 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
     user_id = await resolve_websocket_token_user(token or "")
     await ws_manager.connect(websocket, user_id)
     logger.info("WebSocket client connected")
+    accepted_at = time.monotonic()
 
     try:
         # Send initial status of all printers
+        initial_status_started = time.monotonic()
         statuses = printer_manager.get_all_statuses()
         for printer_id, state in statuses.items():
             await websocket.send_json(
@@ -70,6 +74,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
                 }
             )
         logger.info("Sent initial status for %s printers", len(statuses))
+        logger.info(
+            "WebSocket bootstrap timing: auth_and_accept=%.3fs initial_status=%.3fs printers=%s",
+            accepted_at - started,
+            time.monotonic() - initial_status_started,
+            len(statuses),
+        )
 
         # Keep connection alive and handle incoming messages
         while True:
@@ -98,8 +108,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
                             }
                         )
 
-    except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected normally")
+    except WebSocketDisconnect as exc:
+        logger.info("WebSocket client disconnected (code=%s)", exc.code)
         await ws_manager.disconnect(websocket)
     except Exception as e:
         logger.error("WebSocket error: %s", e, exc_info=True)

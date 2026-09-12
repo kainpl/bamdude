@@ -47,6 +47,15 @@ _SUBSCRIBER_QUEUE_SIZE = 4
 # Sentinel pushed to subscriber queues when the upstream pump exits, so each
 # subscriber's read loop can break out cleanly instead of hanging on get().
 _UPSTREAM_GONE = b""
+# A multipart text part is deliberately emitted before ``_UPSTREAM_GONE`` when
+# a replacement is refused.  It gives API/debug consumers a bounded reason
+# instead of an indistinguishable empty stream; the next subscription retries
+# only after the predecessor's teardown event is set.
+_PREDECESSOR_TEARDOWN_ERROR = (
+    b"--frame\r\n"
+    b"Content-Type: text/plain\r\n\r\n"
+    b"Camera is still closing its previous connection. Please retry shortly.\r\n"
+)
 
 UpstreamFactory = Callable[[asyncio.Event], AsyncGenerator[bytes, None]]
 
@@ -220,16 +229,28 @@ class MjpegBroadcaster:
         """Drive the upstream generator and broadcast each chunk."""
         try:
             # Don't dial the printer until the broadcaster we're replacing has
-            # closed its socket (upstream #2521). Bounded so a wedged teardown
-            # degrades to the old overlap behaviour rather than never producing
-            # a frame at all.
+            # closed its socket.  A timeout is an explicit refusal, not
+            # permission to overlap two connections: Bambu cameras can keep an
+            # orphan socket alive for minutes, starving the new viewer.
             predecessor = self._predecessor
-            self._predecessor = None
             if predecessor is not None:
                 try:
                     await asyncio.wait_for(predecessor.wait_until_torn_down(), timeout=_TEARDOWN_WAIT_SECONDS)
                 except TimeoutError:
-                    logger.warning("Prior broadcaster %r didn't tear down in time; dialing anyway", self._key)
+                    logger.error(
+                        "Prior broadcaster %r did not tear down in %.1fs; refusing replacement connection",
+                        self._key,
+                        _TEARDOWN_WAIT_SECONDS,
+                    )
+                    async with self._lock:
+                        targets = list(self._subscribers)
+                    for queue in targets:
+                        try:
+                            queue.put_nowait(_PREDECESSOR_TEARDOWN_ERROR)
+                        except asyncio.QueueFull:
+                            pass
+                    return
+                self._predecessor = None
             async for chunk in self._factory(self._upstream_disconnect):
                 # Snapshot subscribers under lock so we don't iterate a list
                 # mutated by subscribe()/unsubscribe() while we are putting.

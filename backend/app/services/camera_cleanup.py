@@ -120,11 +120,19 @@ class CameraAttempt:
 
     async def _close(self):
         from backend.app.services.camera_tls import close_tls_proxy
+        from backend.app.services.ffmpeg_stderr import FfmpegStdoutDrain
         from backend.app.utils.ffmpeg_output import summarize_ffmpeg_stderr
 
         succeeded = True
+        stdout_drain = None
         try:
             if self.process is not None:
+                # The caller has stopped reading stdout before it exits this
+                # attempt.  Take over before waiting for process shutdown so a
+                # full ffmpeg pipe cannot turn a normal terminate into the
+                # two-second timeout path.  Do not start this in the live
+                # stream itself: one pipe must always have exactly one reader.
+                stdout_drain = FfmpegStdoutDrain(self.process, name=self.context).start()
                 if self.stop_process is None:
                     succeeded = await stop_camera_process(self.process, self.context)
                 else:
@@ -136,6 +144,8 @@ class CameraAttempt:
             if self.process is not None and self.process.returncode is None:
                 _unreaped_processes[self.process.pid] = self.process
             try:
+                if stdout_drain is not None:
+                    await stdout_drain.aclose()
                 # Keep draining until ffmpeg exits (or is explicitly handed off).
                 if self.stderr is not None:
                     await self.stderr.aclose()

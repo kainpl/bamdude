@@ -35,6 +35,7 @@ export function CameraDiagnoseModal({ printerId, printerName, onClose }: CameraD
   }, []);
 
   const result = diagnose.data as CameraDiagnoseResult | undefined;
+  const catalogResolution = result?.catalog_capabilities?.resolution_supported;
 
   return (
     <Modal
@@ -74,6 +75,11 @@ export function CameraDiagnoseModal({ printerId, printerName, onClose }: CameraD
                     {stage.code && (
                       <div className="text-xs text-bambu-gray font-mono">{stage.code}</div>
                     )}
+                    {stage.source && (
+                      <div className="text-xs text-bambu-gray">
+                        {t('camera.diagnose.meta.frameSource')}: {t(`camera.diagnose.captureSource.${stage.source}`)}
+                      </div>
+                    )}
                   </div>
                   <div className="text-xs text-bambu-gray tabular-nums flex-shrink-0">
                     {stage.duration_ms} ms
@@ -107,6 +113,14 @@ export function CameraDiagnoseModal({ printerId, printerName, onClose }: CameraD
                 <span className="text-bambu-gray/60">{t('camera.diagnose.meta.profile')}: </span>
                 <span className="font-mono">{result.profile}</span>
               </div>
+              {Array.isArray(catalogResolution) && (
+                <div>
+                  <span className="text-bambu-gray/60">{t('camera.diagnose.meta.catalogResolution')}: </span>
+                  <span className="font-mono">
+                    {catalogResolution.join(', ')}
+                  </span>
+                </div>
+              )}
             </div>
           </>
         )}

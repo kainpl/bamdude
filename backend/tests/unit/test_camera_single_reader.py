@@ -56,6 +56,30 @@ class TestTheBuiltInPathCoalesces:
         assert opens == 1, "five simultaneous consumers must share one connection"
         assert results == [b"\xff\xd8FRAME"] * 5
 
+    async def test_provenance_marks_the_joining_caller(self) -> None:
+        opened = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _slow_capture(ip, code, model, timeout):
+            opened.set()
+            await release.wait()
+            return b"\xff\xd8FRAME"
+
+        with patch.object(camera_service, "_capture_camera_frame_bytes_uncoalesced", _slow_capture):
+            leader_task = asyncio.create_task(
+                camera_service.capture_camera_frame_with_provenance("10.0.0.5", "code", "P1S")
+            )
+            await opened.wait()
+            follower_task = asyncio.create_task(
+                camera_service.capture_camera_frame_with_provenance("10.0.0.5", "code", "P1S")
+            )
+            release.set()
+            leader, follower = await asyncio.gather(leader_task, follower_task)
+
+        assert leader.frame == follower.frame == b"\xff\xd8FRAME"
+        assert leader.source == "fresh"
+        assert follower.source == "coalesced"
+
     async def test_a_later_call_captures_fresh(self) -> None:
         """It coalesces; it does NOT cache. Plate detection and the finish photo
         decide things about a running print from these frames, and a stale one

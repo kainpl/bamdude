@@ -15,8 +15,10 @@ import subprocess
 import time
 import traceback
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from backend.app.services.camera_cleanup import CameraAttempt
 from backend.app.services.camera_tls import (
@@ -36,18 +38,30 @@ logger = logging.getLogger(__name__)
 # deliberately excludes the timeout — callers disagree about it, from 10 s to
 # 30 s, and including it would mean they never coalesce, which is exactly the
 # Obico-vs-snapshot pair from the report.
-_inflight_captures: dict[str, "asyncio.Task[bytes | None]"] = {}
+_inflight_captures: dict[str, "asyncio.Task[CameraCaptureResult]"] = {}
+
+
+@dataclass(frozen=True)
+class CameraCaptureResult:
+    """One-shot frame plus how this caller obtained it.
+
+    ``fresh`` means this task opened the capture path. ``coalesced`` means the
+    caller deliberately joined a capture already running for the same printer,
+    which preserves the printer's single-camera-connection limit. A missing
+    source means no usable frame arrived.
+    """
+
+    frame: bytes | None
+    source: Literal["fresh", "coalesced"] | None
 
 
 def capture_in_flight(ip_address: str) -> bool:
     """True iff a one-shot capture for this IP is running right now.
 
-    For callers that need to know whether they would JOIN someone else's capture
-    rather than perform their own — the diagnose tool reports on what it
-    measured, so it must not present a coalesced frame as proof that it opened
-    its own connection. Ordinary consumers should ignore this: they want "a
-    recent frame", and :func:`capture_camera_frame_bytes` already does the right
-    thing for them.
+    Most callers should ignore this and use
+    :func:`capture_camera_frame_with_provenance` when the distinction matters,
+    or :func:`capture_camera_frame_bytes` when it does not. A pre-call check is
+    only a momentary observation: the leader can finish before the caller joins.
     """
     task = _inflight_captures.get(ip_address)
     return task is not None and not task.done()
@@ -476,6 +490,23 @@ async def capture_camera_frame_bytes(
 ) -> bytes | None:
     """Capture a single frame and return as JPEG bytes (no disk write).
 
+    This compatibility wrapper deliberately hides whether the caller opened a
+    socket or joined an already-running capture. Use
+    :func:`capture_camera_frame_with_provenance` only where that distinction is
+    part of the result, such as the operator-facing diagnostic.
+
+    """
+    return (await capture_camera_frame_with_provenance(ip_address, access_code, model, timeout)).frame
+
+
+async def capture_camera_frame_with_provenance(
+    ip_address: str,
+    access_code: str,
+    model: str | None,
+    timeout: int = 15,
+) -> CameraCaptureResult:
+    """Capture a frame and report whether this caller opened the camera socket.
+
     Concurrent callers for the same printer **share one capture** (#2705): the
     first opens the connection, everyone arriving while it is in flight awaits
     the same result. Every consumer here wants "a recent frame" rather than "a
@@ -508,7 +539,8 @@ async def capture_camera_frame_bytes(
             must not silently inherit the leader's deadline in either direction.
 
     Returns:
-        JPEG bytes if capture was successful, None otherwise
+        A frame and its source. ``frame`` is ``None`` when no usable image was
+        received within the caller's deadline.
     """
     # A follower whose leader failed takes a turn of its own rather than
     # inheriting a failure it never had a chance to avoid — by then the leader
@@ -522,7 +554,7 @@ async def capture_camera_frame_bytes(
         wait_started = time.monotonic()
         logger.debug("Waiting on in-flight camera capture for %s [capture_id=%s]", ip_address, leader.get_name())
         try:
-            frame = await asyncio.wait_for(asyncio.shield(leader), timeout=timeout)
+            result = await asyncio.wait_for(asyncio.shield(leader), timeout=timeout)
         except TimeoutError:
             # shield() keeps the capture running for whoever else is still
             # waiting on it — giving up is this caller's decision alone.
@@ -533,7 +565,7 @@ async def capture_camera_frame_bytes(
                 leader.get_name(),
                 time.monotonic() - wait_started,
             )
-            return None
+            return CameraCaptureResult(frame=None, source=None)
         except asyncio.CancelledError:
             # Distinguish "the capture I joined was cancelled" from "I was
             # cancelled". Only the former is ours to recover from.
@@ -545,26 +577,26 @@ async def capture_camera_frame_bytes(
                 leader.get_name(),
             )
             continue
-        if frame is not None:
+        if result.frame is not None:
             logger.info(
                 "Reusing in-flight camera capture for %s: %s bytes "
                 "(no second connection opened) [capture_id=%s elapsed=%.3fs]",
                 ip_address,
-                len(frame),
+                len(result.frame),
                 leader.get_name(),
                 time.monotonic() - wait_started,
             )
-            return frame
+            return CameraCaptureResult(frame=result.frame, source="coalesced")
         logger.info(
             "In-flight camera capture for %s failed; capturing our own [capture_id=%s]", ip_address, leader.get_name()
         )
     else:
-        return None
+        return CameraCaptureResult(frame=None, source=None)
 
     # The name is the attempt ID: followers already hold the task, so they can
     # log the same ID without a second registry or changing the capture API.
     task = asyncio.create_task(
-        _capture_camera_frame_bytes_uncoalesced(ip_address, access_code, model, timeout),
+        _capture_camera_frame_with_provenance_uncoalesced(ip_address, access_code, model, timeout),
         name=f"camera-capture-{uuid.uuid4().hex[:12]}",
     )
     _inflight_captures[ip_address] = task
@@ -576,6 +608,17 @@ async def capture_camera_frame_bytes(
     # routine — does not take the capture down with it; the followers already
     # waiting on it still get their frame.
     return await asyncio.shield(task)
+
+
+async def _capture_camera_frame_with_provenance_uncoalesced(
+    ip_address: str,
+    access_code: str,
+    model: str | None,
+    timeout: int,
+) -> CameraCaptureResult:
+    """Run the socket-owning capture and annotate a successful fresh frame."""
+    frame = await _capture_camera_frame_bytes_uncoalesced(ip_address, access_code, model, timeout)
+    return CameraCaptureResult(frame=frame, source="fresh" if frame is not None else None)
 
 
 async def _capture_camera_frame_bytes_uncoalesced(

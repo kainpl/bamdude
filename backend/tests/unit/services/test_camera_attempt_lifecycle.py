@@ -146,14 +146,14 @@ def test_stop_during_backoff_cannot_spawn_again(run, tls_context, processes, mon
     original_sleep = asyncio.sleep
     backoff = asyncio.Event()
 
-    async def sleep(delay):
-        if delay == 0.01:
+    async def wait_for_reconnect(delay, disconnect_event):
+        if delay > 0:
             backoff.set()
             await original_sleep(0.05)
-        else:
-            await original_sleep(delay)
+            return disconnect_event is None or not disconnect_event.is_set()
+        return True
 
-    monkeypatch.setattr(asyncio, "sleep", sleep)
+    monkeypatch.setattr(route, "wait_for_rtsp_reconnect", wait_for_reconnect)
 
     async def scenario():
         async with farm(tls_context):
@@ -162,6 +162,10 @@ def test_stop_during_backoff_cannot_spawn_again(run, tls_context, processes, mon
                 "127.0.0.1", "secret", "X1C", stream_id="stop", disconnect_event=stop
             )
             await anext(stream)
+            # The first reconnect is deliberately immediate. Consume that
+            # replacement's first frame, then exercise cancellation while the
+            # second consecutive failure is in its jittered backoff window.
+            assert FRAME in await anext(stream)
             next_frame = asyncio.create_task(anext(stream))
             await asyncio.wait_for(backoff.wait(), 2)
             if action == "cancel":
@@ -173,7 +177,7 @@ def test_stop_during_backoff_cannot_spawn_again(run, tls_context, processes, mon
                 with pytest.raises(StopAsyncIteration):
                     await next_frame
             await stream.aclose()
-            assert len(created) == 1 and camera_tls._proxy_states[servers[0]].closed
+            assert len(created) == 2 and all(camera_tls._proxy_states[server].closed for server in servers)
 
     run(scenario())
 
@@ -330,6 +334,39 @@ async def test_real_subprocess_is_reaped_on_cancellation():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert process.returncode is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.platform == "win32" and not hasattr(asyncio, "ProactorEventLoop"), reason="needs subprocess support"
+)
+async def test_cleanup_drains_full_stdout_before_waiting_for_exit():
+    """A noisy ffmpeg must not force the two-second terminate timeout.
+
+    The child is a stand-in for ffmpeg writing MJPEG frames faster than the
+    client consumes them.  There is deliberately no stdout reader until the
+    attempt starts teardown.
+    """
+    import time
+
+    process = None
+    started = asyncio.Event()
+    started_at = time.monotonic()
+    async with CameraAttempt("stdout-drain-test") as attempt:
+        process = attempt.process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-u",
+            "-c",
+            "import sys; chunk = b'x' * 65536\nwhile True:\n sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush()",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        started.set()
+        await asyncio.sleep(0.05)
+
+    assert started.is_set()
+    assert process.returncode is not None
+    assert time.monotonic() - started_at < 1.5
 
 
 @pytest.mark.parametrize("owner", ["capture", "external_capture"])
