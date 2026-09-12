@@ -38,7 +38,11 @@ async def test_unreadable_head_does_not_block_later_valid_auto_job(
     queued = (await db_session.execute(select(PrintQueueItem))).scalar_one()
     assert queued.source_auto_item_id == created.json()["id"]
     await db_session.refresh(broken)
-    assert broken.status == "pending" and broken.waiting_reason
+    # An item whose source cannot be read is FAILED with the reason on the row
+    # (since 2026-09-11, "fail unavailable sources without blocking remaining
+    # jobs") — it no longer waits forever as ``pending``. The point of this test
+    # is the line above: the valid job behind it still gets placed.
+    assert broken.status == "failed" and broken.waiting_reason
     mqtt._client.publish.assert_not_called()
 
 
