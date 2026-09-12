@@ -60,6 +60,7 @@ async def test_stop_cancels_the_task_and_disarms(_mock_faulthandler):
 async def test_heartbeat_interval_is_below_stall_threshold():
     """A healthy loop must always re-arm before the timer can fire."""
     assert loop_watchdog.HEARTBEAT_INTERVAL < loop_watchdog.STALL_THRESHOLD
+    assert loop_watchdog.SLOW_SCHEDULER_LAG_SECONDS < loop_watchdog.STALL_THRESHOLD
 
 
 async def test_rearm_failure_does_not_crash_the_watchdog(_mock_faulthandler):

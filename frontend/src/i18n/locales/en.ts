@@ -490,6 +490,7 @@ export default {
     camWall: {
       noPrinters: 'No printers to show',
       noSignal: 'No signal',
+      currentJobFallback: 'Current print',
       live: 'Live',
       snap: 'Snap',
       off: 'Off',
@@ -3173,7 +3174,7 @@ export default {
     progressInTitle: 'Show print progress in the browser tab',
     progressInTitleHint: 'The soonest-finishing print\'s percentage appears in the tab title, with a matching progress ring as the tab icon. Applies to this browser only.',
     saveThumbnailsDescription: 'Extract and save preview images from 3MF files',
-    captureFinishPhotoDescription: 'Take a photo from printer camera when print completes. BamDude records a brief timelapse during the print so the photo can be sourced from the moment before the bed drops; the timelapse file is kept if you enabled timelapse for this print, otherwise it is deleted automatically after the photo is captured.',
+    captureFinishPhotoDescription: 'Capture finish photos and notification images. While printing, BamDude may capture frames in the background to preserve the last view of the print. Off by default. This does not enable the printer\'s timelapse.',
     deleteTimelapseAfterAttach: 'Remove timelapses from the printer once saved',
     deleteTimelapseAfterAttachDesc:
       'After a recording is attached to its archive, delete it from the printer to keep its storage from filling up. Only ever after the copy has been saved. Off by default — a recording may still be wanted on the machine itself.',
@@ -3746,6 +3747,12 @@ export default {
         protocol: 'Protocol',
         port: 'Port',
         profile: 'Profile',
+        frameSource: 'Frame source',
+        catalogResolution: 'Catalog resolution',
+      },
+      captureSource: {
+        fresh: 'New camera capture',
+        coalesced: 'Shared concurrent capture',
       },
     },
   },

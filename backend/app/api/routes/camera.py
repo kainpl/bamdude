@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 import subprocess
 import sys
 import time
@@ -357,6 +358,44 @@ async def generate_chamber_mjpeg_stream(
 _FFMPEG_KILL_TIMEOUT = 2.0
 
 
+def compute_rtsp_reconnect_delay(
+    reconnect_count: int,
+    profile,
+    *,
+    jitter_random: float | None = None,
+) -> float:
+    """Return a bounded, jittered RTSP reconnect delay.
+
+    The first reconnect is immediate so a short packet loss does not cost a
+    viewer a visible pause. Repeated failures back off exponentially and each
+    camera gets independent jitter, avoiding a 50-printer farm retrying in one
+    burst after an AP or switch recovers.
+    """
+    if reconnect_count <= 1:
+        return 0.0
+    base_delay = profile.rtsp_reconnect_delay * (2 ** min(reconnect_count - 2, 10))
+    capped_delay = min(base_delay, profile.rtsp_reconnect_cap)
+    random_value = random.random() if jitter_random is None else jitter_random
+    multiplier = 1 + profile.rtsp_reconnect_jitter * (2 * random_value - 1)
+    return min(capped_delay * multiplier, profile.rtsp_reconnect_cap)
+
+
+async def wait_for_rtsp_reconnect(delay: float, disconnect_event: asyncio.Event | None) -> bool:
+    """Wait for a retry unless the last viewer left in the meantime."""
+    if disconnect_event is not None and disconnect_event.is_set():
+        return False
+    if delay <= 0:
+        return True
+    if disconnect_event is None:
+        await asyncio.sleep(delay)
+        return True
+    try:
+        await asyncio.wait_for(disconnect_event.wait(), timeout=delay)
+    except TimeoutError:
+        return True
+    return False
+
+
 async def _terminate_ffmpeg(process: asyncio.subprocess.Process, stream_id: str | None = None) -> bool:
     """Terminate an ffmpeg process gracefully, then kill if needed."""
     if process.returncode is not None:
@@ -498,15 +537,16 @@ async def generate_rtsp_mjpeg_stream(
                 break
 
             if reconnect_count > 0:
+                reconnect_delay = compute_rtsp_reconnect_delay(reconnect_count, profile)
                 logger.info(
-                    "RTSP reconnecting (%d/%d) for %s (stream_id=%s)",
+                    "RTSP reconnecting (%d/%d) for %s (stream_id=%s delay=%.3fs)",
                     reconnect_count,
                     profile.rtsp_reconnect_max,
                     ip_address,
                     stream_id,
+                    reconnect_delay,
                 )
-                await asyncio.sleep(profile.rtsp_reconnect_delay)
-                if disconnect_event and disconnect_event.is_set():
+                if not await wait_for_rtsp_reconnect(reconnect_delay, disconnect_event):
                     break
 
             async with CameraAttempt(
@@ -609,6 +649,7 @@ async def generate_rtsp_mjpeg_stream(
                 buffer = b""
                 stream_ended = False
                 client_gone = False
+                first_frame_at: float | None = None
 
                 while True:
                     if disconnect_event and disconnect_event.is_set():
@@ -648,6 +689,14 @@ async def generate_rtsp_mjpeg_stream(
                             frame = buffer[: end_idx + 2]
                             buffer = buffer[end_idx + 2 :]
                             got_any_frames = True
+                            if first_frame_at is None:
+                                first_frame_at = _time.monotonic()
+                            elif _time.monotonic() - first_frame_at >= profile.rtsp_reconnect_stable_seconds:
+                                # A stream that supplied valid frames for a
+                                # meaningful interval deserves a fresh retry
+                                # budget. Do not reset on connection alone:
+                                # a flapping camera must still hit the cap.
+                                reconnect_count = 0
 
                             if printer_id is not None:
                                 import time
@@ -1227,10 +1276,12 @@ async def camera_status(
 
     # Check if there's an active stream for this printer
     has_active_stream = False
+    source: str | None = None
 
     # Check external camera streams
     if printer_id in _active_external_streams:
         has_active_stream = True
+        source = "external"
 
     # Check ffmpeg/RTSP streams
     if not has_active_stream:
@@ -1239,6 +1290,7 @@ async def camera_status(
                 process = _active_streams[stream_id]
                 if process.returncode is None:
                     has_active_stream = True
+                    source = "rtsp"
                     break
 
     # Check chamber image streams
@@ -1246,6 +1298,7 @@ async def camera_status(
         for stream_id in _active_chamber_streams:
             if stream_id.startswith(f"{printer_id}-"):
                 has_active_stream = True
+                source = "chamber_image"
                 break
 
     # Get timing information
@@ -1268,6 +1321,12 @@ async def camera_status(
         "has_frames": printer_id in _last_frames,
         "seconds_since_frame": seconds_since_frame,
         "stream_uptime": stream_uptime,
+        # A support bundle can distinguish a built-in protocol from an
+        # operator-configured external camera without inspecting credentials.
+        "source": source,
+        # External-camera streams are intentionally direct today, so this is
+        # their viewer count only when the built-in fan-out path is active.
+        "subscribers": get_subscriber_count(f"printer-{printer_id}"),
         # Consider stalled if no frame for more than 10 seconds after stream started
         "stalled": (
             has_active_stream

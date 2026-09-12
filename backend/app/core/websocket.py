@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -105,6 +106,7 @@ class ConnectionManager:
             return
 
         data = json.dumps(message)
+        started = time.monotonic()
         async with self._lock:
             disconnected = []
             for connection in self.active_connections:
@@ -118,6 +120,17 @@ class ConnectionManager:
                 if conn in self.active_connections:
                     self.active_connections.remove(conn)
                 self._user_by_conn.pop(conn, None)
+
+        elapsed = time.monotonic() - started
+        if elapsed >= 0.25:
+            logger.warning(
+                "Slow WebSocket broadcast: type=%s clients=%s bytes=%s elapsed=%.3fs disconnected=%s",
+                message.get("type", "unknown"),
+                len(self.active_connections),
+                len(data),
+                elapsed,
+                len(disconnected),
+            )
 
     async def broadcast_to_user(self, user_id: int | None, message: dict[str, Any]):
         """Send a message only to the given user's connections.

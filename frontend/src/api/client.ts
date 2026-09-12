@@ -2468,6 +2468,8 @@ export interface CameraDiagnoseStage {
   status: 'ok' | 'failed' | 'skipped';
   duration_ms: number;
   code: string | null;
+  /** Whether the successful first-frame test opened its own capture or joined one already in flight. */
+  source?: 'fresh' | 'coalesced' | null;
 }
 
 export interface CameraDiagnoseResult {
@@ -2481,6 +2483,18 @@ export interface CameraDiagnoseResult {
   stages: CameraDiagnoseStage[];
   // i18n key under `camera.diagnose.summary.*`.
   summary_code: string;
+  /** Descriptive Bambu Studio catalog metadata. It does not select a transport. */
+  catalog_capabilities?: Record<string, unknown>;
+}
+
+export interface CameraStreamStatus {
+  active: boolean;
+  stalled: boolean;
+  has_frames: boolean;
+  seconds_since_frame: number | null;
+  stream_uptime: number | null;
+  source: 'rtsp' | 'chamber_image' | 'external' | null;
+  subscribers: number;
 }
 
 // Connection diagnostic (GET /printers/{id}/diagnostic and
@@ -10006,7 +10020,7 @@ export const api = {
   testCameraConnection: (printerId: number) =>
     request<{ success: boolean; message?: string; error?: string }>(`/printers/${printerId}/camera/test`),
   getCameraStatus: (printerId: number) =>
-    request<{ active: boolean; stalled: boolean }>(`/printers/${printerId}/camera/status`),
+    request<CameraStreamStatus>(`/printers/${printerId}/camera/status`),
   // Camera diagnostic (#1395 follow-up) — staged check the operator
   // can run inline to self-diagnose "connection lost" before opening a
   // ticket. The modal renders one row per stage and looks up the

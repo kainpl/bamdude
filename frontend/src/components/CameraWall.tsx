@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { cameraWallPrintName } from '../utils/cameraWall';
 import { useQueries } from '@tanstack/react-query';
 import { Settings as SettingsIcon } from 'lucide-react';
 import { CameraTile, type CameraTileMode, type CameraTileStatusMode } from './CameraTile';
@@ -27,6 +28,8 @@ export interface CameraWallStatus {
   layer_num?: number | null;
   total_layers?: number | null;
   subtask_name?: string | null;
+  current_print?: string | null;
+  gcode_file?: string | null;
   // Codes only — enough to run the same filterKnownHMSErrors() on both the
   // authenticated wall and the kiosk feed, so the error chip means the same
   // thing in either mode.
@@ -298,7 +301,10 @@ export function CameraWall({
                 remainingMin={statusByPrinter.get(p.id)?.remaining_time ?? null}
                 layerNum={statusByPrinter.get(p.id)?.layer_num ?? null}
                 totalLayers={statusByPrinter.get(p.id)?.total_layers ?? null}
-                printName={statusByPrinter.get(p.id)?.subtask_name ?? null}
+                printName={
+                  cameraWallPrintName(statusByPrinter.get(p.id)) ??
+                  t('printers.camWall.currentJobFallback')
+                }
                 hmsErrorCount={
                   filterKnownHMSErrors(statusByPrinter.get(p.id)?.hms_errors ?? []).length
                 }

@@ -40,8 +40,16 @@ class CameraProfile:
     analyzeduration: int = 0
     # Max consecutive RTSP reconnection attempts before giving up.
     rtsp_reconnect_max: int = 30
-    # Seconds between RTSP reconnect attempts.
+    # Base seconds between repeated RTSP reconnect attempts. The first retry is
+    # immediate; later retries use exponential backoff from this value.
     rtsp_reconnect_delay: float = 0.2
+    # Maximum wait between attempts, before and after jitter.
+    rtsp_reconnect_cap: float = 2.0
+    # Fractional jitter applied to retries after the immediate first retry.
+    # 0.2 means a random multiplier in [0.8, 1.2].
+    rtsp_reconnect_jitter: float = 0.2
+    # A reconnect budget is reset only after this many seconds of real frames.
+    rtsp_reconnect_stable_seconds: float = 30.0
     # Optional extra ``-input``-side ffmpeg flags inserted before ``-i``.
     # Reserved for future per-model quirks; default is none.
     extra_ffmpeg_input_args: tuple[str, ...] = field(default_factory=tuple)

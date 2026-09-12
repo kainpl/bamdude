@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from backend.app.services.camera import CameraCaptureResult
 from backend.app.services.camera_diagnose import (
     _LIVE_FRAME_FRESHNESS_SECONDS,
     diagnose_camera,
@@ -35,6 +36,19 @@ class TestLiveStreamShortcut:
         )
         assert result.overall_status == "ok"
         assert result.summary_code == "live_stream_active_healthy"
+
+    async def test_diagnostics_expose_catalog_capabilities_without_selecting_transport(self):
+        result = await diagnose_camera(
+            ip_address="192.0.2.1",
+            access_code="x",
+            model="P2S",
+            printer_id=1,
+            has_live_stream=True,
+            live_frame_age_seconds=0,
+        )
+        assert result.protocol == "rtsp"
+        assert result.catalog_capabilities["resolution_supported"] == ["1080p"]
+        assert result.catalog_capabilities["liveview_remote"] == "tutk"
         assert len(result.stages) == 1
         assert result.stages[0].name == "live_stream_active"
         assert result.stages[0].status == "ok"
@@ -147,9 +161,9 @@ class TestFirstFrameStage:
                 new=_tcp_ok,
             ),
             patch(
-                "backend.app.services.camera_diagnose.capture_camera_frame_bytes",
+                "backend.app.services.camera_diagnose.capture_camera_frame_with_provenance",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=CameraCaptureResult(frame=None, source=None),
             ),
         ):
             result = await diagnose_camera(
@@ -181,7 +195,7 @@ class TestFirstFrameStage:
                 new=_tcp_ok,
             ),
             patch(
-                "backend.app.services.camera_diagnose.capture_camera_frame_bytes",
+                "backend.app.services.camera_diagnose.capture_camera_frame_with_provenance",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("ffmpeg died"),
             ),
@@ -207,9 +221,9 @@ class TestFirstFrameStage:
                 new=_tcp_ok,
             ),
             patch(
-                "backend.app.services.camera_diagnose.capture_camera_frame_bytes",
+                "backend.app.services.camera_diagnose.capture_camera_frame_with_provenance",
                 new_callable=AsyncMock,
-                return_value=b"\xff\xd8\xff\xd9",  # tiny valid-looking JPEG
+                return_value=CameraCaptureResult(frame=b"\xff\xd8\xff\xd9", source="fresh"),
             ),
         ):
             result = await diagnose_camera(
@@ -221,6 +235,7 @@ class TestFirstFrameStage:
         assert result.overall_status == "ok"
         assert result.summary_code == "all_ok"
         assert all(s.status == "ok" for s in result.stages)
+        assert result.stages[1].source == "fresh"
 
 
 class TestResultMetadata:

@@ -255,6 +255,43 @@ def get_device_support_flags(model: str | None, firmware_version: str | None = N
     return print_block if isinstance(print_block, dict) else {}
 
 
+def camera_capability_catalog(model: str | None, firmware_version: str | None = None) -> dict[str, object]:
+    """Return safe camera facts declared by the mirrored Bambu Studio config.
+
+    This is deliberately descriptive, not a transport selector. Firmware can
+    report a different live camera state and the RTSP/chamber choice still has
+    the proven runtime fallback in :mod:`services.camera`. Keeping this data
+    visible in diagnostics lets support compare a model's declared capability
+    with what the connected printer actually does without logging camera URLs
+    or credentials.
+    """
+    ipcam = get_device_support_flags(model, firmware_version).get("ipcam")
+    if not isinstance(ipcam, dict):
+        return {}
+
+    result: dict[str, object] = {}
+    resolutions = ipcam.get("resolution_supported")
+    if isinstance(resolutions, list) and all(isinstance(value, str) for value in resolutions):
+        result["resolution_supported"] = resolutions
+    for source_key, result_key in (("virtual_camera", "virtual_camera"),):
+        value = ipcam.get(source_key)
+        if isinstance(value, (str, bool)):
+            result[result_key] = value
+    liveview = ipcam.get("liveview")
+    if isinstance(liveview, dict) and isinstance(liveview.get("remote"), str):
+        result["liveview_remote"] = liveview["remote"]
+    file_capability = ipcam.get("file")
+    if isinstance(file_capability, dict):
+        file_result = {
+            key: value
+            for key, value in file_capability.items()
+            if key in {"local", "remote", "model_download"} and isinstance(value, str)
+        }
+        if file_result:
+            result["file"] = file_result
+    return result
+
+
 def is_bed_slinger(model: str | None) -> bool:
     """Whether the printer's Z axis controls the *toolhead*, not the bed.
 

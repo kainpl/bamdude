@@ -33,10 +33,9 @@ class AppSettings(BaseModel):
     capture_finish_photo: bool = Field(
         default=False,
         description=(
-            "Capture photo from printer camera when print completes. BamDude records a "
-            "brief timelapse during the print so the photo can be sourced from the moment "
-            "before the bed drops; the timelapse file is kept if you enabled timelapse for "
-            "this print, otherwise it is deleted automatically after the photo is captured."
+            "Capture finish photos and notification images. BamDude may capture frames "
+            "in the background while printing to preserve the last view of the print; "
+            "this does not enable the printer's timelapse."
         ),
     )
     # ⚠️ Off by default, and it stays off unless somebody chooses it. "BamDude
