@@ -7708,6 +7708,10 @@ export const api = {
       printer_id: number;
       path: string;
       filename: string;
+      // The archive the file on the printer was recognised as, when one exists.
+      // Its plate thumbnails are what `thumbnail_url` points at on that path;
+      // null means the 3MF was read from the printer instead.
+      archive_id: number | null;
       plates: Array<{
         index: number;
         name: string | null;
@@ -7726,14 +7730,9 @@ export const api = {
       }>;
       is_multi_plate: boolean;
     }>(`/printers/${printerId}/files/plates?path=${encodeURIComponent(path)}${storageParam(storage)}`),
-  getPrinterFilePlateThumbnail: (
-    printerId: number,
-    plateIndex: number,
-    path: string,
-    storage?: PrinterStorage,
-  ) =>
-    `${API_BASE}/printers/${printerId}/files/plate-thumbnail/${plateIndex}` +
-    `?path=${encodeURIComponent(path)}${storageParam(storage)}`,
+  // No per-plate image URL here on purpose: an <img> cannot carry the
+  // Authorization header, so `getPrinterFilePlates` answers each plate's
+  // `thumbnail_url` itself — an anonymous archive route or a data URL.
   downloadPrinterFile: async (printerId: number, path: string, storage?: PrinterStorage): Promise<void> => {
     const headers: Record<string, string> = {};
     if (authToken) {

@@ -185,9 +185,14 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
                           : 'border-bambu-dark-tertiary bg-bambu-dark-secondary hover:border-bambu-gray'
                       }`}
                     >
-                      {plate.has_thumbnail ? (
+                      {/* The plates answer carries the URL itself — an anonymous
+                          archive route or an inline data URL. There is no
+                          per-plate image endpoint on the printer routes: an
+                          <img> cannot send the Authorization header, so the one
+                          that used to exist answered 401 for every plate. */}
+                      {plate.thumbnail_url ? (
                         <img
-                          src={api.getPrinterFilePlateThumbnail(printerId, plate.index, filePath)}
+                          src={plate.thumbnail_url}
                           alt={`Plate ${plate.index}`}
                           className="w-10 h-10 rounded object-cover bg-bambu-dark-tertiary"
                         />

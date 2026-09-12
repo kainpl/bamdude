@@ -10,6 +10,23 @@ import { FileManagerModal } from '../../components/FileManagerModal';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 
+// The 3D-view modal mounts these; keep WebGL / Three.js out of jsdom.
+vi.mock('../../components/ModelViewer', () => ({
+  ModelViewer: ({ className }: { className?: string }) => (
+    <div data-testid="model-viewer" className={className}>
+      Model Viewer Mock
+    </div>
+  ),
+}));
+
+vi.mock('../../components/GcodePreview', () => ({
+  GcodePreview: ({ className }: { className?: string }) => (
+    <div data-testid="gcode-preview" className={className}>
+      G-code Preview Mock
+    </div>
+  ),
+}));
+
 const mockFiles = [
   {
     name: 'cache',
@@ -528,6 +545,82 @@ describe('FileManagerModal', () => {
       fireEvent.click(screen.getByRole('tab', { name: /internal/i }));
 
       await waitFor(() => expect(screen.queryByText(/1 selected/i)).not.toBeInTheDocument());
+    });
+  });
+
+  describe('plate thumbnails', () => {
+    const onlyA3mf = [
+      { name: 'My_Model.3mf', path: '/cache/My_Model.3mf', size: 1024, is_directory: false },
+    ];
+
+    const platesAnswer = (
+      thumbnails: Array<string | null>,
+    ) => ({
+      printer_id: 1,
+      path: '/cache/My_Model.3mf',
+      filename: 'My_Model.3mf',
+      archive_id: 9,
+      is_multi_plate: true,
+      plates: thumbnails.map((thumbnail_url, i) => ({
+        index: i + 1,
+        name: `Plate ${i + 1}`,
+        objects: [`Part ${i + 1}`],
+        // The server sets has_thumbnail to exactly "thumbnail_url is non-null";
+        // the true-with-null row below is deliberately inconsistent to pin which
+        // of the two the modal believes.
+        has_thumbnail: true,
+        thumbnail_url,
+        print_time_seconds: 1800,
+        filament_used_grams: 12,
+        filaments: [],
+      })),
+    });
+
+    /** Opens the 3D view of the single 3MF in the listing. */
+    const openViewer = async (thumbnails: Array<string | null>) => {
+      const askedForPerPlateImage: string[] = [];
+      server.use(
+        http.get('/api/v1/printers/:id/files', () => HttpResponse.json({ files: onlyA3mf })),
+        http.get('/api/v1/printers/:id/files/plates', () =>
+          HttpResponse.json(platesAnswer(thumbnails)),
+        ),
+        // The per-plate image route Task 2 deleted. jsdom never fetches an
+        // <img src>, so an empty log is a guard against a future fetch-based
+        // path rather than the proof — the src assertions are that.
+        http.get('/api/v1/printers/:id/files/plate-thumbnail/:plate', ({ request }) => {
+          askedForPerPlateImage.push(request.url);
+          return new HttpResponse(null, { status: 404 });
+        }),
+      );
+
+      render(<FileManagerModal printerId={1} printerName="X1 Carbon" onClose={mockOnClose} />);
+      fireEvent.click(await screen.findByTitle('3D View'));
+      return askedForPerPlateImage;
+    };
+
+    it('renders each plate thumbnail from the answer, never through a per-plate image route', async () => {
+      const askedForPerPlateImage = await openViewer([
+        '/api/v1/archives/9/plate-thumbnail/1',
+        'data:image/png;base64,AAAA',
+      ]);
+
+      const imgs = await screen.findAllByRole('img', { name: /plate/i });
+      expect(imgs.map((img) => img.getAttribute('src'))).toEqual([
+        '/api/v1/archives/9/plate-thumbnail/1',
+        'data:image/png;base64,AAAA',
+      ]);
+      expect(askedForPerPlateImage).toEqual([]);
+    });
+
+    it('draws the placeholder for a plate the answer carries no URL for', async () => {
+      await openViewer([null, 'data:image/png;base64,BBBB']);
+
+      const imgs = await screen.findAllByRole('img', { name: /plate/i });
+      // Only plate 2 has a URL — plate 1 falls through to the box icon, whatever
+      // has_thumbnail claims.
+      expect(imgs.map((img) => img.getAttribute('src'))).toEqual([
+        'data:image/png;base64,BBBB',
+      ]);
     });
   });
 });
