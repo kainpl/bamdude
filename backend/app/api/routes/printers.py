@@ -51,6 +51,7 @@ from backend.app.schemas.printer import (
 )
 from backend.app.schemas.timelapse import TimelapseStorage
 from backend.app.services import archive_parts
+from backend.app.services.archive import find_archive_for_sd_file, sd_stem
 from backend.app.services.archive_defects import DefectsResult, DefectsWrite, record_defects
 from backend.app.services.bambu_ftp import (
     clear_sdcard_async,
@@ -1680,42 +1681,12 @@ async def get_printer_cover(
         if cache_key in _cover_cache[printer_id]:
             return Response(content=_cover_cache[printer_id][cache_key], media_type="image/png")
 
-    # Resolve the printing archive for this printer.  Match by print_name
-    # (== subtask_name) or filename variations.
-    from sqlalchemy import or_ as sa_or
-
-    from backend.app.models.archive import PrintArchive
-
-    subtask_base = subtask_name.replace(".gcode.3mf", "").replace(".3mf", "")
-    # Bambu firmware reports subtask_name with spaces collapsed to underscores
-    # (e.g. plate name "Modular Panels rear" → "Modular_Panels_rear"), while the
-    # archive keeps the original spaced filename. So an exact match misses
-    # multi-plate prints whose plate name contains spaces — normalise both sides
-    # to underscores. Mirrors build_filename_candidates() in archive_download.py.
-    subtask_us = subtask_base.replace(" ", "_")
-    filename_us = func.replace(PrintArchive.filename, " ", "_")
-    # No status filter: the printer state can be FINISH (archive already
-    # flipped to "completed") while the UI still asks for the cover.  Also
-    # require a non-empty file_path so a fallback row (3MF pending) doesn't
-    # shadow an older populated archive with the same name.
-    archive_result = await db.execute(
-        select(PrintArchive)
-        .where(PrintArchive.printer_id == printer_id)
-        .where(PrintArchive.file_path != "")
-        .where(
-            sa_or(
-                PrintArchive.print_name == subtask_base,
-                PrintArchive.filename == f"{subtask_base}.gcode.3mf",
-                PrintArchive.filename == f"{subtask_base}.3mf",
-                PrintArchive.filename == subtask_name,
-                filename_us == f"{subtask_us}.gcode.3mf",
-                filename_us == f"{subtask_us}.3mf",
-            )
-        )
-        .order_by(PrintArchive.created_at.desc())
-        .limit(1)
-    )
-    archive = archive_result.scalar_one_or_none()
+    # Resolve the printing archive for this printer. The match (spaces folded,
+    # suffix variants, no status filter, newest row with the 3MF on disk) lives
+    # in find_archive_for_sd_file — read its docstring for why each part is
+    # there; the file manager asks the same question through it.
+    subtask_base = sd_stem(subtask_name)
+    archive = await find_archive_for_sd_file(db, printer_id, subtask_name)
     if archive is None:
         raise HTTPException(404, f"No archive with a local 3MF yet for '{subtask_base}' on printer {printer_id}")
 

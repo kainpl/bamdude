@@ -1158,6 +1158,70 @@ def read_total_layers(zf: zipfile.ZipFile, gcode_path: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def sd_stem(sd_name: str) -> str:
+    """The name on the card without its trailing ``.gcode.3mf`` / ``.3mf`` suffixes.
+
+    The same strip loop as ``utils.filename.derive_remote_filename``, minus the
+    re-append of a single ``.3mf`` — the two must agree on where the stem ends,
+    because that function computes the very name on the card this one takes apart.
+    """
+    stem = sd_name
+    while True:
+        if stem.endswith(".gcode.3mf"):
+            stem = stem[:-10]
+        elif stem.endswith(".3mf"):
+            stem = stem[:-4]
+        else:
+            return stem
+
+
+async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: str) -> PrintArchive | None:
+    """The archive that holds the 3MF a file on the printer's card came from — or None.
+
+    One owner for "printer file name → archive" (spec 2026-09-12 §3.1): the
+    printer-card cover and the file manager both ask here. An archive's
+    ``filename`` IS the card name for an external print (the download attaches
+    the name it found) and DERIVES the card name for a dispatched one
+    (``derive_remote_filename``: suffixes collapsed, spaces → underscores), so
+    the match folds spaces on both sides and accepts ``{stem}.3mf`` /
+    ``{stem}.gcode.3mf`` / the raw name / ``print_name == stem``. Only rows with
+    a 3MF on disk count — a provisional row (``file_path == ""``) must never
+    shadow a populated one, and a row whose file has since vanished yields to
+    the next-newest. No content hash: that would need the bytes, and not
+    fetching them is the point.
+
+    Deliberately no status filter: the printer can be FINISH (the archive
+    already flipped to ``completed``) while the UI still asks for the picture.
+    """
+    stem = sd_stem(sd_name)
+    stem_us = stem.replace(" ", "_")
+    filename_us = func.replace(PrintArchive.filename, " ", "_")
+    rows = (
+        (
+            await db.execute(
+                select(PrintArchive)
+                .where(PrintArchive.printer_id == printer_id)
+                .where(PrintArchive.file_path != "")
+                .where(
+                    or_(
+                        PrintArchive.print_name == stem,
+                        PrintArchive.filename == sd_name,
+                        filename_us == f"{stem_us}.3mf",
+                        filename_us == f"{stem_us}.gcode.3mf",
+                    )
+                )
+                .order_by(PrintArchive.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for archive in rows:
+        if (settings.base_dir / archive.file_path).is_file():
+            return archive
+    return None
+
+
 def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
     """Build the full per-plate metadata list for one 3MF.
 
