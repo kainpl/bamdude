@@ -27,6 +27,7 @@ class _FakeMjpegResponse:
 
     def __init__(self, chunks, status=200, raise_after=None, raise_exc=None):
         self.status = status
+        self.headers = {}
         self._chunks = list(chunks)
         self._raise_after = raise_after
         self._raise_exc = raise_exc
@@ -59,7 +60,7 @@ class _FakeMjpegSession:
     def __init__(self, response):
         self._response = response
 
-    def get(self, _url):
+    def get(self, _url, **_kwargs):
         return self._response
 
     async def __aenter__(self):
@@ -238,33 +239,13 @@ class TestFormatMjpegFrame:
 
 
 class TestGetFfmpegPath:
-    """Tests for ffmpeg path detection."""
+    """External and built-in cameras must resolve the same configured binary."""
 
-    def test_get_ffmpeg_path_from_shutil_which(self):
-        """Verify ffmpeg found via shutil.which is returned."""
+    def test_get_ffmpeg_path_delegates_to_the_builtin_resolver(self):
         from backend.app.services.external_camera import get_ffmpeg_path
 
-        with patch("shutil.which", return_value="/usr/bin/ffmpeg"):
-            result = get_ffmpeg_path()
-            assert result == "/usr/bin/ffmpeg"
-
-    def test_get_ffmpeg_path_fallback_to_common_paths(self):
-        """Verify common paths are checked when shutil.which fails."""
-        from backend.app.services.external_camera import get_ffmpeg_path
-
-        with patch("shutil.which", return_value=None), patch("pathlib.Path.exists") as mock_exists:
-            # First common path exists
-            mock_exists.return_value = True
-            result = get_ffmpeg_path()
-            assert result in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"]
-
-    def test_get_ffmpeg_path_returns_none_when_not_found(self):
-        """Verify None is returned when ffmpeg not found anywhere."""
-        from backend.app.services.external_camera import get_ffmpeg_path
-
-        with patch("shutil.which", return_value=None), patch("pathlib.Path.exists", return_value=False):
-            result = get_ffmpeg_path()
-            assert result is None
+        with patch("backend.app.services.camera.get_ffmpeg_path", return_value="C:/tools/ffmpeg.exe"):
+            assert get_ffmpeg_path() == "C:/tools/ffmpeg.exe"
 
 
 class TestJpegFrameExtraction:
@@ -517,6 +498,55 @@ class TestSnapshotUrlOverride:
 class TestRtspUrlHandling:
     """Tests for RTSP/RTSPS URL handling."""
 
+    def test_sanitizer_preserves_encoded_credentials_and_ipv6_loopback(self):
+        from backend.app.services.external_camera import _sanitize_camera_url
+
+        url = "http://user%40name:p%3Ass@[::1]:1984/api/stream.mjpeg?src=cam"
+        assert _sanitize_camera_url(url, ("http", "https")) == url
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[fe80::1]/snapshot.jpg",
+            "rtsp://0.0.0.0/live",
+            "rtsp://239.1.2.3/live",
+        ],
+    )
+    def test_sanitizer_rejects_non_routable_camera_hosts(self, url):
+        from backend.app.services.external_camera import _sanitize_camera_url
+
+        assert _sanitize_camera_url(url) is None
+
+    @pytest.mark.asyncio
+    async def test_rtsp_rejects_invalid_target_before_spawning_ffmpeg(self):
+        from unittest.mock import AsyncMock
+
+        from backend.app.services import external_camera as ec
+
+        spawn = AsyncMock()
+        with patch.object(ec.asyncio, "create_subprocess_exec", spawn):
+            assert await ec._capture_rtsp_frame("rtsp://169.254.169.254/live", 1) is None
+        spawn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rtsp_passes_the_narrow_protocol_whitelist_to_ffmpeg(self):
+        from unittest.mock import AsyncMock, Mock
+
+        from backend.app.services import external_camera as ec
+
+        process = Mock(pid=42, returncode=0, stdout=None)
+        process.communicate = AsyncMock(return_value=(_make_jpeg(), b""))
+        spawn = AsyncMock(return_value=process)
+        with (
+            patch.object(ec, "get_ffmpeg_path", return_value="ffmpeg"),
+            patch.object(ec.asyncio, "create_subprocess_exec", spawn),
+        ):
+            assert await ec._capture_rtsp_frame("rtsp://127.0.0.1:8554/live", 1) == _make_jpeg()
+
+        args = spawn.call_args.args
+        assert args[args.index("-protocol_whitelist") + 1] == ec._RTSP_PROTOCOL_WHITELIST
+
     def test_rtsps_url_detection(self):
         """Verify rtsps:// and rtsp:// URL schemes are distinct."""
         url_rtsps = "rtsps://user:pass@192.168.1.1:554/stream"
@@ -572,6 +602,18 @@ class TestUsbCameraHandling:
             assert "name" in camera
             assert camera["device"].startswith("/dev/video")
 
+    @pytest.mark.parametrize("device", ["/dev/video0", "/dev/video12", "/dev/video99"])
+    def test_safe_usb_device_path_accepts_only_two_digit_v4l2_devices(self, device):
+        from backend.app.services.external_camera import _safe_usb_device_path
+
+        assert _safe_usb_device_path(device).as_posix() == device
+
+    @pytest.mark.parametrize("device", ["/dev/video", "/dev/video000", "/dev/video0/../sda", "/dev/video0x"])
+    def test_safe_usb_device_path_rejects_prefix_and_traversal_variants(self, device):
+        from backend.app.services.external_camera import _safe_usb_device_path
+
+        assert _safe_usb_device_path(device) is None
+
     @pytest.mark.asyncio
     async def test_capture_frame_usb_type_accepted(self):
         """Verify 'usb' camera type is accepted."""
@@ -616,6 +658,7 @@ def _fake_snapshot_session(body: bytes, status: int = 200):
     class _Resp:
         def __init__(self):
             self.status = status
+            self.headers = {}
 
         async def __aenter__(self):
             return self
@@ -636,7 +679,7 @@ def _fake_snapshot_session(body: bytes, status: int = 200):
         async def __aexit__(self, *a):
             return False
 
-        def get(self, _url):
+        def get(self, _url, **_kwargs):
             return _Resp()
 
     return _Session
@@ -706,3 +749,42 @@ class TestSnapshotTranscode:
         with patch.object(ec.aiohttp, "ClientSession", _fake_snapshot_session(html)):
             out = await ec._capture_snapshot("http://192.168.50.50/snapshot", 10)
         assert out == html
+
+    @pytest.mark.asyncio
+    async def test_snapshot_rejects_a_redirect_to_metadata_before_following_it(self):
+        """Each redirect must be treated as a new user-provided destination."""
+        from backend.app.services import external_camera as ec
+
+        class Response:
+            def __init__(self, status, location=None):
+                self.status = status
+                self.headers = {"Location": location} if location else {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def read(self):
+                return _make_jpeg()
+
+        class Session:
+            calls: list[str] = []
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def get(self, url, **_kwargs):
+                self.calls.append(url)
+                return Response(302, "http://169.254.169.254/latest/meta-data/")
+
+        with patch.object(ec.aiohttp, "ClientSession", Session):
+            assert await ec._capture_snapshot("http://camera.local/snapshot", 10) is None
+        assert Session.calls == ["http://camera.local/snapshot"]

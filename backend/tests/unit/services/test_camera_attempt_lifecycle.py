@@ -332,6 +332,39 @@ async def test_real_subprocess_is_reaped_on_cancellation():
     assert process.returncode is not None
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.platform == "win32" and not hasattr(asyncio, "ProactorEventLoop"), reason="needs subprocess support"
+)
+async def test_cleanup_drains_full_stdout_before_waiting_for_exit():
+    """A noisy ffmpeg must not force the two-second terminate timeout.
+
+    The child is a stand-in for ffmpeg writing MJPEG frames faster than the
+    client consumes them.  There is deliberately no stdout reader until the
+    attempt starts teardown.
+    """
+    import time
+
+    process = None
+    started = asyncio.Event()
+    started_at = time.monotonic()
+    async with CameraAttempt("stdout-drain-test") as attempt:
+        process = attempt.process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-u",
+            "-c",
+            "import sys; chunk = b'x' * 65536\nwhile True:\n sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush()",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        started.set()
+        await asyncio.sleep(0.05)
+
+    assert started.is_set()
+    assert process.returncode is not None
+    assert time.monotonic() - started_at < 1.5
+
+
 @pytest.mark.parametrize("owner", ["capture", "external_capture"])
 @pytest.mark.parametrize("failure", ["timeout", "tls_cleanup"])
 def test_capture_failure_reaps_and_returns_none(run, tls_context, processes, monkeypatch, owner, failure):

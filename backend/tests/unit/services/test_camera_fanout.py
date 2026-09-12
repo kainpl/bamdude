@@ -271,6 +271,33 @@ async def test_registry_replaces_stopped_broadcaster():
     await shutdown_broadcaster("p1")
 
 
+async def test_successor_refuses_to_overlap_a_predecessor_that_never_closed(monkeypatch):
+    """A timeout must not reopen the camera socket beside its predecessor."""
+    monkeypatch.setattr(camera_fanout, "_TEARDOWN_WAIT_SECONDS", 0.02)
+    dials = [0]
+
+    async def factory(_disconnect: asyncio.Event) -> AsyncGenerator[bytes, None]:
+        dials[0] += 1
+        yield b"new-frame"
+
+    predecessor = MjpegBroadcaster("p1", _make_factory([b"old"] * 1000, delay=0.05))
+    successor = MjpegBroadcaster("p1", factory, predecessor=predecessor)
+    first = await successor.subscribe()
+
+    assert await asyncio.wait_for(first.get(), timeout=1.0) == camera_fanout._PREDECESSOR_TEARDOWN_ERROR
+    assert await asyncio.wait_for(first.get(), timeout=1.0) == camera_fanout._UPSTREAM_GONE
+    assert dials == [0]
+
+    # A later subscription is allowed only once the old broadcaster confirms
+    # that its upstream is gone.  The successor keeps the predecessor reference
+    # after the bounded failure rather than silently dropping the guard.
+    predecessor._teardown_complete.set()
+    second = await successor.subscribe()
+    assert await asyncio.wait_for(second.get(), timeout=1.0) == b"new-frame"
+    assert dials == [1]
+    await successor.force_shutdown()
+
+
 # ---------------------------------------------------------------------------
 # Audit findings: subscribe-after-grace-stops contract + unsubscribe count
 # ---------------------------------------------------------------------------

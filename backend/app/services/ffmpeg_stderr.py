@@ -106,3 +106,47 @@ class FfmpegStderrDrain:
             await task
         except (asyncio.CancelledError, Exception):  # noqa: B014 — best-effort teardown
             pass
+
+
+class FfmpegStdoutDrain:
+    """Discard stdout while a stopped ffmpeg process is being reaped.
+
+    A live camera stream owns stdout until its generator exits.  After that
+    generator hands control to :class:`CameraAttempt`, this short-lived drain
+    becomes the sole reader.  Starting it *before* waiting for ffmpeg matters:
+    a full pipe can otherwise keep asyncio's subprocess transport from
+    completing the wait even after the child has been terminated.
+    """
+
+    def __init__(self, process: asyncio.subprocess.Process, *, name: str = "ffmpeg") -> None:
+        self._process = process
+        self._name = name
+        self._task: asyncio.Task | None = None
+
+    def start(self) -> FfmpegStdoutDrain:
+        """Begin draining when the process has a stdout pipe."""
+        if self._task is not None or not self._process or not getattr(self._process, "stdout", None):
+            return self
+        self._task = asyncio.create_task(self._run(), name=f"ffmpeg-stdout-{self._name}")
+        return self
+
+    async def _run(self) -> None:
+        stdout = self._process.stdout
+        try:
+            while await stdout.read(8192):
+                pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — teardown draining is best-effort
+            logger.debug("ffmpeg stdout drain (%s) ended: %s", self._name, exc)
+
+    async def aclose(self) -> None:
+        """Stop a drain that is still waiting for EOF.  Safe to call twice."""
+        task, self._task = self._task, None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: B014 — best-effort teardown
+            pass

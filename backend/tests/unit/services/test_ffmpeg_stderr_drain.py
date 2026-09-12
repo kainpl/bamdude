@@ -17,7 +17,7 @@ import asyncio
 
 import pytest
 
-from backend.app.services.ffmpeg_stderr import _SIDE_CAP, FfmpegStderrDrain
+from backend.app.services.ffmpeg_stderr import _SIDE_CAP, FfmpegStderrDrain, FfmpegStdoutDrain
 
 
 class _FakeStderr:
@@ -39,8 +39,9 @@ class _FakeStderr:
 
 
 class _FakeProcess:
-    def __init__(self, stderr) -> None:
+    def __init__(self, stderr, stdout=None) -> None:
         self.stderr = stderr
+        self.stdout = stdout
 
 
 async def _drain_to_eof(chunks: list[bytes]) -> FfmpegStderrDrain:
@@ -120,3 +121,13 @@ async def test_a_reader_that_raises_does_not_kill_the_stream():
     await asyncio.sleep(0.01)
     await d.aclose()  # the task swallowed it
     assert d.text() == ""
+
+
+@pytest.mark.asyncio
+async def test_stdout_drain_reads_until_eof_and_is_safe_to_close_twice():
+    stdout = _FakeStderr([b"frame-1", b"frame-2"])
+    d = FfmpegStdoutDrain(_FakeProcess(None, stdout), name="test").start()
+    await asyncio.sleep(0.01)
+    await d.aclose()
+    await d.aclose()
+    assert stdout.reads >= 3
