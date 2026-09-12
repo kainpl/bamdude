@@ -53,6 +53,9 @@ def test_missing_inputs_leave_it_unknown():
         # otherwise be read as "one second remaining", i.e. a whole print's worth
         # of elapsed time invented out of a flag.
         _row(remaining=True, estimate=7200),
+        # ``json.loads`` accepts the NaN/Infinity literals; ``int()`` of either raises.
+        _row(remaining=float("nan"), estimate=7200),
+        _row(remaining=float("inf"), estimate=7200),
     ):
         assert _reconstruct_recovered_start(row) is False
         assert row.started_at is None

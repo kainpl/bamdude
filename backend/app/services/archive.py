@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -1207,8 +1208,8 @@ def _reconstruct_recovered_start(archive: PrintArchive) -> bool:
         return False
     remaining = rec.get("remaining_seconds")
     estimate = archive.print_time_seconds
-    if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
-        return False
+    if isinstance(remaining, bool) or not isinstance(remaining, (int, float)) or not math.isfinite(remaining):
+        return False  # ``json.loads`` admits NaN/Infinity literals; ``int()`` of either would raise below
     if not estimate or estimate <= 0:
         return False
     try:
