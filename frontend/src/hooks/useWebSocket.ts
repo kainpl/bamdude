@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, ApiError } from '../api/client';
+import { api, ApiError, recordLivePrinterStatus } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useConnection } from '../contexts/ConnectionContext';
 import { useTranslation } from 'react-i18next';
@@ -48,6 +48,7 @@ interface WebSocketMessage {
   device?: Record<string, unknown>;
   state?: string;
   reason?: string | null;
+  bootstrap_id?: string;
 }
 
 export function useWebSocket() {
@@ -58,6 +59,8 @@ export function useWebSocket() {
   // the socket, whose ws.onclose then set a *fresh* reconnect timeout — a
   // leaked reconnect that kept minting ws-tokens post-logout).
   const disposedRef = useRef(false);
+  const connectingRef = useRef(false);
+  const generationRef = useRef(0);
   const queryClient = useQueryClient();
   const [isConnected, setIsConnectedLocal] = useState(false);
   const { setIsConnected: setIsConnectedShared } = useConnection();
@@ -121,10 +124,27 @@ export function useWebSocket() {
     processNext();
   }, []);
 
+  const applyPendingPrinterStatus = useCallback(() => {
+    if (printerStatusTimeoutRef.current) clearTimeout(printerStatusTimeoutRef.current);
+    printerStatusTimeoutRef.current = null;
+    const updates = new Map(pendingPrinterStatus.current);
+    pendingPrinterStatus.current.clear();
+    updates.forEach((statusData, id) => {
+      queryClient.setQueryData(['printerStatus', id], (old: Record<string, unknown> | undefined) => {
+        const merged = { ...old, ...statusData };
+        if (merged.wifi_signal == null && old?.wifi_signal != null) merged.wifi_signal = old.wifi_signal;
+        return merged;
+      });
+    });
+  }, [queryClient]);
+
   const connect = useCallback(async () => {
-    if (disposedRef.current || wsRef.current?.readyState === WebSocket.OPEN) {
+    if (disposedRef.current || connectingRef.current || wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
       return;
     }
+    connectingRef.current = true;
+    const generation = generationRef.current;
+    const connectStarted = performance.now();
 
     // GHSA-r2qv follow-up: /api/v1/ws now requires a short-lived token (the
     // HTTP auth middleware can't gate the WebSocket upgrade). Mint one per
@@ -134,6 +154,7 @@ export function useWebSocket() {
     try {
       ({ token } = await api.getWebSocketToken());
     } catch (err) {
+      if (disposedRef.current || generation !== generationRef.current) return;
       // A 401/403 from the token mint is an AUTH decision, not a transient
       // blip — retrying just hammers /auth/ws-token every 3s forever:
       //   401 — the JWT expired. ``request()`` already cleared it and
@@ -156,9 +177,11 @@ export function useWebSocket() {
         connect();
       }, 3000);
       return;
+    } finally {
+      if (generation === generationRef.current) connectingRef.current = false;
     }
 
-    if (disposedRef.current) {
+    if (disposedRef.current || generation !== generationRef.current) {
       return;
     }
 
@@ -204,6 +227,7 @@ export function useWebSocket() {
     };
 
     ws.onopen = () => {
+      if (wsRef.current !== ws) return;
       if (import.meta.env.MODE !== 'test') console.log('[WebSocket] Connected');
       setIsConnected(true);
       // Expose the on-demand ping for the visibility handler.
@@ -213,8 +237,20 @@ export function useWebSocket() {
     };
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws) return;
       try {
         const message: WebSocketMessage = JSON.parse(event.data);
+        if (message.type === 'initial_status_complete' && message.bootstrap_id) {
+          // Flush into the SAME cache the cards observe, even with REST still
+          // in flight. The ack makes this visible in backend-only farm logs.
+          applyPendingPrinterStatus();
+          ws.send(JSON.stringify({
+            type: 'initial_status_applied',
+            bootstrap_id: message.bootstrap_id,
+            connect_ms: Math.round(performance.now() - connectStarted),
+          }));
+          return;
+        }
         // Pong from the server clears the watchdog. Don't queue or render —
         // it's keepalive plumbing, not user-visible state.
         if (message.type === 'pong') {
@@ -224,6 +260,7 @@ export function useWebSocket() {
         // Handle printer_status directly (already throttled) to avoid queue delays
         // This prevents the "timelapse" effect where status updates are applied slowly
         if (message.type === 'printer_status' && message.printer_id !== undefined && message.data) {
+          recordLivePrinterStatus(message.printer_id, message.data);
           handleMessageRef.current(message);
         } else {
           // Queue other messages for throttled processing
@@ -242,6 +279,7 @@ export function useWebSocket() {
         pingInterval = null;
       }
       clearPongTimeout();
+      if (wsRef.current !== ws) return;
       sendPingRef.current = null;
       setIsConnected(false);
       wsRef.current = null;
@@ -266,7 +304,7 @@ export function useWebSocket() {
     };
 
     wsRef.current = ws;
-  }, [processMessageQueue, setIsConnected]);
+  }, [processMessageQueue, setIsConnected, applyPendingPrinterStatus]);
 
   // Throttled printer status update - coalesces rapid updates per printer.
   //
@@ -290,27 +328,9 @@ export function useWebSocket() {
 
     // Schedule update if not already scheduled
     if (!printerStatusTimeoutRef.current) {
-      printerStatusTimeoutRef.current = window.setTimeout(() => {
-        const updates = new Map(pendingPrinterStatus.current);
-        pendingPrinterStatus.current.clear();
-        printerStatusTimeoutRef.current = null;
-
-        // Apply all pending updates
-        updates.forEach((statusData, id) => {
-          queryClient.setQueryData(
-            ['printerStatus', id],
-            (old: Record<string, unknown> | undefined) => {
-              const merged = { ...old, ...statusData };
-              if (merged.wifi_signal == null && old?.wifi_signal != null) {
-                merged.wifi_signal = old.wifi_signal;
-              }
-              return merged;
-            }
-          );
-        });
-      }, 100); // Update at most every 100ms
+      printerStatusTimeoutRef.current = window.setTimeout(applyPendingPrinterStatus, 100);
     }
-  }, [queryClient]);
+  }, [applyPendingPrinterStatus]);
 
   // Debounced invalidation helper - coalesces multiple rapid invalidations
   const debouncedInvalidate = useCallback((queryKey: string) => {
@@ -764,6 +784,7 @@ export function useWebSocket() {
     // only the surviving mount's connect actually runs. In production
     // (no StrictMode) this is a harmless 0 ms delay.
     disposedRef.current = false;
+    generationRef.current += 1;
     const initTimer = window.setTimeout(connect, 0);
 
     // Visibility-sync: when the tab returns to the foreground we want
@@ -771,8 +792,9 @@ export function useWebSocket() {
     // (b) confidence that the WS socket is still alive — browsers can
     // silently kill long-idle sockets without firing onclose.
     //
-    // Strategy: invalidate queries unconditionally (cheap, runs only once
-    // per visibility flip) + send an immediate ping. The existing 10 s
+    // Refresh only mounted queries + send an immediate ping. Refetching all
+    // inactive pages here used to create an HTTP storm after every Alt+Tab.
+    // The existing 10 s
     // pong-timeout watchdog inside connect() handles the "no pong came
     // back" case — if the socket was killed in the background, the
     // watchdog detects it within ~10 s and triggers the standard
@@ -780,7 +802,7 @@ export function useWebSocket() {
     // without churning. No more reconnect flicker on every Alt+Tab.
     const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return;
-      queryClient.invalidateQueries({ refetchType: 'all' });
+      queryClient.invalidateQueries({ type: 'active' });
       sendPingRef.current?.();
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
@@ -789,6 +811,8 @@ export function useWebSocket() {
       // Mark disposed BEFORE closing so the ws.onclose triggered by close()
       // sees it and won't schedule a post-unmount reconnect.
       disposedRef.current = true;
+      generationRef.current += 1;
+      connectingRef.current = false;
       clearTimeout(initTimer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       if (reconnectTimeoutRef.current) {

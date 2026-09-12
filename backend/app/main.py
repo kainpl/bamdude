@@ -9553,6 +9553,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    await ws_manager.shutdown()
     # Cloud Link first: it holds a socket and describes this farm, so it should
     # let go before the services it describes start disappearing underneath it.
     # ``stop()`` cancels the client task rather than waiting on its stop event

@@ -13,6 +13,7 @@
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateObjectsResponse } from '../types/plates';
 import type { MonitorSnapshot, MonitorView } from '../features/monitor/types';
 import { isMonitorKioskLocation } from '../features/monitor/location';
+import { createPrinterStatusBatcher } from './printerStatusBatch';
 
 export class ApiError extends Error {
   status: number;
@@ -6959,6 +6960,15 @@ export interface UsageProjection {
   slots?: UsageProjectionSlot[];
 }
 
+const printerStatusReads = createPrinterStatusBatcher(
+  id => request<PrinterStatus>(`/printers/${id}/status`, { signal: AbortSignal.timeout(15_000) }),
+  ids => request<Record<string, PrinterStatus>>(`/printers/status/batch?${ids.map(id => `ids=${id}`).join('&')}`, { signal: AbortSignal.timeout(15_000) }),
+  () => new ApiError('Printer not found', 404),
+);
+
+// Only tracks outstanding reads; never stores a second status cache.
+export const recordLivePrinterStatus = printerStatusReads.update;
+
 export const api = {
   getMonitorSnapshot: (view: MonitorView, signal?: AbortSignal) =>
     request<MonitorSnapshot>(`/monitor/snapshot?view=${view}`, { signal }),
@@ -7226,8 +7236,7 @@ export const api = {
     if (locationId) params.set('location_id', String(locationId));
     return request<Array<{ type: string; color: string; tray_info_idx: string; tray_sub_brands: string; extruder_id: number | null }>>(`/printers/available-filaments?${params}`);
   },
-  getPrinterStatus: (id: number) =>
-    request<PrinterStatus>(`/printers/${id}/status`),
+  getPrinterStatus: printerStatusReads.get,
   refreshPrinterStatus: (id: number) =>
     request<{ status: string }>(`/printers/${id}/refresh-status`, {
       method: 'POST',

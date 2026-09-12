@@ -235,6 +235,17 @@ export const handlers = [
     return HttpResponse.json(printer);
   }),
 
+  // Use each test's own single-status fixture for the batch as well, matching
+  // the backend's shared response builder. Per-test overrides still apply.
+  http.get('/api/v1/printers/status/batch', async ({ request }) => {
+    const url = new URL(request.url);
+    const entries = await Promise.all(url.searchParams.getAll('ids').map(async id => {
+      const response = await fetch(new URL(`/api/v1/printers/${id}/status`, url).href);
+      return response.ok ? [id, await response.json()] as const : null;
+    }));
+    return HttpResponse.json(Object.fromEntries(entries.filter(entry => entry !== null)));
+  }),
+
   http.get('/api/v1/printers/:id/status', ({ params }) => {
     return HttpResponse.json({
       id: Number(params.id),

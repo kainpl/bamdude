@@ -2,12 +2,31 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
+
+# A slow browser gets disconnected and receives a new snapshot on reconnect.
+# Never discard/reorder print/queue events to keep a stalled socket alive.
+MAX_PENDING_MESSAGES = 256
+MAX_PENDING_BYTES = 4 * 1024 * 1024
+SEND_TIMEOUT_SECONDS = 5.0
+
+
+@dataclass
+class _Outbox:
+    messages: deque[tuple[str, int]] = field(default_factory=deque)
+    pending_bytes: int = 0
+    wake: asyncio.Event = field(default_factory=asyncio.Event)
+    progress: asyncio.Event = field(default_factory=asyncio.Event)
+    task: asyncio.Task | None = None
+    close_code: int | None = None
 
 
 class ConnectionManager:
@@ -21,7 +40,7 @@ class ConnectionManager:
         # In-process subscribers to the same fan-out the browsers get — today
         # only the Cloud Link uplink. See ``add_internal_listener``.
         self._internal_listeners: list[Callable[[dict[str, Any]], None]] = []
-        self._lock = asyncio.Lock()
+        self._outboxes: dict[WebSocket, _Outbox] = {}
 
     # ------------------------------------------------------ internal listeners
 
@@ -80,16 +99,118 @@ class ConnectionManager:
         """Accept a new WebSocket connection, tagged with the authenticated user
         so per-user broadcasts can target it."""
         await websocket.accept()
-        async with self._lock:
-            self.active_connections.append(websocket)
-            self._user_by_conn[websocket] = user_id
+        self.active_connections.append(websocket)
+        self._user_by_conn[websocket] = user_id
+        outbox = _Outbox()
+        self._outboxes[websocket] = outbox
+        outbox.task = asyncio.create_task(self._writer(websocket, outbox), name="websocket-writer")
+
+    def _remove(self, websocket: WebSocket) -> None:
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        self._user_by_conn.pop(websocket, None)
+
+    def _enqueue(self, websocket: WebSocket, data: str, size: int) -> None:
+        outbox = self._outboxes.get(websocket)
+        if outbox is None or outbox.close_code is not None:
+            return
+        if len(outbox.messages) >= MAX_PENDING_MESSAGES or outbox.pending_bytes + size > MAX_PENDING_BYTES:
+            logger.warning(
+                "WebSocket outbox overflow: pending=%s bytes=%s; closing slow client",
+                len(outbox.messages),
+                outbox.pending_bytes,
+            )
+            # The writer owns close as well as send. No second concurrent ASGI
+            # writer, including when overflow occurs inside a broadcast.
+            outbox.close_code = 1013
+            self._remove(websocket)
+            outbox.messages.clear()
+            outbox.pending_bytes = 0
+        else:
+            outbox.messages.append((data, size))
+            outbox.pending_bytes += size
+        outbox.wake.set()
+
+    async def _writer(self, websocket: WebSocket, outbox: _Outbox) -> None:
+        try:
+            while outbox.close_code is None:
+                await outbox.wake.wait()
+                outbox.wake.clear()
+                while outbox.messages and outbox.close_code is None:
+                    data, size = outbox.messages.popleft()
+                    outbox.pending_bytes -= size
+                    started = time.monotonic()
+                    # asyncio.timeout keeps one task per client, not per frame.
+                    async with asyncio.timeout(SEND_TIMEOUT_SECONDS):
+                        await websocket.send_text(data)
+                    outbox.progress.set()
+                    elapsed = time.monotonic() - started
+                    if elapsed >= 0.25:
+                        logger.warning(
+                            "Slow WebSocket send: elapsed=%.3fs pending=%s bytes=%s",
+                            elapsed,
+                            len(outbox.messages),
+                            outbox.pending_bytes,
+                        )
+        except TimeoutError:
+            logger.warning("WebSocket send timed out; closing slow client")
+            outbox.close_code = 1013
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            outbox.close_code = 1011
+        finally:
+            self._remove(websocket)
+            outbox.messages.clear()
+            outbox.pending_bytes = 0
+            outbox.progress.set()
+            try:
+                if outbox.close_code is not None:
+                    with suppress(Exception):
+                        async with asyncio.timeout(SEND_TIMEOUT_SECONDS):
+                            await websocket.close(code=outbox.close_code)
+            finally:
+                self._outboxes.pop(websocket, None)
+
+    async def send(self, websocket: WebSocket, message: dict[str, Any]) -> None:
+        """Enqueue a direct reply, pacing only this client's snapshot producer."""
+        data = json.dumps(message)
+        self._enqueue(websocket, data, len(data.encode("utf-8")))
+        outbox = self._outboxes.get(websocket)
+        # A large bootstrap must give its own writer time to drain. A single
+        # sleep(0) is insufficient when ASGI send itself yields several times.
+        # Broadcast producers never wait here, and can keep feeding all viewers.
+        while (
+            outbox is not None
+            and self._outboxes.get(websocket) is outbox
+            and outbox.close_code is None
+            and (
+                len(outbox.messages) >= min(32, MAX_PENDING_MESSAGES) or outbox.pending_bytes >= MAX_PENDING_BYTES // 2
+            )
+        ):
+            outbox.progress.clear()
+            await outbox.progress.wait()
 
     async def disconnect(self, websocket: WebSocket):
         """Remove a WebSocket connection."""
-        async with self._lock:
-            if websocket in self.active_connections:
-                self.active_connections.remove(websocket)
-            self._user_by_conn.pop(websocket, None)
+        self._remove(websocket)
+        outbox = self._outboxes.get(websocket)
+        if outbox and outbox.task:
+            outbox.task.cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await outbox.task
+            finally:
+                # A task cancelled before its first turn never enters the
+                # writer's finally block. Disconnect must release that queue too.
+                outbox.messages.clear()
+                outbox.pending_bytes = 0
+                outbox.progress.set()
+                self._outboxes.pop(websocket, None)
+
+    async def shutdown(self) -> None:
+        """Lifespan owns the writers, including clients already evicted."""
+        await asyncio.gather(*(self.disconnect(ws) for ws in list(self._outboxes)))
 
     async def broadcast(self, message: dict[str, Any]):
         """Broadcast a message to all connected clients.
@@ -107,29 +228,18 @@ class ConnectionManager:
 
         data = json.dumps(message)
         started = time.monotonic()
-        async with self._lock:
-            disconnected = []
-            for connection in self.active_connections:
-                try:
-                    await connection.send_text(data)
-                except Exception:
-                    disconnected.append(connection)
-
-            # Clean up disconnected clients
-            for conn in disconnected:
-                if conn in self.active_connections:
-                    self.active_connections.remove(conn)
-                self._user_by_conn.pop(conn, None)
+        size = len(data.encode("utf-8"))
+        for connection in list(self.active_connections):
+            self._enqueue(connection, data, size)
 
         elapsed = time.monotonic() - started
         if elapsed >= 0.25:
             logger.warning(
-                "Slow WebSocket broadcast: type=%s clients=%s bytes=%s elapsed=%.3fs disconnected=%s",
+                "Slow WebSocket broadcast enqueue: type=%s clients=%s bytes=%s elapsed=%.3fs",
                 message.get("type", "unknown"),
                 len(self.active_connections),
-                len(data),
+                size,
                 elapsed,
-                len(disconnected),
             )
 
     async def broadcast_to_user(self, user_id: int | None, message: dict[str, Any]):
@@ -150,19 +260,10 @@ class ConnectionManager:
             await self.broadcast(message)
             return
         data = json.dumps(message)
-        async with self._lock:
-            disconnected = []
-            for connection in self.active_connections:
-                if self._user_by_conn.get(connection) != user_id:
-                    continue
-                try:
-                    await connection.send_text(data)
-                except Exception:
-                    disconnected.append(connection)
-            for conn in disconnected:
-                if conn in self.active_connections:
-                    self.active_connections.remove(conn)
-                self._user_by_conn.pop(conn, None)
+        size = len(data.encode("utf-8"))
+        for connection in list(self.active_connections):
+            if self._user_by_conn.get(connection) == user_id:
+                self._enqueue(connection, data, size)
 
     async def send_printer_status(self, printer_id: int, status: dict):
         """Send printer status update to all clients."""

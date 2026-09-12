@@ -367,6 +367,31 @@ async def verify_websocket_token(token: str) -> bool:
         return result.scalar_one_or_none() is not None
 
 
+async def authenticate_websocket_token(token: str) -> tuple[bool, int | None]:
+    """Validate and resolve the owner in one round trip at WS upgrade.
+
+    A valid API-key token has no username; keep that distinct from an invalid
+    token (and from a token whose named owner no longer exists).
+    """
+    if not token:
+        return False, None
+    async with async_session() as db:
+        row = (
+            await db.execute(
+                select(AuthEphemeralToken.username, User.id)
+                .outerjoin(User, User.username == AuthEphemeralToken.username)
+                .where(
+                    AuthEphemeralToken.token == token,
+                    AuthEphemeralToken.token_type == TokenType.WEBSOCKET,
+                    AuthEphemeralToken.expires_at > datetime.now(timezone.utc),
+                )
+            )
+        ).one_or_none()
+    if row is None or (row[0] is not None and row[1] is None):
+        return False, None
+    return True, row[1]
+
+
 async def resolve_websocket_token_user(token: str) -> int | None:
     """Return the user id a valid WS token was minted for, for per-user broadcast
     tagging. None if the token is invalid/expired or was minted without a user
