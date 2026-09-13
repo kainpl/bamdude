@@ -56,9 +56,11 @@ identity без секретів і bounded черги лише останньо
 звільняє producer.
 
 Режим fail-closed. Помилка bootstrap/containment worker не повертає inline
-transport. Built-in Bambu live view і Virtual Printer raw TCP camera passthrough
-навмисно недоступні у worker mode, доки не з'являться їхні raw-lease шляхи.
-Спочатку перевіряйте налаштування на підтримуваному хості: поточна валідація не
-замінює physical-farm або Linux-service acceptance run.
+transport. Virtual Printer camera passthrough — worker-owned raw TCP lease, тому
+він зберігає байти як є й не перетинається з JPEG relay того самого джерела.
+Built-in Bambu live view лишається навмисно недоступним, доки не буде його
+окремого raw/decoded producer. Спочатку перевіряйте налаштування на
+підтримуваному хості: поточна валідація не замінює physical-farm або
+Linux-service acceptance run.
 
 [Перевірки й синтетичний baseline](testing/camera-observability.md).

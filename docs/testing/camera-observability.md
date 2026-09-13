@@ -77,10 +77,10 @@ delivery merge.
 
 Not covered by automated tests: a physical Bambu chamber/RTSP live source,
 hardware decoder profiles, a 50-camera soak with API/MQTT/WebSocket latency
-measurements, Linux service/cgroup/watchdog operation, and the future raw TCP
-lease for Virtual Printer. Worker mode rejects built-in Bambu live view and
-Virtual Printer raw passthrough instead of silently creating a second camera
-owner.
+measurements, and Linux service/cgroup/watchdog operation. Virtual Printer raw
+TCP passthrough now has a worker-owned, byte-for-byte lease with a loopback
+echo acceptance test; worker mode still rejects built-in Bambu live view rather
+than silently creating a second camera owner.
 
 Українською: перевірено 432 тести камер/FFmpeg та API принтерів. Синтетичний
 прогін вимірює лише накладні витрати метрик без реальних камер, декодування та

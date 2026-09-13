@@ -55,9 +55,11 @@ Each worker live lease has one producer per stable, secret-free printer identity
 and bounded latest-frame queues; a lost media socket releases the producer.
 
 The mode fails closed. A worker bootstrap/containment failure does not fall back
-to inline transport. Built-in Bambu live view and Virtual Printer raw TCP camera
-passthrough are deliberately unavailable in worker mode until their raw-lease
-paths are implemented. Test this setting first on a supported host; the current
-validation does not replace a physical-farm or Linux-service acceptance run.
+to inline transport. Virtual Printer camera passthrough is a worker-owned raw
+TCP lease, so it stays byte-for-byte and cannot overlap a JPEG relay for the
+same source. Built-in Bambu live view remains deliberately unavailable until its
+separate raw/decoded producer is implemented. Test this setting first on a
+supported host; the current validation does not replace a physical-farm or
+Linux-service acceptance run.
 
 [Validation and synthetic baseline](testing/camera-observability.md).
