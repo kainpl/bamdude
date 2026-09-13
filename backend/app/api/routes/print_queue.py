@@ -36,6 +36,7 @@ from backend.app.services.filament_policy import decode
 from backend.app.services.filament_policy_write import routing_update
 from backend.app.services.notification_service import notification_service
 from backend.app.services.queue_add import add_items_to_printer_queue
+from backend.app.services.queue_source_descriptor import source_storage_state
 from backend.app.services.queue_times import plate_metadata_cached
 from backend.app.utils.printer_models import is_gcode_compatible
 
@@ -124,6 +125,16 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         # User tracking (Issue #206)
         "created_by_id": item.created_by_id,
         "created_by_username": item.created_by.username if item.created_by else None,
+        # m173. ``blob_state`` is deliberately not passed: this enricher never
+        # loads the ``queue_sources`` row, and a caller that has not looked may
+        # not claim ``ready`` — so a snapshotted row still reads ``legacy`` until
+        # the resolver task teaches this path to load it. ``source_size_bytes``
+        # arrives with the same row and stays None for the same reason.
+        "source_storage": source_storage_state(
+            queue_source_id=item.queue_source_id,
+            origin=item.origin,
+            is_calibration=item.is_calibration,
+        ),
     }
     response = PrintQueueItemResponse(**item_dict)
     # ⚠️ Only when the relationship is already loaded. This runs in async

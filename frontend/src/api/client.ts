@@ -4121,6 +4121,14 @@ export interface DiscoveredTasmotaDevice {
  *  string form. 'auto' is only offered on models whose firmware supports it. */
 export type CalibrationMode = 'off' | 'auto' | 'on';
 
+/** Whether a queued job owns a local copy of the bytes it prints (m173).
+ *  `ready` — the copy is there and verified, so the job no longer depends on the
+ *  share, the library row or the archive it came from; `preparing` — being
+ *  captured right now; `legacy` — no copy yet, it still depends on its original
+ *  source; `broken` — a copy was taken and no longer answers for it; `exempt` —
+ *  an external print or a calibration job, which never had a source to copy. */
+export type QueueSourceStorage = 'ready' | 'preparing' | 'legacy' | 'broken' | 'exempt';
+
 // Print Queue types
 export interface PrintQueueItem {
   filament_routing?: FilamentRoutingSnapshot | null;
@@ -4180,6 +4188,10 @@ export interface PrintQueueItem {
   error_message: string | null;
   created_at: string;
   batch_id?: string | null;
+  /** Whether this job owns a local copy of the bytes it prints (m173). */
+  source_storage?: QueueSourceStorage;
+  /** Size of that copy, where known. */
+  source_size_bytes?: number | null;
   archive_name?: string | null;
   archive_thumbnail?: string | null;
   library_file_name?: string | null;
@@ -4479,6 +4491,12 @@ export interface AutoQueueItem {
   print_time_seconds: number | null;
   been_jumped: boolean;
   batch_id: string | null;
+  /** Whether this row owns a local copy of the bytes its work prints (m173).
+   *  Never `exempt` — the external and calibration exceptions only ever reach a
+   *  per-printer row. */
+  source_storage?: QueueSourceStorage;
+  /** Size of that copy, where known. */
+  source_size_bytes?: number | null;
   /** m171: set when the rebalancer moved this row's work here from another model. */
   rebalanced_at?: string | null;
   rebalanced_from_model?: string | null;

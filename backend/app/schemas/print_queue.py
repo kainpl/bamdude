@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, PlainSerializer, model_validator
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.filament_routing import FilamentRoutingChoices
 from backend.app.schemas.timelapse import TimelapseStorage
+from backend.app.services.queue_source_descriptor import SourceStorageState
 from backend.app.utils.temperature_limits import MAX_CHAMBER_TEMP_C
 
 
@@ -160,6 +161,14 @@ class PrintQueueItemResponse(BaseModel):
     error_message: str | None
     created_at: UTCDatetime
     batch_id: str | None = None
+    # Whether this job owns a local copy of the bytes it prints (m173, spec §8).
+    # Add-only and read-only: ``ready`` is set for an attached, verified blob and
+    # never inferred from the kind of the original source; ``exempt`` is an
+    # external print or a calibration job; ``legacy`` is a row the background
+    # hydration has still to reach. The raw spool path is deliberately NOT
+    # exposed — there is no "print an arbitrary hash" surface (§10).
+    source_storage: SourceStorageState = "legacy"
+    source_size_bytes: int | None = None
 
     # Nested info for UI
     archive_name: str | None = None

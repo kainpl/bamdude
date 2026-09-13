@@ -210,6 +210,12 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
         queue_id=src.queue_id,
         archive_id=src.archive_id,
         library_file_id=src.library_file_id,
+        # m173: the clone prints the SAME bytes and becomes a second owner of the
+        # same blob — never a new read of the original (queue-source-spool spec
+        # §9). The snapshot travels beside the id because that is what keeps the
+        # display name and the plate fallback with the copy.
+        queue_source_id=src.queue_source_id,
+        source_snapshot=src.source_snapshot,
         project_id=src.project_id,
         project_line_id=src.project_line_id,
         # Carried, not reset to "queue": a retry of an external print is still

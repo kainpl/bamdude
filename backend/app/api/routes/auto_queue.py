@@ -55,6 +55,7 @@ from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.auto_queue_eligibility import find_eligible_printer
 from backend.app.services.filament_intake import fail_auto_source, read_item_requirements, routing_detail
 from backend.app.services.filament_preview import routing_preview
+from backend.app.services.queue_source_descriptor import source_storage_state
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
 from backend.app.utils.printer_models import normalize_model_name
 
@@ -144,6 +145,11 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         rebalanced_from_model=item.rebalanced_from_model,
         created_at=item.created_at,
         created_by_id=item.created_by_id,
+        # m173. As in ``print_queue._enrich_response``: the ``queue_sources`` row
+        # is not loaded here, and a caller that has not looked may not claim
+        # ``ready`` — a snapshotted row reads ``legacy`` until the resolver task
+        # teaches this builder to load it. No auto row is ever ``exempt``.
+        source_storage=source_storage_state(queue_source_id=item.queue_source_id),
     )
 
     # UI-friendly nested data. Both ``PrintArchive`` and ``LibraryFile`` store

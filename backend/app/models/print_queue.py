@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from backend.app.core.database import Base
@@ -35,7 +35,16 @@ class PrintQueueItem(Base):
         return value
 
     # Source file (either archive_id OR library_file_id; archive created at print start from library file)
-    archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="CASCADE"), nullable=True)
+    #
+    # ⚠️ SET NULL, not CASCADE (m173). This was the one cascade that destroyed a
+    # job because its *source* went away: purging an archive took every queue row
+    # naming it, on PostgreSQL, silently. A job with a queue source of its own no
+    # longer depends on the archive, so the navigational link nulls and the work
+    # survives (queue-source-spool spec §4, §10). SQLite enforces no FK rule at
+    # all, so the detach there is code, beside the delete paths. ``archive_id``
+    # also doubles as the *execution* archive of a running print, which is a
+    # second reason nothing may cascade off it.
+    archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
     # SET NULL on library file delete so queue items survive as "orphan" rows
     # with their archive_id (if any) still pointing at a valid archive. The
     # delete_file endpoint explicitly nulls this too for SQLite installs where
@@ -43,6 +52,23 @@ class PrintQueueItem(Base):
     library_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True
     )
+
+    # The immutable local copy of the bytes this job prints (m173). NULL is a
+    # legacy row — one queued before the spool existed, or an exempt one
+    # (external / calibration). RESTRICT: a blob a job still names may not be
+    # deleted out from under it, and nulling the reference instead would turn a
+    # runnable job into one with no source at all. See ``models/queue_source.py``
+    # and spec §4.
+    queue_source_id: Mapped[int | None] = mapped_column(
+        ForeignKey("queue_sources.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    # Versioned per-job metadata about that source: ``provenance`` (the original
+    # kind/id, for navigation and audit only), the display filename, the format
+    # and the archive plate fallback. Deliberately NOT a second home for the
+    # job's own ``project_id`` / ``project_line_id`` / ``created_by_id`` — those
+    # stay canonical as columns (spec §4). The blob is shared; this is not.
+    source_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     project_line_id: Mapped[int | None] = mapped_column(
         ForeignKey("project_lines.id", ondelete="SET NULL"), nullable=True, index=True

@@ -324,6 +324,7 @@ def import_all_models() -> None:
         product,
         project,
         project_line,
+        queue_source,
         settings,
         shopping_list,
         slicer_pipeline,
