@@ -30,7 +30,7 @@ this table can be in (§4, §5). ``preparing`` is an API word only, derived from
 the live supervisor — see
 :data:`~backend.app.services.queue_source_descriptor.SOURCE_STORAGE_STATES`.
 
-The three CHECKs are named so that :func:`db_portable._reconcile_check_constraints`
+The four CHECKs are named so that :func:`db_portable._reconcile_check_constraints`
 can add them to a database that was imported from a file which never had them —
 that pass matches by name, and an unnamed CHECK is silently skipped.
 """
