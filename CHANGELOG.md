@@ -135,6 +135,8 @@
 
 ### Fixed
 
+- **The printers page keeps the sort order you chose.** Sorting by status, by current job or by "free at" reads each printer's live status, which arrives a moment after the page does — and the order was worked out once, before any of it was there, so the page opened alphabetically and only obeyed the saved order after you re-picked it by hand. The order now follows the statuses as they land, and the orders that do not need them poll nothing extra.
+
 - **A non-proxy virtual printer now stops cleanly when its listeners cannot start.** A missing local bind IP, occupied port, or startup timeout no longer produces a misleading success log or leaves a partial server running. The real-printer MQTT bridge attaches only after all configured listeners are ready and is detached if startup fails or is cancelled. Other virtual printers can still start. The bilingual Virtual Printer guide now includes native Windows IP-alias setup, the DHCP caveat, and when additional addresses are required.
 
 - **Fleet pages make fewer status requests and keep live updates moving.** Simultaneous printer-status reads share a bounded REST batch, while WebSocket states can populate cards before REST finishes. Late REST replies preserve newer live fields, and returning to a browser tab refreshes only active queries. Each WebSocket viewer has an independent bounded delivery queue, so a stalled connection cannot delay other viewers or printer-event producers. Backend logs now correlate initial-state preparation with the browser's cache acknowledgement to help investigate slow page opening.

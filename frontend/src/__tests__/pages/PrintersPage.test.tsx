@@ -193,6 +193,60 @@ describe('PrintersPage', () => {
     });
   });
 
+  describe('sorting', () => {
+    /** The card headings, in the order the page rendered them. */
+    const renderedOrder = () =>
+      screen
+        .getAllByText(/^(X1 Carbon|P1S Backup|A1 Spare)$/)
+        .filter(el => el.tagName === 'H3')
+        .map(el => el.textContent);
+
+    it('re-sorts by current job when the statuses arrive, with no second pick of the order', async () => {
+      // The saved order is «ETA (job)», which reads the live status. Those
+      // statuses land AFTER the first paint — that is the whole bug this pins:
+      // the order used to be computed once against an empty status cache, where
+      // every printer tied and the name tiebreaker decided, and it stayed that
+      // way until the operator re-picked the order by hand (2026-09-13).
+      localStorage.setItem('printerSortBy', 'eta');
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const byId: Record<string, unknown> = {
+        // Finishing soonest → first; then the other running one; the idle
+        // printer sinks below both. Alphabetically this is the exact reverse.
+        '1': { ...mockPrinterStatus, state: 'RUNNING', remaining_time: 5 },
+        '2': { ...mockPrinterStatus, state: 'RUNNING', remaining_time: 90 },
+        '3': { ...mockPrinterStatus, state: 'IDLE', remaining_time: 0 },
+      };
+      server.use(
+        http.get('/api/v1/printers/status/batch', async ({ request }) => {
+          await held;
+          const ids = new URL(request.url).searchParams.getAll('ids');
+          return HttpResponse.json(Object.fromEntries(ids.map(id => [id, byId[id] ?? mockPrinterStatus])));
+        }),
+        http.get('/api/v1/printers/:id/status', async ({ params }) => {
+          await held;
+          return HttpResponse.json(byId[String(params.id)] ?? mockPrinterStatus);
+        }),
+      );
+
+      const view = render(<PrintersPage />);
+      try {
+        await screen.findByText('A1 Spare');
+        // Cold cache: nothing to compare, so the name tiebreaker orders them.
+        expect(renderedOrder()).toEqual(['A1 Spare', 'P1S Backup', 'X1 Carbon']);
+
+        release();
+
+        await waitFor(() => {
+          expect(renderedOrder()).toEqual(['X1 Carbon', 'P1S Backup', 'A1 Spare']);
+        });
+      } finally {
+        release();
+        view.unmount();
+      }
+    }, 20_000);
+  });
+
   describe('tags', () => {
     // jsdom measures every element as zero-wide, so the page's responsive
     // toolbar concludes its inline controls have overflowed and folds them

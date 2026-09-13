@@ -1,5 +1,5 @@
 import { useState, useEffect, useId, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
 import { useTranslation } from 'react-i18next';
 import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
@@ -9268,9 +9268,38 @@ export function PrintersPage() {
   });
   const forecastRows = useMemo(() => forecastById(farmForecast), [farmForecast]);
 
+  // Three orders read the live per-printer status, and the sort below must be
+  // recomputed when that status ARRIVES — not only when the operator picks an
+  // order. Reading the cache with `queryClient.getQueryData` inside the memo
+  // could not do that: `queryClient` never changes identity, so the memo held
+  // whatever the cache happened to hold on the first paint. On a cold load that
+  // is nothing, every comparator tied, the `localeCompare` tiebreaker won, and
+  // a saved «by current job» order rendered alphabetically until the operator
+  // re-picked it (reported 2026-09-13). These observers make the cache a real
+  // dependency. They are opened only for the orders that need them, the way the
+  // farm forecast above is fetched only for «free at»: the other orders keep
+  // today's render count exactly, and no new query key is introduced — the
+  // cards already own these, so this only adds a second observer on each.
+  const orderReadsStatus = sortBy === 'status' || sortBy === 'eta' || sortBy === 'freeAt';
+  const statusQueries = useQueries({
+    queries: (orderReadsStatus ? filteredPrinters : []).map((printer) => ({
+      queryKey: ['printerStatus', printer.id],
+      queryFn: () => api.getPrinterStatus(printer.id),
+      refetchInterval: 30000,
+    })),
+  });
+  const statusByPrinter = useMemo(() => {
+    const map = new Map<number, EtaStatus | undefined>();
+    if (!orderReadsStatus) return map;
+    filteredPrinters.forEach((printer, i) => {
+      map.set(printer.id, statusQueries[i]?.data as EtaStatus | undefined);
+    });
+    return map;
+  }, [orderReadsStatus, filteredPrinters, statusQueries]);
+
   const sortedPrinters = useMemo(() => {
     const sorted = [...filteredPrinters];
-    const statusOf = (printer: Printer) => queryClient.getQueryData<EtaStatus>(['printerStatus', printer.id]);
+    const statusOf = (printer: Printer) => statusByPrinter.get(printer.id);
 
     switch (sortBy) {
       case 'name':
@@ -9307,8 +9336,8 @@ export function PrintersPage() {
       case 'status':
         // Sort by status: HMS errors > printing > idle > offline
         sorted.sort((a, b) => {
-          const statusA = queryClient.getQueryData<{ connected: boolean; state: string | null; hms_errors?: HMSError[] }>(['printerStatus', a.id]);
-          const statusB = queryClient.getQueryData<{ connected: boolean; state: string | null; hms_errors?: HMSError[] }>(['printerStatus', b.id]);
+          const statusA = statusOf(a) as { connected: boolean; state: string | null; hms_errors?: HMSError[] } | undefined;
+          const statusB = statusOf(b) as { connected: boolean; state: string | null; hms_errors?: HMSError[] } | undefined;
 
           const getPriority = (s: typeof statusA) => {
             if (!s?.connected) return 3; // offline
@@ -9348,7 +9377,7 @@ export function PrintersPage() {
     }
 
     return sorted;
-  }, [filteredPrinters, sortBy, sortAsc, queryClient, forecastRows]);
+  }, [filteredPrinters, sortBy, sortAsc, statusByPrinter, forecastRows]);
 
   // Modifier-aware single-printer selection. Behaves like a file-manager:
   //
