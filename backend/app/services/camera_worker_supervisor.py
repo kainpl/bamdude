@@ -10,11 +10,16 @@ from __future__ import annotations
 import asyncio
 import os
 import secrets
+import signal
 import subprocess
 import sys
 import uuid
 from dataclasses import dataclass, field
 
+from backend.app.services.camera_worker_containment import (
+    CameraWorkerContainmentError,
+    WorkerContainment,
+)
 from backend.app.services.camera_worker_protocol import (
     CameraWorkerProtocolError,
     WorkerBootstrap,
@@ -49,10 +54,12 @@ class CameraWorkerSupervisor:
     _request_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _stderr_task: asyncio.Task[None] | None = None
     _stderr_bytes: int = 0
+    _containment: WorkerContainment | None = None
 
     async def start(self) -> None:
         if self.process is not None:
             raise RuntimeError("camera worker harness is already started")
+        self._prepare_start()
         self._control_server = await asyncio.start_server(self._accept_control, host="127.0.0.1", port=0)
         self._media_server = await asyncio.start_server(self._reject_media, host="127.0.0.1", port=0)
         control_port = self._listener_port(self._control_server)
@@ -73,6 +80,14 @@ class CameraWorkerSupervisor:
             stderr=asyncio.subprocess.PIPE,
             **creation_kwargs,
         )
+        try:
+            # The child imports only its IPC harness before it receives stdin;
+            # attaching here precedes any future FFmpeg/camera spawn.
+            self._containment = WorkerContainment.attach(self.process.pid)
+        except CameraWorkerContainmentError as exc:
+            await self._terminate_uncontained_process()
+            await self._close_servers()
+            raise CameraWorkerUnavailable("camera worker process containment is unavailable") from exc
         self._stderr_task = asyncio.create_task(self._drain_stderr(), name="camera-worker-harness-stderr")
         assert self.process.stdin is not None
         self.process.stdin.write(self.bootstrap.to_bytes())
@@ -133,18 +148,49 @@ class CameraWorkerSupervisor:
             try:
                 await asyncio.wait_for(process.wait(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
             except TimeoutError:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
-                except TimeoutError:
-                    process.kill()
-                    await process.wait()
-        await asyncio.gather(
-            *(server.wait_closed() for server in (self._control_server, self._media_server) if server is not None)
-        )
+                await self._terminate_process_tree(process)
+        await self._close_servers()
         if self._stderr_task is not None:
             await self._stderr_task
+        if self._containment is not None:
+            self._containment.close()
+            self._containment = None
         self.process = None
+        self._reader = None
+        self._writer = None
+
+    async def _terminate_uncontained_process(self) -> None:
+        """Clean up a child when attaching its required containment failed."""
+
+        process = self.process
+        if process is not None and process.returncode is None:
+            process.terminate()
+            await process.wait()
+        self.process = None
+
+    async def _terminate_process_tree(self, process: asyncio.subprocess.Process) -> None:
+        """Escalate a stuck worker without leaving its future producers behind."""
+
+        if os.name == "nt" and self._containment is not None:
+            # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE ends every descendant, unlike
+            # Process.terminate(), which would only end the worker parent.
+            self._containment.close()
+            self._containment = None
+        elif os.name != "nt":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:  # pragma: no cover - Windows attaches a Job Object before bootstrap
+            process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+            return
+        except TimeoutError:
+            pass
+
+        if os.name != "nt":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:  # pragma: no cover - defensive fallback after Job Object close
+            process.kill()
+        await process.wait()
 
     async def _accept_control(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -225,3 +271,20 @@ class CameraWorkerSupervisor:
         for server in (self._control_server, self._media_server):
             if server is not None:
                 server.close()
+
+    async def _close_servers(self) -> None:
+        self._close_listeners()
+        await asyncio.gather(
+            *(server.wait_closed() for server in (self._control_server, self._media_server) if server is not None)
+        )
+
+    def _prepare_start(self) -> None:
+        """Allow a stopped harness object to start a fresh authenticated child."""
+
+        self.bootstrap = None
+        self._reader = None
+        self._writer = None
+        self._ready.clear()
+        self._connection_closed.clear()
+        self._stderr_task = None
+        self._stderr_bytes = 0
