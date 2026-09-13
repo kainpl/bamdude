@@ -105,7 +105,7 @@ async def test_an_adopted_row_keeps_the_origin_of_whoever_made_it(
         printer_id=printer.id,
         origin="direct",
         library_file_id=raw_gcode_source.id,
-        staged=await a_direct_capture(),
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     await mark_queue_printing_for_printer(printer.id)
@@ -147,7 +147,7 @@ async def test_a_direct_prints_own_row_is_adopted_not_duplicated(
         printer_id=printer.id,
         origin="direct",
         library_file_id=raw_gcode_source.id,
-        staged=await a_direct_capture(),
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     await mark_queue_printing_for_printer(printer.id)
@@ -173,7 +173,7 @@ async def test_an_adopted_row_learns_its_archive(
         printer_id=printer.id,
         origin="direct",
         library_file_id=raw_gcode_source.id,
-        staged=await a_direct_capture(),
+        staged=await a_direct_capture(raw_gcode_source),
     )
     archive = await archive_factory(printer.id, status="printing")
 

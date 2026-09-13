@@ -75,7 +75,7 @@ async def test_the_queue_waits_for_a_direct_print(
         printer_id=printer.id,
         origin="direct",
         library_file_id=raw_gcode_source.id,
-        staged=await a_direct_capture(),
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     start = AsyncMock()
@@ -200,7 +200,7 @@ async def test_another_printers_direct_print_does_not_hold_this_queue(
         printer_id=other.id,
         origin="direct",
         library_file_id=raw_gcode_source.id,
-        staged=await a_direct_capture(),
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     start = AsyncMock()

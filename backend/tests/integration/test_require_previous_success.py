@@ -281,7 +281,7 @@ class TestTheGateSeesPrintsItUsedToMiss:
             printer_id=printer.id,
             origin="direct",
             library_file_id=raw_gcode_source.id,
-            staged=await a_direct_capture(),
+            staged=await a_direct_capture(raw_gcode_source),
         )
 
         @asynccontextmanager

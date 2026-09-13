@@ -257,7 +257,9 @@ async def test_a_refusal_fails_the_item_and_leaves_the_queue_idle(
     ``error``, so failing the queue for a refusal would freeze exactly the queue
     strict mode exists to protect."""
     service = BackgroundDispatchService()
-    queue, item, job = await _real_claim(db_session, printer_factory, raw_gcode_source, await a_direct_capture())
+    queue, item, job = await _real_claim(
+        db_session, printer_factory, raw_gcode_source, await a_direct_capture(raw_gcode_source)
+    )
 
     await service._release_direct_claim(job, status="failed", queue_error=False)
 
@@ -276,7 +278,9 @@ async def test_a_real_failure_still_puts_the_queue_in_error(
 ):
     """The default did not move: a dispatch that broke still stops the queue."""
     service = BackgroundDispatchService()
-    queue, item, job = await _real_claim(db_session, printer_factory, raw_gcode_source, await a_direct_capture())
+    queue, item, job = await _real_claim(
+        db_session, printer_factory, raw_gcode_source, await a_direct_capture(raw_gcode_source)
+    )
 
     await service._release_direct_claim(job, status="failed")
 

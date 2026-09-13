@@ -57,22 +57,54 @@ _EXEMPT_SITES: dict[tuple[str, str], str] = {
 }
 
 
-def _sites() -> list[tuple[str, str, int, ast.Call]]:
-    """Every queue-row construction under ``backend/app``, with its scope.
+def _model_aliases(tree: ast.AST) -> set[str]:
+    """Names a module gave one of the queue models — ``_MODEL = PrintQueueItem``.
+
+    A helper parameterised by tier is how a writer would arrive holding the model
+    as a value (a promotion or a rebalance that writes into either queue), and a
+    guard that matched only the model's own spelling would not see the
+    construction at all. One level of aliasing, which is what such a helper
+    looks like; an alias of an alias is not worth the walk.
+    """
+    return {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and node.value.id in _MODELS
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    } | {
+        node.target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in _MODELS
+        and isinstance(node.target, ast.Name)
+    }
+
+
+def _sites_in(source: str, where: str) -> list[tuple[str, str, int, ast.Call]]:
+    """Every queue-row construction in one module's source, with its scope.
 
     The scope is the dotted chain of enclosing classes and functions, so that an
     exemption can name one writer instead of a whole module — ``manager.py``
     holds two writers and ``background_dispatch.py`` holds a dispatcher beside
     its calibration door.
+
+    Takes source text rather than a path so that the guard's own blind spots can
+    be tested on synthetic writers (see ``_BLIND_SPOTS`` below). A guard that
+    reads *almost* everything is worse than one that reads nothing: it looks like
+    coverage.
     """
+    tree = ast.parse(source, filename=where)
+    names = (*_MODELS, *_model_aliases(tree))
     found: list[tuple[str, str, int, ast.Call]] = []
 
-    def walk(node: ast.AST, where: str, scope: tuple[str, ...]) -> None:
+    def walk(node: ast.AST, scope: tuple[str, ...]) -> None:
         for child in ast.iter_child_nodes(node):
             inner = scope
             if isinstance(child, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
                 inner = (*scope, child.name)
-            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id in _MODELS:
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id in names:
                 # ⚠️ EVERY call, ``PrintQueueItem()`` with no keywords included. An
                 # earlier version of this guard also required ``child.keywords``,
                 # on the theory that it was excluding the model's own class
@@ -82,11 +114,17 @@ def _sites() -> list[tuple[str, str, int, ast.Call]]:
                 # assign the columns one at a time, ``session.add`` it, and the
                 # guard saw a site with no keywords and skipped it.
                 found.append((where, ".".join(scope), child.lineno, child))
-            walk(child, where, inner)
+            walk(child, inner)
 
+    walk(tree, ())
+    return found
+
+
+def _sites() -> list[tuple[str, str, int, ast.Call]]:
+    """Every queue-row construction under ``backend/app``."""
+    found: list[tuple[str, str, int, ast.Call]] = []
     for path in sorted(_BACKEND.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        walk(tree, path.relative_to(_BACKEND).as_posix(), ())
+        found.extend(_sites_in(path.read_text(encoding="utf-8"), path.relative_to(_BACKEND).as_posix()))
     return found
 
 
@@ -144,34 +182,120 @@ def test_no_exemption_names_a_site_that_is_gone():
     )
 
 
+def _bulk_inserts_in(source: str, where: str) -> list[str]:
+    """``insert`` calls in one module that name a queue model, as ``where:line``.
+
+    ⚠️ The callee is matched by **spelling**, not by identity: this codebase
+    habitually imports SQLAlchemy under an alias (``sa_select``, ``sa_func``,
+    ``sa_insert``) and sometimes as a module (``sa.insert``), so a check for the
+    bare name ``insert`` would have let its own house style through.
+
+    ⚠️ And the model is looked for **anywhere in the callee expression** as well as
+    in the arguments, because ``PrintQueueItem.__table__.insert()`` spells the
+    model on the left of the call and passes nothing at all.
+    """
+    tree = ast.parse(source, filename=where)
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        callee = node.func
+        spelled_insert = (isinstance(callee, ast.Name) and callee.id.endswith("insert")) or (
+            isinstance(callee, ast.Attribute) and callee.attr == "insert"
+        )
+        if not spelled_insert:
+            continue
+        names_a_model = any(isinstance(arg, ast.Name) and arg.id in _MODELS for arg in node.args) or any(
+            isinstance(inner, ast.Name) and inner.id in _MODELS for inner in ast.walk(callee)
+        )
+        if names_a_model:
+            offenders.append(f"{where}:{node.lineno}")
+    return offenders
+
+
 def test_no_writer_inserts_a_queue_row_behind_the_constructor():
     """The AST guard above only sees constructors, so nothing else may write rows.
 
     A ``session.execute(insert(PrintQueueItem), [...])`` would create runnable
     jobs the guard cannot read — the one shape that makes this whole test
     decorative. There is no such writer today and there must not be one.
-
-    ⚠️ The callee is matched by **spelling**, not by identity: this codebase
-    habitually imports SQLAlchemy under an alias (``sa_select``, ``sa_func``,
-    ``sa_insert``) and sometimes as a module (``sa.insert``), so a check for the
-    bare name ``insert`` would have let its own house style through.
     """
     offenders: list[str] = []
     for path in sorted(_BACKEND.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            callee = node.func
-            spelled_insert = (isinstance(callee, ast.Name) and callee.id.endswith("insert")) or (
-                isinstance(callee, ast.Attribute) and callee.attr == "insert"
-            )
-            if not spelled_insert:
-                continue
-            if any(isinstance(arg, ast.Name) and arg.id in _MODELS for arg in node.args):
-                offenders.append(f"{path.relative_to(_BACKEND).as_posix()}:{node.lineno}")
+        offenders.extend(_bulk_inserts_in(path.read_text(encoding="utf-8"), path.relative_to(_BACKEND).as_posix()))
     assert not offenders, (
         f"{offenders} builds queue rows with a bulk insert(), which the construction-site guard "
         "cannot see. Write the rows through the model constructor so the capture rule is "
         "enforceable, or extend this guard to cover the statement."
     )
+
+
+# --------------------------------------------------------------------------- #
+# The guard's own blind spots
+# --------------------------------------------------------------------------- #
+#
+# Every shape below was, at some point, a writer that this guard could not see —
+# three of them found by a reviewer rather than by the guard, which is the whole
+# argument for pinning them here rather than in a report: a future refactor of
+# the walk above cannot quietly reopen one.
+
+_BLIND_SPOTS: dict[str, str] = {
+    "a row built with no keywords, its columns assigned afterwards": """
+item = PrintQueueItem()
+item.queue_id = 1
+item.status = "pending"
+session.add(item)
+""",
+    "a model reached through a module-level alias": """
+_MODEL = AutoQueueItem
+
+
+def enqueue(session):
+    session.add(_MODEL(status="pending", position=1))
+""",
+    "a model aliased with an annotation": """
+_MODEL: type = PrintQueueItem
+
+
+def enqueue(session):
+    session.add(_MODEL(queue_id=1, status="pending"))
+""",
+    "the splat that hides which columns are set": """
+def enqueue(session, fields):
+    session.add(PrintQueueItem(**fields))
+""",
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_BLIND_SPOTS), ids=lambda name: name)
+def test_the_guard_sees_a_writer_shaped_like_this(shape: str):
+    """Seen AND reported: a site the walk finds but the rule waves through is no
+    better than one it never found."""
+    sites = _sites_in(_BLIND_SPOTS[shape], "<probe>")
+    assert sites, f"the guard does not even see {shape!r} — widen _sites_in"
+
+    for _where, _scope, _line, call in sites:
+        names = {kw.arg for kw in call.keywords if kw.arg}
+        assert not set(_REQUIRED) <= names, f"{shape!r} passed a captured source — fix the probe, not the guard"
+
+
+def test_a_compliant_site_is_accepted():
+    """The other half: the rule must not simply fail everything it sees."""
+    source = """
+def enqueue(session, source, snapshot):
+    session.add(PrintQueueItem(queue_source_id=source.id, source_snapshot=snapshot, queue_id=1, status="pending"))
+"""
+    (site,) = _sites_in(source, "<probe>")
+    names = {kw.arg: kw.value for kw in site[3].keywords if kw.arg}
+    assert set(_REQUIRED) <= set(names)
+    assert not any(_literal_none(names[name]) for name in _REQUIRED)
+
+
+def test_a_row_inserted_through_the_models_own_table_is_seen():
+    """``PrintQueueItem.__table__.insert()`` names the model on the LEFT of the
+    call and passes no arguments at all — the args-only check missed it."""
+    assert _bulk_inserts_in("session.execute(PrintQueueItem.__table__.insert(), rows)\n", "<probe>") == ["<probe>:1"]
+    assert _bulk_inserts_in("await session.execute(sa_insert(AutoQueueItem), rows)\n", "<probe>") == ["<probe>:1"]
+    assert _bulk_inserts_in("await session.execute(sa.insert(PrintQueueItem), rows)\n", "<probe>") == ["<probe>:1"]
+    # Somebody else's table is not this guard's business.
+    assert _bulk_inserts_in("await session.execute(sa_insert(LibraryFile), rows)\n", "<probe>") == []

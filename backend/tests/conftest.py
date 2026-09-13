@@ -909,7 +909,7 @@ async def raw_gcode_source(db_session, tmp_path):
 
 
 @pytest.fixture
-async def a_direct_capture(raw_gcode_source):
+def a_direct_capture():
     """Take the capture a direct print takes before it claims a printer (m173).
 
     ``queue_batch.claim_printer_for_direct_print`` refuses ``origin="direct"``
@@ -920,10 +920,15 @@ async def a_direct_capture(raw_gcode_source):
 
     A **factory**, not a value: a receipt may be published once, so a test that
     claims two printers needs two captures.
+
+    ⚠️ The source is named at the call and has no default. This used to fall back to
+    ``raw_gcode_source``, which made the fixture dependency materialise that row for
+    every test that took a capture — including the three that capture a file of
+    their own, where it left a library row nothing referenced.
     """
     from backend.app.services.queue_source_capture import capture_staged, plan_capture
 
     async def capture(source=None, *, archive=None):
-        return await capture_staged(plan_capture(archive=archive, library_file=source or raw_gcode_source))
+        return await capture_staged(plan_capture(archive=archive, library_file=source))
 
     return capture

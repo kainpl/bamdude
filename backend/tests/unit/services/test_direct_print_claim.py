@@ -37,7 +37,7 @@ async def test_the_claim_is_a_printing_row_the_scheduler_cannot_pick_up(
         origin="direct",
         library_file_id=raw_gcode_source.id,
         created_by_id=None,
-        staged=await a_direct_capture(),
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     assert item is not None
@@ -58,7 +58,7 @@ async def test_the_queue_is_claimed_and_points_at_the_item(
         printer_id=printer.id,
         origin="direct",
         library_file_id=raw_gcode_source.id,
-        staged=await a_direct_capture(),
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     await db_session.refresh(queue)
@@ -79,7 +79,7 @@ async def test_it_does_not_disturb_the_pending_ordering(
         printer_id=printer.id,
         origin="direct",
         library_file_id=raw_gcode_source.id,
-        staged=await a_direct_capture(),
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     from backend.app.services.queue_batch import enqueue_batch_copies
@@ -103,7 +103,7 @@ async def test_the_print_options_land_on_the_row(db_session, printer_factory, ra
         origin="direct",
         library_file_id=raw_gcode_source.id,
         options={"plate_id": 3, "ams_mapping": [1, -1], "timelapse": True, "layer_inspect": True},
-        staged=await a_direct_capture(),
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     assert item.plate_id == 3
@@ -129,7 +129,7 @@ async def test_the_owner_is_carried(db_session, printer_factory, raw_gcode_sourc
         origin="direct",
         created_by_id=user.id,
         library_file_id=raw_gcode_source.id,
-        staged=await a_direct_capture(),
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     assert item.created_by_id == user.id
@@ -150,7 +150,7 @@ async def test_a_printer_with_no_queue_row_gets_one_and_the_claim(
         printer_id=printer.id,
         origin="direct",
         library_file_id=raw_gcode_source.id,
-        staged=await a_direct_capture(),
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     assert item is not None
