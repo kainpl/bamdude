@@ -251,6 +251,90 @@ async def get_printer_or_404(printer_id: int, db: AsyncSession) -> Printer:
     return printer
 
 
+async def _worker_external_stream_response(
+    *,
+    printer: Printer,
+    printer_id: int,
+    request: Request,
+    fps: int,
+    runtime,
+) -> StreamingResponse:
+    """Serve external live video from the supervised worker's JPEG relay.
+
+    The worker owns the physical source; this process keeps the existing HTTP
+    fan-out and browser-disconnect behaviour.  That preserves the public MJPEG
+    endpoint and avoids multiplying worker leases when a camera wall opens the
+    same printer in several places.
+    """
+
+    _stream_start_times.setdefault(printer_id, time.time())
+    _active_external_streams.add(printer_id)
+    fanout_key = f"printer-{printer_id}"
+    # Stable, secret-free source identity.  The URL intentionally is not the
+    # key: an access-token rotation must not create a second physical producer.
+    identity = str(uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:printer:{printer_id}:external-camera"))
+
+    def _publish_worker_frame(frame: bytes) -> None:
+        now = time.time()
+        _last_frames[printer_id] = frame
+        _last_frame_times[printer_id] = now
+        # The external snapshot endpoint consults this short cache before it
+        # opens a competing one-shot connection to a single-reader camera.
+        _remember_snapshot(printer_id, frame)
+
+    def _factory(disconnect_event: asyncio.Event):
+        async def _stream():
+            try:
+                async for chunk in runtime.stream_external(
+                    identity=identity,
+                    url=printer.external_camera_url,
+                    camera_type=printer.external_camera_type,
+                    fps=fps,
+                    disconnect_event=disconnect_event,
+                    on_frame=_publish_worker_frame,
+                ):
+                    yield chunk
+            finally:
+                _active_external_streams.discard(printer_id)
+                _release_printer_frame_state(printer_id)
+
+        return _stream()
+
+    broadcaster: MjpegBroadcaster = await get_or_create_broadcaster(fanout_key, _factory)
+    try:
+        queue = await broadcaster.subscribe()
+    except RuntimeError:
+        broadcaster = await get_or_create_broadcaster(fanout_key, _factory)
+        queue = await broadcaster.subscribe()
+
+    async def _is_disconnected() -> bool:
+        try:
+            return await request.is_disconnected()
+        except Exception:
+            return True
+
+    async def _generate():
+        async for chunk in iter_subscriber(
+            broadcaster,
+            queue,
+            is_disconnected=_is_disconnected,
+            on_unsubscribe=lambda remaining: logger.info(
+                "Camera worker viewer detached from %s (subscribers=%d)", fanout_key, remaining
+            ),
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        _generate(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
 @camera_metrics.observed_stream("chamber_image")
 async def generate_chamber_mjpeg_stream(
     ip_address: str,
@@ -849,6 +933,7 @@ async def camera_stream(
     if printer.external_camera_enabled and printer.external_camera_url:
         import time
 
+        from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
         from backend.app.services.external_camera import generate_mjpeg_stream
 
         # Limit external camera FPS to reduce browser load
@@ -856,6 +941,16 @@ async def camera_stream(
         logger.info(
             "Using external camera (%s) for printer %s at %s fps", printer.external_camera_type, printer_id, fps
         )
+
+        runtime = get_camera_runtime()
+        if isinstance(runtime, WorkerCameraRuntime):
+            return await _worker_external_stream_response(
+                printer=printer,
+                printer_id=printer_id,
+                request=request,
+                fps=fps,
+                runtime=runtime,
+            )
 
         # Register into the SAME registries the RTSP and chamber paths use
         # (#2675). External streams used to track only _active_external_streams,

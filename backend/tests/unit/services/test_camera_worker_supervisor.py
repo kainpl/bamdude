@@ -177,3 +177,30 @@ async def test_worker_relays_latest_frames_for_an_external_live_lease():
         await supervisor.stop()
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_worker_runtime_adapts_external_live_lease_to_mjpeg_and_releases_it():
+    server = await asyncio.start_server(_serve_snapshot, host="127.0.0.1", port=0)
+    port = server.sockets[0].getsockname()[1]
+    supervisor = CameraWorkerSupervisor()
+    runtime = WorkerCameraRuntime(supervisor)
+    disconnect = asyncio.Event()
+    stream = runtime.stream_external(
+        identity=str(uuid.uuid4()),
+        url=f"http://127.0.0.1:{port}/snapshot.jpg",
+        camera_type="snapshot",
+        fps=5,
+        disconnect_event=disconnect,
+    )
+    try:
+        chunk = await asyncio.wait_for(anext(stream), timeout=3)
+        assert b"Content-Type: image/jpeg" in chunk
+        assert _JPEG in chunk
+    finally:
+        disconnect.set()
+        await stream.aclose()
+        assert not supervisor._live_media_queues
+        await runtime.stop()
+        server.close()
+        await server.wait_closed()

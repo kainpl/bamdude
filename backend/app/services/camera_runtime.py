@@ -8,7 +8,9 @@ browser-token and worker-process imports.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import asyncio
+import uuid
+from collections.abc import AsyncGenerator, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -144,6 +146,50 @@ class WorkerCameraRuntime:
 
     async def capture(self, request: CameraCaptureRequest) -> CameraCaptureResult:
         return await self.supervisor.capture(request)
+
+    async def stream_external(
+        self,
+        *,
+        identity: str,
+        url: str,
+        camera_type: str,
+        fps: int,
+        disconnect_event: asyncio.Event,
+        on_frame: Callable[[bytes], None] | None = None,
+    ) -> AsyncGenerator[bytes, None]:
+        """Yield a worker-owned external camera stream as standard MJPEG parts.
+
+        The HTTP layer still owns browser disconnect detection and its normal
+        fan-out lifecycle.  This adapter only bridges its one physical source
+        to that fan-out; it never exposes worker protocol frames to a client.
+        ``identity`` is a stable UUID for the physical source, not a URL, so a
+        credential rotation cannot accidentally create a second producer.
+        """
+
+        # Validate it here too: callers must not use an endpoint URL as the
+        # worker identity, which would make credentials part of a registry key.
+        uuid.UUID(identity)
+        lease_id, queue = await self.supervisor.subscribe_external(
+            identity=identity,
+            url=url,
+            camera_type=camera_type,
+            fps=fps,
+        )
+        try:
+            from backend.app.services.external_camera import format_mjpeg_frame
+
+            while not disconnect_event.is_set():
+                try:
+                    media = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except TimeoutError:
+                    continue
+                if media is None:
+                    return
+                if on_frame is not None:
+                    on_frame(media.frame)
+                yield format_mjpeg_frame(media.frame)
+        finally:
+            await self.supervisor.unsubscribe(lease_id, queue)
 
     async def stop(self) -> None:
         await self.supervisor.stop()

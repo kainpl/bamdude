@@ -779,7 +779,7 @@ async def generate_mjpeg_stream(
                 on_frame(frame)
             except Exception:
                 logger.exception("on_frame callback raised")
-        return _format_mjpeg_frame(frame)
+        return format_mjpeg_frame(frame)
 
     if camera_type == "mjpeg":
         # Proxy MJPEG stream directly, with reconnect on timeout
@@ -859,7 +859,7 @@ async def generate_mjpeg_stream(
                 await asyncio.sleep(frame_interval)
 
 
-def _format_mjpeg_frame(frame: bytes) -> bytes:
+def format_mjpeg_frame(frame: bytes) -> bytes:
     """Format frame for MJPEG HTTP response."""
     return (
         b"--frame\r\n"
@@ -867,6 +867,11 @@ def _format_mjpeg_frame(frame: bytes) -> bytes:
         b"Content-Length: " + str(len(frame)).encode() + b"\r\n"
         b"\r\n" + frame + b"\r\n"
     )
+
+
+# Kept as a compatibility alias for integrations that used the original helper
+# before the worker runtime made multipart formatting a shared boundary.
+_format_mjpeg_frame = format_mjpeg_frame
 
 
 async def _stream_mjpeg(url: str) -> AsyncGenerator[bytes, None]:
