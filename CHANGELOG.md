@@ -9,6 +9,8 @@
 
 ### Added
 
+- **Camera timing and frame provenance for support.** Camera status and diagnosis expose optional producer/attempt IDs, first-frame versus caller wait timings, bounded counters and snapshot provenance. Each producer emits one sanitized completion record to backend logs; status reads never open a camera. Shared captures keep the producer's clock, and slow-viewer drops are distinguished from network loss. See [field semantics](docs/camera-observability.md) / [українською](docs/camera-observability.uk.md).
+
 - **Point a local frontend at a remote backend.** Vite's development and preview proxies now accept `BACKEND_URL` for HTTP and WebSocket requests. Without it, the existing localhost target and `BACKEND_PORT` behavior are preserved.
 
 - **Download the current log without restarting BamDude.** System Info → Log Files now lists `bamdude.log` first, even before any daily archive exists. Download saves a full, finite snapshot while logging continues, without requiring DEBUG mode or the support bundle's tail limit. The snapshot is prepared off the request event loop, and its temporary copy is removed after transfer or disconnection. Daily archives keep their download and delete actions; the current row only offers download.

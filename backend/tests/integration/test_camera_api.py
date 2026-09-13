@@ -306,7 +306,7 @@ class TestCameraAPI:
         fake_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
 
         with patch(
-            "backend.app.services.external_camera.capture_frame",
+            "backend.app.services.external_camera._capture_frame_uncoalesced",
             new_callable=AsyncMock,
             return_value=fake_jpeg,
         ):
@@ -327,7 +327,7 @@ class TestCameraAPI:
         )
 
         with patch(
-            "backend.app.services.external_camera.capture_frame",
+            "backend.app.services.external_camera._capture_frame_uncoalesced",
             new_callable=AsyncMock,
             return_value=None,
         ):

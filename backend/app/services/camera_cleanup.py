@@ -101,6 +101,11 @@ class CameraAttempt:
         self.stop_process = stop_process
 
     async def __aenter__(self):
+        from backend.app.services.camera_metrics import current
+
+        self.metrics = current.get()
+        if self.metrics is not None and self.metrics.identity is None:
+            self.metrics.begin_attempt()
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
@@ -119,11 +124,14 @@ class CameraAttempt:
             # cleanup failure; neither a traceback nor a credentialed argv here.
 
     async def _close(self):
+        import time
+
         from backend.app.services.camera_tls import close_tls_proxy
         from backend.app.services.ffmpeg_stderr import FfmpegStdoutDrain
         from backend.app.utils.ffmpeg_output import summarize_ffmpeg_stderr
 
         succeeded = True
+        started = time.monotonic()
         stdout_drain = None
         try:
             if self.process is not None:
@@ -158,5 +166,12 @@ class CameraAttempt:
                         await close_tls_proxy(self.proxy)
                     except TimeoutError:
                         succeeded = False  # proxy coordinator already logged it
+        metrics = getattr(self, "metrics", None)
+        if metrics is not None:
+            metrics.cleanup_ms = round((time.monotonic() - started) * 1000, 3)
+            if self.stderr is not None:
+                metrics.observe_stderr(self.stderr.text())
+            if not succeeded:
+                metrics.end_reason = "cleanup_failed"
         if not succeeded:
             raise CameraCleanupError("Camera attempt cleanup failed")

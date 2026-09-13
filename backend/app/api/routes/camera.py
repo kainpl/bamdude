@@ -24,6 +24,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
+from backend.app.services import camera_metrics
 from backend.app.services.camera import (
     capture_camera_frame,
     create_tls_proxy,
@@ -251,6 +252,7 @@ async def get_printer_or_404(printer_id: int, db: AsyncSession) -> Printer:
     return printer
 
 
+@camera_metrics.observed_stream("chamber_image")
 async def generate_chamber_mjpeg_stream(
     ip_address: str,
     access_code: str,
@@ -270,8 +272,11 @@ async def generate_chamber_mjpeg_stream(
     if stream_id and disconnect_event:
         _disconnect_events[stream_id] = disconnect_event
 
+    metrics = camera_metrics.current.get()
+    metrics.begin_attempt()
     connection = await generate_chamber_image_stream(ip_address, access_code, fps)
     if connection is None:
+        metrics.end_reason = "connect_failed"
         logger.error("Failed to connect to chamber image stream for %s", ip_address)
         yield (
             b"--frame\r\n"
@@ -299,6 +304,7 @@ async def generate_chamber_mjpeg_stream(
             # Read next frame
             frame = await read_next_chamber_frame(reader, timeout=30.0)
             if frame is None:
+                metrics.end_reason = "upstream_ended"
                 logger.warning("Chamber image stream ended for %s", stream_id)
                 break
 
@@ -310,12 +316,14 @@ async def generate_chamber_mjpeg_stream(
                 _last_frame_times[printer_id] = time.time()
 
             # Rate limiting - skip frames if needed to maintain target FPS
+            metrics.frame(frame, output=False)
             current_time = asyncio.get_event_loop().time()
             if current_time - last_frame_time < frame_interval:
                 continue
             last_frame_time = current_time
 
             # Yield frame in MJPEG format
+            metrics.frame(frame)
             yield (
                 b"--frame\r\n"
                 b"Content-Type: image/jpeg\r\n"
@@ -324,10 +332,13 @@ async def generate_chamber_mjpeg_stream(
             )
 
     except asyncio.CancelledError:
+        metrics.end_reason = "client_disconnected"
         logger.info("Chamber image stream cancelled (stream_id=%s)", stream_id)
     except GeneratorExit:
+        metrics.end_reason = "client_disconnected"
         logger.info("Chamber image stream generator exit (stream_id=%s)", stream_id)
     except Exception as e:
+        metrics.end_reason = "upstream_error"
         logger.exception("Chamber image stream error: %s", e)
     finally:
         # Remove from active streams and disconnect events
@@ -341,11 +352,13 @@ async def generate_chamber_mjpeg_stream(
         _release_printer_frame_state(printer_id)
 
         # Close the connection
+        cleanup_started = asyncio.get_running_loop().time()
         try:
             writer.close()
             await writer.wait_closed()
         except OSError:
             pass  # Connection already closed or broken; cleanup is best-effort
+        metrics.cleanup_ms = round((asyncio.get_running_loop().time() - cleanup_started) * 1000, 3)
         logger.info("Chamber image stream stopped for %s (stream_id=%s)", ip_address, stream_id)
 
 
@@ -479,6 +492,7 @@ async def _read_ffmpeg_stderr(
 # change. Upstream Bambuddy #1395 / commit 67cb5275.
 
 
+@camera_metrics.observed_stream("rtsp")
 async def generate_rtsp_mjpeg_stream(
     ip_address: str,
     access_code: str,
@@ -493,8 +507,10 @@ async def generate_rtsp_mjpeg_stream(
     This is for X1/H2/P2 models that support RTSP streaming.
     Auto-reconnects when the printer drops the RTSP session (common on P2S).
     """
+    metrics = camera_metrics.current.get()
     ffmpeg = get_ffmpeg_path()
     if not ffmpeg:
+        metrics.end_reason = "configuration_error"
         logger.error("ffmpeg not found - camera streaming requires ffmpeg")
         yield (b"--frame\r\nContent-Type: text/plain\r\n\r\nError: ffmpeg not installed\r\n")
         return
@@ -631,10 +647,12 @@ async def generate_rtsp_mjpeg_stream(
                 # Drain from spawn through process exit, including the startup probe.
                 await asyncio.sleep(0.1)
                 if process.returncode is not None:
+                    metrics.consecutive_failures = min(2**53 - 1, metrics.consecutive_failures + 1)
                     stderr_text = _summarize_ffmpeg_stderr(stderr_drain.text())
                     logger.error("ffmpeg failed immediately (attempt %d): %s", reconnect_count + 1, stderr_text)
                     _spawned_ffmpeg_pids.pop(process.pid, None)
                     if not got_any_frames and reconnect_count == 0:
+                        metrics.end_reason = "connect_failed"
                         # First attempt failed immediately - camera is likely unreachable
                         yield (
                             b"--frame\r\n"
@@ -689,6 +707,7 @@ async def generate_rtsp_mjpeg_stream(
                             frame = buffer[: end_idx + 2]
                             buffer = buffer[end_idx + 2 :]
                             got_any_frames = True
+                            metrics.frame(frame)
                             if first_frame_at is None:
                                 first_frame_at = _time.monotonic()
                             elif _time.monotonic() - first_frame_at >= profile.rtsp_reconnect_stable_seconds:
@@ -697,6 +716,7 @@ async def generate_rtsp_mjpeg_stream(
                                 # budget. Do not reset on connection alone:
                                 # a flapping camera must still hit the cap.
                                 reconnect_count = 0
+                                metrics.consecutive_failures = 0
 
                             if printer_id is not None:
                                 import time
@@ -736,6 +756,7 @@ async def generate_rtsp_mjpeg_stream(
                     break
 
                 if stream_ended:
+                    metrics.consecutive_failures = min(2**53 - 1, metrics.consecutive_failures + 1)
                     reconnect_count += 1
                     continue
 
@@ -743,6 +764,7 @@ async def generate_rtsp_mjpeg_stream(
                 break
 
         if reconnect_count > profile.rtsp_reconnect_max:
+            metrics.end_reason = "retry_exhausted"
             logger.error(
                 "RTSP max reconnects (%d) reached for %s (stream_id=%s)",
                 profile.rtsp_reconnect_max,
@@ -751,6 +773,7 @@ async def generate_rtsp_mjpeg_stream(
             )
 
     except FileNotFoundError:
+        metrics.end_reason = metrics.end_reason or "configuration_error"
         logger.error("ffmpeg not found - camera streaming requires ffmpeg")
         yield (b"--frame\r\nContent-Type: text/plain\r\n\r\nError: ffmpeg not installed\r\n")
     except asyncio.CancelledError:
@@ -759,6 +782,7 @@ async def generate_rtsp_mjpeg_stream(
     except GeneratorExit:
         logger.debug("Camera stream generator closed (stream_id=%s)", stream_id)
     except Exception as e:
+        metrics.end_reason = metrics.end_reason or "upstream_error"
         logger.error("Camera stream error (stream_id=%s): %s", stream_id, _summarize_ffmpeg_stderr(str(e)))
     finally:
         # Remove from active streams and disconnect events
@@ -888,6 +912,8 @@ async def camera_stream(
                     on_process=_register_external_process,
                     on_frame=_publish_external_frame,
                     stop_event=stop_event,
+                    printer_id=printer_id,
+                    stream_id=stream_id,
                 ):
                     # generate_mjpeg_stream already handles rate limiting;
                     # track frame times per printer AND per stream for stall detection
@@ -1134,17 +1160,24 @@ async def camera_snapshot(
 
     # Check for external camera first
     if printer.external_camera_enabled and printer.external_camera_url:
-        from backend.app.services.external_camera import capture_frame
+        from backend.app.services.external_camera import capture_frame_with_provenance
 
         cached = _get_cached_snapshot(printer_id)
         if cached is not None:
+            camera_metrics.remember_delivery(printer_id, "snapshot_cache")
             return _snapshot_response(printer_id, cached)
 
-        frame_data = await capture_frame(
+        result = await capture_frame_with_provenance(
             printer.external_camera_url,
             printer.external_camera_type,
             timeout=15,
             snapshot_url=printer.external_camera_snapshot_url,
+        )
+        frame_data = result.frame
+        camera_metrics.remember_delivery(
+            printer_id,
+            "shared_capture" if result.source == "coalesced" else "own_capture" if frame_data else None,
+            result,
         )
         if not frame_data:
             raise HTTPException(
@@ -1163,10 +1196,12 @@ async def camera_snapshot(
     # Upstream Bambuddy #1271 / commit c097140e.
     buffered = try_get_active_buffered_frame(printer_id)
     if buffered is not None:
+        camera_metrics.remember_delivery(printer_id, "live_buffer")
         return _snapshot_response(printer_id, buffered)
 
     cached = _get_cached_snapshot(printer_id)
     if cached is not None:
+        camera_metrics.remember_delivery(printer_id, "snapshot_cache")
         return _snapshot_response(printer_id, cached)
 
     # Create temporary file for the snapshot
@@ -1184,6 +1219,11 @@ async def camera_snapshot(
             model=printer.model,
             output_path=temp_path,
             timeout=15,
+            on_result=lambda result: camera_metrics.remember_delivery(
+                printer_id,
+                "shared_capture" if result.source == "coalesced" else "own_capture" if result.frame else None,
+                result,
+            ),
         )
 
         if not success:
@@ -1324,6 +1364,8 @@ async def camera_status(
         # A support bundle can distinguish a built-in protocol from an
         # operator-configured external camera without inspecting credentials.
         "source": source,
+        "telemetry": camera_metrics.for_printer(printer_id),
+        "last_snapshot": camera_metrics.delivery_for_printer(printer_id),
         # External-camera streams are intentionally direct today, so this is
         # their viewer count only when the built-in fan-out path is active.
         "subscribers": get_subscriber_count(f"printer-{printer_id}"),

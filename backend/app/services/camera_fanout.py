@@ -266,7 +266,14 @@ class MjpegBroadcaster:
                         # Slow viewer — drop this frame for them. They'll catch
                         # up on the next frame. Don't unsubscribe: a brief
                         # browser stall shouldn't end the stream.
-                        pass
+                        if (
+                            b"Content-Type: image/jpeg" in chunk[:128]
+                            and self._key.startswith("printer-")
+                            and self._key.removeprefix("printer-").isdecimal()
+                        ):
+                            from backend.app.services.camera_metrics import drop_for_printer
+
+                            drop_for_printer(int(self._key.removeprefix("printer-")))
         except asyncio.CancelledError:
             raise
         except Exception:
