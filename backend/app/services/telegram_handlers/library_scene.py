@@ -371,9 +371,11 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
             library_file = (
                 await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
             ).scalar_one_or_none()
-            if library_file is None:
-                await callback.answer(t(lang, NS, "library.failed"), show_alert=True)
-                return
+            # A file that is gone needs no special branch here: ``plan_capture``
+            # refuses a source it cannot resolve with the same 422 the queue's
+            # other doors answer, the handler below turns that into the sentence
+            # the operator reads, and the scene ends the way every other outcome
+            # does — back at the menu, rather than returning from the middle.
             plan = plan_capture(library_file=library_file)
         staged = await capture_staged(plan)
 

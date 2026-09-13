@@ -72,14 +72,15 @@ def _sites() -> list[tuple[str, str, int, ast.Call]]:
             inner = scope
             if isinstance(child, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
                 inner = (*scope, child.name)
-            if (
-                isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Name)
-                and child.func.id in _MODELS
-                # The model's own class statement is not a construction, and
-                # neither is a bare ``PrintQueueItem`` used as a type.
-                and child.keywords
-            ):
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id in _MODELS:
+                # ⚠️ EVERY call, ``PrintQueueItem()`` with no keywords included. An
+                # earlier version of this guard also required ``child.keywords``,
+                # on the theory that it was excluding the model's own class
+                # statement and bare uses as a type — neither of which is an
+                # ``ast.Call``, so it excluded nothing and opened the one hole a
+                # writer can walk through without noticing: build the row empty,
+                # assign the columns one at a time, ``session.add`` it, and the
+                # guard saw a site with no keywords and skipped it.
                 found.append((where, ".".join(scope), child.lineno, child))
             walk(child, where, inner)
 
@@ -149,12 +150,23 @@ def test_no_writer_inserts_a_queue_row_behind_the_constructor():
     A ``session.execute(insert(PrintQueueItem), [...])`` would create runnable
     jobs the guard cannot read — the one shape that makes this whole test
     decorative. There is no such writer today and there must not be one.
+
+    ⚠️ The callee is matched by **spelling**, not by identity: this codebase
+    habitually imports SQLAlchemy under an alias (``sa_select``, ``sa_func``,
+    ``sa_insert``) and sometimes as a module (``sa.insert``), so a check for the
+    bare name ``insert`` would have let its own house style through.
     """
     offenders: list[str] = []
     for path in sorted(_BACKEND.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "insert"):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = node.func
+            spelled_insert = (isinstance(callee, ast.Name) and callee.id.endswith("insert")) or (
+                isinstance(callee, ast.Attribute) and callee.attr == "insert"
+            )
+            if not spelled_insert:
                 continue
             if any(isinstance(arg, ast.Name) and arg.id in _MODELS for arg in node.args):
                 offenders.append(f"{path.relative_to(_BACKEND).as_posix()}:{node.lineno}")

@@ -263,7 +263,7 @@ class TestTheGateSeesPrintsItUsedToMiss:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_a_failed_direct_print_gates_what_is_queued_behind_it(
-        self, db_session, printer_factory, monkeypatch, raw_gcode_source
+        self, db_session, printer_factory, monkeypatch, raw_gcode_source, a_direct_capture
     ) -> None:
         """End to end through the real claim and the real release, because the
         point is the row those two leave behind — not a row hand-built to look
@@ -277,7 +277,11 @@ class TestTheGateSeesPrintsItUsedToMiss:
         assert await PrintScheduler().previous_print_succeeded(db_session, printer.id) is True
 
         claimed = await claim_printer_for_direct_print(
-            db_session, printer_id=printer.id, origin="direct", library_file_id=raw_gcode_source.id
+            db_session,
+            printer_id=printer.id,
+            origin="direct",
+            library_file_id=raw_gcode_source.id,
+            staged=await a_direct_capture(),
         )
 
         @asynccontextmanager

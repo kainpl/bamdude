@@ -906,3 +906,24 @@ async def raw_gcode_source(db_session, tmp_path):
     db_session.add(source)
     await db_session.commit()
     return source
+
+
+@pytest.fixture
+async def a_direct_capture(raw_gcode_source):
+    """Take the capture a direct print takes before it claims a printer (m173).
+
+    ``queue_batch.claim_printer_for_direct_print`` refuses ``origin="direct"``
+    without one: BamDude captures what it sends (queue-source-spool spec S1), and
+    only the external claim — a print it never sent — has nothing to snapshot. A
+    test that only cares about the claim's bookkeeping still has to hand it a real
+    receipt, and this is that one line.
+
+    A **factory**, not a value: a receipt may be published once, so a test that
+    claims two printers needs two captures.
+    """
+    from backend.app.services.queue_source_capture import capture_staged, plan_capture
+
+    async def capture(source=None, *, archive=None):
+        return await capture_staged(plan_capture(archive=archive, library_file=source or raw_gcode_source))
+
+    return capture

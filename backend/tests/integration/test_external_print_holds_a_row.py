@@ -92,7 +92,7 @@ async def test_the_row_says_it_is_external(db_session, printer_factory, main_db)
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_an_adopted_row_keeps_the_origin_of_whoever_made_it(
-    db_session, printer_factory, main_db, raw_gcode_source
+    db_session, printer_factory, main_db, raw_gcode_source, a_direct_capture
 ):
     """A dispatch of ours reaches ``on_print_start`` too, and adopts its own
     claim rather than making a second row. Adoption must not relabel it: the
@@ -101,7 +101,11 @@ async def test_an_adopted_row_keeps_the_origin_of_whoever_made_it(
 
     printer, queue = await _queue(db_session, printer_factory)
     await claim_printer_for_direct_print(
-        db_session, printer_id=printer.id, origin="direct", library_file_id=raw_gcode_source.id
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(),
     )
 
     await mark_queue_printing_for_printer(printer.id)
@@ -130,7 +134,7 @@ async def test_the_row_carries_the_archive_so_completion_can_close_it(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_a_direct_prints_own_row_is_adopted_not_duplicated(
-    db_session, printer_factory, main_db, raw_gcode_source
+    db_session, printer_factory, main_db, raw_gcode_source, a_direct_capture
 ):
     """⚠️ ``on_print_start`` runs for our own dispatches too, and a second row
     there would trip on_print_complete's "Multiple queue items in 'printing'
@@ -139,7 +143,11 @@ async def test_a_direct_prints_own_row_is_adopted_not_duplicated(
 
     printer, queue = await _queue(db_session, printer_factory)
     mine = await claim_printer_for_direct_print(
-        db_session, printer_id=printer.id, origin="direct", library_file_id=raw_gcode_source.id
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(),
     )
 
     await mark_queue_printing_for_printer(printer.id)
@@ -151,7 +159,7 @@ async def test_a_direct_prints_own_row_is_adopted_not_duplicated(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_an_adopted_row_learns_its_archive(
-    db_session, printer_factory, main_db, archive_factory, raw_gcode_source
+    db_session, printer_factory, main_db, archive_factory, raw_gcode_source, a_direct_capture
 ):
     """A direct print's row is created before its archive exists — the dispatcher
     wires it, but a re-trigger path that adopts a different archive would leave
@@ -161,7 +169,11 @@ async def test_an_adopted_row_learns_its_archive(
 
     printer, queue = await _queue(db_session, printer_factory)
     mine = await claim_printer_for_direct_print(
-        db_session, printer_id=printer.id, origin="direct", library_file_id=raw_gcode_source.id
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(),
     )
     archive = await archive_factory(printer.id, status="printing")
 

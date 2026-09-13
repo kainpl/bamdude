@@ -1432,85 +1432,90 @@ class VirtualPrinterInstance:
                 sliced_model: str | None = None
                 if isinstance(library_file.file_metadata, dict):
                     sliced_model = library_file.file_metadata.get("sliced_for_model")
-            except BaseException:
-                await discard_staged(staged)
-                raise
 
-            async with self._session_factory() as db:
-                # Precedence per flag: slicer value -> system fallback row for
-                # the TARGET MODEL -> column default — the same ladder as
-                # ``_add_to_print_queue``, resolved before a printer exists.
-                system_opts = await self._load_system_print_options_for_model(
-                    db, strict_requirements.model or sliced_model
-                )
-                bed_levelling = _resolve_print_option(slicer_opts, system_opts, "bed_leveling", "bed_levelling", True)
-                flow_cali = _resolve_print_option(slicer_opts, system_opts, "flow_cali", "flow_cali", True)
-                layer_inspect = _resolve_print_option(slicer_opts, system_opts, "layer_inspect", "layer_inspect", False)
-                timelapse = _resolve_print_option(slicer_opts, system_opts, "timelapse", "timelapse", False)
-                use_ams = bool(slicer_opts["use_ams"]) if slicer_opts and "use_ams" in slicer_opts else True
-                timelapse_storage = (slicer_opts or {}).get("timelapse_storage")
-                nozzle_mapping_json = self._parse_nozzle_mapping(slicer_opts)
-
-            # Serialise filament fields as JSON strings — the column is
-            # ``Text`` and the eligibility scheduler reads via
-            # ``json.loads`` in ``auto_queue_eligibility.py``. Storing the
-            # raw Python list works on SQLite (silently stringifies via
-            # str(list) → e.g. ``"['PLA']"``) but breaks the eligibility
-            # parser, which then treats the row as if it had no
-            # requirements. The /auto-queue/ POST route already does this
-            # right (`auto_queue.py:268`); this aligns the VP path.
-            required_types_json = (
-                json.dumps(list(dict.fromkeys(f["type"] for f in strict_requirements.used_filaments)))
-                if strict_requirements.used_filaments
-                else None
-            )
-            target_model = strict_requirements.model or sliced_model
-            created_ids: list[int] = []
-
-            async def attach(db, source) -> None:
-                # Position at the end of pending items so VP-uploads don't
-                # jump ahead of UI submissions. Read inside the publication's
-                # transaction, which is also the one that inserts.
-                max_pos = await db.scalar(
-                    sa_select(sa_func.coalesce(sa_func.max(AutoQueueItem.position), 0)).where(
-                        AutoQueueItem.status == "pending"
+                async with self._session_factory() as db:
+                    # Precedence per flag: slicer value -> system fallback row for
+                    # the TARGET MODEL -> column default — the same ladder as
+                    # ``_add_to_print_queue``, resolved before a printer exists.
+                    system_opts = await self._load_system_print_options_for_model(
+                        db, strict_requirements.model or sliced_model
                     )
-                )
-                item = AutoQueueItem(
-                    queue_source_id=source.id,
-                    source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
-                    library_file_id=library_file.id,
-                    archive_id=None,  # archive created at print-start by _run_print_library_file
-                    target_model=target_model,
-                    required_filament_types=required_types_json,
-                    filament_overrides=(json.dumps(filament_overrides_json) if filament_overrides_json else None),
-                    plate_id=plate_id,
-                    position=(max_pos or 0) + 1,
-                    status="pending",
-                    manual_start=not self.auto_dispatch,
-                    bed_levelling=bed_levelling,
-                    flow_cali=flow_cali,
-                    layer_inspect=layer_inspect,
-                    timelapse=timelapse,
-                    timelapse_storage=timelapse_storage,
-                    use_ams=use_ams,
-                    feed_policy="auto" if use_ams else "external_only",
-                    force_color_match=self.queue_force_color_match,
-                    nozzle_mapping=nozzle_mapping_json,
-                    # Per-VP auto-print G-code injection opt-in (#1516). Copied
-                    # onto the per-printer print_queue item when the scheduler
-                    # promotes this router row. No-op unless snippets exist.
-                    gcode_injection=self.gcode_injection,
-                )
-                db.add(item)
-                await db.flush()
-                created_ids.append(item.id)
+                    bed_levelling = _resolve_print_option(
+                        slicer_opts, system_opts, "bed_leveling", "bed_levelling", True
+                    )
+                    flow_cali = _resolve_print_option(slicer_opts, system_opts, "flow_cali", "flow_cali", True)
+                    layer_inspect = _resolve_print_option(
+                        slicer_opts, system_opts, "layer_inspect", "layer_inspect", False
+                    )
+                    timelapse = _resolve_print_option(slicer_opts, system_opts, "timelapse", "timelapse", False)
+                    use_ams = bool(slicer_opts["use_ams"]) if slicer_opts and "use_ams" in slicer_opts else True
+                    timelapse_storage = (slicer_opts or {}).get("timelapse_storage")
+                    nozzle_mapping_json = self._parse_nozzle_mapping(slicer_opts)
 
-            try:
+                # Serialise filament fields as JSON strings — the column is
+                # ``Text`` and the eligibility scheduler reads via
+                # ``json.loads`` in ``auto_queue_eligibility.py``. Storing the
+                # raw Python list works on SQLite (silently stringifies via
+                # str(list) → e.g. ``"['PLA']"``) but breaks the eligibility
+                # parser, which then treats the row as if it had no
+                # requirements. The /auto-queue/ POST route already does this
+                # right (`auto_queue.py:268`); this aligns the VP path.
+                required_types_json = (
+                    json.dumps(list(dict.fromkeys(f["type"] for f in strict_requirements.used_filaments)))
+                    if strict_requirements.used_filaments
+                    else None
+                )
+                target_model = strict_requirements.model or sliced_model
+                created_ids: list[int] = []
+
+                async def attach(db, source) -> None:
+                    # Position at the end of pending items so VP-uploads don't
+                    # jump ahead of UI submissions. Read inside the publication's
+                    # transaction, which is also the one that inserts.
+                    max_pos = await db.scalar(
+                        sa_select(sa_func.coalesce(sa_func.max(AutoQueueItem.position), 0)).where(
+                            AutoQueueItem.status == "pending"
+                        )
+                    )
+                    item = AutoQueueItem(
+                        queue_source_id=source.id,
+                        source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
+                        library_file_id=library_file.id,
+                        archive_id=None,  # archive created at print-start by _run_print_library_file
+                        target_model=target_model,
+                        required_filament_types=required_types_json,
+                        filament_overrides=(json.dumps(filament_overrides_json) if filament_overrides_json else None),
+                        plate_id=plate_id,
+                        position=(max_pos or 0) + 1,
+                        status="pending",
+                        manual_start=not self.auto_dispatch,
+                        bed_levelling=bed_levelling,
+                        flow_cali=flow_cali,
+                        layer_inspect=layer_inspect,
+                        timelapse=timelapse,
+                        timelapse_storage=timelapse_storage,
+                        use_ams=use_ams,
+                        feed_policy="auto" if use_ams else "external_only",
+                        force_color_match=self.queue_force_color_match,
+                        nozzle_mapping=nozzle_mapping_json,
+                        # Per-VP auto-print G-code injection opt-in (#1516). Copied
+                        # onto the per-printer print_queue item when the scheduler
+                        # promotes this router row. No-op unless snippets exist.
+                        gcode_injection=self.gcode_injection,
+                    )
+                    db.add(item)
+                    await db.flush()
+                    created_ids.append(item.id)
+
                 # The row and the blob's own row are committed together, after the
                 # file is in its final place (§5 step 6).
                 await publish_staged(staged, attach)
             except BaseException:
+                # ⚠️ ONE handler over everything between the copy and the
+                # publication — the requirements read, the options session, the
+                # JSON building. A second ``try`` starting at the publish left the
+                # steps in between able to fail with the staged file still on disk,
+                # waiting out the GC's one-hour orphan grace for nothing.
                 await discard_staged(staged)
                 raise
             # Same late-MQTT insurance as the print_queue path: if the

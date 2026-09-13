@@ -511,9 +511,10 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
             library_file = (
                 await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
             ).scalar_one_or_none()
-            if library_file is None:
-                await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
-                return
+            # No branch for a file that is gone: ``plan_capture`` refuses an
+            # unresolvable source with the queue's own 422, the handler below says
+            # so in the operator's language, and the scene ends at the queue view
+            # like every other outcome.
             plan = plan_capture(library_file=library_file)
         # Copy first, holding no session (spec \u00a75 steps 1-3), then read the
         # routing out of the COPY: the plate this job prints and the filaments it

@@ -158,10 +158,26 @@ async def claim_printer_for_direct_print(
     (spec §5): the row is then written inside the publication's own transaction,
     so the claim and the blob's row are committed together — and the copy is
     already finished, which is what keeps the printer free for the length of it.
-    An ``external`` print has no ``staged`` and takes no snapshot: §2's exemption.
+    An ``external`` print has no ``staged`` and takes no snapshot: §2's exemption,
+    and it is the ONLY thing that exemption covers — see the refusal below.
 
     The caller owns the release: see ``background_dispatch``.
     """
+    if origin == "direct" and staged is None:
+        # ⚠️ The §2 exemption belongs to the external print alone. This one site
+        # writes the claim for both, and it expresses "no snapshot" as a value
+        # (``queue_source_id=None`` when there is no source row) — which the
+        # source guard in ``tests/unit/test_every_queue_row_names_its_source.py``
+        # permits precisely because the decision is made per call. So the decision
+        # has to be a real one: a direct print BamDude sends is captured like any
+        # other add (S1), and a caller that reached here without a capture has
+        # skipped it rather than chosen it. ``ValueError`` and not an
+        # ``HTTPException``: no operator input can produce this, only a new
+        # dispatch path that forgot the copy.
+        raise ValueError(
+            "a direct print must be captured before it claims the printer — pass staged= "
+            "(services/queue_source_capture.capture_staged); only origin='external' has no snapshot"
+        )
     # Read the evidence BEFORE the publication: a 3MF parse under the
     # process-wide storage guard would serialise every other publication behind
     # this claim. Requirements come from the captured copy when there is one.

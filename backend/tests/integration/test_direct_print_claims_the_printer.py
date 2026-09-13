@@ -65,11 +65,17 @@ def _idle_printer_manager():
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_the_queue_waits_for_a_direct_print(db_session, printer_factory, scheduler, raw_gcode_source):
+async def test_the_queue_waits_for_a_direct_print(
+    db_session, printer_factory, scheduler, raw_gcode_source, a_direct_capture
+):
     """The bug, end to end: file1 claimed, file2 must not overtake it."""
     printer, item = await _printer_with_pending_item(db_session, printer_factory, raw_gcode_source)
     await claim_printer_for_direct_print(
-        db_session, printer_id=printer.id, origin="direct", library_file_id=raw_gcode_source.id
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(),
     )
 
     start = AsyncMock()
@@ -181,7 +187,7 @@ async def test_a_rejected_direct_print_leaves_no_claim(db_session, printer_facto
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_another_printers_direct_print_does_not_hold_this_queue(
-    db_session, printer_factory, scheduler, raw_gcode_source
+    db_session, printer_factory, scheduler, raw_gcode_source, a_direct_capture
 ):
     """⚠️ Per printer. A farm-wide hold would be worse than the bug — one
     Print now anywhere would stall every queue until it started."""
@@ -190,7 +196,11 @@ async def test_another_printers_direct_print_does_not_hold_this_queue(
     db_session.add(PrinterQueue(id=other.id, printer_id=other.id))
     await db_session.commit()
     await claim_printer_for_direct_print(
-        db_session, printer_id=other.id, origin="direct", library_file_id=raw_gcode_source.id
+        db_session,
+        printer_id=other.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(),
     )
 
     start = AsyncMock()

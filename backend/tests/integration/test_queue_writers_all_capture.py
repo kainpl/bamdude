@@ -226,7 +226,7 @@ async def test_the_bots_library_add_refuses_a_file_id_that_names_an_archive(
     ).scalar_one_or_none() is None, "fixture no longer reproduces the id collision"
     callback = a_callback()
 
-    with patch("backend.app.services.telegram_handlers.start.cmd_start", new=AsyncMock()):
+    with patch("backend.app.services.telegram_handlers.start.cmd_start", new=AsyncMock()) as menu:
         await cb_library_add_queue(callback, a_state({"file_id": archive.id, "printer_id": printer.id}), tg_chat=None)
 
     assert reads == [], "nothing may be read for a library id that names no library file"
@@ -234,6 +234,8 @@ async def test_the_bots_library_add_refuses_a_file_id_that_names_an_archive(
     assert await count_of(db_session, PrintQueueItem) == 0
     assert staging_litter() == []
     assert callback.answer.await_args.kwargs.get("show_alert") is True
+    assert answered(callback) == routing_detail("source_unreadable")["message"], "say what was wrong, not 'failed'"
+    assert menu.await_count == 1, "a refusal ends the scene where every other outcome does — at the menu"
 
 
 async def test_the_bot_tells_the_operator_which_refusal_it_was(
@@ -424,6 +426,35 @@ async def test_a_farm_distributed_slicer_upload_captures_too(
     assert json.loads(item.required_filament_types) == ["PLA"]
     assert item.source_snapshot["display_filename"] == source.filename
     assert vp._recent_auto_items[original.name][0] == [item.id]
+    assert staging_litter() == []
+
+
+async def test_a_failure_between_the_copy_and_the_publish_still_gives_the_bytes_back(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, reads
+):
+    """Everything between ``capture`` and ``publish`` sits inside one handler.
+
+    The steps in that gap are unglamorous — a session for the saved print options,
+    the nozzle parse, a JSON dump — and a failure in any of them used to leave the
+    staged file waiting out the collector's one-hour orphan grace on behalf of a
+    job nobody was ever going to get.
+    """
+    source, printer, _queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    source.file_metadata = {"sliced_for_model": "P1P", "plates": [{"index": 15}]}
+    await db_session.commit()
+    vp = await a_vp(tmp_path, test_engine, printer, mode="auto_queue")
+    monkeypatch.setattr(vp, "_save_to_library", AsyncMock(return_value=source))
+    monkeypatch.setattr(
+        VirtualPrinterInstance,
+        "_parse_nozzle_mapping",
+        staticmethod(lambda _slicer_opts: 1 / 0),
+    )
+
+    await vp._add_to_auto_queue(Path(source.file_path), "127.0.0.1")
+
+    assert len(reads) == 1, "the copy did happen — this is about what follows it"
+    assert await count_of(db_session, AutoQueueItem) == 0
+    assert await blobs(db_session) == []
     assert staging_litter() == []
 
 
