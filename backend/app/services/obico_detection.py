@@ -232,8 +232,7 @@ class ObicoDetectionService:
         """
         # Late import to avoid cycles at module load time
         from backend.app.api.routes.camera import live_frame_for_capture
-        from backend.app.services.camera import capture_camera_frame_bytes
-        from backend.app.services.external_camera import capture_frame as capture_external_frame
+        from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
         async with async_session() as db:
             printer = await db.get(Printer, printer_id)
@@ -258,19 +257,26 @@ class ObicoDetectionService:
             return None
 
         if printer.external_camera_enabled and printer.external_camera_url:
-            return await capture_external_frame(
-                printer.external_camera_url,
-                printer.external_camera_type,
-                timeout=SNAPSHOT_CAPTURE_TIMEOUT,
-                snapshot_url=printer.external_camera_snapshot_url,
+            result = await capture(
+                CameraCaptureRequest.external(
+                    url=printer.external_camera_url,
+                    camera_type=printer.external_camera_type,
+                    snapshot_url=printer.external_camera_snapshot_url,
+                    timeout=SNAPSHOT_CAPTURE_TIMEOUT,
+                    purpose="obico",
+                )
             )
-
-        return await capture_camera_frame_bytes(
-            ip_address=printer.ip_address,
-            access_code=printer.access_code,
-            model=printer.model,
-            timeout=SNAPSHOT_CAPTURE_TIMEOUT,
-        )
+        else:
+            result = await capture(
+                CameraCaptureRequest.builtin(
+                    ip_address=printer.ip_address,
+                    access_code=printer.access_code,
+                    model=printer.model,
+                    timeout=SNAPSHOT_CAPTURE_TIMEOUT,
+                    purpose="obico",
+                )
+            )
+        return result.frame
 
     async def _check_printer(self, printer_id: int, status, settings: dict):
         task_name = getattr(status, "task_name", None) or getattr(status, "subtask_name", "") or ""

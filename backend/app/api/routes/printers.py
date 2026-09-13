@@ -870,6 +870,9 @@ async def delete_printer(
     await db.delete(printer)
     await db.commit()
 
+    from backend.app.services.camera_metrics import forget_printer
+
+    forget_printer(printer_id)
     return {"status": "deleted", "archives_deleted": delete_archives}
 
 

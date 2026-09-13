@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -126,7 +127,46 @@ async def test_camera_readiness_timeout_releases_other_listeners(startup):
     startup.modes["TCPProxy"] = "stall"
     assert await asyncio.wait_for(startup.instance.start_server(), timeout=7) is False
     assert_stopped(startup)
+
+
+@pytest.mark.asyncio
+async def test_worker_camera_runtime_refuses_direct_vp_camera_proxy(startup, monkeypatch):
+    """A configured worker without its runtime process must still fail closed."""
+
+    from backend.app.core import config
+
+    monkeypatch.setattr(config.settings, "camera_runtime", "worker")
+    assert await startup.instance.start_server() is False
+    assert_stopped(startup)
     startup.client.register_raw_message_handler.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_worker_camera_runtime_owns_vp_raw_camera_proxy(startup, monkeypatch):
+    from backend.app.core import config
+    from backend.app.services import camera_runtime
+
+    class Supervisor:
+        start_raw_proxy = AsyncMock(return_value="raw-lease")
+        stop_raw_proxy = AsyncMock()
+
+    supervisor = Supervisor()
+    runtime = camera_runtime.WorkerCameraRuntime(supervisor)
+    monkeypatch.setattr(config.settings, "camera_runtime", "worker")
+    monkeypatch.setattr(camera_runtime, "get_camera_runtime", lambda: runtime)
+
+    assert await startup.instance.start_server() is True
+    supervisor.start_raw_proxy.assert_awaited_once()
+    raw_proxy_kwargs = supervisor.start_raw_proxy.call_args.kwargs
+    assert raw_proxy_kwargs["bind_address"] == "192.0.2.10"
+    assert raw_proxy_kwargs["listen_port"] == 322
+    assert raw_proxy_kwargs["target_host"] == "192.0.2.20"
+    assert raw_proxy_kwargs["target_port"] == 322
+    # The stable identity is not a credential or endpoint string.
+    uuid.UUID(raw_proxy_kwargs["identity"])
+    await startup.instance.stop_server()
+    supervisor.stop_raw_proxy.assert_awaited_once_with("raw-lease")
+    assert_stopped(startup)
 
 
 @pytest.mark.asyncio

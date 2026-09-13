@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import userEvent from '@testing-library/user-event';
@@ -114,6 +114,27 @@ describe('PrintersPage', () => {
     localStorage.removeItem('printerSortBy');
     localStorage.removeItem('printerSortAsc');
     localStorage.removeItem('printerCardSize');
+  });
+
+  it('restores only the last saved camera and switches the single popup to another card', async () => {
+    localStorage.setItem('openEmbeddedCameras', JSON.stringify([
+      { id: 1, name: 'X1 Carbon' }, { id: 2, name: 'P1S Backup' },
+    ]));
+    server.use(http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({ camera_view_mode: 'embedded' })));
+    const view = render(<PrintersPage />);
+    try {
+      const initial = await screen.findByAltText('Camera stream') as HTMLImageElement;
+      expect(initial.src).toContain('/printers/2/');
+      await waitFor(() => expect(screen.getAllByTitle('Open camera overlay')).toHaveLength(3));
+      await userEvent.click(within(document.getElementById('printer-1')!).getByTitle('Open camera overlay'));
+      await waitFor(() => expect(screen.getByAltText('Camera stream').getAttribute('src')).toContain('/printers/1/'));
+      expect(initial.src).toMatch(/^data:image\/gif;/);
+      expect(screen.getAllByAltText('Camera stream')).toHaveLength(1);
+      expect(JSON.parse(localStorage.getItem('openEmbeddedCameras')!)).toEqual([{ id: 1, name: 'X1 Carbon' }]);
+    } finally {
+      view.unmount();
+      localStorage.removeItem('openEmbeddedCameras');
+    }
   });
 
   describe('rendering', () => {

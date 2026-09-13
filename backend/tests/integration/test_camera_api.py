@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
+from backend.app.services.camera_metrics import CameraCaptureResult
+
 
 @pytest.fixture(autouse=True)
 async def _inject_camera_stream_token(async_client: AsyncClient):
@@ -208,15 +210,9 @@ class TestCameraAPI:
         # Create a fake JPEG (starts with FFD8)
         fake_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
 
-        with patch("backend.app.api.routes.camera.capture_camera_frame", new_callable=AsyncMock) as mock_capture:
-            mock_capture.return_value = True
-
-            # Mock the file read
-            with patch("builtins.open", create=True) as mock_open:
-                mock_open.return_value.__enter__.return_value.read.return_value = fake_jpeg
-
-                with patch("pathlib.Path.exists", return_value=True), patch("pathlib.Path.unlink"):
-                    _response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
+        with patch("backend.app.services.camera_runtime.capture", new_callable=AsyncMock) as mock_capture:
+            mock_capture.return_value = CameraCaptureResult(fake_jpeg, "fresh")
+            _response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
 
         # Note: The actual test might fail due to file operations, but this tests the endpoint structure
         # In production tests, we'd mock more comprehensively
@@ -229,13 +225,9 @@ class TestCameraAPI:
         fake_jpeg = b"\xff\xd8first-cached-frame"
 
         with (
-            patch("backend.app.api.routes.camera.capture_camera_frame", new_callable=AsyncMock) as mock_capture,
-            patch("builtins.open", create=True) as mock_open,
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.unlink"),
+            patch("backend.app.services.camera_runtime.capture", new_callable=AsyncMock) as mock_capture,
         ):
-            mock_capture.return_value = True
-            mock_open.return_value.__enter__.return_value.read.return_value = fake_jpeg
+            mock_capture.return_value = CameraCaptureResult(fake_jpeg, "fresh")
 
             first = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
             second = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
@@ -256,15 +248,12 @@ class TestCameraAPI:
         now = 1000.0
         fake_jpegs = [b"\xff\xd8first-frame", b"\xff\xd8second-frame"]
 
-        async def fake_capture(*, output_path, **_kwargs):
-            output_path.write_bytes(fake_jpegs.pop(0))
-            return True
+        async def fake_capture(_request):
+            return CameraCaptureResult(fake_jpegs.pop(0), "fresh")
 
         with (
             patch("backend.app.api.routes.camera.time.monotonic", side_effect=lambda: now),
-            patch("backend.app.api.routes.camera.capture_camera_frame", new_callable=AsyncMock) as mock_capture,
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.unlink"),
+            patch("backend.app.services.camera_runtime.capture", new_callable=AsyncMock) as mock_capture,
         ):
             mock_capture.side_effect = fake_capture
 
@@ -284,11 +273,9 @@ class TestCameraAPI:
         """Verify 503 when camera capture fails."""
         printer = await printer_factory()
 
-        with patch("backend.app.api.routes.camera.capture_camera_frame", new_callable=AsyncMock) as mock_capture:
-            mock_capture.return_value = False
-
-            with patch("pathlib.Path.exists", return_value=False), patch("pathlib.Path.unlink"):
-                response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
+        with patch("backend.app.services.camera_runtime.capture", new_callable=AsyncMock) as mock_capture:
+            mock_capture.return_value = CameraCaptureResult(None, None)
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
 
         assert response.status_code == 503
         assert "Failed to capture" in response.json()["detail"]
@@ -306,7 +293,7 @@ class TestCameraAPI:
         fake_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
 
         with patch(
-            "backend.app.services.external_camera.capture_frame",
+            "backend.app.services.external_camera._capture_frame_uncoalesced",
             new_callable=AsyncMock,
             return_value=fake_jpeg,
         ):
@@ -327,7 +314,7 @@ class TestCameraAPI:
         )
 
         with patch(
-            "backend.app.services.external_camera.capture_frame",
+            "backend.app.services.external_camera._capture_frame_uncoalesced",
             new_callable=AsyncMock,
             return_value=None,
         ):

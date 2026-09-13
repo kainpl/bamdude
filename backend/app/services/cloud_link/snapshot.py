@@ -387,8 +387,7 @@ async def _capture(printer_id: int, camera: _Camera) -> bytes | None:
     "the agent calls the product's function" is pinned rather than asserted.
     """
     from backend.app.api.routes.camera import live_frame_for_capture
-    from backend.app.services.camera import capture_camera_frame_bytes
-    from backend.app.services.external_camera import capture_frame as capture_external_frame
+    from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
     defer, buffered = live_frame_for_capture(printer_id)
     if defer:
@@ -401,19 +400,26 @@ async def _capture(printer_id: int, camera: _Camera) -> bytes | None:
         return buffered
 
     if camera.external_enabled and camera.external_url:
-        return await capture_external_frame(
-            camera.external_url,
-            camera.external_type,
-            timeout=CAMERA_TIMEOUT_S,
-            snapshot_url=camera.external_snapshot_url,
+        result = await capture(
+            CameraCaptureRequest.external(
+                url=camera.external_url,
+                camera_type=camera.external_type,
+                timeout=CAMERA_TIMEOUT_S,
+                snapshot_url=camera.external_snapshot_url,
+                purpose="cloud_link",
+            )
         )
-
-    return await capture_camera_frame_bytes(
-        ip_address=camera.ip_address,
-        access_code=camera.access_code,
-        model=camera.model,
-        timeout=CAMERA_TIMEOUT_S,
-    )
+    else:
+        result = await capture(
+            CameraCaptureRequest.builtin(
+                ip_address=camera.ip_address,
+                access_code=camera.access_code,
+                model=camera.model,
+                timeout=CAMERA_TIMEOUT_S,
+                purpose="cloud_link",
+            )
+        )
+    return result.frame
 
 
 # ---------------------------------------------------------------- the upload

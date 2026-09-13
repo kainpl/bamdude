@@ -15,12 +15,11 @@ import subprocess
 import time
 import traceback
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 
 from backend.app.services.camera_cleanup import CameraAttempt
+from backend.app.services.camera_metrics import CameraCaptureResult, capture_result, record_frame
 from backend.app.services.camera_tls import (
     close_tls_proxy as close_tls_proxy,
     create_tls_proxy as create_tls_proxy,
@@ -39,20 +38,6 @@ logger = logging.getLogger(__name__)
 # 30 s, and including it would mean they never coalesce, which is exactly the
 # Obico-vs-snapshot pair from the report.
 _inflight_captures: dict[str, "asyncio.Task[CameraCaptureResult]"] = {}
-
-
-@dataclass(frozen=True)
-class CameraCaptureResult:
-    """One-shot frame plus how this caller obtained it.
-
-    ``fresh`` means this task opened the capture path. ``coalesced`` means the
-    caller deliberately joined a capture already running for the same printer,
-    which preserves the printer's single-camera-connection limit. A missing
-    source means no usable frame arrived.
-    """
-
-    frame: bytes | None
-    source: Literal["fresh", "coalesced"] | None
 
 
 def capture_in_flight(ip_address: str) -> bool:
@@ -362,7 +347,7 @@ async def read_chamber_image_frame(
                 logger.warning("Chamber image: JPEG missing end marker, may be truncated")
 
             logger.debug("Chamber image: received %s bytes", len(jpeg_data))
-            return jpeg_data
+            return record_frame(jpeg_data)
 
         finally:
             writer.close()
@@ -451,6 +436,8 @@ async def capture_camera_frame(
     model: str | None,
     output_path: Path,
     timeout: int = 30,
+    *,
+    on_result=None,
 ) -> bool:
     """Capture a single frame from the printer's camera stream and save to disk.
 
@@ -469,7 +456,10 @@ async def capture_camera_frame(
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    jpeg_data = await capture_camera_frame_bytes(ip_address, access_code, model, timeout)
+    result = await capture_camera_frame_with_provenance(ip_address, access_code, model, timeout)
+    if on_result is not None:
+        on_result(result)
+    jpeg_data = result.frame
     if jpeg_data:
         try:
             with open(output_path, "wb") as f:
@@ -547,6 +537,7 @@ async def capture_camera_frame_with_provenance(
     # has finished, so there is no socket left to compete with. Bounded at two
     # rounds: if the capture we joined AND its replacement both failed, a third
     # connection will not help, and this caller has spent its patience.
+    caller_started = time.monotonic()
     for _ in range(2):
         leader = _inflight_captures.get(ip_address)
         if leader is None or leader.done():
@@ -565,7 +556,7 @@ async def capture_camera_frame_with_provenance(
                 leader.get_name(),
                 time.monotonic() - wait_started,
             )
-            return CameraCaptureResult(frame=None, source=None)
+            return CameraCaptureResult(frame=None, source=None).for_caller(caller_started)
         except asyncio.CancelledError:
             # Distinguish "the capture I joined was cancelled" from "I was
             # cancelled". Only the former is ours to recover from.
@@ -586,12 +577,12 @@ async def capture_camera_frame_with_provenance(
                 leader.get_name(),
                 time.monotonic() - wait_started,
             )
-            return CameraCaptureResult(frame=result.frame, source="coalesced")
+            return result.for_caller(caller_started, shared=True)
         logger.info(
             "In-flight camera capture for %s failed; capturing our own [capture_id=%s]", ip_address, leader.get_name()
         )
     else:
-        return CameraCaptureResult(frame=None, source=None)
+        return CameraCaptureResult(frame=None, source=None).for_caller(caller_started)
 
     # The name is the attempt ID: followers already hold the task, so they can
     # log the same ID without a second registry or changing the capture API.
@@ -607,7 +598,7 @@ async def capture_camera_frame_with_provenance(
     # shield() so a cancelled leader — a client navigating away mid-snapshot is
     # routine — does not take the capture down with it; the followers already
     # waiting on it still get their frame.
-    return await asyncio.shield(task)
+    return (await asyncio.shield(task)).for_caller(caller_started)
 
 
 async def _capture_camera_frame_with_provenance_uncoalesced(
@@ -617,8 +608,11 @@ async def _capture_camera_frame_with_provenance_uncoalesced(
     timeout: int,
 ) -> CameraCaptureResult:
     """Run the socket-owning capture and annotate a successful fresh frame."""
-    frame = await _capture_camera_frame_bytes_uncoalesced(ip_address, access_code, model, timeout)
-    return CameraCaptureResult(frame=frame, source="fresh" if frame is not None else None)
+    return await capture_result(
+        _capture_camera_frame_bytes_uncoalesced(ip_address, access_code, model, timeout),
+        "chamber_image" if is_chamber_image_model(model) else "rtsp",
+        ip_address,
+    )
 
 
 async def _capture_camera_frame_bytes_uncoalesced(
@@ -719,7 +713,7 @@ async def _capture_camera_frame_bytes_uncoalesced(
                     process.pid,
                     time.monotonic() - started,
                 )
-                return stdout
+                return record_frame(stdout)
             else:
                 stderr_text = summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT
                 logger.error(

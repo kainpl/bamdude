@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { cameraWallPrintName } from '../utils/cameraWall';
 import { useQueries } from '@tanstack/react-query';
 import { Settings as SettingsIcon } from 'lucide-react';
+import { useCameraLiveBudget } from '../hooks/useCameraLiveBudget';
 import { CameraTile, type CameraTileMode, type CameraTileStatusMode } from './CameraTile';
 import { filterKnownHMSErrors } from './HMSErrorModal';
 import { api, type HMSError, type PrinterStatus } from '../api/client';
@@ -149,12 +150,16 @@ export function CameraWall({
   // snapshot polling. Off-screen tiles render paused (no network). Disconnected
   // printers also render paused regardless of visibility — there's nothing to
   // stream and burning a live-budget slot on them would starve a working tile.
+  const requestedLive = Math.min(maxLive, printers.filter((p) =>
+    visibleIds.has(p.id) && statusByPrinter.get(p.id)?.connected).length);
+  const { granted: liveSlots, ready, protocol, limit } = useCameraLiveBudget(requestedLive);
+
   const modeByPrinter = useMemo(() => {
     const map = new Map<number, CameraTileMode>();
-    let liveBudget = Math.max(0, maxLive);
+    let liveBudget = liveSlots;
     for (const p of printers) {
       const connected = statusByPrinter.get(p.id)?.connected ?? false;
-      if (!visibleIds.has(p.id) || !connected) {
+      if (!ready || !visibleIds.has(p.id) || !connected) {
         map.set(p.id, 'paused');
         continue;
       }
@@ -166,7 +171,7 @@ export function CameraWall({
       }
     }
     return map;
-  }, [printers, visibleIds, maxLive, statusByPrinter]);
+  }, [printers, visibleIds, liveSlots, ready, statusByPrinter]);
 
   if (printers.length === 0) {
     return (
@@ -178,6 +183,11 @@ export function CameraWall({
 
   return (
     <div className="space-y-3">
+      {liveSlots < requestedLive && (
+        <p className="text-xs text-bambu-gray" role="status">
+          {t('printers.camWall.transportLimit', { protocol: protocol === 'unknown' ? t('printers.camWall.transportUnknown') : protocol, limit })}
+        </p>
+      )}
       <div className="flex items-center justify-between text-xs text-bambu-gray">
         <span>
           {t('printers.camWall.summary', {

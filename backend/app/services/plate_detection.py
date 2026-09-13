@@ -617,13 +617,18 @@ async def capture_camera_image(
     # Try external camera first if requested and available
     if image_data is None and use_external and external_camera_url and external_camera_type:
         try:
-            from backend.app.services.external_camera import capture_frame
+            from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-            image_data = await capture_frame(
-                external_camera_url,
-                external_camera_type,
-                snapshot_url=external_camera_snapshot_url,
-            )
+            image_data = (
+                await capture(
+                    CameraCaptureRequest.external(
+                        url=external_camera_url,
+                        camera_type=external_camera_type,
+                        snapshot_url=external_camera_snapshot_url,
+                        purpose="plate_check",
+                    )
+                )
+            ).frame
             if image_data:
                 camera_source = "external"
                 logger.debug("Captured frame from external camera for printer %s", printer_id)
@@ -647,28 +652,22 @@ async def capture_camera_image(
 
         # If no buffered frame, try to capture a new one
         if image_data is None:
-            import os
-            import tempfile
+            from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-            from backend.app.services.camera import capture_camera_frame
-
-            fd, tmp_name = tempfile.mkstemp(suffix=".jpg")
-            os.close(fd)
-            tmp_path = Path(tmp_name)
-            tmp_path.chmod(0o600)
-
-            try:
-                success = await capture_camera_frame(ip_address, access_code, model, tmp_path, timeout=10)
-                if success:
-                    with open(tmp_path, "rb") as f:
-                        image_data = f.read()
-                    camera_source = "built-in"
-                    logger.debug("Captured frame from built-in camera for printer %s", printer_id)
-            finally:
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass  # Best-effort cleanup of temporary camera capture file
+            image_data = (
+                await capture(
+                    CameraCaptureRequest.builtin(
+                        ip_address=ip_address,
+                        access_code=access_code,
+                        model=model,
+                        timeout=10,
+                        purpose="plate_check",
+                    )
+                )
+            ).frame
+            if image_data:
+                camera_source = "built-in"
+                logger.debug("Captured frame from built-in camera for printer %s", printer_id)
 
     return image_data, camera_source
 

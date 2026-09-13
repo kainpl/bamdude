@@ -44,12 +44,9 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from backend.app.services.camera import (
-    capture_camera_frame_with_provenance,
-    get_camera_port,
-    is_chamber_image_model,
-)
+from backend.app.services.camera import get_camera_port, is_chamber_image_model
 from backend.app.services.camera_profiles import DEFAULT_PROFILE, get_camera_profile
+from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 from backend.app.utils.printer_configs import camera_capability_catalog
 
 logger = logging.getLogger(__name__)
@@ -77,6 +74,10 @@ class CameraDiagnoseStage:
     # opening another camera socket. This is correct and protects one-reader
     # firmware; expose it so support does not mistake it for a fresh probe.
     source: str | None = None
+    attempt_id: str | None = None
+    first_frame_ms: float | None = None
+    caller_wait_ms: float | None = None
+    cleanup_ms: float | None = None
 
 
 @dataclass
@@ -110,6 +111,10 @@ class CameraDiagnoseResult:
                     "duration_ms": s.duration_ms,
                     "code": s.code,
                     "source": s.source,
+                    "attempt_id": s.attempt_id,
+                    "first_frame_ms": s.first_frame_ms,
+                    "caller_wait_ms": s.caller_wait_ms,
+                    "cleanup_ms": s.cleanup_ms,
                 }
                 for s in self.stages
             ],
@@ -183,11 +188,14 @@ async def _check_first_frame(
     handshake + first keyframe; either it works or it doesn't."""
     started = time.monotonic()
     try:
-        capture = await capture_camera_frame_with_provenance(
-            ip_address=ip_address,
-            access_code=access_code,
-            model=model,
-            timeout=timeout,
+        capture_result = await capture(
+            CameraCaptureRequest.builtin(
+                ip_address=ip_address,
+                access_code=access_code,
+                model=model,
+                timeout=timeout,
+                purpose="diagnose",
+            )
         )
     except Exception as exc:  # noqa: BLE001 — see camera_profiles.py rationale
         # The camera-capture pipeline can raise from many layers (ffmpeg
@@ -201,18 +209,26 @@ async def _check_first_frame(
             duration_ms=int((time.monotonic() - started) * 1000),
             code="capture_exception",
         )
-    if capture.frame:
+    if capture_result.frame:
         return CameraDiagnoseStage(
             name="first_frame",
             status="ok",
             duration_ms=int((time.monotonic() - started) * 1000),
-            source=capture.source,
+            source=capture_result.source,
+            attempt_id=capture_result.attempt_id,
+            first_frame_ms=capture_result.first_frame_ms,
+            caller_wait_ms=capture_result.caller_wait_ms,
+            cleanup_ms=capture_result.cleanup_ms,
         )
     return CameraDiagnoseStage(
         name="first_frame",
         status="failed",
         duration_ms=int((time.monotonic() - started) * 1000),
         code="no_frame",
+        attempt_id=capture_result.attempt_id,
+        first_frame_ms=capture_result.first_frame_ms,
+        caller_wait_ms=capture_result.caller_wait_ms,
+        cleanup_ms=capture_result.cleanup_ms,
     )
 
 

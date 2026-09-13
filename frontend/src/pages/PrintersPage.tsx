@@ -8816,31 +8816,26 @@ export function PrintersPage() {
   // for the picked printer so all M-card affordances work identically.
   const [expandedPrinterId, setExpandedPrinterId] = useState<number | null>(null);
 
-  // Embedded camera viewer state - supports multiple simultaneous viewers
-  // Persisted to localStorage so cameras reopen after navigation
-  const [embeddedCameraPrinters, setEmbeddedCameraPrinters] = useState<Map<number, { id: number; name: string }>>(() => {
-    // Initialize from localStorage if camera_view_mode is embedded
-    const saved = localStorage.getItem('openEmbeddedCameras');
-    if (saved) {
-      try {
-        const cameras = JSON.parse(saved) as Array<{ id: number; name: string }>;
-        return new Map(cameras.map(c => [c.id, c]));
-      } catch {
-        return new Map();
-      }
+  // One floating camera. Read the old array format but restore only its last
+  // valid selection, so upgrading cannot reopen a fleet of live connections.
+  const [embeddedCamera, setEmbeddedCamera] = useState<{ id: number; name: string } | null>(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem('openEmbeddedCameras') || '[]');
+      if (!Array.isArray(saved)) return null;
+      return saved.filter((camera) => camera && Number.isInteger(camera.id) && camera.id > 0
+        && typeof camera.name === 'string').at(-1) ?? null;
+    } catch {
+      return null;
     }
-    return new Map();
   });
 
-  // Persist open cameras to localStorage when they change
   useEffect(() => {
-    const cameras = Array.from(embeddedCameraPrinters.values());
-    if (cameras.length > 0) {
-      localStorage.setItem('openEmbeddedCameras', JSON.stringify(cameras));
+    if (embeddedCamera) {
+      localStorage.setItem('openEmbeddedCameras', JSON.stringify([embeddedCamera]));
     } else {
       localStorage.removeItem('openEmbeddedCameras');
     }
-  }, [embeddedCameraPrinters]);
+  }, [embeddedCamera]);
 
   const { data: printers, isLoading } = useQuery({
     queryKey: ['printers'],
@@ -8888,10 +8883,10 @@ export function PrintersPage() {
 
   // Close embedded cameras if mode changes to 'window'
   useEffect(() => {
-    if (settings?.camera_view_mode === 'window' && embeddedCameraPrinters.size > 0) {
-      setEmbeddedCameraPrinters(new Map());
+    if (settings?.camera_view_mode === 'window' && embeddedCamera !== null) {
+      setEmbeddedCamera(null);
     }
-  }, [settings?.camera_view_mode, embeddedCameraPrinters.size]);
+  }, [settings?.camera_view_mode, embeddedCamera]);
 
   // Fetch all smart plugs to know which printers have them
   const { data: smartPlugs } = useQuery({
@@ -9798,7 +9793,7 @@ export function PrintersPage() {
       timeFormat={settings?.time_format || 'system'}
       dateFormat={settings?.date_format || 'system'}
       cameraViewMode={settings?.camera_view_mode || 'window'}
-      onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
+      onOpenEmbeddedCamera={(id, name) => setEmbeddedCamera({ id, name })}
       checkPrinterFirmware={settings?.check_printer_firmware !== false}
       useSlicerApi={settings?.use_slicer_api ?? false}
       dryingPresets={effectiveDryingPresets}
@@ -9926,7 +9921,7 @@ export function PrintersPage() {
           onTileClick={(id, name) => {
             const cameraMode = settings?.camera_view_mode || 'window';
             if (cameraMode === 'embedded') {
-              setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }));
+              setEmbeddedCamera({ id, name });
             } else {
               const saved = localStorage.getItem('cameraWindowState');
               const state = saved ? JSON.parse(saved) : { width: 640, height: 400 };
@@ -10012,20 +10007,15 @@ export function PrintersPage() {
         />
       )}
 
-      {/* Embedded Camera Viewers - multiple viewers can be open simultaneously */}
-      {Array.from(embeddedCameraPrinters.values()).map((camera, index) => (
+      {/* The printer key unmounts/cancels the old camera before its replacement. */}
+      {embeddedCamera && (
         <EmbeddedCameraViewer
-          key={camera.id}
-          printerId={camera.id}
-          printerName={camera.name}
-          viewerIndex={index}
-          onClose={() => setEmbeddedCameraPrinters(prev => {
-            const next = new Map(prev);
-            next.delete(camera.id);
-            return next;
-          })}
+          key={embeddedCamera.id}
+          printerId={embeddedCamera.id}
+          printerName={embeddedCamera.name}
+          onClose={() => setEmbeddedCamera(null)}
         />
-      ))}
+      )}
 
       {/* Bulk confirm modals */}
       {bulkConfirmAction === 'stop' && (
@@ -10108,7 +10098,7 @@ export function PrintersPage() {
               timeFormat={settings?.time_format || 'system'}
               dateFormat={settings?.date_format || 'system'}
               cameraViewMode={settings?.camera_view_mode || 'window'}
-              onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
+              onOpenEmbeddedCamera={(id, name) => setEmbeddedCamera({ id, name })}
               checkPrinterFirmware={settings?.check_printer_firmware !== false}
               useSlicerApi={settings?.use_slicer_api ?? false}
               dryingPresets={effectiveDryingPresets}

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from backend.app.schemas.settings import AppSettingsUpdate
+from backend.app.services.camera_metrics import CameraCaptureResult
 from backend.app.services.obico_detection import (
     FRAME_CACHE_TTL,
     ObicoDetectionService,
@@ -681,12 +682,12 @@ class TestCaptureFrameStreamActiveGate:
         mock_db.__aexit__ = AsyncMock(return_value=False)
         mock_db.get = AsyncMock(return_value=mock_printer)
 
-        fresh_capture = AsyncMock(return_value=b"FRESH")
+        fresh_capture = AsyncMock(return_value=CameraCaptureResult(b"FRESH", "fresh"))
 
         with (
             patch("backend.app.services.obico_detection.async_session", return_value=mock_db),
             patch("backend.app.api.routes.camera.is_stream_active", return_value=False),
-            patch("backend.app.services.camera.capture_camera_frame_bytes", fresh_capture),
+            patch("backend.app.services.camera_runtime.capture", fresh_capture),
         ):
             result = await svc._capture_frame(1)
 
@@ -711,11 +712,11 @@ class TestCaptureFrameStreamActiveGate:
         mock_db.__aexit__ = AsyncMock(return_value=False)
         mock_db.get = AsyncMock(return_value=mock_printer)
 
-        external_capture = AsyncMock(return_value=b"EXTERNAL")
+        external_capture = AsyncMock(return_value=CameraCaptureResult(b"EXTERNAL", "fresh"))
 
         with (
             patch("backend.app.services.obico_detection.async_session", return_value=mock_db),
-            patch("backend.app.services.external_camera.capture_frame", external_capture),
+            patch("backend.app.services.camera_runtime.capture", external_capture),
         ):
             result = await svc._capture_frame(1)
 

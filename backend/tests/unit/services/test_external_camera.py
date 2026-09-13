@@ -582,6 +582,34 @@ class TestRtspUrlHandling:
         assert cmd_rtsp[-1] != cmd_rtsps[-1]
 
 
+@pytest.mark.asyncio
+async def test_rtsp_stream_can_opt_into_a_bambu_camera_profile(monkeypatch):
+    """The worker passes the model profile without changing external defaults."""
+
+    from backend.app.services import external_camera as ec
+    from backend.app.services.camera_profiles import get_camera_profile
+
+    profiles = []
+
+    async def fake_rtsp(_url, _fps, *, on_process=None, profile=None):
+        profiles.append(profile)
+        yield _make_jpeg()
+
+    monkeypatch.setattr(ec, "_stream_rtsp", fake_rtsp)
+    stream = ec.generate_mjpeg_stream(
+        "rtsp://127.0.0.1/live",
+        "rtsp",
+        5,
+        rtsp_profile=get_camera_profile("P2S"),
+    )
+    try:
+        assert _make_jpeg() in await anext(stream)
+    finally:
+        await stream.aclose()
+
+    assert profiles == [get_camera_profile("P2S")]
+
+
 class TestUsbCameraHandling:
     """Tests for USB camera support."""
 

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings
 
@@ -210,6 +211,11 @@ class Settings(BaseSettings):
     # the service's PATH — e.g. a fresh Windows winget install whose PATH change
     # hasn't reached an already-running shell/service yet.
     ffmpeg_path: str | None = None
+
+    # Camera ownership stays in-process unless a validated worker rollout is
+    # explicitly requested. Worker startup is fail-closed; it never falls back
+    # to a second inline owner after a containment or IPC failure.
+    camera_runtime: Literal["inline", "worker"] = "inline"
 
     # Logging
     log_level: str = "INFO"  # Override with LOG_LEVEL env var (DEBUG, INFO, WARNING, ERROR)
