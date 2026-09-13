@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -24,7 +25,12 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.schemas.calibration_mode import derive_mode
 from backend.app.services import chamber_history
-from backend.app.services.filament_intake import item_descriptor, resolve_source_path, routing_detail
+from backend.app.services.filament_intake import (
+    item_descriptor,
+    resolve_source_path,
+    routing_detail,
+    source_display_filename,
+)
 from backend.app.services.filament_preflight import preflight_item
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.filament_routing import RoutingDeferred
@@ -2490,10 +2496,13 @@ class PrintScheduler:
                 return library_file.filename.replace(".gcode.3mf", "").replace(".3mf", "")
         # A job whose original rows are gone still knows what it is called: the
         # snapshot carries the human filename precisely so the hash never has to
-        # stand in for it (§4, A04).
+        # stand in for it (§4, A04) — and when the payload cannot answer, the job
+        # number is the honest label. Never the object's name: this one goes into
+        # a notification, where a 64-hex string tells the operator nothing.
         descriptor = await item_descriptor(db, item)
         if descriptor is not None:
-            return descriptor.display_filename.replace(".gcode.3mf", "").replace(".3mf", "")
+            with suppress(SourceUnavailable):
+                return source_display_filename(descriptor).replace(".gcode.3mf", "").replace(".3mf", "")
         return f"Job #{item.id}"
 
     async def _get_printer(self, db: AsyncSession, printer_id: int) -> Printer | None:
@@ -2652,8 +2661,14 @@ class PrintScheduler:
             logger.error("Queue item %s: source row carries no file", item.id)
             return
 
-        # Check file exists on disk (fast fail before any dispatch work).
+        # Check file exists on disk (fast fail before any dispatch work) — and,
+        # for a job the snapshot has to name, that the snapshot can name it. Both
+        # answer with the same refusal and both must happen before the
+        # pending→printing flip below, so they share this one try.
+        snapshot_name: str | None = None
         try:
+            if descriptor is not None:
+                snapshot_name = source_display_filename(descriptor)
             await require_source_file(file_path)
         except SourceUnavailable as exc:
             if exc.reason in SOURCE_FAILURES:
@@ -2690,6 +2705,20 @@ class PrintScheduler:
         # nozzles yet, we fall through and dispatch exactly as before. On
         # dual-nozzle printers (H2D) a match against EITHER installed nozzle
         # passes, so a 0.6 slice is fine as long as one hotend is a 0.6.
+        #
+        # ⚠️ Since m173 ``archive`` can be None for a job that still dispatches
+        # (its snapshot holds the bytes, its archive row was purged), so the
+        # question would be asked of unknown data — except that it is not asked at
+        # all in that case, and the reason is worth having written down rather than
+        # re-derived: the block is gated on ``guard is None``, and a preflight
+        # guard is None for exactly two kinds of job — a calibration job (§2's
+        # exemption: never captured, so ``archive`` is None only if its own library
+        # asset vanished, and it carries no ``nozzle_diameter`` either) and a raw
+        # ``.gcode`` job (whose nozzle diameter cannot exist: the value is 3MF
+        # metadata). Every job that HAS a snapshot and an archive-shaped source
+        # gets a guard, so it never reaches this line. If a future change makes a
+        # 3MF job guard-less, read the diameter off the snapshot rather than
+        # letting "unknown" mean "dispatch".
         sliced_nozzle = archive.nozzle_diameter if archive else None
         if sliced_nozzle and guard is None:
             installed = _installed_nozzle_diameters(printer_manager.get_status(item.queue_id))
@@ -2816,17 +2845,20 @@ class PrintScheduler:
             dispatch_kind = "print_library_file"
             dispatch_source_id = library_file.id
             dispatch_source_name = library_file.filename
-        elif descriptor is not None:
+        elif descriptor is not None and snapshot_name is not None:
             # No original row left — the snapshot carries everything the runner
             # needs, so ``source_id`` is None and the runner looks nothing up.
             # The provenance decides which runner only so that the archive row,
             # the log lines and the panel keep saying "reprint" for a reprint;
             # the bytes are the same either way (§4: provenance is navigation).
+            # ⚠️ A payload whose provenance is unreadable never gets here: it has
+            # no usable name either, and ``source_display_filename`` above already
+            # refused it — so this mapping is never applied to a guessed ``{}``.
             dispatch_kind = (
                 "reprint_archive" if descriptor.provenance.get("kind") == "archive" else "print_library_file"
             )
             dispatch_source_id = None
-            dispatch_source_name = descriptor.display_filename
+            dispatch_source_name = snapshot_name
         else:
             # Should have been caught above, but belt-and-braces.
             await self._fail_item(db, item, "No source file specified")

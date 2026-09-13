@@ -21,6 +21,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.queue_source import FORMAT_GCODE, QueueSource
 from backend.app.services.filament_requirements import PrintRequirements, PrintRequirementsCache
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor, stored_descriptor
+from backend.app.services.source_io import SourceUnavailable
 
 
 async def fail_auto_source(db, item, reason):
@@ -90,6 +91,35 @@ async def item_descriptor(db, item) -> QueueSourceDescriptor | None:
     if source is None:
         return None
     return stored_descriptor(source, getattr(item, "source_snapshot", None))
+
+
+def source_display_filename(descriptor: QueueSourceDescriptor) -> str:
+    """The human name a captured source may be printed under — or a refusal.
+
+    ``stored_descriptor`` has to answer *something* when it cannot parse a row's
+    ``source_snapshot`` (a payload written under a future
+    ``SOURCE_SNAPSHOT_VERSION``, i.e. after a downgrade), and what it answers is
+    the object's own file name — which is its sha256. Its docstring scopes that
+    fallback to "only the display name and the plate fallback degrade", and for a
+    label on a screen that is true.
+
+    It is **not** true for the dispatch, which is why this asks before using it.
+    That one string decides whether the file looks sliced at all
+    (``_is_sliced_file``) and becomes the name on the printer via
+    ``derive_remote_filename`` — and §4/A04 forbid the hash reaching the printer
+    or the UI as a filename. So a job whose payload this version cannot read fails
+    closed with ``source_unreadable``: the same refusal a job whose object is
+    missing gets, and for the same reason — this BamDude cannot read that job's
+    source. It is recoverable by upgrading back, and it never sends a fabricated
+    name to hardware.
+
+    Recognising it needs no access to the payload: the fallback is *exactly* the
+    object's basename, and no capture ever records a display name equal to the
+    hash it computed.
+    """
+    if descriptor.display_filename == descriptor.path.name:
+        raise SourceUnavailable()
+    return descriptor.display_filename
 
 
 async def read_item_requirements(db, item, cache: PrintRequirementsCache | None = None) -> PrintRequirements:

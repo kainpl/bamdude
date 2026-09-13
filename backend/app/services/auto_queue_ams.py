@@ -30,15 +30,10 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.config import settings as app_settings
-from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
-from backend.app.models.library import LibraryFile
 from backend.app.services.print_scheduler import _canonical_filament_type
 from backend.app.services.printer_manager import printer_manager
 
@@ -72,22 +67,6 @@ def _colors_are_similar(color1: str | None, color2: str | None, threshold: int =
         return abs(r1 - r2) <= threshold and abs(g1 - g2) <= threshold and abs(b1 - b2) <= threshold
     except ValueError:
         return False
-
-
-async def _resolve_source_path(db: AsyncSession, item: AutoQueueItem) -> Path | None:
-    """Return the on-disk path of the 3MF for an auto-queue item."""
-    if item.archive_id:
-        result = await db.execute(select(PrintArchive).where(PrintArchive.id == item.archive_id))
-        archive = result.scalar_one_or_none()
-        if archive and archive.file_path:
-            return app_settings.base_dir / archive.file_path
-    elif item.library_file_id:
-        result = await db.execute(select(LibraryFile).where(LibraryFile.id == item.library_file_id))
-        lib = result.scalar_one_or_none()
-        if lib and lib.file_path:
-            p = Path(lib.file_path)
-            return p if p.is_absolute() else app_settings.base_dir / lib.file_path
-    return None
 
 
 async def get_filament_requirements(db: AsyncSession, item: AutoQueueItem) -> list[dict] | None:

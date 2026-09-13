@@ -88,15 +88,30 @@ def _key(target) -> str | None:
 def forbid_reads(monkeypatch, *paths: Path) -> list[str]:
     """Make every ``open``/``stat`` of ``paths`` raise, and record the attempt.
 
-    ``Path.stat`` covers the existence guards (``require_source_file`` asks
-    ``is_file()``, ``SourceIdentity.of`` asks ``stat()``); ``builtins.open`` and
-    ``io.open`` cover the readers (``zipfile``, the hasher, the FTP upload,
-    ``Path.open`` — which calls ``io.open`` directly, so patching ``builtins``
-    alone would miss it).
+    Five patches, because every one of them is a way around the other four and the
+    whole value of this trap is that there is no way around it — a reader that
+    walked past it would leave all fifteen ``touched == []`` assertions asserting
+    nothing:
+
+    * ``Path.stat`` — the existence guards (``require_source_file`` asks
+      ``is_file()``, ``SourceIdentity.of`` asks ``stat()``);
+    * ``builtins.open`` **and** ``io.open`` — the readers (``zipfile``, the hasher,
+      the FTP upload, and ``Path.open``, which calls ``io.open`` directly, so
+      patching ``builtins`` alone would miss it);
+    * ``os.stat`` — everything that does not go through ``pathlib``, including
+      ``os.path.getsize``, and none of it touches ``Path.stat``;
+    * ``os.path.isfile`` and ``os.path.exists`` — ⚠️ measured, not assumed: on
+      CPython 3.12 for Windows these are the C fast paths ``nt._path_isfile`` /
+      ``nt._path_exists``, which never call ``os.stat``, so patching ``os.stat``
+      does **not** cover them;
+    * ``os.open`` — the file-descriptor route, which no reader here uses today and
+      which is exactly why it is closed.
     """
     forbidden = {_key(path) for path in paths}
     touched: list[str] = []
-    real_stat, real_builtin_open, real_io_open = Path.stat, builtins.open, io.open
+    real_path_stat, real_builtin_open, real_io_open = Path.stat, builtins.open, io.open
+    real_os_stat, real_os_open = os.stat, os.open
+    real_isfile, real_exists = os.path.isfile, os.path.exists
 
     def guard(target, what: str) -> None:
         key = _key(target)
@@ -104,20 +119,24 @@ def forbid_reads(monkeypatch, *paths: Path) -> list[str]:
             touched.append(f"{what}:{key}")
             raise AssertionError(f"the ORIGINAL source was {what}ed after capture: {key}")
 
-    def stat(self, *args, **kwargs):
+    def path_stat(self, *args, **kwargs):
         guard(self, "stat")
-        return real_stat(self, *args, **kwargs)
+        return real_path_stat(self, *args, **kwargs)
 
-    def opener(real):
-        def open_(file, *args, **kwargs):
-            guard(file, "open")
-            return real(file, *args, **kwargs)
+    def watched(real, what: str):
+        def call(target, *args, **kwargs):
+            guard(target, what)
+            return real(target, *args, **kwargs)
 
-        return open_
+        return call
 
-    monkeypatch.setattr(Path, "stat", stat)
-    monkeypatch.setattr(builtins, "open", opener(real_builtin_open))
-    monkeypatch.setattr(io, "open", opener(real_io_open))
+    monkeypatch.setattr(Path, "stat", path_stat)
+    monkeypatch.setattr(builtins, "open", watched(real_builtin_open, "open"))
+    monkeypatch.setattr(io, "open", watched(real_io_open, "open"))
+    monkeypatch.setattr(os, "stat", watched(real_os_stat, "stat"))
+    monkeypatch.setattr(os, "open", watched(real_os_open, "open"))
+    monkeypatch.setattr(os.path, "isfile", watched(real_isfile, "stat"))
+    monkeypatch.setattr(os.path, "exists", watched(real_exists, "stat"))
     return touched
 
 
@@ -213,6 +232,25 @@ def dispatch_mocks(monkeypatch, factory, *, upload=None):
     return service
 
 
+def record_dispatch_contract(monkeypatch, service) -> list[tuple[str, int | None]]:
+    """Every ``(kind, source_id)`` the scheduler hands the dispatcher.
+
+    A wrapper around the real call, not a replacement: which runner the snapshot's
+    provenance picks is a decision ``print_scheduler`` makes and nothing else can be
+    observed from — both runners produce an archive with the same name and hash for
+    a source-less job, so an assertion on the outcome cannot tell them apart.
+    """
+    seen: list[tuple[str, int | None]] = []
+    real = service.run_from_queue_item
+
+    async def spy(**kwargs):
+        seen.append((kwargs["kind"], kwargs["source_id"]))
+        return await real(**kwargs)
+
+    monkeypatch.setattr(service, "run_from_queue_item", spy)
+    return seen
+
+
 def scheduler_with_captured_dispatch(monkeypatch) -> tuple[object, list]:
     """A real ``PrintScheduler`` whose spawned dispatch the test awaits itself."""
     import backend.app.services.print_scheduler as ps
@@ -294,7 +332,8 @@ async def test_an_assigned_auto_job_prints_after_its_library_file_is_gone(
     await lose_the_original(db_session, item, original, row=source)
 
     factory = async_sessionmaker(test_engine, expire_on_commit=False)
-    dispatch_mocks(monkeypatch, factory)
+    service = dispatch_mocks(monkeypatch, factory)
+    contract = record_dispatch_contract(monkeypatch, service)
     touched = forbid_reads(monkeypatch, original)
     scheduler, spawned = scheduler_with_captured_dispatch(monkeypatch)
 
@@ -302,6 +341,8 @@ async def test_an_assigned_auto_job_prints_after_its_library_file_is_gone(
     assert await drain(spawned) == 1
 
     assert touched == []
+    # A library-provenance snapshot goes to the library runner, with no original id.
+    assert contract == [("print_library_file", None)]
     mqtt._client.publish.assert_called_once()
     command = json.loads(mqtt._client.publish.call_args.args[1])["print"]
     assert command["param"] == f"Metadata/plate_{PLATE}.gcode"
@@ -323,9 +364,14 @@ async def test_an_assigned_auto_job_prints_after_its_library_file_is_gone(
     assert archive.content_hash != archive.source_content_hash
     assert json.loads(archive.applied_patches)
     # The archive owns its own bytes — a copy, not a pointer into the spool (§9:
-    # the blob is released when the last job row lets go of it).
+    # the blob is released when the last job row lets go of it) — and keeps them
+    # under the human name, so one archive tree does not hold two naming
+    # conventions depending on how the print was queued.
     archived = Path(settings.base_dir) / archive.file_path
     assert archived.is_file() and archived != object_of(blob)
+    assert archived.name == source.filename
+    assert blob.sha256 not in archive.file_path
+    assert archived.parent.name.endswith("_lamp")
     assert archived.read_bytes() == object_of(blob).read_bytes()
 
 
@@ -351,7 +397,8 @@ async def test_a_queue_job_reprints_after_its_archive_row_is_gone(
     await lose_the_original(db_session, item, original, row=source)
 
     factory = async_sessionmaker(test_engine, expire_on_commit=False)
-    dispatch_mocks(monkeypatch, factory)
+    service = dispatch_mocks(monkeypatch, factory)
+    contract = record_dispatch_contract(monkeypatch, service)
     touched = forbid_reads(monkeypatch, original)
     scheduler, spawned = scheduler_with_captured_dispatch(monkeypatch)
 
@@ -359,6 +406,10 @@ async def test_a_queue_job_reprints_after_its_archive_row_is_gone(
     assert await drain(spawned) == 1
 
     assert touched == []
+    # An archive-provenance snapshot goes to the REPRINT runner — the mapping
+    # ``print_scheduler`` makes from ``provenance["kind"]`` — and carries no
+    # original id, because the row it names is gone.
+    assert contract == [("reprint_archive", None)]
     mqtt._client.publish.assert_called_once()
     await db_session.refresh(item)
     assert item.status == "printing"
@@ -420,6 +471,81 @@ async def test_a_direct_print_survives_its_library_row_being_trashed_mid_dispatc
     assert archive.library_file_id is None
 
 
+@pytest.mark.parametrize("owner", ["queue", "direct"])
+async def test_a_payload_this_version_cannot_read_refuses_instead_of_printing_a_hash(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, owner
+):
+    """A future ``source_snapshot`` version fails closed — it never names a print.
+
+    ``stored_descriptor`` degrades an unparsable payload to the object's own name,
+    which is its sha256. That is fine for a label and unacceptable here: the same
+    string decides whether the file looks sliced and becomes the file name on the
+    printer (§4/A04). So the dispatch refuses with ``source_unreadable``, the
+    reason a job whose source this BamDude cannot read has always had — and
+    upgrading back makes the job printable again.
+
+    Both doors are covered: the scheduler resolves the name before it flips the
+    row to ``printing``, and the runner resolves it again for a direct print, which
+    never passes through ``_start_print``.
+    """
+    from backend.app.services.filament_intake import routing_detail
+    from backend.app.services.queue_add import add_items_to_printer_queue
+    from backend.app.services.queue_source_descriptor import SOURCE_SNAPSHOT_VERSION
+
+    _unused, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    settings.archive_dir.mkdir(parents=True, exist_ok=True)
+    source = await a_library_source(db_session, tmp_path, name="downgraded.gcode.3mf")
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    service = dispatch_mocks(monkeypatch, factory)
+
+    if owner == "direct":
+        await service.dispatch_print_library_file(
+            file_id=source.id,
+            filename=source.filename,
+            printer_id=printer.id,
+            printer_name=printer.name,
+            options={"plate_id": PLATE, "mesh_mode_fast_check": True},
+            requested_by_user_id=None,
+            requested_by_username=None,
+        )
+        job = service._queued_jobs[0]
+        item = await db_session.get(PrintQueueItem, job.queue_item_id)
+    else:
+        items, _queue = await add_items_to_printer_queue(
+            db_session,
+            PrintQueueItemCreate(queue_id=queue.id, library_file_id=source.id, plate_id=PLATE),
+            None,
+        )
+        item = items[0]
+    blob = await one_blob(db_session)
+    # What a row written by a LATER version looks like to this one.
+    item.source_snapshot = {**(item.source_snapshot or {}), "version": SOURCE_SNAPSHOT_VERSION + 1}
+    await lose_the_original(db_session, item, Path(source.file_path), row=source)
+    refusal = routing_detail("source_unreadable")["message"]
+
+    if owner == "direct":
+        await service._run_active_job(job)
+        assert job.outcome["deferred"] is True, job.outcome
+        assert job.outcome["reason"]["code"] == "source_unreadable"
+        await db_session.refresh(item)
+        assert item.waiting_reason == refusal
+    else:
+        scheduler, spawned = scheduler_with_captured_dispatch(monkeypatch)
+        await scheduler.check_queue()
+        assert await drain(spawned) == 0, "nothing may be dispatched for a job that cannot be named"
+        await db_session.refresh(item)
+        assert item.status == "failed"
+        assert item.error_message == refusal
+
+    mqtt._client.publish.assert_not_called()
+    assert (await db_session.execute(select(func.count()).select_from(PrintArchive))).scalar() == 0
+    # The refusal never quotes the object's name, and the object itself is intact:
+    # this is a job BamDude cannot read, not a blob that went bad.
+    assert blob.sha256 not in f"{item.error_message} {item.waiting_reason}"
+    await db_session.refresh(blob)
+    assert blob.state == STATE_READY and object_of(blob).is_file()
+
+
 async def test_the_trap_catches_a_legacy_job_reading_its_original(
     db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions
 ):
@@ -459,6 +585,45 @@ async def test_the_trap_catches_a_legacy_job_reading_its_original(
 
     assert touched, "a legacy row must still read its original — otherwise the trap proves nothing"
     mqtt._client.publish.assert_not_called()
+
+
+def test_the_trap_covers_the_routes_around_pathlib(tmp_path, monkeypatch):
+    """Every door, not just the ones today's readers use.
+
+    ``os.stat``, ``os.open`` and the ``os.path`` predicates reach the filesystem
+    without touching ``Path.stat`` or ``builtins.open`` — and on this platform
+    ``os.path.isfile`` does not even reach ``os.stat``. A future reader could have
+    walked past the trap and left every ``touched == []`` assertion in this file
+    asserting nothing at all.
+    """
+    guarded = tmp_path / "original.gcode.3mf"
+    guarded.write_bytes(b"bytes")
+    other = tmp_path / "somebody-else.gcode.3mf"
+    other.write_bytes(b"bytes")
+    touched = forbid_reads(monkeypatch, guarded)
+
+    for read in (
+        lambda: guarded.stat(),
+        lambda: guarded.is_file(),
+        lambda: guarded.open("rb"),
+        # Deliberately unmanaged and deliberately spelled two ways: each of these
+        # is a door being knocked on, and the trap raises before a handle exists.
+        lambda: open(guarded, "rb"),  # noqa: SIM115
+        lambda: io.open(guarded, "rb"),  # noqa: SIM115, UP020
+        lambda: os.stat(guarded),
+        lambda: os.path.isfile(guarded),
+        lambda: os.path.exists(guarded),
+        lambda: os.open(guarded, os.O_RDONLY),
+    ):
+        with pytest.raises(AssertionError, match="ORIGINAL source"):
+            read()
+
+    assert len(touched) == 9
+    # And it is the named path that is trapped, not the filesystem: every other
+    # read in the process has to keep working, or the harness would be proving
+    # that nothing can read anything.
+    assert other.is_file() and other.read_bytes() == b"bytes"
+    assert os.path.isfile(other) and os.path.exists(other)
 
 
 # --------------------------------------------------------------------------- #

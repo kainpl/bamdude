@@ -2044,6 +2044,7 @@ class ArchiveService:
         prefer_filename_for_name: bool = False,
         plate_index: int | None = None,
         dispatched_file: Path | None = None,
+        stored_filename: str | None = None,
         is_calibration: bool = False,
         calibration_session_id: int | None = None,
     ) -> PrintArchive | None:
@@ -2068,6 +2069,15 @@ class ArchiveService:
                 stored with UUID names)
             source_content_hash: SHA256 of the UNPATCHED source file, when the
                 caller (BamDude dispatch) knows it. None for external prints.
+            stored_filename: Name to keep the archived copy under, when
+                ``source_file.name`` is not a name anybody should read. Since m173
+                a dispatch's ``source_file`` is the captured object in the queue
+                spool, whose name is its sha256 — and the archive folder around it
+                is named after the human stem, so without this one tree would hold
+                both conventions and the person reading it during an incident pays.
+                Containment-checked like ``attach_3mf_to_archive``'s ``dest_name``;
+                ``None`` keeps the source file's own name, as every caller before
+                m173 did.
             applied_patches: Patch identifiers applied by the dispatch pipeline
                 before upload. None for external prints.
             subtask_id: Printer-assigned subtask identifier from MQTT push_status,
@@ -2199,7 +2209,16 @@ class ArchiveService:
                 )  # SEC-PATH-OK: printer_folder=str(printer_id); archive_name is timestamp + path-stripped display stem (no separators)
                 suffix += 1
             archive_dir.mkdir(parents=True)
-            dest_file = archive_dir / source_file.name
+            # The human name when the caller has one (a captured source's own name
+            # is its hash — see ``stored_filename``), containment-checked exactly
+            # as ``attach_3mf_to_archive`` does it: the string reaches here from a
+            # row or from a job's ``source_snapshot``, neither of which this
+            # function gets to trust with a path component.
+            dest_file = (
+                safe_join_under(archive_dir, stored_filename, http=False)
+                if stored_filename
+                else archive_dir / source_file.name
+            )
             # Explicit fsync'd loop avoids the shutil.copy2 → sendfile short-read
             # quirk that silently truncated 3MF archives on some platforms (#1032).
             # ``bytes_for_disk`` is the post-patch file when the dispatcher

@@ -39,7 +39,7 @@ from backend.app.services.bambu_ftp import (
     upload_file_async,
     with_ftp_retry,
 )
-from backend.app.services.filament_intake import item_descriptor, routing_detail
+from backend.app.services.filament_intake import item_descriptor, routing_detail, source_display_filename
 from backend.app.services.filament_preflight import final_guard, preflight_item
 from backend.app.services.filament_routing import RoutingDeferred
 from backend.app.services.gcode_patcher import GcodeInjectionSpec
@@ -1588,7 +1588,7 @@ class BackgroundDispatchService:
             return
         raise RuntimeError(f"Unknown dispatch job kind: {job.kind}")
 
-    async def _prepare_filament_routing(self, db, job, pins: AsyncExitStack | None = None):
+    async def _prepare_filament_routing(self, db, job, pins: AsyncExitStack):
         """Read the claim, the job's source and its routing — before any file is opened.
 
         ⚠️ ``pins`` is how the blob survives the dispatch (spec §9). The GC never
@@ -1597,6 +1597,10 @@ class BackgroundDispatchService:
         the bytes being uploaded are unowned. The pin is taken here because this is
         the first point that knows which blob it is, and released when the runner
         exits — so it spans preflight, patch, archive-write and upload.
+
+        **Required, with no default**, because the failure mode of forgetting it is
+        a file unlinked under a running print and no error anywhere: a caller that
+        does not hold a stack must be a type error, not a silent no-pin dispatch.
 
         Taking it needs the storage guard for the registration only, and this
         session has done nothing but read at that point, so a publication holding
@@ -1610,7 +1614,7 @@ class BackgroundDispatchService:
         job.claim_started_at = item.started_at
         job.original_archive_id, job.original_library_file_id = item.archive_id, item.library_file_id
         job.source = await item_descriptor(db, item)
-        if job.source is not None and pins is not None:
+        if job.source is not None:
             from backend.app.services import queue_sources
 
             await pins.enter_async_context(queue_sources.pin(item.queue_source_id))
@@ -1753,8 +1757,10 @@ class BackgroundDispatchService:
             printer_access_code = printer.access_code
             printer_model = printer.model
             # The human name, from the row while it exists and from the snapshot
-            # after that — never the object's own name, which is its hash (A04).
-            archive_filename = source_archive.filename if source_archive else job.source.display_filename
+            # after that — never the object's own name, which is its hash (A04):
+            # a payload this version cannot read refuses here instead of naming
+            # the print after a hash. See ``source_display_filename``.
+            archive_filename = source_archive.filename if source_archive else source_display_filename(job.source)
 
             if not printer_manager.is_connected(job.printer_id):
                 raise RuntimeError("Printer is not connected")
@@ -1865,6 +1871,9 @@ class BackgroundDispatchService:
                     ),
                     applied_patches=applied_patches or None,
                     library_file_id=source_archive.library_file_id if source_archive else None,
+                    # A captured source is stored under its hash; the archive keeps
+                    # its copy under the name the folder around it already uses.
+                    stored_filename=archive_filename if job.source is not None else None,
                     created_by_id=job.requested_by_user_id,
                     plate_index=job.options.get("plate_id"),
                     print_data={"status": "printing"},
@@ -2390,7 +2399,11 @@ class BackgroundDispatchService:
             if not lib_file and job.source is None:
                 raise SourceUnavailable()
 
-            library_filename = lib_file.filename if lib_file else job.source.display_filename
+            # Same rule as the reprint runner: the row's name while it exists, the
+            # snapshot's after that, and a refusal rather than a hash — which
+            # ``_is_sliced_file`` below would otherwise reject as "not a sliced
+            # file", blaming a 3MF that is perfectly good.
+            library_filename = lib_file.filename if lib_file else source_display_filename(job.source)
             if not self._is_sliced_file(library_filename):
                 raise RuntimeError("Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
 
@@ -2493,6 +2506,9 @@ class BackgroundDispatchService:
                     source_content_hash=job.source.sha256 if job.source is not None else lib_file.file_hash,
                     applied_patches=applied_patches or None,
                     library_file_id=lib_file.id if lib_file else None,
+                    # A captured source is stored under its hash; the archive keeps
+                    # its copy under the name the folder around it already uses.
+                    stored_filename=library_filename if job.source is not None else None,
                     # Tag the resulting archive row as a calibration print
                     # when the queue item was an is_calibration job — keeps
                     # archive.kind='calibration' filter in /archives in sync
