@@ -3,7 +3,13 @@
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from backend.app.services.filament_intake import item_source, read_item_requirements, resolve_source_path
+from backend.app.models.queue_source import FORMAT_GCODE
+from backend.app.services.filament_intake import (
+    item_descriptor,
+    item_source,
+    read_item_requirements,
+    resolve_source_path,
+)
 from backend.app.services.filament_policy import decode, queue_policy, source_scope
 from backend.app.services.filament_requirements import SourceIdentity
 from backend.app.services.filament_routing import RoutingDeferred, fingerprint, resolve_filament_routing
@@ -41,12 +47,22 @@ def revision_for(req, policy, snapshot):
 
 
 async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None):
-    archive, library = await item_source(db, item)
-    path = resolve_source_path(archive, library)
+    # The captured source when there is one (m173): a snapshot-backed job is
+    # answered from its blob, and the archive / library rows it was built from
+    # may be gone — which is the whole point of having copied it (spec §7).
+    descriptor = await item_descriptor(db, item)
+    if descriptor is None:
+        archive, library = await item_source(db, item)
+        path = resolve_source_path(archive, library)
+        raw_gcode = bool(path) and path.suffix.lower() == ".gcode"
+    else:
+        # The object is stored under its hash, so its own name would answer this
+        # wrongly for a raw source; the format the capture verified is the answer.
+        raw_gcode = descriptor.format == FORMAT_GCODE
     # These flags come from a server-created queue row, never request options.
     if item.is_calibration and item.calibration_session_id is not None:
         return None
-    if path and path.suffix.lower() == ".gcode" and item.source_auto_item_id is None:
+    if raw_gcode and item.source_auto_item_id is None:
         return None
     req = await read_item_requirements(db, item, cache)
     if req.status != "ok":
@@ -58,13 +74,29 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
     scope = saved.get("source_identity", {})
     if not isinstance(scope, dict) or not isinstance(saved.get("runtime", {}), dict):
         raise RoutingDeferred("mapping_review_required")
-    if scope and {k: scope.get(k) for k in ("kind", "id")} != source_scope(item.archive_id, item.library_file_id):
+    # ⚠️ Both source questions below are asked of a LEGACY row only, and that is
+    # the narrowing this whole feature is for. The stored ``{kind, id}`` and the
+    # stored ``{size, mtime_ns}`` describe the ORIGINAL the intent was written
+    # about; for a job that prints a frozen copy neither is its identity any
+    # more. The scope answered "source_changed" the moment a trashed library file
+    # nulled the reference — refusing to dispatch a job whose bytes had not moved
+    # — and the revision compares an original's mtime against the copy's, which
+    # differ by construction (and change again on a restore, which re-creates the
+    # spool tree). What the job prints is pinned by ``queue_source_id``, the
+    # snapshot is immutable, and ``final_guard`` still re-reads it before publish.
+    # Task 7 records the snapshot's hash here, which is an identity that survives
+    # a restore; until then the presence of the blob is the answer.
+    if (
+        scope
+        and descriptor is None
+        and {k: scope.get(k) for k in ("kind", "id")} != source_scope(item.archive_id, item.library_file_id)
+    ):
         raise RoutingDeferred("source_changed")
     if saved.get("printer_id") not in (None, printer_id):
         raise RoutingDeferred("mapping_review_required")
     if saved.get("resolved_plate_id") not in (None, 0, req.resolved_plate_id):
         raise RoutingDeferred("plate_selection_required")
-    if scope.get("revision") and req.source_identity:
+    if descriptor is None and scope.get("revision") and req.source_identity:
         current = {"size": req.source_identity.size, "mtime_ns": req.source_identity.mtime_ns}
         if current != scope["revision"]:
             raise RoutingDeferred("source_changed")

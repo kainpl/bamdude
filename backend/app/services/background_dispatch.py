@@ -14,6 +14,7 @@ import logging
 import time
 import zipfile
 from collections import deque
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
@@ -38,13 +39,14 @@ from backend.app.services.bambu_ftp import (
     upload_file_async,
     with_ftp_retry,
 )
-from backend.app.services.filament_intake import routing_detail
+from backend.app.services.filament_intake import item_descriptor, routing_detail
 from backend.app.services.filament_preflight import final_guard, preflight_item
 from backend.app.services.filament_routing import RoutingDeferred
 from backend.app.services.gcode_patcher import GcodeInjectionSpec
 from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.product_sync import purge_file_product_links
+from backend.app.services.queue_source_descriptor import QueueSourceDescriptor
 from backend.app.services.source_io import SourceUnavailable, require_source_file, source_probe
 from backend.app.utils.filename import derive_remote_filename
 
@@ -554,7 +556,11 @@ class DispatchOutcome(TypedDict):
 class PrintDispatchJob:
     id: int
     kind: Literal["reprint_archive", "print_library_file"]
-    source_id: int
+    #: The ORIGINAL archive / library row this dispatch was started from, when
+    #: one still exists. ``None`` is an ordinary answer since m173: a job backed
+    #: by a captured source needs no original, and the runner then looks nothing
+    #: up rather than resolving an id whose row may be somebody else's by now.
+    source_id: int | None
     source_name: str
     printer_id: int
     printer_name: str
@@ -591,6 +597,11 @@ class PrintDispatchJob:
             "deferred": False,
         }
     )
+    # The bytes this dispatch prints, read off the queue row by
+    # ``_prepare_filament_routing`` before anything opens a file (spec §7, S2).
+    # ``None`` means a legacy row (or one of §2's exemptions — an external print,
+    # a calibration asset), which still reads its original.
+    source: QueueSourceDescriptor | None = None
     routing_guard: Any = None
     claim_started_at: Any = None
     original_archive_id: int | None = None
@@ -841,7 +852,9 @@ class BackgroundDispatchService:
         self,
         *,
         kind: Literal["reprint_archive", "print_library_file"],
-        source_id: int,
+        # ``None`` when the queue row's only source is its captured copy — the
+        # runner then reads the descriptor and looks no original up (spec §7).
+        source_id: int | None,
         source_name: str,
         printer_id: int,
         printer_name: str,
@@ -1575,7 +1588,20 @@ class BackgroundDispatchService:
             return
         raise RuntimeError(f"Unknown dispatch job kind: {job.kind}")
 
-    async def _prepare_filament_routing(self, db, job):
+    async def _prepare_filament_routing(self, db, job, pins: AsyncExitStack | None = None):
+        """Read the claim, the job's source and its routing — before any file is opened.
+
+        ⚠️ ``pins`` is how the blob survives the dispatch (spec §9). The GC never
+        releases a blob a job row still names, but a row can be deleted under a
+        running dispatch (a printer deleted, a user deleted), and from that moment
+        the bytes being uploaded are unowned. The pin is taken here because this is
+        the first point that knows which blob it is, and released when the runner
+        exits — so it spans preflight, patch, archive-write and upload.
+
+        Taking it needs the storage guard for the registration only, and this
+        session has done nothing but read at that point, so a publication holding
+        the guard can always finish and hand it over.
+        """
         from backend.app.models.print_queue import PrintQueueItem
 
         item = await db.get(PrintQueueItem, job.queue_item_id) if job.queue_item_id else None
@@ -1583,6 +1609,11 @@ class BackgroundDispatchService:
             raise RoutingDeferred("dispatch_claim_changed")
         job.claim_started_at = item.started_at
         job.original_archive_id, job.original_library_file_id = item.archive_id, item.library_file_id
+        job.source = await item_descriptor(db, item)
+        if job.source is not None and pins is not None:
+            from backend.app.services import queue_sources
+
+            await pins.enter_async_context(queue_sources.pin(item.queue_source_id))
         job.routing_intent = item.filament_routing
         job.routing_guard = await preflight_item(db, item, job.printer_id)
         if job.routing_guard:
@@ -1700,13 +1731,17 @@ class BackgroundDispatchService:
 
         job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False, "deferred": False}
 
-        async with async_session() as db:
+        async with AsyncExitStack() as pins, async_session() as db:
             service = ArchiveService(db)
-            # Capture the dispatch claim and original refs before any source
-            # probe can fail; the failure path must be able to release it.
-            await self._prepare_filament_routing(db, job)
-            source_archive = await service.get_archive(job.source_id)
-            if not source_archive:
+            # Capture the dispatch claim, the job's own source and the original
+            # refs before any source probe can fail; the failure path must be able
+            # to release the claim. ``pins`` holds the blob for the whole runner.
+            await self._prepare_filament_routing(db, job, pins)
+            # ⚠️ The source archive is provenance now, not the bytes: a job with a
+            # snapshot prints the copy it took, and the row it was taken from may
+            # have been purged since (spec §7). Only a job with neither is broken.
+            source_archive = await service.get_archive(job.source_id) if job.source_id else None
+            if not source_archive and job.source is None:
                 raise SourceUnavailable()
 
             printer = await db.scalar(select(Printer).where(Printer.id == job.printer_id))
@@ -1717,7 +1752,9 @@ class BackgroundDispatchService:
             printer_ip = printer.ip_address
             printer_access_code = printer.access_code
             printer_model = printer.model
-            archive_filename = source_archive.filename
+            # The human name, from the row while it exists and from the snapshot
+            # after that — never the object's own name, which is its hash (A04).
+            archive_filename = source_archive.filename if source_archive else job.source.display_filename
 
             if not printer_manager.is_connected(job.printer_id):
                 raise RuntimeError("Printer is not connected")
@@ -1726,7 +1763,7 @@ class BackgroundDispatchService:
             if not await printer_manager.ensure_fresh_connection_for_printer(printer):
                 raise RuntimeError("Can`t re-connect printer MQTT")
 
-            file_path = settings.base_dir / source_archive.file_path
+            file_path = job.source.path if job.source is not None else settings.base_dir / source_archive.file_path
             await require_source_file(file_path)
 
             # Unified 3MF post-processing: M970 commenting (mesh-mode-fast-check
@@ -1808,12 +1845,26 @@ class BackgroundDispatchService:
                     printer_id=job.printer_id,
                     source_file=file_path,
                     dispatched_file=upload_file_path,
-                    original_filename=source_archive.filename,
-                    project_id=source_archive.project_id,
-                    project_line_id=source_archive.project_line_id,
-                    source_content_hash=source_archive.source_content_hash or source_archive.content_hash,
+                    original_filename=archive_filename,
+                    project_id=source_archive.project_id if source_archive else job.project_id,
+                    project_line_id=source_archive.project_line_id if source_archive else job.project_line_id,
+                    # ⚠️ With a snapshot the chain root is the snapshot's own hash,
+                    # and that is not a fallback for a missing row — it is the
+                    # correct answer whenever one exists. ``source_content_hash``
+                    # has to describe the bytes written to ``file_path`` (that is
+                    # what ``effective_hash`` dedups on), and those bytes ARE the
+                    # snapshot. Inheriting the row's value instead would carry a
+                    # hash of whatever the original used to be, and the disk-dedup
+                    # lookup would point this archive at another row's file. The
+                    # two agree by construction for every chain BamDude wrote, so
+                    # reprints still group with their source (spec §3, S9).
+                    source_content_hash=(
+                        job.source.sha256
+                        if job.source is not None
+                        else (source_archive.source_content_hash or source_archive.content_hash)
+                    ),
                     applied_patches=applied_patches or None,
-                    library_file_id=source_archive.library_file_id,
+                    library_file_id=source_archive.library_file_id if source_archive else None,
                     created_by_id=job.requested_by_user_id,
                     plate_index=job.options.get("plate_id"),
                     print_data={"status": "printing"},
@@ -1868,7 +1919,7 @@ class BackgroundDispatchService:
             finally:
                 self._startup_lock.release()
 
-            remote_filename = derive_remote_filename(source_archive.filename)
+            remote_filename = derive_remote_filename(archive_filename)
             remote_path = f"/{remote_filename}"
 
             # Which medium this print goes to. Decided once, here, and carried
@@ -2327,16 +2378,23 @@ class BackgroundDispatchService:
         # consistent for queue-item callers awaiting completion_event.
         job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False, "deferred": False}
 
-        async with async_session() as db:
-            await self._prepare_filament_routing(db, job)
-            lib_file = await db.scalar(LibraryFile.active().where(LibraryFile.id == job.source_id))
-            if not lib_file:
+        async with AsyncExitStack() as pins, async_session() as db:
+            await self._prepare_filament_routing(db, job, pins)
+            # ⚠️ The library row is provenance now, not the bytes (spec §7): the
+            # file this job prints was copied into the spool when it was queued,
+            # and the row may have been trashed since — which is exactly the case
+            # the snapshot exists for. Only a job with neither is broken.
+            lib_file = (
+                await db.scalar(LibraryFile.active().where(LibraryFile.id == job.source_id)) if job.source_id else None
+            )
+            if not lib_file and job.source is None:
                 raise SourceUnavailable()
 
-            if not self._is_sliced_file(lib_file.filename):
+            library_filename = lib_file.filename if lib_file else job.source.display_filename
+            if not self._is_sliced_file(library_filename):
                 raise RuntimeError("Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
 
-            file_path = Path(settings.base_dir) / lib_file.file_path
+            file_path = job.source.path if job.source is not None else Path(settings.base_dir) / lib_file.file_path
             await require_source_file(file_path)
 
             printer = await db.scalar(select(Printer).where(Printer.id == job.printer_id))
@@ -2347,7 +2405,6 @@ class BackgroundDispatchService:
             printer_ip = printer.ip_address
             printer_access_code = printer.access_code
             printer_model = printer.model
-            library_filename = lib_file.filename
 
             if not printer_manager.is_connected(job.printer_id):
                 raise RuntimeError("Printer is not connected")
@@ -2385,7 +2442,7 @@ class BackgroundDispatchService:
                     job.options["applied_patches"] = existing_patches + patches
                     logger.info("Dispatch job %s: 3MF transformed (%s)", job.id, patches)
 
-            await self._set_active_message(job, f"Creating archive for {lib_file.filename}...")
+            await self._set_active_message(job, f"Creating archive for {library_filename}...")
             # Hold the startup-lock for the DB-write critical section only:
             # ``archive_print`` (heavy INSERT into print_archives + related
             # rows) plus the queue-item linking. Commit closes the txn
@@ -2397,11 +2454,11 @@ class BackgroundDispatchService:
                 archive_service = ArchiveService(db)
                 applied_patches = job.options.get("applied_patches") if isinstance(job.options, dict) else None
                 # Two distinct files in play after the patcher:
-                # - ``file_path`` is the unpatched library original, used as
+                # - ``file_path`` is the unpatched source — the job's captured
+                #   copy when it has one, else the library original — used as
                 #   ``source_file`` so the archive's display name / suffix
                 #   come from it and ``source_content_hash`` (set explicitly
-                #   below from ``lib_file.file_hash``) chains correctly to
-                #   the library row.
+                #   below) chains correctly to the bytes on disk.
                 # - ``upload_file_path`` is the post-patch tempfile that the
                 #   FTP step is about to send to the printer. Pass it as
                 #   ``dispatched_file`` so ``content_hash`` reflects the
@@ -2422,12 +2479,20 @@ class BackgroundDispatchService:
                     printer_id=job.printer_id,
                     source_file=file_path,
                     dispatched_file=upload_file_path,
-                    original_filename=lib_file.filename,
+                    original_filename=library_filename,
                     project_id=job.project_id,
                     project_line_id=job.project_line_id,
-                    source_content_hash=lib_file.file_hash,
+                    # ⚠️ The snapshot's hash, not the library row's, whenever
+                    # there is one: ``source_content_hash`` must describe the
+                    # bytes ``archive_print`` writes to disk — which are the
+                    # captured copy — because that is the key on-disk dedup
+                    # reuses another row's file by. ``library_files.file_hash``
+                    # is the hash of whatever is on the share NOW, and a share
+                    # that changed after this job was queued (the case the spool
+                    # exists for) would point this archive at the wrong bytes.
+                    source_content_hash=job.source.sha256 if job.source is not None else lib_file.file_hash,
                     applied_patches=applied_patches or None,
-                    library_file_id=lib_file.id,
+                    library_file_id=lib_file.id if lib_file else None,
                     # Tag the resulting archive row as a calibration print
                     # when the queue item was an is_calibration job — keeps
                     # archive.kind='calibration' filter in /archives in sync
@@ -2512,7 +2577,7 @@ class BackgroundDispatchService:
             finally:
                 self._startup_lock.release()
 
-            remote_filename = derive_remote_filename(lib_file.filename)
+            remote_filename = derive_remote_filename(library_filename)
             remote_path = f"/{remote_filename}"
 
             # Which medium this print goes to. Decided once, here, and carried
@@ -2866,7 +2931,10 @@ class BackgroundDispatchService:
                 # External library files (is_external=True) are never touched.
                 # Upstream #730 / #1682b695.
                 cleanup_disk_paths: list[Path] = []
-                if job.cleanup_library_after_dispatch and not lib_file.is_external:
+                # ``lib_file is None`` means the row this dispatch was started
+                # from is already gone — there is nothing left to clean up, and
+                # the print ran from its own copy regardless.
+                if job.cleanup_library_after_dispatch and lib_file is not None and not lib_file.is_external:
                     # A transient library source is removed after success. Its
                     # execution archive becomes the durable source for Repeat;
                     # keep semantic rules while recording the archive revision.
