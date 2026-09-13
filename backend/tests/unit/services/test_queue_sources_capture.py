@@ -361,7 +361,17 @@ async def test_a_row_pointing_outside_the_spool_is_refused_not_written(tmp_path,
         await queue_sources.publish(receipt, recording_attach([]), session_factory=sessions)
 
     assert not (Path(settings.base_dir).parent / "escaped.3mf").exists()
+    # A ``WriteFailed`` out of the install proves nothing moved, so this receipt
+    # is still good — bytes, pin and the right to publish all intact.
     assert receipt.staging_path.is_file()
+    assert queue_sources.pinned_staging_paths() == frozenset({receipt.staging_path})
+    async with sessions() as session:
+        bad = await session.scalar(select(QueueSource).where(QueueSource.sha256 == receipt.sha256))
+        await session.delete(bad)
+        await session.commit()
+
+    published = await queue_sources.publish(receipt, recording_attach([]), session_factory=sessions)
+    assert published.relative_path == queue_sources.object_relative_path(receipt.sha256, FORMAT_3MF)
 
 
 async def test_attach_failure_leaves_no_row_and_no_final_file(tmp_path, sessions):
@@ -383,6 +393,44 @@ async def test_attach_failure_leaves_no_row_and_no_final_file(tmp_path, sessions
     # escape the taxonomy), and its staging pin must not outlive it — that set
     # is what the GC reads.
     assert not receipt.staging_path.exists()
+    assert queue_sources.pinned_staging_paths() == frozenset()
+    with pytest.raises(RuntimeError, match="already"):
+        await queue_sources.publish(receipt, recording_attach([]), session_factory=sessions)
+
+
+async def test_a_cancellation_inside_the_install_spends_the_receipt(tmp_path, sessions, monkeypatch):
+    """``_file_work`` joins its worker and only THEN re-raises ``CancelledError``.
+
+    So a client disconnect (or shutdown) can land while ``os.replace`` has
+    already happened: measured on ``core/db_portable.py:79-96``. The receipt must
+    be spent on that doubt, not revived over a file that has moved — a revived
+    one would reach ``os.replace`` on nothing and escape the taxonomy as a bare
+    ``OSError``, and its pin would sit in the GC's set with no owner left to
+    clear it.
+    """
+    source = _three(tmp_path)
+    receipt = await queue_sources.capture(request_for(source))
+    started, release = threading.Event(), threading.Event()
+    real_install = queue_sources._install_object
+
+    def blocking_install(part: Path, target: Path) -> None:
+        started.set()
+        release.wait(10)
+        real_install(part, target)  # the rename really does complete
+
+    monkeypatch.setattr(queue_sources, "_install_object", blocking_install)
+    task = asyncio.create_task(queue_sources.publish(receipt, recording_attach([]), session_factory=sessions))
+    await wait_for(started.is_set)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The bytes did move — they are an orphan object with no row, which is
+    # exactly what §5.7 hands to cleanup — so the receipt is spent.
+    assert len(objects()) == 1
+    async with sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(QueueSource)) == 0
     assert queue_sources.pinned_staging_paths() == frozenset()
     with pytest.raises(RuntimeError, match="already"):
         await queue_sources.publish(receipt, recording_attach([]), session_factory=sessions)

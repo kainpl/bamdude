@@ -513,6 +513,20 @@ class CaptureReceipt:
             self.state = "discarded"
 
 
+class _Publication:
+    """One publication's single question: has the staged file left staging yet?
+
+    A holder rather than a return value because both writing paths — a brand-new
+    object and a repair — can move it, and the failure handler must know even
+    when the exception came from inside the move itself.
+    """
+
+    __slots__ = ("staging_consumed",)
+
+    def __init__(self) -> None:
+        self.staging_consumed = False
+
+
 def snapshot_for(receipt: CaptureReceipt, source: QueueSource) -> dict[str, Any]:
     """The ``source_snapshot`` payload for a job backed by this capture.
 
@@ -566,8 +580,15 @@ def _install_object(part: Path, target: Path) -> None:
         assert_under(objects_root(), target, http=False)
     except PathTraversalError as exc:
         raise WriteFailed(f"{target} is not inside the queue spool") from exc
-    target.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(part, target)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(part, target)
+    except OSError as exc:
+        # Mapped, not left to escape as a bare OSError — and it keeps the rule
+        # :func:`_install` depends on exact: a ``WriteFailed`` out of this
+        # function always means the staged file did NOT move (``mkdir`` runs
+        # before the rename, and a rename either happens or does not).
+        raise _write_failure(exc) from exc
     _fsync_dir(target.parent)
 
 
@@ -876,9 +897,7 @@ async def publish(
     test engine's factory; production leaves it alone.
     """
     receipt._claim()
-    # Set the moment the rename consumes the ``.part``. Everything after that
-    # point is a failure the receipt cannot be retried through.
-    staging_consumed = False
+    publication = _Publication()
     try:
         async with storage_mutation():
             if receipt.epoch != current_epoch():
@@ -899,8 +918,7 @@ async def publish(
                     # Path arithmetic only on the loop; the containment check and
                     # every syscall happen inside the worker call below.
                     target = Path(settings.base_dir) / relative
-                    await _file_work(_install_object, receipt.staging_path, target)
-                    staging_consumed = True
+                    await _install(receipt, target, publication)
                     created = True
                     row = QueueSource(
                         sha256=receipt.sha256,
@@ -912,7 +930,7 @@ async def publish(
                     session.add(row)
                     await session.flush()
                 else:
-                    row, staging_consumed = await _reuse_or_repair(existing, receipt)
+                    row = await _reuse_or_repair(existing, receipt, publication)
 
                 try:
                     await attach(session, row)
@@ -929,11 +947,14 @@ async def publish(
                         await _file_work(_drop, Path(settings.base_dir) / relative)
                     raise
     except BaseException:
-        if staging_consumed or receipt.state == "published":
-            # The ``.part`` no longer exists, so its pin must not survive it —
-            # the GC reads that set and would keep waiting for a file nobody owns.
+        if publication.staging_consumed or receipt.state == "published":
+            # Nobody owns that ``.part`` any more — it has either been renamed
+            # away or (on the reuse path after a committed publication) become a
+            # duplicate this receipt no longer speaks for. Either way the pin must
+            # go: the GC reads that set, and a pin nothing will ever release would
+            # hold a file, or the memory of one, forever.
             _unpin_staging(receipt.staging_path)
-        if staging_consumed:
+        if publication.staging_consumed:
             receipt._spend()
         else:
             # Nothing moved (busy, a traversal refusal, a stale epoch): the
@@ -947,7 +968,32 @@ async def publish(
     return row
 
 
-async def _reuse_or_repair(existing: QueueSource, receipt: CaptureReceipt) -> tuple[QueueSource, bool]:
+async def _install(receipt: CaptureReceipt, target: Path, publication: _Publication) -> None:
+    """Move the staged file into place, recording the move PESSIMISTICALLY.
+
+    ⚠️ ``_file_work`` joins its worker thread and only **then** re-raises
+    ``CancelledError`` (``core/db_portable.py:79-96`` — deliberately, so that file
+    work cannot be abandoned half-done). A cancellation from a client disconnect
+    or from shutdown therefore arrives with ``os.replace`` already completed, and
+    a flag set on the line *after* the await would still read False.
+
+    So everything except our own :class:`WriteFailed` counts as consumed:
+    ``_install_object`` raises that one only before the rename, which proves
+    nothing moved. Spending a receipt we could have kept costs one re-capture;
+    reviving one over a file that has moved costs a bare ``OSError`` out of the
+    taxonomy on the retry and a pin in the GC's set that nothing will release.
+    """
+    try:
+        await _file_work(_install_object, receipt.staging_path, target)
+    except WriteFailed:
+        raise
+    except BaseException:
+        publication.staging_consumed = True
+        raise
+    publication.staging_consumed = True
+
+
+async def _reuse_or_repair(existing: QueueSource, receipt: CaptureReceipt, publication: _Publication) -> QueueSource:
     """Decide what an already-known hash means for these bytes (§5 step 5).
 
     A verified ``ready`` object is reused as it stands — one blob for the whole
@@ -957,8 +1003,9 @@ async def _reuse_or_repair(existing: QueueSource, receipt: CaptureReceipt) -> tu
     the same id — but only with no live reader/writer/backup pin, and failed jobs
     stay failed until somebody retries them.
 
-    Returns the row and **whether the staged file was consumed** by a repair:
-    the caller needs that to know if a later failure leaves anything to retry.
+    A repair moves the staged file, so it records that on ``publication`` exactly
+    as the new-object path does — see :func:`_install` for why the flag cannot
+    live on the line after the await.
     """
     if existing.state == STATE_DELETING:
         # ⚠️ Before the verification, not after: the GC may have unlinked the
@@ -971,16 +1018,14 @@ async def _reuse_or_repair(existing: QueueSource, receipt: CaptureReceipt) -> tu
     target = Path(settings.base_dir) / existing.relative_path
     intact = await _file_work(_verify_object, target, existing.sha256, existing.size_bytes)
     if intact and existing.state == STATE_READY:
-        return existing, False
+        return existing
 
     if _blob_is_pinned(existing.id):
         raise QueueSourceBusy("these bytes are in use and cannot be repaired right now")
-    consumed = False
     if not intact:
-        await _file_work(_install_object, receipt.staging_path, target)
-        consumed = True
+        await _install(receipt, target, publication)
         logger.info("Repaired queue source %s (%s) from a fresh capture", existing.id, existing.sha256[:12])
     existing.state = STATE_READY
     existing.size_bytes = receipt.size_bytes
     existing.unreferenced_at = None
-    return existing, consumed
+    return existing
