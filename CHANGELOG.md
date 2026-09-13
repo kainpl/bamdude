@@ -9,6 +9,8 @@
 
 ### Added
 
+- **One camera-capture runtime boundary.** Snapshots, diagnosis, Obico, Cloud Link, plate checks, external layer timelapse and Telegram now describe their capture need through one in-process interface. The current adapter keeps the existing inline transport, coalescing and one-camera safeguards unchanged; it is the controlled seam for the future supervised camera worker. Finish-photo archival remains on its specialised path until its rotation, opt-in and archive acceptance are moved together.
+
 - **Camera timing and frame provenance for support.** Camera status and diagnosis expose optional producer/attempt IDs, first-frame versus caller wait timings, bounded counters and snapshot provenance. Each producer emits one sanitized completion record to backend logs; status reads never open a camera. Shared captures keep the producer's clock, and slow-viewer drops are distinguished from network loss. See [field semantics](docs/camera-observability.md) / [українською](docs/camera-observability.uk.md).
 
 - **Point a local frontend at a remote backend.** Vite's development and preview proxies now accept `BACKEND_URL` for HTTP and WebSocket requests. Without it, the existing localhost target and `BACKEND_PORT` behavior are preserved.

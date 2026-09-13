@@ -98,7 +98,11 @@ class TestTimelapseFrames:
         from backend.app.services import layer_timelapse
 
         monkeypatch.setattr(app_settings, "base_dir", tmp_path)
-        monkeypatch.setattr(layer_timelapse, "capture_frame", AsyncMock(return_value=_jpeg(640, 480)))
+        from backend.app.services.camera_metrics import CameraCaptureResult
+
+        monkeypatch.setattr(
+            layer_timelapse, "capture", AsyncMock(return_value=CameraCaptureResult(_jpeg(640, 480), "fresh"))
+        )
 
         session = layer_timelapse.TimelapseSession(
             printer_id=1, archive_id=None, camera_url="http://cam", camera_type="mjpeg", rotation=90
@@ -114,7 +118,9 @@ class TestTimelapseFrames:
 
         monkeypatch.setattr(app_settings, "base_dir", tmp_path)
         original = _jpeg(640, 480)
-        monkeypatch.setattr(layer_timelapse, "capture_frame", AsyncMock(return_value=original))
+        from backend.app.services.camera_metrics import CameraCaptureResult
+
+        monkeypatch.setattr(layer_timelapse, "capture", AsyncMock(return_value=CameraCaptureResult(original, "fresh")))
 
         session = layer_timelapse.TimelapseSession(
             printer_id=2, archive_id=None, camera_url="http://cam", camera_type="mjpeg"

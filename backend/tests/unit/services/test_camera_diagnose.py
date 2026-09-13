@@ -161,7 +161,7 @@ class TestFirstFrameStage:
                 new=_tcp_ok,
             ),
             patch(
-                "backend.app.services.camera_diagnose.capture_camera_frame_with_provenance",
+                "backend.app.services.camera_diagnose.capture",
                 new_callable=AsyncMock,
                 return_value=CameraCaptureResult(frame=None, source=None),
             ),
@@ -195,7 +195,7 @@ class TestFirstFrameStage:
                 new=_tcp_ok,
             ),
             patch(
-                "backend.app.services.camera_diagnose.capture_camera_frame_with_provenance",
+                "backend.app.services.camera_diagnose.capture",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("ffmpeg died"),
             ),
@@ -221,7 +221,7 @@ class TestFirstFrameStage:
                 new=_tcp_ok,
             ),
             patch(
-                "backend.app.services.camera_diagnose.capture_camera_frame_with_provenance",
+                "backend.app.services.camera_diagnose.capture",
                 new_callable=AsyncMock,
                 return_value=CameraCaptureResult(frame=b"\xff\xd8\xff\xd9", source="fresh"),
             ),

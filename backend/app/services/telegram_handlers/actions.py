@@ -81,13 +81,18 @@ async def cb_camera_snapshot(callback: CallbackQuery, tg_chat: TelegramChat | No
 
     # Try capture
     try:
-        from backend.app.services.camera import capture_camera_frame_bytes
+        from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-        jpeg_bytes = await capture_camera_frame_bytes(
-            ip_address=printer.ip_address,
-            access_code=printer.access_code,
-            model=printer.model,
-        )
+        jpeg_bytes = (
+            await capture(
+                CameraCaptureRequest.builtin(
+                    ip_address=printer.ip_address,
+                    access_code=printer.access_code,
+                    model=printer.model,
+                    purpose="telegram",
+                )
+            )
+        ).frame
 
         if jpeg_bytes:
             from aiogram.types import BufferedInputFile

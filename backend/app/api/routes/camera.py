@@ -26,7 +26,6 @@ from backend.app.models.printer import Printer
 from backend.app.models.user import User
 from backend.app.services import camera_metrics
 from backend.app.services.camera import (
-    capture_camera_frame,
     create_tls_proxy,
     generate_chamber_image_stream,
     get_camera_port,
@@ -1160,18 +1159,20 @@ async def camera_snapshot(
 
     # Check for external camera first
     if printer.external_camera_enabled and printer.external_camera_url:
-        from backend.app.services.external_camera import capture_frame_with_provenance
+        from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
         cached = _get_cached_snapshot(printer_id)
         if cached is not None:
             camera_metrics.remember_delivery(printer_id, "snapshot_cache")
             return _snapshot_response(printer_id, cached)
 
-        result = await capture_frame_with_provenance(
-            printer.external_camera_url,
-            printer.external_camera_type,
-            timeout=15,
-            snapshot_url=printer.external_camera_snapshot_url,
+        result = await capture(
+            CameraCaptureRequest.external(
+                url=printer.external_camera_url,
+                camera_type=printer.external_camera_type,
+                timeout=15,
+                snapshot_url=printer.external_camera_snapshot_url,
+            )
         )
         frame_data = result.frame
         camera_metrics.remember_delivery(
@@ -1213,28 +1214,29 @@ async def camera_snapshot(
     temp_path.chmod(0o600)
 
     try:
-        success = await capture_camera_frame(
-            ip_address=printer.ip_address,
-            access_code=printer.access_code,
-            model=printer.model,
-            output_path=temp_path,
-            timeout=15,
-            on_result=lambda result: camera_metrics.remember_delivery(
-                printer_id,
-                "shared_capture" if result.source == "coalesced" else "own_capture" if result.frame else None,
-                result,
-            ),
-        )
+        from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-        if not success:
+        result = await capture(
+            CameraCaptureRequest.builtin(
+                ip_address=printer.ip_address,
+                access_code=printer.access_code,
+                model=printer.model,
+                timeout=15,
+            )
+        )
+        camera_metrics.remember_delivery(
+            printer_id,
+            "shared_capture" if result.source == "coalesced" else "own_capture" if result.frame else None,
+            result,
+        )
+        if not result.frame:
             raise HTTPException(
                 status_code=503,
                 detail="Failed to capture camera frame. Ensure printer is on and camera is enabled.",
             )
 
-        # Read and return the image
-        with open(temp_path, "rb") as f:
-            image_data = f.read()
+        temp_path.write_bytes(result.frame)
+        image_data = result.frame
 
         _remember_snapshot(printer_id, image_data)
         return _snapshot_response(printer_id, image_data)
