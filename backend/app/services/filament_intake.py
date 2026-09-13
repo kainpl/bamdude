@@ -11,7 +11,7 @@ capture** (S7: a bad spool must not make anything read another file).
 from pathlib import Path
 
 from fastapi import HTTPException
-from sqlalchemy import update
+from sqlalchemy import inspect as sa_inspect, update
 
 from backend.app.core.config import settings
 from backend.app.i18n import current_language, t
@@ -66,6 +66,29 @@ async def item_source(db, item):
             await db.execute(LibraryFile.active().where(LibraryFile.id == item.library_file_id))
         ).scalar_one_or_none()
     return archive, library
+
+
+def loaded_descriptor(item) -> QueueSourceDescriptor | None:
+    """:func:`item_descriptor` for a caller that cannot await — the response builders.
+
+    Same question, same answer, same :func:`stored_descriptor`; the only
+    difference is where the ``queue_sources`` row comes from. ``_enrich_response``
+    and ``auto_queue._to_response`` are synchronous and run inside async request
+    handlers, where touching an unloaded relationship is a ``MissingGreenlet``
+    rather than a lazy query — so the row has to be eager-loaded by the query and
+    this asks whether it was, exactly as the same builder already does for
+    ``project``.
+
+    A row whose relationship was not loaded reads as ``None``: the card then
+    degrades to what the original rows can say, which is what it did before m173.
+    That is a display decision only; nothing here is on a dispatch path.
+    """
+    if not getattr(item, "queue_source_id", None):
+        return None
+    if "queue_source" in sa_inspect(item).unloaded:
+        return None
+    source = item.queue_source
+    return None if source is None else stored_descriptor(source, getattr(item, "source_snapshot", None))
 
 
 async def item_descriptor(db, item) -> QueueSourceDescriptor | None:
@@ -129,7 +152,13 @@ async def read_item_requirements(db, item, cache: PrintRequirementsCache | None 
         # navigation now, and one of them may be trashed or gone — which for a
         # snapshot-backed job changes nothing about what it prints.
         return await (cache or PrintRequirementsCache()).read(
-            descriptor.path, item.plate_id, archive_plate_id=descriptor.plate_fallback
+            descriptor.path,
+            item.plate_id,
+            archive_plate_id=descriptor.plate_fallback,
+            # The identity this read reports is the snapshot's HASH, so the
+            # revision it stamps into the intent — and the scheduler's two
+            # claim-time re-probes — survive a restore (spec §7).
+            sha256=descriptor.sha256,
         )
     archive, library = await item_source(db, item)
     return await (cache or PrintRequirementsCache()).read(
@@ -173,7 +202,9 @@ async def require_source_requirements(
     archive_plate_id = (
         descriptor.plate_fallback if descriptor is not None else (archive.plate_index if archive else None)
     )
-    req = await cache.read(path, plate_id, archive_plate_id=archive_plate_id)
+    req = await cache.read(
+        path, plate_id, archive_plate_id=archive_plate_id, sha256=descriptor.sha256 if descriptor else None
+    )
     if req.status != "ok":
         raise HTTPException(
             422,

@@ -571,13 +571,12 @@ async def test_a_lost_original_costs_nothing_the_job_needs(
 ):
     """The original vanishing inside the capture window must cost the job nothing.
 
-    The routing intent records **no file revision** for a captured source at all
-    (see ``queue_source_capture.staged_requirements``: an mtime is the wrong
-    identity for a frozen copy, and routing v2 puts the snapshot's hash there),
-    so an original that disappears between the copy and the rows takes nothing
-    with it. What must survive is the **resolved plate**: it came out of the
-    captured bytes, and preflight refuses with ``plate_selection_required`` when
-    the stored intent has none.
+    The routing intent records the **captured copy's hash** as its revision, never
+    the original's stat (see ``queue_source_capture.staged_requirements``), so an
+    original that disappears between the copy and the rows takes nothing with it.
+    What must also survive is the **resolved plate**: it came out of the captured
+    bytes, and preflight refuses with ``plate_selection_required`` when the stored
+    intent has none.
     """
     source, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     await db_session.commit()
@@ -598,7 +597,11 @@ async def test_a_lost_original_costs_nothing_the_job_needs(
     assert len(items) == 2
     stored = json.loads(items[0].filament_routing)
     assert stored["resolved_plate_id"] == 15
-    assert stored["source_identity"].get("revision") is None, "a captured source records no revision"
+    revision = stored["source_identity"]["revision"]
+    # The identity of a frozen copy is its content. Nothing about the original —
+    # which no longer exists — and no timestamp, which a restore would change.
+    assert set(revision) == {"sha256", "size_bytes"}, revision
+    assert "mtime_ns" not in json.dumps(stored)
     assert {item.plate_id for item in items} == {15}
 
 

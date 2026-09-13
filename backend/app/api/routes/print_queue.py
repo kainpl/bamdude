@@ -3,6 +3,7 @@
 import json
 import logging
 import uuid
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,12 +33,14 @@ from backend.app.schemas.print_queue import (
     PrintQueueReorder,
 )
 from backend.app.services import farm_forecast
+from backend.app.services.filament_intake import loaded_descriptor, source_display_filename
 from backend.app.services.filament_policy import decode
 from backend.app.services.filament_policy_write import routing_update
 from backend.app.services.notification_service import notification_service
 from backend.app.services.queue_add import add_items_to_printer_queue
 from backend.app.services.queue_source_descriptor import source_storage_state
-from backend.app.services.queue_times import plate_metadata_cached
+from backend.app.services.queue_times import plate_metadata_cached, plate_metadata_for_row
+from backend.app.services.source_io import SourceUnavailable
 from backend.app.utils.printer_models import is_gcode_compatible
 
 logger = logging.getLogger(__name__)
@@ -62,7 +65,20 @@ def _set_calibration_mode(item: PrintQueueItem, field: str, value) -> None:
 
 
 def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
-    """Add nested archive/printer/library_file info to response."""
+    """Add nested archive/printer/library_file info to response.
+
+    ⚠️ **The job's own captured bytes describe it, not its original rows** (m173,
+    spec §4, A09). Those rows may be gone — trashed, purged, retention-swept —
+    while the job still prints perfectly, and before this read such a row came
+    back untimed, unplated and named ``File #undefined``. ``descriptor`` is the
+    snapshot when the query eager-loaded ``queue_source``; the archive / library
+    branches below still fill everything they always did, so a legacy row is
+    answered byte-identically and a snapshotted row whose rows survive simply has
+    its three per-plate numbers and its name come out of the frozen copy instead.
+    """
+    descriptor = loaded_descriptor(item)
+    source = item.queue_source if descriptor is not None else None
+    snapshot_time, snapshot_grams, snapshot_bed = plate_metadata_for_row(plate_id=item.plate_id, descriptor=descriptor)
     # Parse ams_mapping from JSON string BEFORE model_validate
     ams_mapping_parsed = None
     if item.ams_mapping:
@@ -125,16 +141,17 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         # User tracking (Issue #206)
         "created_by_id": item.created_by_id,
         "created_by_username": item.created_by.username if item.created_by else None,
-        # m173. ``blob_state`` is deliberately not passed: this enricher never
-        # loads the ``queue_sources`` row, and a caller that has not looked may
-        # not claim ``ready`` — so a snapshotted row still reads ``legacy`` until
-        # the resolver task teaches this path to load it. ``source_size_bytes``
-        # arrives with the same row and stays None for the same reason.
+        # m173. ``blob_state`` comes from the row the query eager-loads for
+        # ``descriptor`` below; a caller that did not load it answers ``legacy``,
+        # because ``ready`` is a promise that the bytes are there and this builder
+        # may not make one it has not checked.
         "source_storage": source_storage_state(
             queue_source_id=item.queue_source_id,
+            blob_state=source.state if source is not None else None,
             origin=item.origin,
             is_calibration=item.is_calibration,
         ),
+        "source_size_bytes": source.size_bytes if source is not None else None,
     }
     response = PrintQueueItemResponse(**item_dict)
     # ⚠️ Only when the relationship is already loaded. This runs in async
@@ -210,6 +227,31 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
                     response.filament_used_grams = plate_weight
                 if plate_bed:
                     response.bed_type = plate_bed
+    if descriptor is not None:
+        # LAST, so the frozen copy outranks both rows — including an original that
+        # has been re-sliced since this job accepted its bytes (A03). Each value is
+        # applied only when the snapshot actually has it: a plate with no
+        # ``prediction`` leaves the row's own recorded estimate standing rather
+        # than blanking a number that came out of these same bytes.
+        if snapshot_time is not None:
+            response.print_time_seconds = snapshot_time
+        if snapshot_grams > 0:
+            response.filament_used_grams = snapshot_grams
+        if snapshot_bed:
+            response.bed_type = snapshot_bed
+        if not response.archive_name and not response.library_file_name:
+            # ``QueueCard`` renders ``archive_name || library_file_name ||
+            # 'File #' + (archive_id || library_file_id)`` — with both ids NULL the
+            # third answer is "File #undefined", so the job's own display name is
+            # the only thing that can name it. It goes in the field its provenance
+            # would have filled, and never as the object's hash, which
+            # ``source_display_filename`` refuses (§4, A04).
+            with suppress(SourceUnavailable):
+                name = source_display_filename(descriptor)
+                if descriptor.provenance.get("kind") == "archive":
+                    response.archive_name = name
+                else:
+                    response.library_file_name = name
     if item.queue and item.queue.printer:
         response.printer_name = item.queue.printer.name
     return response
@@ -255,6 +297,7 @@ async def list_queue(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
@@ -322,6 +365,7 @@ async def add_to_queue(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
@@ -461,6 +505,7 @@ async def get_queue_item(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
@@ -577,6 +622,7 @@ async def update_queue_item(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
@@ -842,6 +888,7 @@ async def start_queue_item(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
         )
         .where(PrintQueueItem.id == item_id)
@@ -876,6 +923,7 @@ async def start_queue_item(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
@@ -1004,6 +1052,7 @@ async def clone_item_endpoint(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
@@ -1172,6 +1221,7 @@ async def retry_failed_item(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),

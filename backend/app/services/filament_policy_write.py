@@ -83,14 +83,17 @@ async def prepare_routing(
         library_file_id=library_file_id,
         requirements=req,
         # ⚠️ Passed explicitly rather than left to ``serialize_policy`` to take off
-        # the requirements: it reads the resolved plate only inside the branch that
-        # also records a source revision, and a captured source deliberately has
-        # none (see ``queue_source_capture.staged_requirements`` — an mtime is the
-        # wrong identity for a frozen copy). Without this the stored intent would
-        # lose ``resolved_plate_id`` with it, and preflight's
-        # ``plate_selection_required`` gate would go quiet for every such job.
+        # the requirements, which reads the resolved plate only inside the branch
+        # that also records a source revision. A captured source records one now
+        # (its hash), so the two agree — but a read that could not identify its
+        # source at all still records no revision, and without this line such a job
+        # would lose ``resolved_plate_id`` with it and preflight's
+        # ``plate_selection_required`` gate would go quiet for it.
         plate_id=req.resolved_plate_id,
         printer_id=printer_id,
+        # Provenance: which stored object this intent was written about. ``None``
+        # for a staged capture, whose row does not exist until ``publish`` (§5).
+        queue_source_id=descriptor.queue_source_id if descriptor is not None else None,
     ), req.resolved_plate_id
 
 

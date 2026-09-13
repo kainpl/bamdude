@@ -34,7 +34,6 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,11 +50,11 @@ from backend.app.services import queue_rebalance
 from backend.app.services.auto_queue_eligibility import busy_printer_ids, find_eligible_printer, offline_candidates_for
 from backend.app.services.filament_intake import fail_auto_source, read_item_requirements
 from backend.app.services.filament_policy import auto_policy, serialize_policy
-from backend.app.services.filament_requirements import PrintRequirementsCache, SourceIdentity
+from backend.app.services.filament_requirements import PrintRequirementsCache, probe_identity
 from backend.app.services.filament_routing import resolve_filament_routing
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_rebalance import REBALANCE_SETTING_KEY
-from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, source_probe
+from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -456,8 +455,13 @@ class AutoQueueScheduler:
             next_pos = (max_pos or 0) + 1
 
             # Revalidate the SAME plan after DB awaits and before claiming the row.
+            # ⚠️ Both re-probes below carry ``identity.sha256``, so they ask the same
+            # question the first read asked. For a captured source the identity is
+            # hash-anchored; probing the same path without the label would produce a
+            # stat-anchored identity that can never compare equal to it, and EVERY
+            # snapshot-backed assignment would die on "evidence changed".
             identity = requirements.source_identity
-            current_identity = await source_probe(("identity", identity.path), SourceIdentity.of, Path(identity.path))
+            current_identity = await probe_identity(identity)
             if (
                 printer_manager.get_feed_snapshot(printer.id).marker != plan.snapshot_marker
                 or policy.fingerprint != plan.policy_fingerprint
@@ -483,7 +487,7 @@ class AutoQueueScheduler:
             if not claimed.rowcount:
                 raise ValueError("Auto item is no longer pending")
 
-            current_identity = await source_probe(("identity", identity.path), SourceIdentity.of, Path(identity.path))
+            current_identity = await probe_identity(identity)
             if (
                 printer_manager.get_feed_snapshot(printer.id).marker != plan.snapshot_marker
                 or identity != current_identity
@@ -523,6 +527,12 @@ class AutoQueueScheduler:
                     requirements=requirements,
                     printer_id=printer.id,
                     exact_model=True,
+                    # The promoted row's intent names the blob it was written about,
+                    # and the revision it stamps is that blob's HASH (the
+                    # requirements above were read through the descriptor). Before
+                    # routing v2 this stamped the copy's mtime, which a portable
+                    # restore changes — and the reader had to look away for it.
+                    queue_source_id=item.queue_source_id,
                 ),
                 nozzle_mapping=item.nozzle_mapping,
                 plate_id=plan.resolved_plate_id,

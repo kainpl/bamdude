@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import suppress
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -53,7 +54,13 @@ from backend.app.schemas.project import RebalanceOut
 from backend.app.services import queue_rebalance
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.auto_queue_eligibility import find_eligible_printer
-from backend.app.services.filament_intake import fail_auto_source, read_item_requirements, routing_detail
+from backend.app.services.filament_intake import (
+    fail_auto_source,
+    loaded_descriptor,
+    read_item_requirements,
+    routing_detail,
+    source_display_filename,
+)
 from backend.app.services.filament_preview import routing_preview
 from backend.app.services.queue_source_descriptor import source_storage_state
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
@@ -75,7 +82,15 @@ async def preview_routing(
 
 
 def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
-    """Build an AutoQueueItemResponse from an ORM row, expanding JSON columns."""
+    """Build an AutoQueueItemResponse from an ORM row, expanding JSON columns.
+
+    ⚠️ A row whose original library file or archive is gone still has to be able to
+    name itself (m173, A09): its own captured bytes carry the display name it was
+    queued under. Its estimate needs no such rescue — ``print_time_seconds`` is a
+    column on this row, written from the captured bytes at add time.
+    """
+    descriptor = loaded_descriptor(item)
+    source = item.queue_source if descriptor is not None else None
     required_types = None
     if item.required_filament_types:
         try:
@@ -145,11 +160,14 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         rebalanced_from_model=item.rebalanced_from_model,
         created_at=item.created_at,
         created_by_id=item.created_by_id,
-        # m173. As in ``print_queue._enrich_response``: the ``queue_sources`` row
-        # is not loaded here, and a caller that has not looked may not claim
-        # ``ready`` — a snapshotted row reads ``legacy`` until the resolver task
-        # teaches this builder to load it. No auto row is ever ``exempt``.
-        source_storage=source_storage_state(queue_source_id=item.queue_source_id),
+        # m173. As in ``print_queue._enrich_response``: the state comes from the
+        # eager-loaded ``queue_sources`` row, and a caller that did not load it may
+        # not claim ``ready``. No auto row is ever ``exempt``.
+        source_storage=source_storage_state(
+            queue_source_id=item.queue_source_id,
+            blob_state=source.state if source is not None else None,
+        ),
+        source_size_bytes=source.size_bytes if source is not None else None,
     )
 
     # UI-friendly nested data. Both ``PrintArchive`` and ``LibraryFile`` store
@@ -171,6 +189,15 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         meta = item.library_file.file_metadata if item.library_file.file_metadata else None
         response.library_file_name = (meta.get("print_name") if meta else None) or item.library_file.filename
         response.library_file_thumbnail = item.library_file.thumbnail_path
+    if descriptor is not None and not response.archive_name and not response.library_file_name:
+        # The job's own name, in the field its provenance would have filled, and
+        # never the object's hash — ``source_display_filename`` refuses that (A04).
+        with suppress(SourceUnavailable):
+            name = source_display_filename(descriptor)
+            if descriptor.provenance.get("kind") == "archive":
+                response.archive_name = name
+            else:
+                response.library_file_name = name
     if item.created_by is not None:
         response.created_by_username = item.created_by.username
     if item.assigned_to is not None:
@@ -214,6 +241,7 @@ async def add_to_auto_queue(
         select(AutoQueueItem)
         .options(
             selectinload(AutoQueueItem.archive),
+            selectinload(AutoQueueItem.queue_source),
             selectinload(AutoQueueItem.library_file),
             selectinload(AutoQueueItem.created_by),
         )
@@ -232,6 +260,7 @@ async def list_auto_queue(
     """List auto-queue items, optionally filtered by status / batch_id."""
     stmt = select(AutoQueueItem).options(
         selectinload(AutoQueueItem.archive),
+        selectinload(AutoQueueItem.queue_source),
         selectinload(AutoQueueItem.library_file),
         selectinload(AutoQueueItem.created_by),
         selectinload(AutoQueueItem.assigned_to).selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
@@ -288,6 +317,7 @@ async def get_auto_queue_item(
         select(AutoQueueItem)
         .options(
             selectinload(AutoQueueItem.archive),
+            selectinload(AutoQueueItem.queue_source),
             selectinload(AutoQueueItem.library_file),
             selectinload(AutoQueueItem.created_by),
             selectinload(AutoQueueItem.assigned_to)
@@ -412,6 +442,7 @@ async def cancel_auto_queue_item(
         select(AutoQueueItem)
         .options(
             selectinload(AutoQueueItem.archive),
+            selectinload(AutoQueueItem.queue_source),
             selectinload(AutoQueueItem.library_file),
             selectinload(AutoQueueItem.created_by),
             selectinload(AutoQueueItem.assigned_to)

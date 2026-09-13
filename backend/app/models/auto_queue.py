@@ -160,10 +160,14 @@ class AutoQueueItem(Base):
     project: Mapped["Project | None"] = relationship()
     created_by: Mapped["User | None"] = relationship()
     assigned_to: Mapped["PrintQueueItem | None"] = relationship(foreign_keys=[assigned_to_item_id])
+    # See ``models/print_queue.py`` — read-only navigation for the synchronous
+    # response builder, which must describe the row from the bytes it owns.
+    queue_source: Mapped["QueueSource | None"] = relationship(viewonly=True)
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.library import LibraryFile  # noqa: E402
 from backend.app.models.print_queue import PrintQueueItem  # noqa: E402
 from backend.app.models.project import Project  # noqa: E402
+from backend.app.models.queue_source import QueueSource  # noqa: E402
 from backend.app.models.user import User  # noqa: E402

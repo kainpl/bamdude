@@ -20,6 +20,7 @@ from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.services.product_composition import plate_filaments
+from backend.app.services.queue_source_descriptor import QueueSourceDescriptor
 from backend.app.utils.threemf_tools import extract_bed_type_from_3mf, extract_filament_usage_from_3mf
 
 logger = logging.getLogger(__name__)
@@ -117,16 +118,53 @@ def plate_metadata_cached(file_path: Path, plate_id: int | None) -> tuple[int | 
     return result
 
 
+def plate_metadata_for_row(
+    *, plate_id: int | None, descriptor: QueueSourceDescriptor | None
+) -> tuple[int | None, float, str | None]:
+    """``(print_time, filament_grams, bed_type)`` of a job's own captured bytes (m173).
+
+    The snapshot is the source of truth for what a queued job IS (spec §4, A09):
+    its original row may be gone, and while it exists it may have been re-sliced
+    since — A03 says the job keeps the bytes it accepted, so the card has to
+    describe those. One call, three values, because the three parsers share one
+    cache entry.
+
+    **Where the answer is cached:** :func:`plate_metadata_cached`, unchanged — the
+    same module-level LRU the original path has always used, keyed by the file's
+    own revision. For a content-addressed immutable object that key can never go
+    stale, so a queue poll opens the ZIP once per (object, plate) and every later
+    poll of every row is a dict lookup.
+
+    ``(None, 0.0, None)`` for a job with no snapshot, and for one whose object is
+    missing or unreadable — never a fall back to another file (S7).
+    """
+    if descriptor is None:
+        return None, 0.0, None
+    return plate_metadata_cached(descriptor.path, plate_id or descriptor.plate_fallback)
+
+
 def print_time_for_row(
-    *, archive: PrintArchive | None, library_file: LibraryFile | None, plate_id: int | None
+    *,
+    archive: PrintArchive | None,
+    library_file: LibraryFile | None,
+    plate_id: int | None,
+    descriptor: QueueSourceDescriptor | None = None,
 ) -> int | None:
     """A queue row's print time, the way the queue response derives it.
 
-    Archive first (its own estimate, then the plate's if the 3MF is on disk),
-    else the library file (its metadata, then the plate's). ``None`` = the row
-    has no estimate — callers must not invent one. ``is_file()``, never
-    ``exists()``: a blank ``file_path`` resolves to the data directory.
+    The job's own captured bytes first when it has them (m173). Then archive (its
+    own estimate, then the plate's if the 3MF is on disk), else the library file
+    (its metadata, then the plate's). ``None`` = the row has no estimate — callers
+    must not invent one. ``is_file()``, never ``exists()``: a blank ``file_path``
+    resolves to the data directory.
+
+    A snapshot whose plate carries no ``prediction`` falls through to the row's
+    own recorded estimate, which is not a guess: it was read out of the same bytes
+    when the row was written. A job with neither answers ``None``.
     """
+    snapshot_time, _grams, _bed = plate_metadata_for_row(plate_id=plate_id, descriptor=descriptor)
+    if snapshot_time is not None:
+        return snapshot_time
     if archive is not None and archive.deleted_at is None:
         seconds = archive.print_time_seconds
         if plate_id:
@@ -151,14 +189,24 @@ def print_time_for_row(
 
 
 def filaments_for_row(
-    *, archive: PrintArchive | None, library_file: LibraryFile | None, plate_id: int | None
+    *,
+    archive: PrintArchive | None,
+    library_file: LibraryFile | None,
+    plate_id: int | None,
+    descriptor: QueueSourceDescriptor | None = None,
 ) -> list[dict] | None:
     """The slicer's filaments (type, colour, ``used_g``) of a queue row's plate.
 
-    Library rows read the metadata already on the row — plate ``plate_id``, or
-    the whole file when the row names none. Archive rows read the 3MF on disk;
-    an archive without its file answers ``None``, never a guess.
+    A job with a captured source reads that (m173) — the bytes it will actually
+    print, whatever became of the row it came from. Library rows read the metadata
+    already on the row — plate ``plate_id``, or the whole file when the row names
+    none. Archive rows read the 3MF on disk; an archive without its file answers
+    ``None``, never a guess.
     """
+    if descriptor is not None:
+        if not descriptor.path.is_file():
+            return None
+        return extract_filament_usage_from_3mf(descriptor.path, plate_id or descriptor.plate_fallback) or None
     if archive is not None and archive.deleted_at is None:
         path = settings.base_dir / archive.file_path
         if archive.file_path and path.is_file():

@@ -1185,6 +1185,7 @@ class VirtualPrinterInstance:
             # the whole database. ONE capture serves every plate of a Send All.
             staged = await capture_staged(plan)
             try:
+                from backend.app.services.filament_policy import record_queue_source
                 from backend.app.services.filament_policy_write import prepare_routing
                 from backend.app.services.filament_requirements import PrintRequirementsCache
 
@@ -1258,7 +1259,7 @@ class VirtualPrinterInstance:
                             nozzle_mapping=nozzle_mapping_json,
                             # None unless this VP opted in — see above.
                             ams_mapping=ams_mapping_json,
-                            filament_routing=routing,
+                            filament_routing=record_queue_source(routing, source),
                             # Per-VP opt-in for auto-print G-code injection (#1516).
                             # Default off; when on, the dispatcher still no-ops unless
                             # gcode_snippets are configured for the target model, so

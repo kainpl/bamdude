@@ -237,7 +237,9 @@ def test_source_change_during_read_refuses_result(tmp_path, monkeypatch):
     before = SourceIdentity.of(source)
     after = SourceIdentity(before.path, before.size + 1, before.mtime_ns + 1)
     revisions = iter([before, after])
-    monkeypatch.setattr(SourceIdentity, "of", lambda path: next(revisions))
+    # ``*, sha256`` mirrors the real signature — a captured source is read with
+    # its hash label, and a stub without the keyword would raise TypeError instead.
+    monkeypatch.setattr(SourceIdentity, "of", lambda path, *, sha256=None: next(revisions))
     assert read_print_requirements(source).reason == "source_changed"
 
 

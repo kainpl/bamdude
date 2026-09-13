@@ -43,9 +43,11 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.product import ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.app.models.queue_source import QueueSource
 from backend.app.models.spool import Spool
 from backend.app.services.plan_engine import OrderPlan, plan_for_orders
 from backend.app.services.product_composition import plate_filaments
+from backend.app.services.queue_source_descriptor import stored_descriptor
 from backend.app.services.queue_times import filaments_for_row
 from backend.app.services.spoolman import get_spoolman_client
 
@@ -346,6 +348,8 @@ async def queued_needs_of(
                     PrintQueueItem.plate_id,
                     PrintQueueItem.project_id,
                     PrintQueueItem.project_line_id,
+                    PrintQueueItem.queue_source_id,
+                    PrintQueueItem.source_snapshot,
                 ).where(
                     PrintQueueItem.status == "pending",
                     or_(
@@ -364,6 +368,8 @@ async def queued_needs_of(
                     AutoQueueItem.plate_id,
                     AutoQueueItem.project_id,
                     AutoQueueItem.project_line_id,
+                    AutoQueueItem.queue_source_id,
+                    AutoQueueItem.source_snapshot,
                 ).where(
                     AutoQueueItem.status == "pending",
                     AutoQueueItem.assigned_to_item_id.is_(None),
@@ -387,15 +393,28 @@ async def queued_needs_of(
         if archive_ids
         else {}
     )
+    # m173: a row with a captured source is read from THAT — the file or archive it
+    # came from may be gone, and until this read such a row reported "unknown" and
+    # the order page could not say what it still needs. Loaded by id in one
+    # statement, like the two above, so the statement count stays fixed however
+    # long the queue is.
+    blob_ids = {r[5] for r in rows if r[5] is not None}
+    blobs: dict[int, QueueSource] = (
+        {b.id: b for b in (await db.execute(select(QueueSource).where(QueueSource.id.in_(blob_ids)))).scalars()}
+        if blob_ids
+        else {}
+    )
     out: dict[int, list[QueuedNeed]] = {}
-    for library_file_id, archive_id, plate_id, project_id, line_id in rows:
+    for library_file_id, archive_id, plate_id, project_id, line_id, blob_id, snapshot in rows:
         owner, colour = lines.get(line_id, (project_id, None)) if line_id is not None else (project_id, None)
         if owner not in active:
             continue
+        blob = blobs.get(blob_id) if blob_id is not None else None
         raw = filaments_for_row(
             archive=archives.get(archive_id) if archive_id is not None else None,
             library_file=files.get(library_file_id) if library_file_id is not None else None,
             plate_id=plate_id,
+            descriptor=stored_descriptor(blob, snapshot) if blob is not None else None,
         )
         out.setdefault(owner, []).append(QueuedNeed(colour, _lines_of(raw)))
     return out

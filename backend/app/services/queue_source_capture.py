@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -200,25 +200,20 @@ async def staged_requirements(
     and the refusal for a plate the file does not have happens here, between
     ``capture`` and ``publish``.
 
-    **No file revision is recorded on the intent**, and that is an answer rather
-    than a gap. The ``(size, mtime_ns)`` pair ``serialize_policy`` stores exists
-    to ask one question at dispatch — "has the original changed since this job was
-    queued?" — and for a job that prints a frozen copy the question is obsolete:
-    A03 says an existing job keeps the bytes it accepted, and a changed original
-    is the *next* capture's business. Nor could it be asked honestly: §7 forbids
-    comparing the original's size/mtime against the copy's, the two differ by
-    construction, and after a ``restore`` an mtime is not a portable identity at
-    all. ``filament_preflight`` skips the comparison when no revision was
-    recorded, exactly as it does for every row written before revisions existed,
-    and Task 7's routing v2 puts the snapshot's **hash** there instead — an
-    identity that does survive a restore.
+    **The revision recorded on the intent is the copy's HASH** (routing v2). The
+    question the revision exists to ask at dispatch used to be "has the original
+    changed since this job was queued?", which for a frozen copy is obsolete — A03
+    says an existing job keeps the bytes it accepted, and a changed original is the
+    *next* capture's business. The question it asks now is "are these still the
+    bytes this intent was written about?", which the hash answers portably: §7
+    forbids comparing the original's size/mtime against the copy's, and an mtime
+    survives neither a restore nor a spool rewrite, while the hash survives both.
 
-    Everything the same read produces for its own use is untouched: the cache
-    still keys on the copy's identity, and ``auto_queue_scheduler``'s
-    claim-time re-probe still compares the copy against itself, because the
-    requirements it re-reads come from the same descriptor.
+    The identity is read from ``staging/<token>.part``, whose path never reaches
+    the intent: ``SourceIdentity.revision()`` is path-free, so the revision written
+    here is the same one the published object answers with afterwards.
     """
-    req = await require_source_requirements(
+    return await require_source_requirements(
         cache,
         archive,
         library_file,
@@ -227,7 +222,6 @@ async def staged_requirements(
         product_plate_id=product_plate_id,
         descriptor=staged.descriptor,
     )
-    return None if req is None else replace(req, source_identity=None)
 
 
 def _refusal(exc: QueueSourceError) -> HTTPException:

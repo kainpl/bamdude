@@ -100,6 +100,15 @@ class QueueSourceDescriptor:
     display_filename: str
     plate_fallback: int | None = None
     provenance: dict[str, Any] = field(default_factory=dict)
+    #: The ``queue_sources`` row these bytes live in, when there is one — ``None``
+    #: for a capture that has not been published yet (§5 step 4: the row is
+    #: written by ``publish``, after the routing intent has already been
+    #: serialized). It is recorded in the intent so a person can see which object
+    #: the intent was written about, and it is **never** compared to decide
+    #: whether two sources are the same: ``queue_sources.id`` is a plain INTEGER
+    #: PRIMARY KEY, so SQLite hands a deleted row's id to the next INSERT, and
+    #: only ``sha256`` answers that question (S4).
+    queue_source_id: int | None = None
 
 
 def source_snapshot(descriptor: QueueSourceDescriptor) -> dict[str, Any]:
@@ -159,6 +168,7 @@ def stored_descriptor(source: QueueSource, snapshot: dict[str, Any] | None) -> Q
         display_filename=payload.get("display_filename") or Path(source.relative_path).name,
         plate_fallback=payload.get("plate_fallback"),
         provenance=dict(provenance) if isinstance(provenance, dict) else {},
+        queue_source_id=source.id,
     )
 
 

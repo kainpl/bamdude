@@ -229,6 +229,12 @@ class PrintQueueItem(Base):
     library_file: Mapped["LibraryFile | None"] = relationship()
     project: Mapped["Project | None"] = relationship(back_populates="queue_items")
     created_by: Mapped["User | None"] = relationship()
+    # Read-only navigation to the blob, for the SYNCHRONOUS response builders: they
+    # have to describe the job from the bytes it owns, and they cannot await
+    # (``filament_intake.loaded_descriptor``). No ``back_populates`` on purpose —
+    # the blob is shared by every job that names it and must never be able to
+    # cascade anything onto them; who owns it is a query the GC runs (§9).
+    queue_source: Mapped["QueueSource | None"] = relationship(viewonly=True)
 
     # Convenience property to get printer_id via queue
     @property
@@ -241,4 +247,5 @@ from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.library import LibraryFile  # noqa: E402
 from backend.app.models.printer_queue import PrinterQueue  # noqa: E402
 from backend.app.models.project import Project  # noqa: E402
+from backend.app.models.queue_source import QueueSource  # noqa: E402
 from backend.app.models.user import User  # noqa: E402

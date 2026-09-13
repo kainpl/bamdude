@@ -37,7 +37,7 @@ from backend.app.schemas.calibration_mode import mode_to_bool
 from backend.app.schemas.print_queue import PrintQueueItemCreate
 from backend.app.services import queue_sources
 from backend.app.services.filament_intake import routing_detail
-from backend.app.services.filament_policy import choices_policy, serialize_policy
+from backend.app.services.filament_policy import choices_policy, record_queue_source, serialize_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.order_filing import resolve_line_id
 from backend.app.services.printer_manager import printer_manager
@@ -367,7 +367,7 @@ async def _publish_items(
                     manual_start=data.manual_start,
                     require_previous_success=data.require_previous_success,
                     ams_mapping=ams_mapping_json,
-                    filament_routing=routing,
+                    filament_routing=record_queue_source(routing, source),
                     plate_id=data.plate_id,
                     bed_levelling=mode_to_bool(data.bed_levelling),
                     bed_levelling_mode=data.bed_levelling,

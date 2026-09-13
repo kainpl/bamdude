@@ -494,6 +494,7 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
 
     from backend.app.models.library import LibraryFile
     from backend.app.services import queue_sources
+    from backend.app.services.filament_policy import record_queue_source
     from backend.app.services.filament_policy_write import prepare_routing
     from backend.app.services.queue_source_capture import (
         capture_staged,
@@ -532,7 +533,7 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
                 source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
                 queue_id=queue_id,
                 library_file_id=file_id,
-                filament_routing=routing,
+                filament_routing=record_queue_source(routing, source),
                 plate_id=plate_id,
                 status="pending",
                 position=await next_queue_position(session, queue_id),

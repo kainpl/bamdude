@@ -589,21 +589,21 @@ async def test_eligibility_places_a_job_whose_library_row_is_gone(
     assert item.plate_id == 15
 
 
-async def test_a_captured_job_stores_no_file_revision_and_dispatch_never_asks_for_one(
+async def test_a_captured_job_stores_its_own_hash_as_the_revision_and_preflights_without_the_original(
     db_session, tmp_path, printer_factory, monkeypatch, sessions
 ):
-    """A03/S2 at the preflight boundary, and why the stored revision had to go.
+    """A03/S2 at the preflight boundary, and what the stored revision became.
 
     The routing intent used to carry the ORIGINAL's ``(size, mtime_ns)`` so that
     dispatch could refuse a job whose source had changed underneath it. For a job
-    that prints a frozen copy that question is answered differently — the old job
-    keeps the bytes it accepted — and asking the old way is worse than useless:
-    the copy's mtime is not the original's, so every captured job would defer as
+    that prints a frozen copy that question is answered differently — the job keeps
+    the bytes it accepted — and asking the old way is worse than useless: the copy's
+    mtime is not the original's, so every captured job would defer as
     ``source_changed``, and after a restore an mtime means nothing at all.
 
-    So: no revision is recorded, preflight skips the comparison exactly as it does
-    for rows written before revisions existed, and the job preflights fine with
-    the original **deleted**.
+    So the revision is the captured copy's **hash** (routing v2): preflight still
+    asks whether these are the bytes the intent was written about, it can answer
+    portably, and the job preflights fine with the original **deleted**.
     """
     from backend.app.schemas.print_queue import PrintQueueItemCreate
     from backend.app.services.filament_preflight import preflight_item
@@ -618,7 +618,11 @@ async def test_a_captured_job_stores_no_file_revision_and_dispatch_never_asks_fo
     )
     item = items[0]
     stored = json.loads(item.filament_routing)
-    assert stored["source_identity"].get("revision") is None
+    blob = await db_session.get(QueueSource, item.queue_source_id)
+    assert stored["version"] == 2
+    assert stored["source_identity"]["revision"] == {"sha256": blob.sha256, "size_bytes": blob.size_bytes}
+    assert stored["source_identity"]["queue_source_id"] == blob.id
+    assert "mtime_ns" not in json.dumps(stored)
     assert stored["resolved_plate_id"] == 15, "the plate is not the revision's to take with it"
 
     Path(source.file_path).unlink()
@@ -626,6 +630,51 @@ async def test_a_captured_job_stores_no_file_revision_and_dispatch_never_asks_fo
 
     assert guard is not None and guard.plan is not None
     assert guard.plan.resolved_plate_id == 15
+
+
+async def test_a_row_whose_blob_was_swapped_under_its_intent_is_refused(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """What the hash revision is FOR (routing v2).
+
+    The intent is evidence about a specific set of bytes. Repointing the row at a
+    different blob — a cross-model conversion, a clone built from a detached id —
+    leaves an intent that decided the plate, the pins and the mapping for the
+    OTHER file, and every reader resolves through ``queue_source_id``. Comparing
+    the recorded hash is what notices; comparing the recorded blob **id** would not
+    be enough, since SQLite hands a deleted row's id to the next INSERT.
+    """
+    from backend.app.schemas.print_queue import PrintQueueItemCreate
+    from backend.app.services.filament_preflight import preflight_item
+    from backend.app.services.filament_routing import RoutingDeferred
+    from backend.app.services.queue_add import add_items_to_printer_queue
+
+    source, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    other_path = write_routing_3mf(tmp_path / "other.gcode.3mf", {15: PLATE_FILAMENTS}, model="P1P")
+    other = LibraryFile(
+        filename=other_path.name, file_path=str(other_path), file_size=other_path.stat().st_size, file_type="gcode"
+    )
+    db_session.add(other)
+    await db_session.commit()
+
+    items, _queue = await add_items_to_printer_queue(
+        db_session, PrintQueueItemCreate(queue_id=queue.id, library_file_id=source.id, plate_id=15), None
+    )
+    item = items[0]
+    assert await preflight_item(db_session, item, printer.id) is not None
+
+    others, _queue = await add_items_to_printer_queue(
+        db_session, PrintQueueItemCreate(queue_id=queue.id, library_file_id=other.id, plate_id=15), None
+    )
+    mine, theirs = (await blobs(db_session))[0], (await blobs(db_session))[1]
+    assert mine.sha256 != theirs.sha256
+    item.queue_source_id = theirs.id
+    item.source_snapshot = others[0].source_snapshot
+    await db_session.commit()
+
+    with pytest.raises(RoutingDeferred) as refusal:
+        await preflight_item(db_session, item, printer.id)
+    assert refusal.value.reason == "source_changed"
 
 
 async def test_an_edit_of_a_snapshot_job_re_reads_the_snapshot(

@@ -24,6 +24,7 @@ from backend.app.models.queue_source import QueueSource
 from backend.app.schemas.calibration_mode import normalize_mode
 from backend.app.services import queue_sources
 from backend.app.services.filament_intake import item_source
+from backend.app.services.filament_policy import record_queue_source
 from backend.app.services.filament_policy_write import prepare_routing
 from backend.app.services.order_filing import resolve_line_id
 from backend.app.services.queue_counters import set_queue_printing, update_queue_counters
@@ -213,7 +214,7 @@ async def claim_printer_for_direct_print(
             )
 
         item = PrintQueueItem(
-            filament_routing=routing,
+            filament_routing=record_queue_source(routing, source),
             queue_id=queue.id,
             position=0,
             status="printing",
@@ -388,7 +389,7 @@ async def enqueue_batch_copies(
                         archive_id=archive_id,
                         library_file_id=library_file_id,
                         ams_mapping=ams_mapping_json,
-                        filament_routing=routing,
+                        filament_routing=record_queue_source(routing, source),
                         plate_id=plate_id,
                         bed_levelling=bed_mode == "on",
                         bed_levelling_mode=bed_mode,

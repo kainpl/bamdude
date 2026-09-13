@@ -264,6 +264,10 @@ def test_the_descriptor_carries_exactly_the_agreed_fields():
         "display_filename",
         "plate_fallback",
         "provenance",
+        # Routing v2: which ``queue_sources`` row these bytes live in. Navigation
+        # only — ``sha256`` stays the identity, because SQLite reuses a deleted
+        # row's id (S4).
+        "queue_source_id",
     ]
 
 

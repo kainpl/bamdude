@@ -5,7 +5,20 @@ from dataclasses import asdict
 
 from backend.app.services.filament_routing import RoutingPolicy
 
-VERSION = 1
+#: The version every writer stamps. **2** since m173: a job's identity is the
+#: captured snapshot's hash, not the original file's ``(size, mtime_ns)``.
+VERSION = 2
+
+#: Every version this build can read, and the list is closed on purpose.
+#:
+#: v1 rows are read unchanged — the semantic half of the payload (mode, feed
+#: policy, overrides, pins, printer scope, resolved plate, ``exact_model``, the
+#: review flag) never changed shape, and only ``source_identity`` gained
+#: ``queue_source_id`` and a second revision shape. What must NOT happen is this
+#: tuple turning into "any integer": the payload IS the meaning here, so an
+#: intent written by a newer build is ``review_required`` and a human looks at
+#: it, rather than a dispatch proceeding on pins it could not parse.
+SUPPORTED_VERSIONS = (1, 2)
 FEED_POLICIES = {"auto", "ams_only", "external_only"}
 CHOICE_FIELDS = {"feed_policy", "force_color_match", "filament_overrides"}
 
@@ -96,13 +109,24 @@ def serialize_policy(
     plate_id=None,
     printer_id=None,
     exact_model=False,
+    queue_source_id=None,
 ):
+    """Write the intent: the operator's answers, plus what this job's source IS.
+
+    ``source_identity`` carries three things and they have three different jobs.
+    ``{kind, id}`` and ``queue_source_id`` are provenance — what the intent was
+    written about, so Repeat/Retry/clone can restore the source and so a person
+    can trace it. ``revision`` is the only part that is ever *compared*, and its
+    shape says which question it answers: a captured snapshot records
+    ``{sha256, size_bytes}`` (portable across a restore, §7), an original records
+    ``{size, mtime_ns}`` as it always did. See
+    ``filament_requirements.revision_refutes`` for the reader.
+    """
     identity = source_scope(archive_id, library_file_id)
+    if queue_source_id is not None:
+        identity["queue_source_id"] = queue_source_id
     if requirements and requirements.source_identity:
-        identity["revision"] = {
-            "size": requirements.source_identity.size,
-            "mtime_ns": requirements.source_identity.mtime_ns,
-        }
+        identity["revision"] = requirements.source_identity.revision()
         plate_id = requirements.resolved_plate_id
     return json.dumps(
         {
@@ -117,9 +141,38 @@ def serialize_policy(
     )
 
 
+def record_queue_source(routing, source):
+    """Name the published blob in an intent that was serialized before it had a row.
+
+    A fresh add reads its requirements from the STAGED copy and writes its intent
+    there (§5 step 4) — before ``publish`` gives those bytes a ``queue_sources``
+    row — so ``serialize_policy`` cannot know the id at that point. The writers
+    can, because they build the job row with it, and this is the one line they add.
+
+    It is **navigation, never evidence**: the revision already recorded (the copy's
+    hash) resolves to exactly one row, ``queue_sources.sha256`` being UNIQUE, so an
+    intent that lacks the id is not degraded and nothing compares it — see
+    ``QueueSourceDescriptor.queue_source_id`` for why an id would be the weaker
+    key anyway.
+    """
+    if routing is None or source is None:
+        return routing
+    data = decode(routing)
+    if not isinstance(data, dict) or data.get("version") != VERSION:
+        return routing
+    identity = data.get("source_identity")
+    if not isinstance(identity, dict):
+        return routing
+    identity["queue_source_id"] = source.id
+    return json.dumps(data, separators=(",", ":"))
+
+
 def deserialize_policy(value):
     data = decode(value)
-    if not isinstance(data, dict) or type(data.get("version")) is not int or data.get("version") != VERSION:
+    # ``type(...) is not int`` before the membership test, and it is load-bearing:
+    # ``True == 1`` in Python, so a payload whose version is a boolean would pass
+    # ``in SUPPORTED_VERSIONS`` and be read as v1.
+    if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] not in SUPPORTED_VERSIONS:
         return RoutingPolicy(review_required=True)
     if data.get("mode") not in {"auto", "pinned"} or data.get("feed_policy") not in FEED_POLICIES:
         return RoutingPolicy(review_required=True)
@@ -170,9 +223,22 @@ def queue_policy(item):
 
 
 def restore_routing_source(item):
-    """Repeat/copy keeps the source the intent describes, even after an execution archive was linked."""
+    """Repeat/copy keeps the source the intent describes, even after an execution archive was linked.
+
+    Reads every supported version, or Repeat/Retry/clone would silently stop
+    restoring the source of every row written before the bump.
+
+    It restores the ORIGINAL references only. ``queue_source_id`` is already on
+    the row in each of these flows (Repeat and Retry re-arm the same row, a clone
+    carries both columns), and re-attaching a blob from a payload is a WRITE to
+    the spool's ownership: it would have to happen under
+    ``queue_sources.storage_mutation()`` and refuse a row that is no longer
+    ``ready``, which a synchronous column-fixer cannot do.
+    """
     snapshot = decode(item.filament_routing)
-    if not isinstance(snapshot, dict) or snapshot.get("version") != VERSION:
+    if not isinstance(snapshot, dict) or type(snapshot.get("version")) is not int:
+        return
+    if snapshot["version"] not in SUPPORTED_VERSIONS:
         return
     source = snapshot.get("source_identity", {})
     if not isinstance(source, dict):

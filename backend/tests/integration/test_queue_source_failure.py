@@ -54,7 +54,11 @@ async def test_auto_queue_skips_bad_source_and_requires_explicit_retry(
     if failure == "missing":
         path.unlink()
 
-    def stat(file):
+    def stat(file, *, sha256=None):
+        # Mirrors ``SourceIdentity.of``'s real signature: a captured source is read
+        # with its hash label (routing v2), and a stub that dropped the keyword
+        # would turn every such read into a TypeError rather than the OSError this
+        # test is about.
         if file == path:
             source_checks.append(1)
             if failure in ("assignment", "claimed") and len(source_checks) >= (4 if failure == "assignment" else 5):
@@ -63,7 +67,7 @@ async def test_auto_queue_skips_bad_source_and_requires_explicit_retry(
             raise OSError(112, "Host is down")
         if file == path and failure == "timeout":
             release.wait(10)
-        return original(file)
+        return original(file, sha256=sha256)
 
     monkeypatch.setattr(SourceIdentity, "of", stat)
     monkeypatch.setattr(source_io, "SOURCE_IO_TIMEOUT", 0.2 if failure == "timeout" else 5)
