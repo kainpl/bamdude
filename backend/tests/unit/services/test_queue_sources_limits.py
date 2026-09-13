@@ -523,6 +523,23 @@ async def test_a_pin_survives_an_exception_in_its_body():
     assert queue_sources.pinned_source_ids() == frozenset()
 
 
+async def test_resetting_the_module_under_a_live_worker_is_refused(tmp_path, bench):
+    """A leaked worker must fail a test loudly, not be reset out from under it."""
+    source = tmp_path / "share" / "a.3mf"
+    make_3mf(source)
+    gate = bench.arm(1)[0]
+    task = capture_task(source)
+    await wait_for(lambda: gate.reading.is_set())
+
+    with pytest.raises(RuntimeError, match="still alive"):
+        queue_sources._reset_state()
+
+    await cancel_all(task)
+    bench.drain()
+    await wait_for(lambda: queue_sources.active_captures() == 0)
+    queue_sources._reset_state()  # and now it is allowed
+
+
 # --------------------------------------------------------------------------- #
 # The module must leave nothing behind
 # --------------------------------------------------------------------------- #

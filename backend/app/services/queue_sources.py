@@ -323,10 +323,17 @@ def invalidate_receipts() -> int:
 
 
 def _reset_state() -> None:
-    """Tests only: drop the process state. Never call with a worker alive."""
+    """Tests only: drop the process state.
+
+    Refuses while a worker is alive rather than warning about it in a docstring.
+    Resetting under a live thread would hand its slot to the next test and leave
+    it writing into a spool nobody is tracking — a test that leaks a worker has
+    to fail, loudly, in its own teardown.
+    """
     global _backup_pins, _epoch
     with _state_lock:
-        _inflight.clear()
+        if _inflight:
+            raise RuntimeError(f"{len(_inflight)} capture worker(s) still alive; drain them before resetting")
         _pins.clear()
         _staging_pins.clear()
         _backup_pins = 0
@@ -489,8 +496,21 @@ class CaptureReceipt:
         self.state = "publishing"
 
     def _release_claim(self) -> None:
+        """Hand the receipt back as publishable — only when nothing moved."""
         if self.state == "publishing":
             self.state = "staged"
+
+    def _spend(self) -> None:
+        """The staged file is gone, so this receipt can never publish again.
+
+        A publication that failed *after* the rename has no bytes left to retry
+        with: handing the receipt back as ``staged`` would advertise a file that
+        does not exist, and the retry would reach ``os.replace`` on nothing and
+        escape the error taxonomy as a bare ``OSError``. The caller must capture
+        again.
+        """
+        if self.state == "publishing":
+            self.state = "discarded"
 
 
 def snapshot_for(receipt: CaptureReceipt, source: QueueSource) -> dict[str, Any]:
@@ -856,6 +876,9 @@ async def publish(
     test engine's factory; production leaves it alone.
     """
     receipt._claim()
+    # Set the moment the rename consumes the ``.part``. Everything after that
+    # point is a failure the receipt cannot be retried through.
+    staging_consumed = False
     try:
         async with storage_mutation():
             if receipt.epoch != current_epoch():
@@ -877,6 +900,7 @@ async def publish(
                     # every syscall happen inside the worker call below.
                     target = Path(settings.base_dir) / relative
                     await _file_work(_install_object, receipt.staging_path, target)
+                    staging_consumed = True
                     created = True
                     row = QueueSource(
                         sha256=receipt.sha256,
@@ -888,7 +912,7 @@ async def publish(
                     session.add(row)
                     await session.flush()
                 else:
-                    row = await _reuse_or_repair(existing, receipt)
+                    row, staging_consumed = await _reuse_or_repair(existing, receipt)
 
                 try:
                     await attach(session, row)
@@ -905,7 +929,16 @@ async def publish(
                         await _file_work(_drop, Path(settings.base_dir) / relative)
                     raise
     except BaseException:
-        receipt._release_claim()
+        if staging_consumed or receipt.state == "published":
+            # The ``.part`` no longer exists, so its pin must not survive it —
+            # the GC reads that set and would keep waiting for a file nobody owns.
+            _unpin_staging(receipt.staging_path)
+        if staging_consumed:
+            receipt._spend()
+        else:
+            # Nothing moved (busy, a traversal refusal, a stale epoch): the
+            # caller still holds its bytes and may retry.
+            receipt._release_claim()
         raise
 
     _unpin_staging(receipt.staging_path)
@@ -914,7 +947,7 @@ async def publish(
     return row
 
 
-async def _reuse_or_repair(existing: QueueSource, receipt: CaptureReceipt) -> QueueSource:
+async def _reuse_or_repair(existing: QueueSource, receipt: CaptureReceipt) -> tuple[QueueSource, bool]:
     """Decide what an already-known hash means for these bytes (§5 step 5).
 
     A verified ``ready`` object is reused as it stands — one blob for the whole
@@ -923,8 +956,14 @@ async def _reuse_or_repair(existing: QueueSource, receipt: CaptureReceipt) -> Qu
     whose file went missing) is repaired in place by exactly these bytes, with
     the same id — but only with no live reader/writer/backup pin, and failed jobs
     stay failed until somebody retries them.
+
+    Returns the row and **whether the staged file was consumed** by a repair:
+    the caller needs that to know if a later failure leaves anything to retry.
     """
     if existing.state == STATE_DELETING:
+        # ⚠️ Before the verification, not after: the GC may have unlinked the
+        # object already, and "missing" must not route these bytes into the
+        # repair branch and put a file back under an unfinished unlink.
         raise QueueSourceBusy("the garbage collector is still unlinking these bytes")
 
     # The row owns where its bytes live; a repair must land there, not at a path
@@ -932,14 +971,16 @@ async def _reuse_or_repair(existing: QueueSource, receipt: CaptureReceipt) -> Qu
     target = Path(settings.base_dir) / existing.relative_path
     intact = await _file_work(_verify_object, target, existing.sha256, existing.size_bytes)
     if intact and existing.state == STATE_READY:
-        return existing
+        return existing, False
 
     if _blob_is_pinned(existing.id):
         raise QueueSourceBusy("these bytes are in use and cannot be repaired right now")
+    consumed = False
     if not intact:
         await _file_work(_install_object, receipt.staging_path, target)
+        consumed = True
         logger.info("Repaired queue source %s (%s) from a fresh capture", existing.id, existing.sha256[:12])
     existing.state = STATE_READY
     existing.size_bytes = receipt.size_bytes
     existing.unreferenced_at = None
-    return existing
+    return existing, consumed

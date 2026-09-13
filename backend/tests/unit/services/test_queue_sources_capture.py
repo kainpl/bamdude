@@ -312,6 +312,35 @@ async def test_a_deleting_row_answers_busy_rather_than_overwriting_under_an_unli
         assert (await session.get(QueueSource, existing.id)).state == STATE_DELETING
 
 
+async def test_a_deleting_row_whose_file_is_already_gone_is_not_written_again(tmp_path, sessions):
+    """The case the guard actually prevents a write in.
+
+    The GC has already unlinked the object and is still finishing its own work.
+    Without the ``deleting`` check the verification would simply say "missing"
+    and the repair branch would put a file back underneath it — spec §5 step 5's
+    "не підміняти файл під незавершеним unlink".
+    """
+    source = _three(tmp_path)
+    existing = await publish_bytes(sessions, source)
+    on_disk = Path(settings.base_dir) / existing.relative_path
+    on_disk.unlink()
+    async with sessions() as session:
+        row = await session.get(QueueSource, existing.id)
+        row.state = STATE_DELETING
+        await session.commit()
+
+    receipt = await queue_sources.capture(request_for(source))
+    with pytest.raises(queue_sources.QueueSourceBusy):
+        await queue_sources.publish(receipt, recording_attach([]), session_factory=sessions)
+
+    assert not on_disk.exists()
+    assert objects() == []
+    # Busy is not a spent receipt: nothing moved, so the caller may retry.
+    assert receipt.staging_path.is_file()
+    async with sessions() as session:
+        assert (await session.get(QueueSource, existing.id)).state == STATE_DELETING
+
+
 async def test_a_row_pointing_outside_the_spool_is_refused_not_written(tmp_path, sessions):
     """A path is never trusted because a row carries it (§4: no arbitrary path)."""
     source = _three(tmp_path)
@@ -348,6 +377,38 @@ async def test_attach_failure_leaves_no_row_and_no_final_file(tmp_path, sessions
     async with sessions() as session:
         assert await session.scalar(select(func.count()).select_from(QueueSource)) == 0
     assert objects() == []
+    # The staged file was consumed by the rename and then removed with the
+    # object, so this receipt is spent. It must not advertise itself as
+    # publishable (a retry would reach ``os.replace`` on a missing file and
+    # escape the taxonomy), and its staging pin must not outlive it — that set
+    # is what the GC reads.
+    assert not receipt.staging_path.exists()
+    assert queue_sources.pinned_staging_paths() == frozenset()
+    with pytest.raises(RuntimeError, match="already"):
+        await queue_sources.publish(receipt, recording_attach([]), session_factory=sessions)
+
+
+async def test_attach_failure_after_a_repair_also_spends_the_receipt(tmp_path, sessions):
+    """The repair path consumes the staged file too (§5 step 5)."""
+    source = _three(tmp_path)
+    existing = await publish_bytes(sessions, source)
+    on_disk = Path(settings.base_dir) / existing.relative_path
+    on_disk.unlink()
+    receipt = await queue_sources.capture(request_for(source))
+
+    async def attach(session: AsyncSession, row: QueueSource) -> None:
+        raise RuntimeError("the caller's own refusal")
+
+    with pytest.raises(RuntimeError, match="the caller's own refusal"):
+        await queue_sources.publish(receipt, attach, session_factory=sessions)
+
+    # The repair stands: the bytes are correct and this publication did not
+    # create the object, so its other owners keep it.
+    assert on_disk.read_bytes() == source.read_bytes()
+    assert not receipt.staging_path.exists()
+    assert queue_sources.pinned_staging_paths() == frozenset()
+    with pytest.raises(RuntimeError, match="already"):
+        await queue_sources.publish(receipt, recording_attach([]), session_factory=sessions)
 
 
 async def test_the_snapshot_payload_comes_from_task_ones_builder(tmp_path, sessions):
