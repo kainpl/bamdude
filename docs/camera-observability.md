@@ -45,4 +45,19 @@ appropriate (it can capture if no live producer exists), and download the curren
 backend log. Match `attempt_id` before comparing durations. Output queue drops
 alone do not identify a Wi-Fi failure or explain API/WebSocket latency.
 
+## Experimental worker runtime
+
+`CAMERA_RUNTIME=worker` is opt-in; `inline` remains the default. It starts one
+supervised child before camera work begins. One-shot built-in/external captures
+and external live MJPEG, RTSP and snapshot sources use its authenticated
+loopback JPEG relay, while this process keeps the existing browser fan-out.
+Each worker live lease has one producer per stable, secret-free printer identity
+and bounded latest-frame queues; a lost media socket releases the producer.
+
+The mode fails closed. A worker bootstrap/containment failure does not fall back
+to inline transport. Built-in Bambu live view and Virtual Printer raw TCP camera
+passthrough are deliberately unavailable in worker mode until their raw-lease
+paths are implemented. Test this setting first on a supported host; the current
+validation does not replace a physical-farm or Linux-service acceptance run.
+
 [Validation and synthetic baseline](testing/camera-observability.md).

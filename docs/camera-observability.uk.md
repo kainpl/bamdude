@@ -45,4 +45,20 @@ snapshot-рішень. Видалення принтера прибирає йо
 Перед порівнянням тривалостей звіряйте `attempt_id`. Відкидання кадрів через чергу
 глядача саме по собі не доводить збій Wi-Fi чи причину затримки API/WebSocket.
 
+## Експериментальний worker runtime
+
+`CAMERA_RUNTIME=worker` — opt-in, за замовченням лишається `inline`. Він до
+початку camera work запускає один supervised child. One-shot built-in/external
+capture і live MJPEG, RTSP та snapshot зовнішніх камер ідуть через його
+автентифікований loopback JPEG relay, а цей процес зберігає чинний browser
+fan-out. Для кожного worker live lease є один producer на стабільний printer
+identity без секретів і bounded черги лише останнього кадру; втрата media socket
+звільняє producer.
+
+Режим fail-closed. Помилка bootstrap/containment worker не повертає inline
+transport. Built-in Bambu live view і Virtual Printer raw TCP camera passthrough
+навмисно недоступні у worker mode, доки не з'являться їхні raw-lease шляхи.
+Спочатку перевіряйте налаштування на підтримуваному хості: поточна валідація не
+замінює physical-farm або Linux-service acceptance run.
+
 [Перевірки й синтетичний baseline](testing/camera-observability.md).

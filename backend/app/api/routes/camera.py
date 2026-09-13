@@ -1050,6 +1050,19 @@ async def camera_stream(
     else:
         fps = min(max(fps, 1), 30)
 
+    # Do not let the experimental worker mode create a hidden second owner for
+    # a built-in Bambu source. External live sources have an authenticated
+    # worker relay above; built-in chamber/RTSP live producers still need their
+    # raw lease implementation. One-shot built-in captures are already worker
+    # owned. Failing this live request is safer than silently mixing owners.
+    from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
+
+    if isinstance(get_camera_runtime(), WorkerCameraRuntime):
+        raise HTTPException(
+            status_code=503,
+            detail="Built-in live camera streaming is not available in worker runtime yet.",
+        )
+
     # Choose the appropriate stream generator based on model
     if is_chamber_image_model(printer.model):
         stream_generator = generate_chamber_mjpeg_stream
