@@ -135,7 +135,7 @@
 
 ### Fixed
 
-- **The printers page keeps the sort order you chose.** Sorting by status, by current job or by "free at" reads each printer's live status, which arrives a moment after the page does — and the order was worked out once, before any of it was there, so the page opened alphabetically and only obeyed the saved order after you re-picked it by hand. The order now follows the statuses as they land, and the orders that do not need them poll nothing extra.
+- **The printers page keeps the sort order you chose.** Sorting by status, by current job or by "free at" reads each printer's live status, which arrives a moment after the page does — and the order was worked out once, before any of it was there, so the page opened alphabetically and only obeyed the saved order after you re-picked it by hand. The order now follows the statuses as they land, and the orders that do not need them poll nothing extra. The same order is also called the same thing everywhere now: the printers page called it "ETA (завдання)" while the monitor called it "ETA (друк)".
 
 - **A non-proxy virtual printer now stops cleanly when its listeners cannot start.** A missing local bind IP, occupied port, or startup timeout no longer produces a misleading success log or leaves a partial server running. The real-printer MQTT bridge attaches only after all configured listeners are ready and is detached if startup fails or is cancelled. Other virtual printers can still start. The bilingual Virtual Printer guide now includes native Windows IP-alias setup, the DHCP caveat, and when additional addresses are required.
 

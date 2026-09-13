@@ -629,7 +629,7 @@ export default {
       model: 'Модель',
       location: 'Розташування',
       tag: 'Тег',
-      eta: 'ETA (завдання)',
+      eta: 'ETA (друк)',
       freeAt: 'ETA (черга)',
       ascending: 'Сортувати за зростанням',
       descending: 'Сортувати за спаданням'
