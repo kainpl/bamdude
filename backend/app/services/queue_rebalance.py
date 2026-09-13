@@ -618,13 +618,27 @@ async def _apply(
     print-option profile are both fetched before the first assignment to
     ``item``, so a refusal or a DB error there leaves the row exactly as it was.
     And the creation of the ``k − 1`` companions is undone by hand when it
-    fails: ``add_items_to_auto_queue`` raises BEFORE its own commit, its first
-    SELECT autoflushes the already-converted row, and the tick's ``commit``
-    would then make a HALF move durable — the row covering 2 of the 6 parts it
-    used to claim, the companions never created, the line quietly four parts
-    short. Restoring the ten fields and reporting ``creation_failed`` is what
-    keeps "a move" one thing — and when the writer got as far as its own
-    ``commit``, undoing means DELETING the rows it made, not forgetting them.
+    fails: the already-converted row rides along on the writer's own
+    transaction, so without the undo a HALF move becomes durable — the row
+    covering 2 of the 6 parts it used to claim, the companions never created,
+    the line quietly four parts short. Restoring the ten fields and reporting
+    ``creation_failed`` is what keeps "a move" one thing — and when the writer
+    got as far as its own ``commit``, undoing means DELETING the rows it made,
+    not forgetting them.
+
+    ⚠️ **Since the queue spool (2026-09-13) the writer COMMITS FIRST.**
+    ``add_items_to_auto_queue`` releases its transaction before it copies the
+    source file (spec §5 step 1 — a copy over a share may take minutes and must
+    not be held open across), and that commit carries this row's conversion with
+    it. Every failure the writer can *raise* is still undone here, in process:
+    the fields are restored and the one ``commit`` that follows makes the undo
+    durable. What is new is the crash window: if the process dies **during the
+    copy**, the conversion is already on disk and the ``k − 1`` companions do not
+    exist, which is the half move this function exists to prevent. Before the
+    spool nothing was durable at that point. Closing it means capturing the bytes
+    BEFORE the row is mutated — Task 8 of the queue-source-spool plan owns that;
+    until then the recovery is the operator's (the line reads four parts short and
+    a re-run of the rebalance covers it).
 
     The conversion keeps every print option, the line, ``force_color_match`` and
     the position; the created rows take the saved profile for the receiving

@@ -49,6 +49,13 @@ async def prepare_routing(
         archive_id=archive_id,
         library_file_id=library_file_id,
         requirements=req,
+        # ⚠️ Passed explicitly rather than left to ``serialize_policy`` to take off
+        # the requirements: it reads the resolved plate only inside the branch that
+        # also records the source revision, and a capture whose original vanished
+        # inside the copy window legitimately has no revision. Without this the
+        # stored intent would lose ``resolved_plate_id`` along with it, and
+        # preflight's ``plate_selection_required`` gate would go quiet for that job.
+        plate_id=req.resolved_plate_id,
         printer_id=printer_id,
     ), req.resolved_plate_id
 

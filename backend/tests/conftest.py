@@ -164,6 +164,23 @@ async def test_engine(monkeypatch):
     a service under test writes into the database the assertions read. Tests that
     want their own factory (``monkeypatch.setattr(bd, "async_session", ...)``)
     still win — this is the default, not an override.
+
+    ⚠️ Two caveats, both about what this does NOT give you.
+
+    An **autouse** fixture that patched the same attribute without depending on
+    ``test_engine`` would be overridden here rather than the other way round:
+    pytest sets up the fixture a test asks for (directly or through
+    ``db_session`` / ``client``) after the autouse ones. None exists today; one
+    written later has to take ``test_engine`` as an argument to win.
+
+    And with ONE factory over one in-memory SQLite engine, every session shares a
+    single DBAPI connection (``StaticPool``), so a publication cannot *block* on a
+    transaction the caller left open — it silently joins it. A test that means to
+    prove a transaction was released before some long call therefore has to assert
+    the session's own state (``in_transaction()``); a probe write from another
+    session shows only that nothing rolled it back. The one place this is
+    load-bearing says so out loud:
+    ``integration/test_queue_add_captures_once.py::test_the_long_transaction_is_released_before_the_copy``.
     """
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 

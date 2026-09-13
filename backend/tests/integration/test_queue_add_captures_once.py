@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import threading
 import time
 from pathlib import Path
@@ -422,6 +423,45 @@ async def test_a_printer_that_became_busy_during_the_copy_is_not_claimed(
     assert not service._queued_jobs
 
 
+async def test_a_reprint_whose_archive_is_gone_captures_nothing(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions, reads
+):
+    """A reprint resolves an ARCHIVE id, and nothing else — never a library row.
+
+    Archive ids and library ids are independent sequences, so an id that names no
+    archive can name a real, unrelated library file. A lookup that fell through to
+    one would capture a stranger's bytes and dispatch them under the reprint's
+    name. Here the library file carries exactly the id the reprint asks for.
+    """
+    from backend.app.services import background_dispatch as bd
+
+    source, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    await db_session.commit()
+    monkeypatch.setattr(bd, "async_session", sessions)
+    monkeypatch.setattr(bd.ws_manager, "broadcast", AsyncMock())
+    service = bd.BackgroundDispatchService()
+
+    with pytest.raises(HTTPException) as refused:
+        await service._dispatch(
+            kind="reprint_archive",
+            source_id=source.id,
+            source_name=source.filename,
+            printer_id=printer.id,
+            printer_name=printer.name,
+            options={"plate_id": 15},
+            requested_by_user_id=None,
+            requested_by_username=None,
+        )
+
+    assert refused.value.status_code == 422
+    assert refused.value.detail["code"] == "source_unreadable"
+    assert reads == [], "nothing may be read for a source that does not exist"
+    assert await blobs(db_session) == []
+    assert (await db_session.execute(select(func.count()).select_from(PrintQueueItem))).scalar() == 0
+    assert staging_litter() == []
+    assert not service._queued_jobs
+
+
 # --------------------------------------------------------------------------- #
 # §5 step 4 — the requested plate is checked on the CAPTURED bytes
 # --------------------------------------------------------------------------- #
@@ -524,6 +564,41 @@ async def test_the_requirements_are_read_from_the_copy_not_the_original(
     # The evidence the routing carries had to come from somewhere.
     assert items[0].filament_routing and '"resolved_plate_id":15' in items[0].filament_routing
     assert items[0].queue_source_id == (await blobs(db_session))[0].id
+
+
+async def test_a_lost_original_costs_the_revision_and_nothing_else(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """The original vanishing inside the capture window must not cost the plate.
+
+    The revision stored in the routing intent still describes the ORIGINAL (until
+    routing v2 anchors identity on the snapshot's hash), so a file that disappears
+    between the copy and that read leaves the comparison out — as every row
+    written before revisions existed does. The **resolved plate** is not the
+    original's to lose: it came out of the captured bytes, and preflight refuses
+    with ``plate_selection_required`` when the stored intent has none.
+    """
+    source, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    await db_session.commit()
+    original = Path(source.file_path)
+    real_capture = queue_sources.capture
+
+    async def capture_then_lose_the_original(request):
+        staged = await real_capture(request)
+        original.unlink()
+        return staged
+
+    monkeypatch.setattr(queue_sources, "capture", capture_then_lose_the_original)
+
+    items, _batch_id = await enqueue_batch_copies(
+        db_session, printer_id=printer.id, count=2, library_file_id=source.id, plate_id=15
+    )
+
+    assert len(items) == 2
+    stored = json.loads(items[0].filament_routing)
+    assert stored["resolved_plate_id"] == 15
+    assert stored["source_identity"].get("revision") is None, "the revision is the one thing that is lost"
+    assert {item.plate_id for item in items} == {15}
 
 
 def test_the_loop_and_the_workers_survived():

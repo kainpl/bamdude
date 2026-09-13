@@ -99,11 +99,20 @@ async def direct_print_capture_plan(db: AsyncSession, *, kind: str, source_id: i
     a stalled share must not be able to park a machine or hold up every other
     printer's dispatch while the bytes are read. ``external`` never comes here —
     that is the §2 exemption, a print BamDude did not send.
+
+    ⚠️ ``kind`` decides which table is asked, and there is **no fall-through**
+    between them. Archive ids and library ids are independent sequences, so an id
+    that names no archive can perfectly well name a real, unrelated library file —
+    and a lookup that tried the other table would capture a stranger's bytes and
+    dispatch them under this job's name. A source that is gone is a refusal (422),
+    which is how ``filament_intake.item_source`` and the claim below both read it.
     """
     archive = await db.get(PrintArchive, source_id) if kind == "reprint_archive" else None
-    library_file = None
-    if archive is None:
-        library_file = (await db.execute(LibraryFile.active().where(LibraryFile.id == source_id))).scalar_one_or_none()
+    library_file = (
+        (await db.execute(LibraryFile.active().where(LibraryFile.id == source_id))).scalar_one_or_none()
+        if kind == "print_library_file"
+        else None
+    )
     return plan_capture(archive=archive, library_file=library_file)
 
 
