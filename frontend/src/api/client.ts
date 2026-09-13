@@ -12504,21 +12504,22 @@ export const supportApi = {
   clearLogs: () =>
     request<{ message: string }>('/support/logs', { method: 'DELETE' }),
 
-  // Historical log archive management — populated by daily rotation.
-  // Files matching ``bamdude-YYYY-MM-DD.log`` only; backend enforces
-  // path-traversal guard.
+  // The current log is separate from daily archives; only archives can be deleted.
   listLogArchives: () =>
-    request<{ archives: { filename: string; size_bytes: number; mtime: string }[] }>(
+    request<{
+      archives: { filename: string; size_bytes: number; mtime: string }[];
+      current?: { filename: string; size_bytes: number; mtime: string } | null;
+    }>(
       '/support/log-archives',
     ),
 
   downloadLogArchive: async (filename: string) => {
     const headers: Record<string, string> = {};
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-    const response = await fetch(
-      `${API_BASE}/support/log-archives/${encodeURIComponent(filename)}/download`,
-      { headers },
-    );
+    const path = filename === 'bamdude.log'
+      ? '/support/logs/download'
+      : `/support/log-archives/${encodeURIComponent(filename)}/download`;
+    const response = await fetch(`${API_BASE}${path}`, { headers });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       throw new Error(error.detail || `HTTP ${response.status}`);

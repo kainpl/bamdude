@@ -5,7 +5,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import { setAuthToken, getAuthToken, api } from '../../api/client';
+import { setAuthToken, getAuthToken, api, supportApi } from '../../api/client';
 
 // Mock localStorage
 const localStorageMock = {
@@ -36,6 +36,38 @@ afterEach(() => {
   setAuthToken(null);
 });
 afterAll(() => server.close());
+
+describe('Log file downloads', () => {
+  it.each([
+    ['bamdude.log', '/api/v1/support/logs/download'],
+    ['bamdude-2026-09-12.log', '/api/v1/support/log-archives/bamdude-2026-09-12.log/download'],
+  ])('downloads %s through its authenticated endpoint', async (filename, path) => {
+    let authorization: string | null = null;
+    let savedFilename = '';
+    const originalCreate = window.URL.createObjectURL;
+    const originalRevoke = window.URL.revokeObjectURL;
+    window.URL.createObjectURL = vi.fn(() => 'blob:log');
+    window.URL.revokeObjectURL = vi.fn();
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      savedFilename = this.download;
+    });
+    server.use(http.get(path, ({ request }) => {
+      authorization = request.headers.get('Authorization');
+      return HttpResponse.text('current log contents');
+    }));
+    try {
+      setAuthToken('log-reader-token');
+      await supportApi.downloadLogArchive(filename);
+      expect(authorization).toBe('Bearer log-reader-token');
+      expect(savedFilename).toBe(filename);
+      expect(window.URL.revokeObjectURL).toHaveBeenCalledWith('blob:log');
+    } finally {
+      window.URL.createObjectURL = originalCreate;
+      window.URL.revokeObjectURL = originalRevoke;
+      click.mockRestore();
+    }
+  });
+});
 
 describe('Auth Token Management', () => {
   it('setAuthToken stores token in localStorage', () => {

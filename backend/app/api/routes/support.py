@@ -10,10 +10,12 @@ import logging
 import os
 import platform
 import re
+import tempfile
 import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO
 
 import psutil
 from fastapi import APIRouter, HTTPException, Query
@@ -21,6 +23,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.types import Receive, Scope, Send
 
 from backend.app.core.auth import RequirePermission
 from backend.app.core.config import APP_VERSION, settings
@@ -342,34 +345,99 @@ class LogArchiveEntry(BaseModel):
 
 class LogArchivesResponse(BaseModel):
     archives: list[LogArchiveEntry]
+    current: LogArchiveEntry | None = None
+
+
+class _LogSnapshotResponse(StreamingResponse):
+    """Own the temporary snapshot, including when the client disconnects."""
+
+    def __init__(self, snapshot: BinaryIO, size: int):
+        self.snapshot = snapshot
+        super().__init__(
+            iter(lambda: snapshot.read(64 * 1024), b""),
+            media_type="text/plain",
+            headers={
+                "Content-Disposition": build_content_disposition("bamdude.log"),
+                "Content-Length": str(size),
+                "Cache-Control": "no-store",
+            },
+        )
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.snapshot.close()
+
+
+@router.get("/logs/download")
+def download_current_log(
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+):
+    """Copy the live log in a worker thread, then stream a finite snapshot.
+
+    Capture the opened file's size so concurrent appends cannot extend the
+    download. Close the live handle before any network transfer (especially
+    important for Windows rotation). TemporaryFile bounds memory and removes
+    the copy on close, even if the response is abandoned before streaming.
+    """
+    log_dir = settings.log_dir.resolve()
+    source_path = log_dir / "bamdude.log"
+    if not source_path.resolve().is_relative_to(log_dir):
+        raise HTTPException(status_code=403, detail="Path traversal detected")
+
+    snapshot = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115 — ownership passes to the response
+    try:
+        with source_path.open("rb") as source:
+            size = os.fstat(source.fileno()).st_size
+            remaining = size
+            while remaining:
+                chunk = source.read(min(64 * 1024, remaining))
+                if not chunk:
+                    raise HTTPException(status_code=409, detail="Log was cleared during download. Please retry.")
+                snapshot.write(chunk)
+                remaining -= len(chunk)
+        snapshot.seek(0)
+        return _LogSnapshotResponse(snapshot, size)
+    except BaseException as exc:
+        snapshot.close()
+        if isinstance(exc, FileNotFoundError):
+            raise HTTPException(status_code=404, detail="Current log not found") from exc
+        if isinstance(exc, OSError):
+            logger.warning("Failed to snapshot current log: %s", exc)
+            raise HTTPException(status_code=500, detail="Failed to prepare current log download") from exc
+        raise
 
 
 @router.get("/log-archives", response_model=LogArchivesResponse)
 async def list_log_archives(
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
-    """List rotated log archives (newest first)."""
+    """List the live log separately from rotated archives (newest first)."""
     archives: list[LogArchiveEntry] = []
+    current: LogArchiveEntry | None = None
     log_dir = settings.log_dir
     if log_dir.is_dir():
         for entry in log_dir.iterdir():
             if not entry.is_file():
                 continue
-            if not _ARCHIVE_NAME_RE.match(entry.name):
+            if entry.name != "bamdude.log" and not _ARCHIVE_NAME_RE.match(entry.name):
                 continue
             try:
                 stat = entry.stat()
             except OSError:
                 continue
-            archives.append(
-                LogArchiveEntry(
-                    filename=entry.name,
-                    size_bytes=stat.st_size,
-                    mtime=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-                )
+            log_entry = LogArchiveEntry(
+                filename=entry.name,
+                size_bytes=stat.st_size,
+                mtime=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
             )
+            if entry.name == "bamdude.log":
+                current = log_entry
+            else:
+                archives.append(log_entry)
     archives.sort(key=lambda a: a.filename, reverse=True)
-    return LogArchivesResponse(archives=archives)
+    return LogArchivesResponse(archives=archives, current=current)
 
 
 @router.get("/log-archives/{filename}/download")

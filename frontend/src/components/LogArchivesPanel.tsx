@@ -6,11 +6,8 @@ import { supportApi } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 
 /**
- * Lists rotated daily log archives (``bamdude-YYYY-MM-DD.log`` files
- * produced by ``TimedRotatingFileHandler``) with download + delete
- * actions. Live ``bamdude.log`` is shown by the existing ``<LogViewer>``
- * component above this panel — that's the streaming-tail UI; this is
- * the on-disk historical-archive manager.
+ * Downloads a snapshot of the live log and manages rotated daily archives.
+ * The current file is listed first and cannot be deleted from this panel.
  *
  * Operator-facing rationale: deleting via the UI saves a shell session
  * into the container; downloading streams the raw text file (no zip
@@ -57,18 +54,19 @@ export function LogArchivesPanel() {
   };
 
   const archives = data?.archives ?? [];
+  const files = data?.current ? [data.current, ...archives] : archives;
 
   return (
     <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
       <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <FileText className="w-5 h-5 text-bambu-green" />
           <h3 className="text-base font-semibold text-white">
-            {t('logArchives.title', { defaultValue: 'Historical Logs' })}
+            {t('logArchives.title', { defaultValue: 'Log Files' })}
           </h3>
           <span className="text-xs text-bambu-gray">
             {t('logArchives.subtitle', {
-              defaultValue: 'Daily-rotated archives. Live bamdude.log is shown above.',
+              defaultValue: 'Download the current log or a daily archive. No restart needed.',
             })}
           </span>
         </div>
@@ -87,10 +85,10 @@ export function LogArchivesPanel() {
         <div className="flex items-center justify-center py-8">
           <Loader2 className="w-5 h-5 animate-spin text-bambu-green" />
         </div>
-      ) : archives.length === 0 ? (
+      ) : files.length === 0 ? (
         <p className="text-sm text-bambu-gray py-4 text-center">
           {t('logArchives.empty', {
-            defaultValue: 'No rotated log archives yet — daily rotation runs at midnight.',
+            defaultValue: 'No log files available.',
           })}
         </p>
       ) : (
@@ -113,7 +111,8 @@ export function LogArchivesPanel() {
               </tr>
             </thead>
             <tbody>
-              {archives.map((a) => {
+              {files.map((a) => {
+                const isCurrent = a.filename === 'bamdude.log';
                 const isDownloading = downloadingFile === a.filename;
                 const isDeleting = deleteMutation.isPending && deleteMutation.variables === a.filename;
                 const confirming = pendingDelete === a.filename;
@@ -122,7 +121,14 @@ export function LogArchivesPanel() {
                     key={a.filename}
                     className="border-b border-bambu-dark-tertiary/50 last:border-b-0 hover:bg-bambu-dark/30"
                   >
-                    <td className="py-2 px-2 font-mono text-xs text-white">{a.filename}</td>
+                    <td className="py-2 px-2 font-mono text-xs text-white">
+                      {a.filename}
+                      {isCurrent && (
+                        <span className="ml-2 font-sans text-bambu-green">
+                          {t('logArchives.current')}
+                        </span>
+                      )}
+                    </td>
                     <td className="py-2 px-2 text-right text-bambu-gray tabular-nums">
                       {formatBytes(a.size_bytes)}
                     </td>
@@ -134,17 +140,19 @@ export function LogArchivesPanel() {
                         <button
                           type="button"
                           onClick={() => handleDownload(a.filename)}
-                          disabled={isDownloading}
+                          disabled={downloadingFile !== null}
                           className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors disabled:opacity-50"
-                          title={t('common.download', { defaultValue: 'Download' })}
+                          title={isCurrent ? t('logArchives.currentHint') : t('common.download', { defaultValue: 'Download' })}
+                          aria-label={t('common.download', { defaultValue: 'Download' })}
                         >
                           {isDownloading ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           ) : (
                             <Download className="w-3.5 h-3.5" />
                           )}
+                          {isCurrent && t('common.download')}
                         </button>
-                        {confirming ? (
+                        {!isCurrent && (confirming ? (
                           <>
                             <button
                               type="button"
@@ -175,7 +183,7 @@ export function LogArchivesPanel() {
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
-                        )}
+                        ))}
                       </div>
                     </td>
                   </tr>

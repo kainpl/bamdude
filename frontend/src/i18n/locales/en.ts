@@ -8012,13 +8012,13 @@ export default {
     enableSwitchbarHint: 'Enable "Show in Switchbar" in Settings > Smart Plugs'
   },
 
-  // Historical log archive panel - sits below LogViewer on /system page.
-  // Live bamdude.log streams via LogViewer; this panel manages the
-  // rotated daily archives produced by TimedRotatingFileHandler.
+  // Current log download and daily archives, below LogViewer on /system.
   logArchives: {
-    title: 'Historical Logs',
-    subtitle: 'Daily-rotated archives. Live bamdude.log is shown above.',
-    empty: 'No rotated log archives yet - daily rotation runs at midnight.',
+    title: 'Log Files',
+    subtitle: 'Download the current log or a daily archive. No restart needed.',
+    empty: 'No log files available.',
+    current: 'Current',
+    currentHint: 'Download the full log as it stands when copying starts. Logging continues.',
     filename: 'Filename',
     size: 'Size',
     modified: 'Modified',
