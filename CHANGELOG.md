@@ -9,6 +9,8 @@
 
 ### Added
 
+- **Point a local frontend at a remote backend.** Vite's development and preview proxies now accept `BACKEND_URL` for HTTP and WebSocket requests. Without it, the existing localhost target and `BACKEND_PORT` behavior are preserved.
+
 - **Download the current log without restarting BamDude.** System Info → Log Files now lists `bamdude.log` first, even before any daily archive exists. Download saves a full, finite snapshot while logging continues, without requiring DEBUG mode or the support bundle's tail limit. The snapshot is prepared off the request event loop, and its temporary copy is removed after transfer or disconnection. Daily archives keep their download and delete actions; the current row only offers download.
 
 - **Replace a slot's spool in one step.** An assigned AMS or external slot now offers *Replace spool* next to *Unassign*: the dialog shows what is currently assigned, lists only spools that are free, and one confirm swaps the assignment. Everything that already happened on an assignment mid-print — the pause-layer split of filament usage, the replacement-after-runout record — happens exactly as before; nothing is skipped. A Spoolman slot now refreshes on the printer card the moment its assignment changes, instead of at the next poll.

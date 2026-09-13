@@ -4,7 +4,8 @@ import path from 'path'
 
 // Backend port for dev/preview server proxy (default: 8000)
 const backendPort = process.env.BACKEND_PORT || '8000'
-const backendUrl = `http://localhost:${backendPort}`
+//const backendUrl = `http://localhost:${backendPort}`
+const backendUrl = process.env.BACKEND_URL || `http://localhost:${backendPort}`
 
 // Shared proxy rules — used by both the dev server (`npm run dev`) and the
 // preview server (`npm run preview` / `npm run start`, which serves the
