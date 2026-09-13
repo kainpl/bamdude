@@ -6,6 +6,11 @@
  *   X.Y.Z                  → stable       (e.g. 0.5.0)
  *   X.Y.Z.W                → stable patch (e.g. 0.5.0.1)
  *   X.Y.ZbN / X.Y.Z.WbN    → beta         (e.g. 0.5.0b1, 0.5.0.2b3)
+ *   X.Y.ZaN / X.Y.Z.WaN    → alpha        (e.g. 0.5.6a1) — a LOCAL marker for
+ *                            builds that are not published: the tag-publish
+ *                            workflow classifies stable and beta only and
+ *                            refuses an alpha tag outright, which is the
+ *                            intended answer (an alpha is not a channel).
  *
  * Usage: node scripts/set_version.js 0.5.0b1
  */
@@ -22,16 +27,17 @@ if (!version) {
   process.exit(1);
 }
 
-// Validates the channels listed above. Kept intentionally strict — an
+// Validates the shapes listed above. Kept intentionally strict — an
 // accidental "0.5.0-beta" or "0.5.0-rc1" would silently slip past upstream's
 // pattern and break the Docker-publish channel detection later.
-const VERSION_RE = /^\d+\.\d+\.\d+(\.\d+)?(b\d+)?$/;
+const VERSION_RE = /^\d+\.\d+\.\d+(\.\d+)?([ab]\d+)?$/;
 if (!VERSION_RE.test(version)) {
   console.error(
     `Invalid version format: "${version}". Expected:\n` +
       `  X.Y.Z                  (stable)\n` +
       `  X.Y.Z.W                (stable patch)\n` +
-      `  X.Y.ZbN / X.Y.Z.WbN    (beta)`,
+      `  X.Y.ZbN / X.Y.Z.WbN    (beta)\n` +
+      `  X.Y.ZaN / X.Y.Z.WaN    (alpha — local builds, never tagged)`,
   );
   process.exit(1);
 }

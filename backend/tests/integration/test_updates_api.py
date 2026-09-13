@@ -312,6 +312,30 @@ class TestParseVersion:
         # -daily.YYYYMMDD suffix is stripped before parsing
         assert parse_version("0.2.2b4-daily.20260313") == (0, 2, 2, 0, 1, 4)
 
+    def test_bare_letter_alpha_keeps_its_number(self):
+        """``0.5.6a1`` is the shape a local alpha build carries (2026-09-13).
+
+        The bare ``a`` used to fall outside the suffix alternation, so the
+        number after it was never consumed and every alpha parsed as
+        prerelease 0 — a2 did not sort above a1.
+        """
+        from backend.app.api.routes.updates import is_newer_version, parse_version
+
+        assert parse_version("0.5.6a1") == (0, 5, 6, 0, 1, 1)
+        assert parse_version("0.5.6.2a3") == (0, 5, 6, 2, 1, 3)
+        assert is_newer_version("0.5.6a2", "0.5.6a1") is True
+        # A beta, an rc and the release all outrank the alpha of the same
+        # version — the stage is compared before the number, so b1 beats a9.
+        assert is_newer_version("0.5.6b1", "0.5.6a1") is True
+        assert is_newer_version("0.5.6b1", "0.5.6a9") is True
+        assert is_newer_version("0.5.6rc1", "0.5.6b9") is True
+        assert is_newer_version("0.5.6a1", "0.5.6b1") is False
+        assert is_newer_version("0.5.6", "0.5.6a1") is True
+        assert is_newer_version("0.5.6a1", "0.5.6") is False
+        # Beta-to-beta ordering, the pre-existing case, is unchanged.
+        assert is_newer_version("0.4.4b2", "0.4.4b1") is True
+        assert is_newer_version("0.4.4b1", "0.4.4b2") is False
+
 
 class TestIsNewerVersion:
     """is_newer_version handles the full release / prerelease / patch matrix."""

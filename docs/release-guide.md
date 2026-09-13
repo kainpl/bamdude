@@ -208,7 +208,7 @@ stabilisation starts). Several in a row are fine: `v0.5.6b1`, `b2`, `b3` →
 Steps 1–2 as for stable, then:
 
 ```bash
-node scripts/set_version.js 0.5.6b1     # accepts X.Y.Z, X.Y.Z.W, X.Y.ZbN, X.Y.Z.WbN
+node scripts/set_version.js 0.5.6b1     # accepts X.Y.Z, X.Y.Z.W, X.Y.ZbN, X.Y.Z.WbN, X.Y.ZaN
 git commit -am "chore(release): 0.5.6b1"
 git push origin dev
 # wait for the green dev run — same gate as step 5
@@ -227,6 +227,18 @@ under the `[Unreleased]` that becomes the stable. If a beta needs its own note,
 add a `### 0.5.6b1 (pre-release)` sub-heading inside that section.
 
 After a beta, work continues on `dev` at the beta version until the next bump.
+
+### Alpha (`X.Y.ZaN`) — a local build, not a channel
+
+`node scripts/set_version.js 0.5.6a1` is accepted so a feature branch can carry
+a version of its own for a **local** Docker build or a hand-built Windows
+installer (the installer's filename and its Inno `AppVersion` take the string as
+it is; nothing in the installer needs a numeric form). An alpha is deliberately
+**not** a release channel: it is never tagged, so no image and no GitHub release
+carries it, and `docker-publish-tag.yml` classifies stable and beta only — a
+`v…aN` tag would fail that workflow on purpose rather than guess a channel. The
+in-app update check does understand the shape (alpha < beta < rc < release of
+the same version), so somebody running an alpha is still offered the next beta.
 
 ---
 
