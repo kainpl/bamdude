@@ -172,6 +172,7 @@ async def test_worker_relays_latest_frames_for_an_external_live_lease():
         )
         assert (await asyncio.wait_for(queue.get(), timeout=3)).frame == _JPEG
         await supervisor.unsubscribe(lease_id, queue)
+        assert not supervisor._live_media_queues
     finally:
         await supervisor.stop()
         server.close()

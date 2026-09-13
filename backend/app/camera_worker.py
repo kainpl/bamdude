@@ -258,6 +258,7 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                 forwarder = live_forwarders.pop(lease_id, None) if isinstance(lease_id, str) else None
                 if forwarder is not None:
                     forwarder.cancel()
+                    await asyncio.gather(forwarder, return_exceptions=True)
                 reply = make_reply(
                     generation=bootstrap.generation,
                     request_id=request["request_id"],
@@ -268,6 +269,13 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                 for task in capture_tasks:
                     task.cancel()
                 await asyncio.gather(*capture_tasks, return_exceptions=True)
+                for lease in tuple(live_leases.values()):
+                    await live_registry.unsubscribe(lease)
+                live_leases.clear()
+                for forwarder in live_forwarders.values():
+                    forwarder.cancel()
+                await asyncio.gather(*live_forwarders.values(), return_exceptions=True)
+                live_forwarders.clear()
                 async with write_lock:
                     await write_control(
                         writer,

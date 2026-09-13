@@ -266,6 +266,7 @@ class CameraWorkerSupervisor:
         self._reader = None
         self._writer = None
         self._fail_media_waiters()
+        self._live_media_queues.clear()
 
     async def _terminate_uncontained_process(self) -> None:
         """Clean up a child when attaching its required containment failed."""
@@ -447,6 +448,7 @@ class CameraWorkerSupervisor:
         self._stderr_task = None
         self._stderr_bytes = 0
         self._media_waiters.clear()
+        self._live_media_queues.clear()
         self._pending_requests.clear()
         self._control_reader_task = None
 
