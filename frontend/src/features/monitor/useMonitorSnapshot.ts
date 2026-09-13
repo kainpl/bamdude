@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError, type FarmForecast } from '../../api/client';
 import type { MonitorSnapshot, MonitorView } from './types';
+import { liveStatusPriorityIds, prioritizeLiveStatusEntries } from '../../utils/liveStatusPriority';
+
+const MONITOR_SNAPSHOT_APPLY_CHUNK_SIZE = 10;
 
 async function kioskRead<T>(endpoint: 'snapshot' | 'forecast', token: string, signal: AbortSignal, view?: MonitorView): Promise<T> {
   const response = await fetch(`/api/v1/monitor/kiosk/${endpoint}${view ? `?view=${view}` : ''}`, {
@@ -85,7 +88,72 @@ export function useMonitorResource<T>(read: (signal: AbortSignal) => Promise<T>,
 export function useMonitorSnapshot(view: MonitorView, token: string | null) {
   const read = useCallback((signal: AbortSignal) => token !== null ? kioskRead<MonitorSnapshot>('snapshot', token, signal, view) :
     api.getMonitorSnapshot(view, signal), [view, token]);
-  return useMonitorResource(read, 5000, true, token === null);
+  const resource = useMonitorResource(read, 5000, true, token === null);
+  const prioritized = usePrioritizedMonitorSnapshot(resource.data);
+  return { ...resource, data: prioritized };
+}
+
+/**
+ * The monitor is deliberately a compact polling feed, not a second WebSocket
+ * client. On refresh, commit tiles mounted in its virtual grid first, then
+ * merge the rest in ten-printer tasks so a full snapshot cannot monopolize a
+ * paint opportunity.
+ */
+function usePrioritizedMonitorSnapshot(snapshot: MonitorSnapshot | undefined) {
+  const [displayed, setDisplayed] = useState<MonitorSnapshot>();
+  const latest = useRef<MonitorSnapshot | undefined>(undefined);
+
+  useEffect(() => {
+    if (!snapshot) {
+      latest.current = undefined;
+      setDisplayed(undefined);
+      return;
+    }
+    const previous = latest.current;
+    if (!previous || previous.view !== snapshot.view) {
+      latest.current = snapshot;
+      setDisplayed(snapshot);
+      return;
+    }
+
+    const oldById = new Map(previous.printers.map(printer => [printer.printer_id, printer]));
+    const applied = new Map<number, MonitorSnapshot['printers'][number]>();
+    const priorityIds = liveStatusPriorityIds();
+    const remaining = snapshot.printers.filter((printer) => {
+      const old = oldById.get(printer.printer_id);
+      if (!old || priorityIds.has(printer.printer_id)) {
+        applied.set(printer.printer_id, printer);
+        return false;
+      }
+      applied.set(printer.printer_id, old);
+      return true;
+    });
+    const publish = () => {
+      const next = { ...snapshot, printers: snapshot.printers.map(printer => applied.get(printer.printer_id) ?? printer) };
+      latest.current = next;
+      setDisplayed(next);
+    };
+    publish();
+
+    let cancelled = false;
+    const applyNext = () => {
+      if (cancelled || remaining.length === 0) return;
+      const entries: Array<[number, MonitorSnapshot['printers'][number]]> = remaining.map(printer => [printer.printer_id, printer]);
+      const ordered = prioritizeLiveStatusEntries(entries);
+      const chunk = ordered.slice(0, MONITOR_SNAPSHOT_APPLY_CHUNK_SIZE);
+      const chosen = new Set(chunk.map(([id]) => id));
+      remaining.splice(0, remaining.length, ...remaining.filter(printer => !chosen.has(printer.printer_id)));
+      for (const [id, printer] of chunk) applied.set(id, printer);
+      publish();
+      if (remaining.length > 0) window.setTimeout(applyNext, 0);
+    };
+    if (remaining.length > 0) window.setTimeout(applyNext, 0);
+    return () => { cancelled = true; };
+  }, [snapshot]);
+
+  // First load must show the full snapshot once, so the priority registry has
+  // cards to observe. Subsequent refreshes use the staged value above.
+  return displayed ?? snapshot;
 }
 
 export function useMonitorForecast(token: string | null, enabled: boolean) {

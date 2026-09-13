@@ -11,6 +11,7 @@ import React from 'react';
 import { QueryClient, QueryClientProvider, useQueries } from '@tanstack/react-query';
 import { ToastProvider } from '../../contexts/ToastContext';
 import { ORDER_VIEW_KEYS } from '../../utils/queryInvalidation';
+import { clearLiveStatusPriority, setLiveStatusPriority } from '../../utils/liveStatusPriority';
 
 // Track WebSocket instances created during tests
 let wsInstances: MockWebSocket[] = [];
@@ -299,6 +300,28 @@ describe('useWebSocket hook', () => {
   });
 
   describe('message handling', () => {
+    it('applies a mounted card status before offscreen status updates', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      const writes = vi.spyOn(queryClient, 'setQueryData');
+      setLiveStatusPriority('printers', [3]);
+
+      try {
+        renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+        const ws = await waitForWs();
+        act(() => {
+          ws.open();
+          ws.simulateMessage({ type: 'printer_status', printer_id: 1, data: { state: 'IDLE' } });
+          ws.simulateMessage({ type: 'printer_status', printer_id: 2, data: { state: 'IDLE' } });
+          ws.simulateMessage({ type: 'printer_status', printer_id: 3, data: { state: 'RUNNING' } });
+        });
+
+        await waitFor(() => expect(writes.mock.calls.filter(([key]) => key[0] === 'printerStatus')).toHaveLength(3));
+        expect(writes.mock.calls.filter(([key]) => key[0] === 'printerStatus').map(([key]) => key[1])).toEqual([3, 1, 2]);
+      } finally {
+        clearLiveStatusPriority('printers');
+      }
+    });
+
     it('updates printer status in query cache on printer_status message', async () => {
       // Test the printer status update logic directly using setQueryData
       // The WebSocket handler with throttling is complex to test with fake timers,

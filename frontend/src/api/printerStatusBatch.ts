@@ -7,6 +7,11 @@ interface PendingStatus {
   reject: (error: unknown) => void;
 }
 
+// Keep the network-efficient 100-printer request, but do not resolve a whole
+// farm's React Query observers in one turn. Each yield lets the browser paint
+// and run already-queued WebSocket callbacks before the next card slice lands.
+export const STATUS_APPLY_CHUNK_SIZE = 10;
+
 /** Coalesce reads from cards/title/wall in the same browser turn. No cache:
  * permissions and credentials are checked by request() on every batch.
  */
@@ -32,18 +37,24 @@ export function createPrinterStatusBatcher(
         const rows = chunk.length === 1
           ? { [chunk[0]]: await readOne(chunk[0]) }
           : await readMany(chunk);
-        for (const item of items.filter(item => chunk.includes(item.id))) {
-          const row = rows[item.id];
-          // A slow REST reply must not overwrite MQTT data that arrived after
-          // the request began. Keep REST-only enrichment (archive/plate IDs).
-          if (row) {
-            const merged = { ...row, ...item.live };
-            // Match the WS cache merge: omitted signal telemetry must not
-            // erase the last measured signal from the REST snapshot.
-            if (merged.wifi_signal == null && row.wifi_signal != null) merged.wifi_signal = row.wifi_signal;
-            item.resolve(merged);
-          } else item.reject(missing());
-          inFlight.delete(item);
+        const waiters = items.filter(item => chunk.includes(item.id));
+        for (let waiterOffset = 0; waiterOffset < waiters.length; waiterOffset += STATUS_APPLY_CHUNK_SIZE) {
+          for (const item of waiters.slice(waiterOffset, waiterOffset + STATUS_APPLY_CHUNK_SIZE)) {
+            const row = rows[item.id];
+            // A slow REST reply must not overwrite MQTT data that arrived after
+            // the request began. Keep REST-only enrichment (archive/plate IDs).
+            if (row) {
+              const merged = { ...row, ...item.live };
+              // Match the WS cache merge: omitted signal telemetry must not
+              // erase the last measured signal from the REST snapshot.
+              if (merged.wifi_signal == null && row.wifi_signal != null) merged.wifi_signal = row.wifi_signal;
+              item.resolve(merged);
+            } else item.reject(missing());
+            inFlight.delete(item);
+          }
+          if (waiterOffset + STATUS_APPLY_CHUNK_SIZE < waiters.length) {
+            await new Promise<void>(resolve => window.setTimeout(resolve, 0));
+          }
         }
       }
     } catch (error) {

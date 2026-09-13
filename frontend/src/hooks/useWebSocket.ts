@@ -6,6 +6,7 @@ import { useConnection } from '../contexts/ConnectionContext';
 import { useTranslation } from 'react-i18next';
 import { inventoryLocationsQueryKey } from '../utils/inventoryQueries';
 import { ORDER_VIEW_KEYS } from '../utils/queryInvalidation';
+import { prioritizeLiveStatusEntries } from '../utils/liveStatusPriority';
 
 // The only auth-failure close code /api/v1/ws emits (backend websocket.py
 // _WS_CLOSE_UNAUTHORIZED). A 4401 means the ws-token was missing / invalid /
@@ -13,6 +14,7 @@ import { ORDER_VIEW_KEYS } from '../utils/queryInvalidation';
 // can fix without a fresh login (which remounts this provider anyway). Treat it
 // as terminal so we don't respawn the /auth/ws-token loop.
 const WS_CLOSE_UNAUTHORIZED = 4401;
+const STATUS_CACHE_APPLY_CHUNK_SIZE = 10;
 
 /**
  * How long invalidations are coalesced before any of them fires, and how far
@@ -87,6 +89,7 @@ export function useWebSocket() {
   // Throttle printer status updates to prevent freeze during rapid messages
   const pendingPrinterStatus = useRef<Map<number, Record<string, unknown>>>(new Map());
   const printerStatusTimeoutRef = useRef<number | null>(null);
+  const statusApplyInProgressRef = useRef(false);
 
   // Throttle message processing to prevent browser freeze
   const messageQueueRef = useRef<WebSocketMessage[]>([]);
@@ -124,18 +127,45 @@ export function useWebSocket() {
     processNext();
   }, []);
 
-  const applyPendingPrinterStatus = useCallback(() => {
+  const applyPendingPrinterStatus = useCallback(async () => {
+    if (statusApplyInProgressRef.current) return;
     if (printerStatusTimeoutRef.current) clearTimeout(printerStatusTimeoutRef.current);
     printerStatusTimeoutRef.current = null;
     const updates = new Map(pendingPrinterStatus.current);
     pendingPrinterStatus.current.clear();
-    updates.forEach((statusData, id) => {
-      queryClient.setQueryData(['printerStatus', id], (old: Record<string, unknown> | undefined) => {
-        const merged = { ...old, ...statusData };
-        if (merged.wifi_signal == null && old?.wifi_signal != null) merged.wifi_signal = old.wifi_signal;
-        return merged;
-      });
-    });
+    if (updates.size === 0) return;
+
+    statusApplyInProgressRef.current = true;
+    try {
+    let entries = Array.from(updates.entries());
+      while (entries.length > 0) {
+        // Re-evaluate between chunks: an operator may have scrolled while the
+        // previous ten writes yielded, so the new viewport goes next.
+        const next = prioritizeLiveStatusEntries(entries);
+        const chunk = next.slice(0, STATUS_CACHE_APPLY_CHUNK_SIZE);
+        entries = next.slice(STATUS_CACHE_APPLY_CHUNK_SIZE);
+        for (const [id, statusData] of chunk) {
+          queryClient.setQueryData(['printerStatus', id], (old: Record<string, unknown> | undefined) => {
+            const merged = { ...old, ...statusData };
+            if (merged.wifi_signal == null && old?.wifi_signal != null) merged.wifi_signal = old.wifi_signal;
+            return merged;
+          });
+        }
+        if (entries.length > 0) {
+          await new Promise<void>(resolve => window.setTimeout(resolve, 0));
+        }
+      }
+    } finally {
+      statusApplyInProgressRef.current = false;
+      // Messages received while applying this snapshot stay newer: they were
+      // collected in the fresh map and are committed only after this one.
+      if (pendingPrinterStatus.current.size > 0 && !printerStatusTimeoutRef.current) {
+        printerStatusTimeoutRef.current = window.setTimeout(() => {
+          printerStatusTimeoutRef.current = null;
+          void applyPendingPrinterStatus();
+        }, 0);
+      }
+    }
   }, [queryClient]);
 
   const connect = useCallback(async () => {
@@ -243,12 +273,14 @@ export function useWebSocket() {
         if (message.type === 'initial_status_complete' && message.bootstrap_id) {
           // Flush into the SAME cache the cards observe, even with REST still
           // in flight. The ack makes this visible in backend-only farm logs.
-          applyPendingPrinterStatus();
-          ws.send(JSON.stringify({
-            type: 'initial_status_applied',
-            bootstrap_id: message.bootstrap_id,
-            connect_ms: Math.round(performance.now() - connectStarted),
-          }));
+          void applyPendingPrinterStatus().then(() => {
+            if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({
+              type: 'initial_status_applied',
+              bootstrap_id: message.bootstrap_id,
+              connect_ms: Math.round(performance.now() - connectStarted),
+            }));
+          });
           return;
         }
         // Pong from the server clears the watchdog. Don't queue or render —
@@ -327,7 +359,7 @@ export function useWebSocket() {
     pendingPrinterStatus.current.set(printerId, { ...existing, ...data });
 
     // Schedule update if not already scheduled
-    if (!printerStatusTimeoutRef.current) {
+    if (!printerStatusTimeoutRef.current && !statusApplyInProgressRef.current) {
       printerStatusTimeoutRef.current = window.setTimeout(applyPendingPrinterStatus, 100);
     }
   }, [applyPendingPrinterStatus]);

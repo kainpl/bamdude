@@ -28,7 +28,7 @@ export function MonitorTile({ printer: p, view, generatedAt, now, stale, forecas
   const clock = seconds == null || p.state !== 'RUNNING' || outdated ? '—' :
     clockTime(now + seconds * 1000, i18n.language);
   return <Card className={`sm-tile sm-tone-${state.tone} ${outdated ? 'sm-outdated' : ''}`}
-    data-printer-id={p.printer_id} data-state={state.kind} role="button" tabIndex={0}
+    data-printer-id={p.printer_id} data-live-status-printer-id={p.printer_id} data-state={state.kind} role="button" tabIndex={0}
     aria-label={`${p.name}: ${label}${outdated ? `, ${t('monitor.stale')}` : ''}`}
     onClick={onOpen} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}>
     <div className="sm-tile-top">

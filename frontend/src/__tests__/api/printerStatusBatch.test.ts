@@ -15,6 +15,30 @@ describe('fleet status REST reads', () => {
     expect(one).not.toHaveBeenCalled();
   });
 
+  it('applies one response to card observers in small tasks without splitting the HTTP request', async () => {
+    vi.useFakeTimers();
+    try {
+      const one = vi.fn(async (id: number) => row(id));
+      const many = vi.fn(async (ids: number[]) => Object.fromEntries(ids.map(id => [id, row(id)])));
+      const settled = vi.fn();
+      const batch = createPrinterStatusBatcher(one, many, () => new Error('missing'));
+      const results = Array.from({ length: 25 }, (_, id) => batch.get(id).then(settled));
+
+      await vi.advanceTimersToNextTimerAsync();
+      expect(many).toHaveBeenCalledTimes(1);
+      // Vitest may run one nested 0ms yield in the same advancement, but it
+      // must not have drained the whole 25-card response in that turn.
+      expect(settled.mock.calls.length).toBeGreaterThanOrEqual(10);
+      expect(settled.mock.calls.length).toBeLessThan(25);
+
+      await vi.runAllTimersAsync();
+      await Promise.all(results);
+      expect(settled).toHaveBeenCalledTimes(25);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps newer MQTT fields when an old REST response arrives and still accepts enrichment', async () => {
     let finish!: (rows: Record<string, PrinterStatus>) => void;
     const many = vi.fn(() => new Promise<Record<string, PrinterStatus>>(resolve => { finish = resolve; }));

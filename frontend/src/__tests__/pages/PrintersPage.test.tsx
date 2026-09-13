@@ -113,10 +113,11 @@ describe('PrintersPage', () => {
     localStorage.removeItem('printerTagFilter');
     localStorage.removeItem('printerSortBy');
     localStorage.removeItem('printerSortAsc');
+    localStorage.removeItem('printerCardSize');
   });
 
   describe('rendering', () => {
-    it('renders 50 live cards while the REST status snapshot is held back', async () => {
+    it('keeps a large fleet virtualized while the REST status snapshot is held back', async () => {
       const fleet = Array.from({ length: 50 }, (_, i) => ({ ...mockPrinters[0], id: i + 1, name: `Farm printer ${i + 1}` }));
       let release!: () => void;
       const held = new Promise<void>(resolve => { release = resolve; });
@@ -137,8 +138,14 @@ describe('PrintersPage', () => {
       }
       const view = render(<><CaptureCache /><PrintersPage /></>);
       try {
-        await screen.findByText('Farm printer 50');
+        // The first viewport-sized slice mounts immediately. Once all 50 are
+        // eligible, only the rows nearest the viewport remain in the DOM —
+        // their statuses still arrive through the one farm-wide batch.
+        await screen.findByText('Farm printer 1', {}, { timeout: 20_000 });
         await waitFor(() => expect(requests).toBe(1));
+        await waitFor(() => {
+          expect(screen.queryByText('Farm printer 50')).not.toBeInTheDocument();
+        });
         act(() => {
           for (let id = 1; id <= 50; id++) {
             // Same key and shape written by useWebSocket; the hook's 50-printer
@@ -149,13 +156,25 @@ describe('PrintersPage', () => {
             });
           }
         });
-        await waitFor(() => expect(screen.getAllByText(/^LiveJob-\d+$/)).toHaveLength(50));
+        await screen.findByText('LiveJob-1');
         expect(cache.getQueryState(['printerStatus', 50])?.fetchStatus).toBe('fetching');
       } finally {
         release();
         view.unmount();
       }
     }, 20_000);
+
+    it('virtualizes the dense S grid too', async () => {
+      const fleet = Array.from({ length: 50 }, (_, i) => ({ ...mockPrinters[0], id: i + 1, name: `Small farm printer ${i + 1}` }));
+      server.use(http.get('/api/v1/printers/', () => HttpResponse.json(fleet)));
+      localStorage.setItem('printerCardSize', '1');
+
+      render(<PrintersPage />);
+
+      await screen.findByText('Small farm printer 1');
+      await waitFor(() => expect(document.querySelectorAll('[data-testid="printer-card-grid-row"]')).not.toHaveLength(0));
+      expect(document.querySelectorAll('[id^="printer-"]').length).toBeLessThan(fleet.length);
+    });
 
     it('renders the page title', async () => {
       render(<PrintersPage />);
@@ -172,6 +191,14 @@ describe('PrintersPage', () => {
         expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
         expect(screen.getByText('P1S Backup')).toBeInTheDocument();
       });
+    });
+
+    it('defers offscreen card layout while reserving each card size footprint', async () => {
+      render(<PrintersPage />);
+
+      const card = await screen.findByText('X1 Carbon').then((name) => name.closest('#printer-1'));
+      expect(card).not.toBeNull();
+      expect(card).toHaveStyle({ contentVisibility: 'auto', containIntrinsicSize: 'auto 700px' });
     });
 
     it('shows printer models', async () => {

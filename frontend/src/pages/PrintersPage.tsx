@@ -1,5 +1,6 @@
 import { useState, useEffect, useId, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
+import { WindowVirtualGrid } from '../components/WindowVirtualGrid';
 import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
 import { useTranslation } from 'react-i18next';
 import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
@@ -167,6 +168,8 @@ import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoo
 import { getPrinterImage, getWifiStrength, hasDoorSensor, mapModelCode } from '../utils/printer';
 import { OpenMonitorButton } from '../features/monitor/OpenMonitorButton';
 import { useMonitorTarget } from '../features/monitor/useMonitorTarget';
+import { useProgressiveListLength } from '../hooks/useProgressiveListLength';
+import { useMountedPrinterPriority } from '../hooks/useMountedPrinterPriority';
 import { formatPrintName } from '../utils/printName';
 import { compareFwVersions } from '../utils/firmwareVersion';
 import { computePopoverPosition } from '../utils/popoverPosition';
@@ -1685,6 +1688,44 @@ function FanBadge({
 // user reaches for a size that is already asking for more room.
 const CARD_BODY_SCALE: Record<number, number> = { 1: 1, 2: 1, 3: 1.2, 4: 1.4 };
 
+// `content-visibility: auto` skips offscreen layout and paint, but an
+// intrinsic fallback keeps the grid and scrollbar stable until a card is first
+// visited. These sizes mirror the four card modes rather than forcing all
+// printers into a misleading uniform height.
+const CARD_INTRINSIC_HEIGHT: Record<number, string> = {
+  1: 'auto 240px',
+  2: 'auto 700px',
+  3: 'auto 850px',
+  4: 'auto 1000px',
+};
+
+// Row estimates make the first scroll position plausible; the virtualizer
+// replaces them with each rendered row's measured height. Keep the values in
+// step with `CARD_INTRINSIC_HEIGHT`, which is the fallback before a card has
+// ever been laid out.
+const CARD_ROW_HEIGHT_ESTIMATE: Record<number, number> = {
+  1: 240,
+  2: 700,
+  3: 850,
+  4: 1000,
+};
+
+// The grid breakpoints are viewport media queries, not container queries, so
+// this mirrors `getGridClasses` exactly. Virtualization works in every card
+// size; only the number of complete cards per virtual row changes.
+function printerGridColumnCount(cardSize: number, viewportWidth: number): number {
+  switch (cardSize) {
+    case 1:
+      return viewportWidth >= 1280 ? 4 : viewportWidth >= 1024 ? 3 : viewportWidth >= 640 ? 2 : 1;
+    case 2:
+      return viewportWidth >= 1280 ? 3 : viewportWidth >= 768 ? 2 : 1;
+    case 3:
+      return viewportWidth >= 1024 ? 2 : 1;
+    default:
+      return 1;
+  }
+}
+
 // The scaled sizes, handed to the card subtree as custom properties.
 //
 // ⚠️ Custom properties rather than an em-based root font-size: setting
@@ -1749,6 +1790,7 @@ function PrinterCard({
   onExpand,
   onCollapse,
   spoolDisplayTemplate,
+  virtualized = false,
 }: {
   printer: Printer;
   hideIfDisconnected?: boolean;
@@ -1804,6 +1846,10 @@ function PrinterCard({
   // the popup's only visible close control (Esc is the other).
   onCollapse?: () => void;
   spoolDisplayTemplate?: string;
+  // A mounted virtual row is already guaranteed to be near the viewport.
+  // Its height must be fully measurable, so it does not also use the p1
+  // `content-visibility` optimization.
+  virtualized?: boolean;
 }) {
   const { t, i18n } = useTranslation();
   const effectiveSpoolTemplate = spoolDisplayTemplate || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
@@ -3099,12 +3145,15 @@ function PrinterCard({
   return (
     <Card
       id={`printer-${printer.id}`}
+      data-live-status-printer-id={printer.id}
       // The click handler below only acts on modifier clicks — a plain click
       // is a no-op, so the card must not wear a link cursor.
       pointer={false}
       className={`relative scroll-mt-20 ${compact ? 'group' : ''}`}
       style={{
         ...buildCardScaleStyle(cardSize),
+        contentVisibility: virtualized ? 'visible' : 'auto',
+        containIntrinsicSize: virtualized ? undefined : CARD_INTRINSIC_HEIGHT[cardSize] ?? CARD_INTRINSIC_HEIGHT[2],
         ...(compactShadow ? ({ '--card-shadow': compactShadow } as React.CSSProperties) : {}),
       }}
       onDragEnter={handleCardDragEnter}
@@ -8668,6 +8717,7 @@ function PowerDropdownItem({
 }
 
 export function PrintersPage() {
+  useMountedPrinterPriority('printers');
   const { t } = useTranslation();
   const [monitorTarget, clearMonitorTarget] = useMonitorTarget();
   const [showAddModal, setShowAddModal] = useState(false);
@@ -8687,6 +8737,7 @@ export function PrintersPage() {
   });
   // Card size: 1=small, 2=medium, 3=large, 4=xl
   const [cardSize, setCardSize] = useState<number>(() => readStoredCardSize('printerCardSize'));
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   // Page view: 'cards' = printer cards (default), 'camwall' = grid of live camera tiles (#451)
   const [pageView, setPageView] = useState<'cards' | 'camwall'>(() => {
     return localStorage.getItem('printerPageView') === 'camwall' ? 'camwall' : 'cards';
@@ -9268,21 +9319,14 @@ export function PrintersPage() {
   });
   const forecastRows = useMemo(() => forecastById(farmForecast), [farmForecast]);
 
-  // Three orders read the live per-printer status, and the sort below must be
-  // recomputed when that status ARRIVES — not only when the operator picks an
-  // order. Reading the cache with `queryClient.getQueryData` inside the memo
-  // could not do that: `queryClient` never changes identity, so the memo held
-  // whatever the cache happened to hold on the first paint. On a cold load that
-  // is nothing, every comparator tied, the `localeCompare` tiebreaker won, and
-  // a saved «by current job» order rendered alphabetically until the operator
-  // re-picked it (reported 2026-09-13). These observers make the cache a real
-  // dependency. They are opened only for the orders that need them, the way the
-  // farm forecast above is fetched only for «free at»: the other orders keep
-  // today's render count exactly, and no new query key is introduced — the
-  // cards already own these, so this only adds a second observer on each.
+  // Preload every status before progressively mounting the heavy cards. The
+  // shared batcher therefore still makes one fleet request instead of one
+  // request per 8-card mount slice. These observers also make status-dependent
+  // sort orders rerun as their data arrives; a cache read alone cannot do that
+  // because `queryClient` itself never changes identity.
   const orderReadsStatus = sortBy === 'status' || sortBy === 'eta' || sortBy === 'freeAt';
   const statusQueries = useQueries({
-    queries: (orderReadsStatus ? filteredPrinters : []).map((printer) => ({
+    queries: (printers ?? []).map((printer) => ({
       queryKey: ['printerStatus', printer.id],
       queryFn: () => api.getPrinterStatus(printer.id),
       refetchInterval: 30000,
@@ -9291,11 +9335,11 @@ export function PrintersPage() {
   const statusByPrinter = useMemo(() => {
     const map = new Map<number, EtaStatus | undefined>();
     if (!orderReadsStatus) return map;
-    filteredPrinters.forEach((printer, i) => {
+    printers?.forEach((printer, i) => {
       map.set(printer.id, statusQueries[i]?.data as EtaStatus | undefined);
     });
     return map;
-  }, [orderReadsStatus, filteredPrinters, statusQueries]);
+  }, [orderReadsStatus, printers, statusQueries]);
 
   const sortedPrinters = useMemo(() => {
     const sorted = [...filteredPrinters];
@@ -9457,6 +9501,23 @@ export function PrintersPage() {
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- t is stable; listing it re-groups on every i18n tick
   }, [sortBy, sortedPrinters, sortAsc]);
+  const progressivelyMountedCardCount = useProgressiveListLength(sortedPrinters.length);
+  const progressivelyMountedPrinterIds = useMemo(
+    () => new Set(sortedPrinters.slice(0, progressivelyMountedCardCount).map((printer) => printer.id)),
+    [sortedPrinters, progressivelyMountedCardCount],
+  );
+  const mountedRegularPrinters = useMemo(
+    () => sortedPrinters.slice(0, progressivelyMountedCardCount),
+    [sortedPrinters, progressivelyMountedCardCount],
+  );
+  const regularGridColumns = printerGridColumnCount(cardSize, viewportWidth);
+  const regularGridGap = cardSize >= 3 ? 24 : 16;
+
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // ResizeObserver for the responsive toolbar: re-measure on layout changes
   // (window resize, printer list grows/shrinks, smart-plug power dropdown
@@ -9709,6 +9770,46 @@ export function PrintersPage() {
     </>
   );
 
+  const renderRegularPrinterCard = (printer: Printer, virtualized = false) => (
+    <PrinterCard
+      key={printer.id}
+      printer={printer}
+      hideIfDisconnected={hideDisconnected && !monitorTarget}
+      maintenanceInfo={maintenanceByPrinter[printer.id]}
+      viewMode={viewMode}
+      cardSize={cardSize}
+      spoolmanEnabled={spoolmanEnabled}
+      hasUnlinkedSpools={hasUnlinkedSpools}
+      linkedSpools={linkedSpools}
+      spoolmanUrl={spoolmanStatus?.url}
+      spoolmanSyncMode={spoolmanSyncMode}
+      spoolmanSpools={spoolmanSpoolsData}
+      spoolmanSlotAssignments={spoolmanSlotAssignments}
+      spoolmanLoading={spoolmanLoading}
+      onUnassignSpoolmanSpool={(spoolId) => unassignSpoolmanMutation.mutate(spoolId)}
+      onGetAssignment={getAssignment}
+      onUnassignSpool={(pid, aid, tid) => unassignMutation.mutate({ printerId: pid, amsId: aid, trayId: tid })}
+      amsThresholds={settings ? {
+        humidityGood: Number(settings.ams_humidity_good) || 40,
+        humidityFair: Number(settings.ams_humidity_fair) || 60,
+        tempGood: Number(settings.ams_temp_good) || 28,
+        tempFair: Number(settings.ams_temp_fair) || 35,
+      } : undefined}
+      timeFormat={settings?.time_format || 'system'}
+      dateFormat={settings?.date_format || 'system'}
+      cameraViewMode={settings?.camera_view_mode || 'window'}
+      onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
+      checkPrinterFirmware={settings?.check_printer_firmware !== false}
+      useSlicerApi={settings?.use_slicer_api ?? false}
+      dryingPresets={effectiveDryingPresets}
+      isSelected={selectedPrinterIds.has(printer.id)}
+      onSelect={handleSelectPrinter}
+      onExpand={(id) => setExpandedPrinterId(id)}
+      spoolDisplayTemplate={settings?.spool_display_template || undefined}
+      virtualized={virtualized}
+    />
+  );
+
   return (
     <div className="p-4">
       {/* Header section: title with PrinterIcon + StatusSummaryBar (upstream PR #1203). */}
@@ -9855,7 +9956,10 @@ export function PrintersPage() {
       ) : groupedPrinters ? (
         /* Grouped by location or by tag */
         <div className="space-y-4">
-          {groupedPrinters.map((group) => (
+          {groupedPrinters.map((group) => {
+            const visibleItems = group.items.filter((printer) => progressivelyMountedPrinterIds.has(printer.id));
+            if (visibleItems.length === 0) return null;
+            return (
             <div key={group.key}>
               <h2
                 className="text-lg font-semibold text-white mb-3 flex items-center gap-2 flex-wrap"
@@ -9866,90 +9970,38 @@ export function PrintersPage() {
                 <span className="text-sm font-normal text-bambu-gray">({group.items.length})</span>
                 {group.locationId !== undefined && <LocationConditions locationId={group.locationId} />}
               </h2>
-              <div className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
-                {group.items.map((printer) => (
-                  <PrinterCard
-                    key={printer.id}
-                    printer={printer}
-                    hideIfDisconnected={hideDisconnected && !monitorTarget}
-                    maintenanceInfo={maintenanceByPrinter[printer.id]}
-                    viewMode={viewMode}
-                    cardSize={cardSize}
-                    amsThresholds={settings ? {
-                      humidityGood: Number(settings.ams_humidity_good) || 40,
-                      humidityFair: Number(settings.ams_humidity_fair) || 60,
-                      tempGood: Number(settings.ams_temp_good) || 28,
-                      tempFair: Number(settings.ams_temp_fair) || 35,
-                    } : undefined}
-                    spoolmanEnabled={spoolmanEnabled}
-                    hasUnlinkedSpools={hasUnlinkedSpools}
-                    linkedSpools={linkedSpools}
-                    spoolmanUrl={spoolmanStatus?.url}
-                    spoolmanSyncMode={spoolmanSyncMode}
-                    spoolmanSpools={spoolmanSpoolsData}
-                    spoolmanSlotAssignments={spoolmanSlotAssignments}
-                    spoolmanLoading={spoolmanLoading}
-                    onUnassignSpoolmanSpool={(spoolId) => unassignSpoolmanMutation.mutate(spoolId)}
-                    onGetAssignment={getAssignment}
-                    onUnassignSpool={(pid, aid, tid) => unassignMutation.mutate({ printerId: pid, amsId: aid, trayId: tid })}
-                    timeFormat={settings?.time_format || 'system'}
-                    dateFormat={settings?.date_format || 'system'}
-                    cameraViewMode={settings?.camera_view_mode || 'window'}
-                    onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
-                    checkPrinterFirmware={settings?.check_printer_firmware !== false}
-                    useSlicerApi={settings?.use_slicer_api ?? false}
-                    dryingPresets={effectiveDryingPresets}
-                    isSelected={selectedPrinterIds.has(printer.id)}
-                    onSelect={handleSelectPrinter}
-                    onExpand={(id) => setExpandedPrinterId(id)}
-                    spoolDisplayTemplate={settings?.spool_display_template || undefined}
-                  />
-                ))}
-              </div>
+              <WindowVirtualGrid
+                items={visibleItems}
+                columns={regularGridColumns}
+                estimateRowHeight={CARD_ROW_HEIGHT_ESTIMATE[cardSize] ?? CARD_ROW_HEIGHT_ESTIMATE[2]}
+                rowGap={regularGridGap}
+                className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}
+                rowClassName={`grid items-start gap-x-4 ${cardSize >= 3 ? 'gap-x-6' : ''} ${getGridClasses()}`}
+                getItemKey={(printer) => printer.id}
+                renderItem={renderRegularPrinterCard}
+                forceVirtualized={progressivelyMountedCardCount > 18}
+                baseOverscan={cardSize === 1 ? 1 : 2}
+                debugId={`printers-group-${group.key}`}
+              />
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         /* Regular grid view */
-        <div className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
-          {sortedPrinters.map((printer) => (
-            <PrinterCard
-              key={printer.id}
-              printer={printer}
-              hideIfDisconnected={hideDisconnected && !monitorTarget}
-              maintenanceInfo={maintenanceByPrinter[printer.id]}
-              viewMode={viewMode}
-              cardSize={cardSize}
-              spoolmanEnabled={spoolmanEnabled}
-              hasUnlinkedSpools={hasUnlinkedSpools}
-              linkedSpools={linkedSpools}
-              spoolmanUrl={spoolmanStatus?.url}
-              spoolmanSyncMode={spoolmanSyncMode}
-              spoolmanSpools={spoolmanSpoolsData}
-              spoolmanSlotAssignments={spoolmanSlotAssignments}
-              spoolmanLoading={spoolmanLoading}
-              onUnassignSpoolmanSpool={(spoolId) => unassignSpoolmanMutation.mutate(spoolId)}
-              onGetAssignment={getAssignment}
-              onUnassignSpool={(pid, aid, tid) => unassignMutation.mutate({ printerId: pid, amsId: aid, trayId: tid })}
-              amsThresholds={settings ? {
-                humidityGood: Number(settings.ams_humidity_good) || 40,
-                humidityFair: Number(settings.ams_humidity_fair) || 60,
-                tempGood: Number(settings.ams_temp_good) || 28,
-                tempFair: Number(settings.ams_temp_fair) || 35,
-              } : undefined}
-              timeFormat={settings?.time_format || 'system'}
-              cameraViewMode={settings?.camera_view_mode || 'window'}
-              onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
-              checkPrinterFirmware={settings?.check_printer_firmware !== false}
-              useSlicerApi={settings?.use_slicer_api ?? false}
-              dryingPresets={effectiveDryingPresets}
-              isSelected={selectedPrinterIds.has(printer.id)}
-              onSelect={handleSelectPrinter}
-              onExpand={(id) => setExpandedPrinterId(id)}
-              spoolDisplayTemplate={settings?.spool_display_template || undefined}
-            />
-          ))}
-        </div>
+        <WindowVirtualGrid
+          items={mountedRegularPrinters}
+          columns={regularGridColumns}
+          estimateRowHeight={CARD_ROW_HEIGHT_ESTIMATE[cardSize] ?? CARD_ROW_HEIGHT_ESTIMATE[2]}
+          rowGap={regularGridGap}
+          className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}
+          rowClassName={`grid items-start gap-x-4 ${cardSize >= 3 ? 'gap-x-6' : ''} ${getGridClasses()}`}
+          getItemKey={(printer) => printer.id}
+          renderItem={renderRegularPrinterCard}
+          baseOverscan={cardSize === 1 ? 1 : 2}
+          testId="printer-card-grid"
+          debugId="printers"
+        />
       )}
 
       {showAddModal && (

@@ -24,6 +24,9 @@ import { PrintModal } from '../components/PrintModal';
 import { OpenMonitorButton } from '../features/monitor/OpenMonitorButton';
 import { useMonitorTarget } from '../features/monitor/useMonitorTarget';
 import { Button } from '../components/Button';
+import { WindowVirtualGrid } from '../components/WindowVirtualGrid';
+import { useMountedPrinterPriority } from '../hooks/useMountedPrinterPriority';
+import { useProgressiveListLength } from '../hooks/useProgressiveListLength';
 
 type ViewMode = 'expanded' | 'all' | 'timeline';
 
@@ -35,9 +38,25 @@ const QUEUE_GRID_CLASSES: Record<number, string> = {
   4: 'grid-cols-1',
 };
 
+const QUEUE_ROW_HEIGHT_ESTIMATE = 480;
+
+function queueGridColumnCount(cardSize: number, viewportWidth: number): number {
+  switch (cardSize) {
+    case 1:
+      return viewportWidth >= 1280 ? 4 : viewportWidth >= 1024 ? 3 : viewportWidth >= 640 ? 2 : 1;
+    case 2:
+      return viewportWidth >= 1024 ? 3 : viewportWidth >= 640 ? 2 : 1;
+    case 3:
+      return viewportWidth >= 1024 ? 2 : 1;
+    default:
+      return 1;
+  }
+}
+
 const VALID_VIEW_MODES: ViewMode[] = ['expanded', 'all', 'timeline'];
 
 export function QueuePage() {
+  useMountedPrinterPriority('queues');
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const [monitorTarget, clearMonitorTarget] = useMonitorTarget();
@@ -60,10 +79,17 @@ export function QueuePage() {
   // only decides how many queue cards share a row; the card itself does not
   // change yet (2026-09-09).
   const [cardSize, setCardSize] = useState<number>(() => readStoredCardSize('queueCardSize'));
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const handleCardSizeChange = (size: number) => {
     setCardSize(size);
     localStorage.setItem('queueCardSize', String(size));
   };
+
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // Read once, from the one place that knows how these two keys are spelled —
   // the same helper the copy-queue dialog reads, so both are in step.
@@ -112,6 +138,18 @@ export function QueuePage() {
     queryFn: api.getQueues,
     refetchInterval: 15000,
   });
+
+  // Queue cards use the same printerStatus key as the Printers page. Start
+  // the shared batch-100 read for the full fleet before virtual rows mount,
+  // rather than leaving each newly scrolled card to start its own request.
+  useEffect(() => {
+    for (const queue of queues ?? []) {
+      void queryClient.prefetchQuery({
+        queryKey: ['printerStatus', queue.printer_id],
+        queryFn: () => api.getPrinterStatus(queue.printer_id),
+      });
+    }
+  }, [queues, queryClient]);
 
   // The server's per-printer «free at» — what the queue-aware sort orders by.
   // The stats bar holds the same query, so this is a second observer of one
@@ -173,6 +211,7 @@ export function QueuePage() {
   // Grid classes for the cards view, by card size — the Printers page's table
   // (its S row included), so the two fleet pages breathe the same way.
   const gridClasses = QUEUE_GRID_CLASSES[cardSize] ?? QUEUE_GRID_CLASSES[2];
+  const gridColumns = queueGridColumnCount(cardSize, viewportWidth);
 
   // The locations themselves, not the distinct values on screen: a parent with
   // no queues directly on it has to be selectable, and a name stopped being an
@@ -222,6 +261,19 @@ export function QueuePage() {
 
   const hasActiveFilters = search.trim() !== '' || statusFilter !== 'all' || locationFilter !== 'all';
 
+  // Statuses have already been preloaded for the full farm above. The heavy
+  // QueueCard DOM can therefore take the same 12 → +8 route as PrinterCard
+  // without splitting its initial HTTP status batch.
+  const progressivelyMountedQueueCount = useProgressiveListLength(sortedQueues.length);
+  const progressivelyMountedQueueIds = useMemo(
+    () => new Set(sortedQueues.slice(0, progressivelyMountedQueueCount).map(queue => queue.id)),
+    [progressivelyMountedQueueCount, sortedQueues],
+  );
+  const mountedQueues = useMemo(
+    () => sortedQueues.slice(0, progressivelyMountedQueueCount),
+    [progressivelyMountedQueueCount, sortedQueues],
+  );
+
   // Group queues by location or by tag, the printers page's two grouped orders.
   // An array, not an object keyed by id: integer-like object keys iterate in
   // ascending numeric order and would throw away the name sort applied above.
@@ -252,12 +304,21 @@ export function QueuePage() {
     return null;
   }, [sortBy, sortAsc, sortedQueues, t]);
 
-  const renderGrid = (items: PrinterQueue[]) => (
-    <div className={`grid gap-4 items-start ${gridClasses}`}>
-      {items.map((queue) => (
-        <QueueCard key={queue.id} queue={queue} onEditItem={setEditingItem} />
-      ))}
-    </div>
+  const renderGrid = (items: PrinterQueue[], forceVirtualized = false, debugId = 'queues') => (
+    <WindowVirtualGrid
+      items={items}
+      columns={gridColumns}
+      estimateRowHeight={QUEUE_ROW_HEIGHT_ESTIMATE}
+      rowGap={16}
+      className={`grid gap-4 items-start ${gridClasses}`}
+      rowClassName={`grid items-start gap-x-4 ${gridClasses}`}
+      getItemKey={(queue) => queue.id}
+      renderItem={(queue, virtualized) => <QueueCard key={queue.id} queue={queue} onEditItem={setEditingItem} virtualized={virtualized} />}
+      forceVirtualized={forceVirtualized}
+      baseOverscan={cardSize === 1 ? 1 : 2}
+      testId={debugId === 'queues' ? 'queue-card-grid' : `queue-card-grid-${debugId}`}
+      debugId={debugId}
+    />
   );
 
   return (
@@ -342,12 +403,12 @@ export function QueuePage() {
                   {group.label}
                   <span className="text-sm font-normal text-bambu-gray">({group.items.length})</span>
                 </h2>
-                {renderGrid(group.items)}
+                {renderGrid(group.items.filter(queue => progressivelyMountedQueueIds.has(queue.id)), progressivelyMountedQueueCount > 18, `queues-group-${group.key}`)}
               </div>
             ))}
           </div>
         ) : (
-          renderGrid(sortedQueues)
+          renderGrid(mountedQueues)
         )
       )}
 

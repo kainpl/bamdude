@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Expand, ListOrdered, Monitor, Printer, RefreshCw, Search, Sun, Wifi, WifiOff } from 'lucide-react';
 import { Button } from '../components/Button';
@@ -11,6 +11,8 @@ import { readMonitorConfig, readMonitorToken } from '../features/monitor/locatio
 import { useMonitorForecast, useMonitorSnapshot } from '../features/monitor/useMonitorSnapshot';
 import { MonitorTile } from '../features/monitor/MonitorTile';
 import { MonitorDetails } from '../features/monitor/MonitorDetails';
+import { ElementVirtualGrid } from '../components/ElementVirtualGrid';
+import { useMountedPrinterPriority } from '../hooks/useMountedPrinterPriority';
 import { groupMonitor, sortMonitor } from '../features/monitor/sort';
 import { tileState } from '../features/monitor/state';
 import type { MonitorConfig, MonitorPrinter } from '../features/monitor/types';
@@ -24,6 +26,7 @@ function initialConfig(): MonitorConfig {
 }
 
 export default function MonitorPage() {
+  useMountedPrinterPriority('monitor');
   const { t, i18n } = useTranslation();
   const { resolvedMode, setMode } = useTheme();
   const { showToast } = useToast();
@@ -36,6 +39,11 @@ export default function MonitorPage() {
   const [viewport, setViewport] = useState({ width: window.innerWidth - 48, height: window.innerHeight - 220 });
   const [visibleCount, setVisibleCount] = useState(0);
   const content = useRef<HTMLElement>(null);
+  const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
+  const contentRef = useCallback((node: HTMLElement | null) => {
+    content.current = node;
+    setScrollElement(node);
+  }, []);
   const lastOrder = useRef({ at: 0, priority: '', config: '' });
   const beforeAttention = useRef({ search: config.search, group: config.group });
   const data = useMonitorSnapshot(config.view, token);
@@ -106,12 +114,25 @@ export default function MonitorPage() {
     const node = content.current;
     if (!node || typeof IntersectionObserver === 'undefined') return;
     const seen = new Map<Element, boolean>();
+    const updateVisibleCount = () => {
+      setVisibleCount(new Set([...seen]
+        .filter(([tile, visible]) => node.contains(tile) && visible)
+        .map(([tile]) => tile.getAttribute('data-printer-id'))).size);
+    };
     const observer = new IntersectionObserver(changes => {
       for (const change of changes) seen.set(change.target, change.isIntersecting && change.intersectionRatio >= 0.98);
-      setVisibleCount(new Set([...seen].filter(([, visible]) => visible).map(([tile]) => tile.getAttribute('data-printer-id'))).size);
+      updateVisibleCount();
     }, { root: node, threshold: [0, 0.98, 1] });
-    node.querySelectorAll('[data-printer-id]').forEach(tile => observer.observe(tile));
-    return () => observer.disconnect();
+    const observeTiles = () => node.querySelectorAll('[data-printer-id]').forEach(tile => observer.observe(tile));
+    observeTiles();
+    // A virtual row replaces its tiles while the monitor scrolls. Observe the
+    // new nodes as well, otherwise the footer would keep yesterday's count.
+    const mutations = new MutationObserver(() => {
+      observeTiles();
+      updateVisibleCount();
+    });
+    mutations.observe(node, { childList: true, subtree: true });
+    return () => { mutations.disconnect(); observer.disconnect(); };
   }, [groups, tileHeight, columns]);
 
   const toggleAttention = () => {
@@ -158,7 +179,7 @@ export default function MonitorPage() {
       {frozen && <span>{t('monitor.orderHeld')}</span>}
       {(config.view === 'queues' || config.sort === 'freeAt') && forecastStale && !terminal && <span>{t('monitor.forecastUnavailable')}</span>}
     </div>
-    <main ref={content} className="sm-main" onFocusCapture={() => setFrozen(true)} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setFrozen(false); }}
+    <main ref={contentRef} className="sm-main" onFocusCapture={() => setFrozen(true)} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setFrozen(false); }}
       onPointerDown={() => setFrozen(true)} onPointerUp={e => setFrozen(e.currentTarget.contains(document.activeElement))} onPointerCancel={() => setFrozen(false)}>
       {terminal ? <div className="sm-empty"><WifiOff size={36} /><h2>{t(token !== null ? 'monitor.tokenInvalid' : 'monitor.accessDenied')}</h2><p>{t(token !== null ? 'monitor.tokenHelp' : 'monitor.accessHelp')}</p>
         {token === null && <a className="text-bambu-green underline" href="/login" target="_blank" rel="noopener noreferrer">{t('monitor.signIn')}</a>}
@@ -167,9 +188,22 @@ export default function MonitorPage() {
         <div className="sm-empty"><WifiOff size={36} /><h2>{t('monitor.connectionFailed')}</h2><Button onClick={data.retry}>{t('monitor.retry')}</Button></div> : filtered.length === 0 ?
           <div className="sm-empty"><Printer size={36} /><h2>{t(printers.length === 0 ? 'monitor.empty' : config.attention ? 'monitor.noAttention' : 'monitor.noResults')}</h2></div> : groups.map(group => <section key={group.key} className="sm-group">
             {config.group !== 'none' && !config.attention && <h2 className="sm-group-title">{group.key || t(config.group === 'tag' ? 'monitor.noTag' : 'monitor.noLocation')} <span>{group.printers.length}</span></h2>}
-            <div className="sm-grid" style={{ '--sm-columns': columns, '--sm-height': `${tileHeight}px` } as CSSProperties}>{group.printers.map(printer =>
-              <MonitorTile key={printer.printer_id} printer={printer} view={config.view} generatedAt={data.data!.generated_at} now={now} stale={stale}
-                forecast={forecasts?.get(printer.printer_id)} forecastStale={forecastStale} onOpen={() => setSelected(printer.printer_id)} />)}</div>
+            <ElementVirtualGrid
+              items={group.printers}
+              scrollElement={scrollElement}
+              columns={columns}
+              estimateRowHeight={tileHeight}
+              rowGap={10}
+              className="sm-grid"
+              rowClassName="sm-grid"
+              gridStyle={{ '--sm-columns': columns, '--sm-height': `${tileHeight}px` } as CSSProperties}
+              getItemKey={(printer) => printer.printer_id}
+              renderItem={(printer) => <MonitorTile key={printer.printer_id} printer={printer} view={config.view} generatedAt={data.data!.generated_at} now={now} stale={stale}
+                forecast={forecasts?.get(printer.printer_id)} forecastStale={forecastStale} onOpen={() => setSelected(printer.printer_id)} />}
+              forceVirtualized={entries > 18 && !fits}
+              baseOverscan={1}
+              debugId={`monitor-${config.view}-${group.key || 'all'}`}
+            />
           </section>)}
     </main>
     <footer className="sm-footer"><span>{t('monitor.visible', { count: visibleCount, total: printers.length })}{!fits && entries > 0 ? ` · ${t('monitor.scrollHint')}` : ''}</span>

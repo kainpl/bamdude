@@ -85,6 +85,8 @@ const mockPendingItems = [
 
 describe('QueuePage', () => {
   beforeEach(() => {
+    ['queueSortBy', 'queueSortAsc', 'queueCardSize', 'queueViewMode', 'queueSearch', 'queueStatusFilter', 'queueLocationFilter', 'queueHideOffline']
+      .forEach(key => localStorage.removeItem(key));
     server.use(
       http.get('/api/v1/queues/', () => HttpResponse.json(mockQueues)),
       http.get('/api/v1/queue/', () => HttpResponse.json(mockPendingItems)),
@@ -139,6 +141,47 @@ describe('QueuePage', () => {
         expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
         expect(screen.getByText('P1S')).toBeInTheDocument();
       });
+    });
+
+    it('uses the row virtualizer for large location groups', async () => {
+      const fleet = Array.from({ length: 50 }, (_, index) => {
+        const source = mockQueues[index % 2];
+        return {
+          ...source,
+          id: index + 1,
+          printer_id: index + 1,
+          printer_name: `Farm queue ${index + 1}`,
+        };
+      });
+      localStorage.setItem('queueSortBy', 'location');
+      server.use(http.get('/api/v1/queues/', () => HttpResponse.json(fleet)));
+
+      render(<QueuePage />);
+
+      await screen.findByText('Farm queue 1');
+      await waitFor(() => expect(document.querySelectorAll('[data-testid*="queue-card-grid-queues-group-"][data-testid$="-row"]')).not.toHaveLength(0));
+    });
+
+    it('preloads a large queue farm through one status batch before its cards mount', async () => {
+      const fleet = Array.from({ length: 50 }, (_, index) => ({
+        ...mockQueues[index % 2],
+        id: index + 1,
+        printer_id: index + 1,
+        printer_name: `Batch queue ${index + 1}`,
+      }));
+      let batches = 0;
+      server.use(
+        http.get('/api/v1/queues/', () => HttpResponse.json(fleet)),
+        http.get('/api/v1/printers/status/batch', () => {
+          batches++;
+          return HttpResponse.json(Object.fromEntries(fleet.map(queue => [queue.printer_id, { connected: true, state: 'IDLE' }])));
+        }),
+      );
+
+      render(<QueuePage />);
+
+      await screen.findByText('Batch queue 1');
+      await waitFor(() => expect(batches).toBe(1));
     });
 
   });

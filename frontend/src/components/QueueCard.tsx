@@ -70,6 +70,8 @@ import { PlateDefectsRow } from './PlateDefectsRow';
 interface QueueCardProps {
   queue: PrinterQueue;
   onEditItem?: (item: PrintQueueItem) => void;
+  /** WindowVirtualGrid must measure a full card; normal grids can defer it. */
+  virtualized?: boolean;
 }
 
 // 6 distinct hues for batch grouping — intentionally avoids green (success)
@@ -117,7 +119,7 @@ function StatusBadge({ status, t }: { status: string; t: (key: string) => string
   );
 }
 
-export function QueueCard({ queue, onEditItem }: QueueCardProps) {
+export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -663,6 +665,8 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
   return (
     <div
       className="relative"
+      data-live-status-printer-id={queue.printer_id}
+      style={virtualized ? undefined : { contentVisibility: 'auto', containIntrinsicSize: '480px' }}
       onDragEnter={handleCardDragEnter}
       onDragOver={handleCardDragOver}
       onDragLeave={handleCardDragLeave}
