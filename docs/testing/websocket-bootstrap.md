@@ -48,7 +48,8 @@ additive `initial_status_complete` marker. New browsers flush these states into
 the query cache and acknowledge once with `initial_status_applied`. Old browsers
 can ignore the marker and still receive their statuses.
 
-- `WebSocket bootstrap timing`: auth/accept, initial enqueue, printer count, ID.
+- `WebSocket bootstrap timing`: auth/accept, initial enqueue (including waits for
+  this viewer's writer to make room), printer count, ID.
 - `WebSocket bootstrap applied`: matching ID, server elapsed time including the
   acknowledgement's return trip, and browser duration starting before ws-token
   mint. This means cache-ready, **not first DOM paint** or fresh MQTT telemetry.
