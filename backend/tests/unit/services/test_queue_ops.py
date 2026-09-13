@@ -524,3 +524,24 @@ class TestACloneCarriesEveryPrintOption:
         assert clone.dispatch_attempts in (0, None), "a clone must not inherit a spent retry budget"
         assert clone.source_auto_item_id is None
         assert clone.is_calibration in (False, None)
+
+    def test_the_captured_bytes_travel_with_the_clone(self):
+        """m173, named rather than left to the sweep above.
+
+        The generic guard passes just as happily when a column is added to
+        ``NOT_COPIED`` with a plausible sentence, and for these two that would be
+        the bug: a clone that dropped ``queue_source_id`` would fall back to
+        reading the original file — the one thing the queue spool exists to stop —
+        and one that dropped ``source_snapshot`` would keep the right bytes under
+        the wrong name, which ``source_display_filename`` then refuses to send to
+        a printer. So the decision is pinned here in both directions.
+        """
+        src = PrintQueueItem(queue_id=1, queue_source_id=77, source_snapshot={"version": 1, "format": "3mf"})
+
+        clone = queue_ops._copy_item_fields(src, None, 1)
+
+        assert clone.queue_source_id == 77
+        assert clone.source_snapshot == {"version": 1, "format": "3mf"}
+        assert not {"queue_source_id", "source_snapshot"} & self.NOT_COPIED, (
+            "a clone must print the same bytes under the same name — neither column may be dropped"
+        )

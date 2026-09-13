@@ -49,13 +49,14 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project_line import ProjectLine
+from backend.app.models.queue_source import QueueSource
 from backend.app.models.user import User
 from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.project import RebalanceOut, RebalanceSkipped
+from backend.app.services import queue_sources
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.auto_queue_eligibility import busy_printer_ids
 from backend.app.services.farm_forecast import FarmSnapshot, load_snapshot, model_key, rank_active_orders
-from backend.app.services.filament_intake import require_source_requirements
 from backend.app.services.filament_policy import auto_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.order_metrics import attribute, batch_contexts, line_accepts_materials
@@ -69,6 +70,14 @@ from backend.app.services.plan_engine import (
 from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.print_scheduler import scheduler
 from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
+from backend.app.services.queue_source_capture import (
+    StagedSource,
+    capture_staged,
+    discard_staged,
+    plan_capture,
+    publish_staged,
+    staged_requirements,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -614,31 +623,51 @@ async def _apply(
 ) -> None:
     """One move, all-or-nothing: read and prepare EVERYTHING first, then write.
 
-    Order matters twice over. The strict source read and the receiving model's
-    print-option profile are both fetched before the first assignment to
-    ``item``, so a refusal or a DB error there leaves the row exactly as it was.
+    Order matters three times over. The **bytes of the target file** are captured,
+    the strict source read comes out of that copy, and the receiving model's
+    print-option profile is fetched — all before the first assignment to ``item``,
+    so a refusal or a DB error in any of them leaves the row exactly as it was.
     And the creation of the ``k − 1`` companions is undone by hand when it
     fails: the already-converted row rides along on the writer's own
     transaction, so without the undo a HALF move becomes durable — the row
     covering 2 of the 6 parts it used to claim, the companions never created,
-    the line quietly four parts short. Restoring the ten fields and reporting
+    the line quietly four parts short. Restoring the twelve fields and reporting
     ``creation_failed`` is what keeps "a move" one thing — and when the writer
     got as far as its own ``commit``, undoing means DELETING the rows it made,
     not forgetting them.
 
-    ⚠️ **Since the queue spool (2026-09-13) the writer COMMITS FIRST.**
-    ``add_items_to_auto_queue`` releases its transaction before it copies the
-    source file (spec §5 step 1 — a copy over a share may take minutes and must
-    not be held open across), and that commit carries this row's conversion with
-    it. Every failure the writer can *raise* is still undone here, in process:
-    the fields are restored and the one ``commit`` that follows makes the undo
-    durable. What is new is the crash window: if the process dies **during the
-    copy**, the conversion is already on disk and the ``k − 1`` companions do not
-    exist, which is the half move this function exists to prevent. Before the
-    spool nothing was durable at that point. Closing it means capturing the bytes
-    BEFORE the row is mutated — Task 8 of the queue-source-spool plan owns that;
-    until then the recovery is the operator's (the line reads four parts short and
-    a re-run of the rebalance covers it).
+    ⚠️ **A move changes the FILE, so it must change the bytes with it** (m173, the
+    Task 6 review's C1). Since the spool, every reader — routing, eligibility, the
+    promotion, both dispatch runners — resolves a row's source through its
+    ``queue_source_id``. A conversion that rewrote ``library_file_id`` /
+    ``plate_id`` / ``target_model`` and left the snapshot alone therefore printed
+    the **source** model's plate on the **receiving** model's machine, with nothing
+    in the row looking wrong: plate 1 of the old file resolves against plate 1 of
+    the new one, so it does not even fail. Two fixes were rejected. *Clearing* the
+    two columns drops the row back to reading its (new) original and gives up the
+    guarantee the whole feature exists for — an external share that goes away takes
+    the rebalanced job with it. *Capturing after* the mutation satisfies A10's first
+    half and breaks its second: for as long as the copy runs the row is durably
+    filed against a file it has no bytes for. So the capture comes first and a
+    capture refusal is a ``refusal`` (``source_unreadable``), never a half-moved row.
+
+    ⚠️ **The crash window, now that the order is the other way round.** The writer
+    still commits first: ``add_items_to_auto_queue`` releases its transaction before
+    it copies (spec §5 step 1 — a copy over a share may take minutes and must not be
+    held open across). What used to be exposed was the conversion itself: the row
+    was durable on the target file while the bytes were still being read, so a crash
+    during the copy left a converted row with nothing behind it. That is closed — the
+    copy is finished and published before the row moves. What remains is narrower
+    and pre-dates the spool in kind: a crash inside the *companions'* own copy, after
+    the conversion is committed, leaves the line ``(k − 1) × y`` parts short, and the
+    recovery is a re-run of the rebalance, which covers it.
+
+    ⚠️ **The companions capture the same file a second time.** The blob is deduped by
+    ``sha256`` so nothing extra lands on disk, and the parse is shared through
+    ``cache`` — the second read of the original is the price of
+    ``add_items_to_auto_queue`` staying the single definition of "create auto rows",
+    which it must be: a second construction path here is exactly the drift that
+    writer was extracted to prevent.
 
     The conversion keeps every print option, the line, ``force_color_match`` and
     the position; the created rows take the saved profile for the receiving
@@ -661,13 +690,43 @@ async def _apply(
         # read, which is the same thing as a source nobody can read.
         result.skipped.append((item.id, "source_unreadable"))
         return
+    staged = await _capture_target(db, item, move, file, result=result)
+    if staged is None:
+        return
     try:
-        req = await require_source_requirements(
-            cache, None, file, move.plate.plate_index, product_plate_id=move.plate.plate_id
+        req = await staged_requirements(
+            staged, cache, None, file, move.plate.plate_index, product_plate_id=move.plate.plate_id
         )
+
+        from_model = item.target_model or move.from_model
+        to_model = req.model or move.plate.model_label
+        batch_id = item.batch_id or (str(uuid.uuid4()) if move.k > 1 else None)
+        # Everything the creation needs, read while the row is still untouched.
+        payload: dict | None = None
+        if move.k > 1:
+            profile = await preference_options(db, current_user, to_model)
+            options = profile.for_auto_queue() if profile else {}
+            if file.swap_compatible:
+                options["execute_swap_macros"] = False
+                options["swap_macro_events"] = None
+            # After the profile, so the row wins: these four are not toggles the
+            # profile has an opinion about (``SharedQueueOptions`` carries none of
+            # them) — they say how THIS job feeds and what happens when it ends.
+            # ``feed_policy`` may be the row's own ``"auto"``; the writer normalises
+            # it exactly as it does for every other door.
+            payload = {
+                **options,
+                "use_ams": item.use_ams,
+                "feed_policy": item.feed_policy,
+                "auto_off_after": item.auto_off_after,
+                "require_previous_success": item.require_previous_success,
+                "force_color_match": item.force_color_match,
+            }
+        blob = await publish_staged(staged, _no_rows_of_our_own)
     except HTTPException as exc:
+        await discard_staged(staged)
         logger.info(
-            "Rebalance: item %s stays on %s — plate %s unreadable: %s",
+            "Rebalance: item %s stays on %s — plate %s of the copied file was refused: %s",
             item.id,
             item.target_model,
             move.plate.plate_id,
@@ -675,31 +734,11 @@ async def _apply(
         )
         result.skipped.append((item.id, "source_unreadable"))
         return
-
-    from_model = item.target_model or move.from_model
-    to_model = req.model or move.plate.model_label
-    batch_id = item.batch_id or (str(uuid.uuid4()) if move.k > 1 else None)
-    # Everything the creation needs, read while the row is still untouched.
-    payload: dict | None = None
-    if move.k > 1:
-        profile = await preference_options(db, current_user, to_model)
-        options = profile.for_auto_queue() if profile else {}
-        if file.swap_compatible:
-            options["execute_swap_macros"] = False
-            options["swap_macro_events"] = None
-        # After the profile, so the row wins: these four are not toggles the
-        # profile has an opinion about (``SharedQueueOptions`` carries none of
-        # them) — they say how THIS job feeds and what happens when it ends.
-        # ``feed_policy`` may be the row's own ``"auto"``; the writer normalises
-        # it exactly as it does for every other door.
-        payload = {
-            **options,
-            "use_ams": item.use_ams,
-            "feed_policy": item.feed_policy,
-            "auto_off_after": item.auto_off_after,
-            "require_previous_success": item.require_previous_success,
-            "force_color_match": item.force_color_match,
-        }
+    except BaseException:
+        # A DB error, a cancellation at shutdown: give the staged bytes back rather
+        # than leaving a ``.part`` for the grace window (§5 step 4).
+        await discard_staged(staged)
+        raise
 
     logger.info(
         "Rebalance: line %s item %s %s → %s: %d print(s) of plate %s (yield %d, %d parts, surplus %d), "
@@ -716,7 +755,10 @@ async def _apply(
         move.finish,
         "none" if move.home_finish is None else f"{move.home_finish:.0f}s",
     )
-    # The row as it is, so the creation step below can put it back.
+    # The row as it is, so the creation step below can put it back. ⚠️ The two
+    # snapshot columns are part of it: a row restored to the source model's file
+    # while keeping the target file's bytes would be the same wrong-file print as
+    # C1, arrived at from the other direction.
     before = {
         field_name: getattr(item, field_name)
         for field_name in (
@@ -730,68 +772,144 @@ async def _apply(
             "batch_id",
             "rebalanced_at",
             "rebalanced_from_model",
+            "queue_source_id",
+            "source_snapshot",
         )
     }
-    item.archive_id = None
-    item.library_file_id = file.id
-    item.plate_id = req.resolved_plate_id
-    item.target_model = to_model
-    item.required_filament_types = json.dumps(list(dict.fromkeys(f["type"] for f in req.used_filaments)))
-    item.print_time_seconds = req.print_time_seconds
-    item.waiting_reason = None
-    item.batch_id = batch_id
-    item.rebalanced_at = now
-    item.rebalanced_from_model = from_model
-    result.converted += 1
-    result.moved_parts += move.moved_parts
+    # Pinned across the handover: the blob is published and, until the commit
+    # below, nobody owns it — a pin is what §9 offers for exactly that gap.
+    async with queue_sources.pin(blob.id):
+        item.archive_id = None
+        item.library_file_id = file.id
+        item.plate_id = req.resolved_plate_id
+        item.target_model = to_model
+        item.required_filament_types = json.dumps(list(dict.fromkeys(f["type"] for f in req.used_filaments)))
+        item.print_time_seconds = req.print_time_seconds
+        item.waiting_reason = None
+        item.batch_id = batch_id
+        item.rebalanced_at = now
+        item.rebalanced_from_model = from_model
+        item.queue_source_id = blob.id
+        item.source_snapshot = queue_sources.snapshot_for(staged.receipt, blob)
+        # Durable while the pin still holds, so the reference the collector reads
+        # exists before the pin that stood in for it goes.
+        await db.commit()
+        result.converted += 1
+        result.moved_parts += move.moved_parts
 
-    if payload is None:
-        return
-    created: list[AutoQueueItem] = []
-    try:
-        created = await add_items_to_auto_queue(
-            db,
-            AutoQueueItemCreate(
-                library_file_id=file.id,
-                plate_id=req.resolved_plate_id,
-                quantity=move.k - 1,
-                project_line_id=item.project_line_id,
-                **payload,
-            ),
-            current_user,
-            requirements_cache=cache,
-        )
-        for row in created:
-            row.batch_id = batch_id
-            row.rebalanced_at = now
-            row.rebalanced_from_model = from_model
-        await db.flush()
-    except Exception as exc:
-        # Restore FIRST, delete SECOND, commit ONCE. The writer commits its own
-        # rows, so anything that fails after it (the stamping loop, its flush)
-        # leaves them durable — unstamped, filed under the line, holding parts
-        # nobody owes and with no ``rebalanced_at`` to make the cooldown notice.
-        # Restoring before the delete means the autoflush ``db.delete`` may run
-        # can only ever write the row's ORIGINAL values, and the one commit that
-        # follows makes both halves of the undo durable together.
-        for field_name, value in before.items():
-            setattr(item, field_name, value)
-        if created:
+        if payload is None:
+            return
+        created: list[AutoQueueItem] = []
+        try:
+            created = await add_items_to_auto_queue(
+                db,
+                AutoQueueItemCreate(
+                    library_file_id=file.id,
+                    plate_id=req.resolved_plate_id,
+                    quantity=move.k - 1,
+                    project_line_id=item.project_line_id,
+                    **payload,
+                ),
+                current_user,
+                requirements_cache=cache,
+            )
             for row in created:
-                await db.delete(row)
+                row.batch_id = batch_id
+                row.rebalanced_at = now
+                row.rebalanced_from_model = from_model
+            await db.flush()
+        except Exception as exc:
+            # Restore FIRST, delete SECOND, commit ONCE. The writer commits its own
+            # rows, so anything that fails after it (the stamping loop, its flush)
+            # leaves them durable — unstamped, filed under the line, holding parts
+            # nobody owes and with no ``rebalanced_at`` to make the cooldown notice.
+            # Restoring before the delete means the autoflush ``db.delete`` may run
+            # can only ever write the row's ORIGINAL values, and the one commit that
+            # follows makes both halves of the undo durable together.
+            #
+            # ⚠️ **The commit is unconditional now**, where it used to happen only if
+            # rows had been created: the conversion is committed above, beside the
+            # reference to the new blob, so an undo that only assigned the old values
+            # back in memory would leave the converted row on disk and the row in the
+            # session disagreeing with it.
+            #
+            # ⚠️ The blob stays published and becomes unowned when the pin goes. That
+            # is the collector's business and not a leak: it is one shared object,
+            # keyed by content, and the grace window releases it if nothing claims it.
+            for field_name, value in before.items():
+                setattr(item, field_name, value)
+            if created:
+                for row in created:
+                    await db.delete(row)
             await db.commit()
-        result.converted -= 1
-        result.moved_parts -= move.moved_parts
-        logger.warning(
-            "Rebalance: line %s item %s stays on %s — creating its %d companion print(s) failed "
-            "(%d already-created row(s) deleted): %s",
-            item.project_line_id,
+            result.converted -= 1
+            result.moved_parts -= move.moved_parts
+            logger.warning(
+                "Rebalance: line %s item %s stays on %s — creating its %d companion print(s) failed "
+                "(%d already-created row(s) deleted): %s",
+                item.project_line_id,
+                item.id,
+                before["target_model"],
+                move.k - 1,
+                len(created),
+                exc,
+            )
+            result.skipped.append((item.id, "creation_failed"))
+            return
+        result.created += len(created)
+
+
+async def _no_rows_of_our_own(_session: AsyncSession, _source: QueueSource) -> None:
+    """``publish``'s ``attach`` when the caller writes its rows afterwards.
+
+    Every other producer builds its job rows inside the publication's transaction,
+    and this one cannot: the ``k − 1`` companions go through
+    ``add_items_to_auto_queue``, which captures and publishes for itself, and
+    ``publish`` holds the one storage guard while ``attach`` runs — a nested
+    publication would deadlock on it. So the blob is published on its own and the
+    converted row becomes its owner immediately afterwards, under a
+    :func:`queue_sources.pin` that holds it against the collector for the gap (§9).
+    """
+    return None
+
+
+async def _capture_target(
+    db: AsyncSession,
+    item: AutoQueueItem,
+    move: Move,
+    file: LibraryFile,
+    *,
+    result: RebalanceResult,
+) -> StagedSource | None:
+    """Copy the target file's bytes — before one field of ``item`` has changed.
+
+    ``None`` means the move is off and the reason is already recorded: the row is
+    still exactly as the plan found it, which is what makes a refusal here a plain
+    ``refusal`` rather than the first half of a move (A10).
+
+    ⚠️ **The transaction is released before the copy** (spec §5 step 1). A copy over
+    a share can take minutes and on SQLite the caller's write lock would be held
+    across all of it — one unreachable NAS stalling every other query. The commit
+    makes the tick's placement pass, and any earlier move of this run, durable here;
+    that already happened on every ``k > 1`` move, because the companions' writer
+    commits the caller's session for the same reason.
+    """
+    try:
+        plan = plan_capture(library_file=file)
+    except HTTPException as exc:
+        logger.info("Rebalance: item %s stays on %s — %s", item.id, item.target_model, exc.detail)
+        result.skipped.append((item.id, "source_unreadable"))
+        return None
+    await db.commit()
+    try:
+        return await capture_staged(plan)
+    except HTTPException as exc:
+        logger.info(
+            "Rebalance: item %s stays on %s — the copy of plate %s's file was refused: %s",
             item.id,
-            before["target_model"],
-            move.k - 1,
-            len(created),
-            exc,
+            item.target_model,
+            move.plate.plate_id,
+            exc.detail,
         )
-        result.skipped.append((item.id, "creation_failed"))
-        return
-    result.created += len(created)
+        result.skipped.append((item.id, "source_unreadable"))
+        return None

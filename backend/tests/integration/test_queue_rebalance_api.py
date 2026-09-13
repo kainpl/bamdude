@@ -4,15 +4,22 @@ Both run the same procedure with the setting OFF and the cooldown ignored; the
 per-item one answers, for every id it was given, either a move or the reason.
 """
 
+import hashlib
 import json
+import time
+from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.core.auth import create_access_token, get_password_hash
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.group import Group
+from backend.app.models.queue_source import FORMAT_3MF, STATE_READY, QueueSource
 from backend.app.models.user import User
+from backend.app.services import queue_rebalance, queue_sources
 from backend.app.services.farm_forecast import model_key
 from backend.tests.integration.test_auto_queue_scheduler import (
     _make_printer_with_queue,
@@ -218,3 +225,237 @@ async def test_panel_action_needs_queue_update_all(async_client, db_session, pri
     await _as_viewer(async_client, db_session)
     r = await async_client.post("/api/v1/auto-queue/rebalance", json={"item_ids": [farm.item.id]})
     assert r.status_code == 403, r.text
+
+
+# --------------------------------------------------------------------------- #
+# m173 — a move changes the FILE, so it must change the bytes with it
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(autouse=True)
+def clean_spool_state():
+    """Process-global capture state must not travel between tests."""
+    queue_sources._reset_state()
+    yield
+    deadline = time.monotonic() + 10
+    while queue_sources.active_captures() and time.monotonic() < deadline:  # pragma: no cover - drain
+        time.sleep(0.01)
+    queue_sources._reset_state()
+
+
+async def _plant_blob(db, path: Path) -> QueueSource:
+    """A ``queue_sources`` row for bytes that were captured before this test.
+
+    Only the row: nothing in the rebalance reads a blob's file, and the point of
+    planting one is that the row starts out naming the OLD model's copy — which is
+    exactly the state Task 6's C1 leaves behind and what a restore must put back.
+    """
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    row = QueueSource(
+        sha256=digest,
+        size_bytes=path.stat().st_size,
+        relative_path=queue_sources.object_relative_path(digest, FORMAT_3MF),
+        format=FORMAT_3MF,
+        state=STATE_READY,
+    )
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def _a_captured_farm(db_session, printer_factory, tmp_path):
+    """``rebalance_farm`` whose pending row already owns a copy of the P1S file."""
+    farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+    old = await _plant_blob(db_session, Path(farm.big.file_path))
+    farm.item.queue_source_id = old.id
+    farm.item.source_snapshot = {
+        "version": 1,
+        "provenance": {"kind": "library_file", "id": farm.big.id},
+        "display_filename": farm.big.filename,
+        "format": FORMAT_3MF,
+        "plate_fallback": None,
+    }
+    await db_session.commit()
+    farm.old_blob = old
+    return farm
+
+
+async def _move(db_session, farm):
+    p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+    with p_elig, p_sched, p_ams:
+        return await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+
+
+@pytest.mark.asyncio
+async def test_a_moved_row_names_the_TARGET_files_bytes(db_session, printer_factory, tmp_path):
+    """Task 6 review C1: the converted row used to keep the OLD model's blob.
+
+    Every reader resolves through the snapshot now, so a row that names the target
+    model's file in its columns and the source model's bytes in ``queue_source_id``
+    prints the wrong part on the wrong machine, and nothing in the row looks wrong.
+    """
+    farm = await _a_captured_farm(db_session, printer_factory, tmp_path)
+    # Read before the expire below: ``expire_all`` turns every later attribute
+    # access on these into a lazy load, which under the async session is a
+    # MissingGreenlet rather than a query.
+    item_id, old_blob_id = farm.item.id, farm.old_blob.id
+    small_id, small_name = farm.small.id, farm.small.filename
+    target_sha = hashlib.sha256(Path(farm.small.file_path).read_bytes()).hexdigest()
+
+    result = await _move(db_session, farm)
+
+    assert (result.converted, result.created) == (1, 2), result.skipped
+    db_session.expire_all()
+    rows = await _pending(db_session)
+    assert len(rows) == 3
+    for row in rows:
+        assert row.library_file_id == small_id
+        blob = await db_session.get(QueueSource, row.queue_source_id)
+        assert blob is not None, f"row {row.id} has no bytes of its own after the move"
+        assert blob.sha256 == target_sha, f"row {row.id} still names the OLD model's file"
+    converted = next(row for row in rows if row.id == item_id)
+    assert converted.queue_source_id != old_blob_id
+    assert converted.source_snapshot["provenance"] == {"kind": "library_file", "id": small_id}
+    assert converted.source_snapshot["display_filename"] == small_name
+
+
+@pytest.mark.asyncio
+async def test_the_capture_happens_before_the_row_is_mutated(db_session, printer_factory, tmp_path, monkeypatch):
+    """A10: a correct NEW snapshot, or an UNCHANGED old job — never a half-move.
+
+    Capturing after the conversion would satisfy the assertion above and still be
+    wrong: the row would be durable on the target file with no bytes behind it for
+    as long as the copy runs.
+    """
+    farm = await _a_captured_farm(db_session, printer_factory, tmp_path)
+    untouched = (farm.big.id, farm.old_blob.id, "P1S")
+    seen: list[tuple] = []
+    real = queue_sources.capture
+
+    async def spy(request):
+        seen.append((farm.item.library_file_id, farm.item.queue_source_id, farm.item.target_model))
+        return await real(request)
+
+    monkeypatch.setattr(queue_sources, "capture", spy)
+    result = await _move(db_session, farm)
+
+    assert result.converted == 1, result.skipped
+    assert seen, "the move never captured anything"
+    assert seen[0] == untouched, "the row was already mutated when the copy started"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_capture_leaves_the_job_exactly_as_it_was(db_session, printer_factory, tmp_path, monkeypatch):
+    """A10's other half: the refusal is a ``refusal``, not a half-moved row."""
+    farm = await _a_captured_farm(db_session, printer_factory, tmp_path)
+    before = {
+        name: getattr(farm.item, name)
+        for name in (
+            "library_file_id",
+            "plate_id",
+            "target_model",
+            "required_filament_types",
+            "print_time_seconds",
+            "batch_id",
+            "rebalanced_at",
+            "rebalanced_from_model",
+            "queue_source_id",
+            "source_snapshot",
+        )
+    }
+    monkeypatch.setattr(
+        queue_sources, "capture", AsyncMock(side_effect=queue_sources.SourceUnreadable("the share went away"))
+    )
+
+    result = await _move(db_session, farm)
+
+    assert (result.converted, result.created, result.moved_parts) == (0, 0, 0)
+    assert result.skipped == [(farm.item.id, "source_unreadable")]
+    db_session.expire_all()
+    rows = await _pending(db_session)
+    assert len(rows) == 1, "a refused move creates no companions"
+    assert {name: getattr(rows[0], name) for name in before} == before
+
+
+@pytest.mark.asyncio
+async def test_a_failed_companion_creation_restores_the_old_bytes_too(
+    db_session, printer_factory, tmp_path, monkeypatch
+):
+    """The undo is field by field, and the two snapshot columns are two of them.
+
+    A converted row whose companions were never created under-covers its line;
+    one that kept the new bytes while every other column went back would print the
+    target model's plate on the source model's printer.
+    """
+    farm = await _a_captured_farm(db_session, printer_factory, tmp_path)
+    item_id, big_id, old_blob_id = farm.item.id, farm.big.id, farm.old_blob.id
+    monkeypatch.setattr(
+        queue_rebalance, "add_items_to_auto_queue", AsyncMock(side_effect=RuntimeError("the writer is down"))
+    )
+
+    result = await _move(db_session, farm)
+
+    assert (result.converted, result.created, result.moved_parts) == (0, 0, 0)
+    assert result.skipped == [(item_id, "creation_failed")]
+    db_session.expire_all()
+    rows = await _pending(db_session)
+    assert len(rows) == 1
+    assert (rows[0].library_file_id, rows[0].target_model) == (big_id, "P1S")
+    assert rows[0].queue_source_id == old_blob_id, "the row kept the target file's bytes after the undo"
+    assert rows[0].source_snapshot["provenance"] == {"kind": "library_file", "id": big_id}
+    assert rows[0].rebalanced_at is None
+
+
+@pytest.mark.asyncio
+async def test_the_new_blob_is_pinned_across_the_handover(db_session, printer_factory, tmp_path, monkeypatch):
+    """§9: between ``publish`` and the commit that names it, nothing owns the blob.
+
+    The pin is what stands in for that owner. It cannot be observed at its very
+    narrowest — the gap is one ``await`` wide and the collector needs two passes an
+    hour apart to release anything — so what is pinned here is the whole handover,
+    which is the claim the pin is actually making.
+    """
+    farm = await _a_captured_farm(db_session, printer_factory, tmp_path)
+    seen: list[frozenset[int]] = []
+    real = queue_rebalance.add_items_to_auto_queue
+
+    async def spy(*args, **kwargs):
+        seen.append(queue_sources.pinned_source_ids())
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(queue_rebalance, "add_items_to_auto_queue", spy)
+    result = await _move(db_session, farm)
+
+    assert result.converted == 1, result.skipped
+    db_session.expire_all()
+    converted = next(row for row in await _pending(db_session) if row.id == farm.item.id)
+    assert seen and converted.queue_source_id in seen[0], "the new blob was unpinned while nothing owned it"
+    assert queue_sources.pinned_source_ids() == frozenset(), "the pin outlived the move"
+
+
+@pytest.mark.asyncio
+async def test_an_undo_with_no_companions_created_is_still_committed(
+    db_session, test_engine, printer_factory, tmp_path, monkeypatch
+):
+    """The conversion is durable before the companions are attempted.
+
+    So an undo that only assigned the old values back in memory would leave the
+    converted row on disk — which is why the undo's commit is unconditional now,
+    where it used to happen only when rows had been created.
+    """
+    farm = await _a_captured_farm(db_session, printer_factory, tmp_path)
+    item_id, big_id, old_blob_id = farm.item.id, farm.big.id, farm.old_blob.id
+    monkeypatch.setattr(
+        queue_rebalance, "add_items_to_auto_queue", AsyncMock(side_effect=RuntimeError("the writer is down"))
+    )
+
+    result = await _move(db_session, farm)
+    assert result.skipped == [(item_id, "creation_failed")]
+
+    # A session that has never seen this row: the assertions are about the DATABASE,
+    # not about what the caller's session happens to hold.
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as fresh:
+        row = await fresh.get(AutoQueueItem, item_id)
+        assert (row.library_file_id, row.target_model) == (big_id, "P1S")
+        assert (row.queue_source_id, row.rebalanced_at) == (old_blob_id, None)

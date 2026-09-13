@@ -38,7 +38,9 @@ from backend.app.services.filament_policy import decode
 from backend.app.services.filament_policy_write import routing_update
 from backend.app.services.notification_service import notification_service
 from backend.app.services.queue_add import add_items_to_printer_queue
+from backend.app.services.queue_source_capture import refusal, reusing_sources
 from backend.app.services.queue_source_descriptor import source_storage_state
+from backend.app.services.queue_sources import QueueSourceError
 from backend.app.services.queue_times import plate_metadata_cached, plate_metadata_for_row
 from backend.app.services.source_io import SourceUnavailable
 from backend.app.utils.printer_models import is_gcode_compatible
@@ -1023,6 +1025,10 @@ async def clone_item_endpoint(
     source has one (so the new copy becomes a sibling in the same
     batch).  ``scope='batch'`` — clone the entire batch into a new
     batch.  Returns the first cloned item.
+
+    ⚠️ m173: a clone becomes a second owner of the original's captured bytes, so it
+    is refused when those bytes are not printable — with the capture taxonomy's own
+    status, mapped here and nowhere else (spec §6).
     """
     from backend.app.services.queue_counters import update_queue_counters
     from backend.app.services.queue_ops import clone_batch, clone_item
@@ -1031,21 +1037,24 @@ async def clone_item_endpoint(
     if not src:
         raise HTTPException(404, "Queue item not found")
 
-    if scope == "batch":
-        if not src.batch_id:
-            raise HTTPException(400, "Item is not part of a batch")
-        clones = await clone_batch(db, src.batch_id)
-        if not clones:
-            raise HTTPException(400, "No pending items in batch to clone")
-        await update_queue_counters(db, clones[0].queue_id)
-        await db.commit()
-        first = clones[0]
-    else:
-        first = await clone_item(db, item_id, keep_batch=True)
-        if first is None:
-            raise HTTPException(500, "Clone failed")
-        await update_queue_counters(db, first.queue_id)
-        await db.commit()
+    try:
+        if scope == "batch":
+            if not src.batch_id:
+                raise HTTPException(400, "Item is not part of a batch")
+            clones = await clone_batch(db, src.batch_id)
+            if not clones:
+                raise HTTPException(400, "No pending items in batch to clone")
+            await update_queue_counters(db, clones[0].queue_id)
+            await db.commit()
+            first = clones[0]
+        else:
+            first = await clone_item(db, item_id, keep_batch=True)
+            if first is None:
+                raise HTTPException(500, "Clone failed")
+            await update_queue_counters(db, first.queue_id)
+            await db.commit()
+    except QueueSourceError as exc:
+        raise refusal(exc) from exc
 
     # Re-fetch with full eager loading for response.
     result = await db.execute(
@@ -1121,6 +1130,11 @@ async def unskip_item(
     putting it back in the queue has to mean "I have dealt with that failure".
     The blocking row is marked ``gate_acknowledged``, which drops it out of the
     lookback for every item behind it too, not just this one.
+
+    ⚠️ m173: putting a row back into the queue re-arms it on the bytes it already
+    owns — never a new read of its original (spec §7, A08). The blob is therefore
+    asked for under the storage guard and the re-arm is written under it, and a blob
+    that is not ``ready`` leaves the row skipped rather than pending-and-doomed.
     """
     from backend.app.services.queue_counters import update_queue_counters
 
@@ -1130,23 +1144,27 @@ async def unskip_item(
     if item.status != "skipped":
         raise HTTPException(400, f"Only skipped items can be unskipped, current status: '{item.status}'")
 
-    if item.require_previous_success:
-        await _acknowledge_blocking_failure(db, item.queue_id)
-
-    max_pos = (
-        await db.execute(
-            select(func.max(PrintQueueItem.position))
-            .where(PrintQueueItem.queue_id == item.queue_id)
-            .where(PrintQueueItem.status == "pending")
-        )
-    ).scalar() or 0
     from backend.app.services.filament_policy import restore_routing_source
 
-    restore_routing_source(item)
-    item.status = "pending"
-    item.position = max_pos + 1
-    await update_queue_counters(db, item.queue_id)
-    await db.commit()
+    try:
+        async with reusing_sources(db, [item.queue_source_id]):
+            if item.require_previous_success:
+                await _acknowledge_blocking_failure(db, item.queue_id)
+
+            max_pos = (
+                await db.execute(
+                    select(func.max(PrintQueueItem.position))
+                    .where(PrintQueueItem.queue_id == item.queue_id)
+                    .where(PrintQueueItem.status == "pending")
+                )
+            ).scalar() or 0
+            restore_routing_source(item)
+            item.status = "pending"
+            item.position = max_pos + 1
+            await update_queue_counters(db, item.queue_id)
+            await db.commit()
+    except QueueSourceError as exc:
+        raise refusal(exc) from exc
     return {"status": "pending", "item_id": item_id}
 
 
@@ -1191,6 +1209,12 @@ async def retry_failed_item(
     (user-initiated cancel during dispatch) items. The "retry"/"restart"
     distinction is presentation-level only — backend state machine is the
     same: terminal → pending, error_message cleared, position appended.
+
+    ⚠️ m173: a retry re-runs the bytes this row already owns — the failure it is
+    retrying may well have been the original going away, so nothing here reads it
+    (spec §7, A08). The blob is asked for under the storage guard and the re-arm is
+    written under it; bytes that are not ``ready`` leave the row terminal, where the
+    operator can see it, rather than pending and certain to fail again.
     """
     from backend.app.services.queue_counters import update_queue_counters
 
@@ -1200,22 +1224,26 @@ async def retry_failed_item(
     if item.status not in ("failed", "cancelled"):
         raise HTTPException(400, f"Only failed or cancelled items can be retried, current status: '{item.status}'")
 
-    max_pos = (
-        await db.execute(
-            select(func.max(PrintQueueItem.position))
-            .where(PrintQueueItem.queue_id == item.queue_id)
-            .where(PrintQueueItem.status == "pending")
-        )
-    ).scalar() or 0
     from backend.app.services.filament_policy import restore_routing_source
 
-    restore_routing_source(item)
-    item.status = "pending"
-    item.position = max_pos + 1
-    item.error_message = None
-    item.completed_at = None
-    await update_queue_counters(db, item.queue_id)
-    await db.commit()
+    try:
+        async with reusing_sources(db, [item.queue_source_id]):
+            max_pos = (
+                await db.execute(
+                    select(func.max(PrintQueueItem.position))
+                    .where(PrintQueueItem.queue_id == item.queue_id)
+                    .where(PrintQueueItem.status == "pending")
+                )
+            ).scalar() or 0
+            restore_routing_source(item)
+            item.status = "pending"
+            item.position = max_pos + 1
+            item.error_message = None
+            item.completed_at = None
+            await update_queue_counters(db, item.queue_id)
+            await db.commit()
+    except QueueSourceError as exc:
+        raise refusal(exc) from exc
 
     result = await db.execute(
         select(PrintQueueItem)

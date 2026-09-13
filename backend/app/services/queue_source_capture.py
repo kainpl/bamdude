@@ -36,19 +36,26 @@ The order every producer follows, and the reason for it:
    together — after the file is in place;
 5. re-read the rows in the caller's session, because the response is built from
    relationships only a live session can load.
+
+And one thing a writer does when there is nothing to capture: :func:`reusing_sources`
+is the other half of the same story — the clone, the retry, the unskip and the
+plate-repeat give bytes somebody else already captured a second owner, or re-arm a
+job onto them, and §9 puts that on the same storage guard as a publication, a
+delete and the collector.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.queue_source import FORMAT_3MF, FORMAT_GCODE, QueueSource
+from backend.app.models.queue_source import FORMAT_3MF, FORMAT_GCODE, STATE_READY, QueueSource
 from backend.app.services import queue_sources
 from backend.app.services.filament_intake import require_source_requirements, resolve_source_path, routing_detail
 from backend.app.services.filament_requirements import PrintRequirements, PrintRequirementsCache
@@ -151,7 +158,7 @@ async def capture_staged(request: CaptureRequest) -> StagedSource:
     try:
         receipt = await queue_sources.capture(request)
     except QueueSourceError as exc:
-        raise _refusal(exc) from exc
+        raise refusal(exc) from exc
     return StagedSource(receipt=receipt, original=request.path)
 
 
@@ -169,7 +176,7 @@ async def publish_staged(
     try:
         return await queue_sources.publish(staged.receipt, attach)
     except QueueSourceError as exc:
-        raise _refusal(exc) from exc
+        raise refusal(exc) from exc
 
 
 async def discard_staged(staged: StagedSource | None) -> None:
@@ -224,6 +231,46 @@ async def staged_requirements(
     )
 
 
-def _refusal(exc: QueueSourceError) -> HTTPException:
+@asynccontextmanager
+async def reusing_sources(db: AsyncSession, source_ids: Iterable[int | None]) -> AsyncIterator[dict[int, QueueSource]]:
+    """Hold the storage guard while EXISTING bytes gain an owner (§9, Task 3's C1).
+
+    A clone, a retry, an unskip and a plate-repeat capture nothing: they attach, or
+    re-arm a job onto, a blob somebody else captured. §9 puts that on the same
+    guard as a publication, a delete and the collector, and the contract is **ask
+    under the guard, then write** — so the writer's own rows are added and
+    committed inside the body of this ``async with``, never after it. Reading the
+    state first and acquiring afterwards is the race: the collector's decision is
+    taken under this guard too, so between such a check and the write it can flip
+    the row to ``deleting`` and unlink the file.
+
+    Every id is re-read from the database (``populate_existing``, because a row
+    already in the session's identity map would answer with whatever state it was
+    loaded with — exactly the stale read this exists to prevent), and anything but
+    ``ready`` raises :class:`~backend.app.services.queue_sources.SourceUnreadable`:
+    the same refusal a job whose object is missing gets at dispatch, because it is
+    the same fact. A route maps it with :func:`refusal`; ``plate_hold`` maps it to
+    its own ``RepeatNotPossible``.
+
+    An empty set of ids (a legacy job, or one of §2's exemptions) takes no guard at
+    all, so a farm that has never captured anything pays nothing for this.
+    """
+    ids = sorted({int(source_id) for source_id in source_ids if source_id})
+    if not ids:
+        yield {}
+        return
+    async with queue_sources.storage_mutation():
+        blobs: dict[int, QueueSource] = {}
+        for source_id in ids:
+            blob = await db.get(QueueSource, source_id, populate_existing=True)
+            if blob is None or blob.state != STATE_READY:
+                raise queue_sources.SourceUnreadable(
+                    f"queue source {source_id} is {'gone' if blob is None else blob.state}"
+                )
+            blobs[source_id] = blob
+        yield blobs
+
+
+def refusal(exc: QueueSourceError) -> HTTPException:
     """One mapping for the whole taxonomy — the status lives on the class (§6)."""
     return HTTPException(exc.http_status, routing_detail(exc.reason))
