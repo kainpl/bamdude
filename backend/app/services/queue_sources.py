@@ -982,6 +982,12 @@ async def _install(receipt: CaptureReceipt, target: Path, publication: _Publicat
     nothing moved. Spending a receipt we could have kept costs one re-capture;
     reviving one over a file that has moved costs a bare ``OSError`` out of the
     taxonomy on the retry and a pin in the GC's set that nothing will release.
+
+    ⚠️ The rule is deliberately coarser than "did the file move": :class:`NoSpace`
+    is not a :class:`WriteFailed`, so an ``ENOSPC``/``EDQUOT`` out of ``mkdir``
+    spends a receipt whose bytes are still staged and intact. That is the safe
+    direction — the caller re-captures — and it keeps this a single ``except``
+    clause rather than a per-errno reading of what the filesystem did.
     """
     try:
         await _file_work(_install_object, receipt.staging_path, target)
