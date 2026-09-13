@@ -148,8 +148,23 @@ def event_loop():
 
 
 @pytest.fixture
-async def test_engine():
-    """Create a test database engine."""
+async def test_engine(monkeypatch):
+    """Create a test database engine — and make the module-level session use it.
+
+    ``backend.app.core.database.async_session`` is how every service that owns its
+    own transaction opens one: the dispatcher, the schedulers, and (since the
+    queue spool) ``queue_sources.publish``, which deliberately does not borrow the
+    request's session because a publication must commit on its own. Left alone in
+    a test, that factory is bound to the engine built at import time — a *second*
+    in-memory SQLite database with no tables in it — so a service that opened it
+    failed with "no such table", naming a table the test had just created.
+
+    The ``client`` fixtures have patched it for exactly this reason since they
+    existed; binding it here gives every test with a database the same thing, so
+    a service under test writes into the database the assertions read. Tests that
+    want their own factory (``monkeypatch.setattr(bd, "async_session", ...)``)
+    still win — this is the default, not an override.
+    """
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 
     # The same connect listener production uses: pragmas plus the Unicode
@@ -173,6 +188,14 @@ async def test_engine():
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    from backend.app.core import database as database_module
+
+    monkeypatch.setattr(
+        database_module,
+        "async_session",
+        async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False),
+    )
 
     yield engine
 

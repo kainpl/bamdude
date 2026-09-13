@@ -1,19 +1,32 @@
-"""A bad external source fails its own job; the next job keeps moving."""
+"""A bad external source fails its own job; the next job keeps moving.
+
+Two halves, and the difference between them is deliberate (spec §5): a job that
+was already accepted gets the failed/skip soft-fix and waits for an explicit
+Retry, while an add whose **first** copy failed is not accepted work at all — it
+leaves no runnable row and answers with the capture taxonomy's own status code.
+"""
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Event
 
 import pytest
-from sqlalchemy import select
+from fastapi import HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.core import database
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
-from backend.app.services import source_io
+from backend.app.models.queue_source import QueueSource
+from backend.app.schemas.print_queue import PrintQueueItemCreate
+from backend.app.services import queue_sources, source_io
 from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
 from backend.app.services.filament_requirements import SourceIdentity
+from backend.app.services.queue_add import add_items_to_printer_queue
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
 pytestmark = pytest.mark.integration
@@ -238,3 +251,157 @@ async def test_source_lost_between_scheduler_and_dispatch_does_not_leave_printin
     assert item.archive_id == (archive.id if archive else None)
     assert queue.status == "idle" and queue.current_item_id is None
     mqtt._client.publish.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# A failed FIRST copy: the add is refused with the service's own status code and
+# leaves nothing runnable behind (spec §5's last paragraph, §6's codes, A05).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(autouse=True)
+def _clean_spool_state():
+    queue_sources._reset_state()
+    yield
+    deadline = time.monotonic() + 10
+    while queue_sources.active_captures() and time.monotonic() < deadline:  # pragma: no cover - drain
+        time.sleep(0.01)
+    queue_sources._reset_state()
+
+
+@pytest.fixture
+def spool_sessions(test_engine, monkeypatch):
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(database, "async_session", factory)
+    return factory
+
+
+@pytest.mark.parametrize(
+    "error,status,code",
+    [
+        (queue_sources.QueueSourceBusy, 503, "source_copy_busy"),
+        (queue_sources.StorageReplaced, 503, "source_spool_replaced"),
+        (queue_sources.SourceUnreadable, 422, "source_unreadable"),
+        (queue_sources.SourceChanged, 422, "source_changed"),
+        (queue_sources.SourceInvalid, 422, "source_invalid"),
+        (queue_sources.CaptureTimeout, 504, "source_copy_timeout"),
+        (queue_sources.NoSpace, 507, "source_spool_no_space"),
+        (queue_sources.WriteFailed, 507, "source_spool_write_failed"),
+        (queue_sources.QueueSourceError, 500, "source_copy_failed"),
+    ],
+)
+async def test_the_add_answers_the_capture_taxonomy_verbatim(
+    db_session, tmp_path, printer_factory, monkeypatch, spool_sessions, error, status, code
+):
+    """The reason code and the HTTP status both come from the service's class.
+
+    Every one of the nine is mapped in ONE place, so no route can answer 500 for
+    a busy spool or 400 for a torn file. The message is localized through the
+    ``filament_routing`` namespace, which is where every other queue refusal the
+    frontend reacts to already lives.
+    """
+    source, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    await db_session.commit()
+
+    async def refuse(request):
+        raise error("injected")
+
+    monkeypatch.setattr(queue_sources, "capture", refuse)
+
+    with pytest.raises(HTTPException) as refused:
+        await add_items_to_printer_queue(
+            db_session,
+            PrintQueueItemCreate(queue_id=queue.id, library_file_id=source.id, plate_id=15),
+            None,
+        )
+
+    assert refused.value.status_code == status
+    assert refused.value.detail["code"] == code
+    assert refused.value.detail["message"]
+    assert (await db_session.execute(select(func.count()).select_from(PrintQueueItem))).scalar() == 0
+    assert (await db_session.execute(select(func.count()).select_from(QueueSource))).scalar() == 0
+
+
+async def test_a_source_that_vanished_refuses_the_add_without_a_row(
+    db_session, tmp_path, printer_factory, monkeypatch, spool_sessions
+):
+    """The same answer end to end, with a real missing file rather than an injection."""
+    source, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    await db_session.commit()
+    Path(source.file_path).unlink()
+
+    with pytest.raises(HTTPException) as refused:
+        await add_items_to_printer_queue(
+            db_session,
+            PrintQueueItemCreate(queue_id=queue.id, library_file_id=source.id, plate_id=15, quantity=3),
+            None,
+        )
+
+    assert refused.value.status_code == 422
+    assert refused.value.detail["code"] == "source_unreadable"
+    assert (await db_session.execute(select(func.count()).select_from(PrintQueueItem))).scalar() == 0
+    assert (await db_session.execute(select(func.count()).select_from(QueueSource))).scalar() == 0
+
+
+async def test_a_failed_publication_is_reported_once_and_never_retried(
+    db_session, tmp_path, printer_factory, monkeypatch, spool_sessions
+):
+    """After a failure past the rename the bytes are gone — capture again, never republish.
+
+    The receipt is spent by then (the staged file has been renamed away and the
+    object may be shared with other owners), so a wrapper that looped on
+    ``publish`` would reach ``os.replace`` on nothing and escape the taxonomy as
+    a bare ``OSError``. One failed add, reported once.
+    """
+    source, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    await db_session.commit()
+    attempts = []
+
+    async def refuse(receipt, attach, **kwargs):
+        attempts.append(receipt)
+        await receipt.discard()
+        raise queue_sources.WriteFailed("injected after the rename")
+
+    monkeypatch.setattr(queue_sources, "publish", refuse)
+
+    with pytest.raises(HTTPException) as refused:
+        await add_items_to_printer_queue(
+            db_session,
+            PrintQueueItemCreate(queue_id=queue.id, library_file_id=source.id, plate_id=15),
+            None,
+        )
+
+    assert refused.value.status_code == 507
+    assert refused.value.detail["code"] == "source_spool_write_failed"
+    assert len(attempts) == 1
+    assert (await db_session.execute(select(func.count()).select_from(PrintQueueItem))).scalar() == 0
+
+
+async def test_a_failure_after_the_commit_still_reports_the_real_reason(
+    db_session, tmp_path, printer_factory, monkeypatch, spool_sessions
+):
+    """A publication that raises AFTER its commit owns no staged bytes any more.
+
+    ``publish`` marks the receipt published the instant the commit returns and can
+    still fail after that (a cancellation arriving in the cleanup). The add's
+    handler must not answer that with ``RuntimeError: a published receipt has no
+    staged bytes to discard`` — the operator would be told nothing about what went
+    wrong, and the real reason would be gone.
+    """
+    source, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    await db_session.commit()
+
+    async def commit_then_fail(receipt, attach, **kwargs):
+        receipt.state = "published"
+        raise queue_sources.WriteFailed("injected after the commit")
+
+    monkeypatch.setattr(queue_sources, "publish", commit_then_fail)
+
+    with pytest.raises(HTTPException) as refused:
+        await add_items_to_printer_queue(
+            db_session,
+            PrintQueueItemCreate(queue_id=queue.id, library_file_id=source.id, plate_id=15),
+            None,
+        )
+
+    assert refused.value.detail["code"] == "source_spool_write_failed"

@@ -10,6 +10,7 @@ from backend.app.i18n import current_language, t
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
+from backend.app.models.queue_source import FORMAT_GCODE
 from backend.app.services.filament_requirements import PrintRequirements, PrintRequirementsCache
 
 
@@ -61,12 +62,29 @@ async def require_source_requirements(
     *,
     allow_raw_gcode: bool = False,
     product_plate_id: int | None = None,
+    source_path: Path | None = None,
+    source_format: str | None = None,
 ) -> PrintRequirements | None:
+    """Requirements for a queue writer's source, or a 422 naming what is wrong.
+
+    ``source_path`` / ``source_format`` are the *bytes to read instead of the
+    original* — a queue source's staged copy (spec §5 step 4), whose name is a
+    random ``.part`` token and so cannot be asked what container it is. The row
+    still comes from ``archive`` / ``library_file``: the refusal names that id,
+    and an archive still contributes its plate fallback.
+    ``services/queue_source_capture.py::staged_requirements`` is the only caller
+    that passes them.
+    """
     source = archive or library_file
-    path = resolve_source_path(archive, library_file)
+    path = resolve_source_path(archive, library_file) if source_path is None else source_path
+    raw_gcode = (
+        source_format == FORMAT_GCODE
+        if source_format is not None
+        else path is not None and path.suffix.lower() == ".gcode"
+    )
     # Only a server-identified raw G-code source keeps the existing explicit
     # per-printer workflow. A broken 3MF never acquires this exemption.
-    if allow_raw_gcode and path is not None and path.suffix.lower() == ".gcode":
+    if allow_raw_gcode and raw_gcode:
         return None
     req = await cache.read(path, plate_id, archive_plate_id=archive.plate_index if archive else None)
     if req.status != "ok":

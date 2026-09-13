@@ -34,5 +34,12 @@
   "feed_state_changed": "Filament state changed during preparation. Check the sources before retrying.",
   "dispatch_claim_changed": "This dispatch attempt no longer owns the queue item.",
   "source_read_forbidden": "You do not have permission to read this source.",
-  "feed_state_unavailable": "Waiting for current AMS and external feed configuration."
+  "feed_state_unavailable": "Waiting for current AMS and external feed configuration.",
+  "source_copy_busy": "The queue is already copying files. Try again in a moment.",
+  "source_spool_replaced": "A restore replaced the saved queue files. Try again.",
+  "source_invalid": "The source file is not a readable sliced file.",
+  "source_copy_timeout": "Copying the source file into the queue took too long. Check the storage connection, then try again.",
+  "source_spool_no_space": "There is not enough free space to save this file for the queue.",
+  "source_spool_write_failed": "The file could not be saved for the queue. Check the server's data storage.",
+  "source_copy_failed": "The file could not be saved for the queue."
 }

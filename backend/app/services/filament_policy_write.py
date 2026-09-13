@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import asdict
+from functools import partial
 from types import SimpleNamespace
 
 from fastapi import HTTPException
@@ -11,15 +12,26 @@ from backend.app.services.filament_intake import item_source, require_source_req
 from backend.app.services.filament_policy import CHOICE_FIELDS, choices_policy, decode, queue_policy, serialize_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.queue_source_capture import staged_requirements
 
 
 async def prepare_routing(
-    db, *, printer_id, archive_id=None, library_file_id=None, options=None, cache=None, library_file=None
+    db, *, printer_id, archive_id=None, library_file_id=None, options=None, cache=None, library_file=None, staged=None
 ):
+    """Routing intent for one source, read from the bytes the job will print.
+
+    ``staged`` is a ``queue_source_capture.StagedSource`` when the caller has
+    already captured those bytes: the requirements then come from that copy
+    (spec §5 step 4) rather than from the original, through the one helper that
+    knows how to read a staged file. Everything after the read — the policy, the
+    override check, the serialized intent — is untouched, because it is the same
+    evidence out of the same bytes.
+    """
     options = options or {}
     source = SimpleNamespace(archive_id=archive_id, library_file_id=library_file_id)
     archive, library = (None, library_file) if library_file is not None else await item_source(db, source)
-    req = await require_source_requirements(
+    reader = require_source_requirements if staged is None else partial(staged_requirements, staged)
+    req = await reader(
         cache or PrintRequirementsCache(),
         archive,
         library,

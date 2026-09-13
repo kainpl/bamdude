@@ -1069,15 +1069,90 @@ class BackgroundDispatchService:
         project_line_id: int | None = None,
         cleanup_library_after_dispatch: bool = False,
     ) -> dict[str, Any]:
+        # ⚠️ The source is copied into the queue spool BEFORE the printer is
+        # claimed, and outside ``_lock`` (spec §5 steps 1-3). A copy can take
+        # minutes over a share: claiming first would park the machine for all of
+        # it — and, on a failure, for nothing — while holding ``_lock`` would stop
+        # every *other* printer being dispatched to as well.
+        #
+        # The price is that time passes between asking whether this printer is
+        # free and taking its claim, so the question is asked twice: here, so an
+        # already-refused dispatch costs no walk over the share, and again under
+        # the lock in ``_enqueue_claimed_job``, which is the answer that decides.
+        # A refusal after the copy discards the staged bytes and leaves no row.
         async with self._lock:
-            has_pending_for_printer = any(job.printer_id == printer_id for job in self._queued_jobs)
-            has_active_for_printer = any(active.job.printer_id == printer_id for active in self._active_jobs.values())
+            self._refuse_unless_free(printer_id, printer_name)
 
-            if has_pending_for_printer or has_active_for_printer:
-                raise DispatchEnqueueRejected(f"Printer {printer_name} already has a background dispatch in progress")
+        from backend.app.services.queue_batch import direct_print_capture_plan
+        from backend.app.services.queue_source_capture import capture_staged, discard_staged
 
-            if self._printer_is_busy_printing(printer_id):
-                raise DispatchEnqueueRejected(f"Printer {printer_name} is currently busy printing")
+        async with async_session() as prep_db:
+            capture_plan = await direct_print_capture_plan(prep_db, kind=kind, source_id=source_id)
+        staged = await capture_staged(capture_plan)
+        try:
+            return await self._enqueue_claimed_job(
+                kind=kind,
+                source_id=source_id,
+                source_name=source_name,
+                printer_id=printer_id,
+                printer_name=printer_name,
+                options=options,
+                requested_by_user_id=requested_by_user_id,
+                requested_by_username=requested_by_username,
+                project_id=project_id,
+                project_line_id=project_line_id,
+                cleanup_library_after_dispatch=cleanup_library_after_dispatch,
+                staged=staged,
+            )
+        except BaseException:
+            await discard_staged(staged)
+            raise
+
+    def _refuse_unless_free(self, printer_id: int, printer_name: str) -> None:
+        """Both availability questions, asked under ``_lock``.
+
+        Extracted because ``_dispatch`` asks them twice — before the copy and
+        again before the claim — and two copies of the same two refusals would
+        drift. Never call it without the lock: it reads the dispatcher's own
+        in-memory job lists.
+        """
+        has_pending_for_printer = any(job.printer_id == printer_id for job in self._queued_jobs)
+        has_active_for_printer = any(active.job.printer_id == printer_id for active in self._active_jobs.values())
+
+        if has_pending_for_printer or has_active_for_printer:
+            raise DispatchEnqueueRejected(f"Printer {printer_name} already has a background dispatch in progress")
+
+        if self._printer_is_busy_printing(printer_id):
+            raise DispatchEnqueueRejected(f"Printer {printer_name} is currently busy printing")
+
+    async def _enqueue_claimed_job(
+        self,
+        *,
+        kind: Literal["reprint_archive", "print_library_file"],
+        source_id: int,
+        source_name: str,
+        printer_id: int,
+        printer_name: str,
+        options: dict[str, Any],
+        requested_by_user_id: int | None,
+        requested_by_username: str | None,
+        project_id: int | None,
+        project_line_id: int | None,
+        cleanup_library_after_dispatch: bool,
+        staged,
+    ) -> dict[str, Any]:
+        """Re-check availability, take the claim, queue the job — the fast half.
+
+        ``staged`` is the ``queue_source_capture.StagedSource`` the copy above
+        produced; the claim row is written inside its publication's transaction.
+        The bytes are already on disk when this runs, so ``_lock`` is held for one
+        INSERT, one UPDATE and the dispatcher's own bookkeeping, exactly as it was
+        before the spool existed.
+        """
+        async with self._lock:
+            # The re-check. Time has passed while the source was copied, and the
+            # answer from before the copy is not evidence any more.
+            self._refuse_unless_free(printer_id, printer_name)
 
             # Claim the printer now, in the DB, so ``check_queue`` sees this
             # print for the whole of its dispatch. Until this existed the claim
@@ -1108,6 +1183,7 @@ class BackgroundDispatchService:
                     created_by_id=requested_by_user_id,
                     project_id=project_id,
                     project_line_id=project_line_id,
+                    staged=staged,
                 )
                 claim_item_id = claim_item.id if claim_item is not None else None
                 if claim_item is not None:
