@@ -37,8 +37,10 @@ from backend.app.models.queue_source import (
     QueueSource,
 )
 from backend.app.services.queue_source_descriptor import (
+    SOURCE_SNAPSHOT_VERSION,
     SOURCE_STORAGE_STATES,
     QueueSourceDescriptor,
+    source_snapshot,
     source_storage_state,
 )
 
@@ -84,6 +86,19 @@ async def test_the_same_bytes_are_one_row(db_session):
     await db_session.commit()
 
     db_session.add(_source(relative_path="queue-spool/objects/aa/other.3mf"))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+@pytest.mark.parametrize("value", ["", "a" * 63, "a" * 65, "short"])
+async def test_only_a_full_length_sha256_is_accepted(db_session, value):
+    """Spec §4 says the hash is non-empty, and NOT NULL alone admits ``''`` and a
+    truncated value. A hex SHA-256 is 64 characters forever, so the length is a
+    fact the column can hold — and it has to be held HERE: SQLite cannot add a
+    CHECK to an existing table without rebuilding it, so a constraint written
+    after m173 ships would never reach an upgraded database."""
+    db_session.add(_source(sha256=value))
     with pytest.raises(IntegrityError):
         await db_session.commit()
     await db_session.rollback()
@@ -159,13 +174,13 @@ async def test_a_queue_item_may_name_no_source_and_then_one(db_session, printer_
         position=2,
         created_by_id=None,
         queue_source_id=source.id,
-        source_snapshot={"version": 1, "display_filename": "lamp.gcode.3mf"},
+        source_snapshot={"version": SOURCE_SNAPSHOT_VERSION, "display_filename": "lamp.gcode.3mf"},
     )
     auto_legacy = AutoQueueItem(position=1)
     auto_snapshotted = AutoQueueItem(
         position=2,
         queue_source_id=source.id,
-        source_snapshot={"version": 1, "display_filename": "lamp.gcode.3mf"},
+        source_snapshot={"version": SOURCE_SNAPSHOT_VERSION, "display_filename": "lamp.gcode.3mf"},
     )
     db_session.add_all([legacy, snapshotted, auto_legacy, auto_snapshotted])
     await db_session.commit()
@@ -176,7 +191,7 @@ async def test_a_queue_item_may_name_no_source_and_then_one(db_session, printer_
     assert snapshotted.source_snapshot["display_filename"] == "lamp.gcode.3mf"
     assert auto_legacy.queue_source_id is None
     assert auto_snapshotted.queue_source_id == source.id
-    assert auto_snapshotted.source_snapshot["version"] == 1
+    assert auto_snapshotted.source_snapshot["version"] == SOURCE_SNAPSHOT_VERSION
 
 
 async def test_the_snapshot_column_keeps_a_dict_as_a_dict(db_session, printer_factory):
@@ -191,7 +206,11 @@ async def test_the_snapshot_column_keeps_a_dict_as_a_dict(db_session, printer_fa
         queue_id=queue.id,
         position=1,
         created_by_id=None,
-        source_snapshot={"version": 1, "provenance": {"kind": "library_file", "id": 9}, "plate_fallback": 2},
+        source_snapshot={
+            "version": SOURCE_SNAPSHOT_VERSION,
+            "provenance": {"kind": "library_file", "id": 9},
+            "plate_fallback": 2,
+        },
     )
     db_session.add(item)
     await db_session.commit()
@@ -291,6 +310,65 @@ def test_the_display_name_is_not_the_hash():
     )
     assert descriptor.display_filename == "Настільна лампа.gcode.3mf"
     assert descriptor.sha256 not in descriptor.display_filename
+
+
+# ── The stored snapshot payload ─────────────────────────────────────────────
+
+
+def test_the_snapshot_version_is_one_named_number():
+    """Nothing else may spell this. ``filament_policy.VERSION`` is the precedent
+    and also the warning: its decoder compares the version for exact equality, so
+    a writer that invented a second spelling would silently degrade every row it
+    touched."""
+    assert SOURCE_SNAPSHOT_VERSION == 1
+
+
+def test_the_snapshot_is_built_from_the_descriptor_and_stamped():
+    """One builder, one layout (spec §4: provenance, display filename, format,
+    plate fallback). A capture that hand-wrote the dict would be free to drop a
+    key every later reader expects."""
+    descriptor = QueueSourceDescriptor(
+        path=Path("queue-spool/objects/aa/" + "a" * 64 + ".3mf"),
+        format="3mf",
+        sha256="a" * 64,
+        size_bytes=4096,
+        display_filename="lamp.gcode.3mf",
+        plate_fallback=2,
+        provenance={"kind": "library_file", "id": 9},
+    )
+
+    snapshot = source_snapshot(descriptor)
+
+    assert snapshot == {
+        "version": SOURCE_SNAPSHOT_VERSION,
+        "provenance": {"kind": "library_file", "id": 9},
+        "display_filename": "lamp.gcode.3mf",
+        "format": "3mf",
+        "plate_fallback": 2,
+    }
+    # No hash and no path: the snapshot is the job's metadata, and the bytes are
+    # identified by ``queue_source_id`` alone. A path copied in here would be a
+    # second, rottable truth about where the file is.
+    assert "sha256" not in snapshot
+    assert "path" not in snapshot and "relative_path" not in snapshot
+
+
+def test_the_snapshot_does_not_share_the_descriptors_provenance_dict():
+    """The row's JSON is mutable and the descriptor is frozen — handing out the
+    same dict would let a writer reach back into a value object."""
+    descriptor = QueueSourceDescriptor(
+        path=Path("x.3mf"),
+        format="3mf",
+        sha256="b" * 64,
+        size_bytes=1,
+        display_filename="x.3mf",
+        provenance={"kind": "archive", "id": 3},
+    )
+
+    snapshot = source_snapshot(descriptor)
+    snapshot["provenance"]["id"] = 99
+
+    assert descriptor.provenance == {"kind": "archive", "id": 3}
 
 
 # ── The API-facing storage state ────────────────────────────────────────────

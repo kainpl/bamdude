@@ -64,6 +64,14 @@ class QueueSource(Base):
     __tablename__ = "queue_sources"
     __table_args__ = (
         UniqueConstraint("sha256", name="uq_queue_sources_sha256"),
+        # Spec §4 says the hash is non-empty, and NOT NULL alone admits ``''`` and
+        # a truncated value. A hex SHA-256 is 64 characters, always — so the
+        # length is a fact the column can hold, and here is the one place it CAN
+        # be held: SQLite cannot add a CHECK to an existing table without
+        # rebuilding it, so a constraint written after m173 shipped would only
+        # ever reach fresh installs. ``length()`` (not a regex) because it is the
+        # one string function both dialects spell the same way.
+        CheckConstraint("length(sha256) = 64", name="ck_queue_sources_sha256_length"),
         # ``>= 0``, not ``> 0``. Refusing an empty capture needs the format and
         # the CRC to decide and belongs to the writer; the column's job is only
         # to make a negative size — which could only come from an arithmetic

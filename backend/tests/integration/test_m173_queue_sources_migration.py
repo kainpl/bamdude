@@ -180,7 +180,7 @@ async def test_the_work_already_queued_is_untouched(pre_m173):
 async def test_the_constraints_reach_an_upgraded_database_too(pre_m173):
     """A CHECK written for fresh installs only never reaches an existing file —
     SQLite cannot add one without rebuilding the table, so they are part of the
-    CREATE. All four are exercised against the migrated database itself."""
+    CREATE. All five are exercised against the migrated database itself."""
     await _run_upgrade(pre_m173)
 
     insert = "INSERT INTO queue_sources (sha256, size_bytes, relative_path, format, state) VALUES (:h, :n, 'p', :f, :s)"
@@ -190,6 +190,8 @@ async def test_the_constraints_reach_an_upgraded_database_too(pre_m173):
 
     for bad, why in (
         ({**good, "h": "a" * 64}, "UNIQUE"),
+        ({**good, "h": "b" * 63}, "CHECK"),
+        ({**good, "h": ""}, "CHECK"),
         ({**good, "h": "b" * 64, "n": -1}, "CHECK"),
         ({**good, "h": "c" * 64, "f": "stl"}, "CHECK"),
         ({**good, "h": "d" * 64, "s": "preparing"}, "CHECK"),
@@ -224,18 +226,41 @@ async def test_a_second_run_changes_nothing(pre_m173):
 
 
 async def test_a_fresh_install_is_a_noop(test_engine):
-    """``create_all`` has already built everything from the models; the guard
-    finds the table and the index statements are ``IF NOT EXISTS``. This is also
-    the check that the model and the migration describe the same table — a
-    mismatch shows up as a duplicate-column or duplicate-index error here."""
+    """``create_all`` built everything from the models; running the migration over
+    it twice changes nothing.
+
+    ⚠️ Passing here does NOT by itself prove the model and the migration describe
+    the same table: ``add_column`` short-circuits on the column *name*, and
+    ``CREATE INDEX IF NOT EXISTS`` under a name the models do not use would add a
+    **second** index rather than fail. The actual guard is the index-name
+    assertions at the end — that the names the migration writes are the names
+    ``create_all`` generates from the models (``ix_<table>_<column>`` for
+    ``index=True``, and the explicit ``Index(...)`` name on ``queue_sources``),
+    and that neither queue table ends up with two indexes over the same column.
+    """
     for _ in range(2):
         async with test_engine.begin() as conn:
             await conn.exec_driver_sql("PRAGMA foreign_keys = OFF")
             await m173.upgrade(conn)
+
     async with test_engine.begin() as conn:
         assert await table_exists(conn, "queue_sources")
         assert await column_exists(conn, "print_queue", "queue_source_id")
         assert await column_exists(conn, "auto_queue_items", "source_snapshot")
+
+        indexes = {r[1] for r in (await conn.execute(text("PRAGMA index_list(queue_sources)"))).fetchall()}
+        assert "ix_queue_sources_state_unreferenced_at" in indexes
+
+        for table in ("print_queue", "auto_queue_items"):
+            rows = (await conn.execute(text(f"PRAGMA index_list({table})"))).fetchall()
+            assert f"ix_{table}_queue_source_id" in {r[1] for r in rows}
+            over_the_column = [
+                r[1]
+                for r in rows
+                if [c[2] for c in (await conn.execute(text(f"PRAGMA index_info({r[1]})"))).fetchall()]
+                == ["queue_source_id"]
+            ]
+            assert over_the_column == [f"ix_{table}_queue_source_id"], over_the_column
 
 
 # ── The dialect the maintainer does not develop on ──────────────────────────

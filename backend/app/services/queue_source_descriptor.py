@@ -44,6 +44,16 @@ SOURCE_STORAGE_STATES: tuple[SourceStorageState, ...] = (
     "exempt",
 )
 
+#: The ``version`` stamped into ``PrintQueueItem.source_snapshot`` /
+#: ``AutoQueueItem.source_snapshot`` (spec §4: the column is versioned).
+#:
+#: One named number, so that no writer can invent a second spelling of the
+#: payload. ``services/filament_policy.py::VERSION`` is both the precedent and
+#: the warning: its decoder compares the version for **exact** equality, so a
+#: row written under an unrecognised version does not degrade gracefully — it
+#: degrades silently. Bump this only together with a reader that accepts both.
+SOURCE_SNAPSHOT_VERSION = 1
+
 #: ``PrintQueueItem.origin`` values with no supported source at row creation.
 #: ``direct`` is NOT one of them — BamDude sends a direct print from a local
 #: sliced source and captures it like any other (§2, and the writers map's
@@ -86,6 +96,29 @@ class QueueSourceDescriptor:
     display_filename: str
     plate_fallback: int | None = None
     provenance: dict[str, Any] = field(default_factory=dict)
+
+
+def source_snapshot(descriptor: QueueSourceDescriptor) -> dict[str, Any]:
+    """The ``source_snapshot`` payload for a job backed by ``descriptor``.
+
+    One builder, one layout — spec §4 names the contents (the original kind/id as
+    provenance, the display filename, the format, the archive plate fallback), and
+    a capture that hand-wrote the dict would be free to drop a key every later
+    reader expects. Whoever attaches a queue source goes through here.
+
+    Neither the hash nor the path is copied in: the bytes are identified by
+    ``queue_source_id``, and a path duplicated into the row's JSON would be a
+    second truth about where the file is — one that rots the moment the spool
+    moves, which restore does. The ``provenance`` dict is copied, because the
+    row's JSON is mutable and the descriptor is frozen.
+    """
+    return {
+        "version": SOURCE_SNAPSHOT_VERSION,
+        "provenance": dict(descriptor.provenance),
+        "display_filename": descriptor.display_filename,
+        "format": descriptor.format,
+        "plate_fallback": descriptor.plate_fallback,
+    }
 
 
 def source_storage_state(

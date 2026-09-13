@@ -119,7 +119,17 @@ class ArchivePurgeService:
         # A pending queue item whose source archive was just trashed can never
         # dispatch — its 3MF is gone from disk. Cancel it with a clear reason
         # instead of leaving it stuck 'pending' forever (#1348 follow-up).
-        # Hard-delete is already handled by ON DELETE CASCADE on the FK.
+        #
+        # ⚠️ The FK removes nothing. It used to read ON DELETE CASCADE, which at
+        # hard-delete time deleted the queue rows on PostgreSQL — and on SQLite
+        # never did anything at all, because ``PRAGMA foreign_keys`` is off in
+        # this codebase, so the comment that claimed it was "already handled"
+        # was false on the backend most installs run. m173 made the rule SET
+        # NULL: a job that owns a local copy of its bytes has to survive its
+        # archive going away. The cancel below is therefore the whole of what
+        # happens to a pending row, on both dialects, and the code-level detach
+        # of the rows that remain — the one SQLite needs because it honours no FK
+        # action — lands with Task 9 of the queue-source-spool plan.
         await ArchivePurgeService._cancel_pending_queue_items(db, archive.id)
         await db.commit()
         await db.refresh(archive)

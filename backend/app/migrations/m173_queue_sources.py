@@ -61,10 +61,13 @@ async def upgrade(conn):
     stamp = "DATETIME" if sqlite else "TIMESTAMP"
 
     if not await table_exists(conn, "queue_sources"):
-        # The three CHECKs and the UNIQUE are part of the table, not an
+        # The four CHECKs and the UNIQUE are part of the table, not an
         # afterthought: SQLite cannot add either to an existing table without
         # rebuilding it, so a constraint written for fresh installs only would
-        # never reach an upgraded database. The names match the models so that
+        # never reach an upgraded database. ``length(sha256) = 64`` is there for
+        # that reason and no other — it is the difference between "the hash is
+        # non-empty" being enforced and being hoped for, and it cannot be added
+        # by a later migration. The names match the models so that
         # ``db_portable._reconcile_check_constraints`` — which matches by name —
         # can still add them to a file imported from somewhere that lacked them.
         await conn.exec_driver_sql(
@@ -79,6 +82,7 @@ async def upgrade(conn):
                 created_at {ts} NOT NULL,
                 unreferenced_at {stamp},
                 CONSTRAINT uq_queue_sources_sha256 UNIQUE (sha256),
+                CONSTRAINT ck_queue_sources_sha256_length CHECK (length(sha256) = 64),
                 CONSTRAINT ck_queue_sources_size_bytes_non_negative CHECK (size_bytes >= 0),
                 CONSTRAINT ck_queue_sources_format CHECK (format IN ('3mf', 'gcode')),
                 CONSTRAINT ck_queue_sources_state CHECK (state IN ('ready', 'deleting', 'broken'))
