@@ -1821,6 +1821,7 @@ export default {
       partial: 'Added to the queue: {{success}} of {{total}}. The other {{failed}} were not added.',
       reasonFor: '{{printers}}: {{reason}}',
       deselected: 'The printers that already took it are unticked, so pressing Add again cannot give them a second job.',
+      quantityLeft: 'The quantity now asks for the {{count}} copies still missing, not the whole batch again.',
       uncertain: 'It is not clear whether the job was added — no answer came back. The queue has been refreshed; check it before adding the job again.',
       uncertainPartial: 'Added to the queue: {{success}} of {{total}}. No answer came back for the rest, so it is not clear whether they were added. The queue has been refreshed; check it before adding them again.',
     },

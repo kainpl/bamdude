@@ -1694,6 +1694,13 @@ export function PrintModal({
     // Printers that got at least one row out of this submit. They are unticked
     // before the dialog is handed back, so a second press cannot duplicate them.
     const landedOn = new Set<number>();
+    // Rows written per plate, keyed exactly as `planPlateIds` keys them (a
+    // plate-less submit is 0). ⚠️ In TOTAL mode the quantity field is a total for
+    // the whole submit, so a retry has to ask for `total − what landed`; without
+    // this the dialog invites a second press (see `failure.deselected`) that
+    // re-orders the full total over the printers that refused, and the farm
+    // over-produces by whatever already went out.
+    const queuedByPlate = new Map<number, number>();
 
 
     // Swap-macro payload is only meaningful on a swap-enabled printer AND
@@ -1820,6 +1827,7 @@ export function PrintModal({
           landedOn.add(printerId);
           // Edit mode replaces one row; everything else writes one per copy.
           results.queued += copies;
+          queuedByPlate.set(plateId ?? 0, (queuedByPlate.get(plateId ?? 0) ?? 0) + copies);
         } catch (error) {
           results.failed++;
           if (isUnknownOutcome(error)) unknownOutcomes++;
@@ -1879,13 +1887,47 @@ export function PrintModal({
       // dialog closes instead and the queue is where the operator looks.
       const retryable = selectedPrinters.filter((id) => !landedOn.has(id));
       const deselected = landedOn.size > 0 && retryable.length > 0 && !unknownOnly;
-      if (deselected) setSelectedPrinters(retryable);
+      // ⚠️ **And a retry must ask for what is MISSING, not for the original
+      // total.** In `total` mode the field is one number for the whole submit,
+      // dealt round-robin; leaving it at 10 after 4 copies landed means the next
+      // press orders 10 more across the printers that refused. Per-printer mode
+      // needs nothing — its number is already per machine, and the machines that
+      // took work are gone from the selection.
+      //
+      // The leftover is computed per PLATE, because each plate carries its own
+      // total: one plate writes the shared field (what the operator sees is then
+      // what the deal does), several write the per-plate map the plan lines and
+      // the plate list already display. Touching the field clears that map, which
+      // is the operator taking the number back — exactly right.
+      let stillMissing: number | null = null;
+      if (deselected) {
+        setSelectedPrinters(retryable);
+        if (effectiveQuantityMode === 'total') {
+          const remaining = planPlateIds.map(
+            (plate) => [plate, Math.max(0, quantityForPlate(plate) - (queuedByPlate.get(plate) ?? 0))] as const,
+          );
+          const total = remaining.reduce((sum, [, left]) => sum + left, 0);
+          // `total === 0` needs every row to have landed, which contradicts a
+          // failure being in this branch — so it cannot happen, and if it ever
+          // did, leaving the field alone beats writing a zero into it.
+          if (total > 0) {
+            stillMissing = total;
+            if (remaining.length === 1) {
+              setQuantity(total);
+              setPlateQuantities({});
+            } else {
+              setPlateQuantities(Object.fromEntries(remaining));
+            }
+          }
+        }
+      }
       showToast(
         queueAddOutcomeText(t, {
           added: results.success,
           total: results.success + results.failed,
           failures,
           deselected,
+          stillMissing,
         }),
         'error',
       );

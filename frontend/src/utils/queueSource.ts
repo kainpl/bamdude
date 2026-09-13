@@ -136,9 +136,17 @@ export function queueAddOutcomeText(
     failures: readonly QueueAddFailure[];
     /** True when the dialog stayed open and unticked what already landed. */
     deselected?: boolean;
+    /**
+     * Copies the retry now asks for, when the dialog had to correct the quantity
+     * to keep it honest (`total` mode only).
+     *
+     * Said out loud because the number on screen changes by itself: an operator
+     * who typed 10, saw 4 land and then reads 6 in the field is owed the reason.
+     */
+    stillMissing?: number | null;
   },
 ): string {
-  const { added, total, failures, deselected = false } = outcome;
+  const { added, total, failures, deselected = false, stillMissing = null } = outcome;
   const answered = failures.filter((f) => !isUnknownOutcome(f.error));
   const unanswered = failures.filter((f) => isUnknownOutcome(f.error));
 
@@ -169,6 +177,7 @@ export function queueAddOutcomeText(
     parts.push(bare ? reason : t('queueSpool.failure.reasonFor', { printers: labels.join(', '), reason }));
   }
   if (deselected) parts.push(t('queueSpool.failure.deselected'));
+  if (stillMissing != null) parts.push(t('queueSpool.failure.quantityLeft', { count: stillMissing }));
   return parts.join(' ');
 }
 

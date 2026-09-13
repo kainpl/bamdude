@@ -81,14 +81,17 @@ describe('the print dialog while the queue saves the file', () => {
     );
   });
 
-  const mount = (printerIds: number[] = [1]) =>
+  const onClose = vi.fn();
+
+  const mount = (printerIds: number[] = [1], plateIds?: number[]) =>
     render(
       <PrintModal
         mode="add-to-queue"
         archiveId={1}
         archiveName="Bracket"
         initialSelectedPrinterIds={printerIds}
-        onClose={vi.fn()}
+        preselectedPlateIds={plateIds}
+        onClose={onClose}
         onSuccess={vi.fn()}
       />,
     );
@@ -317,5 +320,38 @@ describe('the print dialog while the queue saves the file', () => {
       ),
     );
     expect(posts).toBe(3);
+  });
+  it('closes instead of leaving a dialog that could only duplicate', async () => {
+    // One printer, two plates, one of them refused. Unticking what landed would
+    // empty the selection — and the single-printer auto-select effect would put
+    // it straight back, arming the plate that already went out. So this ending
+    // closes the dialog and the queue is where the operator looks.
+    server.use(
+      http.get('/api/v1/archives/:id/plates', () =>
+        HttpResponse.json({
+          is_multi_plate: true,
+          plates: [
+            { index: 1, name: null, objects: [], filaments: [] },
+            { index: 2, name: null, objects: [], filaments: [] },
+          ],
+        }),
+      ),
+      http.post('/api/v1/queue/', async ({ request }) => {
+        const body = (await request.json()) as { plate_id: number | null };
+        posts += 1;
+        if (body.plate_id === 1) return HttpResponse.json({ id: 1, status: 'pending', created_item_ids: [1] });
+        return refusal('source_copy_busy', 503);
+      }),
+    );
+    mount([1], [1, 2]);
+
+    fireEvent.click(await screen.findByRole('button', { name: /queue 2 plates/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(posts).toBe(2);
+    // The dialog said what landed and what did not before it went.
+    const message = mockShowToast.mock.calls[0][0] as string;
+    expect(message).toContain('Added to the queue: 1 of 2.');
+    expect(message).not.toContain('are unticked');
   });
 });

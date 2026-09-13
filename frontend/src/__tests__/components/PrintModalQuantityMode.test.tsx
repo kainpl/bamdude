@@ -260,4 +260,55 @@ describe('quantity mode', () => {
     await waitFor(() => expect(onAnswered).toHaveBeenCalled());
     expect(onAnswered.mock.calls[0][0].quantityMode).toBe('total');
   });
+  /**
+   * ⚠️ A retry asks for what is MISSING, not for the total again.
+   *
+   * Once a partial refusal unticks the printers that already took work, the
+   * dialog invites a second press in so many words — and in `total` mode the
+   * field is one number for the whole submit. Left at 10 after 4 copies landed,
+   * that press orders 10 MORE across the two printers that refused and the farm
+   * over-produces by four. The arithmetic was always this way; nothing used to
+   * tell the operator to press again.
+   */
+  it('a retry after a partial refusal asks for the copies still missing', async () => {
+    server.use(
+      http.post('/api/v1/queue/', async ({ request }) => {
+        const body = (await request.json()) as { queue_id: number; quantity: number };
+        posts.push({ queue_id: body.queue_id, quantity: body.quantity });
+        if (body.queue_id === 1) {
+          return HttpResponse.json({ id: posts.length, status: 'pending', created_item_ids: [posts.length] });
+        }
+        return HttpResponse.json(
+          { detail: { code: 'source_copy_busy', params: {}, message: 'busy' } },
+          { status: 503 },
+        );
+      }),
+    );
+    mount([1, 2, 3]);
+    await screen.findByTestId('quantity-mode-toggle');
+    fireEvent.click(screen.getByTestId('quantity-mode-total'));
+    setQuantity(10);
+    await waitFor(() =>
+      expect(screen.getByTestId('quantity-plan')).toHaveTextContent('10 → A1-01: 4 · A1-02: 3 · A1-03: 3'),
+    );
+
+    submit();
+    await waitFor(() => expect(posts).toHaveLength(3));
+    expect(posts.map((p) => p.quantity)).toEqual([4, 3, 3]);
+
+    // Four landed on A1-01. The field now reads the six that did not, and the
+    // plan re-deals those six over the two printers still ticked.
+    await waitFor(() => expect((screen.getByLabelText('Quantity') as HTMLInputElement).value).toBe('6'));
+    await waitFor(() =>
+      expect(screen.getByTestId('quantity-plan')).toHaveTextContent('6 → A1-02: 3 · A1-03: 3'),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /queue to 2 printers/i }));
+    await waitFor(() => expect(posts).toHaveLength(5));
+    // Not 10 again, and not on A1-01.
+    expect(posts.slice(3)).toEqual([
+      { queue_id: 2, quantity: 3 },
+      { queue_id: 3, quantity: 3 },
+    ]);
+  });
 });
