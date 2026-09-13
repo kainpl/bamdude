@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -10,9 +11,13 @@ from dataclasses import dataclass, field
 from backend.app.services.camera_worker_protocol import CameraWorkerProtocolError
 
 MAX_LIVE_SUBSCRIBERS = 64
+# A relay carries a single latest JPEG by reference per producer/subscriber.
+# 64 live sessions * 2 MiB bounds either worker or API process at 128 MiB.
+MAX_LIVE_FRAME_BYTES = 2 * 1024 * 1024
 # ``bytes`` queues use a zero-length value solely as the terminal marker.  A
 # valid JPEG is always non-empty and is validated again at the media boundary.
 LIVE_STREAM_ENDED = b""
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -149,6 +154,8 @@ class LiveProducerRegistry:
             if len(subscribers) >= MAX_LIVE_SUBSCRIBERS:
                 raise RuntimeError("camera worker live subscriber limit reached")
             if identity not in self._producers:
+                if len(self._producers) >= MAX_LIVE_SUBSCRIBERS:
+                    raise RuntimeError("camera worker live producer limit reached")
                 task = asyncio.create_task(start(), name=f"camera-worker-live-{uuid.uuid4().hex[:12]}")
                 self._producers[identity] = task
                 task.add_done_callback(lambda completed, key=identity: self._producer_finished(key, completed))
@@ -195,6 +202,13 @@ class LiveProducerRegistry:
             await asyncio.gather(producer, return_exceptions=True)
 
     def publish(self, identity: str, frame: bytes) -> None:
+        if not 0 < len(frame) <= MAX_LIVE_FRAME_BYTES:
+            logger.warning(
+                "Dropping worker live frame: %d bytes exceeds %d-byte limit",
+                len(frame),
+                MAX_LIVE_FRAME_BYTES,
+            )
+            return
         self._latest[identity] = frame
         for queue in self._subscribers.get(identity, {}).values():
             if queue.full():

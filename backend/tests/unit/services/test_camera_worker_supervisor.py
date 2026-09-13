@@ -6,7 +6,7 @@ import uuid
 import pytest
 
 from backend.app.services.camera_runtime import CameraCaptureRequest, WorkerCameraRuntime
-from backend.app.services.camera_worker_supervisor import CameraWorkerSupervisor
+from backend.app.services.camera_worker_supervisor import CameraWorkerSupervisor, CameraWorkerUnavailable
 
 _JPEG = b"\xff\xd8camera-worker-test\xff\xd9"
 
@@ -178,6 +178,20 @@ async def test_worker_relays_latest_frames_for_an_external_live_lease():
         await supervisor.stop()
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_worker_refuses_the_sixty_fifth_live_relay_before_opening_a_camera():
+    supervisor = CameraWorkerSupervisor(process=object())
+    supervisor._live_media_queues = {str(index): asyncio.Queue(maxsize=1) for index in range(64)}
+
+    with pytest.raises(CameraWorkerUnavailable, match="live relay limit"):
+        await supervisor.subscribe_external(
+            identity=str(uuid.uuid4()),
+            url="http://127.0.0.1/snapshot.jpg",
+            camera_type="snapshot",
+            fps=1,
+        )
 
 
 @pytest.mark.asyncio

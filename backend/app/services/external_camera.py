@@ -11,6 +11,7 @@ import asyncio
 import functools
 import ipaddress
 import logging
+import random
 import re
 import shutil
 import time
@@ -25,6 +26,7 @@ import aiohttp
 from backend.app.core.logging_filters import redact_url_credentials
 from backend.app.services import camera_metrics
 from backend.app.services.camera_cleanup import CameraAttempt, CameraCleanupError
+from backend.app.services.camera_profiles import CameraProfile
 from backend.app.services.ffmpeg_stderr import FfmpegStderrDrain
 from backend.app.utils.ffmpeg_output import NO_FFMPEG_OUTPUT, summarize_ffmpeg_stderr
 
@@ -737,6 +739,7 @@ async def generate_mjpeg_stream(
     stop_event: asyncio.Event | None = None,
     printer_id: int | None = None,
     stream_id: str | None = None,
+    rtsp_profile: CameraProfile | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Generator yielding MJPEG frames for streaming.
 
@@ -810,27 +813,46 @@ async def generate_mjpeg_stream(
             await asyncio.sleep(2)
 
     elif camera_type == "rtsp":
-        # Use ffmpeg to convert RTSP to MJPEG, with reconnect on timeout
-        max_retries = 3
-        for attempt in range(max_retries + 1):
+        # External cameras retain their historical three retries.  A Bambu
+        # RTSPS source can opt into its model profile so P2S gets its relaxed
+        # probe settings and farm-safe reconnect backoff in the worker too.
+        max_retries = 3 if rtsp_profile is None else rtsp_profile.rtsp_reconnect_max
+        attempt = 0
+        while attempt <= max_retries:
             frame_yielded = False
-            async for frame in _stream_rtsp(url, fps, on_process=on_process):
+            first_frame_at: float | None = None
+            async for frame in _stream_rtsp(url, fps, on_process=on_process, profile=rtsp_profile):
                 frame_yielded = True
+                first_frame_at = first_frame_at or time.monotonic()
                 yield _publish(frame)
             metric = camera_metrics.current.get()
             metric.consecutive_failures = 0 if frame_yielded else min(2**53 - 1, metric.consecutive_failures + 1)
-            if not frame_yielded or attempt == max_retries or (stop_event is not None and stop_event.is_set()):
+            if stop_event is not None and stop_event.is_set():
+                break
+            if (
+                rtsp_profile is not None
+                and first_frame_at is not None
+                and time.monotonic() - first_frame_at >= rtsp_profile.rtsp_reconnect_stable_seconds
+            ):
+                # A stream that held for a meaningful interval gets a fresh
+                # reconnect budget; a flaky source cannot retry forever.
+                attempt = 0
+            if not frame_yielded or attempt == max_retries:
                 if not frame_yielded:
                     metric.end_reason = metric.end_reason or "connect_failed"
                 elif attempt == max_retries:
                     metric.end_reason = metric.end_reason or "retry_exhausted"
                 break
+            attempt += 1
+            delay = 2.0 if rtsp_profile is None else _rtsp_reconnect_delay(attempt, rtsp_profile)
             logger.warning(
-                "External RTSP stream ended, reconnecting (attempt %d/%d)...",
-                attempt + 1,
+                "External RTSP stream ended, reconnecting (attempt %d/%d, delay=%.3fs)...",
+                attempt,
                 max_retries,
+                delay,
             )
-            await asyncio.sleep(2)
+            if not await _wait_for_rtsp_retry(delay, stop_event):
+                break
 
     elif camera_type == "usb":
         camera_metrics.current.get().begin_attempt()
@@ -933,6 +955,7 @@ async def _stream_rtsp(
     fps: int,
     *,
     on_process: Callable[[asyncio.subprocess.Process], None] | None = None,
+    profile: CameraProfile | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Stream frames from RTSP URL via ffmpeg.
 
@@ -996,13 +1019,14 @@ async def _stream_rtsp(
                 "-max_delay",
                 "500000",
                 "-probesize",
-                "32",
+                str(profile.probesize if profile is not None else 32),
                 "-analyzeduration",
-                "0",
+                str(profile.analyzeduration if profile is not None else 0),
                 "-fflags",
                 "nobuffer",
                 "-flags",
                 "low_delay",
+                *(profile.extra_ffmpeg_input_args if profile is not None else ()),
                 "-i",
                 effective_url,
                 "-f",
@@ -1076,6 +1100,32 @@ async def _stream_rtsp(
         raise
     except (OSError, CameraCleanupError) as e:
         logger.error("RTSP stream error: %s", summarize_ffmpeg_stderr(str(e)))
+
+
+def _rtsp_reconnect_delay(reconnect_count: int, profile: CameraProfile) -> float:
+    """Return the worker-safe equivalent of the built-in RTSP backoff."""
+
+    if reconnect_count <= 1:
+        return 0.0
+    base_delay = profile.rtsp_reconnect_delay * (2 ** min(reconnect_count - 2, 10))
+    capped_delay = min(base_delay, profile.rtsp_reconnect_cap)
+    multiplier = 1 + profile.rtsp_reconnect_jitter * (2 * random.random() - 1)
+    return min(capped_delay * multiplier, profile.rtsp_reconnect_cap)
+
+
+async def _wait_for_rtsp_retry(delay: float, stop_event: asyncio.Event | None) -> bool:
+    if stop_event is not None and stop_event.is_set():
+        return False
+    if delay <= 0:
+        return True
+    if stop_event is None:
+        await asyncio.sleep(delay)
+        return True
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+    except TimeoutError:
+        return True
+    return False
 
 
 async def _stream_usb(

@@ -43,6 +43,7 @@ _MAX_PENDING_CONTROL_REQUESTS = 256
 # A live producer may legitimately run at 1 FPS.  Keep its relay open longer
 # than the control/snapshot timeout while still detecting a lost producer.
 _LIVE_MEDIA_IDLE_SECONDS = 20.0
+_MAX_LIVE_MEDIA_QUEUES = 64
 
 LiveMediaQueue = asyncio.Queue[WorkerMediaFrame | None]
 
@@ -205,6 +206,8 @@ class CameraWorkerSupervisor:
 
         if self.process is None:
             await self.start()
+        if len(self._live_media_queues) >= _MAX_LIVE_MEDIA_QUEUES:
+            raise CameraWorkerUnavailable("camera worker live relay limit reached")
         session_id = str(uuid.uuid4())
         queue: LiveMediaQueue = asyncio.Queue(maxsize=1)
         self._live_media_queues[session_id] = queue
@@ -234,6 +237,8 @@ class CameraWorkerSupervisor:
 
         if self.process is None:
             await self.start()
+        if len(self._live_media_queues) >= _MAX_LIVE_MEDIA_QUEUES:
+            raise CameraWorkerUnavailable("camera worker live relay limit reached")
         session_id = str(uuid.uuid4())
         queue: LiveMediaQueue = asyncio.Queue(maxsize=1)
         self._live_media_queues[session_id] = queue

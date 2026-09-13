@@ -74,6 +74,12 @@ _SNAPSHOT_CACHE_TTL_SECONDS = 5.0
 # Track active external camera streams by printer ID
 _active_external_streams: set[int] = set()
 
+# Worker-owned sources have no local ffmpeg/chamber socket to register in the
+# legacy maps above.  Keep their source type and a per-upstream token here so
+# snapshots and background consumers still honour the single-camera-reader
+# invariant while a worker relay is active.
+_active_worker_streams: dict[int, tuple[str, str]] = {}
+
 # Track ALL spawned ffmpeg PIDs (persists even if _active_streams entries are removed)
 # Maps PID -> spawn timestamp - used by cleanup to find truly orphaned OS processes
 _spawned_ffmpeg_pids: dict[int, float] = {}
@@ -113,7 +119,9 @@ def is_stream_active(printer_id: int) -> bool:
     printer_prefix = f"{printer_id}-"
     if any(sid == str(printer_id) or sid.startswith(printer_prefix) for sid in _active_streams):
         return True
-    return any(sid == str(printer_id) or sid.startswith(printer_prefix) for sid in _active_chamber_streams)
+    if any(sid == str(printer_id) or sid.startswith(printer_prefix) for sid in _active_chamber_streams):
+        return True
+    return printer_id in _active_worker_streams
 
 
 def live_frame_for_capture(printer_id: int) -> tuple[bool, bytes | None]:
@@ -251,7 +259,7 @@ async def get_printer_or_404(printer_id: int, db: AsyncSession) -> Printer:
     return printer
 
 
-async def _worker_external_stream_response(
+async def _worker_stream_response(
     *,
     printer: Printer,
     printer_id: int,
@@ -260,7 +268,7 @@ async def _worker_external_stream_response(
     runtime,
     builtin: bool = False,
 ) -> StreamingResponse:
-    """Serve external live video from the supervised worker's JPEG relay.
+    """Serve worker-owned live video through the existing HTTP fan-out.
 
     The worker owns the physical source; this process keeps the existing HTTP
     fan-out and browser-disconnect behaviour.  That preserves the public MJPEG
@@ -268,14 +276,13 @@ async def _worker_external_stream_response(
     same printer in several places.
     """
 
-    _stream_start_times.setdefault(printer_id, time.time())
-    _active_external_streams.add(printer_id)
     fanout_key = f"printer-{printer_id}"
     # Stable, secret-free source identity.  The URL intentionally is not the
     # key: an access-token rotation must not create a second physical producer.
     identity = str(
         uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:printer:{printer_id}:{'builtin' if builtin else 'external-camera'}")
     )
+    source = "chamber_image" if builtin and is_chamber_image_model(printer.model) else "rtsp" if builtin else "external"
 
     def _publish_worker_frame(frame: bytes) -> None:
         now = time.time()
@@ -286,6 +293,13 @@ async def _worker_external_stream_response(
         _remember_snapshot(printer_id, frame)
 
     def _factory(disconnect_event: asyncio.Event):
+        # The factory runs once per actual upstream, not once per browser
+        # subscriber.  Its token prevents an older grace-window teardown from
+        # erasing a successor's worker state.
+        worker_stream_token = uuid.uuid4().hex
+        _active_worker_streams[printer_id] = (worker_stream_token, source)
+        _stream_start_times.setdefault(printer_id, time.time())
+
         async def _stream():
             try:
                 stream = (
@@ -311,7 +325,8 @@ async def _worker_external_stream_response(
                 async for chunk in stream:
                     yield chunk
             finally:
-                _active_external_streams.discard(printer_id)
+                if _active_worker_streams.get(printer_id) == (worker_stream_token, source):
+                    _active_worker_streams.pop(printer_id, None)
                 _release_printer_frame_state(printer_id)
 
         return _stream()
@@ -960,7 +975,7 @@ async def camera_stream(
 
         runtime = get_camera_runtime()
         if isinstance(runtime, WorkerCameraRuntime):
-            return await _worker_external_stream_response(
+            return await _worker_stream_response(
                 printer=printer,
                 printer_id=printer_id,
                 request=request,
@@ -1069,7 +1084,7 @@ async def camera_stream(
     from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
 
     if isinstance(get_camera_runtime(), WorkerCameraRuntime):
-        return await _worker_external_stream_response(
+        return await _worker_stream_response(
             printer=printer,
             printer_id=printer_id,
             request=request,
@@ -1443,8 +1458,15 @@ async def camera_status(
     has_active_stream = False
     source: str | None = None
 
+    # Check worker relays before local streams.  A worker owns its physical
+    # socket, but status/snapshot users must still see its protocol type.
+    worker_stream = _active_worker_streams.get(printer_id)
+    if worker_stream is not None:
+        has_active_stream = True
+        source = worker_stream[1]
+
     # Check external camera streams
-    if printer_id in _active_external_streams:
+    if not has_active_stream and printer_id in _active_external_streams:
         has_active_stream = True
         source = "external"
 

@@ -49,38 +49,40 @@ Windows worktree with the project's existing Python environment. The child
 authenticates with a one-use loopback bootstrap, runs inside a Windows Job
 Object, relays bounded JPEG frames on the separate media listener, preserves
 control responsiveness during concurrent capture, and releases a live producer
-when its media relay closes. The external live HTTP adapter retains the existing
-MJPEG response and `MjpegBroadcaster` fan-out while the physical external source
-runs in the child; the test uses a local snapshot server and verifies a frame
-reaches the client and snapshot cache.
+when its media relay closes. The live HTTP adapter retains the existing MJPEG
+response and `MjpegBroadcaster` fan-out while the physical source runs in the
+child. It supports external sources and built-in Bambu chamber/RTSPS sources;
+worker status exposes the real source type, so snapshot and background consumers
+do not open a second camera reader. Built-in RTSPS receives the same per-model
+FFmpeg probe and reconnect profile as the inline transport.
 
-Completed commands and results:
+The relay permits at most 64 active media queues and drops JPEGs over 2 MiB.
+Each process therefore retains at most 128 MiB of queued live frames. These are
+backpressure limits, not a promise that a 50-camera farm needs that much memory.
+
+Completed bounded commands and results for the worker rollout:
 
 | Scope | Result |
 | --- | --- |
-| Worker protocol, containment, capture/live relay, runtime adapter, external camera | 238 passed |
-| Camera routes, fan-out, profiles, TLS, capability/status and worker HTTP adapter | 90 passed |
-| Cloud Link snapshot | 35 passed |
-| Obico | 48 passed |
-| Layer timelapse | 16 passed |
-| Finish photo moment + bot camera controls | 39 passed |
-| Integration camera API | 35 passed |
-| Virtual Printer startup/proxy safety | 170 passed |
+| Camera services, worker protocol/containment/relay, FFmpeg drain | 193 passed |
+| Camera API units, status/fan-out invariants, Virtual Printer startup/proxy | 242 passed |
+| Cloud Link, Obico, layer timelapse and finish-photo consumers | 156 passed |
+| Bot camera controls and integration camera API | 49 passed |
+| Focused profile/status/backpressure checks before the broad run | 103 passed |
 | Ruff on changed worker, camera and VP files | passed |
 
-The broad combined command was not recorded as a pass because this shell
-environment stopped it around its time budget without a pytest completion line;
-the same coverage was therefore rerun in the bounded groups above. Graphify AST
-update was started after the code changes; its local CLI leaves a zero-CPU child
-after extraction in this Windows host, so it must be checked again before a
-delivery merge.
+The broad combined command is intentionally split because this Windows shell
+can interrupt a long pytest process before it prints a completion line. Each
+group above printed its own passing summary. Graphify must still be refreshed
+before a delivery merge.
 
 Not covered by automated tests: a physical Bambu chamber/RTSP live source,
 hardware decoder profiles, a 50-camera soak with API/MQTT/WebSocket latency
 measurements, and Linux service/cgroup/watchdog operation. Virtual Printer raw
 TCP passthrough now has a worker-owned, byte-for-byte lease with a loopback
-echo acceptance test; worker mode still rejects built-in Bambu live view rather
-than silently creating a second camera owner.
+echo acceptance test. Built-in Bambu live view is worker-owned too; its HTTP
+adapter and profile handoff are covered with local tests, while a physical
+printer acceptance run remains required.
 
 Українською: перевірено 432 тести камер/FFmpeg та API принтерів. Синтетичний
 прогін вимірює лише накладні витрати метрик без реальних камер, декодування та

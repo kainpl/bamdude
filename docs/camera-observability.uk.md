@@ -49,15 +49,17 @@ snapshot-рішень. Видалення принтера прибирає йо
 
 `CAMERA_RUNTIME=worker` — opt-in, за замовченням лишається `inline`. Він до
 початку camera work запускає один supervised child. One-shot built-in/external
-capture і live MJPEG, RTSP та snapshot зовнішніх камер ідуть через його
-автентифікований loopback JPEG relay, а цей процес зберігає чинний browser
-fan-out. Для кожного worker live lease є один producer на стабільний printer
-identity без секретів і bounded черги лише останнього кадру; втрата media socket
-звільняє producer.
+capture, built-in Bambu chamber/RTSPS live view і live MJPEG, RTSP та snapshot
+зовнішніх камер ідуть через його автентифікований loopback JPEG relay, а цей
+процес зберігає чинний browser fan-out. Для кожного worker live lease є один
+producer на стабільний printer identity без секретів і черга лише останнього
+кадру. Одночасно є максимум 64 relay, а кадр обмежено 2 MiB: це обмежує черги
+live JPEG до 128 MiB на процес; втрата media socket звільняє producer.
 
 Режим fail-closed. Помилка bootstrap/containment worker не повертає inline
 transport. Built-in Bambu chamber/RTSPS і external live sources використовують
-worker-owned decoded JPEG leases. Virtual Printer camera passthrough — окремий
+worker-owned decoded JPEG leases. Built-in RTSPS бере той самий profile моделі
+для probe і reconnect, що й inline live view. Virtual Printer camera passthrough — окремий
 raw TCP lease, тому він зберігає байти як є й не перетинається з JPEG relay того
 самого джерела. Спочатку перевіряйте налаштування на підтримуваному хості:
 поточна валідація не замінює physical-farm або Linux-service acceptance run.

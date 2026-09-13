@@ -2,7 +2,12 @@ import asyncio
 
 import pytest
 
-from backend.app.services.camera_worker_live import LIVE_STREAM_ENDED, LiveExternalSubscription, LiveProducerRegistry
+from backend.app.services.camera_worker_live import (
+    LIVE_STREAM_ENDED,
+    MAX_LIVE_FRAME_BYTES,
+    LiveExternalSubscription,
+    LiveProducerRegistry,
+)
 
 
 @pytest.mark.asyncio
@@ -84,3 +89,22 @@ async def test_live_registry_waits_for_last_producer_cleanup_and_notifies_subscr
     _lease, ended_queue = await registry.subscribe("camera-b", ending_producer)
     release.set()
     assert await asyncio.wait_for(ended_queue.get(), timeout=1) == LIVE_STREAM_ENDED
+
+
+@pytest.mark.asyncio
+async def test_live_registry_drops_a_frame_over_the_process_memory_budget():
+    registry = LiveProducerRegistry()
+    stopped = asyncio.Event()
+
+    async def producer():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    lease, queue = await registry.subscribe("camera-a", producer)
+    registry.publish("camera-a", b"x" * (MAX_LIVE_FRAME_BYTES + 1))
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(queue.get(), timeout=0.05)
+    await registry.unsubscribe(lease)
+    await asyncio.wait_for(stopped.wait(), timeout=1)

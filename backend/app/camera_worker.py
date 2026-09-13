@@ -277,6 +277,7 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                                     except OSError:
                                         pass
                                 return
+                        from backend.app.services.camera_profiles import get_camera_profile
                         from backend.app.services.external_camera import generate_mjpeg_stream
 
                         async for _chunk in generate_mjpeg_stream(
@@ -286,6 +287,11 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                             "rtsp" if isinstance(subscription, LiveBuiltinSubscription) else subscription.camera_type,
                             subscription.fps,
                             on_frame=lambda frame: live_registry.publish(subscription.identity, frame),
+                            rtsp_profile=(
+                                get_camera_profile(subscription.model)
+                                if isinstance(subscription, LiveBuiltinSubscription)
+                                else None
+                            ),
                         ):
                             pass
 
