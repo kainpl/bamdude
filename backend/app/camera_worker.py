@@ -91,8 +91,37 @@ async def _capture(command, bootstrap: WorkerBootstrap) -> dict:
     }
 
 
+async def _serve_capture(request: dict, bootstrap: WorkerBootstrap, writer, write_lock: asyncio.Lock) -> None:
+    """Keep control readable while one physical capture awaits its transport."""
+
+    try:
+        from backend.app.services.camera_worker_capture import WorkerCaptureCommand
+
+        result = await _capture(WorkerCaptureCommand.from_payload(request["payload"]), bootstrap)
+    except (CameraWorkerProtocolError, OSError, TimeoutError):
+        # Transport implementations write their own redacted evidence; no URL,
+        # credential, stack trace or raw exception crosses IPC.
+        result = {
+            "frame_available": False,
+            "source": None,
+            "attempt_id": None,
+            "first_frame_ms": None,
+            "cleanup_ms": None,
+        }
+    async with write_lock:
+        await write_control(
+            writer,
+            make_reply(
+                generation=bootstrap.generation,
+                request_id=request["request_id"],
+                ok=True,
+                result=result,
+            ),
+        )
+
+
 async def run(bootstrap: WorkerBootstrap) -> int:
-    """Connect once to the parent and serve harness-only control operations."""
+    """Connect once and keep control responsive while captures run."""
 
     reader, writer = await asyncio.open_connection("127.0.0.1", bootstrap.control_port)
     try:
@@ -110,18 +139,21 @@ async def run(bootstrap: WorkerBootstrap) -> int:
         if not hello["ok"]:
             return 2
 
+        write_lock = asyncio.Lock()
+        capture_tasks: set[asyncio.Task[None]] = set()
         while True:
             request = await read_control(reader)
             if request["generation"] != bootstrap.generation:
-                await write_control(
-                    writer,
-                    make_reply(
-                        generation=bootstrap.generation,
-                        request_id=request["request_id"],
-                        ok=False,
-                        error="protocol_error",
-                    ),
-                )
+                async with write_lock:
+                    await write_control(
+                        writer,
+                        make_reply(
+                            generation=bootstrap.generation,
+                            request_id=request["request_id"],
+                            ok=False,
+                            error="protocol_error",
+                        ),
+                    )
                 return 3
             operation = request["operation"]
             if operation == "heartbeat":
@@ -139,41 +171,27 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                     result={"state": "ready", "camera_runtime": "not_started"},
                 )
             elif operation == "capture":
-                try:
-                    from backend.app.services.camera_worker_capture import WorkerCaptureCommand
-
-                    result = await _capture(WorkerCaptureCommand.from_payload(request["payload"]), bootstrap)
-                    reply = make_reply(
-                        generation=bootstrap.generation,
-                        request_id=request["request_id"],
-                        ok=True,
-                        result=result,
-                    )
-                except (CameraWorkerProtocolError, OSError, TimeoutError):
-                    # Transport implementations write their own redacted evidence;
-                    # no URL, credential, stack trace or raw exception crosses IPC.
-                    reply = make_reply(
-                        generation=bootstrap.generation,
-                        request_id=request["request_id"],
-                        ok=True,
-                        result={
-                            "frame_available": False,
-                            "source": None,
-                            "attempt_id": None,
-                            "first_frame_ms": None,
-                            "cleanup_ms": None,
-                        },
-                    )
-            elif operation == "shutdown":
-                await write_control(
-                    writer,
-                    make_reply(
-                        generation=bootstrap.generation,
-                        request_id=request["request_id"],
-                        ok=True,
-                        result={"state": "stopping"},
-                    ),
+                task = asyncio.create_task(
+                    _serve_capture(request, bootstrap, writer, write_lock),
+                    name=f"camera-worker-{request['request_id']}",
                 )
+                capture_tasks.add(task)
+                task.add_done_callback(capture_tasks.discard)
+                continue
+            elif operation == "shutdown":
+                for task in capture_tasks:
+                    task.cancel()
+                await asyncio.gather(*capture_tasks, return_exceptions=True)
+                async with write_lock:
+                    await write_control(
+                        writer,
+                        make_reply(
+                            generation=bootstrap.generation,
+                            request_id=request["request_id"],
+                            ok=True,
+                            result={"state": "stopping"},
+                        ),
+                    )
                 return 0
             else:
                 reply = make_reply(
@@ -182,7 +200,8 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                     ok=False,
                     error="unknown_operation",
                 )
-            await write_control(writer, reply)
+            async with write_lock:
+                await write_control(writer, reply)
     except (CameraWorkerProtocolError, OSError, asyncio.IncompleteReadError):
         return 3
     finally:

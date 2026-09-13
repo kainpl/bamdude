@@ -39,6 +39,7 @@ from backend.app.services.camera_worker_protocol import (
 _STARTUP_TIMEOUT_SECONDS = 5.0
 _REQUEST_TIMEOUT_SECONDS = 2.0
 _SHUTDOWN_TIMEOUT_SECONDS = 5.0
+_MAX_PENDING_CONTROL_REQUESTS = 256
 
 
 class CameraWorkerUnavailable(RuntimeError):
@@ -57,7 +58,9 @@ class CameraWorkerSupervisor:
     _writer: asyncio.StreamWriter | None = None
     _ready: asyncio.Event = field(default_factory=asyncio.Event)
     _connection_closed: asyncio.Event = field(default_factory=asyncio.Event)
-    _request_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _control_write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _pending_requests: dict[str, asyncio.Future[dict]] = field(default_factory=dict)
+    _control_reader_task: asyncio.Task[None] | None = None
     _stderr_task: asyncio.Task[None] | None = None
     _stderr_bytes: int = 0
     _containment: WorkerContainment | None = None
@@ -112,12 +115,16 @@ class CameraWorkerSupervisor:
     async def request(
         self, operation: str, payload: dict | None = None, *, timeout: float = _REQUEST_TIMEOUT_SECONDS
     ) -> dict:
-        """Send one serialised request; the harness has one control reader."""
+        """Send a request without making a slow capture block control replies."""
 
         if self.bootstrap is None or self._reader is None or self._writer is None:
             raise CameraWorkerUnavailable("camera worker is not connected")
         request_id = str(uuid.uuid4())
-        async with self._request_lock:
+        future: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
+        async with self._control_write_lock:
+            if len(self._pending_requests) >= _MAX_PENDING_CONTROL_REQUESTS:
+                raise CameraWorkerUnavailable("camera worker control queue is full")
+            self._pending_requests[request_id] = future
             try:
                 await write_control(
                     self._writer,
@@ -128,10 +135,17 @@ class CameraWorkerSupervisor:
                         payload=payload or {},
                     ),
                 )
-                reply = await asyncio.wait_for(read_control(self._reader), timeout=timeout)
-                return validate_reply(reply, generation=self.bootstrap.generation, request_id=request_id)
             except (CameraWorkerProtocolError, OSError, TimeoutError) as exc:
+                self._pending_requests.pop(request_id, None)
                 raise CameraWorkerUnavailable("camera worker control request failed") from exc
+        try:
+            return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+        except (CameraWorkerProtocolError, OSError, TimeoutError) as exc:
+            raise CameraWorkerUnavailable("camera worker control request failed") from exc
+        finally:
+            pending = self._pending_requests.pop(request_id, None)
+            if pending is not None and not pending.done():
+                pending.cancel()
 
     async def capture(self, request) -> CameraCaptureResult:
         """Run one physical capture in the child and receive its bounded JPEG relay.
@@ -198,6 +212,7 @@ class CameraWorkerSupervisor:
                 await self._writer.wait_closed()
             except OSError:
                 pass
+        self._fail_pending_requests()
         if process is not None and process.returncode is None:
             try:
                 await asyncio.wait_for(process.wait(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
@@ -206,6 +221,8 @@ class CameraWorkerSupervisor:
         await self._close_servers()
         if self._stderr_task is not None:
             await self._stderr_task
+        if self._control_reader_task is not None:
+            await self._control_reader_task
         if self._containment is not None:
             self._containment.close()
             self._containment = None
@@ -275,6 +292,9 @@ class CameraWorkerSupervisor:
                 ),
             )
             self._ready.set()
+            self._control_reader_task = asyncio.create_task(
+                self._pump_control_replies(), name="camera-worker-control-replies"
+            )
             await self._connection_closed.wait()
         except (CameraWorkerProtocolError, OSError, TimeoutError):
             return
@@ -314,6 +334,24 @@ class CameraWorkerSupervisor:
             except OSError:
                 pass
 
+    async def _pump_control_replies(self) -> None:
+        """Route replies from the single control reader by their request UUID."""
+
+        if self._reader is None or self.bootstrap is None:
+            return
+        try:
+            while True:
+                reply = await read_control(self._reader)
+                request_id = reply["request_id"]
+                future = self._pending_requests.get(request_id)
+                if future is None:
+                    raise CameraWorkerProtocolError("camera worker replied to an unknown request")
+                result = validate_reply(reply, generation=self.bootstrap.generation, request_id=request_id)
+                if not future.done():
+                    future.set_result(result)
+        except (CameraWorkerProtocolError, OSError, asyncio.IncompleteReadError):
+            self._fail_pending_requests()
+
     def _is_valid_hello(self, request: dict) -> bool:
         if self.bootstrap is None:
             return False
@@ -343,6 +381,7 @@ class CameraWorkerSupervisor:
     def _close_listeners(self) -> None:
         self._connection_closed.set()
         self._fail_media_waiters()
+        self._fail_pending_requests()
         for server in (self._control_server, self._media_server):
             if server is not None:
                 server.close()
@@ -364,11 +403,18 @@ class CameraWorkerSupervisor:
         self._stderr_task = None
         self._stderr_bytes = 0
         self._media_waiters.clear()
+        self._pending_requests.clear()
+        self._control_reader_task = None
 
     def _fail_media_waiters(self) -> None:
         for waiter in self._media_waiters.values():
             if not waiter.done():
                 waiter.set_exception(CameraWorkerUnavailable("camera worker stopped before media relay completed"))
+
+    def _fail_pending_requests(self) -> None:
+        for request in self._pending_requests.values():
+            if not request.done():
+                request.set_exception(CameraWorkerUnavailable("camera worker control connection closed"))
 
 
 def _optional_string(value: object) -> str | None:

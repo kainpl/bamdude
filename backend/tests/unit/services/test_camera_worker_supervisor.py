@@ -111,3 +111,46 @@ async def test_worker_runtime_relays_an_external_snapshot_without_starting_main_
         await runtime.stop()
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_worker_keeps_heartbeat_responsive_and_coalesces_concurrent_capture():
+    requests = 0
+
+    async def delayed_snapshot(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        nonlocal requests
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            requests += 1
+            await asyncio.sleep(0.1)
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                + str(len(_JPEG)).encode()
+                + b"\r\nConnection: close\r\n\r\n"
+                + _JPEG
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(delayed_snapshot, host="127.0.0.1", port=0)
+    port = server.sockets[0].getsockname()[1]
+    supervisor = CameraWorkerSupervisor()
+    runtime = WorkerCameraRuntime(supervisor)
+    request = CameraCaptureRequest.external(
+        url=f"http://127.0.0.1:{port}/snapshot.jpg", camera_type="snapshot", timeout=5
+    )
+    try:
+        await supervisor.start()
+        first = asyncio.create_task(runtime.capture(request))
+        second = asyncio.create_task(runtime.capture(request))
+        await asyncio.sleep(0.02)
+        assert (await supervisor.request("heartbeat"))["result"] == {"state": "ready"}
+        first_result, second_result = await asyncio.gather(first, second)
+        assert first_result.frame == second_result.frame == _JPEG
+        assert requests == 1
+    finally:
+        await runtime.stop()
+        server.close()
+        await server.wait_closed()
