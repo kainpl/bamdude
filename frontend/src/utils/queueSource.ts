@@ -99,27 +99,77 @@ export function queueSourceReasonText(t: Translate, error: unknown): string {
   return message || t('queueSpool.reason.source_copy_failed');
 }
 
+/** One attempt that did not land, and what the operator calls its target. */
+export interface QueueAddFailure {
+  /** Printer name, plus the plate when several were sent. */
+  label: string;
+  error: unknown;
+}
+
 /**
- * The refusal, led by the answer to the question the operator is actually
- * asking: *is there a job now or not?*
+ * Everything the operator needs after an add that did not fully land, in the
+ * order they need it: *is there a job now?* first, then a reason per failure.
  *
  * `added` counts the requests that landed and `total` the ones attempted — an
  * add is all-or-nothing per request (§5: a copy failure leaves no runnable
  * row), so "1 of 3 landed" is the whole truth about the other two.
+ *
+ * ⚠️ **A reason belongs to the printers it came from, never to all of them.**
+ * One busy spool and one offline printer are two different answers, and
+ * appending only the first as if it explained both hid the second entirely and
+ * told the operator to "try again in a moment" about a machine that will never
+ * accept the job. Failures are therefore grouped by reason and each group names
+ * its printers — except the one unambiguous case (nothing landed, one reason,
+ * every failure answered), where a bare sentence reads better and cannot be
+ * misattributed.
+ *
+ * ⚠️ **An unanswered request is not a refusal**, so it leads with the
+ * "it is not clear" sentence — but an answered refusal beside it keeps its own
+ * reason. Losing an actionable reason to a sibling's uncertainty is the same
+ * defect as misattributing one.
  */
-export function queueAddFailureText(
+export function queueAddOutcomeText(
   t: Translate,
-  error: unknown,
-  counts: { added: number; total: number },
+  outcome: {
+    added: number;
+    total: number;
+    failures: readonly QueueAddFailure[];
+    /** True when the dialog stayed open and unticked what already landed. */
+    deselected?: boolean;
+  },
 ): string {
-  const reason = queueSourceReasonText(t, error);
-  if (counts.added <= 0) return t('queueSpool.failure.nothingQueued', { reason });
-  return t('queueSpool.failure.partial', {
-    success: counts.added,
-    failed: Math.max(0, counts.total - counts.added),
-    total: counts.total,
-    reason,
-  });
+  const { added, total, failures, deselected = false } = outcome;
+  const answered = failures.filter((f) => !isUnknownOutcome(f.error));
+  const unanswered = failures.filter((f) => isUnknownOutcome(f.error));
+
+  // Insertion-ordered, so the first printer's reason still reads first.
+  const groups = new Map<string, string[]>();
+  for (const failure of answered) {
+    const reason = queueSourceReasonText(t, failure.error);
+    const labels = groups.get(reason);
+    if (labels) labels.push(failure.label);
+    else groups.set(reason, [failure.label]);
+  }
+
+  const parts: string[] = [];
+  if (unanswered.length > 0) {
+    parts.push(
+      added > 0
+        ? t('queueSpool.failure.uncertainPartial', { success: added, total })
+        : t('queueSpool.failure.uncertain'),
+    );
+  } else if (added > 0) {
+    parts.push(t('queueSpool.failure.partial', { success: added, failed: answered.length, total }));
+  } else {
+    parts.push(t('queueSpool.failure.nothingQueued'));
+  }
+
+  const bare = added === 0 && unanswered.length === 0 && groups.size === 1;
+  for (const [reason, labels] of groups) {
+    parts.push(bare ? reason : t('queueSpool.failure.reasonFor', { printers: labels.join(', '), reason }));
+  }
+  if (deselected) parts.push(t('queueSpool.failure.deselected'));
+  return parts.join(' ');
 }
 
 /**

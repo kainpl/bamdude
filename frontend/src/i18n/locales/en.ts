@@ -1361,9 +1361,13 @@ export default {
       deleteConfirm: 'Are you sure you want to delete "{{name}}"? This action cannot be undone.',
       // ⚠️ Since m173 this is no longer "all of them go": a queued print that
       // already keeps its own saved copy survives the archive it came from, and
-      // only the ones still reading this archive are cancelled. The split
-      // itself is counted by `QueueSpoolDeleteNote` under this line.
-      deleteConfirmQueueWarning: 'Queued prints backed by this archive: {{count}}.',
+      // only the ones still reading this archive are cancelled. The split itself
+      // is counted by `QueueSpoolDeleteNote` under this line — but the
+      // CONSEQUENCE stays here and unconditional, because that note can be
+      // silent (the queue could not be read, or this user sees only their own
+      // rows) and a bare number with nothing after it says less than the
+      // sentence this replaced.
+      deleteConfirmQueueWarning: 'Queued prints backed by this archive: {{count}}. The pending ones that still read it are cancelled with it.',
       deleteButton: 'Delete',
       removeSource3mf: 'Remove Source 3MF',
       removeSource3mfConfirm: 'Are you sure you want to remove the source 3MF file from "{{name}}"? This will delete the original slicer project file.',
@@ -1771,22 +1775,28 @@ export default {
       ready: {
         label: 'File saved',
         tip: 'File saved for the queue — this job prints its own copy and no longer needs the original.',
-        tipWithSize: 'File saved for the queue ({{size}}) — this job prints its own copy and no longer needs the original.',
       },
       preparing: {
         label: 'Saving the file',
         tip: 'Saving a copy of the file for the queue. The job waits here until the copy is finished.',
       },
       legacy: {
+        // ⚠️ Says WHAT the row is, never WHY. `legacy` has three causes — no
+        // snapshot yet, a reader that did not ask for the state, an interrupted
+        // capture — so "queued before BamDude kept its own copies" was false for
+        // two of them and for every row queued today. The operator-actionable
+        // half is the only half that is always true.
         label: 'Uses the original',
-        tip: 'Queued before BamDude kept its own copies. It reads the original file, so keep that reachable until it prints.',
+        tip: 'This job has no stored copy of its file, so it reads the original — keep that reachable until it prints.',
       },
       broken: {
+        // No endpoint re-captures a source, so the tooltip must not send anyone
+        // to a Retry that only re-queues the same missing blob.
         label: 'Saved copy lost',
-        tip: 'The saved copy is missing or damaged, so this job cannot print. Retry it to save the file again, or remove it from the queue.',
+        tip: 'The stored copy is missing or damaged, so this job cannot print. Add the file to the queue again, then remove this job.',
       },
     },
-    heldTip: 'The saved file stays with this job until you remove it from the queue.',
+    heldTip: 'The stored file stays with this job until you remove it from the queue.',
     saving: 'Saving the file for the queue…',
     savingProgress: 'Saving the file for the queue… {{current}} of {{total}}',
     // One sentence per refusal the server can answer an add with. Busy is the
@@ -1803,17 +1813,29 @@ export default {
       source_copy_failed: 'The file could not be saved for the queue.',
     },
     // What the operator actually asks after a refusal: was the job created?
+    // Each sentence stands alone — a reason is appended per group of printers,
+    // never folded into the lead, so one machine's answer is never read as
+    // every machine's answer.
     failure: {
-      nothingQueued: 'Nothing was added to the queue. {{reason}}',
-      partial: 'Added to the queue: {{success}} of {{total}}. The other {{failed}} were not added. {{reason}}',
+      nothingQueued: 'Nothing was added to the queue.',
+      partial: 'Added to the queue: {{success}} of {{total}}. The other {{failed}} were not added.',
+      reasonFor: '{{printers}}: {{reason}}',
+      deselected: 'The printers that already took it are unticked, so pressing Add again cannot give them a second job.',
       uncertain: 'It is not clear whether the job was added — no answer came back. The queue has been refreshed; check it before adding the job again.',
       uncertainPartial: 'Added to the queue: {{success}} of {{total}}. No answer came back for the rest, so it is not clear whether they were added. The queue has been refreshed; check it before adding them again.',
     },
+    // ⚠️ Only PENDING work is counted: that is what both delete paths cancel.
+    // A terminal row is history — it neither prints nor gets cancelled, so
+    // counting it inflated one half of the sentence and misdescribed the other.
     deleteNote: {
       checking: 'Checking which queued prints keep their own copy…',
-      selfContained: 'Queued prints that keep their own saved copy: {{count}}. They stay in the queue and still print.',
-      needsOriginal: 'Queued prints that still read these files: {{count}}. They are cancelled with them.',
+      selfContained: 'Pending prints that keep their own saved copy: {{count}}. They stay in the queue and still print.',
+      needsOriginal: 'Pending prints that still read these files: {{count}}. They are cancelled with them.',
       removeHint: 'Remove them from the queue yourself if you no longer want them.',
+      // Silence would read as "nothing is affected", which is the one thing we
+      // do not know here.
+      couldNotCheck: 'BamDude could not check which queued prints use these files. Pending prints that still read them are cancelled with them.',
+      ownRowsOnly: 'You can only see your own queued prints, so the counts above may not be all of them.',
     },
   },
 
@@ -4986,7 +5008,11 @@ export default {
     deleteFolder: 'Delete Folder',
     deleteFile: 'Delete File',
     deleteFilesCount: 'Delete {{count}} Files',
-    deleteFolderConfirm: 'Delete this folder? The files inside move to the trash, where they can be restored.',
+    // ⚠️ The trash is reversible; the QUEUE is not. Restoring a file clears its
+    // `deleted_at` and un-cancels nothing, so the consequence is said in words —
+    // there is no endpoint that counts queued work under a folder, and a number
+    // we cannot have would be worse than none.
+    deleteFolderConfirm: 'Delete this folder? The files inside move to the trash, where they can be restored. Pending prints in the queue that still read those files are cancelled, and restoring the files does not bring them back.',
     deleteFileConfirm: 'Are you sure you want to delete this file?',
     deleteFilesConfirm: 'Delete {{count}} selected files? They move to the trash, where they can be restored.',
     deleting: 'Deleting...',

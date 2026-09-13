@@ -30,6 +30,22 @@ vi.mock('../../contexts/ToastContext', async (importOriginal) => {
   return { ...actual, useToast: () => ({ showToast: mockShowToast }) };
 });
 
+// ⚠️ The refresh is the ONE thing the "no answer came back" message tells the
+// operator to rely on, so it is asserted as a CALL. Asserting only the sentence
+// let the call be deleted with every test still green — a message that lies about
+// the single action it promises.
+const invalidateQueueViews = vi.fn();
+vi.mock('../../utils/queryInvalidation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../utils/queryInvalidation')>();
+  return {
+    ...actual,
+    invalidateQueueViews: (...args: Parameters<typeof actual.invalidateQueueViews>) => {
+      invalidateQueueViews(...args);
+      return actual.invalidateQueueViews(...args);
+    },
+  };
+});
+
 import { render } from '../utils';
 import { PrintModal } from '../../components/PrintModal';
 
@@ -44,11 +60,16 @@ const refusal = (code: string, status: number) =>
   HttpResponse.json({ detail: { code, params: {}, message: `server text for ${code}` } }, { status });
 
 describe('the print dialog while the queue saves the file', () => {
+  /** Which printer each POST was for, in order — a count cannot tell a second
+   *  job on the printer that already took one from a retry of the two that
+   *  refused, which is the whole question in the partial case. */
+  let sentTo: number[];
   let posts: number;
 
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    sentTo = [];
     posts = 0;
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json(printers)),
@@ -149,11 +170,13 @@ describe('the print dialog while the queue saves the file', () => {
     );
   });
 
-  it('counts what landed when only some of a burst was refused', async () => {
+  it('counts what landed, names who refused, and unticks what already has the job', async () => {
     server.use(
-      http.post('/api/v1/queue/', () => {
+      http.post('/api/v1/queue/', async ({ request }) => {
+        const body = (await request.json()) as { queue_id: number };
         posts += 1;
-        if (posts === 1) return HttpResponse.json({ id: 1, status: 'pending', created_item_ids: [1] });
+        sentTo.push(body.queue_id);
+        if (body.queue_id === 1) return HttpResponse.json({ id: 1, status: 'pending', created_item_ids: [1] });
         return refusal('source_copy_busy', 503);
       }),
     );
@@ -164,10 +187,88 @@ describe('the print dialog while the queue saves the file', () => {
     await waitFor(() =>
       expect(mockShowToast).toHaveBeenCalledWith(
         'Added to the queue: 1 of 3. The other 2 were not added. '
-          + 'The queue is already saving other files — try again in a moment.',
+          + 'A1-02, A1-03: The queue is already saving other files — try again in a moment. '
+          + 'The printers that already took it are unticked, so pressing Add again cannot give them a second job.',
         'error',
       ),
     );
+  });
+
+  it("never reads one printer's reason as every printer's", async () => {
+    // A busy spool and an offline printer are two different answers. Appending
+    // only the first as if it explained both hid the second entirely and told
+    // the operator to "try again in a moment" about a machine that will not
+    // accept the job at all.
+    server.use(
+      http.post('/api/v1/queue/', async ({ request }) => {
+        const body = (await request.json()) as { queue_id: number };
+        posts += 1;
+        sentTo.push(body.queue_id);
+        if (body.queue_id === 1) return HttpResponse.json({ id: 1, status: 'pending', created_item_ids: [1] });
+        if (body.queue_id === 2) return refusal('source_copy_busy', 503);
+        return HttpResponse.json({ detail: 'Printer offline' }, { status: 409 });
+      }),
+    );
+    mount([1, 2, 3]);
+
+    fireEvent.click(await screen.findByRole('button', { name: /queue to 3 printers/i }));
+
+    await waitFor(() => expect(mockShowToast).toHaveBeenCalled());
+    const message = mockShowToast.mock.calls[0][0] as string;
+    expect(message).toContain('A1-02: The queue is already saving other files');
+    expect(message).toContain('A1-03: Printer offline');
+  });
+
+  it('cannot give a second job to the printer that already took one', async () => {
+    // The dialog stays open after a partial refusal, and «try again in a moment»
+    // is advice the operator will follow. Before the deselect it gave printer 1
+    // a SECOND job on the next press; the in-flight ref cannot help, because
+    // this is a fresh press after the first submit finished.
+    server.use(
+      http.post('/api/v1/queue/', async ({ request }) => {
+        const body = (await request.json()) as { queue_id: number };
+        posts += 1;
+        sentTo.push(body.queue_id);
+        if (body.queue_id === 1) return HttpResponse.json({ id: 1, status: 'pending', created_item_ids: [1] });
+        return refusal('source_copy_busy', 503);
+      }),
+    );
+    mount([1, 2, 3]);
+
+    fireEvent.click(await screen.findByRole('button', { name: /queue to 3 printers/i }));
+    await waitFor(() => expect(mockShowToast).toHaveBeenCalled());
+
+    // The button renamed itself: two printers are left ticked.
+    fireEvent.click(await screen.findByRole('button', { name: /queue to 2 printers/i }));
+    await waitFor(() => expect(posts).toBe(5));
+
+    expect(sentTo).toEqual([1, 2, 3, 2, 3]);
+    expect(sentTo.filter((id) => id === 1)).toHaveLength(1);
+  });
+
+  it("keeps a refusal's reason when a sibling's answer never came back", async () => {
+    // An unanswered request is unknown, not refused — but the printer that DID
+    // answer gave the one actionable fact in the whole exchange, and losing it
+    // to its sibling's uncertainty is the same defect as misattributing it.
+    server.use(
+      http.post('/api/v1/queue/', async ({ request }) => {
+        const body = (await request.json()) as { queue_id: number };
+        posts += 1;
+        sentTo.push(body.queue_id);
+        if (body.queue_id === 1) return HttpResponse.json({ id: 1, status: 'pending', created_item_ids: [1] });
+        if (body.queue_id === 2) return refusal('source_unreadable', 422);
+        return HttpResponse.error();
+      }),
+    );
+    mount([1, 2, 3]);
+
+    fireEvent.click(await screen.findByRole('button', { name: /queue to 3 printers/i }));
+
+    await waitFor(() => expect(mockShowToast).toHaveBeenCalled());
+    const message = mockShowToast.mock.calls[0][0] as string;
+    expect(message).toContain('Added to the queue: 1 of 3.');
+    expect(message).toContain('it is not clear whether they were added');
+    expect(message).toContain('A1-02: The original file could not be read.');
   });
 
   it('refreshes the list instead of re-posting when the answer never arrives', async () => {
@@ -190,6 +291,8 @@ describe('the print dialog while the queue saves the file', () => {
     );
     // One attempt, and no retry of its own accord: a second POST is a second job.
     expect(posts).toBe(1);
+    // And the list really was refreshed, not just claimed to be.
+    expect(invalidateQueueViews).toHaveBeenCalled();
   });
   it('does not claim the ones that landed were lost too', async () => {
     // Two answered, one never did. Neither "nothing was added" nor "the other

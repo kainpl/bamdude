@@ -46,8 +46,7 @@ describe('the queued-count toast', () => {
     // ⚠️ Since m173 the add path leads with whether a job exists at all
     // (spec §10). That sentence pairs the same two ATTEMPT counts — an add is
     // all-or-nothing per request, so rows have no business in it.
-    expect(source).toContain(
-      'queueAddFailureText(t, firstFailure, { added: results.success, total: results.success + results.failed })',
-    );
+    expect(source).toContain('added: results.success,')
+    expect(source).toContain('total: results.success + results.failed,')
   });
 });

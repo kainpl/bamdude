@@ -238,14 +238,14 @@ describe('AutoQueuePanel — unavailable source', () => {
 describe('AutoQueuePanel - the copy of the file the router will print', () => {
   it('marks a row that keeps its own copy and explains one that is still being saved', async () => {
     vi.mocked(api.getAutoQueue).mockResolvedValue([
-      routerRow({ id: 11, source_storage: 'ready', source_size_bytes: 1_048_576 }),
+      routerRow({ id: 11, source_storage: 'ready' }),
       routerRow({ id: 12, source_storage: 'preparing', batch_id: null, library_file_name: 'other.3mf' }),
     ]);
     render(<AutoQueuePanel />);
 
     expect(
       await screen.findByTitle(
-        'File saved for the queue (1.0 MB) — this job prints its own copy and no longer needs the original.',
+        'File saved for the queue — this job prints its own copy and no longer needs the original.',
       ),
     ).toBeInTheDocument();
     expect(

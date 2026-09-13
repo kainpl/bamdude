@@ -346,7 +346,7 @@ describe('QueuePage', () => {
       server.use(
         byStatus({
           pending: [
-            spoolItem({ id: 101, archive_name: 'Saved one', source_storage: 'ready', source_size_bytes: 2_097_152 }),
+            spoolItem({ id: 101, archive_name: 'Saved one', source_storage: 'ready' }),
             spoolItem({ id: 102, archive_name: 'Copying one', source_storage: 'preparing' }),
             spoolItem({ id: 103, archive_name: 'Old one', source_storage: 'legacy' }),
             spoolItem({ id: 104, archive_name: 'Lost one', source_storage: 'broken' }),
@@ -363,7 +363,7 @@ describe('QueuePage', () => {
 
       expect(
         await screen.findByTitle(
-          'File saved for the queue (2.0 MB) — this job prints its own copy and no longer needs the original.',
+          'File saved for the queue — this job prints its own copy and no longer needs the original.',
         ),
       ).toBeInTheDocument();
       expect(
@@ -371,12 +371,12 @@ describe('QueuePage', () => {
       ).toBeInTheDocument();
       expect(
         screen.getByTitle(
-          'Queued before BamDude kept its own copies. It reads the original file, so keep that reachable until it prints.',
+          'This job has no stored copy of its file, so it reads the original — keep that reachable until it prints.',
         ),
       ).toBeInTheDocument();
       expect(
         screen.getByTitle(
-          'The saved copy is missing or damaged, so this job cannot print. Retry it to save the file again, or remove it from the queue.',
+          'The stored copy is missing or damaged, so this job cannot print. Add the file to the queue again, then remove this job.',
         ),
       ).toBeInTheDocument();
 
@@ -425,8 +425,34 @@ describe('QueuePage', () => {
       await user.click(await screen.findByText(/^Issues \(1\)$/));
 
       expect(
-        await screen.findByTitle(/The saved file stays with this job until you remove it from the queue\./),
+        await screen.findByTitle(/The stored file stays with this job until you remove it from the queue\./),
       ).toBeInTheDocument();
+    });
+
+    it('does not claim a stored file on a failed row that has none', async () => {
+      // ⚠️ The held sentence used to be appended to whatever the state said, so a
+      // failed `legacy` row read «it reads the original file … the stored file
+      // stays with this job» and a `broken` one «the stored copy is missing … the
+      // stored file stays with this job». On the legacy row the ORIGINAL is the
+      // thing still load-bearing, and this is the only variant an operator can
+      // see until the resolver lands.
+      server.use(
+        byStatus({
+          pending: [],
+          failed: [
+            spoolItem({ id: 401, status: 'failed', archive_name: 'Old failed', source_storage: 'legacy' }),
+            spoolItem({ id: 402, status: 'failed', archive_name: 'Lost failed', source_storage: 'broken' }),
+          ],
+        }),
+      );
+      const user = userEvent.setup();
+      render(<QueuePage />);
+
+      await user.click(await screen.findByText(/^Issues \(2\)$/));
+
+      expect(await screen.findByLabelText('Uses the original')).toBeInTheDocument();
+      expect(screen.getByLabelText('Saved copy lost')).toBeInTheDocument();
+      expect(screen.queryByTitle(/The stored file stays with this job/)).toBeNull();
     });
   });
 

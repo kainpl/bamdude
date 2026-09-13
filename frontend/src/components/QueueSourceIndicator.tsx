@@ -2,21 +2,22 @@ import { FileWarning, Link, Loader2, ShieldCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import type { QueueSourceStorage } from '../api/client';
-import { markedStorage } from '../utils/queueSource';
-import { formatFileSize } from '../utils/file';
+import { isSelfContained, markedStorage } from '../utils/queueSource';
 
 interface QueueSourceIndicatorProps {
   /** The row's own `source_storage`. Absent / `exempt` renders nothing. */
   state: QueueSourceStorage | null | undefined;
-  /** Size of the saved copy, where the server knows it. Tooltip only. */
-  sizeBytes?: number | null;
   /**
-   * This row is failed / skipped / cancelled and still holds its file.
+   * This row is failed / skipped / cancelled and keeps its file until it is
+   * removed — the one sentence §10 asks for, said where the operator is already
+   * looking at the row that holds it. Deliberately not a "clean up everything"
+   * button: the retry is the reason the bytes are still there.
    *
-   * Adds the one sentence §10 asks for — the file is kept ON PURPOSE until the
-   * row is removed — where the operator is already looking at the row that is
-   * holding it. Deliberately not a "clean up everything" button: the retry is
-   * the reason the bytes are still there.
+   * ⚠️ **Ignored unless the row actually HAS a stored file.** Appending it to a
+   * `legacy` row read "it reads the original file … the stored file stays with
+   * this job", and to a `broken` one "the stored copy is missing … the stored
+   * file stays with this job" — two sentences contradicting each other, and on
+   * the `legacy` row the ORIGINAL is the thing still load-bearing.
    */
   held?: boolean;
   /** Extra classes for the icon; the default fits a compact queue row. */
@@ -49,12 +50,12 @@ const TONES = {
  * meta line) and takes the same space an icon there already takes. Anything that
  * needed its own block would change the geometry of every queue in the farm.
  *
- * Renders `null` for `exempt`, for a server that predates the field, and for an
- * unknown value — silence beats a mark that might be wrong about file safety.
+ * ⚠️ **Every sentence must be true of THIS row**, not of the feature in general.
+ * That is why `exempt`, a server that predates the field and any unknown value
+ * all render nothing, and why `held` is ignored where nothing is stored.
  */
 export function QueueSourceIndicator({
   state,
-  sizeBytes,
   held = false,
   className = 'w-3.5 h-3.5',
   testId,
@@ -65,16 +66,14 @@ export function QueueSourceIndicator({
 
   const Icon = ICONS[marked];
   const label = t(`queueSpool.state.${marked}.label`);
-  const tip =
-    marked === 'ready' && sizeBytes != null && sizeBytes > 0
-      ? t('queueSpool.state.ready.tipWithSize', { size: formatFileSize(sizeBytes) })
-      : t(`queueSpool.state.${marked}.tip`);
+  const tip = t(`queueSpool.state.${marked}.tip`);
+  const holdsAFile = held && isSelfContained(state);
 
   return (
     <span
       role="img"
       aria-label={label}
-      title={held ? `${tip} ${t('queueSpool.heldTip')}` : tip}
+      title={holdsAFile ? `${tip} ${t('queueSpool.heldTip')}` : tip}
       className="inline-flex items-center flex-shrink-0"
       data-testid={testId}
     >

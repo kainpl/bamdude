@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import { splitBySelfContained } from '../utils/queueSource';
 
 interface QueueSpoolDeleteNoteProps {
@@ -28,9 +29,15 @@ interface QueueSpoolDeleteNoteProps {
  * source would be a guess; the queue list already carries each row's
  * `source_storage`, and that is the only proof there is.
  *
- * Renders nothing when no queue row names these sources — silence is the honest
- * answer to "nothing else happens", and it keeps the confirmation short for the
- * overwhelming majority of deletes.
+ * ⚠️ **PENDING rows only.** Both delete paths cancel exactly the pending ones
+ * (`archive_purge` / `library_trash`); a terminal row is print history — it will
+ * not print and it will not be cancelled — so counting it inflated
+ * "still print" and misdescribed "are cancelled with them".
+ *
+ * ⚠️ **It never stays silent about a question it could not answer.** Nothing on
+ * screen can distinguish "no queued print is affected" from "the queue could not
+ * be read", and this sentence sits on a destructive confirmation, so a failed
+ * query says so and repeats the consequence in words.
  */
 export function QueueSpoolDeleteNote({
   archiveIds = [],
@@ -38,19 +45,31 @@ export function QueueSpoolDeleteNote({
   enabled = true,
 }: QueueSpoolDeleteNoteProps) {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
   const asked = archiveIds.length > 0 || libraryFileIds.length > 0;
+  // ⚠️ A reader without `queue:read_all` is answered with THEIR OWN rows only
+  // (`print_queue.list_queue` filters by `created_by_id`), so the count below is
+  // a part of the picture by construction. That is a fact about the permission,
+  // not a guess from a number — the pre-flight's own total counts every status
+  // and cannot be compared against a pending-only list.
+  const seesEveryRow = hasPermission('queue:read_all');
 
   // Shares the `queue` prefix every queue view uses, so a queue mutation
-  // refreshes it and an open confirmation cannot answer from stale rows.
-  const { data: items, isLoading } = useQuery({
-    queryKey: ['queue', 'all'],
-    queryFn: () => api.getQueue(),
+  // refreshes it and an open confirmation cannot answer from stale rows. Only
+  // pending rows are asked for — the rest are history, and it keeps this off the
+  // full unpaginated listing with five eager-loaded relations per row.
+  const { data: items, isLoading, isError } = useQuery({
+    queryKey: ['queue', 'all', 'pending'],
+    queryFn: () => api.getQueue(undefined, 'pending'),
     enabled: enabled && asked,
     staleTime: 5_000,
   });
 
   if (!asked || !enabled) return null;
   if (isLoading) return <p className="text-xs text-bambu-gray italic">{t('queueSpool.deleteNote.checking')}</p>;
+  if (isError) {
+    return <p className="text-xs text-yellow-700 dark:text-yellow-400">{t('queueSpool.deleteNote.couldNotCheck')}</p>;
+  }
 
   const archives = new Set(archiveIds);
   const files = new Set(libraryFileIds);
@@ -75,6 +94,9 @@ export function QueueSpoolDeleteNote({
         </p>
       )}
       {needsOriginal > 0 && <p>{t('queueSpool.deleteNote.needsOriginal', { count: needsOriginal })}</p>}
+      {!seesEveryRow && (
+        <p className="text-yellow-700 dark:text-yellow-400">{t('queueSpool.deleteNote.ownRowsOnly')}</p>
+      )}
     </div>
   );
 }

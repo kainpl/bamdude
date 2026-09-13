@@ -25,7 +25,7 @@ import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hoo
 import { useOrderCandidates } from '../../hooks/useOrderCandidates';
 import { OrderFilingField, type OrderFilingValue } from '../OrderFilingField';
 import { canQueueWithoutAsking } from '../../utils/bulkQueueEligibility';
-import { isUnknownOutcome, queueAddFailureText } from '../../utils/queueSource';
+import { isUnknownOutcome, queueAddOutcomeText, type QueueAddFailure } from '../../utils/queueSource';
 import { invalidateOrderCandidates, invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
 import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
@@ -1507,7 +1507,12 @@ export function PrintModal({
           showToast(t('queueSpool.failure.uncertain'), 'error');
           onClose();
         } else {
-          showToast(queueAddFailureText(t, err, { added: 0, total: 1 }), 'error');
+          // One request, one target — the reason needs no printer label, and the
+          // builder's bare form is exactly that case.
+          showToast(
+            queueAddOutcomeText(t, { added: 0, total: 1, failures: [{ label: '', error: err }] }),
+            'error',
+          );
         }
       } finally {
         setIsSubmitting(false);
@@ -1675,14 +1680,20 @@ export function PrintModal({
       queued: 0,
       errors: [],
     };
-    // ⚠️ The first failure is kept as the ERROR OBJECT, not only as its text:
-    // the refusal that explains itself to the operator is identified by its
-    // machine code (`source_copy_busy` vs `source_unreadable`), and the sentence
-    // in `results.errors` is prose the server already translated.
-    let firstFailure: unknown = null;
+    // ⚠️ Every failure is kept as the ERROR OBJECT beside the target it belongs
+    // to, not only as its text. The refusal that explains itself to the operator
+    // is identified by its machine code (`source_copy_busy` vs
+    // `source_unreadable`), and one printer's reason must never be read as
+    // every printer's: the message groups these by reason and names the
+    // printers. `results.errors` stays what it was — prose for the log-like
+    // paths that still use it.
+    const failures: QueueAddFailure[] = [];
     // A request whose answer never came back. Not a refusal: it may have been
     // committed, so the list is refreshed and nothing is re-posted (§5).
     let unknownOutcomes = 0;
+    // Printers that got at least one row out of this submit. They are unticked
+    // before the dialog is handed back, so a second press cannot duplicate them.
+    const landedOn = new Set<number>();
 
 
     // Swap-macro payload is only meaningful on a swap-enabled printer AND
@@ -1806,15 +1817,16 @@ export function PrintModal({
             createdItemIds.push(...(added.created_item_ids ?? (added.id != null ? [added.id] : [])));
           }
           results.success++;
+          landedOn.add(printerId);
           // Edit mode replaces one row; everything else writes one per copy.
           results.queued += copies;
         } catch (error) {
           results.failed++;
-          if (firstFailure === null) firstFailure = error;
           if (isUnknownOutcome(error)) unknownOutcomes++;
           const printerName = printers?.find(p => p.id === printerId)?.name || `Printer ${printerId}`;
           const plateName = plate ? (plate.name || t('printModal.plateNFallback', { index: plate.index })) : '';
           const label = plateName ? `${printerName} (${plateName})` : printerName;
+          failures.push({ label, error });
           results.errors.push(`${label}: ${(error as Error).message}`);
         }
       }
@@ -1844,39 +1856,47 @@ export function PrintModal({
       invalidateOrderCandidates(queryClient);
       onSuccess?.();
       onClose();
-    } else if (unknownOutcomes > 0 && mode === 'add-to-queue') {
-      // ⚠️ **The answer never came back, which is not the same as "it failed".**
-      // The server may well have committed before the connection died, and a
-      // second POST would be a second job — so §5's rule is refresh-and-look,
-      // never re-send. The dialog closes with it: a standing form with a live
-      // submit button is exactly the invitation to press again.
-      invalidateQueueViews(queryClient);
-      invalidateOrderCandidates(queryClient);
-      showToast(
-        results.success > 0
-          ? t('queueSpool.failure.uncertainPartial', {
-              success: results.success,
-              total: results.success + results.failed,
-            })
-          : t('queueSpool.failure.uncertain'),
-        'error',
-      );
-      onClose();
     } else if (mode === 'add-to-queue') {
-      // ⚠️ **Every add refusal leads with whether a job exists.** That is the
-      // operator's actual question, and an add is all-or-nothing per request
-      // (§5: a copy failure leaves no runnable row), so the counters answer it
-      // exactly. `success`/`failed` stay a pair of ATTEMPT counts — the partial
-      // sentence pairs them, and folding them into one number is how the
-      // queued-count bug happened.
+      // ⚠️ **Every add refusal leads with whether a job exists**, and then gives
+      // a reason PER PRINTER. That is the operator's actual question, and an add
+      // is all-or-nothing per request (§5: a copy failure leaves no runnable
+      // row), so the counters answer it exactly. `success`/`failed` stay a pair
+      // of ATTEMPT counts — the partial sentence pairs them, and folding them
+      // into one number is how the queued-count bug happened.
+      //
+      // ⚠️ **An unanswered request is not a refusal** (§5): the server may well
+      // have committed before the connection died, a second POST would be a
+      // second job, and the rule is refresh-and-look, never re-send. But the
+      // answered refusals beside it keep their own reasons — losing an
+      // actionable one to a sibling's uncertainty is the same defect as
+      // misattributing it.
+      const unknownOnly = unknownOutcomes > 0;
+      // ⚠️ **What already landed must not still be armed.** This branch used to
+      // leave the dialog standing with every printer ticked and «try again in a
+      // moment» on screen: pressing Add again gave the printer that succeeded a
+      // SECOND job. So the succeeded printers are unticked; when nothing would
+      // be left to retry (one printer, several plates, some of them refused) the
+      // dialog closes instead and the queue is where the operator looks.
+      const retryable = selectedPrinters.filter((id) => !landedOn.has(id));
+      const deselected = landedOn.size > 0 && retryable.length > 0 && !unknownOnly;
+      if (deselected) setSelectedPrinters(retryable);
       showToast(
-        queueAddFailureText(t, firstFailure, { added: results.success, total: results.success + results.failed }),
+        queueAddOutcomeText(t, {
+          added: results.success,
+          total: results.success + results.failed,
+          failures,
+          deselected,
+        }),
         'error',
       );
-      if (results.success > 0) {
+      if (results.success > 0 || unknownOnly) {
         invalidateQueueViews(queryClient);
         invalidateOrderCandidates(queryClient);
       }
+      // Closing is the honest ending whenever the form left standing could
+      // duplicate something: an unknown outcome (we do not know what landed) or
+      // a submit whose every selected printer already took work.
+      if (unknownOnly || (landedOn.size > 0 && retryable.length === 0)) onClose();
     } else if (results.success === 0) {
       showToast(t('printModal.failedPrefix', { error: results.errors[0] }), 'error');
     } else {

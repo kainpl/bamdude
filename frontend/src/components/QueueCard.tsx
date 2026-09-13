@@ -1282,7 +1282,6 @@ function PendingItemRow({
                 nothing at all for an external print or an older server. */}
             <QueueSourceIndicator
               state={item.source_storage}
-              sizeBytes={item.source_size_bytes}
               className="w-3 h-3"
             />
             <p className="text-xs text-white truncate flex-1">{name}</p>
@@ -1597,7 +1596,6 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
                     is looking at the row that is holding it (spec §10). */}
                 <QueueSourceIndicator
                   state={item.source_storage}
-                  sizeBytes={item.source_size_bytes}
                   held
                   className="w-3 h-3"
                 />
@@ -1635,7 +1633,6 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
                 <Ban className="w-3 h-3 text-bambu-gray flex-shrink-0" />
                 <QueueSourceIndicator
                   state={item.source_storage}
-                  sizeBytes={item.source_size_bytes}
                   held
                   className="w-3 h-3"
                 />
@@ -1673,7 +1670,6 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
                 <Pause className="w-3 h-3 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
                 <QueueSourceIndicator
                   state={item.source_storage}
-                  sizeBytes={item.source_size_bytes}
                   held
                   className="w-3 h-3"
                 />

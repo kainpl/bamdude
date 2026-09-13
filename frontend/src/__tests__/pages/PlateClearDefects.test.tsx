@@ -178,3 +178,33 @@ describe('the compact card', () => {
     );
   });
 });
+
+
+/**
+ * m173 changed the queue rows, not this prompt.
+ *
+ * The row held for Clear/Repeat keeps its file (§9), but the prompt is drawn from
+ * live printer state and its two answers are about the plate — ruled out of scope
+ * for a mark. What must hold is that the defects row and both answers are
+ * untouched by the change, and that no queue mark or tooltip leaks in here.
+ */
+describe('the defects prompt after the queue-source mark landed', () => {
+  beforeEach(() => localStorage.setItem('printerCardSize', '2'));
+
+  it('is unchanged, and carries no queue-source mark', async () => {
+    const posted = mockApi([{ id: 11, printer_id: 1, status: 'pending', archive_id: 500, position: 1, source_storage: 'ready' }]);
+    render(<PrintersPage />);
+    await waitForCard();
+
+    // The defects row and the two answers still work exactly as before.
+    fireEvent.click(await screen.findByTestId('plate-defects-toggle'));
+    const lid = (await screen.findByTestId('part-defective-21')) as HTMLInputElement;
+    fireEvent.change(lid, { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: /Clear plate/i }));
+    await waitFor(() => expect(posted.clear).toEqual({ defects: { parts: [{ id: 21, defective: 1 }] } }));
+
+    for (const label of ['File saved', 'Saving the file', 'Uses the original', 'Saved copy lost']) {
+      expect(screen.queryByLabelText(label)).toBeNull();
+    }
+  });
+});

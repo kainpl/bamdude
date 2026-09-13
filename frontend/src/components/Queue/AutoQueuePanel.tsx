@@ -564,7 +564,6 @@ function AutoQueueRow({
               already are — the row keeps its shape. */}
           <QueueSourceIndicator
             state={item.source_storage}
-            sizeBytes={item.source_size_bytes}
             held={item.status === 'failed' || item.status === 'cancelled'}
             className="w-3 h-3"
           />

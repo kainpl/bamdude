@@ -3679,8 +3679,14 @@ export function FileManagerPage() {
           {/* A queued print that already keeps its own copy of the file survives
               this delete and still prints; one that is still reading the file
               goes with it. Counted per row, because a bulk selection is usually
-              a mix of both (spec §10). A folder delete asks nothing: the ids of
-              what is inside it are not here, and the trash is reversible anyway. */}
+              a mix of both (spec §10).
+
+              ⚠️ A folder delete gets no COUNT — the ids of what is inside it are
+              not here and nothing counts queued work under a folder — but it is
+              not silent either: `deleteFolderConfirm` states the consequence in
+              words, including the half that surprises people. The trash being
+              reversible does not cover the queue: restoring a file clears its
+              `deleted_at` and un-cancels nothing. */}
           {deleteConfirm.type === 'folder' ? undefined : (
             <QueueSpoolDeleteNote
               libraryFileIds={deleteConfirm.type === 'bulk' ? selectedFiles : [deleteConfirm.id]}
