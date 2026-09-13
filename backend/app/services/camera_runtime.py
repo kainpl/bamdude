@@ -11,10 +11,13 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
-from typing import Literal, Protocol
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from backend.app.services.camera_metrics import CameraCaptureResult
+
+if TYPE_CHECKING:
+    from backend.app.services.camera_worker_supervisor import CameraWorkerSupervisor
 
 CameraPurpose = Literal[
     "snapshot",
@@ -40,12 +43,12 @@ class CameraCaptureRequest:
     kind: Literal["builtin", "external"]
     purpose: CameraPurpose
     timeout: int
-    ip_address: str | None = None
-    access_code: str | None = None
+    ip_address: str | None = field(default=None, repr=False)
+    access_code: str | None = field(default=None, repr=False)
     model: str | None = None
-    url: str | None = None
+    url: str | None = field(default=None, repr=False)
     camera_type: str | None = None
-    snapshot_url: str | None = None
+    snapshot_url: str | None = field(default=None, repr=False)
 
     @classmethod
     def builtin(
@@ -126,6 +129,24 @@ class InlineCameraRuntime:
             request.timeout,
             request.snapshot_url,
         )
+
+
+@dataclass
+class WorkerCameraRuntime:
+    """Explicit test/rollout adapter for the supervised capture worker.
+
+    Nothing selects this adapter globally yet.  Application startup will add a
+    validated runtime setting only after the worker's producer and relay gates
+    have passed on supported hosts.
+    """
+
+    supervisor: CameraWorkerSupervisor
+
+    async def capture(self, request: CameraCaptureRequest) -> CameraCaptureResult:
+        return await self.supervisor.capture(request)
+
+    async def stop(self) -> None:
+        await self.supervisor.stop()
 
 
 _inline_runtime = InlineCameraRuntime()

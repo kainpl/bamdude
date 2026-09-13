@@ -62,3 +62,11 @@ async def test_runtime_override_is_task_local_and_restores_inline():
 def test_capture_request_rejects_ambiguous_or_unbounded_input(factory):
     with pytest.raises(ValueError):
         factory()
+
+
+def test_capture_request_repr_hides_endpoints_and_credentials():
+    request = camera_runtime.CameraCaptureRequest.builtin(
+        ip_address="192.0.2.10", access_code="access-secret", model="P1S"
+    )
+    assert "192.0.2.10" not in repr(request)
+    assert "access-secret" not in repr(request)

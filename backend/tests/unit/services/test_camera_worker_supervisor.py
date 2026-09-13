@@ -1,8 +1,27 @@
+import asyncio
 import os
 
 import pytest
 
+from backend.app.services.camera_runtime import CameraCaptureRequest, WorkerCameraRuntime
 from backend.app.services.camera_worker_supervisor import CameraWorkerSupervisor
+
+_JPEG = b"\xff\xd8camera-worker-test\xff\xd9"
+
+
+async def _serve_snapshot(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    try:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: "
+            + str(len(_JPEG)).encode()
+            + b"\r\nConnection: close\r\n\r\n"
+            + _JPEG
+        )
+        await writer.drain()
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
 
 @pytest.mark.asyncio
@@ -71,3 +90,24 @@ async def test_harness_timeout_fallback_stops_the_contained_process_tree():
             assert supervisor._containment is None
     finally:
         await supervisor.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_runtime_relays_an_external_snapshot_without_starting_main_camera_io():
+    server = await asyncio.start_server(_serve_snapshot, host="127.0.0.1", port=0)
+    port = server.sockets[0].getsockname()[1]
+    runtime = WorkerCameraRuntime(CameraWorkerSupervisor())
+    try:
+        result = await runtime.capture(
+            CameraCaptureRequest.external(
+                url=f"http://127.0.0.1:{port}/snapshot.jpg", camera_type="snapshot", timeout=5
+            )
+        )
+        assert result.frame == _JPEG
+        assert result.source == "fresh"
+        assert result.attempt_id is not None
+        assert result.caller_wait_ms is not None
+    finally:
+        await runtime.stop()
+        server.close()
+        await server.wait_closed()

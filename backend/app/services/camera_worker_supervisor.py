@@ -1,8 +1,8 @@
-"""Harness-only supervisor for the future out-of-process camera runtime.
+"""Supervisor for the opt-in out-of-process one-shot camera runtime.
 
-This is not wired into application settings yet.  It exists to prove the child
-boundary, bootstrap authentication and bounded shutdown before moving any
-physical camera owner into another process.
+Application settings still select the inline adapter.  This module provides a
+test/rollout seam that proves child ownership, authenticated bootstrap and a
+bounded media relay before the worker becomes a production runtime.
 """
 
 from __future__ import annotations
@@ -13,12 +13,18 @@ import secrets
 import signal
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 
-from backend.app.services.camera_worker_containment import (
-    CameraWorkerContainmentError,
-    WorkerContainment,
+from backend.app.services.camera_metrics import CameraCaptureResult
+from backend.app.services.camera_worker_capture import WorkerCaptureCommand
+from backend.app.services.camera_worker_containment import CameraWorkerContainmentError, WorkerContainment
+from backend.app.services.camera_worker_media import (
+    WorkerMediaFrame,
+    read_media_frame,
+    read_media_hello,
+    valid_media_hello,
 )
 from backend.app.services.camera_worker_protocol import (
     CameraWorkerProtocolError,
@@ -55,13 +61,14 @@ class CameraWorkerSupervisor:
     _stderr_task: asyncio.Task[None] | None = None
     _stderr_bytes: int = 0
     _containment: WorkerContainment | None = None
+    _media_waiters: dict[str, asyncio.Future[WorkerMediaFrame]] = field(default_factory=dict)
 
     async def start(self) -> None:
         if self.process is not None:
             raise RuntimeError("camera worker harness is already started")
         self._prepare_start()
         self._control_server = await asyncio.start_server(self._accept_control, host="127.0.0.1", port=0)
-        self._media_server = await asyncio.start_server(self._reject_media, host="127.0.0.1", port=0)
+        self._media_server = await asyncio.start_server(self._accept_media, host="127.0.0.1", port=0)
         control_port = self._listener_port(self._control_server)
         media_port = self._listener_port(self._media_server)
         self.bootstrap = WorkerBootstrap.create(control_port=control_port, media_port=media_port)
@@ -102,7 +109,9 @@ class CameraWorkerSupervisor:
             await self.stop()
             raise CameraWorkerUnavailable("camera worker did not authenticate") from exc
 
-    async def request(self, operation: str, payload: dict | None = None) -> dict:
+    async def request(
+        self, operation: str, payload: dict | None = None, *, timeout: float = _REQUEST_TIMEOUT_SECONDS
+    ) -> dict:
         """Send one serialised request; the harness has one control reader."""
 
         if self.bootstrap is None or self._reader is None or self._writer is None:
@@ -119,10 +128,55 @@ class CameraWorkerSupervisor:
                         payload=payload or {},
                     ),
                 )
-                reply = await asyncio.wait_for(read_control(self._reader), timeout=_REQUEST_TIMEOUT_SECONDS)
+                reply = await asyncio.wait_for(read_control(self._reader), timeout=timeout)
                 return validate_reply(reply, generation=self.bootstrap.generation, request_id=request_id)
             except (CameraWorkerProtocolError, OSError, TimeoutError) as exc:
                 raise CameraWorkerUnavailable("camera worker control request failed") from exc
+
+    async def capture(self, request) -> CameraCaptureResult:
+        """Run one physical capture in the child and receive its bounded JPEG relay.
+
+        This is an opt-in runtime seam only: no application setting selects it
+        yet.  The caller supplies the already-authorised in-memory request; its
+        credentials travel only over the authenticated loopback control channel.
+        """
+
+        if self.process is None:
+            await self.start()
+        assert self.bootstrap is not None
+        started = time.monotonic()
+        session_id = str(uuid.uuid4())
+        command = WorkerCaptureCommand.from_runtime_request(request, media_session_id=session_id)
+        future: asyncio.Future[WorkerMediaFrame] = asyncio.get_running_loop().create_future()
+        self._media_waiters[session_id] = future
+        try:
+            reply = await self.request("capture", command.to_payload(), timeout=request.timeout + 2.0)
+            result = reply["result"]
+            if not reply["ok"] or result.get("frame_available") is not True:
+                return CameraCaptureResult(
+                    None,
+                    None,
+                    _optional_string(result.get("attempt_id")),
+                    _optional_timing(result.get("first_frame_ms")),
+                    cleanup_ms=_optional_timing(result.get("cleanup_ms")),
+                ).for_caller(started)
+            remaining = request.timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                raise CameraWorkerUnavailable("camera worker media relay timed out")
+            media = await asyncio.wait_for(future, timeout=remaining)
+            return CameraCaptureResult(
+                media.frame,
+                media.source,
+                media.attempt_id,
+                media.first_frame_ms,
+                cleanup_ms=media.cleanup_ms,
+            ).for_caller(started)
+        except (CameraWorkerProtocolError, TimeoutError) as exc:
+            raise CameraWorkerUnavailable("camera worker capture failed") from exc
+        finally:
+            waiter = self._media_waiters.pop(session_id, None)
+            if waiter is not None and not waiter.done():
+                waiter.cancel()
 
     async def stop(self) -> None:
         """Bound normal shutdown, then terminate only this supervisor's child."""
@@ -158,6 +212,7 @@ class CameraWorkerSupervisor:
         self.process = None
         self._reader = None
         self._writer = None
+        self._fail_media_waiters()
 
     async def _terminate_uncontained_process(self) -> None:
         """Clean up a child when attaching its required containment failed."""
@@ -231,14 +286,33 @@ class CameraWorkerSupervisor:
                 except OSError:
                     pass
 
-    async def _reject_media(self, _reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        # A separate listener exists so media can never head-of-line-block control.
-        # No media contract is enabled until CW-03 owns physical producers.
-        writer.close()
+    async def _accept_media(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """Accept exactly one authenticated JPEG for an admitted capture lease."""
+
         try:
-            await writer.wait_closed()
-        except OSError:
-            pass
+            hello = await asyncio.wait_for(read_media_hello(reader), timeout=_STARTUP_TIMEOUT_SECONDS)
+            if self.bootstrap is None or not valid_media_hello(
+                hello, generation=self.bootstrap.generation, secret=self.bootstrap.secret
+            ):
+                return
+            waiter = self._media_waiters.get(hello.session_id)
+            if waiter is None or waiter.done():
+                return
+            frame = await asyncio.wait_for(read_media_frame(reader), timeout=_REQUEST_TIMEOUT_SECONDS)
+            if frame.generation != self.bootstrap.generation or frame.session_id != hello.session_id:
+                raise CameraWorkerProtocolError("media frame belongs to another capture")
+            waiter.set_result(frame)
+        except (CameraWorkerProtocolError, OSError, TimeoutError):
+            if "hello" in locals():
+                waiter = self._media_waiters.get(hello.session_id)
+                if waiter is not None and not waiter.done():
+                    waiter.set_exception(CameraWorkerUnavailable("camera worker media relay failed"))
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
 
     def _is_valid_hello(self, request: dict) -> bool:
         if self.bootstrap is None:
@@ -268,6 +342,7 @@ class CameraWorkerSupervisor:
 
     def _close_listeners(self) -> None:
         self._connection_closed.set()
+        self._fail_media_waiters()
         for server in (self._control_server, self._media_server):
             if server is not None:
                 server.close()
@@ -288,3 +363,17 @@ class CameraWorkerSupervisor:
         self._connection_closed.clear()
         self._stderr_task = None
         self._stderr_bytes = 0
+        self._media_waiters.clear()
+
+    def _fail_media_waiters(self) -> None:
+        for waiter in self._media_waiters.values():
+            if not waiter.done():
+                waiter.set_exception(CameraWorkerUnavailable("camera worker stopped before media relay completed"))
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) and len(value) <= 128 else None
+
+
+def _optional_timing(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and 0 <= value <= 120_000 else None
