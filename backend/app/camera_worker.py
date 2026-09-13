@@ -145,11 +145,13 @@ async def run(bootstrap: WorkerBootstrap) -> int:
             LIVE_STREAM_ENDED,
             LiveExternalSubscription,
             LiveProducerRegistry,
+            RawProxyCommand,
         )
 
         live_registry = LiveProducerRegistry()
         live_leases = {}
         live_forwarders: dict[str, asyncio.Task[None]] = {}
+        raw_proxies: dict[str, tuple[object, object, asyncio.Task[None]]] = {}
 
         async def release_live_lease(lease_id: str, *, cancel_forwarder: bool) -> bool:
             """Release both halves of a live lease exactly once.
@@ -180,6 +182,28 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                 asyncio.create_task(
                     release_live_lease(lease_id, cancel_forwarder=False),
                     name=f"camera-worker-live-release-{lease_id}",
+                )
+
+        async def release_raw_proxy(lease_id: str) -> bool:
+            """Stop transparent VP transport before releasing its exclusive lease."""
+
+            entry = raw_proxies.pop(lease_id, None)
+            if entry is None:
+                return False
+            lease, proxy, task = entry
+            await proxy.stop()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await live_registry.release_raw(lease)
+            return True
+
+        def release_finished_raw_proxy(completed: asyncio.Task[None], lease_id: str) -> None:
+            if not completed.cancelled():
+                completed.exception()
+            if lease_id in raw_proxies:
+                asyncio.create_task(
+                    release_raw_proxy(lease_id),
+                    name=f"camera-worker-raw-release-{lease_id}",
                 )
 
         while True:
@@ -305,12 +329,61 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                     ok=True,
                     result={"released": released},
                 )
+            elif operation == "start_raw_proxy":
+                try:
+                    command = RawProxyCommand.from_payload(request["payload"])
+                    lease = await live_registry.acquire_raw(command.identity)
+                    from backend.app.services.virtual_printer.tcp_proxy import TCPProxy
+
+                    proxy = TCPProxy(
+                        name=f"WorkerCamera-{command.listen_port}",
+                        listen_port=command.listen_port,
+                        target_host=command.target_host,
+                        target_port=command.target_port,
+                        bind_address=command.bind_address,
+                    )
+                    task = asyncio.create_task(proxy.start(), name=f"camera-worker-raw-{lease.lease_id}")
+                    try:
+                        await asyncio.wait_for(proxy.ready.wait(), timeout=5.0)
+                    except TimeoutError:
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                        await live_registry.release_raw(lease)
+                        raise CameraWorkerProtocolError("raw proxy did not become ready")
+                    raw_proxies[lease.lease_id] = (lease, proxy, task)
+                    task.add_done_callback(
+                        lambda completed, lease_id=lease.lease_id: release_finished_raw_proxy(completed, lease_id)
+                    )
+                    reply = make_reply(
+                        generation=bootstrap.generation,
+                        request_id=request["request_id"],
+                        ok=True,
+                        result={"lease_id": lease.lease_id},
+                    )
+                except (CameraWorkerProtocolError, RuntimeError):
+                    reply = make_reply(
+                        generation=bootstrap.generation,
+                        request_id=request["request_id"],
+                        ok=False,
+                        error="protocol_error",
+                    )
+            elif operation == "stop_raw_proxy":
+                lease_id = request["payload"].get("lease_id")
+                released = await release_raw_proxy(lease_id) if isinstance(lease_id, str) else False
+                reply = make_reply(
+                    generation=bootstrap.generation,
+                    request_id=request["request_id"],
+                    ok=True,
+                    result={"released": released},
+                )
             elif operation == "shutdown":
                 for task in capture_tasks:
                     task.cancel()
                 await asyncio.gather(*capture_tasks, return_exceptions=True)
                 for lease_id in tuple(live_leases):
                     await release_live_lease(lease_id, cancel_forwarder=True)
+                for lease_id in tuple(raw_proxies):
+                    await release_raw_proxy(lease_id)
                 async with write_lock:
                     await write_control(
                         writer,

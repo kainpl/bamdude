@@ -28,6 +28,38 @@ class RawCameraLease:
 
 
 @dataclass(frozen=True, kw_only=True)
+class RawProxyCommand:
+    """Validated transparent TCP lease for a Virtual Printer camera endpoint."""
+
+    identity: str
+    bind_address: str
+    listen_port: int
+    target_host: str = field(repr=False)
+    target_port: int
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> RawProxyCommand:
+        if set(payload) != {"identity", "bind_address", "listen_port", "target_host", "target_port"}:
+            raise CameraWorkerProtocolError("raw proxy has an invalid schema")
+        try:
+            return cls(**payload)
+        except (TypeError, ValueError) as exc:
+            raise CameraWorkerProtocolError("raw proxy is invalid") from exc
+
+    def __post_init__(self) -> None:
+        try:
+            uuid.UUID(self.identity)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError("raw proxy identity is invalid") from exc
+        for value, label in ((self.bind_address, "bind address"), (self.target_host, "target host")):
+            if not isinstance(value, str) or not 0 < len(value) <= 255 or any(c in value for c in "\r\n"):
+                raise ValueError(f"raw proxy {label} is invalid")
+        for value in (self.listen_port, self.target_port):
+            if not isinstance(value, int) or not 1 <= value <= 65535:
+                raise ValueError("raw proxy port is invalid")
+
+
+@dataclass(frozen=True, kw_only=True)
 class LiveExternalSubscription:
     """Validated worker command for one external physical producer identity."""
 

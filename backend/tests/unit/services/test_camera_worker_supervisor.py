@@ -1,5 +1,6 @@
 import asyncio
 import os
+import socket
 import uuid
 
 import pytest
@@ -204,3 +205,45 @@ async def test_worker_runtime_adapts_external_live_lease_to_mjpeg_and_releases_i
         await runtime.stop()
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_worker_owns_and_releases_transparent_raw_camera_proxy():
+    async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while data := await reader.read(1024):
+                writer.write(data)
+                await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    target = await asyncio.start_server(echo, host="127.0.0.1", port=0)
+    target_port = target.sockets[0].getsockname()[1]
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        listen_port = reservation.getsockname()[1]
+
+    supervisor = CameraWorkerSupervisor()
+    try:
+        lease_id = await supervisor.start_raw_proxy(
+            identity=str(uuid.uuid4()),
+            bind_address="127.0.0.1",
+            listen_port=listen_port,
+            target_host="127.0.0.1",
+            target_port=target_port,
+        )
+        reader, writer = await asyncio.open_connection("127.0.0.1", listen_port)
+        writer.write(b"raw-camera")
+        await writer.drain()
+        assert await reader.readexactly(10) == b"raw-camera"
+        writer.close()
+        await writer.wait_closed()
+
+        await supervisor.stop_raw_proxy(lease_id)
+        with pytest.raises(OSError):
+            await asyncio.open_connection("127.0.0.1", listen_port)
+    finally:
+        await supervisor.stop()
+        target.close()
+        await target.wait_closed()

@@ -191,6 +191,29 @@ class WorkerCameraRuntime:
         finally:
             await self.supervisor.unsubscribe(lease_id, queue)
 
+    async def start_raw_proxy(
+        self,
+        *,
+        identity: str,
+        bind_address: str,
+        listen_port: int,
+        target_host: str,
+        target_port: int,
+    ) -> str:
+        """Delegate Virtual Printer's byte-for-byte camera endpoint to the worker."""
+
+        uuid.UUID(identity)
+        return await self.supervisor.start_raw_proxy(
+            identity=identity,
+            bind_address=bind_address,
+            listen_port=listen_port,
+            target_host=target_host,
+            target_port=target_port,
+        )
+
+    async def stop_raw_proxy(self, lease_id: str) -> None:
+        await self.supervisor.stop_raw_proxy(lease_id)
+
     async def stop(self) -> None:
         await self.supervisor.stop()
 

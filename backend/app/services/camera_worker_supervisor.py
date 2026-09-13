@@ -233,6 +233,40 @@ class CameraWorkerSupervisor:
         finally:
             self._end_live_queue(queue)
 
+    async def start_raw_proxy(
+        self,
+        *,
+        identity: str,
+        bind_address: str,
+        listen_port: int,
+        target_host: str,
+        target_port: int,
+    ) -> str:
+        """Bind a worker-owned transparent VP camera listener and return its lease."""
+
+        if self.process is None:
+            await self.start()
+        reply = await self.request(
+            "start_raw_proxy",
+            {
+                "identity": identity,
+                "bind_address": bind_address,
+                "listen_port": listen_port,
+                "target_host": target_host,
+                "target_port": target_port,
+            },
+            timeout=_STARTUP_TIMEOUT_SECONDS + _REQUEST_TIMEOUT_SECONDS,
+        )
+        lease_id = reply["result"].get("lease_id")
+        if not reply["ok"] or not isinstance(lease_id, str):
+            raise CameraWorkerUnavailable("camera worker rejected raw camera lease")
+        return lease_id
+
+    async def stop_raw_proxy(self, lease_id: str) -> None:
+        """Release a previously admitted worker-owned transparent listener."""
+
+        await self.request("stop_raw_proxy", {"lease_id": lease_id})
+
     async def stop(self) -> None:
         """Bound normal shutdown, then terminate only this supervisor's child."""
 

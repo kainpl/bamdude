@@ -7,6 +7,7 @@ bound to its dedicated IP address, regardless of mode.
 import asyncio
 import logging
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -272,6 +273,7 @@ class VirtualPrinterInstance:
         self._mqtt: SimpleMQTTServer | None = None
         self._mqtt_bridge: MQTTBridge | None = None
         self._rtsp_proxy: TCPProxy | None = None
+        self._worker_camera_lease: str | None = None
         self._bind: BindServer | None = None
         self._ssdp: VirtualPrinterSSDPServer | None = None
         self._ssdp_proxy: SSDPProxy | None = None
@@ -1771,16 +1773,6 @@ class VirtualPrinterInstance:
             # spoofed identity has no bearing on how the real device serves its
             # camera. The ``_rtsp_proxy`` attribute name is kept for a tight diff;
             # it doubles as chamber-image passthrough on A1/P1.
-            from backend.app.core.config import settings as app_settings
-
-            if app_settings.camera_runtime == "worker":
-                # A VP camera listener is transparent raw TCP, while the
-                # worker currently owns JPEG relay leases. Starting this old
-                # direct proxy alongside the worker would create two physical
-                # camera owners. Refuse the VP until the raw worker lease is
-                # connected to this listener; never fall back silently.
-                raise RuntimeError("virtual-printer camera passthrough requires worker raw-lease support")
-
             target_client = self._printer_manager.get_client(self.target_printer_id)
             target_ip = getattr(target_client, "ip_address", None) if target_client else None
             target_model = getattr(target_client, "model", None) if target_client else None
@@ -1788,19 +1780,35 @@ class VirtualPrinterInstance:
                 from backend.app.services.camera import get_camera_port
 
                 camera_port = get_camera_port(target_model)
-                self._rtsp_proxy = TCPProxy(
-                    name=f"Camera-{camera_port}",
-                    listen_port=camera_port,
-                    target_host=target_ip,
-                    target_port=camera_port,
-                    bind_address=bind_addr,
-                )
-                self._tasks.append(
-                    asyncio.create_task(
-                        run_with_logging(self._rtsp_proxy.start(), f"Camera-{camera_port}"),
-                        name=f"vp_{self.id}_camera",
+                if app_settings.camera_runtime == "worker":
+                    from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
+
+                    runtime = get_camera_runtime()
+                    if not isinstance(runtime, WorkerCameraRuntime):
+                        raise RuntimeError("worker camera runtime is not available")
+                    self._worker_camera_lease = await runtime.start_raw_proxy(
+                        identity=str(
+                            uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:printer:{self.target_printer_id}:builtin")
+                        ),
+                        bind_address=bind_addr,
+                        listen_port=camera_port,
+                        target_host=target_ip,
+                        target_port=camera_port,
                     )
-                )
+                else:
+                    self._rtsp_proxy = TCPProxy(
+                        name=f"Camera-{camera_port}",
+                        listen_port=camera_port,
+                        target_host=target_ip,
+                        target_port=camera_port,
+                        bind_address=bind_addr,
+                    )
+                    self._tasks.append(
+                        asyncio.create_task(
+                            run_with_logging(self._rtsp_proxy.start(), f"Camera-{camera_port}"),
+                            name=f"vp_{self.id}_camera",
+                        )
+                    )
 
         # Bind server
         self._bind = BindServer(
@@ -1891,6 +1899,16 @@ class VirtualPrinterInstance:
             except Exception:
                 logger.exception("[VP %s] Camera proxy stop failed", self.name)
             self._rtsp_proxy = None
+        if self._worker_camera_lease:
+            try:
+                from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
+
+                runtime = get_camera_runtime()
+                if isinstance(runtime, WorkerCameraRuntime):
+                    await runtime.stop_raw_proxy(self._worker_camera_lease)
+            except Exception:
+                logger.exception("[VP %s] Worker camera proxy stop failed", self.name)
+            self._worker_camera_lease = None
         if self._ftp:
             await self._ftp.stop()
             self._ftp = None
