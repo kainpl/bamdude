@@ -495,6 +495,16 @@ class AutoQueueScheduler:
                 queue_id=printer_queue.id,
                 archive_id=item.archive_id,
                 library_file_id=item.library_file_id,
+                # m173: the promoted row prints the bytes the router row already
+                # captured — never a new read of the original (queue-source-spool
+                # spec §7). Both rows then own the blob until the shared cleanup:
+                # the assignment is not a hand-off of the only reference, and this
+                # carry needs no storage guard because the router row is read live
+                # in this same transaction, so the blob cannot be released under
+                # it. The snapshot travels beside the id: it is what keeps the
+                # display name and the plate fallback with the job.
+                queue_source_id=item.queue_source_id,
+                source_snapshot=item.source_snapshot,
                 project_id=item.project_id,
                 project_line_id=item.project_line_id,
                 position=next_pos,

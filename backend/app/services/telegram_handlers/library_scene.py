@@ -16,6 +16,7 @@ from backend.app.services.telegram_handlers.common import (
     get_printers_data,
     has_perm,
     next_queue_position,
+    refusal_text,
     resolve_queue_id,
     scene_expired,
 )
@@ -338,28 +339,66 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
         return
 
     from backend.app.core.database import async_session
+    from backend.app.models.library import LibraryFile
     from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.services import queue_sources
+    from backend.app.services.queue_source_capture import (
+        capture_staged,
+        discard_staged,
+        plan_capture,
+        publish_staged,
+    )
 
     queue_id = await resolve_queue_id(printer_id)
     if queue_id is None:
         await callback.answer(t(lang, NS, "library.failed"), show_alert=True)
         return
 
+    staged = None
     try:
+        # \u26a0\ufe0f The file is copied into ``queue-spool`` BEFORE the row exists (spec
+        # \u00a75): the operator pressed a button on a phone, and the job has to
+        # survive the machine that file came from being shut down. The session is
+        # closed for the copy \u2014 it can take minutes over a share \u2014 and the row is
+        # written inside the publication's own transaction, with the blob's.
         async with async_session() as db:
-            item = PrintQueueItem(
-                queue_id=queue_id,
-                library_file_id=file_id,
-                status="pending",
-                position=await next_queue_position(db, queue_id),
-                created_by_id=tg_chat.user_id if tg_chat else None,
-            )
-            db.add(item)
-            await db.commit()
+            # \u26a0\ufe0f ``file_id`` is a LIBRARY id and is resolved as one, with no
+            # fall-through to any other table: archive ids and library ids are
+            # independent sequences, so a stale id very often names a real,
+            # unrelated archive \u2014 and capturing THAT would queue a stranger's
+            # model under this file's name (see ``queue_batch.py``). It is also
+            # the first time this door checks the file exists at all.
+            library_file = (
+                await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+            ).scalar_one_or_none()
+            if library_file is None:
+                await callback.answer(t(lang, NS, "library.failed"), show_alert=True)
+                return
+            plan = plan_capture(library_file=library_file)
+        staged = await capture_staged(plan)
 
+        async def attach(session, source) -> None:
+            session.add(
+                PrintQueueItem(
+                    queue_source_id=source.id,
+                    source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
+                    queue_id=queue_id,
+                    library_file_id=file_id,
+                    status="pending",
+                    position=await next_queue_position(session, queue_id),
+                    created_by_id=tg_chat.user_id if tg_chat else None,
+                )
+            )
+
+        await publish_staged(staged, attach)
         await callback.answer(f"\u2705 {t(lang, NS, 'library.queued')}")
-    except Exception:
-        await callback.answer(t(lang, NS, "library.failed"), show_alert=True)
+    except Exception as exc:
+        # Whatever went wrong, the bytes nobody is going to print are given back
+        # (\u00a75 step 7) \u2014 and the operator is told which refusal it was, not just
+        # "failed": busy, no space and an unreadable source are different answers
+        # and only one of them means "try again in a moment".
+        await discard_staged(staged)
+        await callback.answer(refusal_text(exc, lang, "library.failed"), show_alert=True)
 
     # Return to main menu
     from backend.app.services.telegram_handlers.start import cmd_start

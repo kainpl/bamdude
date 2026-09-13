@@ -8,7 +8,12 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 
 from backend.app.models.printer_queue import PrinterQueue
-from backend.app.services.filament_intake import item_source, require_source_requirements, routing_detail
+from backend.app.services.filament_intake import (
+    item_descriptor,
+    item_source,
+    require_source_requirements,
+    routing_detail,
+)
 from backend.app.services.filament_policy import CHOICE_FIELDS, choices_policy, decode, queue_policy, serialize_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.printer_manager import printer_manager
@@ -16,21 +21,49 @@ from backend.app.services.queue_source_capture import staged_requirements
 
 
 async def prepare_routing(
-    db, *, printer_id, archive_id=None, library_file_id=None, options=None, cache=None, library_file=None, staged=None
+    db,
+    *,
+    printer_id,
+    archive_id=None,
+    library_file_id=None,
+    options=None,
+    cache=None,
+    library_file=None,
+    staged=None,
+    descriptor=None,
 ):
     """Routing intent for one source, read from the bytes the job will print.
 
-    ``staged`` is a ``queue_source_capture.StagedSource`` when the caller has
-    already captured those bytes: the requirements then come from that copy
-    (spec §5 step 4) rather than from the original, through the one helper that
-    knows how to read a staged file. Everything after the read — the policy, the
-    override check, the serialized intent — is untouched, because it is the same
-    evidence out of the same bytes.
+    Three ways to name those bytes, and they are mutually exclusive:
+
+    * ``staged`` — a ``queue_source_capture.StagedSource``, i.e. an add that has
+      just captured its source and is deciding whether to publish it (spec §5
+      step 4);
+    * ``descriptor`` — the published object of a job that already has one, for an
+      EDIT of that job (§7: after a capture nothing re-reads the original, and
+      the original row may be gone);
+    * neither — a legacy row or a pre-capture preview, read from the original.
+
+    Everything after the read — the policy, the override check, the serialized
+    intent — is untouched, because it is the same evidence out of the same bytes.
     """
     options = options or {}
-    source = SimpleNamespace(archive_id=archive_id, library_file_id=library_file_id)
-    archive, library = (None, library_file) if library_file is not None else await item_source(db, source)
-    reader = require_source_requirements if staged is None else partial(staged_requirements, staged)
+    if descriptor is not None:
+        # The rows are provenance only here, and asking for them would be a read
+        # that can fail for a reason this job no longer depends on (a trashed
+        # library file answers ``None`` through ``LibraryFile.active()``).
+        archive, library = None, None
+    elif library_file is not None:
+        archive, library = None, library_file
+    else:
+        archive, library = await item_source(
+            db, SimpleNamespace(archive_id=archive_id, library_file_id=library_file_id)
+        )
+    reader = (
+        partial(staged_requirements, staged)
+        if staged is not None
+        else partial(require_source_requirements, descriptor=descriptor)
+    )
     req = await reader(
         cache or PrintRequirementsCache(),
         archive,
@@ -51,10 +84,11 @@ async def prepare_routing(
         requirements=req,
         # ⚠️ Passed explicitly rather than left to ``serialize_policy`` to take off
         # the requirements: it reads the resolved plate only inside the branch that
-        # also records the source revision, and a capture whose original vanished
-        # inside the copy window legitimately has no revision. Without this the
-        # stored intent would lose ``resolved_plate_id`` along with it, and
-        # preflight's ``plate_selection_required`` gate would go quiet for that job.
+        # also records a source revision, and a captured source deliberately has
+        # none (see ``queue_source_capture.staged_requirements`` — an mtime is the
+        # wrong identity for a frozen copy). Without this the stored intent would
+        # lose ``resolved_plate_id`` with it, and preflight's
+        # ``plate_selection_required`` gate would go quiet for every such job.
         plate_id=req.resolved_plate_id,
         printer_id=printer_id,
     ), req.resolved_plate_id
@@ -85,6 +119,11 @@ async def routing_update(db, item, changes, cache=None):
         library_file_id=item.library_file_id,
         options=choices,
         cache=cache,
+        # An edit re-reads the source, and for a job with a snapshot that source
+        # is the captured copy — never the original, which is the whole point of
+        # having captured it: moving such a job to another plate or printer used
+        # to be impossible once its library row had been trashed.
+        descriptor=await item_descriptor(db, item),
     )
     if routing:
         stored = json.loads(routing)

@@ -16,6 +16,7 @@ from backend.app.services.telegram_handlers.common import (
     get_printers_data,
     has_perm,
     next_queue_position,
+    refusal_text,
     resolve_queue_id,
     scene_expired,
 )
@@ -399,10 +400,12 @@ async def _add_to_auto_queue(
     file queued from the browser also matches on filament. Two tiers with two
     behaviours for one action is exactly the drift this tier exists to avoid.
 
-    ⚠️ The extractor never raises — a corrupted or truncated 3MF yields empty
-    fields — so a file we cannot read still queues, just with model-only
-    routing. Refusing there would be worse: the operator picked a target that
-    is perfectly valid.
+    ⚠️ A file the server cannot read is REFUSED here, and deliberately so: the
+    writer reads the requirements out of the 3MF it has just copied into the
+    queue spool, and a source it cannot parse has no plate, no filaments and
+    nothing to print. The refusal carries its own reason (see the handler below),
+    which is what the operator needs — the target they picked was fine, the file
+    was not.
     """
 
     from sqlalchemy import select
@@ -439,8 +442,11 @@ async def _add_to_auto_queue(
             pos = item.position
 
         await callback.answer(f"✅ {t(lang, NS, 'queue_add.added', pos=pos)}")
-    except Exception:
-        await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
+    except Exception as exc:
+        # The writer captures the file (spec §5) and refuses with a reason — busy,
+        # no space, an unreadable source. "Failed" made all of those look like the
+        # same permanent rejection.
+        await callback.answer(refusal_text(exc, lang, "queue_add.failed"), show_alert=True)
 
     from backend.app.services.telegram_handlers.queue import render_queue
 
@@ -477,36 +483,72 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
         await scene_expired(callback, lang)
         return
 
+    if not printer_id:
+        await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
+        return
+
+    queue_id = await resolve_queue_id(printer_id)
+    if queue_id is None:
+        await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
+        return
+
+    from backend.app.models.library import LibraryFile
+    from backend.app.services import queue_sources
+    from backend.app.services.filament_policy_write import prepare_routing
+    from backend.app.services.queue_source_capture import (
+        capture_staged,
+        discard_staged,
+        plan_capture,
+        publish_staged,
+    )
+
+    staged = None
     try:
         async with async_session() as db:
-            if not printer_id:
+            # A LIBRARY id, resolved as one, with no fall-through to any other
+            # table \u2014 see the same note in ``library_scene``: a stale id can name
+            # a real archive, whose bytes are somebody else's model.
+            library_file = (
+                await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+            ).scalar_one_or_none()
+            if library_file is None:
                 await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
                 return
+            plan = plan_capture(library_file=library_file)
+        # Copy first, holding no session (spec \u00a75 steps 1-3), then read the
+        # routing out of the COPY: the plate this job prints and the filaments it
+        # needs are evidence about bytes, and those bytes are now ours.
+        staged = await capture_staged(plan)
+        positions: list[int] = []
+        async with async_session() as db:
+            routing, plate_id = await prepare_routing(
+                db, printer_id=printer_id, library_file_id=file_id, library_file=library_file, staged=staged
+            )
 
-            queue_id = await resolve_queue_id(printer_id)
-            if queue_id is None:
-                await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
-                return
-
-            from backend.app.services.filament_policy_write import prepare_routing
-
-            routing, plate_id = await prepare_routing(db, printer_id=printer_id, library_file_id=file_id)
+        async def attach(session, source) -> None:
             item = PrintQueueItem(
+                queue_source_id=source.id,
+                source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
                 queue_id=queue_id,
                 library_file_id=file_id,
                 filament_routing=routing,
                 plate_id=plate_id,
                 status="pending",
-                position=await next_queue_position(db, queue_id),
+                position=await next_queue_position(session, queue_id),
                 created_by_id=tg_chat.user_id if tg_chat else None,
             )
-            db.add(item)
-            await db.commit()
-            pos = item.position
+            session.add(item)
+            await session.flush()
+            positions.append(item.position)
 
-        await callback.answer(f"\u2705 {t(lang, NS, 'queue_add.added', pos=pos)}")
-    except Exception:
-        await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
+        await publish_staged(staged, attach)
+        await callback.answer(f"\u2705 {t(lang, NS, 'queue_add.added', pos=positions[0])}")
+    except Exception as exc:
+        # The bytes nobody is going to print go back (\u00a75 step 7), and the
+        # operator hears which refusal it was: a copy that is busy means "try
+        # again in a moment", a full spool does not.
+        await discard_staged(staged)
+        await callback.answer(refusal_text(exc, lang, "queue_add.failed"), show_alert=True)
 
     from backend.app.services.telegram_handlers.queue import render_queue
 

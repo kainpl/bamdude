@@ -19,9 +19,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
+from backend.app.core.config import settings
 from backend.app.models.queue_source import STATE_READY
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from backend.app.models.queue_source import QueueSource
 
 #: What the API says about a job's source (spec §8). Add-only response field
 #: ``source_storage``; the five values are closed.
@@ -119,6 +123,43 @@ def source_snapshot(descriptor: QueueSourceDescriptor) -> dict[str, Any]:
         "format": descriptor.format,
         "plate_fallback": descriptor.plate_fallback,
     }
+
+
+def stored_descriptor(source: QueueSource, snapshot: dict[str, Any] | None) -> QueueSourceDescriptor:
+    """Read back what :func:`source_snapshot` wrote — the job's own source.
+
+    The mirror of the builder above, and deliberately the only one: a reader that
+    picked the payload apart itself would be free to disagree about which key
+    holds the plate.
+
+    **The bytes come from the ROW, the names from the snapshot.** The row is the
+    disk truth (the object may have been published long before this job existed,
+    and ``restore`` moves the whole tree), while the filename and the plate
+    fallback are the job's — two people may have queued the same bytes under
+    different names (§4, A04).
+
+    A payload written under another ``version`` is not parsed: the path, format,
+    hash and size still come from the row, so the job still reads the **right
+    bytes**, and only the display name and the plate fallback degrade to what the
+    row alone can say. That is the opposite trade-off from
+    ``filament_policy.deserialize_policy``, which must refuse an unknown version
+    outright because there the payload IS the meaning; here it is provenance.
+    """
+    payload = snapshot if isinstance(snapshot, dict) and snapshot.get("version") == SOURCE_SNAPSHOT_VERSION else {}
+    provenance = payload.get("provenance")
+    return QueueSourceDescriptor(
+        path=Path(settings.base_dir) / source.relative_path,
+        format=source.format,
+        sha256=source.sha256,
+        size_bytes=source.size_bytes,
+        # The object's own name is a hash and must never reach the UI or the
+        # printer as one (§4) — but a row whose snapshot is missing or
+        # unreadable has nothing better, and a reader that raised here would
+        # take down a job whose bytes are perfectly fine.
+        display_filename=payload.get("display_filename") or Path(source.relative_path).name,
+        plate_fallback=payload.get("plate_fallback"),
+        provenance=dict(provenance) if isinstance(provenance, dict) else {},
+    )
 
 
 def source_storage_state(

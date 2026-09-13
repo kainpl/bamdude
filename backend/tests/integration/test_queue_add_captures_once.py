@@ -566,17 +566,18 @@ async def test_the_requirements_are_read_from_the_copy_not_the_original(
     assert items[0].queue_source_id == (await blobs(db_session))[0].id
 
 
-async def test_a_lost_original_costs_the_revision_and_nothing_else(
+async def test_a_lost_original_costs_nothing_the_job_needs(
     db_session, tmp_path, printer_factory, monkeypatch, sessions
 ):
-    """The original vanishing inside the capture window must not cost the plate.
+    """The original vanishing inside the capture window must cost the job nothing.
 
-    The revision stored in the routing intent still describes the ORIGINAL (until
-    routing v2 anchors identity on the snapshot's hash), so a file that disappears
-    between the copy and that read leaves the comparison out — as every row
-    written before revisions existed does. The **resolved plate** is not the
-    original's to lose: it came out of the captured bytes, and preflight refuses
-    with ``plate_selection_required`` when the stored intent has none.
+    The routing intent records **no file revision** for a captured source at all
+    (see ``queue_source_capture.staged_requirements``: an mtime is the wrong
+    identity for a frozen copy, and routing v2 puts the snapshot's hash there),
+    so an original that disappears between the copy and the rows takes nothing
+    with it. What must survive is the **resolved plate**: it came out of the
+    captured bytes, and preflight refuses with ``plate_selection_required`` when
+    the stored intent has none.
     """
     source, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     await db_session.commit()
@@ -597,7 +598,7 @@ async def test_a_lost_original_costs_the_revision_and_nothing_else(
     assert len(items) == 2
     stored = json.loads(items[0].filament_routing)
     assert stored["resolved_plate_id"] == 15
-    assert stored["source_identity"].get("revision") is None, "the revision is the one thing that is lost"
+    assert stored["source_identity"].get("revision") is None, "a captured source records no revision"
     assert {item.plate_id for item in items} == {15}
 
 

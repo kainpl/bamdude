@@ -1044,9 +1044,16 @@ class VirtualPrinterInstance:
                 logger.error("[VP %s] Failed to save to library: %s", self.name, file_path.name)
                 return
 
-            # Step 2: pick a queue based on the library row's metadata and
-            # link a queue item to it.
+            # Step 2: pick a queue based on the library row's metadata, copy the
+            # file into the queue spool and link the queue items to that copy.
             from backend.app.models.print_queue import PrintQueueItem
+            from backend.app.services import queue_sources
+            from backend.app.services.queue_source_capture import (
+                capture_staged,
+                discard_staged,
+                plan_capture,
+                publish_staged,
+            )
 
             sliced_model = None
             if isinstance(library_file.file_metadata, dict):
@@ -1080,20 +1087,10 @@ class VirtualPrinterInstance:
                 # rows can't serve here (upstream Bambuddy #1235).
                 system_opts = await self._load_system_print_options(db, queue.printer_id)
 
-                # Append at the tail: MAX(position) for this queue, then hand
-                # consecutive positions to each plate so a Send All keeps
-                # plate-order execution. A hardcoded position=1 stacked every
-                # VP-queued print at the head, so two slicer Sends in a row
-                # collided on position 1 and their order became arbitrary
-                # (upstream Bambuddy v0.2.4.5).
-                from sqlalchemy import func as sa_func, select as sa_select
-
-                max_pos = await db.scalar(
-                    sa_select(sa_func.coalesce(sa_func.max(PrintQueueItem.position), 0)).where(
-                        PrintQueueItem.queue_id == queue.id
-                    )
-                )
-                base_pos = max_pos or 0
+                # As values: the rows below are written by the publication's own
+                # transaction (m173), and an ORM attribute reached across the end
+                # of this session would be a lazy load on an async session.
+                queue_id, printer_id = queue.id, queue.printer_id
 
                 # Precedence per flag: slicer value → system fallback → column
                 # default (see ``_resolve_print_option``). Resolved once — only
@@ -1179,97 +1176,141 @@ class VirtualPrinterInstance:
                         if raw_nozzle_mapping is not None:
                             nozzle_mapping_json = json.dumps(raw_nozzle_mapping)
 
+                plan = plan_capture(library_file=library_file)
+
+            # ⚠️ The session is CLOSED for the copy (spec §5 step 1): the slicer's
+            # upload is already on our disk, but it lands in the VP's own inbox and
+            # the library — the queue prints from ``queue-spool``, and copying
+            # there must not hold a read snapshot (on SQLite, the write lock) of
+            # the whole database. ONE capture serves every plate of a Send All.
+            staged = await capture_staged(plan)
+            try:
                 from backend.app.services.filament_policy_write import prepare_routing
                 from backend.app.services.filament_requirements import PrintRequirementsCache
 
-                cache = PrintRequirementsCache()
-                routed_plates = [
-                    await prepare_routing(
-                        db,
-                        printer_id=queue.printer_id,
-                        library_file_id=library_file.id,
-                        library_file=library_file,
-                        options={"plate_id": plate, "ams_mapping": ams_mapping_json, "use_ams": use_ams},
-                        cache=cache,
-                    )
-                    for plate in plate_ids
-                ]
+                async with self._session_factory() as db:
+                    # §5 step 4 — the routing, and with it the resolved plate, come
+                    # out of the CAPTURED bytes. A plate the file does not have is
+                    # refused here, with the copy still in hand and nothing
+                    # published.
+                    cache = PrintRequirementsCache()
+                    routed_plates = [
+                        await prepare_routing(
+                            db,
+                            printer_id=printer_id,
+                            library_file_id=library_file.id,
+                            library_file=library_file,
+                            options={"plate_id": plate, "ams_mapping": ams_mapping_json, "use_ams": use_ams},
+                            cache=cache,
+                            staged=staged,
+                        )
+                        for plate in plate_ids
+                    ]
                 queue_item_ids: list[int] = []
-                # ⚠️ No ``created_by_id`` here, and that is the answer rather
-                # than a gap. A VirtualPrinter carries no owner, and the obvious
-                # substitute is wrong rather than incomplete: one admin
-                # typically configures the VP while everyone slices through it,
-                # so crediting these to that admin would make the "added by"
-                # column lie and drop other people's jobs into their queue.
-                # Every other path that builds a queue item DOES set it —
-                # ``queue:read_own`` filters on it — so a missing value here has
-                # to stay a deliberate, documented one.
-                for offset, (routing, plate_id) in enumerate(routed_plates, start=1):
-                    queue_item = PrintQueueItem(
-                        queue_id=queue.id,
-                        library_file_id=library_file.id,
-                        archive_id=None,  # archive created at print-start by _run_print_library_file
-                        plate_id=plate_id,
-                        position=base_pos + offset,
-                        status="pending",
-                        manual_start=not self.auto_dispatch,
-                        bed_levelling=bed_levelling,
-                        flow_cali=flow_cali,
-                        layer_inspect=layer_inspect,
-                        timelapse=timelapse,
-                        timelapse_storage=timelapse_storage,
-                        use_ams=use_ams,
-                        # Stamp the slicer's H2C rack nozzle pick on every plate
-                        # of a multi-plate Send All so each plate replays the
-                        # same pick (mirrors the #1697 / #1733 per-plate loop).
-                        nozzle_mapping=nozzle_mapping_json,
-                        # None unless this VP opted in — see above.
-                        ams_mapping=ams_mapping_json,
-                        filament_routing=routing,
-                        # Per-VP opt-in for auto-print G-code injection (#1516).
-                        # Default off; when on, the dispatcher still no-ops unless
-                        # gcode_snippets are configured for the target model, so
-                        # it's effectively "inject when enabled AND snippets exist".
-                        gcode_injection=self.gcode_injection,
+
+                async def attach(db, source) -> None:
+                    # Append at the tail: MAX(position) for this queue, then hand
+                    # consecutive positions to each plate so a Send All keeps
+                    # plate-order execution. A hardcoded position=1 stacked every
+                    # VP-queued print at the head, so two slicer Sends in a row
+                    # collided on position 1 and their order became arbitrary
+                    # (upstream Bambuddy v0.2.4.5). Read inside the publication's
+                    # transaction, which is also the one that inserts.
+                    from sqlalchemy import func as sa_func, select as sa_select
+
+                    base_pos = (
+                        await db.scalar(
+                            sa_select(sa_func.coalesce(sa_func.max(PrintQueueItem.position), 0)).where(
+                                PrintQueueItem.queue_id == queue_id
+                            )
+                        )
+                        or 0
                     )
-                    db.add(queue_item)
-                    await db.flush()  # populate queue_item.id before logging
-                    queue_item_ids.append(queue_item.id)
-                await db.commit()
-                # Track the freshly-committed queue items so ``on_print_command``
-                # can retroactively stamp slicer-side fields if the MQTT
-                # ``project_file`` lands AFTER the ``_SLICER_OPTIONS_WAIT_TIMEOUT``
-                # window expired — the #1780 round-3 race. Eviction of stale
-                # entries here keeps the dict bounded; the queue path is the only
-                # writer, so doing it on commit is enough.
-                now = time.monotonic()
-                cutoff = now - _RECENT_QUEUE_ITEM_TTL
-                self._recent_queue_items = {k: v for k, v in self._recent_queue_items.items() if v[1] > cutoff}
-                self._recent_queue_items[file_path.name] = (list(queue_item_ids), now)
-                # Last-chance check for a command that landed while we were
-                # saving/committing — shared with the auto-queue path so the
-                # two cannot drift (see ``_consume_late_slicer_options``).
-                await self._consume_late_slicer_options(file_path.name)
-                if len(queue_item_ids) == 1:
-                    logger.info(
-                        "[VP %s] Added to queue %s (printer %s): item %s, library_file=%s",
-                        self.name,
-                        queue.id,
-                        queue.printer_id,
-                        queue_item_ids[0],
-                        library_file.id,
-                    )
-                else:
-                    logger.info(
-                        "[VP %s] Added %d queue items for multi-plate upload (plates %s) to queue %s (printer %s): %s, library_file=%s",
-                        self.name,
-                        len(queue_item_ids),
-                        plate_ids,
-                        queue.id,
-                        queue.printer_id,
-                        queue_item_ids,
-                        library_file.id,
-                    )
+                    # ⚠️ No ``created_by_id`` here, and that is the answer rather
+                    # than a gap. A VirtualPrinter carries no owner, and the obvious
+                    # substitute is wrong rather than incomplete: one admin
+                    # typically configures the VP while everyone slices through it,
+                    # so crediting these to that admin would make the "added by"
+                    # column lie and drop other people's jobs into their queue.
+                    # Every other path that builds a queue item DOES set it —
+                    # ``queue:read_own`` filters on it — so a missing value here has
+                    # to stay a deliberate, documented one.
+                    for offset, (routing, plate_id) in enumerate(routed_plates, start=1):
+                        queue_item = PrintQueueItem(
+                            queue_source_id=source.id,
+                            source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
+                            queue_id=queue_id,
+                            library_file_id=library_file.id,
+                            archive_id=None,  # archive created at print-start by _run_print_library_file
+                            plate_id=plate_id,
+                            position=base_pos + offset,
+                            status="pending",
+                            manual_start=not self.auto_dispatch,
+                            bed_levelling=bed_levelling,
+                            flow_cali=flow_cali,
+                            layer_inspect=layer_inspect,
+                            timelapse=timelapse,
+                            timelapse_storage=timelapse_storage,
+                            use_ams=use_ams,
+                            # Stamp the slicer's H2C rack nozzle pick on every plate
+                            # of a multi-plate Send All so each plate replays the
+                            # same pick (mirrors the #1697 / #1733 per-plate loop).
+                            nozzle_mapping=nozzle_mapping_json,
+                            # None unless this VP opted in — see above.
+                            ams_mapping=ams_mapping_json,
+                            filament_routing=routing,
+                            # Per-VP opt-in for auto-print G-code injection (#1516).
+                            # Default off; when on, the dispatcher still no-ops unless
+                            # gcode_snippets are configured for the target model, so
+                            # it's effectively "inject when enabled AND snippets exist".
+                            gcode_injection=self.gcode_injection,
+                        )
+                        db.add(queue_item)
+                        await db.flush()  # populate queue_item.id before logging
+                        queue_item_ids.append(queue_item.id)
+
+                # The rows and the blob's own row are committed together, after the
+                # file is in its final place (§5 step 6).
+                await publish_staged(staged, attach)
+            except BaseException:
+                # Bytes captured for an upload that is not going to be queued are
+                # handed straight back rather than left for the grace window.
+                await discard_staged(staged)
+                raise
+            # Track the freshly-committed queue items so ``on_print_command``
+            # can retroactively stamp slicer-side fields if the MQTT
+            # ``project_file`` lands AFTER the ``_SLICER_OPTIONS_WAIT_TIMEOUT``
+            # window expired — the #1780 round-3 race. Eviction of stale
+            # entries here keeps the dict bounded; the queue path is the only
+            # writer, so doing it on commit is enough.
+            now = time.monotonic()
+            cutoff = now - _RECENT_QUEUE_ITEM_TTL
+            self._recent_queue_items = {k: v for k, v in self._recent_queue_items.items() if v[1] > cutoff}
+            self._recent_queue_items[file_path.name] = (list(queue_item_ids), now)
+            # Last-chance check for a command that landed while we were
+            # saving/committing — shared with the auto-queue path so the
+            # two cannot drift (see ``_consume_late_slicer_options``).
+            await self._consume_late_slicer_options(file_path.name)
+            if len(queue_item_ids) == 1:
+                logger.info(
+                    "[VP %s] Added to queue %s (printer %s): item %s, library_file=%s",
+                    self.name,
+                    queue_id,
+                    printer_id,
+                    queue_item_ids[0],
+                    library_file.id,
+                )
+            else:
+                logger.info(
+                    "[VP %s] Added %d queue items for multi-plate upload (plates %s) to queue %s (printer %s): %s, library_file=%s",
+                    self.name,
+                    len(queue_item_ids),
+                    plate_ids,
+                    queue_id,
+                    printer_id,
+                    queue_item_ids,
+                    library_file.id,
+                )
         except Exception as e:
             logger.exception("[VP %s] Error adding to print queue: %s", self.name, e)
 
@@ -1360,21 +1401,40 @@ class VirtualPrinterInstance:
             from sqlalchemy import func as sa_func, select as sa_select
 
             from backend.app.models.auto_queue import AutoQueueItem
-            from backend.app.services.filament_intake import require_source_requirements
+            from backend.app.services import queue_sources
             from backend.app.services.filament_requirements import PrintRequirementsCache
-
-            plate_id = self._extract_plate_id_from_metadata(library_file.file_metadata)
-            strict_requirements = await require_source_requirements(
-                PrintRequirementsCache(),
-                library_file=library_file,
-                plate_id=plate_id,
+            from backend.app.services.queue_source_capture import (
+                capture_staged,
+                discard_staged,
+                plan_capture,
+                publish_staged,
+                staged_requirements,
             )
-            plate_id = strict_requirements.resolved_plate_id
-            filament_overrides_json = None
 
-            sliced_model: str | None = None
-            if isinstance(library_file.file_metadata, dict):
-                sliced_model = library_file.file_metadata.get("sliced_for_model")
+            # ⚠️ Copy first, with no session open (spec §5 steps 1-3), and read the
+            # requirements out of that copy (step 4): this tier has no printer yet,
+            # so the model, the filaments and the plate the distributor will route
+            # by are ALL evidence about the bytes — and from here on they are our
+            # bytes, not the slicer's inbox.
+            plan = plan_capture(library_file=library_file)
+            staged = await capture_staged(plan)
+            try:
+                plate_id = self._extract_plate_id_from_metadata(library_file.file_metadata)
+                strict_requirements = await staged_requirements(
+                    staged,
+                    PrintRequirementsCache(),
+                    library_file=library_file,
+                    plate_id=plate_id,
+                )
+                plate_id = strict_requirements.resolved_plate_id
+                filament_overrides_json = None
+
+                sliced_model: str | None = None
+                if isinstance(library_file.file_metadata, dict):
+                    sliced_model = library_file.file_metadata.get("sliced_for_model")
+            except BaseException:
+                await discard_staged(staged)
+                raise
 
             async with self._session_factory() as db:
                 # Precedence per flag: slicer value -> system fallback row for
@@ -1391,36 +1451,41 @@ class VirtualPrinterInstance:
                 timelapse_storage = (slicer_opts or {}).get("timelapse_storage")
                 nozzle_mapping_json = self._parse_nozzle_mapping(slicer_opts)
 
+            # Serialise filament fields as JSON strings — the column is
+            # ``Text`` and the eligibility scheduler reads via
+            # ``json.loads`` in ``auto_queue_eligibility.py``. Storing the
+            # raw Python list works on SQLite (silently stringifies via
+            # str(list) → e.g. ``"['PLA']"``) but breaks the eligibility
+            # parser, which then treats the row as if it had no
+            # requirements. The /auto-queue/ POST route already does this
+            # right (`auto_queue.py:268`); this aligns the VP path.
+            required_types_json = (
+                json.dumps(list(dict.fromkeys(f["type"] for f in strict_requirements.used_filaments)))
+                if strict_requirements.used_filaments
+                else None
+            )
+            target_model = strict_requirements.model or sliced_model
+            created_ids: list[int] = []
+
+            async def attach(db, source) -> None:
                 # Position at the end of pending items so VP-uploads don't
-                # jump ahead of UI submissions.
+                # jump ahead of UI submissions. Read inside the publication's
+                # transaction, which is also the one that inserts.
                 max_pos = await db.scalar(
                     sa_select(sa_func.coalesce(sa_func.max(AutoQueueItem.position), 0)).where(
                         AutoQueueItem.status == "pending"
                     )
                 )
-                next_pos = (max_pos or 0) + 1
-
-                # Serialise filament fields as JSON strings — the column is
-                # ``Text`` and the eligibility scheduler reads via
-                # ``json.loads`` in ``auto_queue_eligibility.py``. Storing the
-                # raw Python list works on SQLite (silently stringifies via
-                # str(list) → e.g. ``"['PLA']"``) but breaks the eligibility
-                # parser, which then treats the row as if it had no
-                # requirements. The /auto-queue/ POST route already does this
-                # right (`auto_queue.py:268`); this aligns the VP path.
-                required_types_json = (
-                    json.dumps(list(dict.fromkeys(f["type"] for f in strict_requirements.used_filaments)))
-                    if strict_requirements.used_filaments
-                    else None
-                )
                 item = AutoQueueItem(
+                    queue_source_id=source.id,
+                    source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
                     library_file_id=library_file.id,
                     archive_id=None,  # archive created at print-start by _run_print_library_file
-                    target_model=strict_requirements.model or sliced_model,
+                    target_model=target_model,
                     required_filament_types=required_types_json,
                     filament_overrides=(json.dumps(filament_overrides_json) if filament_overrides_json else None),
                     plate_id=plate_id,
-                    position=next_pos,
+                    position=(max_pos or 0) + 1,
                     status="pending",
                     manual_start=not self.auto_dispatch,
                     bed_levelling=bed_levelling,
@@ -1438,31 +1503,39 @@ class VirtualPrinterInstance:
                     gcode_injection=self.gcode_injection,
                 )
                 db.add(item)
-                await db.commit()
-                # Same late-MQTT insurance as the print_queue path: if the
-                # slicer's command lands after the wait window, the retro
-                # stamp patches this still-pending row (see #1780 round 3).
-                # Prune on write, exactly as the print_queue registry does —
-                # nothing pops an entry whose MQTT arrived on time, so without
-                # this the dict grows one entry per print over the VP's uptime.
-                now = time.monotonic()
-                cutoff = now - _RECENT_QUEUE_ITEM_TTL
-                self._recent_auto_items = {k: v for k, v in self._recent_auto_items.items() if v[1] > cutoff}
-                self._recent_auto_items[file_path.name] = ([item.id], now)
-                # ...and the same last-chance: the registry above did not exist
-                # while the library save and commit were running, so a command
-                # that landed in that window is still sitting in the stash.
-                await self._consume_late_slicer_options(file_path.name)
-                logger.info(
-                    "[VP %s] Added to auto-queue (item %s, library_file=%s, target_model=%s, "
-                    "filaments=%s, force_color=%s)",
-                    self.name,
-                    item.id,
-                    library_file.id,
-                    item.target_model,
-                    item.required_filament_types,
-                    bool(filament_overrides_json),
-                )
+                await db.flush()
+                created_ids.append(item.id)
+
+            try:
+                # The row and the blob's own row are committed together, after the
+                # file is in its final place (§5 step 6).
+                await publish_staged(staged, attach)
+            except BaseException:
+                await discard_staged(staged)
+                raise
+            # Same late-MQTT insurance as the print_queue path: if the
+            # slicer's command lands after the wait window, the retro
+            # stamp patches this still-pending row (see #1780 round 3).
+            # Prune on write, exactly as the print_queue registry does —
+            # nothing pops an entry whose MQTT arrived on time, so without
+            # this the dict grows one entry per print over the VP's uptime.
+            now = time.monotonic()
+            cutoff = now - _RECENT_QUEUE_ITEM_TTL
+            self._recent_auto_items = {k: v for k, v in self._recent_auto_items.items() if v[1] > cutoff}
+            self._recent_auto_items[file_path.name] = (list(created_ids), now)
+            # ...and the same last-chance: the registry above did not exist
+            # while the library save and commit were running, so a command
+            # that landed in that window is still sitting in the stash.
+            await self._consume_late_slicer_options(file_path.name)
+            logger.info(
+                "[VP %s] Added to auto-queue (item %s, library_file=%s, target_model=%s, filaments=%s, force_color=%s)",
+                self.name,
+                created_ids[0],
+                library_file.id,
+                target_model,
+                required_types_json,
+                bool(filament_overrides_json),
+            )
         except Exception as e:
             logger.exception("[VP %s] Error adding to auto-queue: %s", self.name, e)
 

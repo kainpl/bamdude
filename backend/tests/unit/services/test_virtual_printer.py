@@ -6,6 +6,7 @@ Tests the virtual printer manager, FTP server, and SSDP server components.
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -50,6 +51,45 @@ def _routing_library(library, path):
     )
     library.file_path = str(path)
     return library
+
+
+def publishing_into(mock_db, *, max_position=None):
+    """Send the queue-source publication's rows into this test's mock session.
+
+    Since m173 a VP upload is copied into ``queue-spool`` before any row exists,
+    and the rows are then written by ``queue_sources.publish``, which deliberately
+    opens its **own** session: the blob's row and the job rows have to commit
+    together, after the file is in place (queue-source-spool spec §5 step 6). A
+    test whose database is a ``MagicMock`` therefore has to say where that
+    transaction goes, and that is all this does — the capture itself is real
+    (``_routing_library`` writes an actual sliced 3MF, which the capture service
+    hashes and ZIP-validates), and so is everything these tests are about: which
+    columns the VP stamps on the row it creates.
+
+    ``max_position`` is what ``MAX(position)`` answers for a test that has not
+    configured ``scalar`` itself — the position is now read inside the
+    publication's transaction, i.e. through this session.
+    """
+    from backend.app.services import queue_source_capture
+
+    if max_position is not None:
+        mock_db.scalar = AsyncMock(return_value=max_position)
+
+    async def publish(staged, attach):
+        source = SimpleNamespace(
+            id=1,
+            sha256=staged.receipt.sha256,
+            size_bytes=staged.receipt.size_bytes,
+            format=staged.format,
+            relative_path=f"queue-spool/objects/aa/{staged.receipt.sha256}.{staged.format}",
+            state="ready",
+        )
+        await attach(mock_db, source)
+        # Nothing published these bytes for real, so they are not left behind.
+        await staged.receipt.discard()
+        return source
+
+    return patch.object(queue_source_capture, "publish_staged", publish)
 
 
 class TestVirtualPrinterInstance:
@@ -411,12 +451,14 @@ class TestVirtualPrinterInstance:
                 inst, "_save_to_library", new_callable=AsyncMock, return_value=_routing_library(fake_lib, file_path)
             ),
             patch.object(inst, "_find_best_queue", new_callable=AsyncMock, return_value=mock_queue),
+            publishing_into(mock_db, max_position=0),
         ):
             await inst._add_to_print_queue(file_path, "192.168.1.100")
 
         assert len(added_items) == 1
         queue_item = added_items[0]
         assert queue_item.manual_start is False
+        assert queue_item.position == 1
         assert queue_item.library_file_id == 77
         assert queue_item.archive_id is None
         assert queue_item.plate_id == 1  # extracted from metadata['plates'][0].index
@@ -465,6 +507,7 @@ class TestVirtualPrinterInstance:
                     inst, "_save_to_library", new_callable=AsyncMock, return_value=_routing_library(fake_lib, file_path)
                 ),
                 patch.object(inst, "_find_best_queue", new_callable=AsyncMock, return_value=mock_queue),
+                publishing_into(mock_db, max_position=0),
             ):
                 await inst._add_to_print_queue(file_path, "192.168.1.100")
             assert len(added_items) == 1
@@ -514,6 +557,7 @@ class TestVirtualPrinterInstance:
                 inst, "_save_to_library", new_callable=AsyncMock, return_value=_routing_library(fake_lib, file_path)
             ),
             patch.object(inst, "_find_best_queue", new_callable=AsyncMock, return_value=mock_queue),
+            publishing_into(mock_db, max_position=0),
         ):
             await inst._add_to_print_queue(file_path, "192.168.1.100")
 
@@ -635,6 +679,7 @@ class TestVirtualPrinterInstance:
                 "backend.app.services.auto_queue_threemf.extract_auto_queue_requirements",
                 return_value=fake_reqs,
             ),
+            publishing_into(mock_db),
         ):
             await inst._add_to_auto_queue(file_path, "192.168.1.100")
 
@@ -715,6 +760,7 @@ class TestVirtualPrinterInstance:
                 "backend.app.services.auto_queue_threemf.extract_auto_queue_requirements",
                 return_value=fake_reqs,
             ),
+            publishing_into(mock_db),
         ):
             await inst._add_to_auto_queue(file_path, "192.168.1.100")
 
@@ -794,6 +840,7 @@ class TestVirtualPrinterInstance:
                 "backend.app.services.filament_requirements.extract_filament_requirements",
                 return_value=fake_per_slot,
             ),
+            publishing_into(mock_db),
         ):
             await inst._add_to_auto_queue(file_path, "192.168.1.100")
 
@@ -863,6 +910,7 @@ class TestVirtualPrinterInstance:
                     {"slot_id": 1, "type": "PLA", "color": "", "used_grams": 10.0},
                 ],
             ),
+            publishing_into(mock_db),
         ):
             await inst._add_to_auto_queue(file_path, "192.168.1.100")
 
@@ -926,6 +974,7 @@ class TestVirtualPrinterInstance:
                 "backend.app.services.auto_queue_threemf.extract_auto_queue_requirements",
                 return_value=fake_reqs,
             ),
+            publishing_into(mock_db),
         ):
             await inst._add_to_auto_queue(file_path, "192.168.1.100")
 
@@ -2875,12 +2924,16 @@ class TestVirtualPrinterSlicerIntake:
     async def _run_add(self, inst, tmp_path, fake_lib, mock_queue):
         file_path = tmp_path / "test.3mf"
         file_path.write_bytes(b"fake3mf")
+        # The mock session this instance was built with — the publication of the
+        # captured source writes its rows there (see ``publishing_into``).
+        session = inst._session_factory.return_value.__aenter__.return_value
         with (
             patch.object(
                 inst, "_save_to_library", new_callable=AsyncMock, return_value=_routing_library(fake_lib, file_path)
             ),
             patch.object(inst, "_find_best_queue", new_callable=AsyncMock, return_value=mock_queue),
             patch.object(inst, "_load_system_print_options", new_callable=AsyncMock, return_value=None),
+            publishing_into(session, max_position=0),
         ):
             await inst._add_to_print_queue(file_path, "192.168.1.100")
 

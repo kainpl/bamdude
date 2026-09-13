@@ -25,6 +25,27 @@ def state_emoji(state: str | None) -> str:
     return STATE_EMOJIS.get(state or "", "\u26aa")
 
 
+def refusal_text(exc: Exception, lang: str, fallback_key: str) -> str:
+    """The reason to show an operator for a refusal raised by a queue writer.
+
+    The queue's refusals travel as ``{"code", "params", "message"}`` \u2014 the shape
+    ``filament_intake.routing_detail`` builds and the one the frontend reacts to \u2014
+    and ``message`` is already in the system language, which is the only language
+    the bot has (``i18n.get_language`` reads the same setting). So there is
+    **nothing to map here and no table of reasons to keep in step**: the sentence
+    the HTTP route would have answered with is the sentence the chat gets.
+
+    Both scenes used to answer a flat "failed" for every exception, which read as
+    "the printer refused your print" for what was in fact "the file is being
+    copied right now, try again" or "the disk is full" (queue-source-spool \u00a76).
+    Anything that is not one of those refusals still falls back to that wording \u2014
+    an unexpected error is not something to paraphrase at an operator.
+    """
+    detail = getattr(exc, "detail", None)
+    message = detail.get("message") if isinstance(detail, dict) else None
+    return message or t(lang, NS, fallback_key)
+
+
 def has_perm(tg_chat: TelegramChat | None, perm: str) -> bool:
     """Check permission, allowing all if no tg_chat (auth disabled)."""
     if tg_chat is None:

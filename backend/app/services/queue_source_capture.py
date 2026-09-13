@@ -51,25 +51,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.queue_source import FORMAT_3MF, FORMAT_GCODE, QueueSource
 from backend.app.services import queue_sources
 from backend.app.services.filament_intake import require_source_requirements, resolve_source_path, routing_detail
-from backend.app.services.filament_requirements import PrintRequirements, PrintRequirementsCache, SourceIdentity
+from backend.app.services.filament_requirements import PrintRequirements, PrintRequirementsCache
+from backend.app.services.queue_source_descriptor import QueueSourceDescriptor
 from backend.app.services.queue_sources import CaptureReceipt, CaptureRequest, QueueSourceError
-from backend.app.services.source_io import SourceUnavailable, source_probe
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
 class StagedSource:
-    """One request's captured bytes, with the little that is still known of the original.
+    """One request's captured bytes, plus the path they came from.
 
-    ``original`` and ``revision`` are about the *file the bytes came from*, not
-    about the job: they exist for provenance and for the routing policy's
-    revision (see :func:`staged_requirements`), and no dispatch path reads them.
+    ``original`` is about the *file the bytes came from*, not about the job: it is
+    provenance and a log line, and **no dispatch path reads it** — that is the
+    whole point of having copied it. It deliberately carries no file revision any
+    more: see :func:`staged_requirements` for why an mtime is the wrong identity
+    for a frozen copy.
     """
 
     receipt: CaptureReceipt
     original: Path
-    revision: SourceIdentity | None = None
 
     @property
     def format(self) -> str:
@@ -78,6 +79,26 @@ class StagedSource:
     @property
     def staging_path(self) -> Path:
         return self.receipt.staging_path
+
+    @property
+    def descriptor(self) -> QueueSourceDescriptor:
+        """The staged bytes in the shape every reader takes (§7).
+
+        Pointing at ``staging/<token>.part``, which is why the format travels
+        beside it: the name carries no extension a reader could branch on. The
+        published object gets its own descriptor from the row
+        (``CaptureReceipt.descriptor``) — the two are never mixed, because only
+        the row knows where the object finally landed.
+        """
+        return QueueSourceDescriptor(
+            path=self.receipt.staging_path,
+            format=self.receipt.format,
+            sha256=self.receipt.sha256,
+            size_bytes=self.receipt.size_bytes,
+            display_filename=self.receipt.display_filename,
+            plate_fallback=self.receipt.plate_fallback,
+            provenance=dict(self.receipt.provenance),
+        )
 
 
 def capture_format(path: Path) -> str:
@@ -131,7 +152,7 @@ async def capture_staged(request: CaptureRequest) -> StagedSource:
         receipt = await queue_sources.capture(request)
     except QueueSourceError as exc:
         raise _refusal(exc) from exc
-    return StagedSource(receipt=receipt, original=request.path, revision=await _original_revision(request.path))
+    return StagedSource(receipt=receipt, original=request.path)
 
 
 async def publish_staged(
@@ -179,13 +200,23 @@ async def staged_requirements(
     and the refusal for a plate the file does not have happens here, between
     ``capture`` and ``publish``.
 
-    The one thing that must **not** come from the copy is the file revision
-    ``serialize_policy`` records. Until routing v2 anchors identity on the
-    snapshot's hash, ``filament_preflight`` compares that revision against a
-    fresh read of the ORIGINAL, and a staged copy's mtime there would defer every
-    snapshot-backed job as ``source_changed`` — §7 says it outright: do not
-    compare the original's size/mtime against the new copy's mtime. So the
-    evidence is the copy's and the revision stays the original's.
+    **No file revision is recorded on the intent**, and that is an answer rather
+    than a gap. The ``(size, mtime_ns)`` pair ``serialize_policy`` stores exists
+    to ask one question at dispatch — "has the original changed since this job was
+    queued?" — and for a job that prints a frozen copy the question is obsolete:
+    A03 says an existing job keeps the bytes it accepted, and a changed original
+    is the *next* capture's business. Nor could it be asked honestly: §7 forbids
+    comparing the original's size/mtime against the copy's, the two differ by
+    construction, and after a ``restore`` an mtime is not a portable identity at
+    all. ``filament_preflight`` skips the comparison when no revision was
+    recorded, exactly as it does for every row written before revisions existed,
+    and Task 7's routing v2 puts the snapshot's **hash** there instead — an
+    identity that does survive a restore.
+
+    Everything the same read produces for its own use is untouched: the cache
+    still keys on the copy's identity, and ``auto_queue_scheduler``'s
+    claim-time re-probe still compares the copy against itself, because the
+    requirements it re-reads come from the same descriptor.
     """
     req = await require_source_requirements(
         cache,
@@ -194,26 +225,9 @@ async def staged_requirements(
         plate_id,
         allow_raw_gcode=allow_raw_gcode,
         product_plate_id=product_plate_id,
-        source_path=staged.staging_path,
-        source_format=staged.format,
+        descriptor=staged.descriptor,
     )
-    return None if req is None else replace(req, source_identity=staged.revision)
-
-
-async def _original_revision(path: Path) -> SourceIdentity | None:
-    """The original's ``(size, mtime_ns)``, read once per request, off the loop.
-
-    ``None`` when it can no longer be read — the original vanished in the moment
-    between the copy and this read. The job is already independent of that file,
-    and an absent revision is a comparison ``filament_preflight`` skips, exactly
-    as it does for every row written before revisions existed. Refusing an add
-    whose bytes are safely captured would be the wrong way round.
-    """
-    try:
-        return await source_probe(("identity", str(path)), SourceIdentity.of, path)
-    except SourceUnavailable as exc:
-        logger.info("Captured %s, but its revision could no longer be read (%s)", path, exc.reason)
-        return None
+    return None if req is None else replace(req, source_identity=None)
 
 
 def _refusal(exc: QueueSourceError) -> HTTPException:
