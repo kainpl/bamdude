@@ -2339,6 +2339,19 @@ async def assign_spool(
         )
     )
     old = existing.scalar_one_or_none()
+    # What this assignment displaces, read before the row goes (spec 2026-09-13
+    # §3.3). Reported on the response so the UI can offer Replace in one step;
+    # the replace itself is unchanged — an occupied slot is never refused.
+    replaced_spool_id = old.spool_id if old and old.spool_id != data.spool_id else None
+    if replaced_spool_id is not None:
+        logger.info(
+            "Slot %s/%s/%s: spool %s replaced with %s",
+            data.printer_id,
+            data.ams_id,
+            data.tray_id,
+            replaced_spool_id,
+            data.spool_id,
+        )
     if old:
         await db.delete(old)
         await db.flush()
@@ -2456,6 +2469,7 @@ async def assign_spool(
     response = SpoolAssignmentResponse.model_validate(resp)
     response.configured = configured
     response.pending_config = pending_config
+    response.replaced_spool_id = replaced_spool_id
 
     await ws_manager.broadcast(
         {

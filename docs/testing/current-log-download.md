@@ -15,6 +15,11 @@ Verified on Windows, 2026-09-13:
 - Documentation: bilingual MkDocs strict build passed.
 - `npm run build` passed; the resulting `static/` bundle is included.
 
+After integrating the concurrent spool-replacement change from
+`feature/v0.5.6-fixes`, typechecking passed again, as did 89 frontend tests
+(the three files above plus `AssignSpoolModal` and `FilamentHoverCard`) and
+23 current-log/support API tests. The combined frontend bundle was rebuilt.
+
 The tests cover an empty file and a UTF-8 log larger than the support-bundle
 limit, copying in a worker thread, excluding concurrent appends, closing the
 live handle before transfer (including a successful Windows rename), cleanup

@@ -5198,6 +5198,11 @@ export interface InventorySpool {
    *  `include_k_profiles=true` (task 4) — "not requested", distinct from
    *  "requested, none" (`[]`). Legacy flat responses always carry the array. */
   k_profiles?: SpoolKProfile[] | null;
+  /** Informational: present only on the spool returned by the Spoolman slot
+   *  assign, and only when that assign REPLACED a different spool on the slot
+   *  (spec 2026-09-13 §3.3). The dialog reports the replacement from its own
+   *  display names, so nothing branches on this — it is for logs and scripts. */
+  replaced_spoolman_spool_id?: number | null;
 }
 
 // ── Server-driven spool list (task 4, 2026-08-29 server-driven-lists) ────────
@@ -5741,6 +5746,11 @@ export interface SpoolAssignment {
   pending_config?: boolean;  // Slot was empty at assign time; will configure on insert
   created_at: string;
   ams_label?: string | null;  // User-defined friendly name for the AMS unit
+  /** Informational: the spool this assign replaced on the slot, `null` for a
+   *  first assignment and for the idempotent re-assign of the same spool
+   *  (spec 2026-09-13 §3.3). Nothing in the UI branches on it — the replace
+   *  toast is composed from the dialog's own display names. */
+  replaced_spool_id?: number | null;
 }
 
 // Stock forecasting (upstream #1184) — per-SKU reorder configuration +

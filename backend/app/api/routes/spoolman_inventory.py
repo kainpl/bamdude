@@ -1436,6 +1436,33 @@ async def assign_spoolman_slot(
                 status_code=409, detail="Mid-print replacement needs a print that is paused or has been paused"
             )
 
+    # What the upsert below is about to displace, read BEFORE it (spec
+    # 2026-09-13 §3.3) — the ON CONFLICT DO UPDATE overwrites the old spool id
+    # in place, so afterwards there is nothing left to report. Reported on the
+    # response so the UI can offer Replace in one step; the replace itself is
+    # unchanged — an occupied slot is never refused. A column-only select on
+    # purpose: the raw SQL changes the row without the ORM knowing, and loading
+    # the entity here would leave a stale copy in the identity map.
+    spool_on_slot = (
+        await db.execute(
+            select(SpoolmanSlotAssignment.spoolman_spool_id).where(
+                SpoolmanSlotAssignment.printer_id == body.printer_id,
+                SpoolmanSlotAssignment.ams_id == body.ams_id,
+                SpoolmanSlotAssignment.tray_id == body.tray_id,
+            )
+        )
+    ).scalar_one_or_none()
+    replaced_spoolman_spool_id = spool_on_slot if spool_on_slot != body.spoolman_spool_id else None
+    if replaced_spoolman_spool_id is not None:
+        logger.info(
+            "Slot %s/%s/%s: spool %s replaced with %s",
+            body.printer_id,
+            body.ams_id,
+            body.tray_id,
+            replaced_spoolman_spool_id,
+            body.spoolman_spool_id,
+        )
+
     # Spool confirmed in Spoolman — upsert into local slot-assignment table
     # assigned_at is intentionally not refreshed on re-assign (original timestamp preserved)
     try:
@@ -1659,7 +1686,25 @@ async def assign_spoolman_slot(
             body.tray_id,
         )
 
-    return mapped
+    # The slot changed — the event the internal assign and both unassigns send
+    # and this route never did, which is why a Spoolman filament card only
+    # picked up an assignment on the next poll (spec 2026-09-13 §3.3). Sent at
+    # the end, like the internal endpoint: everything a refetch reads — the
+    # slot row, the cleared stale fallback-tag links — is settled by here.
+    await ws_manager.broadcast(
+        {
+            "type": "spool_assignment_changed",
+            "printer_id": body.printer_id,
+            "ams_id": body.ams_id,
+            "tray_id": body.tray_id,
+        }
+    )
+
+    # The spool this assignment displaced is a fact about the ASSIGNMENT, not a
+    # property of the spool, so it is layered onto the response here instead of
+    # into ``_map_spoolman_spool`` (whose shape every other Spoolman route
+    # returns unchanged).
+    return {**mapped, "replaced_spoolman_spool_id": replaced_spoolman_spool_id}
 
 
 @router.delete("/slot-assignments/{spoolman_spool_id}")
@@ -1674,6 +1719,22 @@ async def unassign_spoolman_slot(
     """
     client = await _get_client(db)
 
+    # This route is addressed by SPOOL, not by slot, so the slot the card has to
+    # refresh is knowable only from the row — read it BEFORE the delete, as
+    # plain values (after the commit the instances are expired and their rows
+    # are gone). Normally exactly one; the loop covers nothing more exotic than
+    # a database that somehow holds two.
+    removed_slots = [
+        (row.printer_id, row.ams_id, row.tray_id)
+        for row in (
+            await db.execute(
+                select(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.spoolman_spool_id == spoolman_spool_id)
+            )
+        )
+        .scalars()
+        .all()
+    ]
+
     try:
         await db.execute(
             delete(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.spoolman_spool_id == spoolman_spool_id)
@@ -1683,6 +1744,20 @@ async def unassign_spoolman_slot(
         await db.rollback()
         logger.error("Failed to delete slot assignment: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to remove slot assignment") from exc
+
+    # Symmetry with the assign route (spec 2026-09-13 §3.3): a card that
+    # refreshes when a spool lands on a slot must refresh when it leaves. Only
+    # for rows that actually went — with nothing deleted there is no slot to
+    # name and nothing changed.
+    for printer_id, ams_id, tray_id in removed_slots:
+        await ws_manager.broadcast(
+            {
+                "type": "spool_assignment_changed",
+                "printer_id": printer_id,
+                "ams_id": ams_id,
+                "tray_id": tray_id,
+            }
+        )
 
     # Fetch the spool from Spoolman to return in InventorySpool format.
     # If the spool no longer exists in Spoolman, the local unassignment still succeeded.

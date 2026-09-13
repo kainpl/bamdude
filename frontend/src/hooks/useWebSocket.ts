@@ -621,8 +621,16 @@ export function useWebSocket() {
         break;
 
       case 'spool_assignment_changed':
-        // Spool assigned/unassigned - refresh assignment data across all tabs
+        // Spool assigned/unassigned/replaced — refresh assignment data across
+        // all tabs. ⚠️ BOTH inventory backends send this one event, so all
+        // three keys have to go: the internal assignment table AND the two
+        // Spoolman queries the printer card reads (its own assign/unassign
+        // mutations invalidate exactly these two). With only the internal key
+        // here, the Spoolman assign route's broadcast (spec 2026-09-13 §3.3)
+        // arrived in the browser and refreshed nothing.
         debouncedInvalidate('spool-assignments');
+        debouncedInvalidate('spoolman-slot-assignments');
+        debouncedInvalidate('spoolman-inventory-spools');
         break;
 
       case 'spool_assignment_verified': {

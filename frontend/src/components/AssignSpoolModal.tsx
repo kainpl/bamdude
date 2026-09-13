@@ -26,9 +26,21 @@ interface AssignSpoolModalProps {
     location: string;
   };
   spoolmanEnabled?: boolean;
+  /**
+   * The spool currently on this slot, when the dialog was opened to REPLACE it
+   * rather than to fill an empty slot. Set by the page from the same string the
+   * hover card shows (`formatSpoolDisplayName`), so the dialog names the spool
+   * the operator just read there.
+   *
+   * Its presence is the whole of replace mode: the title and the submit button
+   * say Replace, the header names it, it is dropped from the list it belongs to
+   * (`source`), and the success toast reports both names. The API call is
+   * unchanged — an assign over an occupied slot has always replaced.
+   */
+  currentSpool?: { id: number; displayName: string; source: 'inventory' | 'spoolman' };
 }
 
-export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, trayInfo, spoolmanEnabled }: AssignSpoolModalProps) {
+export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, trayInfo, spoolmanEnabled, currentSpool }: AssignSpoolModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -141,6 +153,16 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // replacement charges what printed so far to the spool that came out.
   const windowMode = replacementWindow?.mode ?? 'none';
 
+  // Replace mode: the dialog was opened over a slot that already holds a spool.
+  const replacing = !!currentSpool;
+  // Hoisted above the mutations because the success toast needs it too — the
+  // name it reports must be the name the list showed, from the same template.
+  const spoolDisplayTemplate = settings?.spool_display_template || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
+  const pickedDisplayName = (id: number, list: InventorySpool[] | undefined) => {
+    const picked = list?.find((spool: InventorySpool) => spool.id === id);
+    return picked ? formatSpoolDisplayName(picked, spoolDisplayTemplate) : `#${id}`;
+  };
+
   const assignMutation = useMutation({
     mutationFn: ({ spoolId, midPrintReplacement }: { spoolId: number; midPrintReplacement: boolean }) =>
       api.assignSpool({
@@ -150,7 +172,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         tray_id: trayId,
         mid_print_replacement: midPrintReplacement,
       }),
-    onSuccess: (newAssignment) => {
+    onSuccess: (newAssignment, variables) => {
       // Immediately update cache so UI reflects the new assignment without waiting for refetch
       queryClient.setQueryData<SpoolAssignment[]>(['spool-assignments'], (old) => {
         const filtered = (old || []).filter(a =>
@@ -161,7 +183,17 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
       });
       queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
       showToast(
-        t(newAssignment.pending_config ? 'inventory.assignPendingInsert' : 'inventory.assignSuccess'),
+        currentSpool
+          ? // A replace over a slot whose filament is not loaded is still a
+            // pending assignment, so replace mode keeps that hint — as its own
+            // string, not `replaceSuccess` + `assignPendingInsert`, which opens
+            // with "Spool assigned." and would contradict the sentence before
+            // it.
+            t(newAssignment.pending_config ? 'inventory.replacePendingInsert' : 'inventory.replaceSuccess', {
+              old: currentSpool.displayName,
+              new: pickedDisplayName(variables.spoolId, spools),
+            })
+          : t(newAssignment.pending_config ? 'inventory.assignPendingInsert' : 'inventory.assignSuccess'),
         'success',
       );
       setShowMismatchConfirm(false);
@@ -183,10 +215,18 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         tray_id: trayId,
         mid_print_replacement: midPrintReplacement,
       }),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-spools'] });
       queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments'] });
-      showToast(t('inventory.assignSuccess'), 'success');
+      showToast(
+        currentSpool
+          ? t('inventory.replaceSuccess', {
+              old: currentSpool.displayName,
+              new: pickedDisplayName(variables.spoolmanSpoolId, spoolmanSpools),
+            })
+          : t('inventory.assignSuccess'),
+        'success',
+      );
       onClose();
     },
     onError: (error: Error) => {
@@ -254,9 +294,29 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // gate and the material/profile filter below, making it a real escape
   // hatch — without this, the toggle's label would be a lie ("Show all"
   // but actually still filters by assignment).
+  //
+  // ⚠️ The spool being REPLACED is excluded separately, outside that bypass:
+  // it is the one spool "Show all" must not bring back, because re-picking it
+  // is a no-op the operator cannot mean. (Without replace mode the slot's own
+  // spool deliberately stays in the list — an idempotent re-assign.)
   const availableSpools = spools?.filter((spool: InventorySpool) =>
-    !spool.archived_at && (disableFiltering || !assignedSpoolIds.has(spool.id))
+    !spool.archived_at
+    && (disableFiltering || !assignedSpoolIds.has(spool.id))
+    && !(currentSpool?.source === 'inventory' && spool.id === currentSpool.id)
   );
+
+  // The replaced spool is a fourth reason a row can be missing, and the only
+  // one the counter below could not name: its assignment is THIS slot, which
+  // `assignedSpoolIds` deliberately skips, so it is counted by neither of the
+  // other two terms and the numbers would add up to fewer removals than were
+  // actually made. Counted only when it is genuinely the row that went (a
+  // spool that is also archived is already explained by that term).
+  const replacedFromList = (spools || []).filter((spool: InventorySpool) =>
+    currentSpool?.source === 'inventory'
+    && spool.id === currentSpool.id
+    && !spool.archived_at
+    && !assignedSpoolIds.has(spool.id)
+  ).length;
 
   // Stage 1: Filter by tray profile match (unless disabled).
   // Show a spool if EITHER the slicer profile matches exactly (qualifier stripped)
@@ -290,13 +350,24 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // token. Lets the operator type "SUN Bl" and match "SUNLU PETG Black"
   // without knowing which individual field the substring lives in, and also
   // type a bare "42" to jump straight to spool #42 even when the configured
-  // display template doesn't include {id}.
-  const spoolDisplayTemplate = settings?.spool_display_template || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
+  // display template doesn't include {id}. (`spoolDisplayTemplate` is resolved
+  // above the mutations — the success toast names the picked spool with it.)
   const filteredSpools = profileFilteredSpools?.filter((spool: InventorySpool) => {
     if (!searchFilter) return true;
     const haystack = `${spool.id} ${formatSpoolDisplayName(spool, spoolDisplayTemplate)}`;
     return spoolDisplayNameMatches(haystack, searchFilter);
   });
+
+  // The Spoolman list, filtered in ONE place (it is read twice below — for the
+  // "is there anything to show" gate and for the rows): archived spools are
+  // never assignable, a spool bound to another slot is never offered (picking
+  // it here would pull it out of another printer), and in replace mode the
+  // spool being replaced goes too.
+  const availableSpoolmanSpools = (spoolmanSpools || []).filter((spool: InventorySpool) =>
+    !spool.archived_at
+    && !assignedSpoolmanSpoolIds.has(spool.id)
+    && !(currentSpool?.source === 'spoolman' && spool.id === currentSpool.id)
+  );
 
   // The single funnel every assignment goes through. Inside either
   // replacement window with no answer yet, ask first; the answer re-enters
@@ -379,12 +450,20 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     <>
       <Modal
         onClose={onClose}
-        title={t('inventory.assignSpool')}
+        title={replacing ? t('inventory.replaceSpool') : t('inventory.assignSpool')}
         icon={<Package className="w-5 h-5 text-bambu-green" />}
         size="2xl"
       >
         {/* Content */}
         <div className="p-4 space-y-4 overflow-y-auto">
+          {/* What is being replaced. The name comes from the page, so it is the
+              same string the hover card the operator came from showed. */}
+          {currentSpool && (
+            <p className="text-xs text-bambu-gray">
+              {t('inventory.currentlyAssigned')}: <span className="text-white">{currentSpool.displayName}</span>
+            </p>
+          )}
+
           {/* Tray info */}
           {trayInfo && (
             <div className="p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
@@ -467,11 +546,15 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                     immediately answerable: if `total fetched` is 0 the
                     backend / cache returned nothing; if it's > 0 then
                     the archived / assigned-elsewhere filter ate the
-                    spool and the toggle is the right escape hatch. */}
+                    spool and the toggle is the right escape hatch.
+                    Every reason a row is gone gets a term, replace mode's
+                    own exclusion included, or the numbers explain fewer
+                    removals than were made. */}
                 {spools && (
                   <p className="text-[10px] mt-2 opacity-60">
                     {spools.length} fetched · {spools.filter(s => s.archived_at).length} archived ·{' '}
                     {spools.filter(s => assignedSpoolIds.has(s.id)).length} assigned to other slots
+                    {replacedFromList > 0 && ` · ${replacedFromList} being replaced`}
                   </p>
                 )}
               </div>
@@ -492,13 +575,13 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                   <div className="flex justify-center py-4">
                     <Loader2 className="w-5 h-5 text-bambu-green animate-spin" />
                   </div>
-                ) : spoolmanSpools && spoolmanSpools.filter(s => !s.archived_at && !assignedSpoolmanSpoolIds.has(s.id)).length > 0 ? (
+                ) : availableSpoolmanSpools.length > 0 ? (
                   <>
                     <p className="text-xs font-medium text-bambu-gray uppercase tracking-wide pt-1">
                       {t('inventory.spoolmanSpools')}
                     </p>
                     <div className="max-h-64 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      {filterSpoolsByQuery(spoolmanSpools.filter(s => !s.archived_at && !assignedSpoolmanSpoolIds.has(s.id)), searchFilter)
+                      {filterSpoolsByQuery(availableSpoolmanSpools, searchFilter)
                         .map((spool: InventorySpool) => (
                           <button
                             key={`spoolman-${spool.id}`}
@@ -572,7 +655,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
               ) : (
                 <>
                   <Package className="w-4 h-4" />
-                  {t('inventory.assignSpool')}
+                  {replacing ? t('inventory.replaceSpool') : t('inventory.assignSpool')}
                 </>
               )}
             </Button>

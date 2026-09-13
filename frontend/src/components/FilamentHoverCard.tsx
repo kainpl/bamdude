@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, type ReactNode } from 're
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Droplets, Copy, Check, Settings2, Package, Unlink } from 'lucide-react';
+import { Droplets, Copy, Check, Settings2, Package, Repeat, Unlink } from 'lucide-react';
 import { isLightColor } from '../utils/colors';
 import { Modal } from './Modal';
 
@@ -472,6 +472,30 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                         >
                           <Package className="w-3.5 h-3.5" />
                           {t('inventory.openInInventory')}
+                        </button>
+                      )}
+                      {/* Replace, not Unassign-then-Assign. Both assign
+                          endpoints have always replaced the spool on an
+                          occupied slot, and the accounting the operator needs
+                          (the usage journal's assignment change, the mid-print
+                          replacement prompt) lives on the assign side — the
+                          unassign endpoints do none of it. So the one-step
+                          path is also the accounted one. It reuses
+                          `onAssignSpool`, which the page passes for assigned
+                          slots too: Replace appears exactly where Assign
+                          would, including behind the internal branch's
+                          non-Bambu gate. */}
+                      {inventory.onAssignSpool && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            dismiss();
+                            inventory.onAssignSpool?.();
+                          }}
+                          className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/40 text-bambu-blue"
+                        >
+                          <Repeat className="w-3.5 h-3.5" />
+                          {t('inventory.replaceSpool')}
                         </button>
                       )}
                       {inventory.onUnassignSpool && (
