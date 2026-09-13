@@ -227,6 +227,36 @@ class CameraWorkerSupervisor:
             self._live_media_queues.pop(session_id, None)
             raise
 
+    async def subscribe_builtin(
+        self, *, identity: str, ip_address: str, access_code: str, model: str | None, fps: int
+    ) -> tuple[str, LiveMediaQueue]:
+        """Start one worker-owned Bambu chamber/RTSPS producer."""
+
+        if self.process is None:
+            await self.start()
+        session_id = str(uuid.uuid4())
+        queue: LiveMediaQueue = asyncio.Queue(maxsize=1)
+        self._live_media_queues[session_id] = queue
+        try:
+            reply = await self.request(
+                "subscribe_builtin",
+                {
+                    "identity": identity,
+                    "media_session_id": session_id,
+                    "ip_address": ip_address,
+                    "access_code": access_code,
+                    "model": model,
+                    "fps": fps,
+                },
+            )
+            lease_id = reply["result"].get("lease_id")
+            if not reply["ok"] or not isinstance(lease_id, str):
+                raise CameraWorkerUnavailable("camera worker rejected built-in live subscription")
+            return lease_id, queue
+        except Exception:
+            self._live_media_queues.pop(session_id, None)
+            raise
+
     async def unsubscribe(self, lease_id: str, queue: LiveMediaQueue) -> None:
         try:
             await self.request("unsubscribe", {"lease_id": lease_id})

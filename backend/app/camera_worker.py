@@ -143,6 +143,7 @@ async def run(bootstrap: WorkerBootstrap) -> int:
         capture_tasks: set[asyncio.Task[None]] = set()
         from backend.app.services.camera_worker_live import (
             LIVE_STREAM_ENDED,
+            LiveBuiltinSubscription,
             LiveExternalSubscription,
             LiveProducerRegistry,
             RawProxyCommand,
@@ -243,16 +244,46 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                 capture_tasks.add(task)
                 task.add_done_callback(capture_tasks.discard)
                 continue
-            elif operation == "subscribe":
+            elif operation in {"subscribe", "subscribe_builtin"}:
                 try:
-                    subscription = LiveExternalSubscription.from_payload(request["payload"])
+                    subscription = (
+                        LiveExternalSubscription.from_payload(request["payload"])
+                        if operation == "subscribe"
+                        else LiveBuiltinSubscription.from_payload(request["payload"])
+                    )
 
                     async def producer(subscription=subscription) -> None:
+                        if isinstance(subscription, LiveBuiltinSubscription):
+                            from backend.app.services.camera import (
+                                generate_chamber_image_stream,
+                                is_chamber_image_model,
+                                read_next_chamber_frame,
+                            )
+
+                            if is_chamber_image_model(subscription.model):
+                                connection = await generate_chamber_image_stream(
+                                    subscription.ip_address, subscription.access_code, subscription.fps
+                                )
+                                if connection is None:
+                                    return
+                                reader, chamber_writer = connection
+                                try:
+                                    while frame := await read_next_chamber_frame(reader, timeout=30.0):
+                                        live_registry.publish(subscription.identity, frame)
+                                finally:
+                                    chamber_writer.close()
+                                    try:
+                                        await chamber_writer.wait_closed()
+                                    except OSError:
+                                        pass
+                                return
                         from backend.app.services.external_camera import generate_mjpeg_stream
 
                         async for _chunk in generate_mjpeg_stream(
-                            subscription.url,
-                            subscription.camera_type,
+                            f"rtsps://bblp:{subscription.access_code}@{subscription.ip_address}:322/streaming/live/1"
+                            if isinstance(subscription, LiveBuiltinSubscription)
+                            else subscription.url,
+                            "rtsp" if isinstance(subscription, LiveBuiltinSubscription) else subscription.camera_type,
                             subscription.fps,
                             on_frame=lambda frame: live_registry.publish(subscription.identity, frame),
                         ):

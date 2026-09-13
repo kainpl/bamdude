@@ -258,6 +258,7 @@ async def _worker_external_stream_response(
     request: Request,
     fps: int,
     runtime,
+    builtin: bool = False,
 ) -> StreamingResponse:
     """Serve external live video from the supervised worker's JPEG relay.
 
@@ -272,7 +273,9 @@ async def _worker_external_stream_response(
     fanout_key = f"printer-{printer_id}"
     # Stable, secret-free source identity.  The URL intentionally is not the
     # key: an access-token rotation must not create a second physical producer.
-    identity = str(uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:printer:{printer_id}:external-camera"))
+    identity = str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:printer:{printer_id}:{'builtin' if builtin else 'external-camera'}")
+    )
 
     def _publish_worker_frame(frame: bytes) -> None:
         now = time.time()
@@ -285,14 +288,27 @@ async def _worker_external_stream_response(
     def _factory(disconnect_event: asyncio.Event):
         async def _stream():
             try:
-                async for chunk in runtime.stream_external(
-                    identity=identity,
-                    url=printer.external_camera_url,
-                    camera_type=printer.external_camera_type,
-                    fps=fps,
-                    disconnect_event=disconnect_event,
-                    on_frame=_publish_worker_frame,
-                ):
+                stream = (
+                    runtime.stream_builtin(
+                        identity=identity,
+                        ip_address=printer.ip_address,
+                        access_code=printer.access_code,
+                        model=printer.model,
+                        fps=fps,
+                        disconnect_event=disconnect_event,
+                        on_frame=_publish_worker_frame,
+                    )
+                    if builtin
+                    else runtime.stream_external(
+                        identity=identity,
+                        url=printer.external_camera_url,
+                        camera_type=printer.external_camera_type,
+                        fps=fps,
+                        disconnect_event=disconnect_event,
+                        on_frame=_publish_worker_frame,
+                    )
+                )
+                async for chunk in stream:
                     yield chunk
             finally:
                 _active_external_streams.discard(printer_id)
@@ -1050,17 +1066,16 @@ async def camera_stream(
     else:
         fps = min(max(fps, 1), 30)
 
-    # Do not let the experimental worker mode create a hidden second owner for
-    # a built-in Bambu source. External live sources have an authenticated
-    # worker relay above; built-in chamber/RTSP live producers still need their
-    # raw lease implementation. One-shot built-in captures are already worker
-    # owned. Failing this live request is safer than silently mixing owners.
     from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
 
     if isinstance(get_camera_runtime(), WorkerCameraRuntime):
-        raise HTTPException(
-            status_code=503,
-            detail="Built-in live camera streaming is not available in worker runtime yet.",
+        return await _worker_external_stream_response(
+            printer=printer,
+            printer_id=printer_id,
+            request=request,
+            fps=fps,
+            runtime=get_camera_runtime(),
+            builtin=True,
         )
 
     # Choose the appropriate stream generator based on model

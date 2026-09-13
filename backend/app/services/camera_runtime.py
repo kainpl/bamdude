@@ -191,6 +191,43 @@ class WorkerCameraRuntime:
         finally:
             await self.supervisor.unsubscribe(lease_id, queue)
 
+    async def stream_builtin(
+        self,
+        *,
+        identity: str,
+        ip_address: str,
+        access_code: str,
+        model: str | None,
+        fps: int,
+        disconnect_event: asyncio.Event,
+        on_frame: Callable[[bytes], None] | None = None,
+    ) -> AsyncGenerator[bytes, None]:
+        """Yield worker-owned Bambu chamber/RTSPS frames as MJPEG parts."""
+
+        uuid.UUID(identity)
+        lease_id, queue = await self.supervisor.subscribe_builtin(
+            identity=identity,
+            ip_address=ip_address,
+            access_code=access_code,
+            model=model,
+            fps=fps,
+        )
+        try:
+            from backend.app.services.external_camera import format_mjpeg_frame
+
+            while not disconnect_event.is_set():
+                try:
+                    media = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except TimeoutError:
+                    continue
+                if media is None:
+                    return
+                if on_frame is not None:
+                    on_frame(media.frame)
+                yield format_mjpeg_frame(media.frame)
+        finally:
+            await self.supervisor.unsubscribe(lease_id, queue)
+
     async def start_raw_proxy(
         self,
         *,

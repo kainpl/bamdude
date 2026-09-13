@@ -60,6 +60,43 @@ class RawProxyCommand:
 
 
 @dataclass(frozen=True, kw_only=True)
+class LiveBuiltinSubscription:
+    """Validated worker command for a physical Bambu live-camera source."""
+
+    identity: str
+    media_session_id: str
+    ip_address: str = field(repr=False)
+    access_code: str = field(repr=False)
+    model: str | None
+    fps: int
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> LiveBuiltinSubscription:
+        expected = {"identity", "media_session_id", "ip_address", "access_code", "model", "fps"}
+        if set(payload) != expected:
+            raise CameraWorkerProtocolError("built-in live subscription has an invalid schema")
+        try:
+            return cls(**payload)
+        except (TypeError, ValueError) as exc:
+            raise CameraWorkerProtocolError("built-in live subscription is invalid") from exc
+
+    def __post_init__(self) -> None:
+        for value in (self.identity, self.media_session_id):
+            try:
+                uuid.UUID(value)
+            except (ValueError, AttributeError, TypeError) as exc:
+                raise ValueError("built-in live subscription identity is invalid") from exc
+        if not isinstance(self.ip_address, str) or not 0 < len(self.ip_address) <= 255:
+            raise ValueError("built-in live subscription address is invalid")
+        if not isinstance(self.access_code, str) or len(self.access_code) > 128:
+            raise ValueError("built-in live subscription access code is invalid")
+        if self.model is not None and (not isinstance(self.model, str) or len(self.model) > 128):
+            raise ValueError("built-in live subscription model is invalid")
+        if not isinstance(self.fps, int) or not 1 <= self.fps <= 30:
+            raise ValueError("built-in live subscription FPS is invalid")
+
+
+@dataclass(frozen=True, kw_only=True)
 class LiveExternalSubscription:
     """Validated worker command for one external physical producer identity."""
 

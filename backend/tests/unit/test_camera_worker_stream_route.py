@@ -49,3 +49,41 @@ async def test_worker_external_route_keeps_http_fanout_and_buffers_frames():
         await camera_routes.shutdown_broadcaster(key)
         camera_routes._active_external_streams.discard(printer_id)
         camera_routes._release_printer_frame_state(printer_id)
+
+
+@pytest.mark.asyncio
+async def test_worker_builtin_route_uses_stable_builtin_identity():
+    printer_id = 987_652
+    calls: list[dict] = []
+
+    class WorkerRuntime:
+        async def stream_builtin(self, **kwargs):
+            calls.append(kwargs)
+            kwargs["on_frame"](_JPEG)
+            yield format_mjpeg_frame(_JPEG)
+            await kwargs["disconnect_event"].wait()
+
+    printer = SimpleNamespace(
+        ip_address="192.0.2.52",
+        access_code="12345678",
+        model="P1S",
+        external_camera_url=None,
+        external_camera_type=None,
+    )
+    request = SimpleNamespace(is_disconnected=AsyncMock(return_value=False))
+    key = f"printer-{printer_id}"
+    response = await camera_routes._worker_external_stream_response(
+        printer=printer,
+        printer_id=printer_id,
+        request=request,
+        fps=5,
+        runtime=WorkerRuntime(),
+        builtin=True,
+    )
+    try:
+        assert _JPEG in await asyncio.wait_for(anext(response.body_iterator), timeout=1)
+        assert calls[0]["identity"] == str(uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:printer:{printer_id}:builtin"))
+    finally:
+        await camera_routes.shutdown_broadcaster(key)
+        camera_routes._active_external_streams.discard(printer_id)
+        camera_routes._release_printer_frame_state(printer_id)
