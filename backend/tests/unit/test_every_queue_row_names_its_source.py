@@ -58,21 +58,43 @@ _EXEMPT_SITES: dict[tuple[str, str], str] = {
 
 
 def _model_aliases(tree: ast.AST) -> set[str]:
-    """Names a module gave one of the queue models — ``_MODEL = PrintQueueItem``.
+    """Every name one module gives to a queue model, so a writer cannot hide behind one.
 
-    A helper parameterised by tier is how a writer would arrive holding the model
-    as a value (a promotion or a rebalance that writes into either queue), and a
-    guard that matched only the model's own spelling would not see the
-    construction at all. One level of aliasing, which is what such a helper
-    looks like; an alias of an alias is not worth the walk.
+    Three spellings, all of them things this codebase actually does:
+
+    * ``_MODEL = PrintQueueItem`` — how a helper parameterised by tier (a promotion,
+      a rebalance that writes into either queue) would arrive holding the model as
+      a value;
+    * ``_MODEL: type = PrintQueueItem`` — the same with a hint on it;
+    * ``from …models.print_queue import PrintQueueItem as Row`` — the house habit
+      (``sa_select``, ``sa_func``, and ``main.py``'s own
+      ``from …models.archive import PrintArchive as _PA`` inside a function). The
+      walk is over the whole tree, so a **function-scoped** import counts too,
+      which is where this codebase puts most of them.
+
+    ⚠️ **The boundary is one level of naming, and it was chosen rather than
+    missed.** A model held in a container (``MODELS["printer"](…)``) or returned by
+    a call (``_model_for(tier)(…)``) stays invisible here: catching those means
+    following values through the program, i.e. writing a type checker, and there
+    is no writer in this codebase or in the plan that looks like either. An alias
+    of an alias is out for the same reason. If one ever appears, the honest fix is
+    a runtime check at the session boundary, not a deeper AST walk.
     """
-    return {
+    aliased_imports = {
+        alias.asname
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.asname and alias.name in _MODELS
+    }
+    assigned = {
         target.id
         for node in ast.walk(tree)
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and node.value.id in _MODELS
         for target in node.targets
         if isinstance(target, ast.Name)
-    } | {
+    }
+    annotated = {
         node.target.id
         for node in ast.walk(tree)
         if isinstance(node, ast.AnnAssign)
@@ -80,6 +102,7 @@ def _model_aliases(tree: ast.AST) -> set[str]:
         and node.value.id in _MODELS
         and isinstance(node.target, ast.Name)
     }
+    return aliased_imports | assigned | annotated
 
 
 def _sites_in(source: str, where: str) -> list[tuple[str, str, int, ast.Call]]:
@@ -263,6 +286,12 @@ def enqueue(session):
     "the splat that hides which columns are set": """
 def enqueue(session, fields):
     session.add(PrintQueueItem(**fields))
+""",
+    "a model imported under another name, inside a function": """
+def enqueue(session):
+    from backend.app.models.print_queue import PrintQueueItem as Row
+
+    session.add(Row(queue_id=1, status="pending"))
 """,
 }
 
