@@ -683,11 +683,18 @@ async def test_preflight_exempts_a_raw_gcode_snapshot_with_no_original_row(
 async def test_a_restored_spool_mtime_does_not_defer_a_snapshot_job(
     db_session, tmp_path, printer_factory, monkeypatch, sessions
 ):
-    """The intent's file revision is about the ORIGINAL, and a snapshot job ignores it.
+    """A restore moves every spool mtime and not one byte, and the job still dispatches.
 
-    The auto tier records the revision of whatever it read. A portable restore
-    re-creates the spool tree, so the mtime of a blob changes without a byte of
-    it changing — and A03 says an accepted job keeps the bytes it accepted.
+    ⚠️ It passes because the intent records the blob's **hash** (routing v2) and
+    preflight compares that — NOT because a snapshot job ignores its revision. It
+    did ignore it for one commit (Task 6's temporary reader-ignore) and restoring
+    that ignore is now a *mutation*: it makes
+    ``test_a_row_whose_blob_was_swapped_under_its_intent_is_refused`` fail. So this
+    test is the portable-restore half of one pair — the comparison is live, and this
+    pins that it compares something a restore cannot change.
+
+    The intent here is written by the real ``_assign``, which is the writer whose
+    stamp had to move to the hash at the same time as the reader.
     """
     from backend.app.services.auto_queue_add import add_items_to_auto_queue
     from backend.app.services.auto_queue_scheduler import AutoQueueScheduler

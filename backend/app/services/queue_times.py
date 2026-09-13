@@ -12,7 +12,9 @@ import logging
 import zipfile
 from collections import OrderedDict
 from pathlib import Path
+from stat import S_ISREG
 from threading import Lock
+from typing import NamedTuple
 
 import defusedxml.ElementTree as ET
 
@@ -82,22 +84,52 @@ def extract_print_time_from_3mf(file_path: Path, plate_id: int | None = None) ->
 # every row, and each row previously opened + parsed its 3MF THREE times (print
 # time, filament usage, bed type). On a farm with a busy queue, several browsers
 # polling every few seconds re-parsed the same unchanged files constantly. Cache
-# the combined (print_time, filament_grams, bed_type) tuple keyed by file
-# revision — an unchanged file is parsed at most once; a replaced/edited file
-# (different mtime/size) re-parses automatically. LRU-bounded so it can't grow
-# without limit. Locked because FastAPI runs handlers across a thread pool.
-_PLATE_META_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+# the combined facts keyed by file revision — an unchanged file is parsed at most
+# once; a replaced/edited file (different mtime/size) re-parses automatically.
+# LRU-bounded so it can't grow without limit. Locked because FastAPI runs handlers
+# across a thread pool.
+#
+# ⚠️ The entry carries the per-slot filament LIST as well as the summed weight, and
+# that is not redundancy: the weight is `sum(f["used_g"] …)` of exactly that list,
+# so the order page's "what does this order still need" reader (which wants the
+# list) and the queue card (which wants the sum) are one parse, not two. It used to
+# be two — and the list side had no cache at all, so a quantity-20 line opened the
+# same ZIP twenty times per request.
+_PLATE_META_CACHE: "OrderedDict[tuple, _PlateFacts]" = OrderedDict()
 _PLATE_META_LOCK = Lock()
 _PLATE_META_MAX = 512
 
 
-def plate_metadata_cached(file_path: Path, plate_id: int | None) -> tuple[int | None, float, str | None]:
-    """Return (print_time_seconds, filament_grams, bed_type) for a plate, cached
-    by file revision so queue polling parses each 3MF once instead of 3x (#2573)."""
+class _PlateFacts(NamedTuple):
+    """Everything one plate of one file revision can be asked, read in one pass."""
+
+    print_time: int | None
+    filament_grams: float
+    bed_type: str | None
+    filaments: tuple[dict, ...]
+
+
+_NO_FACTS = _PlateFacts(None, 0.0, None, ())
+
+
+def _plate_facts(file_path: Path, plate_id: int | None) -> _PlateFacts:
+    """The cached facts for one plate of one file revision — the only parser here.
+
+    ``_NO_FACTS`` when there is no regular file there, which is how a missing
+    snapshot object answers nothing rather than raising — and ⚠️ **a regular file,
+    not merely something that stats**: an archive created at print start carries
+    ``file_path=""`` until its 3MF arrives, and an empty path resolves to the data
+    DIRECTORY, which `stat()` happily describes. The three parsers below then each
+    opened the data directory as a ZIP and logged "Is a directory" on every poll
+    (#2573). The callers' own ``is_file()`` guards stay; this closes the case for
+    the ones that do not have one.
+    """
     try:
         st = file_path.stat()
     except OSError:
-        return None, 0.0, None
+        return _NO_FACTS
+    if not S_ISREG(st.st_mode):
+        return _NO_FACTS
     key = (str(file_path), plate_id, st.st_mtime_ns, st.st_size)
     with _PLATE_META_LOCK:
         hit = _PLATE_META_CACHE.get(key)
@@ -105,17 +137,38 @@ def plate_metadata_cached(file_path: Path, plate_id: int | None) -> tuple[int | 
             _PLATE_META_CACHE.move_to_end(key)
             return hit
 
-    print_time = extract_print_time_from_3mf(file_path, plate_id)
-    filament_grams = sum(f["used_g"] for f in extract_filament_usage_from_3mf(file_path, plate_id))
-    bed_type = extract_bed_type_from_3mf(file_path, plate_id)
-    result: tuple[int | None, float, str | None] = (print_time, filament_grams, bed_type)
+    filaments = tuple(extract_filament_usage_from_3mf(file_path, plate_id) or ())
+    facts = _PlateFacts(
+        print_time=extract_print_time_from_3mf(file_path, plate_id),
+        filament_grams=sum(f["used_g"] for f in filaments),
+        bed_type=extract_bed_type_from_3mf(file_path, plate_id),
+        filaments=filaments,
+    )
 
     with _PLATE_META_LOCK:
-        _PLATE_META_CACHE[key] = result
+        _PLATE_META_CACHE[key] = facts
         _PLATE_META_CACHE.move_to_end(key)
         while len(_PLATE_META_CACHE) > _PLATE_META_MAX:
             _PLATE_META_CACHE.popitem(last=False)
-    return result
+    return facts
+
+
+def plate_metadata_cached(file_path: Path, plate_id: int | None) -> tuple[int | None, float, str | None]:
+    """Return (print_time_seconds, filament_grams, bed_type) for a plate, cached
+    by file revision so queue polling parses each 3MF once instead of 3x (#2573)."""
+    facts = _plate_facts(file_path, plate_id)
+    return facts.print_time, facts.filament_grams, facts.bed_type
+
+
+def plate_filaments_cached(file_path: Path, plate_id: int | None) -> list[dict] | None:
+    """The per-slot filaments of one plate, out of the same entry as the weight.
+
+    ``None`` — never ``[]`` — when the file said nothing, because every caller
+    reads "no readable plate" off that (``filament_needs.QueuedNeed.filaments``
+    is documented as ``None = the row has no readable plate``, and an empty list
+    would be counted as "needs nothing").
+    """
+    return [dict(f) for f in _plate_facts(file_path, plate_id).filaments] or None
 
 
 def plate_metadata_for_row(
@@ -129,11 +182,11 @@ def plate_metadata_for_row(
     describe those. One call, three values, because the three parsers share one
     cache entry.
 
-    **Where the answer is cached:** :func:`plate_metadata_cached`, unchanged — the
-    same module-level LRU the original path has always used, keyed by the file's
-    own revision. For a content-addressed immutable object that key can never go
-    stale, so a queue poll opens the ZIP once per (object, plate) and every later
-    poll of every row is a dict lookup.
+    **Where the answer is cached:** the module-level LRU above, keyed by the file's
+    own revision — the same one the original path has always used. For a
+    content-addressed immutable object that key can never go stale, so a queue poll
+    opens the ZIP once per (object, plate) and every later poll of every row is a
+    dict lookup.
 
     ``(None, 0.0, None)`` for a job with no snapshot, and for one whose object is
     missing or unreadable — never a fall back to another file (S7).
@@ -141,6 +194,16 @@ def plate_metadata_for_row(
     if descriptor is None:
         return None, 0.0, None
     return plate_metadata_cached(descriptor.path, plate_id or descriptor.plate_fallback)
+
+
+def _recorded_estimate(archive: PrintArchive | None, library_file: LibraryFile | None) -> int | None:
+    """The estimate already stored on a row — column reads only, no disk access."""
+    if archive is not None and archive.deleted_at is None:
+        return archive.print_time_seconds
+    if library_file is not None:
+        seconds = (library_file.file_metadata or {}).get("print_time_seconds")
+        return int(seconds) if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) else None
+    return None
 
 
 def print_time_for_row(
@@ -158,13 +221,20 @@ def print_time_for_row(
     must not invent one. ``is_file()``, never ``exists()``: a blank ``file_path``
     resolves to the data directory.
 
-    A snapshot whose plate carries no ``prediction`` falls through to the row's
-    own recorded estimate, which is not a guess: it was read out of the same bytes
-    when the row was written. A job with neither answers ``None``.
+    ⚠️ **A job with a snapshot never has its ORIGINAL FILE re-read for this.** When
+    the object says nothing — no ``prediction`` on that plate, or the object is
+    missing or ``broken`` — the fallback is the row's recorded *column*, which was
+    read out of the bytes the job accepted and is therefore about the right file.
+    The original's file on disk is not: it may have been re-sliced since (A03), and
+    showing a number out of bytes this job will not print is the exact thing this
+    feature exists to stop. ``filaments_for_row`` refuses in the same case, and the
+    two readers must agree. A job with neither answers ``None``.
     """
-    snapshot_time, _grams, _bed = plate_metadata_for_row(plate_id=plate_id, descriptor=descriptor)
-    if snapshot_time is not None:
-        return snapshot_time
+    if descriptor is not None:
+        facts = plate_metadata_for_row(plate_id=plate_id, descriptor=descriptor)
+        if facts[0] is not None:
+            return facts[0]
+        return _recorded_estimate(archive, library_file)
     if archive is not None and archive.deleted_at is None:
         seconds = archive.print_time_seconds
         if plate_id:
@@ -202,16 +272,19 @@ def filaments_for_row(
     already on the row — plate ``plate_id``, or the whole file when the row names
     none. Archive rows read the 3MF on disk; an archive without its file answers
     ``None``, never a guess.
+
+    ⚠️ Both file-reading branches go through the **revision-keyed cache**, and for
+    this reader that is not an optimisation but a correctness-of-cost matter: its
+    only caller asks it once per PENDING ROW of every active order, on a polled
+    page, so a quantity-20 line queued from one file meant twenty opens of the same
+    ZIP per request. The cache makes it one per (object, plate) — and for a
+    captured object that entry is valid for ever, the key being content-addressed.
     """
     if descriptor is not None:
-        if not descriptor.path.is_file():
-            return None
-        return extract_filament_usage_from_3mf(descriptor.path, plate_id or descriptor.plate_fallback) or None
+        return plate_filaments_cached(descriptor.path, plate_id or descriptor.plate_fallback)
     if archive is not None and archive.deleted_at is None:
         path = settings.base_dir / archive.file_path
-        if archive.file_path and path.is_file():
-            return extract_filament_usage_from_3mf(path, plate_id) or None
-        return None
+        return plate_filaments_cached(path, plate_id) if archive.file_path else None
     if library_file is not None:
         filaments = plate_filaments(library_file.file_metadata, plate_id or 0)
         return filaments or None

@@ -424,3 +424,117 @@ async def test_a_broken_blob_is_reported_as_broken_and_describes_nothing(
     # The name is the job's, recorded when the bytes were accepted, so it still
     # tells the operator WHICH job died with the object.
     assert row["library_file_name"] == "lamp.gcode.3mf"
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1
+# --------------------------------------------------------------------------- #
+
+
+async def test_the_card_never_opens_the_original_even_when_the_snapshot_says_nothing(
+    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """m2: a card must not describe a job from bytes it is not going to print.
+
+    The captured plate carries no ``prediction``, the original row SURVIVES, and its
+    file is re-sliced to one that does. The read trap is armed on the original, so a
+    card that fell back to it says so; the honest answer is the row's own recorded
+    metadata, and here the row has none, so: nothing.
+    """
+    from backend.app.services.queue_add import add_items_to_printer_queue
+
+    _unused, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    path = write_routing_3mf(
+        tmp_path / "mute.gcode.3mf",
+        {PLATE: [{"id": 3, "type": "PLA", "color": "#FF0000", "used_g": str(CAPTURED_GRAMS)}]},
+        model="P1P",
+        prediction=None,
+        bed_type=BED,
+    )
+    source = LibraryFile(filename=path.name, file_path=str(path), file_size=path.stat().st_size, file_type="gcode")
+    db_session.add(source)
+    await db_session.commit()
+    items, _queue = await add_items_to_printer_queue(
+        db_session, PrintQueueItemCreate(queue_id=queue.id, library_file_id=source.id, plate_id=PLATE), None
+    )
+    item = items[0]
+    a_sliced_file(path, prediction=RESLICED_SECONDS, grams=99.0)
+
+    touched = forbid_reads(monkeypatch, path)
+    row = next(r for r in await queue_rows(async_client) if r["id"] == item.id)
+
+    assert touched == []
+    assert row["print_time_seconds"] != RESLICED_SECONDS
+    assert row["print_time_seconds"] is None
+    assert row["filament_used_grams"] == pytest.approx(CAPTURED_GRAMS)
+    assert row["bed_type"] == BED
+
+
+async def test_editing_an_auto_queue_row_still_reports_the_blob_it_owns(
+    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """m4: ``PUT /auto-queue/{id}`` was the one response path with no eager load."""
+    from backend.app.services.auto_queue_add import add_items_to_auto_queue
+
+    _unused, printer, _queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    source = await a_library_source(db_session, tmp_path)
+    await add_items_to_auto_queue(
+        db_session,
+        AutoQueueItemCreate(library_file_id=source.id, plate_ids=[PLATE], target_model="P1P"),
+        None,
+    )
+    auto = (await db_session.execute(select(AutoQueueItem))).scalars().one()
+    blob = await one_blob(db_session)
+
+    response = await async_client.put(f"/api/v1/auto-queue/{auto.id}", json={"manual_start": True})
+    assert response.status_code == 200, response.text
+    row = response.json()
+    assert row["source_storage"] == "ready"
+    assert row["source_size_bytes"] == blob.size_bytes
+    assert row["library_file_name"] == "lamp.gcode.3mf"
+
+
+async def test_the_order_page_parses_one_blob_once_for_twenty_copies(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """M1 at the endpoint the finding named: a quantity-20 line is one parse.
+
+    Every copy of the line shares one blob, and ``queued_needs_of`` asks
+    ``filaments_for_row`` once per pending row.
+    """
+    from backend.app.models.project import Project
+    from backend.app.services import filament_needs
+    from backend.app.services.queue_batch import enqueue_batch_copies
+
+    _unused, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    source = await a_library_source(db_session, tmp_path)
+    project = Project(name="Order 20", status="active")
+    db_session.add(project)
+    await db_session.commit()
+
+    items, _batch = await enqueue_batch_copies(
+        db_session,
+        printer_id=printer.id,
+        count=20,
+        library_file_id=source.id,
+        plate_id=PLATE,
+        project_id=project.id,
+    )
+    assert len(items) == 20
+
+    opened: list[Path] = []
+    real = zipfile.ZipFile
+
+    def counting(file, *args, **kwargs):
+        opened.append(Path(str(file)))
+        return real(file, *args, **kwargs)
+
+    monkeypatch.setattr("backend.app.utils.threemf_tools.zipfile.ZipFile", counting)
+    monkeypatch.setattr(queue_times.zipfile, "ZipFile", counting)
+
+    needs = await filament_needs.queued_needs_of(db_session, [project.id], {})
+
+    assert len(needs[project.id]) == 20
+    assert all(n.filaments for n in needs[project.id])
+    # Three parsers behind one cache entry, and twenty rows behind that entry.
+    assert len(opened) == 3, opened

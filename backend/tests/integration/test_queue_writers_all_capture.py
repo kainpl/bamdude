@@ -677,6 +677,45 @@ async def test_a_row_whose_blob_was_swapped_under_its_intent_is_refused(
     assert refusal.value.reason == "source_changed"
 
 
+async def test_a_routing_block_recorded_under_the_old_fingerprint_does_not_park_the_job(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """The upgrade's one visible side effect, pinned as fail-open.
+
+    ``runtime.blocked_revision`` is a memo — "this exact (source revision, policy,
+    feed) triple already failed downstream, do not spend the attempt again" — laid
+    on top of the real gates and read only AFTER the resolver has produced a
+    complete plan. Routing v2 changed the fingerprint's shape (a list became a
+    dict), so every recorded block stops matching. A stale memo must therefore mean
+    "not blocked", never "blocked for ever": the job is re-evaluated once, and the
+    next refusal records the block again in the new shape.
+    """
+    from backend.app.schemas.print_queue import PrintQueueItemCreate
+    from backend.app.services.filament_preflight import preflight_item
+    from backend.app.services.filament_routing import RoutingDeferred
+    from backend.app.services.queue_add import add_items_to_printer_queue
+
+    source, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    items, _queue = await add_items_to_printer_queue(
+        db_session, PrintQueueItemCreate(queue_id=queue.id, library_file_id=source.id, plate_id=15), None
+    )
+    item = items[0]
+    stored = json.loads(item.filament_routing)
+    stored["runtime"] = {"reason": "feed_state_changed", "blocked_revision": "a fingerprint of the old shape"}
+    item.filament_routing = json.dumps(stored)
+    await db_session.commit()
+
+    guard = await preflight_item(db_session, item, printer.id)
+    assert guard is not None and guard.plan is not None
+    # And the memo still bites when it DOES match, so nothing was disarmed.
+    stored["runtime"]["blocked_revision"] = guard.revision
+    item.filament_routing = json.dumps(stored)
+    await db_session.commit()
+    with pytest.raises(RoutingDeferred) as refusal:
+        await preflight_item(db_session, item, printer.id)
+    assert refusal.value.reason == "feed_state_changed"
+
+
 async def test_an_edit_of_a_snapshot_job_re_reads_the_snapshot(
     db_session, tmp_path, printer_factory, monkeypatch, sessions
 ):

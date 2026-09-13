@@ -155,15 +155,22 @@ async def probe_identity(identity: SourceIdentity) -> SourceIdentity:
 def revision_refutes(stored, identity: SourceIdentity | None) -> bool:
     """Does a stored revision contradict the source we can read right now?
 
-    Three answers, and the middle one is the whole point:
+    Four answers, and the two shape-mismatch ones are deliberately NOT symmetric:
 
     * **shapes agree** → compare them. A legacy row whose original was edited is
       still refused (``source_changed``), exactly as before m173; a captured row
       whose blob holds other bytes is refused for the first time.
-    * **shapes differ** → say nothing. The only way this happens is an intent
-      written before v2, which stamped the COPY's ``(size, mtime_ns)``; reading
-      that against a captured source is the restore trap the Task 6 reader-ignore
-      closed, and it must stay closed.
+    * **a stat-shaped stamp against a hash-anchored read** → say nothing. That is
+      an intent written before v2, which stamped the COPY's ``(size, mtime_ns)``;
+      reading it against a captured source is the restore trap the Task 6
+      reader-ignore closed, and it must stay closed.
+    * **a hash-shaped stamp against a stat-anchored read** → **refuse.** This one
+      can never be legitimate: the intent was written about a captured object and is
+      being checked against a file that is not that object. It is reachable exactly
+      where ``filament_intake.item_descriptor`` documents it — a ``queue_source_id``
+      whose row has gone reads as legacy, i.e. as its own original — and without
+      this such a row would dispatch a possibly re-sliced original with no
+      changed-file check at all.
     * **the stored shape is neither** → refuse. Evidence this version cannot read
       is not evidence that nothing changed.
     """
@@ -172,7 +179,9 @@ def revision_refutes(stored, identity: SourceIdentity | None) -> bool:
     if not isinstance(stored, dict) or set(stored) not in (STAT_REVISION_KEYS, HASH_REVISION_KEYS):
         return True
     current = identity.revision()
-    return set(stored) == set(current) and stored != current
+    if set(stored) == set(current):
+        return stored != current
+    return set(stored) == HASH_REVISION_KEYS
 
 
 class UsedFilament(TypedDict):

@@ -344,8 +344,28 @@ async def update_auto_queue_item(
     Once assigned, the per-printer print_queue item is the source of
     truth — edit there via ``PATCH /queue/{id}``.
     """
-    result = await db.execute(select(AutoQueueItem).where(AutoQueueItem.id == item_id))
-    item = result.scalar_one_or_none()
+    # ⚠️ The same eager loads as every other path that ends in ``_to_response``.
+    # Without them this route answered ``source_storage: "legacy"`` and a null size
+    # for a row whose blob is ``ready`` — the one lie m173 left standing — and the
+    # ``item.archive`` read below would be a lazy load inside an async handler.
+    # ⚠️ The same eager loads as every other path that ends in ``_to_response``.
+    # Without them this route answered ``source_storage: "legacy"`` and a null size
+    # for a row whose blob is ``ready`` — the one lie m173 left standing — and the
+    # ``item.archive`` read in the builder would be a lazy load inside an async
+    # handler. The statement is re-run after the commit rather than
+    # ``db.refresh``-ing, because a refresh expires the relationships it would then
+    # have to fetch one at a time.
+    stmt = (
+        select(AutoQueueItem)
+        .options(
+            selectinload(AutoQueueItem.archive),
+            selectinload(AutoQueueItem.queue_source),
+            selectinload(AutoQueueItem.library_file),
+            selectinload(AutoQueueItem.created_by),
+        )
+        .where(AutoQueueItem.id == item_id)
+    )
+    item = (await db.execute(stmt)).scalar_one_or_none()
     if not item:
         raise HTTPException(404, "Auto-queue item not found")
     if item.status != "pending":
@@ -354,8 +374,7 @@ async def update_auto_queue_item(
     _apply_item_update(item, data.model_dump(exclude_unset=True))
 
     await db.commit()
-    await db.refresh(item)
-    return _to_response(item)
+    return _to_response((await db.execute(stmt)).scalar_one())
 
 
 def _apply_item_update(item: AutoQueueItem, update_data: dict) -> None:

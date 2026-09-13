@@ -180,7 +180,13 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
             response.nozzle_diameter = item.archive.nozzle_diameter
             response.sliced_for_model = item.archive.sliced_for_model
             response.bed_type = item.archive.bed_type
-            if item.plate_id:
+            # ⚠️ ``descriptor is None``: a job that owns its bytes is never
+            # described from the ORIGINAL's file. The columns above are fair — they
+            # were read out of the bytes this job accepted — but the file on disk
+            # may have been re-sliced since (A03), and a card showing a number out
+            # of bytes the job will not print is the thing this feature exists to
+            # stop. The snapshot's own three values are applied below.
+            if item.plate_id and descriptor is None:
                 archive_path = settings.base_dir / item.archive.file_path
                 # ⚠️ ``is_file()``, never ``exists()``. An archive created at
                 # print start carries ``file_path=""`` until its 3MF is fetched,
@@ -214,7 +220,8 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
             response.nozzle_diameter = item.library_file.file_metadata.get("nozzle_diameter")
             response.sliced_for_model = item.library_file.file_metadata.get("sliced_for_model")
             response.bed_type = item.library_file.file_metadata.get("bed_type")
-        if item.plate_id:
+        # Same rule as the archive branch above: not for a job with a snapshot.
+        if item.plate_id and descriptor is None:
             lib_path = Path(item.library_file.file_path)
             library_file_path = lib_path if lib_path.is_absolute() else settings.base_dir / item.library_file.file_path
             # Same guard as the archive branch above — a blank ``file_path``
@@ -228,11 +235,10 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
                 if plate_bed:
                     response.bed_type = plate_bed
     if descriptor is not None:
-        # LAST, so the frozen copy outranks both rows — including an original that
-        # has been re-sliced since this job accepted its bytes (A03). Each value is
-        # applied only when the snapshot actually has it: a plate with no
-        # ``prediction`` leaves the row's own recorded estimate standing rather
-        # than blanking a number that came out of these same bytes.
+        # LAST, so the frozen copy outranks both rows. Each value is applied only
+        # when the snapshot actually has it: a plate with no ``prediction`` leaves
+        # the row's own recorded COLUMN standing, which came out of these same
+        # bytes — the original's *file* was already excluded above.
         if snapshot_time is not None:
             response.print_time_seconds = snapshot_time
         if snapshot_grams > 0:

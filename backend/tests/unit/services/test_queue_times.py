@@ -196,3 +196,124 @@ def test_a_missing_snapshot_object_answers_nothing_and_never_the_original(monkey
     gone = a_descriptor(tmp_path / "not-there.3mf")
     assert queue_times.filaments_for_row(archive=archive, library_file=None, plate_id=1, descriptor=gone) is None
     assert calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1 — M1 (the filament list is cached too) and m2 (never the original)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_snapshots_filaments_are_parsed_once_however_many_rows_ask(monkeypatch, tmp_path):
+    """M1: the order page asks this per PENDING ROW, and 20 copies share one blob.
+
+    Before the fix this branch had no cache at all, so a quantity-20 line cost 20
+    ZIP opens per request — and for a library-backed row it replaced ZERO I/O.
+    """
+    snapshot = tmp_path / "object.3mf"
+    snapshot.write_bytes(b"x")
+    parses: list[Path] = []
+    monkeypatch.setattr(
+        queue_times,
+        "extract_filament_usage_from_3mf",
+        lambda path, plate: parses.append(Path(path)) or [{"slot_id": 1, "type": "PLA", "used_g": 4.0}],
+    )
+    monkeypatch.setattr(queue_times, "extract_print_time_from_3mf", lambda path, plate: 60)
+    monkeypatch.setattr(queue_times, "extract_bed_type_from_3mf", lambda path, plate: "Cool Plate")
+    descriptor = a_descriptor(snapshot)
+
+    answers = [
+        queue_times.filaments_for_row(archive=None, library_file=None, plate_id=2, descriptor=descriptor)
+        for _ in range(3)
+    ]
+
+    assert answers == [[{"slot_id": 1, "type": "PLA", "used_g": 4.0}]] * 3
+    assert len(parses) == 1, parses
+    # And the weight the estimate path reports comes out of the SAME entry, so
+    # asking for both costs one parse rather than two.
+    assert queue_times.plate_metadata_for_row(plate_id=2, descriptor=descriptor) == (60, 4.0, "Cool Plate")
+    assert len(parses) == 1, parses
+
+
+def test_an_archive_rows_filaments_share_the_same_cache(monkeypatch, tmp_path):
+    """The archive branch was the pre-existing exception; one function, one rule."""
+    archive = PrintArchive(filename="a", file_path="a.3mf", file_size=1, status="completed")
+    monkeypatch.setattr(queue_times.settings, "base_dir", tmp_path)
+    (tmp_path / "a.3mf").write_bytes(b"x")
+    parses: list[Path] = []
+    monkeypatch.setattr(
+        queue_times,
+        "extract_filament_usage_from_3mf",
+        lambda path, plate: parses.append(Path(path)) or [{"type": "PETG", "used_g": 9.0}],
+    )
+    monkeypatch.setattr(queue_times, "extract_print_time_from_3mf", lambda path, plate: None)
+    monkeypatch.setattr(queue_times, "extract_bed_type_from_3mf", lambda path, plate: None)
+    for _ in range(3):
+        assert queue_times.filaments_for_row(archive=archive, library_file=None, plate_id=1) == [
+            {"type": "PETG", "used_g": 9.0}
+        ]
+    assert len(parses) == 1, parses
+
+
+def test_a_snapshot_that_says_nothing_never_re_reads_the_original_file(monkeypatch, tmp_path):
+    """m2: a card must not describe a job from bytes it is not going to print.
+
+    The blob carries no ``prediction``; the ORIGINAL on disk has been re-sliced and
+    now does. The row's recorded COLUMN is a fair fallback — it was read out of the
+    bytes the job accepted — but the original's file is not.
+    """
+    archive = PrintArchive(filename="a", file_path="a.3mf", file_size=1, status="completed", print_time_seconds=100)
+    monkeypatch.setattr(queue_times.settings, "base_dir", tmp_path)
+    original = tmp_path / "a.3mf"
+    original.write_bytes(b"x")
+    snapshot = tmp_path / "object.3mf"
+    snapshot.write_bytes(b"y")
+
+    def per_path(path, plate):
+        return (None, 0.0, None) if Path(path) == snapshot else (7200, 99.0, "Textured PEI Plate")
+
+    monkeypatch.setattr(queue_times, "plate_metadata_cached", per_path)
+    descriptor = a_descriptor(snapshot)
+    assert queue_times.print_time_for_row(archive=archive, library_file=None, plate_id=2, descriptor=descriptor) == 100
+    # No row either: nothing is the honest answer, never the stranger's number.
+    assert queue_times.print_time_for_row(archive=None, library_file=None, plate_id=2, descriptor=descriptor) is None
+
+
+def test_a_library_rows_recorded_estimate_is_still_the_fallback_for_a_snapshot_job(monkeypatch, tmp_path):
+    lib = LibraryFile(
+        filename="l.gcode.3mf",
+        file_path="l.gcode.3mf",
+        file_size=1,
+        file_type="gcode",
+        file_metadata={"print_time_seconds": 400},
+    )
+    monkeypatch.setattr(queue_times.settings, "base_dir", tmp_path)
+    (tmp_path / "l.gcode.3mf").write_bytes(b"x")
+    snapshot = tmp_path / "object.3mf"
+    snapshot.write_bytes(b"y")
+    monkeypatch.setattr(
+        queue_times,
+        "plate_metadata_cached",
+        lambda path, plate: (None, 0.0, None) if Path(path) == snapshot else (7200, 0.0, None),
+    )
+    assert (
+        queue_times.print_time_for_row(archive=None, library_file=lib, plate_id=3, descriptor=a_descriptor(snapshot))
+        == 400
+    )
+
+
+def test_a_blank_file_path_is_not_parsed_as_a_zip(monkeypatch, tmp_path):
+    """An archive created at print start carries ``file_path=""`` until its 3MF lands.
+
+    An empty path resolves to the DATA DIRECTORY, which stats perfectly well, so the
+    guard has to be "a regular file" and not "something is there" — otherwise the
+    three parsers each open a directory as a ZIP on every poll (#2573).
+    """
+    monkeypatch.setattr(queue_times.settings, "base_dir", tmp_path)
+    parses: list = []
+    monkeypatch.setattr(queue_times, "extract_filament_usage_from_3mf", lambda path, plate: parses.append(path) or [])
+    blank = PrintArchive(filename="a", file_path="", file_size=1, status="printing")
+    assert queue_times.filaments_for_row(archive=blank, library_file=None, plate_id=1) is None
+    # And the directory itself, reached the way a blank path reaches it.
+    assert queue_times.plate_filaments_cached(tmp_path, 1) is None
+    assert queue_times.plate_metadata_cached(tmp_path, 1) == (None, 0.0, None)
+    assert parses == []
