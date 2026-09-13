@@ -42,3 +42,16 @@ def test_live_subscription_rejects_invalid_or_credential_leaking_input():
         fps=5,
     )
     assert "operator:secret" not in repr(subscription)
+
+
+@pytest.mark.asyncio
+async def test_raw_lease_and_live_producer_are_mutually_exclusive():
+    registry = LiveProducerRegistry()
+    raw = await registry.acquire_raw("camera-a")
+    with pytest.raises(RuntimeError, match="raw lease"):
+        await registry.subscribe("camera-a", lambda: asyncio.sleep(0))
+    await registry.release_raw(raw)
+    live, _queue = await registry.subscribe("camera-a", lambda: asyncio.sleep(0.1))
+    with pytest.raises(RuntimeError, match="busy"):
+        await registry.acquire_raw("camera-a")
+    await registry.unsubscribe(live)

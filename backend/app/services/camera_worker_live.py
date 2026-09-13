@@ -18,6 +18,12 @@ class LiveLease:
     lease_id: str
 
 
+@dataclass(frozen=True)
+class RawCameraLease:
+    identity: str
+    lease_id: str
+
+
 @dataclass(frozen=True, kw_only=True)
 class LiveExternalSubscription:
     """Validated worker command for one external physical producer identity."""
@@ -58,12 +64,15 @@ class LiveProducerRegistry:
         self._producers: dict[str, asyncio.Task[None]] = {}
         self._subscribers: dict[str, dict[str, asyncio.Queue[bytes]]] = {}
         self._latest: dict[str, bytes] = {}
+        self._raw_leases: dict[str, RawCameraLease] = {}
         self._lock = asyncio.Lock()
 
     async def subscribe(
         self, identity: str, start: Callable[[], Awaitable[None]]
     ) -> tuple[LiveLease, asyncio.Queue[bytes]]:
         async with self._lock:
+            if identity in self._raw_leases:
+                raise RuntimeError("camera worker raw lease is active")
             subscribers = self._subscribers.setdefault(identity, {})
             if len(subscribers) >= MAX_LIVE_SUBSCRIBERS:
                 raise RuntimeError("camera worker live subscriber limit reached")
@@ -77,6 +86,21 @@ class LiveProducerRegistry:
             if frame := self._latest.get(identity):
                 queue.put_nowait(frame)
             return lease, queue
+
+    async def acquire_raw(self, identity: str) -> RawCameraLease:
+        """Reserve an identity for transparent VP TCP, never JPEG relay."""
+
+        async with self._lock:
+            if identity in self._raw_leases or self._subscribers.get(identity) or identity in self._producers:
+                raise RuntimeError("camera worker identity is busy")
+            lease = RawCameraLease(identity, str(uuid.uuid4()))
+            self._raw_leases[identity] = lease
+            return lease
+
+    async def release_raw(self, lease: RawCameraLease) -> None:
+        async with self._lock:
+            if self._raw_leases.get(lease.identity) == lease:
+                self._raw_leases.pop(lease.identity, None)
 
     async def unsubscribe(self, lease: LiveLease) -> None:
         async with self._lock:
