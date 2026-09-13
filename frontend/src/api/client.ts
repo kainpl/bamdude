@@ -4223,6 +4223,16 @@ export interface PrintQueueItem {
   source_storage?: QueueSourceStorage;
   /** Size of that copy, where known. */
   source_size_bytes?: number | null;
+  /**
+   * Whether `getQueueItemSourceThumbnail(id)` has a picture for this row: the
+   * render of the job's own plate inside the bytes it captured (m173, spec §4).
+   *
+   * ⚠️ A boolean, unlike the two `*_thumbnail` fields below, which are server
+   * DISK PATHS — they say a picture exists and the id says where to ask for it.
+   * A job whose original rows are gone has no such id, which is exactly why it
+   * needs this. `false` means draw the empty state; never ask and never guess.
+   */
+  source_thumbnail?: boolean;
   archive_name?: string | null;
   archive_thumbnail?: string | null;
   library_file_name?: string | null;
@@ -8951,6 +8961,30 @@ export const api = {
     return request<PrintQueueItem[]>(`/queue/?${params}`);
   },
   getQueueItem: (id: number) => request<PrintQueueItem>(`/queue/${id}`),
+  /**
+   * The picture of a queued job's OWN captured bytes (m173, spec §4 / A09).
+   *
+   * ⚠️ **Fetched, not linked.** Unlike `getArchiveThumbnail` /
+   * `getLibraryFileThumbnailUrl`, whose routes are deliberately public, this one
+   * is behind the same `queue:read_all` / `queue:read_own` split as the queue
+   * list itself — a picture is content, and a reader who cannot see the row may
+   * not see its picture. An `<img src>` cannot carry a bearer token, and the
+   * camera stream token beside it carries no identity, so it could not express
+   * "their row, not yours". Hence the blob dance, the same one
+   * `downloadProductExport` does for a permissioned file: the bytes are fetched
+   * with the session's token and `useQueueRowPicture` hands `<img>` an object
+   * URL. Ask only when the row's `source_thumbnail` is true.
+   */
+  getQueueItemSourceThumbnail: async (id: number): Promise<Blob> => {
+    const headers: Record<string, string> = {};
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/queue/${id}/source-thumbnail`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new ApiError(formatErrorDetail(error.detail, response.status), response.status);
+    }
+    return response.blob();
+  },
   addToQueue: (data: PrintQueueItemCreate) =>
     request<PrintQueueItem>('/queue/', {
       method: 'POST',

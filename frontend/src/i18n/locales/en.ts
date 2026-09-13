@@ -4594,8 +4594,9 @@ export default {
     idle: 'Idle',
     offline: 'Offline',
     nothingToCopy: 'Nothing on this queue can be copied.',
-    notCopyable_one: '{{count}} item is not backed by a file and was left out.',
-    notCopyable_other: '{{count}} items are not backed by a file and were left out.',
+    // Listed, with its picture, but not tickable: m173 kept this job's own bytes,
+    // and a copy is an ordinary add that needs an original to read again.
+    originalGone: 'cannot be copied, its original file is gone',
     noOtherPrinters: 'No other {{model}} printers to copy onto.',
     appendsHint: 'Copies go to the end of each queue.',
     // A copy is an ordinary add, so it reads the original file again — a print

@@ -1,13 +1,15 @@
 """API routes for print queue management."""
 
+import asyncio
 import json
 import logging
 import uuid
+import zipfile
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -32,16 +34,17 @@ from backend.app.schemas.print_queue import (
     PrintQueueItemUpdate,
     PrintQueueReorder,
 )
-from backend.app.services import farm_forecast
-from backend.app.services.filament_intake import loaded_descriptor, source_display_filename
+from backend.app.services import farm_forecast, queue_sources
+from backend.app.services.filament_intake import item_descriptor, loaded_descriptor, source_display_filename
 from backend.app.services.filament_policy import decode
 from backend.app.services.filament_policy_write import routing_update
 from backend.app.services.notification_service import notification_service
 from backend.app.services.queue_add import add_items_to_printer_queue
 from backend.app.services.queue_source_descriptor import source_storage_state
-from backend.app.services.queue_times import plate_metadata_cached, plate_metadata_for_row
+from backend.app.services.queue_times import plate_metadata_cached, plate_metadata_for_row, plate_picture_for_row
 from backend.app.services.source_io import SourceUnavailable
 from backend.app.utils.printer_models import is_gcode_compatible
+from backend.app.utils.threemf_tools import plate_picture_entry
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +155,15 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
             is_calibration=item.is_calibration,
         ),
         "source_size_bytes": source.size_bytes if source is not None else None,
+        # Whether this row's own bytes render its plate (spec §4 / A09). A job
+        # whose original rows are gone has no id from which the frontend could
+        # build a thumbnail URL, so it has to be TOLD that it has a picture —
+        # inferring one from the format would put a broken image on every 3MF that
+        # carries no render, and on every raw G-code source. Costs a namelist read
+        # per (object, plate) per process, cached beside the per-plate metadata;
+        # the picture itself is served by ``get_source_thumbnail`` below, which
+        # this list deliberately never calls.
+        "source_thumbnail": plate_picture_for_row(plate_id=item.plate_id, descriptor=descriptor) is not None,
     }
     response = PrintQueueItemResponse(**item_dict)
     # ⚠️ Only when the relationship is already loaded. This runs in async
@@ -523,6 +535,95 @@ async def get_queue_item(
     ):
         raise HTTPException(404, "Queue item not found")
     return _enrich_response(item)
+
+
+def _read_plate_picture(path: Path, plate_id: int | None) -> bytes | None:
+    """The PNG bytes of one plate's render, read off the loop (S10).
+
+    ``None`` — never an exception — for a container that is gone, is not a ZIP, or
+    simply does not render this plate: a missing picture is not an error (spec §4).
+    The entry is named by :func:`~backend.app.utils.threemf_tools.plate_picture_entry`,
+    the same resolver the list's flag asks, so the two cannot disagree about which
+    plate was meant.
+    """
+    try:
+        with zipfile.ZipFile(path, "r") as zf:
+            entry = plate_picture_entry(zf, plate_id)
+            return None if entry is None else zf.read(entry)
+    except (OSError, zipfile.BadZipFile, KeyError):
+        return None
+
+
+@router.get("/{item_id}/source-thumbnail")
+async def get_source_thumbnail(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.QUEUE_READ_ALL,
+            Permission.QUEUE_READ_OWN,
+        )
+    ),
+):
+    """The picture of a queued job's own captured bytes (m173, spec §4 / A09).
+
+    A job that owns a snapshot prints after its library file or archive is gone —
+    and must be able to SHOW itself after that too, which no ``archive_id`` /
+    ``library_file_id`` URL can do. So the plate's render is served straight out
+    of the job's object here, and the list's ``source_thumbnail`` flag says in
+    advance whether there is one.
+
+    ⚠️ **Not a public route**, unlike the legacy ``/archives/{id}/thumbnail`` and
+    ``/library/files/{id}/thumbnail`` beside it. A picture is content: it is
+    behind the same ``queue:read_all`` / ``queue:read_own`` split ``GET /queue/``
+    uses and answers 404 — never 403 — on a row the caller may not see, so a
+    refusal does not confirm that an id exists. That is also why the frontend
+    fetches it with the bearer token and hands an object URL to ``<img>`` instead
+    of threading a camera stream token through the URL: the stream token carries
+    no identity at all, so it could not express "their row, not yours".
+
+    ⚠️ **The bytes are read under a GC pin** (§9), so the collector cannot unlink
+    the object between the decision and the read, and off the event loop, because
+    it is a ZIP read (S10).
+
+    404 covers every kind of "no picture", and each is an ordinary state rather
+    than a failure: a legacy row, a raw G-code source, a plate the slicer never
+    rendered, a ``broken`` blob whose bytes are gone. The caller draws its empty
+    state; nothing here retries and nothing 500s.
+    """
+    current_user, can_read_all = auth_result
+    item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    if (
+        current_user is not None
+        and not can_read_all
+        and (item.created_by_id is None or item.created_by_id != current_user.id)
+    ):
+        raise HTTPException(404, "Queue item not found")
+
+    # The ONE way a job's source is resolved (§7): never a path rebuilt from an
+    # original row, which is exactly the trap this feature closed.
+    descriptor = await item_descriptor(db, item)
+    if descriptor is None or descriptor.queue_source_id is None:
+        raise HTTPException(404, "No plate picture for this job")
+
+    plate_id = item.plate_id or descriptor.plate_fallback
+    async with queue_sources.pin(descriptor.queue_source_id):
+        data = await asyncio.to_thread(_read_plate_picture, descriptor.path, plate_id)
+    if data is None:
+        raise HTTPException(404, "No plate picture for this job")
+
+    # A content-addressed object never changes, so (hash, plate) is an exact
+    # validator and the browser may keep the picture for as long as it likes.
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, max-age=86400",
+            "ETag": f'"{descriptor.sha256}-{plate_id}"',
+        },
+    )
 
 
 @router.patch("/{item_id}", response_model=PrintQueueItemResponse)

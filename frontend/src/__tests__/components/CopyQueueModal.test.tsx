@@ -60,7 +60,7 @@ const SOURCE = queue({ id: 1, printer_id: 1, printer_name: 'P1S-A', printer_mode
 const status = (over: Partial<PrinterStatus> = {}): PrinterStatus =>
   ({ connected: true, progress: 0, current_archive_id: null, current_plate_id: null, ...over }) as PrinterStatus;
 
-function renderModal(items: PrintQueueItem[], droppedCount = 0) {
+function renderModal(items: PrintQueueItem[]) {
   const onConfirm = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -69,7 +69,6 @@ function renderModal(items: PrintQueueItem[], droppedCount = 0) {
         <CopyQueueModal
           source={SOURCE}
           items={copyableItems(items)}
-          droppedCount={droppedCount}
           onCancel={vi.fn()}
           onConfirm={onConfirm}
         />
@@ -83,15 +82,20 @@ describe('what can be copied', () => {
   it('carries explicit relaxed color and file-local slot rules on a copy', () => {
     const routing = { version: 1, mode: 'auto' as const, feed_policy: 'external_only' as const,
       force_color_match: false, filament_overrides: [{ slot_id: 3, color: '#FF0000', force_color_match: true }] };
-    expect(copyableItems([item({ filament_routing: routing })])[0].file.routing).toEqual(routing);
+    expect(copyableItems([item({ filament_routing: routing })])[0].file?.routing).toEqual(routing);
   });
 
   it('carries the plate with the item — the same file has the same plates', () => {
-    expect(copyableItems([item({ plate_id: 3 })])[0].file.plateId).toBe(3);
+    expect(copyableItems([item({ plate_id: 3 })])[0].file?.plateId).toBe(3);
   });
 
-  it('leaves out an item backed by no file at all', () => {
-    expect(copyableItems([item({ library_file_id: null, archive_id: null })])).toEqual([]);
+  it('LISTS an item backed by no file at all, un-copyable rather than dropped', () => {
+    // Superseded ruling (m173 / Task 16): it used to be filtered out, so a job
+    // that had outlived its library file vanished from the operator's own queue.
+    const [only] = copyableItems([item({ library_file_id: null, archive_id: null })]);
+
+    expect(only.file).toBeNull();
+    expect(only.name).toBe('bracket.gcode.3mf');
   });
 
   it('prefers the library file when an item has both', () => {
@@ -129,7 +133,7 @@ describe('a print with no queue row behind it', () => {
 
     const withLive = withCurrentPrint(pending, status({ current_archive_id: 42, subtask_name: 'Live' }));
 
-    expect(withLive.map((entry) => entry.file.name)).toEqual(['Live', 'bracket.gcode.3mf']);
+    expect(withLive.map((entry) => entry.name)).toEqual(['Live', 'bracket.gcode.3mf']);
   });
 
   it('is NOT added twice when the queue already has the same archive', () => {
@@ -247,23 +251,25 @@ describe('the dialog', () => {
     expect(await screen.findByText(/No other P1S printers/i)).toBeInTheDocument();
   });
 
-  it('says how many items it had to leave out', async () => {
-    renderModal([item({ id: 1 })], 1);
+  it('says why a row cannot be copied, in the row itself', async () => {
+    // The old summary footnote counted rows the list had DROPPED; nothing is
+    // dropped now, so the reason lives on the row it is about.
+    renderModal([item({ id: 1, library_file_id: null, archive_id: null })]);
 
-    expect(await screen.findByText(/1 item is not backed by a file/i)).toBeInTheDocument();
+    expect(await screen.findByText(/original file is gone/i)).toBeInTheDocument();
   });
 });
 
 describe('the order a copy inherits', () => {
   it('carries the order the row was filed under — and "none" as an answer, not an absence', () => {
     const [filed] = copyableItems([item({ project_id: 4, project_line_id: 9, project_name: 'Lamps' })]);
-    expect(filed.file.orderFiling).toEqual({ projectId: 4, projectLineId: 9 });
+    expect(filed.file?.orderFiling).toEqual({ projectId: 4, projectLineId: 9 });
     expect(filed.orderName).toBe('Lamps');
 
     const [unfiled] = copyableItems([item({ project_id: null, project_line_id: null, project_name: null })]);
     // Present with nulls: the question was answered when the row was queued,
     // and the dialog must not ask it again.
-    expect(unfiled.file.orderFiling).toEqual({ projectId: null, projectLineId: null });
+    expect(unfiled.file?.orderFiling).toEqual({ projectId: null, projectLineId: null });
     expect(unfiled.orderName).toBeNull();
   });
 

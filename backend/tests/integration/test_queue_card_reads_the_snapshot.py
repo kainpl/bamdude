@@ -59,10 +59,12 @@ def clean_spool_state():
 
 @pytest.fixture(autouse=True)
 def clean_plate_cache():
-    """``_PLATE_META_CACHE`` is module-level; a hit from another test hides a read."""
+    """Both plate caches are module-level; a hit from another test hides a read."""
     queue_times._PLATE_META_CACHE.clear()
+    queue_times._PLATE_PICTURE_CACHE.clear()
     yield
     queue_times._PLATE_META_CACHE.clear()
+    queue_times._PLATE_PICTURE_CACHE.clear()
 
 
 @pytest.fixture
@@ -299,9 +301,11 @@ async def test_the_queue_poll_parses_each_snapshot_once(
     second = await queue_rows(async_client)
     assert [r["print_time_seconds"] for r in first if r["id"] in {i.id for i in items}] == [CAPTURED_SECONDS] * 3
     assert [r["print_time_seconds"] for r in second if r["id"] in {i.id for i in items}] == [CAPTURED_SECONDS] * 3
-    # Three parsers (time, weight, bed) behind one cache entry: three opens for
-    # six row-renderings, and nothing on the second poll.
-    assert len(opened) == 3, opened
+    # Three parsers (time, weight, bed) behind one cache entry, plus the namelist
+    # read that answers ``source_thumbnail`` (Task 16) behind its own: four opens
+    # for six row-renderings, and nothing on the second poll. The count is the
+    # incidental half of this assertion — "and nothing after" is the claim.
+    assert len(opened) == 4, opened
 
 
 # --------------------------------------------------------------------------- #

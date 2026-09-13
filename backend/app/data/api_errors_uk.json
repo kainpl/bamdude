@@ -452,6 +452,7 @@
   "No pending items in this batch": "У цьому пакеті немає елементів в очікуванні",
   "No pending Orca Cloud pairing. Click Connect first to start the flow.": "Немає незавершеного спарювання з Orca Cloud. Спочатку натисніть «Підключити», щоб почати процес.",
   "No pending prints in queue": "У черзі немає друків в очікуванні",
+  "No plate picture for this job": "Для цього завдання немає зображення плити",
   "No plate preview found in 3MF file": "У файлі 3MF не знайдено попереднього перегляду плити",
   "No preference saved": "Збереженого налаштування немає",
   "No print in progress": "Немає друку, що триває",
