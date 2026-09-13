@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.core import database
@@ -1440,12 +1441,39 @@ async def _collect_locked(
                 await session.commit()
             try:
                 await _file_work(_unlink_blob, target)
-            except (OSError, PathTraversalError) as exc:
+            except PathTraversalError as exc:
+                # The one refusal here that can never heal itself: the row points
+                # outside the spool, so no pass will ever unlink it, and because a
+                # ``deleting`` row answers busy before it is verified, every future
+                # capture of THESE bytes gets 503 for as long as it stands. Only a
+                # human can resolve that, so it is an error, not a warning.
+                logger.error(
+                    "Queue source %s points outside the spool (%s) and cannot be collected — "
+                    "its tombstone will refuse every capture of these bytes until it is removed: %s",
+                    row.id,
+                    row.relative_path,
+                    exc,
+                )
+                report.failed += 1
+                continue
+            except OSError as exc:
                 logger.warning("Queue source %s could not be unlinked, leaving its tombstone: %s", row.id, exc)
                 report.failed += 1
                 continue
-            await session.delete(row)
-            await session.commit()
+            try:
+                await session.delete(row)
+                await session.commit()
+            except IntegrityError as exc:
+                # Only reachable if a reference appeared between the re-check and
+                # here, which the guard makes impossible — but an aborted pass
+                # would take every remaining candidate with it, and the row is
+                # already a tombstone the next pass will retry (and mark broken if
+                # it now has an owner). One row's impossible state is not a reason
+                # to stop collecting the rest.
+                await session.rollback()
+                logger.warning("Queue source %s could not be deleted, leaving its tombstone: %s", row.id, exc)
+                report.failed += 1
+                continue
             report.released += 1
 
         # Rebuilt from what survived, rather than bookkept: a file a row still
