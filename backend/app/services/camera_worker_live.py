@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 from backend.app.services.camera_worker_protocol import CameraWorkerProtocolError
 
 MAX_LIVE_SUBSCRIBERS = 64
+# ``bytes`` queues use a zero-length value solely as the terminal marker.  A
+# valid JPEG is always non-empty and is validated again at the media boundary.
+LIVE_STREAM_ENDED = b""
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,7 @@ class LiveProducerRegistry:
                 self._raw_leases.pop(lease.identity, None)
 
     async def unsubscribe(self, lease: LiveLease) -> None:
+        producer: asyncio.Task[None] | None = None
         async with self._lock:
             subscribers = self._subscribers.get(lease.identity)
             if not subscribers or subscribers.pop(lease.lease_id, None) is None:
@@ -111,9 +115,15 @@ class LiveProducerRegistry:
                 return
             self._subscribers.pop(lease.identity, None)
             self._latest.pop(lease.identity, None)
-            task = self._producers.pop(lease.identity, None)
-            if task is not None:
-                task.cancel()
+            producer = self._producers.pop(lease.identity, None)
+            if producer is not None:
+                producer.cancel()
+
+        # A cancelled producer may own an ffmpeg process/socket in its
+        # ``finally``.  Wait for that cleanup outside the registry lock so a
+        # new, unrelated lease is never blocked behind it.
+        if producer is not None:
+            await asyncio.gather(producer, return_exceptions=True)
 
     def publish(self, identity: str, frame: bytes) -> None:
         self._latest[identity] = frame
@@ -125,3 +135,7 @@ class LiveProducerRegistry:
     def _producer_finished(self, identity: str, task: asyncio.Task[None]) -> None:
         if self._producers.get(identity) is task:
             self._producers.pop(identity, None)
+            for queue in self._subscribers.get(identity, {}).values():
+                if queue.full():
+                    queue.get_nowait()
+                queue.put_nowait(LIVE_STREAM_ENDED)

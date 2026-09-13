@@ -141,11 +141,47 @@ async def run(bootstrap: WorkerBootstrap) -> int:
 
         write_lock = asyncio.Lock()
         capture_tasks: set[asyncio.Task[None]] = set()
-        from backend.app.services.camera_worker_live import LiveExternalSubscription, LiveProducerRegistry
+        from backend.app.services.camera_worker_live import (
+            LIVE_STREAM_ENDED,
+            LiveExternalSubscription,
+            LiveProducerRegistry,
+        )
 
         live_registry = LiveProducerRegistry()
         live_leases = {}
         live_forwarders: dict[str, asyncio.Task[None]] = {}
+
+        async def release_live_lease(lease_id: str, *, cancel_forwarder: bool) -> bool:
+            """Release both halves of a live lease exactly once.
+
+            A media socket can disappear without an HTTP client issuing an
+            unsubscribe command.  The forwarder completion path uses this same
+            helper, so an abandoned relay cannot keep a physical producer or
+            its ffmpeg child alive in this worker.
+            """
+
+            lease = live_leases.pop(lease_id, None)
+            if lease is None:
+                return False
+            await live_registry.unsubscribe(lease)
+            forwarder = live_forwarders.pop(lease_id, None)
+            if cancel_forwarder and forwarder is not None and forwarder is not asyncio.current_task():
+                forwarder.cancel()
+                await asyncio.gather(forwarder, return_exceptions=True)
+            return True
+
+        def release_finished_forwarder(completed: asyncio.Task[None], lease_id: str) -> None:
+            # Retrieve the exception so a broken loopback writer does not turn
+            # into an unobserved-task warning.  The parent will receive the
+            # closed relay and reconnect through its normal fan-out lifecycle.
+            if not completed.cancelled():
+                completed.exception()
+            if lease_id in live_leases:
+                asyncio.create_task(
+                    release_live_lease(lease_id, cancel_forwarder=False),
+                    name=f"camera-worker-live-release-{lease_id}",
+                )
+
         while True:
             request = await read_control(reader)
             if request["generation"] != bootstrap.generation:
@@ -219,6 +255,8 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                             )
                             while True:
                                 frame = await queue.get()
+                                if frame == LIVE_STREAM_ENDED:
+                                    return
                                 await write_media_frame(
                                     media_writer,
                                     WorkerMediaFrame(
@@ -233,10 +271,16 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                                 )
                         finally:
                             media_writer.close()
-                            await media_writer.wait_closed()
+                            try:
+                                await media_writer.wait_closed()
+                            except (OSError, RuntimeError):
+                                pass
 
                     forwarder = asyncio.create_task(forward(), name=f"camera-worker-live-forward-{lease.lease_id}")
                     live_forwarders[lease.lease_id] = forwarder
+                    forwarder.add_done_callback(
+                        lambda completed, lease_id=lease.lease_id: release_finished_forwarder(completed, lease_id)
+                    )
                     reply = make_reply(
                         generation=bootstrap.generation,
                         request_id=request["request_id"],
@@ -252,30 +296,21 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                     )
             elif operation == "unsubscribe":
                 lease_id = request["payload"].get("lease_id")
-                lease = live_leases.pop(lease_id, None) if isinstance(lease_id, str) else None
-                if lease is not None:
-                    await live_registry.unsubscribe(lease)
-                forwarder = live_forwarders.pop(lease_id, None) if isinstance(lease_id, str) else None
-                if forwarder is not None:
-                    forwarder.cancel()
-                    await asyncio.gather(forwarder, return_exceptions=True)
+                released = (
+                    await release_live_lease(lease_id, cancel_forwarder=True) if isinstance(lease_id, str) else False
+                )
                 reply = make_reply(
                     generation=bootstrap.generation,
                     request_id=request["request_id"],
                     ok=True,
-                    result={"released": lease is not None},
+                    result={"released": released},
                 )
             elif operation == "shutdown":
                 for task in capture_tasks:
                     task.cancel()
                 await asyncio.gather(*capture_tasks, return_exceptions=True)
-                for lease in tuple(live_leases.values()):
-                    await live_registry.unsubscribe(lease)
-                live_leases.clear()
-                for forwarder in live_forwarders.values():
-                    forwarder.cancel()
-                await asyncio.gather(*live_forwarders.values(), return_exceptions=True)
-                live_forwarders.clear()
+                for lease_id in tuple(live_leases):
+                    await release_live_lease(lease_id, cancel_forwarder=True)
                 async with write_lock:
                     await write_control(
                         writer,

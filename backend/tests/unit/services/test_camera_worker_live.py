@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from backend.app.services.camera_worker_live import LiveExternalSubscription, LiveProducerRegistry
+from backend.app.services.camera_worker_live import LIVE_STREAM_ENDED, LiveExternalSubscription, LiveProducerRegistry
 
 
 @pytest.mark.asyncio
@@ -55,3 +55,32 @@ async def test_raw_lease_and_live_producer_are_mutually_exclusive():
     with pytest.raises(RuntimeError, match="busy"):
         await registry.acquire_raw("camera-a")
     await registry.unsubscribe(live)
+
+
+@pytest.mark.asyncio
+async def test_live_registry_waits_for_last_producer_cleanup_and_notifies_subscribers():
+    registry = LiveProducerRegistry()
+    cleanup_complete = asyncio.Event()
+
+    async def producer():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            cleanup_complete.set()
+
+    lease, _queue = await registry.subscribe("camera-a", producer)
+    await asyncio.sleep(0)
+    await registry.unsubscribe(lease)
+    assert cleanup_complete.is_set()
+
+    # A producer that ends independently wakes its worker forwarder instead of
+    # leaving it blocked forever on an empty per-subscriber queue.
+    release = asyncio.Event()
+
+    async def ending_producer():
+        await release.wait()
+
+    _lease, ended_queue = await registry.subscribe("camera-b", ending_producer)
+    release.set()
+    assert await asyncio.wait_for(ended_queue.get(), timeout=1) == LIVE_STREAM_ENDED

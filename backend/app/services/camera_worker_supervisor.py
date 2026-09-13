@@ -40,6 +40,11 @@ _STARTUP_TIMEOUT_SECONDS = 5.0
 _REQUEST_TIMEOUT_SECONDS = 2.0
 _SHUTDOWN_TIMEOUT_SECONDS = 5.0
 _MAX_PENDING_CONTROL_REQUESTS = 256
+# A live producer may legitimately run at 1 FPS.  Keep its relay open longer
+# than the control/snapshot timeout while still detecting a lost producer.
+_LIVE_MEDIA_IDLE_SECONDS = 20.0
+
+LiveMediaQueue = asyncio.Queue[WorkerMediaFrame | None]
 
 
 class CameraWorkerUnavailable(RuntimeError):
@@ -65,7 +70,7 @@ class CameraWorkerSupervisor:
     _stderr_bytes: int = 0
     _containment: WorkerContainment | None = None
     _media_waiters: dict[str, asyncio.Future[WorkerMediaFrame]] = field(default_factory=dict)
-    _live_media_queues: dict[str, asyncio.Queue[WorkerMediaFrame]] = field(default_factory=dict)
+    _live_media_queues: dict[str, LiveMediaQueue] = field(default_factory=dict)
 
     async def start(self) -> None:
         if self.process is not None:
@@ -195,13 +200,13 @@ class CameraWorkerSupervisor:
 
     async def subscribe_external(
         self, *, identity: str, url: str, camera_type: str, fps: int
-    ) -> tuple[str, asyncio.Queue[WorkerMediaFrame]]:
+    ) -> tuple[str, LiveMediaQueue]:
         """Start one worker-owned external producer and return its latest-frame relay."""
 
         if self.process is None:
             await self.start()
         session_id = str(uuid.uuid4())
-        queue: asyncio.Queue[WorkerMediaFrame] = asyncio.Queue(maxsize=1)
+        queue: LiveMediaQueue = asyncio.Queue(maxsize=1)
         self._live_media_queues[session_id] = queue
         try:
             reply = await self.request(
@@ -222,11 +227,11 @@ class CameraWorkerSupervisor:
             self._live_media_queues.pop(session_id, None)
             raise
 
-    async def unsubscribe(self, lease_id: str, queue: asyncio.Queue[WorkerMediaFrame]) -> None:
-        await self.request("unsubscribe", {"lease_id": lease_id})
-        for session_id, registered in list(self._live_media_queues.items()):
-            if registered is queue:
-                self._live_media_queues.pop(session_id, None)
+    async def unsubscribe(self, lease_id: str, queue: LiveMediaQueue) -> None:
+        try:
+            await self.request("unsubscribe", {"lease_id": lease_id})
+        finally:
+            self._end_live_queue(queue)
 
     async def stop(self) -> None:
         """Bound normal shutdown, then terminate only this supervisor's child."""
@@ -266,7 +271,7 @@ class CameraWorkerSupervisor:
         self._reader = None
         self._writer = None
         self._fail_media_waiters()
-        self._live_media_queues.clear()
+        self._end_all_live_queues()
 
     async def _terminate_uncontained_process(self) -> None:
         """Clean up a child when attaching its required containment failed."""
@@ -357,7 +362,8 @@ class CameraWorkerSupervisor:
             if (waiter is None or waiter.done()) and live_queue is None:
                 return
             while True:
-                frame = await asyncio.wait_for(read_media_frame(reader), timeout=_REQUEST_TIMEOUT_SECONDS)
+                timeout = _REQUEST_TIMEOUT_SECONDS if waiter is not None else _LIVE_MEDIA_IDLE_SECONDS
+                frame = await asyncio.wait_for(read_media_frame(reader), timeout=timeout)
                 if frame.generation != self.bootstrap.generation or frame.session_id != hello.session_id:
                     raise CameraWorkerProtocolError("media frame belongs to another capture")
                 if waiter is not None:
@@ -372,6 +378,9 @@ class CameraWorkerSupervisor:
                 waiter = self._media_waiters.get(hello.session_id)
                 if waiter is not None and not waiter.done():
                     waiter.set_exception(CameraWorkerUnavailable("camera worker media relay failed"))
+                live_queue = self._live_media_queues.pop(hello.session_id, None)
+                if live_queue is not None:
+                    self._signal_live_queue_end(live_queue)
         finally:
             writer.close()
             try:
@@ -426,6 +435,7 @@ class CameraWorkerSupervisor:
     def _close_listeners(self) -> None:
         self._connection_closed.set()
         self._fail_media_waiters()
+        self._end_all_live_queues()
         self._fail_pending_requests()
         for server in (self._control_server, self._media_server):
             if server is not None:
@@ -448,7 +458,7 @@ class CameraWorkerSupervisor:
         self._stderr_task = None
         self._stderr_bytes = 0
         self._media_waiters.clear()
-        self._live_media_queues.clear()
+        self._end_all_live_queues()
         self._pending_requests.clear()
         self._control_reader_task = None
 
@@ -456,6 +466,24 @@ class CameraWorkerSupervisor:
         for waiter in self._media_waiters.values():
             if not waiter.done():
                 waiter.set_exception(CameraWorkerUnavailable("camera worker stopped before media relay completed"))
+
+    def _end_live_queue(self, queue: LiveMediaQueue) -> None:
+        for session_id, registered in list(self._live_media_queues.items()):
+            if registered is queue:
+                self._live_media_queues.pop(session_id, None)
+        self._signal_live_queue_end(queue)
+
+    def _end_all_live_queues(self) -> None:
+        queues = list(self._live_media_queues.values())
+        self._live_media_queues.clear()
+        for queue in queues:
+            self._signal_live_queue_end(queue)
+
+    @staticmethod
+    def _signal_live_queue_end(queue: LiveMediaQueue) -> None:
+        if queue.full():
+            queue.get_nowait()
+        queue.put_nowait(None)
 
     def _fail_pending_requests(self) -> None:
         for request in self._pending_requests.values():
