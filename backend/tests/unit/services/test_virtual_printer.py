@@ -1211,6 +1211,30 @@ class TestVirtualPrinterManager:
         manager._base_dir = tmp_path
 
     @pytest.mark.asyncio
+    async def test_sync_continues_after_failed_vp_without_success_log(self, manager, tmp_path, caplog):
+        failed = self._make_db_vp(id=1, name="Failed VP")
+        healthy = self._make_db_vp(id=2, name="Healthy VP")
+        self._setup_sync_mocks(manager, [failed, healthy], tmp_path)
+        failed_instance = MagicMock()
+        failed_instance.name = failed.name
+        failed_instance.start_server = AsyncMock(return_value=False)
+        healthy_instance = MagicMock()
+        healthy_instance.name = healthy.name
+        healthy_instance.start_server = AsyncMock(return_value=True)
+        with (
+            patch(
+                "backend.app.services.virtual_printer.manager.VirtualPrinterInstance",
+                side_effect=[failed_instance, healthy_instance],
+            ),
+            caplog.at_level("INFO"),
+        ):
+            await manager.sync_from_db()
+        failed_instance.start_server.assert_awaited_once()
+        healthy_instance.start_server.assert_awaited_once()
+        assert "Started server-mode VP: Failed VP" not in caplog.text
+        assert "Started server-mode VP: Healthy VP" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_sync_from_db_restarts_on_mode_change(self, manager, tmp_path):
         """Verify sync_from_db restarts VP when mode changes."""
         from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
@@ -2457,14 +2481,20 @@ class TestBindServer:
                 return_value=(Path("/tmp/cert.pem"), Path("/tmp/key.pem")),  # nosec B108
             ),
         ):
-            # The readiness barrier (V6) awaits each child's ``ready`` Event, so
-            # the mocked instances need a real, already-set Event.
+
+            async def serve():
+                await asyncio.Event().wait()
+
+            # A ready listener stays alive until shutdown.
             for cls in (mock_ssdp_cls, mock_ftp_cls, mock_mqtt_cls, mock_bind_cls):
                 ready = asyncio.Event()
                 ready.set()
                 cls.return_value.ready = ready
+                cls.return_value.start = AsyncMock(side_effect=serve)
+                cls.return_value.stop = AsyncMock()
 
-            await inst.start_server()
+            assert await inst.start_server()
+            await inst.stop_server()
 
             mock_bind_cls.assert_called_once_with(
                 serial=inst.serial,

@@ -631,6 +631,7 @@ class TCPProxy:
         self._server: asyncio.Server | None = None
         self._running = False
         self._active_connections: dict[str, tuple[asyncio.Task, asyncio.Task]] = {}
+        self.ready = asyncio.Event()
 
     async def start(self) -> None:
         """Start the TCP proxy server."""
@@ -656,6 +657,7 @@ class TCPProxy:
             )
 
             logger.info("%s TCP proxy listening on port %s", self.name, self.listen_port)
+            self.ready.set()
 
             async with self._server:
                 await self._server.serve_forever()
@@ -676,6 +678,7 @@ class TCPProxy:
         """Stop the TCP proxy server."""
         logger.info("Stopping %s proxy", self.name)
         self._running = False
+        self.ready.clear()
 
         for client_id, (task1, task2) in list(self._active_connections.items()):
             task1.cancel()

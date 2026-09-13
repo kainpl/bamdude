@@ -1657,7 +1657,29 @@ class VirtualPrinterInstance:
 
     # -- Service lifecycle --
 
-    async def start_server(self) -> None:
+    async def start_server(self) -> bool:
+        """Start all listeners, or release the entire partially started VP."""
+        started = False
+        try:
+            await self._start_server()
+            started = True
+        except Exception:
+            logger.exception(
+                "[VP %s] Server-mode startup failed on %s; check that the bind IP is assigned "
+                "to this host and the required ports are available",
+                self.name,
+                self.bind_ip or "0.0.0.0",
+            )
+        finally:
+            # Also runs on cancellation and on failures during service creation.
+            if not started:
+                await self.stop_server()
+
+        if started:
+            logger.info("[VP %s] Server-mode services started on %s", self.name, self.bind_ip or "0.0.0.0")
+        return started
+
+    async def _start_server(self) -> None:
         """Start server-mode services (FTP, MQTT, SSDP, Bind) on this VP's bind_ip."""
         logger.info("[VP %s] Starting server-mode services on %s", self.name, self.bind_ip)
 
@@ -1731,7 +1753,6 @@ class VirtualPrinterInstance:
                 printer_manager=self._printer_manager,
             )
             self._mqtt.set_bridge(self._mqtt_bridge)
-            await self._mqtt_bridge.start()
 
             # Camera passthrough. BambuStudio / OrcaSlicer connect the "camera"
             # button to the device IP they bound on (the VP), not the IP in the
@@ -1806,34 +1827,37 @@ class VirtualPrinterInstance:
             )
         )
 
-        # Wait briefly for every child service to actually bind its socket so
-        # ``is_running`` doesn't report ready while ports are still in the gap
-        # between task creation and ``asyncio.start_server`` returning — a caller
-        # racing the start (diagnostic route, VP-card poll, integration test)
-        # would otherwise see running=True but port checks fail. Bounded 5 s: if
-        # a child hangs binding we log and continue, and the existing task
-        # tracking still catches the failure on the next iteration (V6, upstream
-        # Bambuddy v0.2.4.5).
+        # Stop waiting as soon as a child exits, even if it caught its own bind
+        # error. A timeout or partial startup must not leave a half-working VP.
         ready_targets = [
             ("FTP", self._ftp.ready),
             ("MQTT", self._mqtt.ready),
             ("Bind", self._bind.ready),
             ("SSDP", self._ssdp.ready),
         ]
+        if self._rtsp_proxy:
+            ready_targets.append(("Camera", self._rtsp_proxy.ready))
+        ready = asyncio.gather(*(event.wait() for _, event in ready_targets))
         try:
-            await asyncio.wait_for(
-                asyncio.gather(*(e.wait() for _, e in ready_targets)),
+            done, _ = await asyncio.wait(
+                [ready, *self._tasks],
                 timeout=5.0,
+                return_when=asyncio.FIRST_COMPLETED,
             )
-        except TimeoutError:
-            not_ready = [name for name, e in ready_targets if not e.is_set()]
-            logger.warning(
-                "[VP %s] Sub-service(s) didn't bind within 5s: %s — continuing anyway",
-                self.name,
-                ", ".join(not_ready) or "(none)",
-            )
+            exited = [task.get_name() for task in self._tasks if task.done()]
+            if ready not in done or exited:
+                not_ready = [name for name, event in ready_targets if not event.is_set()]
+                raise RuntimeError(
+                    f"VP listeners not ready: {', '.join(not_ready) or '(none)'}; "
+                    f"exited tasks: {', '.join(exited) or '(none)'}"
+                )
+        finally:
+            ready.cancel()
+            await asyncio.gather(ready, return_exceptions=True)
 
-        logger.info("[VP %s] Server-mode services started on %s", self.name, bind_addr)
+        # Attach to the real printer only after every listener is usable.
+        if self._mqtt_bridge:
+            await self._mqtt_bridge.start()
 
     async def stop_server(self) -> None:
         """Stop server-mode services."""
@@ -1848,6 +1872,9 @@ class VirtualPrinterInstance:
             if self._mqtt:
                 self._mqtt.set_bridge(None)
             self._mqtt_bridge = None
+        # A child may still be inside start_server/bind. Cancel and join it
+        # before tearing down its object, so it cannot bind after stop returns.
+        await self._cancel_tasks()
         if self._rtsp_proxy:
             try:
                 await self._rtsp_proxy.stop()
@@ -1866,7 +1893,6 @@ class VirtualPrinterInstance:
         if self._ssdp:
             await self._ssdp.stop()
             self._ssdp = None
-        await self._cancel_tasks()
 
     async def start_proxy(self) -> None:
         """Start proxy mode services for this instance."""
@@ -2192,8 +2218,8 @@ class VirtualPrinterManager:
                     printer_manager=self._printer_manager,
                 )
                 self._instances[vp.id] = instance
-                await instance.start_server()
-                logger.info("Started server-mode VP: %s on %s", instance.name, vp.bind_ip)
+                if await instance.start_server():
+                    logger.info("Started server-mode VP: %s on %s", instance.name, vp.bind_ip)
 
     async def remove_instance(self, vp_id: int) -> None:
         """Stop and remove a single VP instance."""
