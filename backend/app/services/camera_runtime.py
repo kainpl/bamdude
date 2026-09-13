@@ -150,11 +150,36 @@ class WorkerCameraRuntime:
 
 
 _inline_runtime = InlineCameraRuntime()
+_configured_runtime: CameraRuntime = _inline_runtime
 _runtime_override: ContextVar[CameraRuntime | None] = ContextVar("camera_runtime_override", default=None)
 
 
 def get_camera_runtime() -> CameraRuntime:
-    return _runtime_override.get() or _inline_runtime
+    return _runtime_override.get() or _configured_runtime
+
+
+async def configure_camera_runtime(mode: Literal["inline", "worker"]) -> None:
+    """Select one process-wide physical camera owner at application startup."""
+
+    global _configured_runtime
+    if mode == "inline":
+        if isinstance(_configured_runtime, WorkerCameraRuntime):
+            await _configured_runtime.stop()
+        _configured_runtime = _inline_runtime
+        return
+    if isinstance(_configured_runtime, WorkerCameraRuntime):
+        return
+    from backend.app.services.camera_worker_supervisor import CameraWorkerSupervisor
+
+    runtime = WorkerCameraRuntime(CameraWorkerSupervisor())
+    await runtime.supervisor.start()
+    _configured_runtime = runtime
+
+
+async def stop_configured_camera_runtime() -> None:
+    """Release the worker tree before the app tears down camera dependencies."""
+
+    await configure_camera_runtime("inline")
 
 
 async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:

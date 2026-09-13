@@ -8749,6 +8749,14 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    # The worker is opt-in and must establish containment before any camera
+    # caller can run. Do not silently leave an inline owner alive when an
+    # install explicitly selected the worker runtime.
+    if app_settings.camera_runtime == "worker":
+        from backend.app.services.camera_runtime import configure_camera_runtime
+
+        await configure_camera_runtime("worker")
+
     # Warm the system language into process memory. Sync callers on hot paths
     # read it from there — notably the MQTT pause classifier, which cannot
     # await a settings read and would otherwise report every pause reason in
@@ -9634,6 +9642,12 @@ async def lifespan(app: FastAPI):
     await stop_connection_watchdog()
     stop_runtime_tracking()
     stop_camera_cleanup()
+    try:
+        from backend.app.services.camera_runtime import stop_configured_camera_runtime
+
+        await stop_configured_camera_runtime()
+    except Exception as e:
+        logging.warning("Failed to stop camera worker runtime: %s", e)
     # Cancel any pending offline-notification debounce tasks (#1752) so the 60s
     # sleep doesn't outlive the asyncio loop on shutdown.
     for _t in list(_printer_offline_notify_tasks.values()):
