@@ -8729,6 +8729,97 @@ async def stop_library_objects_backfill() -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# Queue-source spool collector — the boot sweep + the periodic GC (spec §9, §11)
+# ---------------------------------------------------------------------------
+
+_queue_source_sweep_task: asyncio.Task | None = None
+_queue_source_gc_task: asyncio.Task | None = None
+
+
+async def _queue_source_sweep_once() -> None:
+    """Adopt what the previous process left in ``DATA_DIR/queue-spool``.
+
+    ⚠️ **Nothing escapes this coroutine.** It is fire-and-forget, so an exception
+    would surface only through the background-task logger, and a
+    ``CancelledError`` at shutdown is not a fault — the sweep is idempotent by
+    construction and simply runs again at the next start.
+    """
+    log = logging.getLogger(__name__)
+    try:
+        from backend.app.services.queue_sources import sweep_after_restart
+
+        await sweep_after_restart()
+    except asyncio.CancelledError:
+        log.debug("Queue spool sweep cancelled")
+    except Exception:
+        log.warning("Queue spool sweep failed", exc_info=True)
+
+
+async def _queue_source_gc_loop() -> None:
+    """Release spool blobs whose last owner is gone, no more often than §6 allows.
+
+    Sleeps FIRST: a pass at boot would race the sweep for the same guard and do
+    its work twice. The interval is read from the service on every iteration so
+    the one home for that number stays the one home.
+    """
+    log = logging.getLogger(__name__)
+    from backend.app.services import queue_sources
+
+    while True:
+        try:
+            await asyncio.sleep(queue_sources.GC_MIN_INTERVAL_SECONDS)
+            report = await queue_sources.collect()
+            if report.touched():
+                log.info(
+                    "Queue spool GC: released %d blob(s), %d orphan object(s), %d stray staging file(s), "
+                    "%d marked, %d failed",
+                    report.released,
+                    report.orphan_objects,
+                    report.orphan_parts,
+                    report.marked,
+                    report.failed,
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            log.warning("Queue spool GC pass failed", exc_info=True)
+
+
+def start_queue_source_collector() -> None:
+    """Start the boot sweep and the periodic GC — both tracked, neither blocking.
+
+    ⚠️ The sweep is a task, never a step of the lifespan: it walks the spool and
+    can unlink files, and uvicorn must be answering requests before that finishes.
+    """
+    global _queue_source_sweep_task, _queue_source_gc_task
+    if _queue_source_sweep_task is None:
+        _queue_source_sweep_task = spawn_background_task(_queue_source_sweep_once(), name="queue-source-sweep")
+    if _queue_source_gc_task is None:
+        _queue_source_gc_task = spawn_background_task(_queue_source_gc_loop(), name="queue-source-gc")
+
+
+async def stop_queue_source_collector() -> None:
+    """Cancel both AND wait for them to notice.
+
+    Awaited like ``stop_library_objects_backfill``: a pass holds a database
+    session and may be mid-unlink, and returning from the lifespan with that in
+    flight is how a shutdown ends against a closed engine.
+    """
+    global _queue_source_sweep_task, _queue_source_gc_task
+    tasks = [_queue_source_sweep_task, _queue_source_gc_task]
+    _queue_source_sweep_task = None
+    _queue_source_gc_task = None
+    for task in tasks:
+        if task is None:
+            continue
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -9465,6 +9556,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         logging.getLogger(__name__).warning("library scan sweep failed", exc_info=True)
 
+    # ⚠️ The queue spool can hold three kinds of leftover from a process that
+    # died: a `deleting` tombstone mid-unlink, a `.part` from a capture that
+    # never finished, and a fully renamed object whose row was never committed.
+    # Swept in the background, never in the lifespan — it walks a directory tree
+    # and unlinks files. The periodic collector starts with it and releases a blob
+    # only once every job row of both queues has let go (spec §9).
+    start_queue_source_collector()
+
     # Library 3MFs that never got their object metadata (uploaded before the
     # extractor existed, or scanned while their mount was down) get it here.
     # m158 does the same at upgrade; this is the retry, and on an install where
@@ -9656,6 +9755,7 @@ async def lifespan(app: FastAPI):
         logging.warning("Failed to shut down camera broadcasters: %s", e)
     stop_expected_prints_cleanup()
     stop_label_reclaim()
+    await stop_queue_source_collector()
     await stop_library_objects_backfill()
 
     from backend.app.services.library_scan import cancel_running_scans

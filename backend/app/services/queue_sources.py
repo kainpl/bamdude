@@ -51,6 +51,7 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -60,9 +61,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.core import database
 from backend.app.core.config import settings
 from backend.app.core.db_portable import _file_work
+from backend.app.models.auto_queue import AutoQueueItem
+from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.queue_source import (
     FORMAT_3MF,
     QUEUE_SOURCE_FORMATS,
+    STATE_BROKEN,
     STATE_DELETING,
     STATE_READY,
     QueueSource,
@@ -109,9 +113,10 @@ FREE_SPACE_RESERVE_BYTES = 256 * 1024 * 1024
 #: simulated 30 minutes costs milliseconds.
 PROGRESS_POLL_SECONDS = 0.5
 
-#: The garbage collector's two numbers (§6), kept in this block because the spec
-#: asks for one home for all of them. Read by ``services/queue_source_gc.py``;
-#: unused here by design — a second declaration there would be a second answer.
+#: The garbage collector's two numbers (§6), in this block because the spec asks
+#: for one home for all of them. Read by :func:`collect` at the bottom of this
+#: module — declaring them again beside the collector would be a second answer to
+#: the same question, which is the whole reason they were parked here first.
 GC_MIN_INTERVAL_SECONDS = 15 * 60.0
 ORPHAN_GRACE_SECONDS = 60 * 60.0
 
@@ -261,6 +266,11 @@ _epoch = 0
 _storage_lock: asyncio.Lock | None = None
 _storage_lock_loop: asyncio.AbstractEventLoop | None = None
 
+#: Monotonic reading of the last :func:`collect` that was allowed to run — §6's
+#: "GC не частіше разу на 15 хвилин", held here rather than by one caller so the
+#: rule belongs to the collector and not to whoever happens to trigger it.
+_last_collection: float | None = None
+
 
 def _now() -> float:
     """The monotonic clock, behind one name so a test can replace it."""
@@ -304,9 +314,28 @@ def backup_pinned() -> bool:
 
 
 def pinned_staging_paths() -> frozenset[Path]:
-    """``.part`` files a live worker or an unpublished receipt owns (§9, S6)."""
+    """``.part`` files an unpublished receipt owns (§9, S6)."""
     with _state_lock:
         return frozenset(_staging_pins)
+
+
+def staging_in_use() -> frozenset[Path]:
+    """Every ``.part`` a LIVE worker is writing **or** a receipt still owns.
+
+    ⚠️ This, not :func:`pinned_staging_paths`, is what the GC must ask. A path
+    enters ``_staging_pins`` only when :func:`_finish` hands it to a receipt, so
+    for the whole duration of the copy the file exists and is pinned by nothing:
+    a sweep that consulted only the pin set would unlink a live capture's staging
+    file out from under it (§6: "Не unlink .part з-під живого writer", S6). A copy
+    over a slow share can outlast the one-hour grace, and the restart sweep waives
+    that grace for ``.part`` files altogether.
+
+    Both halves are read in one critical section, and :func:`_finish` moves a path
+    from one to the other in one too, so a handover cannot be observed as neither.
+    """
+    with _state_lock:
+        live = {record.part for record in _inflight.values() if record.part is not None}
+        return frozenset(live | _staging_pins)
 
 
 def current_epoch() -> int:
@@ -330,7 +359,7 @@ def _reset_state() -> None:
     it writing into a spool nobody is tracking — a test that leaks a worker has
     to fail, loudly, in its own teardown.
     """
-    global _backup_pins, _epoch
+    global _backup_pins, _epoch, _last_collection
     with _state_lock:
         if _inflight:
             raise RuntimeError(f"{len(_inflight)} capture worker(s) still alive; drain them before resetting")
@@ -338,6 +367,7 @@ def _reset_state() -> None:
         _staging_pins.clear()
         _backup_pins = 0
         _epoch = 0
+        _last_collection = None
 
 
 def _guard() -> asyncio.Lock:
@@ -1035,3 +1065,479 @@ async def _reuse_or_repair(existing: QueueSource, receipt: CaptureReceipt, publi
     existing.size_bytes = receipt.size_bytes
     existing.unreferenced_at = None
     return existing
+
+
+# --------------------------------------------------------------------------- #
+# Garbage collection — spec §9. A blob goes when its LAST owner is gone.
+#
+# The owners of a blob are every job row of BOTH queues that names it, in ANY
+# status — pending, printing, paused, failed, cancelled, skipped, completed and
+# waiting for a plate answer — plus the short-lived writer / reader / backup pins.
+# There is no ``ref_count`` column and no hidden TTL: the question is asked with a
+# query against both tables, every pass, under the one storage-mutation guard.
+# ``unreferenced_at`` is the grace window's start, never on its own a licence to
+# unlink (§4).
+#
+# ⚠️ "Count → unlink" without that guard is forbidden (S5), and the guard is the
+# *whole* mechanism: a reference to an existing blob is created under it (a
+# publication's reuse, a clone, an assignment), so there is no window between the
+# count and the unlink for one to appear in. The grace is a margin, not the lock.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(slots=True)
+class GcReport:
+    """What one pass did. Every number is also a log line's worth of evidence."""
+
+    #: The pass was refused because the last one was less than
+    #: :data:`GC_MIN_INTERVAL_SECONDS` ago. Not a failure — ask again later.
+    throttled: bool = False
+    rows: int = 0
+    #: Rows that lost their last owner and had their grace window started.
+    marked: int = 0
+    #: Rows that got an owner back, so the window was cleared.
+    unmarked: int = 0
+    #: Blobs whose file was unlinked and whose row was then deleted.
+    released: int = 0
+    #: ``deleting`` rows adopted from a previous pass (or a previous process).
+    tombstones: int = 0
+    #: Tombstones an owner came back to, bytes intact ⇒ ``ready`` again.
+    revived: int = 0
+    #: Tombstones an owner came back to with the bytes gone ⇒ ``broken``.
+    broken: int = 0
+    orphan_objects: int = 0
+    orphan_parts: int = 0
+    #: Entries skipped because they are — or resolve to — something outside this
+    #: tree: a symlink, a Windows junction, an unreadable entry.
+    skipped_links: int = 0
+    #: Entries inside the spool that do not have the shape this module writes.
+    #: Reported, never deleted: a GC removes only what it put there.
+    skipped_unexpected: int = 0
+    #: Unlinks that failed. Each one leaves its tombstone for the next pass.
+    failed: int = 0
+
+    def touched(self) -> bool:
+        return bool(
+            self.marked
+            or self.unmarked
+            or self.released
+            or self.tombstones
+            or self.revived
+            or self.broken
+            or self.orphan_objects
+            or self.orphan_parts
+            or self.skipped_links
+            or self.skipped_unexpected
+            or self.failed
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _SpoolScan:
+    """What one walk of the spool found. Paths only — the decisions are the loop's."""
+
+    orphan_objects: tuple[tuple[Path, float], ...] = ()
+    stray_parts: tuple[tuple[Path, float], ...] = ()
+    links: int = 0
+    unexpected: int = 0
+
+
+def _naive(value: datetime) -> datetime:
+    """The stored form: naive UTC, as every ``DateTime`` column here holds it."""
+    return value.replace(tzinfo=None) if value.tzinfo is not None else value
+
+
+def _moment(now: datetime | None) -> datetime:
+    if now is None:
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+    return _naive(now.astimezone(timezone.utc)) if now.tzinfo is not None else now
+
+
+def _object_path_of(row: QueueSource) -> Path:
+    """Where the ROW says its bytes are — never a path recomputed from the hash."""
+    return Path(settings.base_dir) / row.relative_path
+
+
+def _fs_key(path: Path) -> str:
+    """One spelling of a path, so the walk and the rows can be compared."""
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _unlink_blob(path: Path) -> None:
+    """Remove a published object, containment-checked, off the loop.
+
+    Unlike :func:`_drop` this **raises**: an unlink that did not happen must leave
+    the row's tombstone standing for the next pass (§9), never be logged as done.
+    ``missing_ok`` because a file that is already gone is a finished release.
+    """
+    assert_under(objects_root(), path, http=False)
+    path.unlink(missing_ok=True)
+
+
+def _unlink_part(path: Path) -> None:
+    """Remove a staging file nobody owns. Containment-checked; raises like above."""
+    assert_under(staging_root(), path, http=False)
+    path.unlink(missing_ok=True)
+
+
+def _entries(directory: Path) -> list[os.DirEntry]:
+    try:
+        with os.scandir(directory) as scan:
+            return list(scan)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        logger.warning("Queue spool inventory could not read %s: %s", directory, exc)
+        return []
+
+
+def _is_link(entry: os.DirEntry) -> bool:
+    """Symlink or Windows junction — either way, not ours to walk into.
+
+    An ``OSError`` answers True: an entry we cannot classify is one we must not
+    delete. ``is_junction`` is 3.12's, and the guard keeps this honest if the
+    floor ever moves back.
+    """
+    try:
+        if entry.is_symlink():
+            return True
+    except OSError:
+        return True
+    try:
+        return entry.is_junction()
+    except (AttributeError, OSError):
+        return False
+
+
+def _is_dir(entry: os.DirEntry) -> bool:
+    try:
+        return entry.is_dir(follow_symlinks=False)
+    except OSError:
+        return False
+
+
+def _is_file(entry: os.DirEntry) -> bool:
+    try:
+        return entry.is_file(follow_symlinks=False)
+    except OSError:
+        return False
+
+
+def _age_cutoff(now_ts: float, grace: float) -> float | None:
+    """The mtime a file must be older than, or ``None`` for "do not ask its age".
+
+    ⚠️ A zero grace is deliberately **not** ``now_ts``. ``datetime.now()``
+    truncates to microseconds and a filesystem timestamp does not, so a file
+    written a moment *before* that reading can carry an mtime up to a microsecond
+    *later* than it (measured on NTFS, 2026-09-13 — it made the restart sweep keep
+    a ``.part`` it had just been asked to drop). The restart sweep's argument is
+    that the writer is provably dead, never that the litter is old, so there the
+    age is not a gate at all.
+    """
+    return None if grace <= 0 else now_ts - grace
+
+
+def _entry_mtime(entry: os.DirEntry) -> float:
+    try:
+        return entry.stat(follow_symlinks=False).st_mtime
+    except OSError:
+        # An age we could not read is treated as "brand new", which keeps the file.
+        return time.time()
+
+
+def _scan_spool(known: frozenset[str]) -> _SpoolScan:
+    """List what the spool holds that no row names — off the loop (§9, S10).
+
+    Confined to the two directories this module writes, one shard deep, and it
+    never follows a link: a symlink or a junction is counted and skipped, never
+    descended into and never unlinked (§9 — "не ходити за symlink/junction і не
+    торкатися інших data trees"). Every candidate is containment-checked as well,
+    so a link somebody else dropped in here cannot make the GC delete a file in
+    another tree.
+
+    Anything without the shape this module writes — a file loose in ``objects/``,
+    a directory two shards deep, a ``notes.txt`` in ``staging/`` — is reported and
+    left alone. A collector deletes only what it created.
+    """
+    objects_found: list[tuple[Path, float]] = []
+    parts: list[tuple[Path, float]] = []
+    links = 0
+    unexpected = 0
+    objects_dir = objects_root()
+    staging_dir = staging_root()
+
+    for shard in _entries(objects_dir):
+        if _is_link(shard):
+            links += 1
+            continue
+        if not _is_dir(shard):
+            unexpected += 1
+            continue
+        for entry in _entries(Path(shard.path)):
+            if _is_link(entry):
+                links += 1
+                continue
+            if not _is_file(entry):
+                unexpected += 1
+                continue
+            candidate = Path(entry.path)
+            if _fs_key(candidate) in known:
+                continue
+            try:
+                assert_under(objects_dir, candidate, http=False)
+            except PathTraversalError:
+                links += 1
+                continue
+            objects_found.append((candidate, _entry_mtime(entry)))
+
+    for entry in _entries(staging_dir):
+        if _is_link(entry):
+            links += 1
+            continue
+        if not _is_file(entry) or not entry.name.endswith(".part"):
+            unexpected += 1
+            continue
+        candidate = Path(entry.path)
+        try:
+            assert_under(staging_dir, candidate, http=False)
+        except PathTraversalError:
+            links += 1
+            continue
+        parts.append((candidate, _entry_mtime(entry)))
+
+    return _SpoolScan(tuple(objects_found), tuple(parts), links, unexpected)
+
+
+async def _owned_ids(session: AsyncSession) -> set[int]:
+    """Every blob id either queue names, **in any status** (§9's owner table).
+
+    Deliberately status-blind. A failed, cancelled or skipped row keeps its bytes
+    for Retry/Unskip; a completed row keeps them until the plate is answered for;
+    and a ``printing`` row that ``main.py::_close_stale_printing_rows`` closed on
+    age keeps them too, because that closure is the tidying of a stuck row and not
+    a print ending (§9, added 2026-09-13). The only thing that releases a
+    reference is the row going away.
+    """
+    owned: set[int] = set()
+    for column in (PrintQueueItem.queue_source_id, AutoQueueItem.queue_source_id):
+        rows = await session.scalars(select(column).where(column.is_not(None)).distinct())
+        owned.update(int(value) for value in rows)
+    return owned
+
+
+async def collect(
+    now: datetime | None = None,
+    *,
+    session_factory: async_sessionmaker | None = None,
+    force: bool = False,
+    part_grace_seconds: float | None = None,
+) -> GcReport:
+    """One garbage-collection pass — spec §9.
+
+    Under the same guard as finalize/attach/clone/delete, and in this order: ask
+    both tables and the pins who owns what; start (or clear) the grace window;
+    then, for a blob whose window has run out, flip the row to ``deleting``,
+    **commit that**, unlink, delete the row. The tombstone is durable before the
+    unlink so a crash in between leaves work for the next pass rather than a
+    ``ready`` row with no file, and a failed unlink leaves it standing too.
+
+    ``now`` is the wall clock the grace is measured against (naive UTC or aware);
+    tests pass it so no test waits out an hour. ``force`` skips §6's minimum
+    interval. ``part_grace_seconds`` overrides the grace for ``staging/*.part``
+    only — see :func:`sweep_after_restart`, the one caller that does.
+
+    Never verifies a healthy object's bytes: §7 forbids hashing a large file on
+    every tick, and the GC is not the place a broken blob is discovered.
+    """
+    global _last_collection
+    moment = _moment(now)
+    if not force:
+        last = _last_collection
+        if last is not None and _now() - last < GC_MIN_INTERVAL_SECONDS:
+            return GcReport(throttled=True)
+    # Stamped BEFORE the guard so two callers that both passed the check above do
+    # not turn into two passes queued behind each other.
+    _last_collection = _now()
+    async with storage_mutation():
+        return await _collect_locked(moment, session_factory, part_grace_seconds)
+
+
+async def _collect_locked(
+    moment: datetime,
+    session_factory: async_sessionmaker | None,
+    part_grace_seconds: float | None,
+) -> GcReport:
+    report = GcReport()
+    factory = session_factory or database.async_session
+    async with factory() as session:
+        rows = list(await session.scalars(select(QueueSource).order_by(QueueSource.id)))
+        report.rows = len(rows)
+        owned = await _owned_ids(session)
+        pinned = pinned_source_ids()
+        backup = backup_pinned()
+
+        tombstones: list[QueueSource] = []
+        contested: list[QueueSource] = []
+        candidates: list[QueueSource] = []
+        for row in rows:
+            held = backup or row.id in pinned
+            owner = row.id in owned
+            if row.state == STATE_DELETING:
+                # Its deletion was already decided; the only question left is
+                # whether somebody has claimed it since.
+                (contested if owner or held else tombstones).append(row)
+                continue
+            if owner:
+                if row.unreferenced_at is not None:
+                    row.unreferenced_at = None
+                    report.unmarked += 1
+                continue
+            if held:
+                # The grace never beats a live pin (§9). The mark is left where it
+                # is: it records when the row was last seen with no DB owner, and
+                # a pin is not an owner.
+                continue
+            if row.unreferenced_at is None:
+                row.unreferenced_at = moment
+                report.marked += 1
+                continue
+            if (moment - _naive(row.unreferenced_at)).total_seconds() < ORPHAN_GRACE_SECONDS:
+                continue
+            candidates.append(row)
+
+        # Verified BEFORE the first write of this transaction: this is the one
+        # path that hashes a whole file, and S10 forbids doing that with a write
+        # lock held. It is also rare — a tombstone somebody owns again.
+        verdicts = [
+            (row, await _file_work(_verify_object, _object_path_of(row), row.sha256, row.size_bytes))
+            for row in contested
+        ]
+        for row, intact in verdicts:
+            row.state = STATE_READY if intact else STATE_BROKEN
+            row.unreferenced_at = None
+            if intact:
+                report.revived += 1
+            else:
+                # Never revive a job on a vanished file (§9). The reference stays
+                # so the operator can see which jobs died with those bytes.
+                report.broken += 1
+                logger.warning(
+                    "Queue source %s was being deleted and has an owner again, but its bytes are gone", row.id
+                )
+        if report.marked or report.unmarked or verdicts:
+            await session.commit()
+
+        for row in [*tombstones, *candidates]:
+            # Read before the commit below. Both session factories here are
+            # ``expire_on_commit=False``, but an expiring one would turn this
+            # attribute access into a lazy refresh with no ``await`` in front of
+            # it — a ``MissingGreenlet`` that would only ever appear in production.
+            target = _object_path_of(row)
+            if row.state == STATE_DELETING:
+                report.tombstones += 1
+            else:
+                row.state = STATE_DELETING
+                await session.commit()
+            try:
+                await _file_work(_unlink_blob, target)
+            except (OSError, PathTraversalError) as exc:
+                logger.warning("Queue source %s could not be unlinked, leaving its tombstone: %s", row.id, exc)
+                report.failed += 1
+                continue
+            await session.delete(row)
+            await session.commit()
+            report.released += 1
+
+        # Rebuilt from what survived, rather than bookkept: a file a row still
+        # names is not an orphan, and the rows are the authority on that.
+        known = frozenset(
+            _fs_key(Path(settings.base_dir) / relative)
+            for relative in await session.scalars(select(QueueSource.relative_path))
+        )
+
+    await _sweep_orphans(report, moment, known, part_grace_seconds)
+    return report
+
+
+async def _sweep_orphans(
+    report: GcReport,
+    moment: datetime,
+    known: frozenset[str],
+    part_grace_seconds: float | None,
+) -> None:
+    """Files inside the spool that no row names (§9's orphan inventory)."""
+    scan = await _file_work(_scan_spool, known)
+    report.skipped_links = scan.links
+    report.skipped_unexpected = scan.unexpected
+    # ⚠️ Asked AFTER the walk, on purpose. Admission does not hold the guard, so a
+    # capture can start beside this pass — but a worker sets ``record.part``
+    # before it creates the file, so any ``.part`` the walk could possibly have
+    # seen was already registered by the time this reads the set.
+    in_use = {_fs_key(path) for path in staging_in_use()}
+    now_ts = moment.replace(tzinfo=timezone.utc).timestamp()
+    object_cutoff = _age_cutoff(now_ts, ORPHAN_GRACE_SECONDS)
+    part_cutoff = _age_cutoff(now_ts, ORPHAN_GRACE_SECONDS if part_grace_seconds is None else part_grace_seconds)
+
+    for path, mtime in scan.orphan_objects:
+        if object_cutoff is not None and mtime > object_cutoff:
+            continue
+        try:
+            await _file_work(_unlink_blob, path)
+        except (OSError, PathTraversalError) as exc:
+            logger.warning("Orphan queue-spool object %s could not be removed: %s", path, exc)
+            report.failed += 1
+            continue
+        report.orphan_objects += 1
+
+    for path, mtime in scan.stray_parts:
+        if _fs_key(path) in in_use:
+            continue
+        if part_cutoff is not None and mtime > part_cutoff:
+            continue
+        try:
+            await _file_work(_unlink_part, path)
+        except (OSError, PathTraversalError) as exc:
+            logger.warning("Stray queue-spool staging file %s could not be removed: %s", path, exc)
+            report.failed += 1
+            continue
+        report.orphan_parts += 1
+
+
+async def sweep_after_restart(*, session_factory: async_sessionmaker | None = None) -> None:
+    """Adopt what the previous process left in the spool — §9's tail and §11.
+
+    Three kinds of leftovers, not two:
+
+    * a ``deleting`` tombstone — the GC was unlinking when the process died;
+    * a stray ``staging/*.part`` — a capture that never finished;
+    * **a fully renamed object with no row at all** — a publication moved the
+      staged file and died before its commit, and a cancellation inside the
+      install leaves exactly that by design. §5 step 7 hands those bytes to
+      cleanup, and this is the cleanup.
+
+    ``.part`` files skip the grace: at boot the writer of every one of them is
+    provably dead — this process holds no capture slots — so waiting an hour only
+    keeps a crash's litter on disk. **Objects keep the full grace**: they are
+    verified bytes, an hour costs nothing and a wrong unlink costs a print. Both
+    still refuse anything pinned, and the whole pass runs under the storage guard,
+    so background hydration starting beside this sweep cannot lose its file.
+
+    A referenced blob is never deleted here, no failed job is reactivated and no
+    print is restarted (§11) — the sweep is one ordinary :func:`collect` pass with
+    the interval and the ``.part`` grace waived, so there is only one set of rules
+    to be right about.
+    """
+    report = await collect(session_factory=session_factory, force=True, part_grace_seconds=0.0)
+    if report.touched():
+        logger.info(
+            "Queue spool sweep: released %d blob(s), %d orphan object(s), %d stray staging file(s); "
+            "%d tombstone(s), %d revived, %d broken, %d failed, %d skipped",
+            report.released,
+            report.orphan_objects,
+            report.orphan_parts,
+            report.tombstones,
+            report.revived,
+            report.broken,
+            report.failed,
+            report.skipped_links + report.skipped_unexpected,
+        )
