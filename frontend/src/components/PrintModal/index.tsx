@@ -25,6 +25,7 @@ import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hoo
 import { useOrderCandidates } from '../../hooks/useOrderCandidates';
 import { OrderFilingField, type OrderFilingValue } from '../OrderFilingField';
 import { canQueueWithoutAsking } from '../../utils/bulkQueueEligibility';
+import { isUnknownOutcome, queueAddOutcomeText, type QueueAddFailure } from '../../utils/queueSource';
 import { invalidateOrderCandidates, invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
 import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
@@ -1352,7 +1353,7 @@ export function PrintModal({
     return amsMapping;
   };
 
-  const handleSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean }) => {
+  const runSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean }) => {
     e?.preventDefault();
 
     // ⚠️ A dialog that never showed itself does not announce itself either.
@@ -1497,7 +1498,22 @@ export function PrintModal({
         onSuccess?.();
         onClose();
       } catch (err) {
-        showToast(t('printModal.failedPrefix', { error: (err as Error).message }), 'error');
+        // The router tier is ONE request, so "was it added?" has one answer —
+        // and a dropped connection still leaves it unknown rather than refused.
+        if (isUnknownOutcome(err)) {
+          invalidateQueueViews(queryClient);
+          queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
+          invalidateOrderCandidates(queryClient);
+          showToast(t('queueSpool.failure.uncertain'), 'error');
+          onClose();
+        } else {
+          // One request, one target — the reason needs no printer label, and the
+          // builder's bare form is exactly that case.
+          showToast(
+            queueAddOutcomeText(t, { added: 0, total: 1, failures: [{ label: '', error: err }] }),
+            'error',
+          );
+        }
       } finally {
         setIsSubmitting(false);
       }
@@ -1664,6 +1680,27 @@ export function PrintModal({
       queued: 0,
       errors: [],
     };
+    // ⚠️ Every failure is kept as the ERROR OBJECT beside the target it belongs
+    // to, not only as its text. The refusal that explains itself to the operator
+    // is identified by its machine code (`source_copy_busy` vs
+    // `source_unreadable`), and one printer's reason must never be read as
+    // every printer's: the message groups these by reason and names the
+    // printers. `results.errors` stays what it was — prose for the log-like
+    // paths that still use it.
+    const failures: QueueAddFailure[] = [];
+    // A request whose answer never came back. Not a refusal: it may have been
+    // committed, so the list is refreshed and nothing is re-posted (§5).
+    let unknownOutcomes = 0;
+    // Printers that got at least one row out of this submit. They are unticked
+    // before the dialog is handed back, so a second press cannot duplicate them.
+    const landedOn = new Set<number>();
+    // Rows written per plate, keyed exactly as `planPlateIds` keys them (a
+    // plate-less submit is 0). ⚠️ In TOTAL mode the quantity field is a total for
+    // the whole submit, so a retry has to ask for `total − what landed`; without
+    // this the dialog invites a second press (see `failure.deselected`) that
+    // re-orders the full total over the printers that refused, and the farm
+    // over-produces by whatever already went out.
+    const queuedByPlate = new Map<number, number>();
 
 
     // Swap-macro payload is only meaningful on a swap-enabled printer AND
@@ -1787,13 +1824,17 @@ export function PrintModal({
             createdItemIds.push(...(added.created_item_ids ?? (added.id != null ? [added.id] : [])));
           }
           results.success++;
+          landedOn.add(printerId);
           // Edit mode replaces one row; everything else writes one per copy.
           results.queued += copies;
+          queuedByPlate.set(plateId ?? 0, (queuedByPlate.get(plateId ?? 0) ?? 0) + copies);
         } catch (error) {
           results.failed++;
+          if (isUnknownOutcome(error)) unknownOutcomes++;
           const printerName = printers?.find(p => p.id === printerId)?.name || `Printer ${printerId}`;
           const plateName = plate ? (plate.name || t('printModal.plateNFallback', { index: plate.index })) : '';
           const label = plateName ? `${printerName} (${plateName})` : printerName;
+          failures.push({ label, error });
           results.errors.push(`${label}: ${(error as Error).message}`);
         }
       }
@@ -1823,12 +1864,115 @@ export function PrintModal({
       invalidateOrderCandidates(queryClient);
       onSuccess?.();
       onClose();
+    } else if (mode === 'add-to-queue') {
+      // ⚠️ **Every add refusal leads with whether a job exists**, and then gives
+      // a reason PER PRINTER. That is the operator's actual question, and an add
+      // is all-or-nothing per request (§5: a copy failure leaves no runnable
+      // row), so the counters answer it exactly. `success`/`failed` stay a pair
+      // of ATTEMPT counts — the partial sentence pairs them, and folding them
+      // into one number is how the queued-count bug happened.
+      //
+      // ⚠️ **An unanswered request is not a refusal** (§5): the server may well
+      // have committed before the connection died, a second POST would be a
+      // second job, and the rule is refresh-and-look, never re-send. But the
+      // answered refusals beside it keep their own reasons — losing an
+      // actionable one to a sibling's uncertainty is the same defect as
+      // misattributing it.
+      const unknownOnly = unknownOutcomes > 0;
+      // ⚠️ **What already landed must not still be armed.** This branch used to
+      // leave the dialog standing with every printer ticked and «try again in a
+      // moment» on screen: pressing Add again gave the printer that succeeded a
+      // SECOND job. So the succeeded printers are unticked; when nothing would
+      // be left to retry (one printer, several plates, some of them refused) the
+      // dialog closes instead and the queue is where the operator looks.
+      const retryable = selectedPrinters.filter((id) => !landedOn.has(id));
+      const deselected = landedOn.size > 0 && retryable.length > 0 && !unknownOnly;
+      // ⚠️ **And a retry must ask for what is MISSING, not for the original
+      // total.** In `total` mode the field is one number for the whole submit,
+      // dealt round-robin; leaving it at 10 after 4 copies landed means the next
+      // press orders 10 more across the printers that refused. Per-printer mode
+      // needs nothing — its number is already per machine, and the machines that
+      // took work are gone from the selection.
+      //
+      // The leftover is computed per PLATE, because each plate carries its own
+      // total: one plate writes the shared field (what the operator sees is then
+      // what the deal does), several write the per-plate map the plan lines and
+      // the plate list already display. Touching the field clears that map, which
+      // is the operator taking the number back — exactly right.
+      let stillMissing: number | null = null;
+      if (deselected) {
+        setSelectedPrinters(retryable);
+        if (effectiveQuantityMode === 'total') {
+          const remaining = planPlateIds.map(
+            (plate) => [plate, Math.max(0, quantityForPlate(plate) - (queuedByPlate.get(plate) ?? 0))] as const,
+          );
+          const total = remaining.reduce((sum, [, left]) => sum + left, 0);
+          // `total === 0` needs every row to have landed, which contradicts a
+          // failure being in this branch — so it cannot happen, and if it ever
+          // did, leaving the field alone beats writing a zero into it.
+          if (total > 0) {
+            stillMissing = total;
+            if (remaining.length === 1) {
+              setQuantity(total);
+              setPlateQuantities({});
+            } else {
+              setPlateQuantities(Object.fromEntries(remaining));
+            }
+          }
+        }
+      }
+      showToast(
+        queueAddOutcomeText(t, {
+          added: results.success,
+          total: results.success + results.failed,
+          failures,
+          deselected,
+          stillMissing,
+        }),
+        'error',
+      );
+      if (results.success > 0 || unknownOnly) {
+        invalidateQueueViews(queryClient);
+        invalidateOrderCandidates(queryClient);
+      }
+      // Closing is the honest ending whenever the form left standing could
+      // duplicate something: an unknown outcome (we do not know what landed) or
+      // a submit whose every selected printer already took work.
+      if (unknownOnly || (landedOn.size > 0 && retryable.length === 0)) onClose();
     } else if (results.success === 0) {
       showToast(t('printModal.failedPrefix', { error: results.errors[0] }), 'error');
     } else {
       showToast(t('printModal.partialSuccess', { success: results.success, failed: results.failed }), 'error');
       invalidateQueueViews(queryClient);
       invalidateOrderCandidates(queryClient);
+    }
+  };
+
+  /**
+   * The one gate against a second submit (spec §10: "повторне натискання
+   * заблоковано").
+   *
+   * ⚠️ **The disabled button is not that gate.** It only disables on the next
+   * render, and neither Enter in a field nor a second click that beats that
+   * render goes through it — measured: three POSTs, three jobs, from one press
+   * of one dialog. The ref is checked and set synchronously, before the first
+   * `await`, so there is no window at all.
+   *
+   * ⚠️ It must be released on EVERY exit, the early ones included: the low-spool
+   * warning returns without submitting and the operator's «print anyway» calls
+   * straight back in here.
+   */
+  const submitInFlightRef = useRef(false);
+  const handleSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean }) => {
+    // The default has to be prevented even when the guard swallows the submit,
+    // or the second Enter navigates the browser away from the app.
+    e?.preventDefault();
+    if (submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
+    try {
+      await runSubmit(e, options);
+    } finally {
+      submitInFlightRef.current = false;
     }
   };
 
@@ -2072,9 +2216,14 @@ export function PrintModal({
         icon: Calendar,
         submitText,
         submitIcon: Calendar,
+        // ⚠️ **What the wait actually is** (§10): the file is being copied into
+        // BamDude's own data directory, and until that lands there is no job.
+        // The count is REQUESTS, not bytes — there is no progress API to read a
+        // percentage from, and a made-up one would be a promise about a copy
+        // nobody is measuring.
         loadingText: submitProgress.total > 1
-          ? t('queue.addingProgress', { current: submitProgress.current, total: submitProgress.total })
-          : t('queue.adding'),
+          ? t('queueSpool.savingProgress', { current: submitProgress.current, total: submitProgress.total })
+          : t('queueSpool.saving'),
       };
     }
     // edit-queue-item mode
@@ -2111,7 +2260,7 @@ export function PrintModal({
   // A grouped run's silent members must not flash on screen. Once refused — by
   // the eligibility gate or by an ending that needs an answer — we render
   // normally and the operator finishes the job. ⚠️ Must stay below every hook,
-  // and `announces` in `handleSubmit` is exactly this condition negated — keep
+  // and `announces` in `runSubmit` is exactly this condition negated — keep
   // the two in step.
   if (autoSubmitWhenUnambiguous && !autoSubmitRefused) return null;
 

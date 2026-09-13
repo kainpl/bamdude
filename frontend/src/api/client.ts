@@ -17,10 +17,23 @@ import { createPrinterStatusBatcher } from './printerStatusBatch';
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /**
+   * The machine-readable refusal code, when the server sent one.
+   *
+   * ⚠️ **The message is prose and must never be branched on** (CLAUDE.md). A
+   * refusal the frontend has to REACT to carries a code in its detail —
+   * `{code, params, message}` for the filament-routing / queue-source family,
+   * `{error, message}` elsewhere — and this is where that code arrives, so a
+   * caller can tell `source_copy_busy` (ask again) from `source_unreadable`
+   * (the file is gone) without matching English sentences that are translated
+   * server-side anyway.
+   */
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -427,6 +440,7 @@ function formatErrorDetail(detail: unknown, status: number): string {
 async function handleErrorResponse(response: Response, __isRetry: boolean): Promise<void> {
   const error = await response.json().catch(() => ({}));
   const message = formatErrorDetail(error.detail, response.status);
+  const code = refusalCode(error.detail);
 
   if (response.status === 401) {
     const refreshable = !__isRetry && REFRESH_ERROR_MESSAGES.some(m => message.includes(m));
@@ -452,7 +466,24 @@ async function handleErrorResponse(response: Response, __isRetry: boolean): Prom
     }
   }
 
-  throw new ApiError(message, response.status);
+  throw new ApiError(message, response.status, code);
+}
+
+/**
+ * The machine code inside a refusal detail, or `undefined`.
+ *
+ * Two shapes are in the wild and both are canon: `{code, params, message}`
+ * (filament routing and the queue-source taxonomy) and `{error, message}`
+ * (everything the frontend has to branch on elsewhere). Read in that order and
+ * only when the value is a string — a Pydantic 422's `detail` is an array, and
+ * a bare-string detail has no code at all.
+ */
+function refusalCode(detail: unknown): string | undefined {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
+  const d = detail as Record<string, unknown>;
+  if (typeof d.code === 'string') return d.code;
+  if (typeof d.error === 'string') return d.error;
+  return undefined;
 }
 
 // Resolved once: it cannot change without the page being reloaded, and calling

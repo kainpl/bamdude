@@ -168,3 +168,43 @@ describe('the rebalance refusal codes are the backend’s closed list', () => {
     expect(Object.keys(uk.autoQueue.rebalance.skipped).sort()).toEqual([...SKIP_REASONS].sort());
   });
 });
+
+
+/**
+ * The queue-source refusal codes are a CLOSED list too, mirrored from the
+ * backend taxonomy (`backend/app/services/queue_sources.py` — one class per
+ * code, each with its own HTTP status) into `utils/queueSource.ts` and
+ * translated here key-for-key.
+ *
+ * `queueSourceReasonText` builds the key by INTERPOLATION, so `keysResolve`
+ * cannot see it and a missing or misspelt key renders the raw
+ * `queueSpool.reason.<code>` at the operator on a failed add. A typo made
+ * identically in both files would also pass the parity test above, which is
+ * why the list itself is pinned here.
+ */
+describe('the queue-source refusal codes are the backend’s closed list', () => {
+  const QUEUE_SOURCE_REASONS = [
+    'source_copy_busy',
+    'source_spool_replaced',
+    'source_unreadable',
+    'source_changed',
+    'source_invalid',
+    'source_copy_timeout',
+    'source_spool_no_space',
+    'source_spool_write_failed',
+    'source_copy_failed',
+  ];
+
+  it('en has exactly those keys', () => {
+    expect(Object.keys(en.queueSpool.reason).sort()).toEqual([...QUEUE_SOURCE_REASONS].sort());
+  });
+
+  it('uk has exactly those keys', () => {
+    expect(Object.keys(uk.queueSpool.reason).sort()).toEqual([...QUEUE_SOURCE_REASONS].sort());
+  });
+
+  it('matches the list the frontend actually asks with', async () => {
+    const { QUEUE_SOURCE_REASONS: asked } = await import('../../utils/queueSource');
+    expect([...asked].sort()).toEqual([...QUEUE_SOURCE_REASONS].sort());
+  });
+});

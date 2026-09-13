@@ -273,3 +273,17 @@ describe('the order a copy inherits', () => {
     expect(screen.getAllByText(/Order: Lamps/)).toHaveLength(1);
   });
 });
+
+describe('what a copy does with the file (m173)', () => {
+  it('says a copy reads the original again, before the button is pressed', async () => {
+    // A queued job prints its own saved copy, so the operator can reasonably
+    // assume a copy of it needs nothing else. It does: a copy is an ordinary
+    // add, and an unreachable original refuses it. Better said here than
+    // discovered as a refusal on twelve printers.
+    renderModal([item({ id: 1 })]);
+
+    expect(
+      await screen.findByText(/A copy is a new add: the original file is read again and saved for each copy\./),
+    ).toBeInTheDocument();
+  });
+});

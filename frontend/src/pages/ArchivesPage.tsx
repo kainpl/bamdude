@@ -79,6 +79,7 @@ import { isAnyModalOpen } from '../components/modalStack';
 import { PaginationBar } from '../components/PaginationBar';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { PrintModal } from '../components/PrintModal';
+import { QueueSpoolDeleteNote } from '../components/QueueSpoolDeleteNote';
 import { SliceModal } from '../components/SliceModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PurgeArchivesModal } from '../components/PurgeArchivesModal';
@@ -1348,7 +1349,15 @@ function ArchiveCard({
             setShowDeleteConfirm(false);
           }}
           onCancel={() => setShowDeleteConfirm(false)}
-        />
+        >
+          {/* Which of those queued prints survive this delete, counted from the
+              rows themselves - the impact endpoint answers with one number, and
+              the two halves behave differently since m173. */}
+          <QueueSpoolDeleteNote
+            archiveIds={[archive.id]}
+            enabled={(deleteImpact?.related_queue_items ?? 0) > 0}
+          />
+        </ConfirmModal>
       )}
 
       {/* Delete Source 3MF Confirmation */}
@@ -2480,7 +2489,15 @@ function ArchiveListRow({
             setShowDeleteConfirm(false);
           }}
           onCancel={() => setShowDeleteConfirm(false)}
-        />
+        >
+          {/* Which of those queued prints survive this delete, counted from the
+              rows themselves - the impact endpoint answers with one number, and
+              the two halves behave differently since m173. */}
+          <QueueSpoolDeleteNote
+            archiveIds={[archive.id]}
+            enabled={(deleteImpact?.related_queue_items ?? 0) > 0}
+          />
+        </ConfirmModal>
       )}
 
       {/* Delete Source 3MF Confirmation */}
