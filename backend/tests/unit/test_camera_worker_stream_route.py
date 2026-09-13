@@ -1,6 +1,7 @@
 """HTTP fan-out integration for the worker-owned external camera relay."""
 
 import asyncio
+import logging
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -14,13 +15,17 @@ _JPEG = b"\xff\xd8worker-route-test\xff\xd9"
 
 
 @pytest.mark.asyncio
-async def test_worker_external_route_keeps_http_fanout_and_buffers_frames():
+async def test_worker_external_route_keeps_http_fanout_and_buffers_frames(caplog):
+    caplog.set_level(logging.INFO, logger="backend.app.api.routes.camera")
     printer_id = 987_651
     calls: list[dict] = []
 
     class WorkerRuntime:
         async def stream_external(self, **kwargs):
             calls.append(kwargs)
+            kwargs["on_frame"](_JPEG)
+            yield format_mjpeg_frame(_JPEG)
+            await asyncio.sleep(0)
             kwargs["on_frame"](_JPEG)
             yield format_mjpeg_frame(_JPEG)
             await kwargs["disconnect_event"].wait()
@@ -41,6 +46,7 @@ async def test_worker_external_route_keeps_http_fanout_and_buffers_frames():
     try:
         chunk = await asyncio.wait_for(anext(response.body_iterator), timeout=1)
         assert _JPEG in chunk
+        assert _JPEG in await asyncio.wait_for(anext(response.body_iterator), timeout=1)
         assert camera_routes._get_cached_snapshot(printer_id) == _JPEG
         assert calls[0]["identity"] == str(
             uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:printer:{printer_id}:external-camera")
@@ -49,6 +55,14 @@ async def test_worker_external_route_keeps_http_fanout_and_buffers_frames():
         await camera_routes.shutdown_broadcaster(key)
         camera_routes._active_worker_streams.pop(printer_id, None)
         camera_routes._release_printer_frame_state(printer_id)
+    assert caplog.text.count("Camera worker relay started:") == 1
+    assert caplog.text.count("Camera worker relay first frame:") == 1
+    assert caplog.text.count("Camera worker relay ended:") == 1
+    assert f"printer={printer_id}" in caplog.text
+    assert "frames=2" in caplog.text
+    assert "reason=viewers_gone" in caplog.text
+    assert printer.external_camera_url not in caplog.text
+    assert "operator:secret" not in caplog.text
 
 
 @pytest.mark.asyncio

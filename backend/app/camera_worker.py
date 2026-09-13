@@ -7,9 +7,11 @@ are imported only after an authenticated capture command reaches this process.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import uuid
 
+from backend.app.services.camera_worker_logging import configure_worker_logging, set_camera_log_secrets
 from backend.app.services.camera_worker_protocol import (
     CameraWorkerProtocolError,
     WorkerBootstrap,
@@ -20,6 +22,8 @@ from backend.app.services.camera_worker_protocol import (
     validate_reply,
     write_control,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def _capture(command, bootstrap: WorkerBootstrap) -> dict:
@@ -97,10 +101,19 @@ async def _serve_capture(request: dict, bootstrap: WorkerBootstrap, writer, writ
     try:
         from backend.app.services.camera_worker_capture import WorkerCaptureCommand
 
-        result = await _capture(WorkerCaptureCommand.from_payload(request["payload"]), bootstrap)
+        command = WorkerCaptureCommand.from_payload(request["payload"])
+        set_camera_log_secrets(
+            command.access_code, command.url, command.snapshot_url, identity=command.media_session_id
+        )
+        result = await _capture(command, bootstrap)
+        if not result["frame_available"]:
+            logger.warning(
+                "Camera worker capture produced no frame: purpose=%s session=%s",
+                command.purpose,
+                command.media_session_id,
+            )
     except (CameraWorkerProtocolError, OSError, TimeoutError):
-        # Transport implementations write their own redacted evidence; no URL,
-        # credential, stack trace or raw exception crosses IPC.
+        logger.exception("Camera worker capture failed")
         result = {
             "frame_available": False,
             "source": None,
@@ -253,6 +266,12 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                     )
 
                     async def producer(subscription=subscription) -> None:
+                        set_camera_log_secrets(
+                            subscription.access_code
+                            if isinstance(subscription, LiveBuiltinSubscription)
+                            else subscription.url,
+                            identity=subscription.identity,
+                        )
                         if isinstance(subscription, LiveBuiltinSubscription):
                             from backend.app.services.camera import (
                                 generate_chamber_image_stream,
@@ -442,6 +461,7 @@ async def run(bootstrap: WorkerBootstrap) -> int:
             async with write_lock:
                 await write_control(writer, reply)
     except (CameraWorkerProtocolError, OSError, asyncio.IncompleteReadError):
+        logger.exception("Camera worker control connection failed")
         return 3
     finally:
         writer.close()
@@ -452,11 +472,17 @@ async def run(bootstrap: WorkerBootstrap) -> int:
 
 
 def main() -> int:
+    configure_worker_logging()
     try:
         bootstrap = read_bootstrap(sys.stdin.buffer)
     except CameraWorkerProtocolError:
+        logger.error("Camera worker bootstrap rejected")
         return 2
-    return asyncio.run(run(bootstrap))
+    try:
+        return asyncio.run(run(bootstrap))
+    except Exception:
+        logger.exception("Camera worker terminated unexpectedly")
+        return 3
 
 
 if __name__ == "__main__":

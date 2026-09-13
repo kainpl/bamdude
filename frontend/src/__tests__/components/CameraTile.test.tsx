@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { StrictMode } from 'react';
 import { act, screen } from '@testing-library/react';
 import { render } from '../utils';
 import { CameraTile } from '../../components/CameraTile';
@@ -16,12 +17,21 @@ async function flushMicrotasks() {
 describe('CameraTile', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.spyOn(global, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+    vi.spyOn(global, 'fetch').mockImplementation(async () => new Response('jpeg', { status: 200 }));
+    let nextUrl = 0;
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = vi.fn(() => `blob:frame-${++nextUrl}`);
+      static revokeObjectURL = vi.fn();
+    });
+    Object.defineProperty(HTMLImageElement.prototype, 'decode', {
+      configurable: true, value: vi.fn().mockResolvedValue(undefined),
+    });
   });
 
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('renders the live stream URL in live mode', async () => {
@@ -40,7 +50,7 @@ describe('CameraTile', () => {
     expect(img.src).toContain('fps=8');
   });
 
-  it('renders the snapshot URL and refreshes on the interval', async () => {
+  it('displays completed snapshots and refreshes without replacing the image element', async () => {
     render(
       <CameraTile
         printerId={7}
@@ -51,14 +61,16 @@ describe('CameraTile', () => {
       />,
     );
     await flushMicrotasks();
-    const initial = (screen.getByAltText('P1S-Garage') as HTMLImageElement).src;
-    expect(initial).toContain('/api/v1/printers/7/camera/snapshot');
+    const image = screen.getByAltText('P1S-Garage') as HTMLImageElement;
+    const initial = image.src;
+    expect(initial).toContain('blob:frame-');
 
     await act(async () => {
-      vi.advanceTimersByTime(1500);
+      await vi.advanceTimersByTimeAsync(1500);
     });
     const refreshed = (screen.getByAltText('P1S-Garage') as HTMLImageElement).src;
-    expect(refreshed).toContain('/api/v1/printers/7/camera/snapshot');
+    expect(screen.getByAltText('P1S-Garage')).toBe(image);
+    expect(refreshed).toContain('blob:frame-');
     expect(refreshed).not.toBe(initial);
   });
 
@@ -74,6 +86,34 @@ describe('CameraTile', () => {
     );
     await flushMicrotasks();
     expect(screen.queryByAltText('A1-Offline')).toBeNull();
+  });
+
+  it('cancels the detached MJPEG image on navigation and restores it during Strict Mode replay', async () => {
+    const { unmount } = render(<StrictMode><CameraTile
+      printerId={42} printerName="Live" mode="live" snapshotIntervalMs={5000} connected
+    /></StrictMode>);
+    await flushMicrotasks();
+    const image = screen.getByAltText('Live') as HTMLImageElement;
+    expect(image.src).toContain('/camera/stream?');
+    unmount();
+    expect(image.src).toMatch(/^data:image\/gif;/);
+  });
+
+  it('cancels the old live image when switching to snapshots or going offline', async () => {
+    const { rerender } = render(<CameraTile
+      printerId={42} printerName="Live" mode="live" snapshotIntervalMs={5000} connected
+    />);
+    await flushMicrotasks();
+    const first = screen.getByAltText('Live') as HTMLImageElement;
+    rerender(<CameraTile printerId={42} printerName="Live" mode="snapshot" snapshotIntervalMs={5000} connected />);
+    await flushMicrotasks();
+    expect(first.src).toMatch(/^data:image\/gif;/);
+    rerender(<CameraTile printerId={42} printerName="Live" mode="live" snapshotIntervalMs={5000} connected />);
+    await flushMicrotasks();
+    const second = screen.getByAltText('Live') as HTMLImageElement;
+    rerender(<CameraTile printerId={42} printerName="Live" mode="live" snapshotIntervalMs={5000} connected={false} />);
+    await flushMicrotasks();
+    expect(second.src).toMatch(/^data:image\/gif;/);
   });
 
   it('shows the paused placeholder in paused mode', async () => {

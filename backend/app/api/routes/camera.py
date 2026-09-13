@@ -299,8 +299,33 @@ async def _worker_stream_response(
         worker_stream_token = uuid.uuid4().hex
         _active_worker_streams[printer_id] = (worker_stream_token, source)
         _stream_start_times.setdefault(printer_id, time.time())
+        started = time.monotonic()
+        frames = 0
+        first_frame_ms: float | None = None
+
+        def _observe_worker_frame(frame: bytes) -> None:
+            nonlocal frames, first_frame_ms
+            frames += 1
+            if first_frame_ms is None:
+                first_frame_ms = round((time.monotonic() - started) * 1000, 1)
+                logger.info(
+                    "Camera worker relay first frame: printer=%s session=%s first_frame_ms=%s",
+                    printer_id,
+                    worker_stream_token,
+                    first_frame_ms,
+                )
+            _publish_worker_frame(frame)
 
         async def _stream():
+            reason = "source_ended"
+            logger.info(
+                "Camera worker relay started: printer=%s session=%s identity=%s source=%s requested_fps=%s",
+                printer_id,
+                worker_stream_token,
+                identity,
+                source,
+                fps,
+            )
             try:
                 stream = (
                     runtime.stream_builtin(
@@ -310,7 +335,7 @@ async def _worker_stream_response(
                         model=printer.model,
                         fps=fps,
                         disconnect_event=disconnect_event,
-                        on_frame=_publish_worker_frame,
+                        on_frame=_observe_worker_frame,
                     )
                     if builtin
                     else runtime.stream_external(
@@ -319,12 +344,29 @@ async def _worker_stream_response(
                         camera_type=printer.external_camera_type,
                         fps=fps,
                         disconnect_event=disconnect_event,
-                        on_frame=_publish_worker_frame,
+                        on_frame=_observe_worker_frame,
                     )
                 )
                 async for chunk in stream:
                     yield chunk
+            except asyncio.CancelledError:
+                reason = "cancelled"
+                raise
+            except Exception:
+                reason = "relay_failed"
+                raise
             finally:
+                if disconnect_event.is_set():
+                    reason = "viewers_gone"
+                logger.info(
+                    "Camera worker relay ended: printer=%s session=%s reason=%s frames=%s first_frame_ms=%s duration_ms=%.1f",
+                    printer_id,
+                    worker_stream_token,
+                    reason,
+                    frames,
+                    first_frame_ms,
+                    (time.monotonic() - started) * 1000,
+                )
                 if _active_worker_streams.get(printer_id) == (worker_stream_token, source):
                     _active_worker_streams.pop(printer_id, None)
                 _release_printer_frame_state(printer_id)
@@ -337,6 +379,8 @@ async def _worker_stream_response(
     except RuntimeError:
         broadcaster = await get_or_create_broadcaster(fanout_key, _factory)
         queue = await broadcaster.subscribe()
+
+    logger.info("Camera worker viewer attached to %s (subscribers=%d)", fanout_key, broadcaster.subscriber_count)
 
     async def _is_disconnected() -> bool:
         try:

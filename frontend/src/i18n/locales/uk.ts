@@ -494,6 +494,11 @@ export default {
     camWall: {
       noPrinters: 'Немає принтерів для показу',
       noSignal: 'Немає сигналу',
+      transportUnknown: 'Протокол невідомий',
+      transportLimit: '{{protocol}}: до {{limit}} живих камер у вкладці, спільно з вікнами камер. Решта показують знімки.',
+      snapshotStale: 'Не вдалося оновити знімок; показано останній кадр. Повторюємо…',
+      frameUpdatedAt: 'Оновлено: {{time}}',
+      frameReceivedAt: 'Останній знімок отримано в цій вкладці: {{time}}',
       currentJobFallback: 'Поточний друк',
       live: 'Наживо',
       snap: 'Знімок',

@@ -211,7 +211,9 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - **Printer calibration** — bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed (model-aware, from UI and Telegram bot)
 - Real-time printer status via WebSocket
 - Live camera streaming & snapshots — **fan-out broadcaster** so multiple browser tabs / HA cards / Frigate share a single upstream connection (the printer itself only allows one)
-- **Camera Wall** — one live grid of every printer's camera; on-screen tiles stream live (configurable cap, default 4), off-screen tiles fall back to periodic snapshots, with per-tile offline / status / HMS-error overlays
+- **Camera Wall** — visible tiles share a configurable live budget; HTTP/1.x or unknown browser transport caps it at two streams per tab, while confirmed HTTP/2 or HTTP/3 permits the selected limit. Extra visible cameras show snapshots with the last successful frame time; off-screen tiles pause. Snapshots retain the last image while refreshing.
+- **One floating camera** — another printer replaces the current popup, cancelling its old stream. Refresh, minimize, close and page navigation release the actual image request.
+- **Optional camera worker** — `CAMERA_RUNTIME=worker` moves camera transport and FFmpeg ownership to one supervised local process. `inline` remains the default. INFO logs record worker lifecycle, viewers, first-frame timing and stream completion for diagnosis. This is experimental isolation, not automatic hardware acceleration or a guarantee against browser/network bottlenecks. See the [setup and diagnostics guide](https://docs.bamdude.top/features/camera/#experimental-isolated-camera-process) and [technical notes](docs/camera-observability.md).
 - Streaming overlay for OBS
 - External camera support (MJPEG, RTSP, USB)
 - Build plate empty detection

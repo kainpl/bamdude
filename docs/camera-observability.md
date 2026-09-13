@@ -2,6 +2,32 @@
 
 [Українською](camera-observability.uk.md)
 
+## Browser live-camera limit and floating window
+
+The browser measures the protocol of completed same-origin `/api/` requests
+using Resource Timing `nextHopProtocol`. HTTP/1.x and unavailable/empty protocol
+information keep a conservative **two live MJPEG requests per tab**. Confirmed
+`h2` or `h3` permits the selected wall limit, within the existing maximum of 16.
+HTTPS alone and the HTML document's protocol are not sufficient evidence. If
+HTTP/1.x is observed after HTTP/2 or HTTP/3, the tab stays at two until reload.
+See the [Resource Timing specification](https://www.w3.org/TR/resource-timing/#dom-performanceresourcetiming-nexthopprotocol).
+
+The wall (including kiosk mode) and floating camera share the same tab budget.
+Additional visible cameras use cancellable snapshots; their shared queue has at
+most two requests. The wall's saved maximum is preserved; the displayed effective
+count respects the transport limit. A notice explains when the budget reduces
+live viewing. This reduces browser connection starvation; it does not measure
+server capacity or coordinate separate tabs/windows sharing an origin.
+
+Only one floating camera opens on the Printers page. Clicking another printer's
+camera replaces it, cancelling the previous image request and reconnect/stall
+timers. Old saved lists restore only their last valid camera. Minimize stops the
+live request; expand reacquires a slot. Refresh and close cancel the actual image
+node, including replacements after refresh and React Strict Mode reattachment.
+Backend fan-out releases the viewer; a shared producer remains while other
+viewers still need it. This applies to both inline and worker runtime because the
+browser HTTP lifecycle is common to them.
+
 Camera status now includes optional `telemetry` (the current or last completed live
 producer) and `last_snapshot` (the last HTTP snapshot decision). Existing fields,
 permissions and clients remain compatible. Reading
@@ -66,3 +92,28 @@ current validation does not replace a physical-farm or Linux-service acceptance
 run.
 
 [Validation and synthetic baseline](testing/camera-observability.md).
+
+### Worker logs and browser cleanup
+
+After changing `CAMERA_RUNTIME`, restart the backend. `Camera worker ready`
+records its PID and generation; `Camera worker stopped` records its exit code.
+Worker transport logs and completed-session metrics reach `bamdude.log` with a
+`Camera worker [module]` prefix. Camera URLs and task-scoped credentials are
+removed before transmission; exceptions keep their type and source locations,
+without their raw text or local variables. Records are limited to 8 KiB and
+200 per 10 seconds. Rate-limit summaries report dropped records. Unstructured
+stderr is counted and reported without copying its potentially sensitive text.
+
+At INFO, each live relay logs its start (printer ID, session ID, source identity,
+protocol and requested FPS), first-frame latency once, and an end summary with
+frame count, duration and reason. These count frames delivered to the backend
+relay, not proof of browser rendering. Worker transport records carry the same
+source identity, so they can be matched to a printer without its address or
+credentials. Viewer attach/detach records include the current subscriber count.
+
+Camera Wall explicitly cancels each MJPEG image before it is detached or
+replaced. Removing the DOM element alone can leave Chromium downloading the
+stream and occupying HTTP/1.1 connections after navigation. This cleanup is
+shared by the inline and worker modes. Snapshot tiles retain the last decoded
+image, show its receive time at the bottom right, share two request slots, and
+cancel pending work on navigation; a 20-second deadline includes the JPEG body.

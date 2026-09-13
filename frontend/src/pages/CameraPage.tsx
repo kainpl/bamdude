@@ -1,3 +1,4 @@
+import { useCameraImageRef } from '../hooks/useCameraImageRef';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useSearchParams } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -150,16 +151,9 @@ export function CameraPage() {
 
     window.addEventListener('beforeunload', handleBeforeUnload);
 
-    // Store ref value for cleanup - ref may change by cleanup time
-    const imgElement = imgRef.current;
-
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
 
-      // Clear the image source first to stop the stream
-      if (imgElement) {
-        imgElement.src = '';
-      }
       // Send stop signal only once
       sendStopOnce();
     };
@@ -630,6 +624,16 @@ export function CameraPage() {
       ? appendToken(`/api/v1/printers/${id}/camera/stream?fps=${fps}&t=${imageKey}`)
       : appendToken(`/api/v1/printers/${id}/camera/snapshot?t=${imageKey}`);
 
+  const { attachImage } = useCameraImageRef(currentUrl);
+  const attachStreamImage = useCallback((image: HTMLImageElement | null) => {
+    imgRef.current = image;
+    const detach = attachImage(image);
+    return () => {
+      detach?.();
+      if (imgRef.current === image) imgRef.current = null;
+    };
+  }, [attachImage]);
+
   const isDisabled = streamLoading || transitioning || isReconnecting;
 
   if (!id) {
@@ -791,7 +795,7 @@ export function CameraPage() {
             </div>
           )}
           <img
-            ref={imgRef}
+            ref={attachStreamImage}
             key={imageKey}
             src={currentUrl}
             alt={t('camera.cameraStream')}

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import socket
 import uuid
@@ -95,7 +96,8 @@ async def test_harness_timeout_fallback_stops_the_contained_process_tree():
 
 
 @pytest.mark.asyncio
-async def test_worker_runtime_relays_an_external_snapshot_without_starting_main_camera_io():
+async def test_worker_runtime_relays_an_external_snapshot_without_starting_main_camera_io(caplog):
+    caplog.set_level(logging.INFO, logger="backend.app.services.camera_worker_supervisor")
     server = await asyncio.start_server(_serve_snapshot, host="127.0.0.1", port=0)
     port = server.sockets[0].getsockname()[1]
     runtime = WorkerCameraRuntime(CameraWorkerSupervisor())
@@ -113,6 +115,11 @@ async def test_worker_runtime_relays_an_external_snapshot_without_starting_main_
         await runtime.stop()
         server.close()
         await server.wait_closed()
+    assert "Camera worker ready:" in caplog.text
+    assert "Camera worker stopped:" in caplog.text
+    assert "Camera worker [backend.app.services.camera_metrics]: identity=" in caplog.text
+    assert "Camera session completed:" in caplog.text
+    assert f"http://127.0.0.1:{port}/snapshot.jpg" not in caplog.text
 
 
 @pytest.mark.asyncio

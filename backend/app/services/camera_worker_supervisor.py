@@ -8,6 +8,7 @@ bounded media relay before the worker becomes a production runtime.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import secrets
 import signal
@@ -20,6 +21,7 @@ from dataclasses import dataclass, field
 from backend.app.services.camera_metrics import CameraCaptureResult
 from backend.app.services.camera_worker_capture import WorkerCaptureCommand
 from backend.app.services.camera_worker_containment import CameraWorkerContainmentError, WorkerContainment
+from backend.app.services.camera_worker_logging import MAX_LINE_BYTES, decode_worker_log
 from backend.app.services.camera_worker_media import (
     WorkerMediaFrame,
     read_media_frame,
@@ -44,6 +46,7 @@ _MAX_PENDING_CONTROL_REQUESTS = 256
 # than the control/snapshot timeout while still detecting a lost producer.
 _LIVE_MEDIA_IDLE_SECONDS = 20.0
 _MAX_LIVE_MEDIA_QUEUES = 64
+logger = logging.getLogger(__name__)
 
 LiveMediaQueue = asyncio.Queue[WorkerMediaFrame | None]
 
@@ -95,6 +98,9 @@ class CameraWorkerSupervisor:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            # stderr is a UTF-8 JSON-lines channel, independent of the host's
+            # Windows console code page.
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             **creation_kwargs,
         )
         try:
@@ -118,6 +124,7 @@ class CameraWorkerSupervisor:
         except TimeoutError as exc:
             await self.stop()
             raise CameraWorkerUnavailable("camera worker did not authenticate") from exc
+        logger.info("Camera worker ready: pid=%s generation=%s", self.process.pid, self.bootstrap.generation)
 
     async def request(
         self, operation: str, payload: dict | None = None, *, timeout: float = _REQUEST_TIMEOUT_SECONDS
@@ -336,6 +343,8 @@ class CameraWorkerSupervisor:
         if self._containment is not None:
             self._containment.close()
             self._containment = None
+        if process is not None:
+            logger.info("Camera worker stopped: pid=%s exit_code=%s", process.pid, process.returncode)
         self.process = None
         self._reader = None
         self._writer = None
@@ -493,13 +502,51 @@ class CameraWorkerSupervisor:
     async def _drain_stderr(self) -> None:
         if self.process is None or self.process.stderr is None:
             return
+        pending = b""
+        dropping_line = False
+        unstructured = 0
+        suppressed = 0
+        emitted = 0
+        window_started = time.monotonic()
         while True:
             chunk = await self.process.stderr.read(4096)
             if not chunk:
-                return
-            # The harness retains no child stderr.  A later camera worker must
-            # use a bounded, redacted diagnostic buffer before it gains URLs.
+                break
             self._stderr_bytes = min(32 * 1024, self._stderr_bytes + len(chunk))
+            for part in chunk.splitlines(keepends=True):
+                pending += part
+                if len(pending) > MAX_LINE_BYTES:
+                    pending = b""
+                    dropping_line = True
+                if not part.endswith(b"\n"):
+                    continue
+                record = None if dropping_line else decode_worker_log(pending)
+                pending = b""
+                dropping_line = False
+                if record is None:
+                    unstructured += 1
+                    if unstructured == 1:
+                        logger.warning("Camera worker emitted unstructured stderr; raw content withheld")
+                    continue
+                now = time.monotonic()
+                if now - window_started >= 10:
+                    if suppressed:
+                        logger.warning("Camera worker log rate limit: suppressed %d records", suppressed)
+                    window_started, emitted, suppressed = now, 0, 0
+                if emitted >= 200:
+                    suppressed += 1
+                    continue
+                level, name, message = record
+                logger.log(level, "Camera worker [%s]: %s", name, message)
+                emitted += 1
+        if pending or dropping_line:
+            unstructured += 1
+        if unstructured or suppressed:
+            logger.warning(
+                "Camera worker stderr summary: unstructured_lines=%d rate_limited_records=%d",
+                unstructured,
+                suppressed,
+            )
 
     def _close_listeners(self) -> None:
         self._connection_closed.set()

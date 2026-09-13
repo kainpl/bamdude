@@ -216,6 +216,16 @@ class LiveProducerRegistry:
             queue.put_nowait(frame)
 
     def _producer_finished(self, identity: str, task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.error(
+                    "Camera worker live producer failed: identity=%s",
+                    identity,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+            else:
+                logger.info("Camera worker live producer ended: identity=%s", identity)
         if self._producers.get(identity) is task:
             self._producers.pop(identity, None)
             for queue in self._subscribers.get(identity, {}).values():

@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { AlertTriangle, VideoOff, WifiOff } from 'lucide-react';
 import { getAuthToken, withStreamToken } from '../api/client';
 import { formatDuration } from '../utils/date';
+import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { CameraSnapshotImage } from './CameraSnapshotImage';
 
 export type CameraTileMode = 'live' | 'snapshot' | 'paused';
 export type CameraTileStatusMode = 'off' | 'compact' | 'full';
@@ -35,6 +37,7 @@ interface CameraTileProps {
 // no drag/resize/zoom shell, and snapshot fallback when off-cap. The server
 // still does the MJPEG fan-out, so per-tile cost is one TLS pull on the wire.
 const LIVE_FPS = 8;
+
 
 type StatusBucket = 'printing' | 'paused' | 'finished' | 'error' | 'idle';
 
@@ -120,12 +123,6 @@ export function CameraTile({
     };
   }, [printerId]);
 
-  useEffect(() => {
-    if (mode !== 'snapshot') return;
-    const interval = setInterval(() => setBust((b) => b + 1), snapshotIntervalMs);
-    return () => clearInterval(interval);
-  }, [mode, snapshotIntervalMs]);
-
   // A kiosk carries its own token; everything else rides the module-cached
   // short-lived one that only a signed-in browser holds (upstream #2531).
   const withToken = (path: string) =>
@@ -133,9 +130,7 @@ export function CameraTile({
   const liveUrl = withToken(
     `/api/v1/printers/${printerId}/camera/stream?fps=${LIVE_FPS}&t=${bust}`,
   );
-  const snapshotUrl = withToken(
-    `/api/v1/printers/${printerId}/camera/snapshot?t=${bust}`,
-  );
+  const { attachImage: attachLiveImage } = useCameraImageRef(liveUrl);
 
   const handleClick = () => {
     if (onClick) onClick();
@@ -181,6 +176,14 @@ export function CameraTile({
             <WifiOff className="h-8 w-8 text-bambu-gray/70" aria-hidden="true" />
           )}
         </div>
+      ) : mode === 'snapshot' ? (
+        <CameraSnapshotImage
+          printerId={printerId}
+          printerName={printerName}
+          intervalMs={snapshotIntervalMs}
+          streamToken={streamToken}
+          transform={transform}
+        />
       ) : errored ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-black/80 text-bambu-gray">
           <VideoOff className="h-7 w-7" aria-hidden="true" />
@@ -188,8 +191,9 @@ export function CameraTile({
         </div>
       ) : (
         <img
+          ref={attachLiveImage}
           key={`${mode}-${bust}`}
-          src={mode === 'live' ? liveUrl : snapshotUrl}
+          src={liveUrl}
           alt={printerName}
           draggable={false}
           loading="lazy"
@@ -262,7 +266,7 @@ export function CameraTile({
             </div>
           </div>
         )}
-        <span className="block truncate text-xs font-medium">{printerName}</span>
+        <span className={`block truncate text-xs font-medium${connected && mode === 'snapshot' ? ' pr-36' : ''}`}>{printerName}</span>
       </div>
     </Root>
   );

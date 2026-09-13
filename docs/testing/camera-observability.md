@@ -1,5 +1,58 @@
 # CAM-03 validation — 2026-09-13
 
+## Camera Wall navigation regression — 2026-09-13 evening
+
+Reproduced in the local Chrome/Vite session with `CAMERA_RUNTIME=worker`, two
+live cameras and four snapshot cameras. The second Wall → Archive navigation
+left all 48 thumbnail image elements pending; detached live subscriptions
+remained on the backend. Separate auth-status requests still returned in
+5–6 ms directly and 8–10 ms through Vite. Those timings do not measure browser
+request queueing and are not a general API latency benchmark.
+
+With explicit MJPEG image cancellation on React ref cleanup, three consecutive
+Wall → Archive cycles loaded all 48 thumbnail image elements, and both live
+subscriptions returned to zero at each exit. The backend was not restarted
+between the failing and passing navigation checks. All six cameras rendered
+between cycles and snapshot timestamps advanced. This is a six-camera local
+acceptance check, not a 50-printer soak or an inline/worker performance A/B.
+
+Automated checks exercise ref teardown on navigation, offline transition,
+snapshot transition and Strict Mode replay; snapshot cancellation/retention;
+fragmented UTF-8 worker logs, credential removal, oversized stderr and log rate
+limits. A real supervised child capture verifies that session metrics and
+startup/shutdown records reach the parent logger.
+
+## Floating viewer and transport cap — 2026-09-13 late evening
+
+Before the fix, Refresh → Close retained a detached MJPEG subscriber. The local
+session accumulated four X2D subscribers despite one visible/closed popup; closing
+the affected browser tab released them. The unmount effect had captured the first
+image element, while refresh and minimize replaced or removed later elements.
+The shared image-ref lifecycle now cancels each actual node, and StrictMode setup
+restores its URL. The floating viewer is a single keyed selection; older persisted
+arrays restore only their last valid entry.
+
+Observed with the restarted worker backend and local Chrome/Vite:
+
+- Refreshed X2D displayed a 1920px-wide frame; close detached to zero at 22:46:14.
+- Minimize detached to zero at 22:49:02; relay ended with `viewers_gone` at 22:49:07.
+- Selecting P1S replaced X2D at 22:50:59: one visible stream, P1S frame width 1280;
+  X2D detached to zero and completed after its grace period.
+- With wall maximum set to 8, UI detected `http/1.x` and displayed 2 live + 4
+  snapshots. All six images decoded. A popup above the wall showed a snapshot;
+  the DOM still contained exactly two live-stream images.
+- Wall + popup → Archive: all 48 thumbnails loaded, none pending. Both live
+  subscribers detached to zero and relays ended at 22:56:15.
+
+Automated frontend run: **66 passed across 8 files**, including actual
+PrintersPage persisted-list migration and card selection, popup refresh/minimize/
+key replacement, shared slot release, HTTP/1/unknown cap, h2/h3 detection, mixed
+protocol downgrade, and rejection of navigation/assets/cross-origin evidence.
+HTTP/2 and HTTP/3 are covered with synthetic Resource Timing entries, not a live
+reverse-proxy acceptance run. Budgets are per document, not cross-tab.
+
+## Earlier instrumentation baseline
+
 Base: `f8f67862`, branch `feature/camera-observability-worker-plan`.
 Windows local checkout, Python from the project's existing venv.
 

@@ -490,6 +490,11 @@ export default {
     camWall: {
       noPrinters: 'No printers to show',
       noSignal: 'No signal',
+      transportUnknown: 'Protocol unknown',
+      transportLimit: '{{protocol}}: up to {{limit}} live cameras per tab, shared with camera windows. Extra cameras show snapshots.',
+      snapshotStale: 'Snapshot refresh failed; showing the last frame. Retrying…',
+      frameUpdatedAt: 'Updated: {{time}}',
+      frameReceivedAt: 'Last snapshot received in this tab: {{time}}',
       currentJobFallback: 'Current print',
       live: 'Live',
       snap: 'Snap',
