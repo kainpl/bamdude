@@ -42,6 +42,24 @@ async def test_harness_worker_can_restart_with_a_new_generation():
 
 
 @pytest.mark.asyncio
+async def test_harness_object_can_restart_after_a_clean_stop():
+    supervisor = CameraWorkerSupervisor()
+    try:
+        await supervisor.start()
+        first_generation = supervisor.bootstrap.generation
+    finally:
+        await supervisor.stop()
+
+    try:
+        await supervisor.start()
+        assert supervisor.bootstrap is not None
+        assert supervisor.bootstrap.generation != first_generation
+        assert (await supervisor.request("status"))["ok"] is True
+    finally:
+        await supervisor.stop()
+
+
+@pytest.mark.asyncio
 async def test_harness_timeout_fallback_stops_the_contained_process_tree():
     supervisor = CameraWorkerSupervisor()
     try:

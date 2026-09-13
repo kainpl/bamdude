@@ -127,6 +127,8 @@ def make_reply(
 
 
 def validate_reply(reply: dict[str, Any], *, generation: str, request_id: str) -> dict[str, Any]:
+    if reply["operation"] != "reply":
+        raise CameraWorkerProtocolError("control response is not a reply")
     if reply["generation"] != generation or reply["request_id"] != request_id:
         raise CameraWorkerProtocolError("control reply belongs to another worker generation")
     payload = reply["payload"]

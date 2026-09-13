@@ -47,6 +47,9 @@ def test_reply_requires_matching_generation_request_and_fixed_error_enum():
     assert validate_reply(reply, generation=generation, request_id=request_id)["error"] == "unknown_operation"
     with pytest.raises(CameraWorkerProtocolError):
         validate_reply(reply, generation=str(uuid.uuid4()), request_id=request_id)
+    reply["operation"] = "status"
+    with pytest.raises(CameraWorkerProtocolError, match="not a reply"):
+        validate_reply(reply, generation=generation, request_id=request_id)
 
 
 def test_control_request_uses_versioned_object_schema():
