@@ -1359,7 +1359,11 @@ export default {
     modal: {
       deleteArchive: 'Delete Archive',
       deleteConfirm: 'Are you sure you want to delete "{{name}}"? This action cannot be undone.',
-      deleteConfirmQueueWarning: 'This will also remove {{count}} queued print(s) backed by this archive.',
+      // ⚠️ Since m173 this is no longer "all of them go": a queued print that
+      // already keeps its own saved copy survives the archive it came from, and
+      // only the ones still reading this archive are cancelled. The split
+      // itself is counted by `QueueSpoolDeleteNote` under this line.
+      deleteConfirmQueueWarning: 'Queued prints backed by this archive: {{count}}.',
       deleteButton: 'Delete',
       removeSource3mf: 'Remove Source 3MF',
       removeSource3mfConfirm: 'Are you sure you want to remove the source 3MF file from "{{name}}"? This will delete the original slicer project file.',
@@ -1756,6 +1760,61 @@ export default {
       failed: '{{count}} failed',
       cancelled: '{{count}} cancelled'
     }
+  },
+
+  // The queue's own copy of a job's file (m173). Every state, every refusal and
+  // every "the original is going away" note lives here, because the same
+  // sentences are said by the print dialog, the queue rows and the delete
+  // confirmations — and a second wording per screen is how they drift apart.
+  queueSpool: {
+    state: {
+      ready: {
+        label: 'File saved',
+        tip: 'File saved for the queue — this job prints its own copy and no longer needs the original.',
+        tipWithSize: 'File saved for the queue ({{size}}) — this job prints its own copy and no longer needs the original.',
+      },
+      preparing: {
+        label: 'Saving the file',
+        tip: 'Saving a copy of the file for the queue. The job waits here until the copy is finished.',
+      },
+      legacy: {
+        label: 'Uses the original',
+        tip: 'Queued before BamDude kept its own copies. It reads the original file, so keep that reachable until it prints.',
+      },
+      broken: {
+        label: 'Saved copy lost',
+        tip: 'The saved copy is missing or damaged, so this job cannot print. Retry it to save the file again, or remove it from the queue.',
+      },
+    },
+    heldTip: 'The saved file stays with this job until you remove it from the queue.',
+    saving: 'Saving the file for the queue…',
+    savingProgress: 'Saving the file for the queue… {{current}} of {{total}}',
+    // One sentence per refusal the server can answer an add with. Busy is the
+    // normal outcome of a burst, not a fault — it must not read like one.
+    reason: {
+      source_copy_busy: 'The queue is already saving other files — try again in a moment.',
+      source_spool_replaced: 'A restore is replacing the queue\'s files — try again in a moment.',
+      source_unreadable: 'The original file could not be read. Check that its folder or share is reachable.',
+      source_changed: 'The original file changed while it was being copied. Open it again and add it anew.',
+      source_invalid: 'The original file is not a usable 3MF — it may be truncated. Re-slice it or upload it again.',
+      source_copy_timeout: 'Copying the file took too long and was stopped. Check the connection to where the file is stored.',
+      source_spool_no_space: 'There is not enough free disk space to save the file. Free some space and try again.',
+      source_spool_write_failed: 'The file could not be written to BamDude\'s data folder. Check the disk and the server log.',
+      source_copy_failed: 'The file could not be saved for the queue.',
+    },
+    // What the operator actually asks after a refusal: was the job created?
+    failure: {
+      nothingQueued: 'Nothing was added to the queue. {{reason}}',
+      partial: 'Added to the queue: {{success}} of {{total}}. The other {{failed}} were not added. {{reason}}',
+      uncertain: 'It is not clear whether the job was added — no answer came back. The queue has been refreshed; check it before adding the job again.',
+      uncertainPartial: 'Added to the queue: {{success}} of {{total}}. No answer came back for the rest, so it is not clear whether they were added. The queue has been refreshed; check it before adding them again.',
+    },
+    deleteNote: {
+      checking: 'Checking which queued prints keep their own copy…',
+      selfContained: 'Queued prints that keep their own saved copy: {{count}}. They stay in the queue and still print.',
+      needsOriginal: 'Queued prints that still read these files: {{count}}. They are cancelled with them.',
+      removeHint: 'Remove them from the queue yourself if you no longer want them.',
+    },
   },
 
   // Statistics page
@@ -4516,6 +4575,10 @@ export default {
     notCopyable_other: '{{count}} items are not backed by a file and were left out.',
     noOtherPrinters: 'No other {{model}} printers to copy onto.',
     appendsHint: 'Copies go to the end of each queue.',
+    // A copy is an ordinary add, so it reads the original file again — a print
+    // whose original is gone still prints HERE from its saved copy, but it
+    // cannot be copied anywhere. Said before the button, not after it fails.
+    readsOriginalHint: 'A copy is a new add: the original file is read again and saved for each copy.',
     copy: 'Copy',
   },
 

@@ -300,8 +300,17 @@ export function CopyQueueModal({ source, items, droppedCount = 0, onCancel, onCo
       <div className="flex items-center justify-between gap-2 p-4 border-t border-bambu-dark shrink-0">
         {/* Says where the copies land before you press it — appending is what
             everything else in BamDude does with a busy printer, and a copy
-            that jumped the running queue would be the surprise. */}
-        <span className="text-xs text-bambu-gray">{t('copyQueue.appendsHint')}</span>
+            that jumped the running queue would be the surprise.
+
+            ⚠️ And what a copy IS (m173): an ordinary add, which reads the
+            original file again and saves its own copy of it. So a job that is
+            self-contained here can still refuse to be copied when its original
+            is gone — said before the button rather than discovered after it. */}
+        <span className="text-xs text-bambu-gray">
+          {t('copyQueue.appendsHint')}
+          {' '}
+          {t('copyQueue.readsOriginalHint')}
+        </span>
         <div className="flex items-center gap-2">
           <Button variant="ghost" onClick={onCancel}>
             {t('common.cancel')}

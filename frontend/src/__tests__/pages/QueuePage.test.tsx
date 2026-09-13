@@ -307,6 +307,129 @@ describe('QueuePage', () => {
     });
   });
 
+  // Does this row own the bytes it prints? (spec §10, m173)
+  //
+  // The answer is one glyph with a tooltip, and that is the whole requirement:
+  // no new card, no new row height, and silence where the question does not
+  // arise. Pinned here rather than in a component test because the thing that
+  // could break is the ROW — the mark shares the name line with the build-plate
+  // icon, and a mark that needed its own block would change the geometry of
+  // every queue on the farm.
+  describe('the queue mark for a job that keeps its own file', () => {
+    beforeEach(() => {
+      // An earlier test in this file switches to the List view and PERSISTS it,
+      // in localStorage and in the shared jsdom URL alike — and the flat list is
+      // not the card's row. Ask for the cards explicitly rather than inherit
+      // whatever ran before.
+      localStorage.setItem('queueViewMode', 'expanded');
+      window.history.replaceState({}, '', '/queue');
+    });
+
+    const spoolItem = (over: Record<string, unknown>) => ({
+      ...mockPendingItems[0],
+      ...over,
+    });
+
+    /**
+     * One handler, answering each status query with only its own rows - and only
+     * for the first printer's queue, or both cards would render the same job and
+     * every lookup below would find it twice.
+     */
+    const byStatus = (rows: Record<string, unknown[]>) =>
+      http.get('/api/v1/queue/', ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        if (params.get('queue_id') !== '1') return HttpResponse.json([]);
+        return HttpResponse.json(rows[params.get('status') ?? 'pending'] ?? []);
+      });
+
+    it('marks each state with its own explanation, and says nothing when there is none', async () => {
+      server.use(
+        byStatus({
+          pending: [
+            spoolItem({ id: 101, archive_name: 'Saved one', source_storage: 'ready', source_size_bytes: 2_097_152 }),
+            spoolItem({ id: 102, archive_name: 'Copying one', source_storage: 'preparing' }),
+            spoolItem({ id: 103, archive_name: 'Old one', source_storage: 'legacy' }),
+            spoolItem({ id: 104, archive_name: 'Lost one', source_storage: 'broken' }),
+            spoolItem({ id: 105, archive_name: 'External one', source_storage: 'exempt' }),
+            spoolItem({ id: 106, archive_name: 'Silent one' }),
+          ],
+        }),
+      );
+      const user = userEvent.setup();
+      render(<QueuePage />);
+
+      // A collapsed card shows two rows; every state has to be on screen.
+      await user.click(await screen.findByText(/Show \d+ more/));
+
+      expect(
+        await screen.findByTitle(
+          'File saved for the queue (2.0 MB) — this job prints its own copy and no longer needs the original.',
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTitle('Saving a copy of the file for the queue. The job waits here until the copy is finished.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTitle(
+          'Queued before BamDude kept its own copies. It reads the original file, so keep that reachable until it prints.',
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTitle(
+          'The saved copy is missing or damaged, so this job cannot print. Retry it to save the file again, or remove it from the queue.',
+        ),
+      ).toBeInTheDocument();
+
+      // Four states are marked; `exempt` and an absent field are not — an
+      // external print never had a supported source, so there is nothing to fix.
+      expect(screen.getAllByRole('img', { name: /File saved|Saving the file|Uses the original|Saved copy lost/ }))
+        .toHaveLength(4);
+    });
+
+    it('keeps the mark inside the row it belongs to, changing no geometry', async () => {
+      server.use(
+        byStatus({
+          pending: [spoolItem({ id: 201, archive_name: 'Saved one', source_storage: 'ready' })],
+        }),
+      );
+      render(<QueuePage />);
+
+      const name = await screen.findByText('Saved one');
+      const row = name.closest('div[class*="py-1.5"]')!;
+      expect(row).not.toBeNull();
+      // The mark lives in the row's own name line, beside the plate icon.
+      expect(row.querySelector('[role="img"][aria-label="File saved"]')).not.toBeNull();
+      // And the row is still the compact row it always was.
+      expect(row.className).toContain('py-1.5');
+      expect(row.className).toContain('px-2');
+    });
+
+    it('says a failed row is holding its file on purpose until it is removed', async () => {
+      server.use(
+        byStatus({
+          pending: [],
+          failed: [
+            spoolItem({
+              id: 301,
+              status: 'failed',
+              archive_name: 'Failed one',
+              error_message: 'Printer offline',
+              source_storage: 'ready',
+            }),
+          ],
+        }),
+      );
+      const user = userEvent.setup();
+      render(<QueuePage />);
+
+      await user.click(await screen.findByText(/^Issues \(1\)$/));
+
+      expect(
+        await screen.findByTitle(/The saved file stays with this job until you remove it from the queue\./),
+      ).toBeInTheDocument();
+    });
+  });
+
   // NOT tested here: "picking a parent keeps a queue on its child". A page-level
   // version of that passed in isolation and failed inside this file, and the
   // cause was not the page -- the same render succeeded once the file ran alone.
