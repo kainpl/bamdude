@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from backend.app.services.camera_worker_protocol import CameraWorkerProtocolError
 
 MAX_LIVE_SUBSCRIBERS = 64
 
@@ -14,6 +16,39 @@ MAX_LIVE_SUBSCRIBERS = 64
 class LiveLease:
     identity: str
     lease_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class LiveExternalSubscription:
+    """Validated worker command for one external physical producer identity."""
+
+    identity: str
+    media_session_id: str
+    url: str = field(repr=False)
+    camera_type: str
+    fps: int
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> LiveExternalSubscription:
+        if set(payload) != {"identity", "media_session_id", "url", "camera_type", "fps"}:
+            raise CameraWorkerProtocolError("live subscription has an invalid schema")
+        try:
+            return cls(**payload)
+        except (TypeError, ValueError) as exc:
+            raise CameraWorkerProtocolError("live subscription is invalid") from exc
+
+    def __post_init__(self) -> None:
+        for value in (self.identity, self.media_session_id):
+            try:
+                uuid.UUID(value)
+            except (ValueError, AttributeError, TypeError) as exc:
+                raise ValueError("live subscription identity is invalid") from exc
+        if not isinstance(self.url, str) or not 0 < len(self.url) <= 4096:
+            raise ValueError("live subscription URL is invalid")
+        if self.camera_type not in {"mjpeg", "rtsp", "snapshot", "usb"}:
+            raise ValueError("live subscription camera type is invalid")
+        if not isinstance(self.fps, int) or not 1 <= self.fps <= 30:
+            raise ValueError("live subscription FPS is invalid")
 
 
 class LiveProducerRegistry:

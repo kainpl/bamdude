@@ -141,6 +141,11 @@ async def run(bootstrap: WorkerBootstrap) -> int:
 
         write_lock = asyncio.Lock()
         capture_tasks: set[asyncio.Task[None]] = set()
+        from backend.app.services.camera_worker_live import LiveExternalSubscription, LiveProducerRegistry
+
+        live_registry = LiveProducerRegistry()
+        live_leases = {}
+        live_forwarders: dict[str, asyncio.Task[None]] = {}
         while True:
             request = await read_control(reader)
             if request["generation"] != bootstrap.generation:
@@ -178,6 +183,87 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                 capture_tasks.add(task)
                 task.add_done_callback(capture_tasks.discard)
                 continue
+            elif operation == "subscribe":
+                try:
+                    subscription = LiveExternalSubscription.from_payload(request["payload"])
+
+                    async def producer(subscription=subscription) -> None:
+                        from backend.app.services.external_camera import generate_mjpeg_stream
+
+                        async for _chunk in generate_mjpeg_stream(
+                            subscription.url,
+                            subscription.camera_type,
+                            subscription.fps,
+                            on_frame=lambda frame: live_registry.publish(subscription.identity, frame),
+                        ):
+                            pass
+
+                    lease, _queue = await live_registry.subscribe(subscription.identity, producer)
+                    live_leases[lease.lease_id] = lease
+
+                    async def forward(queue=_queue, session_id=subscription.media_session_id) -> None:
+                        from backend.app.services.camera_worker_media import (
+                            MediaHello,
+                            WorkerMediaFrame,
+                            write_media_frame,
+                            write_media_hello,
+                        )
+
+                        _reader, media_writer = await asyncio.open_connection("127.0.0.1", bootstrap.media_port)
+                        try:
+                            await write_media_hello(
+                                media_writer,
+                                MediaHello(
+                                    generation=bootstrap.generation, session_id=session_id, secret=bootstrap.secret
+                                ),
+                            )
+                            while True:
+                                frame = await queue.get()
+                                await write_media_frame(
+                                    media_writer,
+                                    WorkerMediaFrame(
+                                        generation=bootstrap.generation,
+                                        session_id=session_id,
+                                        frame=frame,
+                                        source="fresh",
+                                        attempt_id=None,
+                                        first_frame_ms=None,
+                                        cleanup_ms=None,
+                                    ),
+                                )
+                        finally:
+                            media_writer.close()
+                            await media_writer.wait_closed()
+
+                    forwarder = asyncio.create_task(forward(), name=f"camera-worker-live-forward-{lease.lease_id}")
+                    live_forwarders[lease.lease_id] = forwarder
+                    reply = make_reply(
+                        generation=bootstrap.generation,
+                        request_id=request["request_id"],
+                        ok=True,
+                        result={"lease_id": lease.lease_id},
+                    )
+                except CameraWorkerProtocolError:
+                    reply = make_reply(
+                        generation=bootstrap.generation,
+                        request_id=request["request_id"],
+                        ok=False,
+                        error="protocol_error",
+                    )
+            elif operation == "unsubscribe":
+                lease_id = request["payload"].get("lease_id")
+                lease = live_leases.pop(lease_id, None) if isinstance(lease_id, str) else None
+                if lease is not None:
+                    await live_registry.unsubscribe(lease)
+                forwarder = live_forwarders.pop(lease_id, None) if isinstance(lease_id, str) else None
+                if forwarder is not None:
+                    forwarder.cancel()
+                reply = make_reply(
+                    generation=bootstrap.generation,
+                    request_id=request["request_id"],
+                    ok=True,
+                    result={"released": lease is not None},
+                )
             elif operation == "shutdown":
                 for task in capture_tasks:
                     task.cancel()

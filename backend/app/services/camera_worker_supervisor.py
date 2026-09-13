@@ -65,6 +65,7 @@ class CameraWorkerSupervisor:
     _stderr_bytes: int = 0
     _containment: WorkerContainment | None = None
     _media_waiters: dict[str, asyncio.Future[WorkerMediaFrame]] = field(default_factory=dict)
+    _live_media_queues: dict[str, asyncio.Queue[WorkerMediaFrame]] = field(default_factory=dict)
 
     async def start(self) -> None:
         if self.process is not None:
@@ -192,6 +193,41 @@ class CameraWorkerSupervisor:
             if waiter is not None and not waiter.done():
                 waiter.cancel()
 
+    async def subscribe_external(
+        self, *, identity: str, url: str, camera_type: str, fps: int
+    ) -> tuple[str, asyncio.Queue[WorkerMediaFrame]]:
+        """Start one worker-owned external producer and return its latest-frame relay."""
+
+        if self.process is None:
+            await self.start()
+        session_id = str(uuid.uuid4())
+        queue: asyncio.Queue[WorkerMediaFrame] = asyncio.Queue(maxsize=1)
+        self._live_media_queues[session_id] = queue
+        try:
+            reply = await self.request(
+                "subscribe",
+                {
+                    "identity": identity,
+                    "media_session_id": session_id,
+                    "url": url,
+                    "camera_type": camera_type,
+                    "fps": fps,
+                },
+            )
+            lease_id = reply["result"].get("lease_id")
+            if not reply["ok"] or not isinstance(lease_id, str):
+                raise CameraWorkerUnavailable("camera worker rejected live subscription")
+            return lease_id, queue
+        except Exception:
+            self._live_media_queues.pop(session_id, None)
+            raise
+
+    async def unsubscribe(self, lease_id: str, queue: asyncio.Queue[WorkerMediaFrame]) -> None:
+        await self.request("unsubscribe", {"lease_id": lease_id})
+        for session_id, registered in list(self._live_media_queues.items()):
+            if registered is queue:
+                self._live_media_queues.pop(session_id, None)
+
     async def stop(self) -> None:
         """Bound normal shutdown, then terminate only this supervisor's child."""
 
@@ -316,12 +352,20 @@ class CameraWorkerSupervisor:
             ):
                 return
             waiter = self._media_waiters.get(hello.session_id)
-            if waiter is None or waiter.done():
+            live_queue = self._live_media_queues.get(hello.session_id)
+            if (waiter is None or waiter.done()) and live_queue is None:
                 return
-            frame = await asyncio.wait_for(read_media_frame(reader), timeout=_REQUEST_TIMEOUT_SECONDS)
-            if frame.generation != self.bootstrap.generation or frame.session_id != hello.session_id:
-                raise CameraWorkerProtocolError("media frame belongs to another capture")
-            waiter.set_result(frame)
+            while True:
+                frame = await asyncio.wait_for(read_media_frame(reader), timeout=_REQUEST_TIMEOUT_SECONDS)
+                if frame.generation != self.bootstrap.generation or frame.session_id != hello.session_id:
+                    raise CameraWorkerProtocolError("media frame belongs to another capture")
+                if waiter is not None:
+                    waiter.set_result(frame)
+                    return
+                assert live_queue is not None
+                if live_queue.full():
+                    live_queue.get_nowait()
+                live_queue.put_nowait(frame)
         except (CameraWorkerProtocolError, OSError, TimeoutError):
             if "hello" in locals():
                 waiter = self._media_waiters.get(hello.session_id)

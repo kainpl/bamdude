@@ -1,5 +1,6 @@
 import asyncio
 import os
+import uuid
 
 import pytest
 
@@ -152,5 +153,26 @@ async def test_worker_keeps_heartbeat_responsive_and_coalesces_concurrent_captur
         assert requests == 1
     finally:
         await runtime.stop()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_worker_relays_latest_frames_for_an_external_live_lease():
+    server = await asyncio.start_server(_serve_snapshot, host="127.0.0.1", port=0)
+    port = server.sockets[0].getsockname()[1]
+    supervisor = CameraWorkerSupervisor()
+    queue = None
+    try:
+        lease_id, queue = await supervisor.subscribe_external(
+            identity=str(uuid.uuid4()),
+            url=f"http://127.0.0.1:{port}/snapshot.jpg",
+            camera_type="snapshot",
+            fps=5,
+        )
+        assert (await asyncio.wait_for(queue.get(), timeout=3)).frame == _JPEG
+        await supervisor.unsubscribe(lease_id, queue)
+    finally:
+        await supervisor.stop()
         server.close()
         await server.wait_closed()
