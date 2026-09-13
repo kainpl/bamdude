@@ -126,6 +126,15 @@ async def test_camera_readiness_timeout_releases_other_listeners(startup):
     startup.modes["TCPProxy"] = "stall"
     assert await asyncio.wait_for(startup.instance.start_server(), timeout=7) is False
     assert_stopped(startup)
+
+
+@pytest.mark.asyncio
+async def test_worker_camera_runtime_refuses_direct_vp_camera_proxy(startup, monkeypatch):
+    from backend.app.core import config
+
+    monkeypatch.setattr(config.settings, "camera_runtime", "worker")
+    assert await startup.instance.start_server() is False
+    assert_stopped(startup)
     startup.client.register_raw_message_handler.assert_not_called()
 
 

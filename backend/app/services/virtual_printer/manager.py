@@ -1771,6 +1771,16 @@ class VirtualPrinterInstance:
             # spoofed identity has no bearing on how the real device serves its
             # camera. The ``_rtsp_proxy`` attribute name is kept for a tight diff;
             # it doubles as chamber-image passthrough on A1/P1.
+            from backend.app.core.config import settings as app_settings
+
+            if app_settings.camera_runtime == "worker":
+                # A VP camera listener is transparent raw TCP, while the
+                # worker currently owns JPEG relay leases. Starting this old
+                # direct proxy alongside the worker would create two physical
+                # camera owners. Refuse the VP until the raw worker lease is
+                # connected to this listener; never fall back silently.
+                raise RuntimeError("virtual-printer camera passthrough requires worker raw-lease support")
+
             target_client = self._printer_manager.get_client(self.target_printer_id)
             target_ip = getattr(target_client, "ip_address", None) if target_client else None
             target_model = getattr(target_client, "model", None) if target_client else None
