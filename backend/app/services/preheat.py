@@ -390,8 +390,10 @@ async def preheat_and_soak(
     # above; the wait/soak loop only polls printer_manager state and sleeps — it
     # never touches the DB. Without this the caller's transaction sat "idle in
     # transaction" for the whole soak, pinning one pooled connection per
-    # preheating printer. expire_on_commit=False keeps printer/archive readable;
-    # there are no pending writes to lose here.
+    # preheating printer. ``printer`` and ``archive`` below are deliberately a
+    # dispatch-start snapshot; callers must re-read any state that controls a
+    # later decision (the dispatch runner's final routing-claim check does).
+    # There are no pending writes to lose here.
     await db.commit()
 
     # Wait for convergence. Bed warm-up is fast; chamber via set_ctt a few minutes;

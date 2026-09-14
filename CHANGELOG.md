@@ -154,6 +154,8 @@
 
 ### Fixed
 
+- **A long-running completion can no longer undo a newer queue pause.** Queue release now performs its ``printing → idle`` transition atomically in the database. If an operator paused or errored the queue while FTP, MQTT, a macro, or preheat was awaited, the stale dispatch session leaves that newer state and its active-item pointer intact.
+
 - **The emptiest compatible spool is now preferred by default.** New and existing installations without an explicit choice use the smallest remaining loaded spool when BamDude chooses a tray for direct print, Auto-Queue or the virtual printer. Turn the setting off in Filament → General to retain slot-order selection; an existing explicit choice remains untouched.
 
 - **Custom filament presets use a generic loaded spool by material by default.** Print and queue routing now compares the `filament_type` of the preset family — for example PETG — rather than treating a vendor preset such as 3DPrint PETG as incompatible with Generic PETG. Turn off *Allow base material match* only where the exact preset is required; exact colour remains an independent, enforceable choice.

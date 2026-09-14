@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
@@ -100,3 +101,45 @@ async def test_completed_still_goes_idle(db_session):
 
     queue = (await db_session.execute(select(PrinterQueue).where(PrinterQueue.id == 2))).scalar_one()
     assert queue.status == "idle"
+
+
+@pytest.mark.asyncio
+async def test_stale_completion_cannot_release_concurrently_paused_queue(db_session, test_engine):
+    """A completion session must not overwrite a pause committed during its await.
+
+    ``expire_on_commit=False`` keeps ``stale_queue`` in the first session's
+    identity map.  Before the CAS update this was enough for ``set_queue_idle``
+    to see ``printing`` and silently turn the newer ``paused`` state into
+    ``idle``.
+    """
+    db_session.add(
+        Printer(
+            id=3,
+            name="p3",
+            serial_number="TEST-CANCEL-STALE-3",
+            ip_address="127.0.0.1",
+            access_code="00000000",
+        )
+    )
+    db_session.add(PrinterQueue(id=3, printer_id=3, status="printing", current_item_id=30))
+    await db_session.commit()
+
+    stale_queue = await db_session.get(PrinterQueue, 3)
+    assert stale_queue is not None and stale_queue.status == "printing"
+
+    session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as concurrent_session:
+        concurrent_queue = await concurrent_session.get(PrinterQueue, 3)
+        assert concurrent_queue is not None
+        concurrent_queue.status = "paused"
+        concurrent_queue.current_item_id = 31
+        await concurrent_session.commit()
+
+    await set_queue_idle(db_session, 3)
+    await db_session.commit()
+
+    async with session_factory() as verify_session:
+        queue = await verify_session.get(PrinterQueue, 3)
+        assert queue is not None
+        assert queue.status == "paused"
+        assert queue.current_item_id == 31

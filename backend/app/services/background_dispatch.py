@@ -2966,7 +2966,11 @@ class BackgroundDispatchService:
                                 settings.base_dir / archive_path
                             )  # SEC-PATH-OK: archive_print generated this persisted relative path.
                         retained = await PrintRequirementsCache().read(archive_path, job.options["plate_id"])
-                        queued = await db.get(PrintQueueItem, job.queue_item_id)
+                        # FTP, preheat and MQTT acknowledgement all happened
+                        # before this cleanup branch.  The initial queue-item
+                        # read is still in this session's identity map, so
+                        # force a real read before touching the row again.
+                        queued = await db.get(PrintQueueItem, job.queue_item_id, populate_existing=True)
                         if queued is not None and queued.started_at == job.claim_started_at:
                             queued.filament_routing = serialize_policy(
                                 job.routing_guard.policy,
