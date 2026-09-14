@@ -59,10 +59,11 @@ const baseSpool = {
   low_stock_threshold_pct: null,
 };
 
-const SPOOLS = [
+const DEFAULT_SPOOLS = [
   { ...baseSpool, id: 1, material: 'PLA', brand: 'eSun' },
   { ...baseSpool, id: 2, material: 'PETG', brand: 'SUNLU' },
 ];
+let spools = DEFAULT_SPOOLS;
 
 // The summary card counts ACTIVE spools; total_spools is deliberately a
 // different number here so a test cannot pass by matching the wrong one.
@@ -90,7 +91,7 @@ let holdList = false;
 function pagedPayload(groupSimilar: boolean) {
   if (groupSimilar) {
     return {
-      items: SPOOLS.map((s) => ({
+      items: spools.map((s) => ({
         material: s.material,
         subtype: '',
         brand: s.brand ?? '',
@@ -104,12 +105,12 @@ function pagedPayload(groupSimilar: boolean) {
         weight_used_total: s.weight_used,
         representative: { ...s, k_profile_count: 0, k_profiles: null },
       })),
-      meta: { total: SPOOLS.length, current_page: 1, per_page: 24, last_page: 1 },
+      meta: { total: spools.length, current_page: 1, per_page: 24, last_page: 1 },
     };
   }
   return {
-    items: SPOOLS.map((s) => ({ ...s, k_profile_count: 0, k_profiles: null })),
-    meta: { total: SPOOLS.length, current_page: 1, per_page: 24, last_page: 1 },
+    items: spools.map((s) => ({ ...s, k_profile_count: 0, k_profiles: null })),
+    meta: { total: spools.length, current_page: 1, per_page: 24, last_page: 1 },
   };
 }
 
@@ -133,11 +134,11 @@ function setupHandlers({ statsPending = false }: { statsPending?: boolean } = {}
       })
     ),
     http.get('/api/v1/inventory/spools/ids', () =>
-      HttpResponse.json({ ids: SPOOLS.map((s) => s.id) })
+      HttpResponse.json({ ids: spools.map((s) => s.id) })
     ),
     http.get('/api/v1/inventory/spools', async ({ request }) => {
       const url = new URL(request.url);
-      if (!url.searchParams.has('page')) return HttpResponse.json(SPOOLS);
+      if (!url.searchParams.has('page')) return HttpResponse.json(spools);
       if (holdList) {
         await new Promise((resolve) => {
           listGate = resolve;
@@ -155,6 +156,7 @@ describe('InventoryPage first paint', () => {
   beforeEach(() => {
     listGate = null;
     holdList = false;
+    spools = DEFAULT_SPOOLS;
     localStorage.clear();
   });
 
@@ -219,5 +221,22 @@ describe('InventoryPage first paint', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('inventory-refetching')).not.toBeInTheDocument();
     });
+  });
+
+  it('uses kilograms beside the remaining bar in table and card views', async () => {
+    spools = [{ ...baseSpool, id: 1, material: 'PLA', brand: 'eSun', label_weight: 19_000 }];
+    setupHandlers();
+    render(<InventoryPageRouter />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('19.00kg').length).toBeGreaterThanOrEqual(2);
+    });
+    expect(screen.queryByText('19000g')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /cards/i }));
+    await waitFor(() => {
+      expect(screen.getAllByText('19.00kg').length).toBeGreaterThanOrEqual(2);
+    });
+    expect(screen.queryByText('19000g')).not.toBeInTheDocument();
   });
 });

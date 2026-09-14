@@ -299,16 +299,16 @@ function toRenderColumns(visible: string[]): string[] {
  * `useKg` is the stats tile's coarse form — kilograms to one decimal, where a
  * farm total of 214.3kg is the useful reading.
  *
- * Everything else is grams, EXCEPT past 10kg, where it switches to kilograms
- * with three decimals. Only a GROUP row ever gets that big: a single spool tops
- * out around 3kg, while a group of eleven sums to five digits, and `11417g` is
- * a number you have to count the digits of. Three decimals of a kilogram is
- * exactly gram precision, so the switch loses nothing — `11.417kg` is the same
- * value, read at a glance.
+ * Everything else is grams below 5kg. Group rows regularly exceed that, and a
+ * five-digit gram value is slower to read than kilograms. Precision decreases
+ * with magnitude: three decimals retain gram precision below 10kg, then two
+ * and one decimal keep larger farm totals readable.
  */
 function formatWeight(g: number, useKg = false): string {
   if (useKg && g >= 1000) return `${(g / 1000).toFixed(1)}kg`;
-  if (g >= 10_000) return `${(g / 1000).toFixed(3)}kg`;
+  if (g >= 100_000) return `${(g / 1000).toFixed(1)}kg`;
+  if (g >= 10_000) return `${(g / 1000).toFixed(2)}kg`;
+  if (g >= 5_000) return `${(g / 1000).toFixed(3)}kg`;
   return `${Math.round(g)}g`;
 }
 
@@ -559,7 +559,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
           style={{ width: `${Math.min(pct, 100)}%` }}
         />
       </div>
-      <span className="text-xs text-bambu-gray min-w-[40px] text-right">{Math.round(remaining)}g</span>
+      <span className="text-xs text-bambu-gray min-w-[40px] text-right">{formatWeight(remaining)}</span>
     </div>
   ),
   spool_name: ({ spool, catalogMap }) => {
@@ -3383,7 +3383,7 @@ function SpoolCard({
               />
             </div>
             <span className="text-xs text-bambu-gray min-w-[40px] text-right">
-              {Math.round(remaining)}g
+              {formatWeight(remaining)}
             </span>
           </div>
         </div>
