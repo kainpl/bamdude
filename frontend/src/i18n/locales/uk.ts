@@ -503,6 +503,9 @@ export default {
       live: 'Наживо',
       snap: 'Знімок',
       off: 'Вимк',
+      startLive: 'Дивитися {{printer}} наживо',
+      stopLive: 'Зупинити перегляд {{printer}} наживо',
+      openPrinterCard: 'Відкрити картку принтера',
       summary: '{{live}} наживо, {{snap}} знімків, {{total}} всього',
       layer: 'Шар {{cur}}/{{total}}',
       timeLeft: 'залишилось {{time}}',
@@ -513,8 +516,6 @@ export default {
       },
       settings: {
         title: 'Налаштування стіни камер',
-        maxLive: 'Макс. потоків наживо',
-        maxLiveHint: 'Скільки плиток транслюють наживо одночасно. Решта оновлюються знімками.',
         snapshotInterval: 'Інтервал знімків (секунди)',
         snapshotIntervalHint: 'Як часто плитки без потоку отримують свіжий знімок.',
         statusOverlay: 'Накладка статусу',

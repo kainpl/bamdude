@@ -23,11 +23,9 @@ import type { CameraTileStatusMode } from '../components/CameraTile';
 
 // Same localStorage keys the in-app wall uses, so a kiosk started from a
 // browser that had already tuned the wall inherits those settings.
-const MAX_LIVE_KEY = 'camWallMaxLive';
 const SNAPSHOT_SEC_KEY = 'camWallSnapshotSec';
 const STATUS_MODE_KEY = 'camWallStatusMode';
 
-const DEFAULT_MAX_LIVE = 4;
 const DEFAULT_SNAPSHOT_SEC = 10;
 
 // A kiosk has no WebSocket to invalidate its queries, so it polls. Matched to
@@ -35,8 +33,6 @@ const DEFAULT_SNAPSHOT_SEC = 10;
 // interacting with a wall, and every tick is N printers' worth of state.
 const KIOSK_POLL_MS = 5000;
 
-const MIN_MAX_LIVE = 1;
-const MAX_MAX_LIVE = 16;
 const MIN_SNAPSHOT_SEC = 2;
 const MAX_SNAPSHOT_SEC = 60;
 
@@ -66,14 +62,6 @@ export function CamWallPage() {
   // separate so the intent is explicit rather than relying on hoisting).
   const kioskFromUrl = kiosk;
 
-  const [maxLive, setMaxLive] = useState(() =>
-    paramNumber(
-      searchParams.get('maxLive'),
-      MIN_MAX_LIVE,
-      MAX_MAX_LIVE,
-      readNumber(MAX_LIVE_KEY, DEFAULT_MAX_LIVE),
-    ),
-  );
   const [snapshotSec, setSnapshotSec] = useState(() =>
     paramNumber(
       searchParams.get('interval'),
@@ -99,9 +87,6 @@ export function CamWallPage() {
   // Persist only on the signed-in wall. A kiosk's settings come from its URL, and
   // writing them back would let opening a kiosk link once silently overwrite the
   // wall preferences of whoever's browser it was opened in.
-  useEffect(() => {
-    if (!kiosk) localStorage.setItem(MAX_LIVE_KEY, String(maxLive));
-  }, [kiosk, maxLive]);
   useEffect(() => {
     if (!kiosk) localStorage.setItem(SNAPSHOT_SEC_KEY, String(snapshotSec));
   }, [kiosk, snapshotSec]);
@@ -152,10 +137,8 @@ export function CamWallPage() {
     <div className="min-h-screen bg-bambu-dark p-4">
       <CameraWall
         printers={printers}
-        maxLive={maxLive}
         snapshotIntervalSec={snapshotSec}
         statusMode={statusMode}
-        onChangeMaxLive={setMaxLive}
         onChangeSnapshotIntervalSec={setSnapshotSec}
         onChangeStatusMode={setStatusMode}
         statusOverride={statusOverride}
@@ -163,13 +146,14 @@ export function CamWallPage() {
         // A passive display has nobody standing at it, and its settings come
         // from the URL rather than this browser's localStorage.
         hideSettings={kiosk}
-        // No tile handler in kiosk mode: the token cannot open the
-        // single-camera view, so a clickable-looking tile would just be a lie.
-        onTileClick={
+        // A kiosk remains passive. An authenticated standalone wall delegates
+        // the established M-card popup to PrintersPage, which owns all of that
+        // card's data and actions instead of duplicating it here.
+        onOpenPrinterCard={
           kiosk
             ? undefined
             : (printerId) => {
-                window.location.href = `/camera/${printerId}`;
+                window.location.assign(`/?view=camwall&expandPrinter=${printerId}`);
               }
         }
       />

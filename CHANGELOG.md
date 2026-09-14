@@ -9,7 +9,9 @@
 
 ### Added
 
-- **Camera viewing respects the browser transport.** HTTP/1.x or an unknown protocol caps live cameras at two per tab, shared by the wall and floating camera; confirmed HTTP/2 or HTTP/3 keeps the selected wall limit. Extra cameras show snapshots, and the UI explains the effective limit. Only one floating camera opens at a time: another printer replaces it. Refresh, replacement, minimize and close cancel the actual MJPEG image request so detached images cannot accumulate connections. Saved multiple-camera lists restore only the last camera.
+- **Camera Wall now opens live video only when the operator asks for it.** Every tile starts as a snapshot, so opening a large wall creates no MJPEG viewers. Click a tile to make it the one LIVE camera; click another to move LIVE there, or the same tile again to return it to snapshots. Errors and pauses stay visibly red or yellow even when ordinary status overlays are hidden, but never start video on their own. Each signed-in tile also opens the existing M-size printer card without changing the chosen camera; a token kiosk remains passive and redacted.
+
+- **Camera viewing respects the browser transport.** HTTP/1.x or an unknown protocol caps live cameras at two per tab, shared by the wall and floating camera; confirmed HTTP/2 or HTTP/3 permits up to 16 requested viewers. Camera Wall itself asks for only one explicit LIVE viewer, while the floating camera can use the remaining budget. Refresh, replacement, minimize and close cancel the actual MJPEG image request so detached images cannot accumulate connections. Saved multiple-camera lists restore only the last camera.
 
 - **Bounded camera-worker IPC and process ownership.** Private authenticated loopback control and media channels carry camera commands and JPEG frames. One-use bootstrap, generation checks and bounded shutdown prevent a stale child from becoming another camera owner. Windows uses a kill-on-close Job Object; POSIX uses a separate process group. Hardware/farm and Linux service acceptance remain separate from software tests.
 

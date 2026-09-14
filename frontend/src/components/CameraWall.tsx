@@ -39,13 +39,10 @@ export interface CameraWallStatus {
 
 interface CameraWallProps {
   printers: CameraWallPrinter[];
-  maxLive: number;
   snapshotIntervalSec: number;
   statusMode: CameraTileStatusMode;
-  /** Omitted by the kiosk wall: a TV has no pointer, and its token cannot open
-   *  the single-camera view anyway. */
-  onTileClick?: (printerId: number, printerName: string) => void;
-  onChangeMaxLive: (next: number) => void;
+  /** Omitted by the kiosk wall: its token cannot open the detailed card. */
+  onOpenPrinterCard?: (printerId: number, printerName: string) => void;
   onChangeSnapshotIntervalSec: (next: number) => void;
   onChangeStatusMode: (next: CameraTileStatusMode) => void;
   /** Kiosk mode (upstream #2531): pre-fetched statuses from the token feed.
@@ -60,19 +57,15 @@ interface CameraWallProps {
   hideSettings?: boolean;
 }
 
-const MIN_MAX_LIVE = 1;
-const MAX_MAX_LIVE = 16;
 const MIN_SNAPSHOT_SEC = 2;
 const MAX_SNAPSHOT_SEC = 60;
 const STATUS_MODES: CameraTileStatusMode[] = ['off', 'compact', 'full'];
 
 export function CameraWall({
   printers,
-  maxLive,
   snapshotIntervalSec,
   statusMode,
-  onTileClick,
-  onChangeMaxLive,
+  onOpenPrinterCard,
   onChangeSnapshotIntervalSec,
   onChangeStatusMode,
   statusOverride,
@@ -105,6 +98,10 @@ export function CameraWall({
   const statusByPrinter: Map<number, CameraWallStatus | undefined> =
     statusOverride ?? fetchedStatusByPrinter;
   const [visibleIds, setVisibleIds] = useState<Set<number>>(() => new Set());
+  // A wall is an overview first. A user explicitly selects the one camera
+  // worth spending a live MJPEG connection on; all other visible tiles stay
+  // on bounded snapshot refreshes.
+  const [activeLivePrinterId, setActiveLivePrinterId] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const settingsRef = useRef<HTMLDivElement | null>(null);
 
@@ -145,33 +142,41 @@ export function CameraWall({
     return () => observer.disconnect();
   }, [printers]);
 
-  // Live slot allocation: visible tiles get live up to `maxLive`, in printer
-  // list order so the assignment is stable. Visible-but-over-cap fall back to
-  // snapshot polling. Off-screen tiles render paused (no network). Disconnected
-  // printers also render paused regardless of visibility — there's nothing to
-  // stream and burning a live-budget slot on them would starve a working tile.
-  const requestedLive = Math.min(maxLive, printers.filter((p) =>
-    visibleIds.has(p.id) && statusByPrinter.get(p.id)?.connected).length);
+  // Scrolling a selected tile away is a navigation event, not a reason to keep
+  // an invisible MJPEG viewer alive. The user can select it again after they
+  // return to it; no printer state change ever selects a live camera for them.
+  useEffect(() => {
+    if (activeLivePrinterId !== null && !visibleIds.has(activeLivePrinterId)) {
+      setActiveLivePrinterId(null);
+    }
+  }, [activeLivePrinterId, visibleIds]);
+
+  const activeLiveIsConnected = activeLivePrinterId !== null &&
+    statusByPrinter.get(activeLivePrinterId)?.connected === true;
+  const requestedLive = activeLiveIsConnected ? 1 : 0;
   const { granted: liveSlots, ready, protocol, limit } = useCameraLiveBudget(requestedLive);
 
   const modeByPrinter = useMemo(() => {
     const map = new Map<number, CameraTileMode>();
-    let liveBudget = liveSlots;
     for (const p of printers) {
       const connected = statusByPrinter.get(p.id)?.connected ?? false;
       if (!ready || !visibleIds.has(p.id) || !connected) {
         map.set(p.id, 'paused');
         continue;
       }
-      if (liveBudget > 0) {
+      if (p.id === activeLivePrinterId && liveSlots > 0) {
         map.set(p.id, 'live');
-        liveBudget -= 1;
       } else {
         map.set(p.id, 'snapshot');
       }
     }
     return map;
-  }, [printers, visibleIds, liveSlots, ready, statusByPrinter]);
+  }, [printers, visibleIds, liveSlots, ready, statusByPrinter, activeLivePrinterId]);
+
+  const toggleLive = (printerId: number) => {
+    if (statusByPrinter.get(printerId)?.connected !== true) return;
+    setActiveLivePrinterId((current) => current === printerId ? null : printerId);
+  };
 
   if (printers.length === 0) {
     return (
@@ -208,28 +213,6 @@ export function CameraWall({
           </button>
           {showSettings && (
             <div className="absolute right-0 top-9 z-30 w-72 space-y-3 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary p-3 shadow-xl">
-              <label className="block space-y-1">
-                <span className="text-xs font-medium text-white">
-                  {t('printers.camWall.settings.maxLive')}
-                </span>
-                <input
-                  type="number"
-                  min={MIN_MAX_LIVE}
-                  max={MAX_MAX_LIVE}
-                  value={maxLive}
-                  onChange={(e) => {
-                    const n = Math.min(
-                      MAX_MAX_LIVE,
-                      Math.max(MIN_MAX_LIVE, Number(e.target.value) || MIN_MAX_LIVE),
-                    );
-                    onChangeMaxLive(n);
-                  }}
-                  className="w-full rounded-md border border-bambu-dark-tertiary bg-bambu-dark px-2 py-1 text-sm text-white"
-                />
-                <span className="block text-[11px] text-bambu-gray">
-                  {t('printers.camWall.settings.maxLiveHint')}
-                </span>
-              </label>
               <label className="block space-y-1">
                 <span className="text-xs font-medium text-white">
                   {t('printers.camWall.settings.snapshotInterval')}
@@ -319,10 +302,11 @@ export function CameraWall({
                   filterKnownHMSErrors(statusByPrinter.get(p.id)?.hms_errors ?? []).length
                 }
                 streamToken={streamToken}
-                // Omitted on the kiosk wall — see CameraTile: a tile with no
-                // handler renders as plain content instead of a button that
-                // looks clickable and does nothing.
-                onClick={onTileClick ? () => onTileClick(p.id, p.name) : undefined}
+                activeLive={p.id === activeLivePrinterId && mode === 'live'}
+                // The kiosk wall deliberately receives neither handler: its
+                // token can only view the passive, redacted wall.
+                onToggleLive={onOpenPrinterCard ? () => toggleLive(p.id) : undefined}
+                onOpenPrinterCard={onOpenPrinterCard ? () => onOpenPrinterCard(p.id, p.name) : undefined}
               />
             </div>
           );

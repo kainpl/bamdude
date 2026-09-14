@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { StrictMode } from 'react';
-import { act, screen } from '@testing-library/react';
+import { act, fireEvent, screen } from '@testing-library/react';
 import { render } from '../utils';
 import { CameraTile } from '../../components/CameraTile';
 
@@ -162,5 +162,62 @@ describe('CameraTile', () => {
       String(url).includes('/api/v1/printers/11/camera/stop'),
     );
     expect(stopCalls.length).toBeGreaterThan(0);
+  });
+
+  it('keeps live selection and the printer-card action separate', async () => {
+    const onToggleLive = vi.fn();
+    const onOpenPrinterCard = vi.fn();
+    render(
+      <CameraTile
+        printerId={23}
+        printerName="P1S-Detail"
+        mode="snapshot"
+        snapshotIntervalMs={5000}
+        connected
+        onToggleLive={onToggleLive}
+        onOpenPrinterCard={onOpenPrinterCard}
+      />,
+    );
+    await flushMicrotasks();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Watch P1S-Detail live' }));
+    expect(onToggleLive).toHaveBeenCalledOnce();
+    expect(onOpenPrinterCard).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open printer card' }));
+    expect(onOpenPrinterCard).toHaveBeenCalledOnce();
+    expect(onToggleLive).toHaveBeenCalledOnce();
+  });
+
+  it('keeps pause and failure visible when ordinary overlays are off', async () => {
+    const { rerender, container } = render(
+      <CameraTile
+        printerId={24}
+        printerName="P1S-Attention"
+        mode="snapshot"
+        snapshotIntervalMs={5000}
+        connected
+        statusMode="off"
+        printerState="PAUSE"
+      />,
+    );
+    await flushMicrotasks();
+    expect(screen.getByText('Paused')).toBeInTheDocument();
+    expect(container.firstElementChild).toHaveClass('border-amber-400');
+
+    rerender(
+      <CameraTile
+        printerId={24}
+        printerName="P1S-Attention"
+        mode="snapshot"
+        snapshotIntervalMs={5000}
+        connected
+        statusMode="off"
+        printerState="FAILED"
+      />,
+    );
+    await flushMicrotasks();
+    expect(screen.getByText('Error')).toBeInTheDocument();
+    expect(container.firstElementChild).toHaveClass('border-red-500');
   });
 });

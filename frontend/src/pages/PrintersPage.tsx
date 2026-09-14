@@ -91,7 +91,7 @@ import {
 } from 'lucide-react';
 import { SelectionBox } from '../components/SelectionBox';
 
-import { Link as RouterLink, useNavigate } from 'react-router';
+import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router';
 import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken } from '../api/client';
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { PauseChip } from '../components/PauseChip';
@@ -8719,6 +8719,7 @@ function PowerDropdownItem({
 export function PrintersPage() {
   useMountedPrinterPriority('printers');
   const { t } = useTranslation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [monitorTarget, clearMonitorTarget] = useMonitorTarget();
   const [showAddModal, setShowAddModal] = useState(false);
   const [hideDisconnected, setHideDisconnected] = useState(() => {
@@ -8738,15 +8739,12 @@ export function PrintersPage() {
   // Card size: 1=small, 2=medium, 3=large, 4=xl
   const [cardSize, setCardSize] = useState<number>(() => readStoredCardSize('printerCardSize'));
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
-  // Page view: 'cards' = printer cards (default), 'camwall' = grid of live camera tiles (#451)
+  // Page view: 'cards' = printer cards (default), 'camwall' = camera overview.
+  // `view=camwall` preserves the wall behind an M-card opened from /camwall.
   const [pageView, setPageView] = useState<'cards' | 'camwall'>(() => {
-    return localStorage.getItem('printerPageView') === 'camwall' ? 'camwall' : 'cards';
-  });
-  // Cam-wall settings — per-user localStorage, no backend write (a Pi 4 install caps the
-  // live count lower than a NUC; default 4 is the documented Pi 4 ceiling).
-  const [camWallMaxLive, setCamWallMaxLive] = useState<number>(() => {
-    const saved = parseInt(localStorage.getItem('camWallMaxLive') || '', 10);
-    return Number.isFinite(saved) && saved > 0 ? saved : 4;
+    return searchParams.get('view') === 'camwall' || localStorage.getItem('printerPageView') === 'camwall'
+      ? 'camwall'
+      : 'cards';
   });
   const [camWallSnapshotSec, setCamWallSnapshotSec] = useState<number>(() => {
     const saved = parseInt(localStorage.getItem('camWallSnapshotSec') || '', 10);
@@ -8841,6 +8839,23 @@ export function PrintersPage() {
     queryKey: ['printers'],
     queryFn: api.getPrinters,
   });
+
+  // `/camwall` uses this one-shot route handoff to reuse the exact M-card
+  // popup below. Remove the id immediately: closing it must not reopen it on
+  // a status update, while `view=camwall` stays to preserve the overview.
+  useEffect(() => {
+    const rawPrinterId = searchParams.get('expandPrinter');
+    if (!rawPrinterId || !printers) return;
+    const printerId = Number(rawPrinterId);
+    if (Number.isInteger(printerId) && printers.some((printer) => printer.id === printerId)) {
+      setExpandedPrinterId(printerId);
+    }
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('expandPrinter');
+      return next;
+    }, { replace: true });
+  }, [printers, searchParams, setSearchParams]);
 
   // Hash-scroll: links from other pages (queue card / project detail /
   // archives "printing" badge) hit /#printer-<id> — the printers list lives
@@ -9915,30 +9930,9 @@ export function PrintersPage() {
       ) : pageView === 'camwall' && !monitorTarget ? (
         <CameraWall
           printers={sortedPrinters}
-          maxLive={camWallMaxLive}
           snapshotIntervalSec={camWallSnapshotSec}
           statusMode={camWallStatusMode}
-          onTileClick={(id, name) => {
-            const cameraMode = settings?.camera_view_mode || 'window';
-            if (cameraMode === 'embedded') {
-              setEmbeddedCamera({ id, name });
-            } else {
-              const saved = localStorage.getItem('cameraWindowState');
-              const state = saved ? JSON.parse(saved) : { width: 640, height: 400 };
-              const features = [
-                `width=${state.width}`,
-                `height=${state.height}`,
-                state.left !== undefined ? `left=${state.left}` : '',
-                state.top !== undefined ? `top=${state.top}` : '',
-                'menubar=no,toolbar=no,location=no,status=no',
-              ].filter(Boolean).join(',');
-              window.open(`/camera/${id}`, `camera-${id}`, features);
-            }
-          }}
-          onChangeMaxLive={(next) => {
-            setCamWallMaxLive(next);
-            localStorage.setItem('camWallMaxLive', String(next));
-          }}
+          onOpenPrinterCard={(id) => setExpandedPrinterId(id)}
           onChangeSnapshotIntervalSec={(next) => {
             setCamWallSnapshotSec(next);
             localStorage.setItem('camWallSnapshotSec', String(next));

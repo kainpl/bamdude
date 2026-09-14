@@ -7,17 +7,24 @@
 The browser measures the protocol of completed same-origin `/api/` requests
 using Resource Timing `nextHopProtocol`. HTTP/1.x and unavailable/empty protocol
 information keep a conservative **two live MJPEG requests per tab**. Confirmed
-`h2` or `h3` permits the selected wall limit, within the existing maximum of 16.
-HTTPS alone and the HTML document's protocol are not sufficient evidence. If
+`h2` or `h3` permits up to 16 requested viewers. HTTPS alone and the HTML
+document's protocol are not sufficient evidence. If
 HTTP/1.x is observed after HTTP/2 or HTTP/3, the tab stays at two until reload.
 See the [Resource Timing specification](https://www.w3.org/TR/resource-timing/#dom-performanceresourcetiming-nexthopprotocol).
 
-The wall (including kiosk mode) and floating camera share the same tab budget.
-Additional visible cameras use cancellable snapshots; their shared queue has at
-most two requests. The wall's saved maximum is preserved; the displayed effective
-count respects the transport limit. A notice explains when the budget reduces
-live viewing. This reduces browser connection starvation; it does not measure
-server capacity or coordinate separate tabs/windows sharing an origin.
+The wall starts every visible tile as a cancellable snapshot; its shared queue
+has at most two requests. A signed-in operator explicitly promotes one tile to
+LIVE, moves that one viewer by selecting another tile, or returns it to a
+snapshot by selecting it again. The budget still protects that viewer alongside
+the floating camera. The old wall `maxLive` setting and URL parameter no longer
+raise several streams. Token kiosks remain passive snapshots. This reduces
+browser connection starvation; it does not measure server capacity or coordinate
+separate tabs/windows sharing an origin.
+
+Error and pause accents remain visible on a snapshot even when routine status
+overlays are hidden; status never starts LIVE automatically. A signed-in tile's
+separate action opens the same M-size printer card used by compact printer cards,
+without changing the selected live camera.
 
 Only one floating camera opens on the Printers page. Clicking another printer's
 camera replaces it, cancelling the previous image request and reconnect/stall

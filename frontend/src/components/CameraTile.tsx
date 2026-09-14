@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, VideoOff, WifiOff } from 'lucide-react';
+import { AlertTriangle, Expand, VideoOff, WifiOff } from 'lucide-react';
 import { getAuthToken, withStreamToken } from '../api/client';
 import { formatDuration } from '../utils/date';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
@@ -16,7 +16,11 @@ interface CameraTileProps {
   mode: CameraTileMode;
   snapshotIntervalMs: number;
   connected: boolean;
-  onClick?: () => void;
+  /** The one explicit live-view selection on an interactive wall. */
+  onToggleLive?: () => void;
+  /** Opens the shared M-size printer card without changing the live selection. */
+  onOpenPrinterCard?: () => void;
+  activeLive?: boolean;
   // Optional status overlay — wired by CameraWall from the shared
   // ['printerStatus', id] query. All optional so existing tests don't break.
   statusMode?: CameraTileStatusMode;
@@ -48,8 +52,9 @@ function classifyState(state: string | null | undefined, hmsErrorCount: number):
       return 'printing';
     case 'PAUSE':
       return 'paused';
-    case 'FINISH':
     case 'FAILED':
+      return 'error';
+    case 'FINISH':
       return 'finished';
     default:
       return 'idle';
@@ -71,7 +76,9 @@ export function CameraTile({
   mode,
   snapshotIntervalMs,
   connected,
-  onClick,
+  onToggleLive,
+  onOpenPrinterCard,
+  activeLive = false,
   statusMode = 'off',
   printerState = null,
   progress = null,
@@ -132,16 +139,16 @@ export function CameraTile({
   );
   const { attachImage: attachLiveImage } = useCameraImageRef(liveUrl);
 
-  const handleClick = () => {
-    if (onClick) onClick();
-  };
-
   const transform = cameraRotation ? `rotate(${cameraRotation}deg)` : undefined;
 
   const bucket = classifyState(printerState, hmsErrorCount);
   // Hide chip for idle to keep cold walls clean; always show when something
   // is happening (printing/paused/finished/error).
-  const showChip = connected && statusMode !== 'off' && bucket !== 'idle';
+  // A wall may hide routine status chips, but an error or pause must still
+  // tell an operator where to look before they choose a live camera.
+  const showChip = connected && bucket !== 'idle' && (
+    statusMode !== 'off' || bucket === 'error' || bucket === 'paused'
+  );
   const isPrintingOrPaused = bucket === 'printing' || bucket === 'paused';
   const showInfoStrip = connected && statusMode === 'full' && isPrintingOrPaused;
   const fileLabel = printName ?? null;
@@ -149,25 +156,36 @@ export function CameraTile({
   const hasLayers = layerNum != null && totalLayers != null && totalLayers > 0;
   const hasRemaining = remainingMin != null && remainingMin > 0;
 
-  // A kiosk wall passes no onClick — there is no pointer at a TV, and the page
-  // is authenticated by a token that cannot open the single-camera view. Render
-  // the tile as plain, non-focusable content rather than a button that looks
-  // clickable and then does nothing.
-  const interactive = onClick != null;
+  // Kiosk walls pass neither handler. They remain passive and redacted, while
+  // an authenticated operator gets two distinct actions: select live, or open
+  // the printer card. These cannot be nested HTML buttons.
+  const interactive = onToggleLive != null;
+  const attentionClass = !connected
+    ? ' border-bambu-dark-tertiary'
+    : bucket === 'error'
+      ? ' border-red-500 ring-1 ring-red-500/70'
+      : bucket === 'paused'
+        ? ' border-amber-400 ring-1 ring-amber-400/60'
+        : activeLive
+          ? ' border-bambu-green ring-1 ring-bambu-green/75'
+          : ' border-bambu-dark-tertiary';
   const rootClass =
-    'group relative aspect-video w-full overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-black text-left' +
-    (interactive ? ' focus:outline-none focus:ring-2 focus:ring-bambu-green' : ' cursor-default');
-  const Root = interactive ? 'button' : 'div';
-  const rootProps = interactive
-    ? ({ type: 'button', onClick: handleClick } as const)
-    : ({} as const);
+    'group relative aspect-video w-full overflow-hidden rounded-lg border bg-black text-left' + attentionClass +
+    (interactive ? '' : ' cursor-default');
 
   return (
-    <Root
-      {...rootProps}
+    <div
       className={rootClass}
       title={printerName}
     >
+      {interactive && (
+        <button
+          type="button"
+          onClick={onToggleLive}
+          aria-label={t(activeLive ? 'printers.camWall.stopLive' : 'printers.camWall.startLive', { printer: printerName })}
+          className="absolute inset-0 z-10 cursor-pointer rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green focus-visible:ring-inset"
+        />
+      )}
       {!connected || mode === 'paused' ? (
         <div className="absolute inset-0 flex items-center justify-center bg-bambu-dark/60">
           {connected ? (
@@ -206,7 +224,7 @@ export function CameraTile({
       {/* Status chip (top-left) */}
       {showChip && (
         <span
-          className={`absolute left-2 top-2 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${BUCKET_CHIP_CLASS[bucket]}`}
+          className={`pointer-events-none absolute left-2 top-2 z-20 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${BUCKET_CHIP_CLASS[bucket]}`}
         >
           {hmsErrorCount > 0 && (
             <AlertTriangle
@@ -220,7 +238,7 @@ export function CameraTile({
 
       {/* Mode indicator (top-right) */}
       <span
-        className={`absolute right-2 top-2 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+        className={`pointer-events-none absolute right-2 top-2 z-20 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
           mode === 'live'
             ? 'bg-red-500/80 text-white'
             : mode === 'snapshot'
@@ -268,6 +286,20 @@ export function CameraTile({
         )}
         <span className={`block truncate text-xs font-medium${connected && mode === 'snapshot' ? ' pr-36' : ''}`}>{printerName}</span>
       </div>
-    </Root>
+      {onOpenPrinterCard && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenPrinterCard();
+          }}
+          aria-label={t('printers.camWall.openPrinterCard', { printer: printerName })}
+          title={t('printers.camWall.openPrinterCard')}
+          className="absolute bottom-2 right-2 z-20 inline-flex h-7 w-7 items-center justify-center rounded-md bg-black/70 text-white transition-colors hover:bg-bambu-dark-tertiary focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green"
+        >
+          <Expand className="h-4 w-4" aria-hidden="true" />
+        </button>
+      )}
+    </div>
   );
 }
