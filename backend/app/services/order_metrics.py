@@ -167,6 +167,8 @@ class ProjectFigures:
     remaining: int = 0
     total_time_seconds: int = 0
     total_filament_grams: float = 0.0
+    total_filament_cost: float = 0.0
+    total_energy_cost: float = 0.0
     total_cost: float = 0.0
     defective: int = 0
     margin: float | None = None
@@ -704,10 +706,13 @@ def project_figures(
     for a in ctx.archives:
         pf.total_time_seconds += int(a.actual_time_seconds or a.print_time_seconds or 0)
         pf.total_filament_grams += float(a.filament_used_grams or 0)
-        pf.total_cost += float(a.cost or 0) + float(a.energy_cost or 0)
+        pf.total_filament_cost += float(a.cost or 0)
+        pf.total_energy_cost += float(a.energy_cost or 0)
         pf.defective += int(a.defective_count or 0)
     pf.total_filament_grams = round(pf.total_filament_grams, 2)
-    pf.total_cost = round(pf.total_cost, 2)
+    pf.total_filament_cost = round(pf.total_filament_cost, 2)
+    pf.total_energy_cost = round(pf.total_energy_cost, 2)
+    pf.total_cost = round(pf.total_filament_cost + pf.total_energy_cost, 2)
     pf.margin = round(ctx.project.price - pf.total_cost, 2) if ctx.project.price is not None else None
     pf.prints_in_progress = sum(1 for a in ctx.archives if a.status == _RUNNING)
     pf.prints_queued = sum(ctx.queued_by_line.values()) + ctx.queued_unfiled

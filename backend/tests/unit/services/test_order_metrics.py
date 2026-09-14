@@ -86,7 +86,19 @@ def _line(lid, product_id, qty, material=None, sort=0):
     return line
 
 
-def _archive(aid, *, file_id, plate, status="completed", material="PETG", line_id=None, cost=1.0, secs=100, grams=10.0):
+def _archive(
+    aid,
+    *,
+    file_id,
+    plate,
+    status="completed",
+    material="PETG",
+    line_id=None,
+    cost=1.0,
+    energy_cost=None,
+    secs=100,
+    grams=10.0,
+):
     a = PrintArchive(
         project_id=1,
         library_file_id=file_id,
@@ -95,6 +107,7 @@ def _archive(aid, *, file_id, plate, status="completed", material="PETG", line_i
         filament_type=material,
         project_line_id=line_id,
         cost=cost,
+        energy_cost=energy_cost,
         actual_time_seconds=secs,
         filament_used_grams=grams,
         quantity=1,
@@ -294,6 +307,21 @@ def test_in_progress_and_project_totals():
     # loop from _units_complete yields 2 and fails this line.
     assert pf.complete == 1  # min(2 printed, 6 // 4 = 1 kit of screws)
     assert pf.total_cost == 3.0 and pf.margin == 97.0 and pf.total_time_seconds == 100 and pf.all_printed is False
+
+
+def test_project_cost_keeps_filament_and_energy_components():
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 2)]
+    archives = [
+        _archive(1, file_id=5, plate=0, cost=1.25, energy_cost=0.35),
+        _archive(2, file_id=5, plate=0, cost=0.75, energy_cost=None),
+    ]
+    ctx = _ctx(lines, parts, archives, {1: [_ap(1, "a", 1)], 2: [_ap(2, "a", 1)]}, {(5, 0): 10})
+
+    figures, other = attribute(ctx)
+    total = project_figures(ctx, figures, other)
+
+    assert (total.total_filament_cost, total.total_energy_cost, total.total_cost) == (2.0, 0.35, 2.35)
 
 
 def test_a_scrapped_plate_is_listed_under_the_line_whose_product_counts_it():

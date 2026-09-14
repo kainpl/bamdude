@@ -156,6 +156,8 @@
 
 ### Fixed
 
+- **Order costs now say what they include.** An order's actual production cost remains the sum of its finished prints, but now shows its filament and measured-electricity components underneath. The forward-looking plan is explicitly labelled *Filament cost*: it is priced from the slicer's grams and farm filament rate, while electricity is only known after a print is measured.
+
 - **Renamed printers are named correctly immediately.** A rename now refreshes the lightweight callback cache without restarting or reconnecting the printer, so notifications, MQTT relay events, queue and stagger status, and macro-completion messages use the new display name.
 
 - **AutoQueue now applies the print profile of the printer it actually chose.** The auto-distribute dialog no longer offers one misleading set of print options, event macros and Swap macros to a mixed-model fleet. When a job reaches a real printer queue, it receives the creating operator's saved profile for that printer model (or that model's system/default profile), including its ordinary event macros — so a P1S light macro runs after AutoQueue promotion. Swap macros still run only on a Swap-enabled target and never on a file that already contains them.

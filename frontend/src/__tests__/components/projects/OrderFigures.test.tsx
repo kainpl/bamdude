@@ -62,6 +62,21 @@ describe('OrderFigures', () => {
     expect(screen.getByText('123.5')).toBeInTheDocument();
     expect(screen.getByText(/other prints/i)).toBeInTheDocument();
   });
+
+  it('breaks actual production cost into filament and electricity', () => {
+    render(
+      <OrderFigures
+        figures={{
+          ...FIGURES,
+          total_cost: 12.5,
+          total_filament_cost: 10,
+          total_energy_cost: 2.5,
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId('order-cost-breakdown')).toHaveTextContent('Filament: $10.00 + Electricity: $2.50');
+  });
   it('shows what is printing and queued right now', () => {
     render(
       <OrderFigures

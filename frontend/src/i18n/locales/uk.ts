@@ -5249,6 +5249,8 @@ export default {
       time: 'Час друку',
       grams: 'Філамент, г',
       cost: 'Собівартість',
+      filamentCost: 'Філамент',
+      energyCost: 'Електрика',
       defective: 'Брак',
       otherPrints: 'Інші друки: {{n}}',
       progress: 'Надруковано із замовленого',
@@ -5380,7 +5382,7 @@ export default {
         prints: 'Друків',
         time: 'Час друку',
         grams: 'Філамент, г',
-        cost: 'Вартість',
+        cost: 'Вартість філаменту',
       },
       wholePlanToQueue: 'Увесь план у чергу',
       toast: {

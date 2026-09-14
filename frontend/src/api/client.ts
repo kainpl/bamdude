@@ -1576,6 +1576,10 @@ export interface ProjectFigures {
   remaining: number;
   total_time_seconds: number;
   total_filament_grams: number;
+  /** Actual filament portion of `total_cost`; older servers omit it. */
+  total_filament_cost?: number;
+  /** Actual electricity portion of `total_cost`; older servers omit it. */
+  total_energy_cost?: number;
   total_cost: number;
   defective: number;
   /** null when the order carries no price — not zero, which would read as

@@ -9,11 +9,12 @@ import { ProgressBar } from './ProgressBar';
 import { ForecastHint } from './ForecastHint';
 
 /** One figure, as the server counted it — this component never adds anything up. */
-function Tile({ label, value }: { label: ReactNode; value: string | number }) {
+function Tile({ label, value, detail }: { label: ReactNode; value: string | number; detail?: ReactNode }) {
   return (
     <div className="rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary p-3">
       <p className="text-xs text-bambu-gray">{label}</p>
       <p className="text-lg font-semibold text-white tabular-nums">{value}</p>
+      {detail && <p className="mt-1 text-xs text-bambu-gray tabular-nums">{detail}</p>}
     </div>
   );
 }
@@ -30,6 +31,10 @@ export function OrderFigures({ figures, forecast }: { figures: ProjectFigures; f
   // The app-wide currency, fetched the way every other money-showing screen
   // fetches it; `formatMoney` covers the unresolved first paint.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  // A current server gives both actual components. The fallback keeps an
+  // in-flight upgrade honest: older servers only gave the combined total.
+  const filamentCost = figures.total_filament_cost ?? figures.total_cost;
+  const energyCost = figures.total_energy_cost ?? 0;
 
   return (
     <section className="space-y-3">
@@ -49,7 +54,17 @@ export function OrderFigures({ figures, forecast }: { figures: ProjectFigures; f
         <Tile label={t('orders.figures.queued')} value={figures.prints_queued} />
         <Tile label={t('orders.figures.time')} value={hoursMinutes(figures.total_time_seconds)} />
         <Tile label={t('orders.figures.grams')} value={figures.total_filament_grams.toFixed(1)} />
-        <Tile label={t('orders.figures.cost')} value={formatMoney(figures.total_cost, settings?.currency)} />
+        <Tile
+          label={t('orders.figures.cost')}
+          value={formatMoney(figures.total_cost, settings?.currency)}
+          detail={
+            <span data-testid="order-cost-breakdown">
+              {t('orders.figures.filamentCost')}: {formatMoney(filamentCost, settings?.currency)}
+              {' + '}
+              {t('orders.figures.energyCost')}: {formatMoney(energyCost, settings?.currency)}
+            </span>
+          }
+        />
         <Tile label={t('orders.figures.defective')} value={figures.defective} />
         <Tile
           label={<>{t('orders.figures.readyAt')} {forecast && <ForecastHint forecast={forecast} />}</>}

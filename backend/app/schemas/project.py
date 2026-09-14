@@ -233,6 +233,8 @@ class ProjectFiguresOut(BaseModel):
     remaining: int
     total_time_seconds: int
     total_filament_grams: float
+    total_filament_cost: float
+    total_energy_cost: float
     total_cost: float
     defective: int
     margin: float | None
