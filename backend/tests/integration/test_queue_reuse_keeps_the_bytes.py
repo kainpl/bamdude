@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
 from pathlib import Path
 
@@ -37,7 +38,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
-from backend.app.models.queue_source import STATE_BROKEN, QueueSource
+from backend.app.models.queue_source import STATE_BROKEN, STATE_READY, QueueSource
 from backend.app.schemas.print_queue import PrintQueueItemCreate
 from backend.app.services import queue_ops, queue_sources
 from backend.app.services.plate_hold import RepeatNotPossible, answer_by_repeating
@@ -48,6 +49,11 @@ from backend.tests.integration.test_filament_routing_dispatch import setup_sourc
 pytestmark = pytest.mark.integration
 
 PLATE = 15
+#: A second plate that really is in the captured file, so "the job was moved to
+#: another plate" can be observed rather than asserted against the value it already
+#: had. ``ABSENT_PLATE`` is in neither.
+SECOND_PLATE = 18
+ABSENT_PLATE = 22
 
 
 @pytest.fixture(autouse=True)
@@ -70,9 +76,13 @@ def sessions(test_engine, monkeypatch):
 
 
 def a_sliced_file(path: Path) -> Path:
+    """A two-plate sliced 3MF — two, so a plate CHANGE has somewhere to go."""
     return write_routing_3mf(
         path,
-        {PLATE: [{"id": 3, "type": "PLA", "color": "#FF0000", "used_g": "1.5"}]},
+        {
+            PLATE: [{"id": 3, "type": "PLA", "color": "#FF0000", "used_g": "1.5"}],
+            SECOND_PLATE: [{"id": 3, "type": "PLA", "color": "#FF0000", "used_g": "2.5"}],
+        },
         model="P1P",
         prediction=3600,
     )
@@ -132,6 +142,21 @@ async def break_the_blob(db, item) -> QueueSource:
     blob.state = STATE_BROKEN
     await db.commit()
     return blob
+
+
+async def break_the_blob_elsewhere(sessions, blob_id: int) -> None:
+    """Flip the blob to ``broken`` from ANOTHER session — the collector's position.
+
+    The collector writes from its own session, so a writer that trusted the object
+    already in its identity map would never see this. Breaking it through
+    ``db_session`` instead (which the simple refusal tests above do, and which is
+    fine for what they claim) leaves the caller's instance already ``broken``, and
+    then a plain ``db.get`` answers correctly by accident.
+    """
+    async with sessions() as other:
+        blob = await other.get(QueueSource, blob_id)
+        blob.state = STATE_BROKEN
+        await other.commit()
 
 
 # --------------------------------------------------------------------------- #
@@ -215,6 +240,39 @@ async def test_the_clone_route_answers_the_taxonomys_status(
 
     assert response.status_code == 422, response.text
     assert response.json()["detail"]["code"] == "source_unreadable"
+
+
+@pytest.mark.parametrize("scope", ["one", "batch"])
+async def test_the_BATCH_clone_route_answers_the_taxonomy_too(
+    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions, scope
+):
+    """The SECOND door onto the same two services, and both of its scopes.
+
+    Unmapped, a known refusal left this route as a bare 500 — indistinguishable on
+    the operator's screen from BamDude being broken, and the frontend branches on
+    ``detail.code``. Parametrized because ``scope='one'`` goes through
+    ``clone_item`` and ``scope='batch'`` through ``clone_batch``: two call sites,
+    one mapping.
+    """
+    from backend.app.services.queue_add import add_items_to_printer_queue
+
+    _unused, _printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    source = await a_library_source(db_session, tmp_path)
+    items, _q = await add_items_to_printer_queue(
+        db_session,
+        PrintQueueItemCreate(queue_id=queue.id, library_file_id=source.id, plate_id=PLATE, quantity=2),
+        None,
+    )
+    batch_id = items[0].batch_id
+    assert batch_id
+    await break_the_blob(db_session, items[0])
+
+    response = await async_client.post(f"/api/v1/queue/batch/{batch_id}/clone?scope={scope}")
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "source_unreadable"
+    rows = (await db_session.execute(select(PrintQueueItem))).scalars().all()
+    assert len(rows) == 2, "nothing may be written when the bytes were refused"
 
 
 async def test_a_legacy_row_is_cloned_exactly_as_before(db_session, tmp_path, printer_factory, monkeypatch):
@@ -397,22 +455,34 @@ async def test_repeat_refuses_a_snapshot_whose_bytes_are_broken(
 async def test_the_state_is_decided_under_the_guard_not_before_it(
     db_session, tmp_path, printer_factory, monkeypatch, sessions
 ):
-    """Break the blob while the writer waits on the guard.
+    """Break the blob while the writer waits on the guard — **from another session**.
 
-    A writer that read ``state`` before acquiring would have decided ``ready``
-    already and would write a reference to bytes the collector has released — the
-    race §9 puts clone on the same guard to close.
+    Two claims in one, and the second is why the other session matters:
+
+    * the writer must not have decided anything before it holds the guard. One that
+      read ``state`` first would already have said ``ready`` and would write a
+      reference to bytes the collector has released — the race §9 puts clone on the
+      same guard to close;
+    * and the read it does under the guard must reach the DATABASE. The caller's
+      session is deliberately warmed with the blob as ``ready`` first, so a writer
+      that trusted its identity map would be answered by that stale object. The
+      collector writes from its own session, which is exactly this shape, and
+      ``populate_existing=True`` is the thing under test.
     """
     item, _printer, _queue, _source, _original = await a_captured_item(
         db_session, tmp_path, printer_factory, monkeypatch
     )
+    blob_id = item.queue_source_id
+    cached = await db_session.get(QueueSource, blob_id)
+    assert cached.state == STATE_READY
 
     async with queue_sources.storage_mutation():
         clone = asyncio.create_task(queue_ops.clone_item(db_session, item.id))
         for _ in range(20):
             await asyncio.sleep(0.005)
         assert not clone.done(), "the clone must wait for the guard before deciding anything"
-        await break_the_blob(db_session, item)
+        await break_the_blob_elsewhere(sessions, blob_id)
+        assert cached.state == STATE_READY, "the caller's session must still be holding the stale value"
 
     with pytest.raises(queue_sources.QueueSourceError):
         await clone
@@ -468,22 +538,33 @@ async def test_moving_a_job_to_another_printer_keeps_its_bytes(
     assert await blob_count(db_session) == 1
 
 
-async def test_changing_the_plate_keeps_the_bytes_and_re_reads_the_copy(
+async def test_changing_the_plate_keeps_the_bytes_and_resolves_the_NEW_plate_from_the_copy(
     async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
 ):
-    """The plate lives in the captured file, so the re-read finds it there."""
+    """Moved to a DIFFERENT plate the captured file has — not to the one it already had.
+
+    The plate the row ends up with is whatever ``prepare_routing`` resolved out of
+    the bytes it read, so patching to the value the row already carried could not
+    fail. Here the job starts on ``PLATE`` and is moved to ``SECOND_PLATE``: if the
+    copy were not read, or the plate were ignored, the row would keep ``PLATE`` (or
+    the request would be refused for a plate that is in fact there).
+    """
     item, _printer, _queue, source, original = await a_captured_item(db_session, tmp_path, printer_factory, monkeypatch)
     blob_id = item.queue_source_id
+    assert item.plate_id == PLATE
     await lose_the_original(db_session, item, original, row=source)
 
     touched = forbid_reads(monkeypatch, original)
-    response = await async_client.patch(f"/api/v1/queue/{item.id}", json={"plate_id": PLATE})
+    response = await async_client.patch(f"/api/v1/queue/{item.id}", json={"plate_id": SECOND_PLATE})
 
     assert touched == []
     assert response.status_code == 200, response.text
+    assert response.json()["plate_id"] == SECOND_PLATE
     db_session.expire_all()
     await db_session.refresh(item)
-    assert (item.plate_id, item.queue_source_id) == (PLATE, blob_id)
+    assert (item.plate_id, item.queue_source_id) == (SECOND_PLATE, blob_id)
+    # The intent was re-written about the same bytes, and about the new plate.
+    assert json.loads(item.filament_routing)["resolved_plate_id"] == SECOND_PLATE
     assert await blob_count(db_session) == 1
 
 
@@ -495,7 +576,7 @@ async def test_a_plate_the_captured_file_does_not_have_is_refused_from_the_copy(
     await lose_the_original(db_session, item, original, row=source)
 
     touched = forbid_reads(monkeypatch, original)
-    response = await async_client.patch(f"/api/v1/queue/{item.id}", json={"plate_id": PLATE + 7})
+    response = await async_client.patch(f"/api/v1/queue/{item.id}", json={"plate_id": ABSENT_PLATE})
 
     assert touched == []
     assert response.status_code == 422, response.text
@@ -506,8 +587,6 @@ async def test_a_pinned_job_moved_to_another_queue_asks_for_a_mapping_review(
     async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
 ):
     """Changing the printer keeps the bytes AND runs the mapping review (A08)."""
-    import json
-
     item, _printer, _queue, source, original = await a_captured_item(db_session, tmp_path, printer_factory, monkeypatch)
     stored = json.loads(item.filament_routing)
     stored["mode"] = "pinned"

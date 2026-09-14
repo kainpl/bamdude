@@ -97,11 +97,57 @@ SKIP_REASONS = (
     "located",
     "no_yield",
     "source_unreadable",
+    "source_copy_busy",
+    "source_spool_full",
     "creation_failed",
     "home_model_idle",
     "no_faster_model",
     "cooldown",
 )
+
+#: How a capture refusal (spec §6's taxonomy) is reported on the panel.
+#:
+#: **Three buckets, not eight, and the split is by what the OPERATOR does** — the
+#: panel's reason column is an instruction, not a diagnosis. Copying the target
+#: file can fail seven ways and they fold onto three answers:
+#:
+#: * ``source_copy_busy`` — wait, and not even that: every cause is transient and
+#:   self-clearing (all capture workers taken, the hydration slot taken, a restore
+#:   having swapped the spool, a read that ran out of time), and a refused move
+#:   sets no ``rebalanced_at``, so ``cooling_lines`` does not hold the line and the
+#:   retry is the NEXT tick rather than 300 s later. The correct response is
+#:   nothing.
+#: * ``source_spool_full`` — free space on the server's data volume. The most
+#:   actionable cause in the set, and folded into "unreadable" it sent the operator
+#:   to look at the library file instead.
+#: * ``source_unreadable`` — the file itself: gone, trashed, on an unreachable
+#:   share, changed under the read, or not the container it claims to be. Nothing
+#:   will ever succeed until a person fixes something.
+#:
+#: A plate the target file does not have stays in the last bucket deliberately: it
+#: means the plan's catalog and the file disagree, which is a bug report rather
+#: than an operator action. An unrecognised refusal lands there too — erring
+#: towards "a person must look" is the safe direction for a code nobody mapped.
+_SKIP_BY_CAPTURE_REASON = {
+    "source_copy_busy": "source_copy_busy",
+    "source_spool_replaced": "source_copy_busy",
+    "source_copy_timeout": "source_copy_busy",
+    "source_spool_no_space": "source_spool_full",
+    "source_spool_write_failed": "source_spool_full",
+}
+
+
+def capture_skip_reason(exc: HTTPException) -> str:
+    """Which of :data:`SKIP_REASONS` a capture refusal is reported as.
+
+    Reads the machine code out of the ``routing_detail`` body the capture
+    service's own mapper built (``{"code", "params", "message"}``) — never the
+    HTTP status, which two different buckets share, and never the message, which
+    is localized.
+    """
+    detail = exc.detail
+    code = detail.get("code") if isinstance(detail, dict) else None
+    return _SKIP_BY_CAPTURE_REASON.get(code, "source_unreadable")
 
 
 # ---------- what the decision sees ----------
@@ -732,7 +778,7 @@ async def _apply(
             move.plate.plate_id,
             exc.detail,
         )
-        result.skipped.append((item.id, "source_unreadable"))
+        result.skipped.append((item.id, capture_skip_reason(exc)))
         return
     except BaseException:
         # A DB error, a cancellation at shutdown: give the staged bytes back rather
@@ -898,7 +944,7 @@ async def _capture_target(
         plan = plan_capture(library_file=file)
     except HTTPException as exc:
         logger.info("Rebalance: item %s stays on %s — %s", item.id, item.target_model, exc.detail)
-        result.skipped.append((item.id, "source_unreadable"))
+        result.skipped.append((item.id, capture_skip_reason(exc)))
         return None
     await db.commit()
     try:
@@ -911,5 +957,5 @@ async def _capture_target(
             move.plate.plate_id,
             exc.detail,
         )
-        result.skipped.append((item.id, "source_unreadable"))
+        result.skipped.append((item.id, capture_skip_reason(exc)))
         return None

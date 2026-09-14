@@ -407,29 +407,59 @@ async def test_a_failed_companion_creation_restores_the_old_bytes_too(
 
 
 @pytest.mark.asyncio
-async def test_the_new_blob_is_pinned_across_the_handover(db_session, printer_factory, tmp_path, monkeypatch):
-    """§9: between ``publish`` and the commit that names it, nothing owns the blob.
+async def test_the_pin_is_held_before_the_reference_is_even_computed(
+    db_session, printer_factory, tmp_path, monkeypatch
+):
+    """§9, the pin's own window: published, nothing owns it yet, and the collector cannot touch it.
 
-    The pin is what stands in for that owner. It cannot be observed at its very
-    narrowest — the gap is one ``await`` wide and the collector needs two passes an
-    hour apart to release anything — so what is pinned here is the whole handover,
-    which is the claim the pin is actually making.
+    ``snapshot_for`` is a production call **inside** the window — under the pin,
+    before the conversion's commit — so a spy there enters it without instrumenting
+    the session. Two claims:
+
+    * the blob is already pinned at that point, which fails immediately if anyone
+      moves the ``pin`` below the assignments or replaces it;
+    * and the **real** collector, run from inside the window, leaves the row's
+      ``unreferenced_at`` alone. That is the behavioural claim ("the grace never
+      beats a live pin") asked of the thing itself rather than of a mock: without
+      the pin the blob is unowned in the database at that instant and the pass
+      would mark it.
+
+    What this does NOT claim: coverage of the one instant no hook can reach, between
+    ``publish``'s guard release and ``pin``'s guard acquire. A pass landing there
+    can only ever set the mark, release needs the full hour, and the next pass
+    clears the mark as soon as the row owns the blob.
     """
     farm = await _a_captured_farm(db_session, printer_factory, tmp_path)
-    seen: list[frozenset[int]] = []
-    real = queue_rebalance.add_items_to_auto_queue
+    window: dict = {}
+    real_snapshot_for = queue_sources.snapshot_for
+    real_commit = db_session.commit
 
-    async def spy(*args, **kwargs):
-        seen.append(queue_sources.pinned_source_ids())
-        return await real(*args, **kwargs)
+    def snapshot_spy(receipt, source):
+        window["pinned"] = queue_sources.pinned_source_ids()
+        window["blob_id"] = source.id
+        window["armed"] = True
+        return real_snapshot_for(receipt, source)
 
-    monkeypatch.setattr(queue_rebalance, "add_items_to_auto_queue", spy)
+    async def commit_spy(*args, **kwargs):
+        if window.pop("armed", False):
+            # Still inside the window: the blob is published, the row that will own
+            # it is not committed, and the collector is about to be asked.
+            window["report"] = await queue_sources.collect(force=True)
+        return await real_commit(*args, **kwargs)
+
+    monkeypatch.setattr(queue_sources, "snapshot_for", snapshot_spy)
+    monkeypatch.setattr(db_session, "commit", commit_spy)
     result = await _move(db_session, farm)
 
     assert result.converted == 1, result.skipped
+    assert window["blob_id"] in window["pinned"], "the pin must be held before the reference is computed"
+    report = window["report"]
+    assert (report.marked, report.released) == (0, 0), "the collector marked a blob a live pin was holding"
+    monkeypatch.undo()
     db_session.expire_all()
     converted = next(row for row in await _pending(db_session) if row.id == farm.item.id)
-    assert seen and converted.queue_source_id in seen[0], "the new blob was unpinned while nothing owned it"
+    blob = await db_session.get(QueueSource, converted.queue_source_id)
+    assert blob.unreferenced_at is None and blob.state == STATE_READY
     assert queue_sources.pinned_source_ids() == frozenset(), "the pin outlived the move"
 
 
@@ -459,3 +489,40 @@ async def test_an_undo_with_no_companions_created_is_still_committed(
         row = await fresh.get(AutoQueueItem, item_id)
         assert (row.library_file_id, row.target_model) == (big_id, "P1S")
         assert (row.queue_source_id, row.rebalanced_at) == (old_blob_id, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raised,expected",
+    [
+        (lambda: queue_sources.QueueSourceBusy("every worker is copying"), "source_copy_busy"),
+        (lambda: queue_sources.StorageReplaced("a restore swapped the spool"), "source_copy_busy"),
+        (lambda: queue_sources.CaptureTimeout("the share stalled"), "source_copy_busy"),
+        (lambda: queue_sources.NoSpace("the volume is full"), "source_spool_full"),
+        (lambda: queue_sources.WriteFailed("the write failed"), "source_spool_full"),
+        (lambda: queue_sources.SourceUnreadable("the share went away"), "source_unreadable"),
+        (lambda: queue_sources.SourceInvalid("not a zip"), "source_unreadable"),
+    ],
+)
+async def test_the_panel_says_what_to_do_about_a_refused_copy(
+    db_session, printer_factory, tmp_path, monkeypatch, raised, expected
+):
+    """Three answers, not one — and the difference is what the operator should do.
+
+    Folded onto ``source_unreadable``, a batch add that merely saturated the capture
+    workers printed "the target file could not be read" over a perfectly good file.
+    That teaches the operator to ignore the reason column, and then the column is
+    worthless the day it is finally right. A full spool is the most actionable cause
+    in the set and used to read as a file problem.
+    """
+    farm = await _a_captured_farm(db_session, printer_factory, tmp_path)
+    item_id, old_blob_id = farm.item.id, farm.old_blob.id
+    monkeypatch.setattr(queue_sources, "capture", AsyncMock(side_effect=raised()))
+
+    result = await _move(db_session, farm)
+
+    assert (result.converted, result.created) == (0, 0)
+    assert result.skipped == [(item_id, expected)]
+    db_session.expire_all()
+    rows = await _pending(db_session)
+    assert len(rows) == 1 and rows[0].queue_source_id == old_blob_id, "a refusal moves nothing, whatever it was"

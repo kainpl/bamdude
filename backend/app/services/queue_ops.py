@@ -309,6 +309,13 @@ async def clone_batch(db: AsyncSession, batch_id: str) -> list[PrintQueueItem]:
     shares one source, but nothing in the model requires it (rows can be grouped
     into a batch after the fact), and a per-row guard would let the collector act
     between two copies of the same batch.
+
+    ⚠️ The ``refresh`` loop is deliberately **outside** the guard. The rows are
+    already committed by then and no refresh can affect who owns a blob, while the
+    guard is the most contended lock in the process and every holder of it is
+    already bounded by SQLite's 15-second busy timeout on the commit above (the
+    real bound on a hold, not the batch size). One reload per clone under that lock
+    buys nothing.
     """
     siblings = await get_batch_pending_items(db, batch_id)
     if not siblings:
@@ -332,8 +339,8 @@ async def clone_batch(db: AsyncSession, batch_id: str) -> list[PrintQueueItem]:
             clones.append(clone)
 
         await db.commit()
-        for c in clones:
-            await db.refresh(c)
+    for c in clones:
+        await db.refresh(c)
     logger.info("Cloned batch %s into new batch %s (%d items)", batch_id, new_batch_id, len(clones))
     return clones
 

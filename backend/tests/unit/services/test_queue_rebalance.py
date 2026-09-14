@@ -5,12 +5,16 @@ prints of a 2-part A1 mini plate, or one print of a 12-part X1C plate with a
 surplus — whichever finishes first, and only when that beats waiting at home.
 """
 
+from fastapi import HTTPException
+
+from backend.app.services import queue_sources
 from backend.app.services.farm_forecast import FarmSnapshot, MachineState, QueuedRow
 from backend.app.services.queue_rebalance import (
     SKIP_REASONS,
     FarmView,
     MovableItem,
     PlateOption,
+    capture_skip_reason,
     home_wait_by_model,
     plan_moves,
 )
@@ -183,8 +187,59 @@ def test_the_reason_list_is_closed():
         "located",
         "no_yield",
         "source_unreadable",
+        "source_copy_busy",
+        "source_spool_full",
         "creation_failed",
         "home_model_idle",
         "no_faster_model",
         "cooldown",
     )
+
+
+#: Which bucket each member of the capture taxonomy is reported as (m173). Written
+#: out by hand, because the point is that somebody DECIDED: the split is by what the
+#: operator does — wait, free space, or fix the file — and not by HTTP status, which
+#: two of the buckets share.
+_EXPECTED_BUCKETS = {
+    "source_copy_busy": "source_copy_busy",
+    "source_spool_replaced": "source_copy_busy",
+    "source_copy_timeout": "source_copy_busy",
+    "source_spool_no_space": "source_spool_full",
+    "source_spool_write_failed": "source_spool_full",
+    "source_unreadable": "source_unreadable",
+    "source_changed": "source_unreadable",
+    "source_invalid": "source_unreadable",
+    # The base class: an unmapped refusal errs towards "a person must look".
+    "source_copy_failed": "source_unreadable",
+}
+
+
+def _taxonomy() -> dict[str, type]:
+    """Every refusal class the capture service can raise, read off the module."""
+    return {
+        value.reason: value
+        for value in vars(queue_sources).values()
+        if isinstance(value, type) and issubclass(value, queue_sources.QueueSourceError)
+    }
+
+
+def test_every_capture_refusal_is_reported_as_a_decided_bucket():
+    """A new refusal class must not silently inherit "the target file cannot be read".
+
+    The taxonomy is walked off the module rather than listed here, so adding a class
+    to it fails this test until somebody chooses what the panel should tell the
+    operator to do about it.
+    """
+    assert set(_taxonomy()) == set(_EXPECTED_BUCKETS), (
+        "the capture taxonomy changed — decide which bucket the new refusal belongs in"
+    )
+    for reason, bucket in _EXPECTED_BUCKETS.items():
+        detail = {"code": reason, "params": {}, "message": ""}
+        assert capture_skip_reason(HTTPException(_taxonomy()[reason].http_status, detail)) == bucket, reason
+        assert bucket in SKIP_REASONS
+
+
+def test_a_refusal_with_no_machine_code_is_still_a_closed_reason():
+    """A bare-string detail must not reach the panel as a raw token or a crash."""
+    assert capture_skip_reason(HTTPException(422, "something nobody mapped")) == "source_unreadable"
+    assert capture_skip_reason(HTTPException(422, {"params": {}})) == "source_unreadable"

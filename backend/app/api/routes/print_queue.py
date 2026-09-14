@@ -1489,6 +1489,12 @@ async def clone_batch_endpoint(
     ``scope='one'`` — add one more copy to the same batch (appended).
     ``scope='batch'`` — create a whole new batch with the same
     configuration as the source.
+
+    ⚠️ m173: the SECOND door onto ``clone_item`` / ``clone_batch``, and therefore
+    the second that has to answer the capture taxonomy. Both services refuse a
+    blob that is not ``ready``, and an unmapped refusal here leaves as a bare 500
+    — on the operator's screen the difference between "the file is unreadable" and
+    "BamDude is broken", and the frontend branches on ``detail.code``.
     """
     from backend.app.services.queue_counters import update_queue_counters
     from backend.app.services.queue_ops import clone_batch, clone_item, get_batch_pending_items
@@ -1498,19 +1504,22 @@ async def clone_batch_endpoint(
         raise HTTPException(404, "No pending items in batch")
     queue_id = pending[0].queue_id
 
-    if scope == "one":
-        new_item = await clone_item(db, pending[0].id, keep_batch=True)
-        if new_item is None:
+    try:
+        if scope == "one":
+            new_item = await clone_item(db, pending[0].id, keep_batch=True)
+            if new_item is None:
+                raise HTTPException(500, "Clone failed")
+            await update_queue_counters(db, queue_id)
+            await db.commit()
+            return {"cloned": 1, "scope": "one", "batch_id": batch_id, "new_item_id": new_item.id}
+
+        clones = await clone_batch(db, batch_id)
+        if not clones:
             raise HTTPException(500, "Clone failed")
         await update_queue_counters(db, queue_id)
         await db.commit()
-        return {"cloned": 1, "scope": "one", "batch_id": batch_id, "new_item_id": new_item.id}
-
-    clones = await clone_batch(db, batch_id)
-    if not clones:
-        raise HTTPException(500, "Clone failed")
-    await update_queue_counters(db, queue_id)
-    await db.commit()
+    except QueueSourceError as exc:
+        raise refusal(exc) from exc
     return {
         "cloned": len(clones),
         "scope": "batch",

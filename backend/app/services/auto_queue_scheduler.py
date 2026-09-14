@@ -199,6 +199,15 @@ class AutoQueueScheduler:
                     moved = await queue_rebalance.rebalance(db, busy_printers=busy_printers)
                 except Exception:
                     logger.exception("AutoQueueScheduler: rebalancing failed")
+                    # ⚠️ The hook commits inside itself (it releases the transaction
+                    # before every file copy), so a failure that WAS a commit leaves
+                    # this session in pending-rollback — and the ``db.commit()`` below
+                    # would then raise a second, unrelated ``PendingRollbackError``
+                    # as "AutoQueueScheduler tick failed", burying the real cause in
+                    # a support bundle. The cause is already in the log line above;
+                    # this only makes the session usable again. Nothing of the
+                    # placement pass is lost: the hook's own commits made it durable.
+                    await db.rollback()
                 else:
                     if moved.converted:
                         logger.info(

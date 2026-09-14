@@ -139,7 +139,7 @@ describe('i18n locale parity', () => {
 /**
  * The rebalancer's refusal codes are a CLOSED list, defined once in
  * `backend/app/services/queue_rebalance.py::SKIP_REASONS` and translated here
- * key-for-key. A 14th code added on the server with no copy on this side would
+ * key-for-key. A code added on the server with no copy on this side would
  * ship as a raw `autoQueue.rebalance.skipped.<code>` in a toast — the panel and
  * the plan block both translate the reason blind, with no fallback.
  */
@@ -153,7 +153,11 @@ describe('the rebalance refusal codes are the backend’s closed list', () => {
     'staged',
     'located',
     'no_yield',
+    // m173: a refused copy of the target file is three answers, not one, because what
+    // the operator should do differs — wait, free space, or fix the file.
     'source_unreadable',
+    'source_copy_busy',
+    'source_spool_full',
     'creation_failed',
     'home_model_idle',
     'no_faster_model',
