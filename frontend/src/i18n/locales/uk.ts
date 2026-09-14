@@ -5007,6 +5007,7 @@ export default {
     folderSortByActivity: 'За останньою активністю',
     dragToResizeTooltip: 'Перетягніть для зміни розміру, подвійний клік для скидання',
     searchFiles: 'Пошук файлів...',
+    searchCurrentFolder: 'Ця папка й підпапки',
     searchSubfoldersHint: 'Включно з підтеками',
     readme: {
       label: 'README',

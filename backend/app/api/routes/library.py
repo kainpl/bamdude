@@ -1819,9 +1819,11 @@ async def list_files(
     internal_only: bool = False,
     external_only: bool = False,
     recursive: bool = False,
+    folder_scope: bool = False,
     # #1268 — cross-cutting user-tag filter. AND semantics: a file must
-    # carry EVERY selected tag. Non-empty tag_ids bypasses the
-    # folder / project / include_root scope (tags are orthogonal).
+    # carry EVERY selected tag. Non-empty tag_ids normally bypasses the
+    # folder / project / include_root scope (tags are orthogonal), unless
+    # folder_scope explicitly requests their intersection.
     tag_ids: list[int] = Query(default_factory=list),
     q: str | None = Query(None, description="Substring match over filename OR the parsed print name"),
     file_type: str | None = Query(None, description="Exact match on file_type (3mf/gcode/stl/...)"),
@@ -1874,6 +1876,8 @@ async def list_files(
                    that walks ``library_folders.parent_id``. Default off so
                    existing callers (folder browsing, etc.) keep their narrow
                    single-folder semantics.
+        folder_scope: Intersect an active ``tag_ids`` filter with the folder
+                      scope instead of treating tags as cross-cutting.
 
     Server-driven list (task 1, 2026-08-29 — mirrors ``ArchiveService.list_archives``):
     every clause below is appended to ``filters``, a plain list of SQLAlchemy
@@ -1907,10 +1911,9 @@ async def list_files(
         # GROUP BY on the outer query — same result set, but it composes into
         # ``filters`` (and therefore into ``count_query`` below) instead of
         # forcing its own group-by/having onto every row this endpoint
-        # returns. This branch intentionally IGNORES folder_id / product_id /
-        # include_root (tags are orthogonal to hierarchy); the ownership
-        # filter above still applies so a *_OWN caller only ever sees their
-        # own files.
+        # returns. Tags normally ignore folder_id / product_id / include_root,
+        # but ``folder_scope`` explicitly asks for their intersection. The
+        # ownership filter above always applies.
         unique_tag_ids = list(dict.fromkeys(tag_ids))
         tag_matches = (
             select(LibraryFileTag.file_id)
@@ -1919,31 +1922,34 @@ async def list_files(
             .having(func.count(distinct(LibraryFileTag.tag_id)) == len(unique_tag_ids))
         )
         filters.append(LibraryFile.id.in_(tag_matches))
-    elif folder_id is not None and recursive:
-        # Walk the subtree starting at folder_id and collect every descendant
-        # id. Recursive CTE works on both SQLite (>=3.8.3, shipped 2014) and
-        # Postgres without dialect branching.
-        roots = (
-            select(LibraryFolder.id).where(LibraryFolder.id == folder_id).cte(name="folder_descendants", recursive=True)
-        )
-        descendants = roots.union_all(select(LibraryFolder.id).join(roots, LibraryFolder.parent_id == roots.c.id))
-        filters.append(LibraryFile.folder_id.in_(select(descendants.c.id)))
-    elif folder_id is not None:
-        filters.append(LibraryFile.folder_id == folder_id)
-    elif product_id is not None:
-        # A file participates in a product either via the direct file→product
-        # pivot OR via the folder→product pivot of its containing folder. Union
-        # the two so the product detail page surfaces both groups in one query.
-        direct_files = select(product_files.c.library_file_id).where(product_files.c.product_id == product_id)
-        inherited_files = (
-            select(LibraryFile.id)
-            .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
-            .join(product_folders, product_folders.c.library_folder_id == LibraryFolder.id)
-            .where(product_folders.c.product_id == product_id)
-        )
-        filters.append(LibraryFile.id.in_(direct_files.union(inherited_files)))
-    elif include_root:
-        filters.append(LibraryFile.folder_id.is_(None))
+    if not tag_ids or folder_scope:
+        if folder_id is not None and recursive:
+            # Walk the subtree starting at folder_id and collect every descendant
+            # id. Recursive CTE works on both SQLite (>=3.8.3, shipped 2014) and
+            # Postgres without dialect branching.
+            roots = (
+                select(LibraryFolder.id)
+                .where(LibraryFolder.id == folder_id)
+                .cte(name="folder_descendants", recursive=True)
+            )
+            descendants = roots.union_all(select(LibraryFolder.id).join(roots, LibraryFolder.parent_id == roots.c.id))
+            filters.append(LibraryFile.folder_id.in_(select(descendants.c.id)))
+        elif folder_id is not None:
+            filters.append(LibraryFile.folder_id == folder_id)
+        elif product_id is not None:
+            # A file participates in a product either via the direct file→product
+            # pivot OR via the folder→product pivot of its containing folder. Union
+            # the two so the product detail page surfaces both groups in one query.
+            direct_files = select(product_files.c.library_file_id).where(product_files.c.product_id == product_id)
+            inherited_files = (
+                select(LibraryFile.id)
+                .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
+                .join(product_folders, product_folders.c.library_folder_id == LibraryFolder.id)
+                .where(product_folders.c.product_id == product_id)
+            )
+            filters.append(LibraryFile.id.in_(direct_files.union(inherited_files)))
+        elif include_root:
+            filters.append(LibraryFile.folder_id.is_(None))
 
     if internal_only:
         filters.append(LibraryFile.is_external.is_(False))

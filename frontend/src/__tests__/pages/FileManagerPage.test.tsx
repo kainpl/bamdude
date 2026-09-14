@@ -115,6 +115,7 @@ describe('FileManagerPage', () => {
   beforeEach(() => {
     // Clear localStorage to ensure consistent view mode
     localStorage.clear();
+    window.history.replaceState({}, '', '/files');
 
     server.use(
       http.get('/api/v1/library/folders', () => {
@@ -303,12 +304,55 @@ describe('FileManagerPage', () => {
       });
     });
 
-    it('shows nested folders', async () => {
+    it('shows only root folders by default', async () => {
+      server.use(
+        http.get('/api/v1/library/folders', () => HttpResponse.json([
+          {
+            ...mockFolders[0],
+            children: [{
+              ...mockFolders[0].children[0],
+              children: [{
+                id: 4,
+                name: 'Mounting Plates',
+                parent_id: 2,
+                file_count: 0,
+                products: [],
+                children: [],
+              }],
+            }],
+          },
+        ])),
+      );
       render(<FileManagerPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText('Brackets')).toBeInTheDocument();
-      });
+      expect(await screen.findByText('Functional Parts')).toBeInTheDocument();
+      expect(screen.queryByText('Brackets')).not.toBeInTheDocument();
+    });
+
+    it('opens the ancestor chain for a folder selected by deep-link', async () => {
+      window.history.replaceState({}, '', '/files?folder=4');
+      server.use(
+        http.get('/api/v1/library/folders', () => HttpResponse.json([
+          {
+            ...mockFolders[0],
+            children: [{
+              ...mockFolders[0].children[0],
+              children: [{
+                id: 4,
+                name: 'Mounting Plates',
+                parent_id: 2,
+                file_count: 0,
+                products: [],
+                children: [],
+              }],
+            }],
+          },
+        ])),
+      );
+
+      render(<FileManagerPage />);
+
+      expect(await screen.findByText('Mounting Plates')).toBeInTheDocument();
     });
 
     it('shows linked folder indicator', async () => {
@@ -416,6 +460,49 @@ describe('FileManagerPage', () => {
 
       await waitFor(() => {
         expect(screen.getByPlaceholderText('Search files...')).toBeInTheDocument();
+      });
+    });
+
+    it('clears the search query from the input control', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      const search = await screen.findByPlaceholderText('Search files...');
+      await user.type(search, 'benchy');
+      await user.click(screen.getByRole('button', { name: 'Clear' }));
+
+      expect(search).toHaveValue('');
+    });
+
+    it('searches the whole library by default and can be scoped to the selected folder', async () => {
+      const user = userEvent.setup();
+      let searchParams: URLSearchParams | null = null;
+      window.history.replaceState({}, '', '/files?folder=1');
+      server.use(
+        http.get('/api/v1/library/files', ({ request }) => {
+          const params = new URL(request.url).searchParams;
+          if (params.get('q') === 'benchy') searchParams = params;
+          return HttpResponse.json({
+            items: mockFiles,
+            meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
+        }),
+      );
+      render(<FileManagerPage />);
+
+      await user.type(await screen.findByPlaceholderText('Search files...'), 'benchy');
+      await waitFor(() => {
+        expect(searchParams?.get('folder_id')).toBeNull();
+        expect(searchParams?.get('include_root')).toBe('false');
+        expect(searchParams?.get('internal_only')).toBeNull();
+        expect(searchParams?.get('external_only')).toBeNull();
+      });
+
+      await user.click(screen.getByRole('button', { name: 'This folder and subfolders' }));
+      await waitFor(() => {
+        expect(searchParams?.get('folder_id')).toBe('1');
+        expect(searchParams?.get('recursive')).toBe('true');
+        expect(searchParams?.get('folder_scope')).toBe('true');
       });
     });
 

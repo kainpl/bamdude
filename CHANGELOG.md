@@ -9,6 +9,10 @@
 
 ### Added
 
+- **Library search now starts across the whole library.** Searching while a folder is open no longer hides matches elsewhere — managed storage, nested folders, root files and linked external folders are all included. When a specific subtree is what you need, choose **This folder and subfolders** beside the search box; that choice is visible and lasts only for the current search. The search field also has a one-click clear control.
+
+- **A compact library folder tree by default.** The sidebar initially shows only the folders directly under Internal and External; open a folder to reveal its children. A link to a deeply nested folder still opens precisely the ancestor chain needed to show it. Existing people who explicitly chose **Expand folders by default** keep that preference.
+
 - **See actual filament use beside the Forecast.** The chart switches between projected remaining stock and grams burned each day for the same five SKUs; the two units remain separate, and a period with no usage says so instead of drawing a misleading line.
 
 - **Put a newly added job next with one tick.** In the Schedule dialog for selected printers, choose **Run next** to place the new ASAP job before the queue's other pending work. The physical print already running is never interrupted. A multi-plate job is inserted as one contiguous block on each selected printer, and each printer's result remains independent; Auto-Queue, scheduled jobs and Queue Only deliberately keep their existing ordering.

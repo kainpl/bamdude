@@ -4979,6 +4979,7 @@ export default {
     folderSortByActivity: 'By recent activity',
     dragToResizeTooltip: 'Drag to resize, double-click to reset',
     searchFiles: 'Search files...',
+    searchCurrentFolder: 'This folder and subfolders',
     searchSubfoldersHint: 'Including subfolders',
     readme: {
       label: 'README',

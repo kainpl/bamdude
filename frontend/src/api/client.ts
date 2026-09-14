@@ -10830,6 +10830,7 @@ export const api = {
     else if (params.scope === 'external') qs.set('external_only', 'true');
     for (const tagId of params.tag_ids ?? []) qs.append('tag_ids', String(tagId));
     if (params.recursive) qs.set('recursive', 'true');
+    if (params.folder_scope) qs.set('folder_scope', 'true');
     if (params.q) qs.set('q', params.q);
     if (params.file_type) qs.set('file_type', params.file_type);
     if (params.unprinted_only) qs.set('unprinted_only', 'true');
@@ -12018,6 +12019,8 @@ export interface LibraryFileListParams {
   scope?: 'internal' | 'external';
   tag_ids?: number[];
   recursive?: boolean;
+  /** Intersect tag filtering with folder_id rather than treating tags as global. */
+  folder_scope?: boolean;
   q?: string;
   file_type?: string;
   unprinted_only?: boolean;

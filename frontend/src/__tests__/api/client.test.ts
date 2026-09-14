@@ -516,6 +516,7 @@ describe('getLibraryFilesPaged (task 2, 2026-08-29 server-driven-lists)', () => 
       scope: 'external',
       tag_ids: [1, 2],
       recursive: true,
+      folder_scope: true,
       q: 'benchy',
       file_type: 'gcode',
       unprinted_only: true,
@@ -535,6 +536,7 @@ describe('getLibraryFilesPaged (task 2, 2026-08-29 server-driven-lists)', () => 
     expect(query!.has('internal_only')).toBe(false);
     expect(query!.getAll('tag_ids')).toEqual(['1', '2']);
     expect(query!.get('recursive')).toBe('true');
+    expect(query!.get('folder_scope')).toBe('true');
     expect(query!.get('q')).toBe('benchy');
     expect(query!.get('file_type')).toBe('gcode');
     expect(query!.get('unprinted_only')).toBe('true');

@@ -447,10 +447,24 @@ interface FolderTreeItemProps {
   dateFormat: DateFormat;
 }
 
+function containsFolder(folder: LibraryFolderTree, folderId: number): boolean {
+  return folder.id === folderId || folder.children.some((child) => containsFolder(child, folderId));
+}
+
 function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t, timeFormat, dateFormat }: FolderTreeItemProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
-  const [showActions, setShowActions] = useState(false);
   const hasChildren = folder.children.length > 0;
+  // Start compact, but never hide a folder selected through a deep-link (or
+  // after returning from another page): every ancestor mounts expanded until
+  // the selected row is visible.
+  const containsSelectedFolder = selectedFolderId !== null && containsFolder(folder, selectedFolderId);
+  const [expanded, setExpanded] = useState(() => defaultExpanded || containsSelectedFolder);
+  const [showActions, setShowActions] = useState(false);
+
+  useEffect(() => {
+    if (hasChildren && containsSelectedFolder) {
+      setExpanded(true);
+    }
+  }, [containsSelectedFolder, hasChildren]);
   // m158: folders link to PRODUCTS. A product that has left the catalog keeps
   // its chip — the link is a fact about the folder, not an offer to make one.
   const linkedTo = folder.products;
@@ -1469,8 +1483,11 @@ export function FileManagerPage() {
   const [wrapFolderNames, setWrapFolderNames] = useState(() => {
     return localStorage.getItem('library-wrap-folders') === 'true';
   });
-  const [collapseFoldersByDefault, setCollapseFoldersByDefault] = useState(() => {
-    return localStorage.getItem('library-collapse-folders') === 'true';
+  const [expandFoldersByDefault, setExpandFoldersByDefault] = useState(() => {
+    // A missing value gets the new compact default (everything collapsed).
+    // Keep an explicit legacy "false": that meant the person deliberately
+    // chose the old "expand all" mode.
+    return localStorage.getItem('library-collapse-folders') === 'false';
   });
   // Folder tree sort (#1770). 'activity' = most recent file activity inside
   // the folder first. Persisted independently from the file-side sort so each
@@ -1533,6 +1550,14 @@ export function FileManagerPage() {
   // The search value now goes to the server as `q` (task 1) — debounced so
   // an undebounced value doesn't fire one request per keystroke.
   const debouncedSearchQuery = useDebouncedValue(searchQuery, 300);
+  // Search is global by default. Scope is transient so a hidden folder
+  // restriction never leaks into a later, unrelated search.
+  const [searchCurrentFolder, setSearchCurrentFolder] = useState(false);
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchCurrentFolder(false);
+    }
+  }, [searchQuery]);
   const [filterType, setFilterType] = useState<string>('all');
   // Deliberately NOT persisted, unlike the grid/list view mode: this is a
   // question, not a preference. Restored silently it would show a partial
@@ -1727,6 +1752,7 @@ export function FileManagerPage() {
    */
   const clearAllFilters = useCallback(() => {
     setSearchQuery('');
+    setSearchCurrentFolder(false);
     setFilterType('all');
     setUnprintedOnly(false);
     setFilterUsername('');
@@ -1734,16 +1760,13 @@ export function FileManagerPage() {
   }, []);
 
   const allFilesRecursive = settings?.library_all_files_recursive ?? false;
-  // #1268: when a folder is selected and the user has typed a search query,
-  // ask the server to expand the result to every descendant folder so the
-  // search can match files in subfolders too. Without this the listing is
-  // just the immediate children and "robot.3mf" two levels deep is invisible
-  // from the parent. Only kicks in for folder-scoped views — root and the
-  // internal/external pseudo-nodes already return the union. Keyed off the
-  // DEBOUNCED query (not the raw keystroke value): both this flag and `q`
-  // below drive the same request, and letting one fire on every keystroke
-  // while the other waits out the debounce would refetch twice for one type.
-  const searchExpandsSubfolders = selectedFolderId !== null && debouncedSearchQuery.trim().length > 0;
+  const hasSearchQuery = debouncedSearchQuery.trim().length > 0;
+  // An explicit local search keeps the selected folder and expands its
+  // subtree. Otherwise text search clears both folder and pseudo-root scopes,
+  // so it covers every file, including external storage.
+  const searchExpandsSubfolders = selectedFolderId !== null && hasSearchQuery && searchCurrentFolder;
+  const searchIsGlobal = hasSearchQuery && !searchExpandsSubfolders;
+  const effectiveFolderId = searchIsGlobal ? null : selectedFolderId;
 
   // Any filter/sort/scope change invalidates the current page — staying on
   // page 4 of a narrower result is a page nobody asked for. Resetting this in
@@ -1759,6 +1782,7 @@ export function FileManagerPage() {
     topLevelView,
     tagFilterKey,
     debouncedSearchQuery,
+    searchCurrentFolder,
     filterType,
     unprintedOnly,
     debouncedFilterUsername,
@@ -1782,21 +1806,22 @@ export function FileManagerPage() {
   // ({items, meta}) replaces the flat array this used to fetch, so there is
   // no client-side filter/sort pass left to run over the result.
   const libraryFileParams: LibraryFileListParams = {
-    folder_id: selectedFolderId,
+    folder_id: effectiveFolderId,
     // "All Files" (selectedFolderId === null): include_root=false lists every
     // file across all subfolders recursively (#1499), include_root=true
     // scopes to root-level files only. Gated on the library_all_files_recursive
     // setting (default off → root-only, the pre-#1499 behaviour). When a
     // specific folder is selected the backend ignores include_root.
-    include_root: selectedFolderId === null ? !allFilesRecursive : true,
+    include_root: searchIsGlobal ? false : effectiveFolderId === null ? !allFilesRecursive : true,
     // At the top level, topLevelView scopes the result to internal managed
     // storage vs the union of every external folder (#1621); per-folder
     // selection passes no scope.
-    scope: selectedFolderId === null ? topLevelView : undefined,
+    scope: searchIsGlobal || effectiveFolderId !== null ? undefined : topLevelView,
     // #1268: a non-empty tag_ids makes the backend bypass folder/root scoping
     // entirely (tags are cross-cutting).
     tag_ids: tagFilterKey,
     recursive: searchExpandsSubfolders,
+    folder_scope: searchExpandsSubfolders,
     q: debouncedSearchQuery.trim() || undefined,
     file_type: filterType !== 'all' ? filterType : undefined,
     unprinted_only: unprintedOnly,
@@ -2281,7 +2306,7 @@ export function FileManagerPage() {
   // can't let their props drift apart.
   const renderRootFolder = (folder: LibraryFolderTree) => (
     <FolderTreeItem
-      key={`${folder.id}-${collapseFoldersByDefault ? 'c' : 'e'}`}
+      key={`${folder.id}-${expandFoldersByDefault ? 'e' : 'c'}`}
       folder={folder}
       depth={1}
       selectedFolderId={selectedFolderId}
@@ -2290,7 +2315,7 @@ export function FileManagerPage() {
       onLink={setLinkFolder}
       onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
       wrapNames={wrapFolderNames}
-      defaultExpanded={!collapseFoldersByDefault}
+      defaultExpanded={expandFoldersByDefault}
       hasPermission={hasPermission}
       t={t}
       timeFormat={timeFormat}
@@ -2567,17 +2592,17 @@ export function FileManagerPage() {
               </button>
               <button
                 onClick={() => {
-                  const newValue = !collapseFoldersByDefault;
-                  setCollapseFoldersByDefault(newValue);
-                  localStorage.setItem('library-collapse-folders', String(newValue));
+                  const newValue = !expandFoldersByDefault;
+                  setExpandFoldersByDefault(newValue);
+                  localStorage.setItem('library-collapse-folders', String(!newValue));
                 }}
                 className={`p-1.5 rounded transition-colors ${
-                  collapseFoldersByDefault
+                  expandFoldersByDefault
                     ? 'bg-bambu-green/20 text-bambu-green'
                     : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
                 }`}
-                title={collapseFoldersByDefault ? t('fileManager.expandFoldersByDefault') : t('fileManager.collapseFoldersByDefault')}
-                aria-label={collapseFoldersByDefault ? t('fileManager.expandFoldersByDefault') : t('fileManager.collapseFoldersByDefault')}
+                title={expandFoldersByDefault ? t('fileManager.collapseFoldersByDefault') : t('fileManager.expandFoldersByDefault')}
+                aria-label={expandFoldersByDefault ? t('fileManager.collapseFoldersByDefault') : t('fileManager.expandFoldersByDefault')}
               >
                 <ListCollapse className="w-4 h-4" />
               </button>
@@ -2784,9 +2809,38 @@ export function FileManagerPage() {
                   placeholder={t('fileManager.searchFiles')}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full h-9 pl-10 pr-3 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
+                  className={`w-full h-9 pl-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green ${searchQuery ? 'pr-9' : 'pr-3'}`}
                 />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery('');
+                      setSearchCurrentFolder(false);
+                    }}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-bambu-gray hover:text-white"
+                    title={t('common.clear')}
+                    aria-label={t('common.clear')}
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
+
+              {selectedFolderId !== null && searchQuery.trim() && (
+                <button
+                  type="button"
+                  onClick={() => setSearchCurrentFolder((scoped) => !scoped)}
+                  aria-pressed={searchCurrentFolder}
+                  className={`h-9 px-3 text-sm rounded-lg border transition-colors ${
+                    searchCurrentFolder
+                      ? 'bg-bambu-green/20 border-bambu-green text-bambu-green'
+                      : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                  }`}
+                >
+                  {t('fileManager.searchCurrentFolder')}
+                </button>
+              )}
 
               {/* Type filter */}
               <select
