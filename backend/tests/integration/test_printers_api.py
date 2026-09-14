@@ -462,14 +462,23 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_update_printer_name(self, async_client: AsyncClient, printer_factory, db_session):
+    async def test_update_printer_name(self, async_client: AsyncClient, printer_factory, db_session, monkeypatch):
         """Verify printer name can be updated."""
         printer = await printer_factory(name="Original Name")
+        from backend.app.api.routes.printers import printer_manager
+        from backend.app.services.printer_manager import PrinterInfo
+
+        monkeypatch.setitem(
+            printer_manager._printer_info,
+            printer.id,
+            PrinterInfo("Original Name", printer.serial_number),
+        )
 
         response = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"name": "Updated Name"})
 
         assert response.status_code == 200
         assert response.json()["name"] == "Updated Name"
+        assert printer_manager.get_printer(printer.id).name == "Updated Name"
 
     @pytest.mark.asyncio
     @pytest.mark.integration

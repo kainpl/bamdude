@@ -526,6 +526,11 @@ async def update_printer(
     await db.commit()
     await db.refresh(printer)
 
+    # A name-only edit does not reconnect MQTT, but callbacks, notifications,
+    # and relays read the connected printer's lightweight in-memory info.
+    if "name" in update_data:
+        printer_manager.update_printer_name(printer_id, printer.name)
+
     # Reconnect if connection settings changed
     if any(k in update_data for k in ["ip_address", "access_code", "is_active"]):
         printer_manager.disconnect_printer(printer_id)

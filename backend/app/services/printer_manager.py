@@ -678,6 +678,12 @@ class PrinterManager:
         """Get printer info by ID."""
         return self._printer_info.get(printer_id)
 
+    def update_printer_name(self, printer_id: int, name: str) -> None:
+        """Refresh the display name held for callbacks without reconnecting."""
+        info = self._printer_info.get(printer_id)
+        if info is not None:
+            info.name = name
+
     def set_current_print_user(self, printer_id: int, user_id: int, username: str):
         """Track who started the current print (Issue #206)."""
         self._current_print_user[printer_id] = {"user_id": user_id, "username": username}

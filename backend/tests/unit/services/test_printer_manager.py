@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from backend.app.services.printer_manager import (
+    PrinterInfo,
     PrinterManager,
     drying_screen_only,
     get_derived_status_name,
@@ -73,6 +74,20 @@ class TestPrinterManager:
     def test_init_loop_is_none(self, manager):
         """Verify event loop is initially None."""
         assert manager._loop is None
+
+    def test_update_printer_name_refreshes_existing_callback_info(self, manager):
+        info = PrinterInfo("Old name", "SERIAL")
+        manager._printer_info[7] = info
+
+        manager.update_printer_name(7, "New name")
+
+        assert manager.get_printer(7) is info
+        assert (info.name, info.serial_number) == ("New name", "SERIAL")
+
+    def test_update_printer_name_does_not_create_disconnected_cache_entry(self, manager):
+        manager.update_printer_name(7, "New name")
+
+        assert manager.get_printer(7) is None
 
     # ========================================================================
     # Tests for callback setters
