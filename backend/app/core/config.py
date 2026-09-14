@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
-APP_VERSION = "0.5.6a1"
+APP_VERSION = "0.5.6a2"
 GITHUB_REPO = "kainpl/bamdude"
 
 # Bug-report relay endpoint. The relay holds the GitHub PAT and creates issues
