@@ -16,6 +16,7 @@ import { isPrintable } from '../../lib/fileTags';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { LibraryPickerModal } from '../LibraryPickerModal';
+import { QueueSourceIndicator } from '../QueueSourceIndicator';
 import { QueueSequencer } from '../QueueSequencer';
 import type { SequencedFile } from '../QueueSequencer';
 import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
@@ -558,6 +559,14 @@ function AutoQueueRow({
           )}
         </div>
         <div className="flex items-center gap-2 text-xs text-bambu-gray flex-wrap mt-0.5">
+          {/* Does the router's row own the bytes it will hand a printer (m173)?
+              In the meta line it already has, at the size the icons there
+              already are — the row keeps its shape. */}
+          <QueueSourceIndicator
+            state={item.source_storage}
+            held={item.status === 'failed' || item.status === 'cancelled'}
+            className="w-3 h-3"
+          />
           <span>
             <ChevronRight className="inline w-3 h-3" />
             {targetModel}

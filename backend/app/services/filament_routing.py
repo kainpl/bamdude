@@ -275,7 +275,11 @@ def resolve_filament_routing(
         plan=RoutingPlan(
             snapshot.printer_id,
             requirements.resolved_plate_id,
-            {"size": identity.size, "mtime_ns": identity.mtime_ns} if identity else {},
+            # One spelling of "which revision of the source is this plan about",
+            # shared with the stored intent: a captured snapshot's hash, an
+            # original's stat. This fingerprint never leaves the process, but the
+            # mtime of a frozen copy is not an identity anywhere (spec §7).
+            identity.revision() if identity else {},
             policy.fingerprint,
             snapshot.marker,
             best,

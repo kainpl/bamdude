@@ -472,6 +472,17 @@ async def remove_vanished(
             rows = (
                 (await db.execute(select(LibraryFile).where(LibraryFile.id.in_([i for i, _ in chunk])))).scalars().all()
             )
+            # A vanished external source must not take a job that has already
+            # captured its own bytes with it.  The hard-delete helper also
+            # nulls both tiers explicitly, which SQLite otherwise leaves as
+            # dangling foreign-key values.
+            from backend.app.services import queue_source_release
+
+            await queue_source_release.source_purged(
+                db,
+                library_file_ids=[row.id for row in rows],
+                reason=queue_source_release.REASON_FILE_VANISHED,
+            )
             # Before the deletes, once for the chunk: the ORM clears the
             # ``product_files`` pivot but not ``product_plates``, whose cascade
             # only fires on PostgreSQL.

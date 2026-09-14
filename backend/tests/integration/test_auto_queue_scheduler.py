@@ -1003,12 +1003,19 @@ class TestRebalanceAcrossModels:
     ) -> None:
         """A move is all-or-nothing, and the writer refusing is where that is decided.
 
-        ``add_items_to_auto_queue`` raises before its own commit (a dangling
-        ``project_id``, a line that is not the order's), its first SELECT
-        autoflushes the already-converted row, the tick's blanket ``except``
-        swallows it and its ``commit`` makes the half-move durable: the line
-        would keep ONE print of a 2-hook plate where six hooks were owed and
-        never learn that four went missing.
+        ``add_items_to_auto_queue`` refuses the companions (a dangling
+        ``project_id``, a line that is not the order's) and the tick's blanket
+        ``except`` swallows it, so without the field-by-field restore below the
+        line would keep ONE print of a 2-hook plate where six hooks were owed
+        and never learn that four went missing.
+
+        ⚠️ The *mechanism* that makes a half-move durable changed on
+        2026-09-13: the writer now commits FIRST and copies the bytes into the
+        queue spool afterwards, so durability no longer needs an autoflush or
+        the tick's commit — the converted row is already on disk while the copy
+        runs. The restore this test pins is what covers a writer refusal; the
+        crash-during-copy window is named in ``queue_rebalance._apply`` and is
+        closed by capturing before the row is mutated.
         """
         from backend.app.services import queue_rebalance
 

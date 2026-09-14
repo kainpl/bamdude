@@ -6,14 +6,16 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import stat
 import tempfile
 import zipfile
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from pathlib import Path, PurePosixPath
 
 logger = logging.getLogger(__name__)
 MANIFEST = "backup-manifest.json"
+QUEUE_SPOOL = "queue-spool"
 _operation_lock = asyncio.Lock()
 
 
@@ -154,6 +156,88 @@ def stage_zigbee_db(data_dir: Path, staging: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     _snapshot_sqlite(source, destination)
     validate_sqlite_backup(destination)
+
+
+def _queue_source_records(backup_db: Path) -> list[tuple[str, int, str]]:
+    """Ready queue objects named by the already-exported portable database.
+
+    The database snapshot is the boundary: a capture completed after it is not
+    in this backup, and an object the snapshot still names must be present and
+    match its recorded hash.  Reading SQLite directly is intentional: this is
+    the portable file produced for the backup, whether the live server runs on
+    SQLite or PostgreSQL.
+    """
+    # ``sqlite3.Connection`` as a context manager commits/rolls back but does
+    # not close. Close explicitly: on Windows the temporary portable DB cannot
+    # be removed while that handle survives a rejected backup/restore.
+    with closing(sqlite3.connect(backup_db)) as db:
+        table = db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'queue_sources'").fetchone()
+        if table is None:
+            return []  # Backups made before m173 remain restorable.
+        columns = {row[1] for row in db.execute("PRAGMA table_info(queue_sources)")}
+        needed = {"sha256", "size_bytes", "relative_path", "format", "state"}
+        if not needed <= columns:
+            raise ValueError("Backup database has an incomplete queue_sources table")
+        rows = db.execute(
+            "SELECT sha256, size_bytes, relative_path, format FROM queue_sources WHERE state = 'ready'"
+        ).fetchall()
+
+    records: list[tuple[str, int, str]] = []
+    for sha256, size_bytes, relative_path, fmt in rows:
+        if not isinstance(sha256, str) or len(sha256) != 64 or any(c not in "0123456789abcdef" for c in sha256):
+            raise ValueError("Backup database has an invalid queue source hash")
+        if not isinstance(size_bytes, int) or size_bytes < 0:
+            raise ValueError("Backup database has an invalid queue source size")
+        if fmt not in ("3mf", "gcode"):
+            raise ValueError("Backup database has an invalid queue source format")
+        expected = f"{QUEUE_SPOOL}/objects/{sha256[:2]}/{sha256}.{fmt}"
+        if relative_path != expected:
+            raise ValueError("Backup database has a queue source outside its spool")
+        records.append((expected, size_bytes, sha256))
+    return records
+
+
+def _verify_queue_object(path: Path, *, size_bytes: int, sha256: str) -> None:
+    if not path.is_file() or path.stat().st_size != size_bytes or digest(path) != sha256:
+        raise ValueError(f"Queue source is missing or corrupt: {path}")
+
+
+def stage_queue_spool(data_dir: Path, staging: Path, backup_db: Path) -> None:
+    """Stage precisely the ready queue objects referenced by *backup_db*.
+
+    ``staging/*.part`` belongs to a live capture, never a queued job.  It is
+    excluded by construction, as are objects published after the database
+    export.  A missing or corrupted referenced object makes the whole backup
+    fail instead of producing a restore that can dispatch only part of its
+    queue.
+    """
+    target_root = staging / QUEUE_SPOOL
+    (target_root / "objects").mkdir(parents=True, exist_ok=True)
+    source_root = data_dir / QUEUE_SPOOL
+    for relative, size_bytes, sha256 in _queue_source_records(backup_db):
+        source = data_dir / relative  # SEC-PATH-OK: exact validated queue object layout.
+        target = staging / relative  # SEC-PATH-OK: exact validated queue object layout.
+        try:
+            source.resolve().relative_to(source_root.resolve())
+        except ValueError as exc:
+            raise ValueError("Queue source escapes its spool") from exc
+        copy_file(source, target)
+        _verify_queue_object(target, size_bytes=size_bytes, sha256=sha256)
+
+
+def validate_staged_queue_spool(staging: Path, backup_db: Path) -> None:
+    """Reject a restore whose ready queue rows and files do not agree."""
+    records = _queue_source_records(backup_db)
+    root = staging / QUEUE_SPOOL
+    expected = {Path(relative).relative_to(QUEUE_SPOOL).as_posix() for relative, _, _ in records}
+    if root.exists():
+        actual = {name for name, (is_dir, _) in inventory(root).items() if name != "." and not is_dir}
+    else:
+        actual = set()
+    if actual != expected:
+        raise ValueError("Backup queue spool does not match the database snapshot")
+    for relative, size_bytes, sha256 in records:
+        _verify_queue_object(staging / relative, size_bytes=size_bytes, sha256=sha256)
 
 
 def _contents(staging: Path):
@@ -323,6 +407,8 @@ class FileRestore:
 
     def __init__(self, staging: Path, settings, data_dir: Path):
         self.targets = [(staging / n, p, True) for n, p in directories(settings).items() if (staging / n).exists()]
+        if (staging / QUEUE_SPOOL).exists():
+            self.targets.append((staging / QUEUE_SPOOL, data_dir / QUEUE_SPOOL, True))
         for name in (".mfa_encryption_key", ".install_id", "zigbee/zigbee.db"):
             if (staging / name).exists():
                 self.targets.append((staging / name, data_dir / name, False))  # SEC-PATH-OK: fixed allowlist above.

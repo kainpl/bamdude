@@ -43,5 +43,10 @@ describe('the queued-count toast', () => {
     // the two meanings into one number is how this went wrong.
     expect(source).toContain('success: number; failed: number; queued: number');
     expect(source).toContain("t('printModal.partialSuccess', { success: results.success, failed: results.failed })");
+    // ⚠️ Since m173 the add path leads with whether a job exists at all
+    // (spec §10). That sentence pairs the same two ATTEMPT counts — an add is
+    // all-or-nothing per request, so rows have no business in it.
+    expect(source).toContain('added: results.success,')
+    expect(source).toContain('total: results.success + results.failed,')
   });
 });

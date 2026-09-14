@@ -34,7 +34,6 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,11 +50,11 @@ from backend.app.services import queue_rebalance
 from backend.app.services.auto_queue_eligibility import busy_printer_ids, find_eligible_printer, offline_candidates_for
 from backend.app.services.filament_intake import fail_auto_source, read_item_requirements
 from backend.app.services.filament_policy import auto_policy, serialize_policy
-from backend.app.services.filament_requirements import PrintRequirementsCache, SourceIdentity
+from backend.app.services.filament_requirements import PrintRequirementsCache, probe_identity
 from backend.app.services.filament_routing import resolve_filament_routing
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_rebalance import REBALANCE_SETTING_KEY
-from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, source_probe
+from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +199,15 @@ class AutoQueueScheduler:
                     moved = await queue_rebalance.rebalance(db, busy_printers=busy_printers)
                 except Exception:
                     logger.exception("AutoQueueScheduler: rebalancing failed")
+                    # ⚠️ The hook commits inside itself (it releases the transaction
+                    # before every file copy), so a failure that WAS a commit leaves
+                    # this session in pending-rollback — and the ``db.commit()`` below
+                    # would then raise a second, unrelated ``PendingRollbackError``
+                    # as "AutoQueueScheduler tick failed", burying the real cause in
+                    # a support bundle. The cause is already in the log line above;
+                    # this only makes the session usable again. Nothing of the
+                    # placement pass is lost: the hook's own commits made it durable.
+                    await db.rollback()
                 else:
                     if moved.converted:
                         logger.info(
@@ -456,8 +464,13 @@ class AutoQueueScheduler:
             next_pos = (max_pos or 0) + 1
 
             # Revalidate the SAME plan after DB awaits and before claiming the row.
+            # ⚠️ Both re-probes below carry ``identity.sha256``, so they ask the same
+            # question the first read asked. For a captured source the identity is
+            # hash-anchored; probing the same path without the label would produce a
+            # stat-anchored identity that can never compare equal to it, and EVERY
+            # snapshot-backed assignment would die on "evidence changed".
             identity = requirements.source_identity
-            current_identity = await source_probe(("identity", identity.path), SourceIdentity.of, Path(identity.path))
+            current_identity = await probe_identity(identity)
             if (
                 printer_manager.get_feed_snapshot(printer.id).marker != plan.snapshot_marker
                 or policy.fingerprint != plan.policy_fingerprint
@@ -483,7 +496,7 @@ class AutoQueueScheduler:
             if not claimed.rowcount:
                 raise ValueError("Auto item is no longer pending")
 
-            current_identity = await source_probe(("identity", identity.path), SourceIdentity.of, Path(identity.path))
+            current_identity = await probe_identity(identity)
             if (
                 printer_manager.get_feed_snapshot(printer.id).marker != plan.snapshot_marker
                 or identity != current_identity
@@ -495,6 +508,16 @@ class AutoQueueScheduler:
                 queue_id=printer_queue.id,
                 archive_id=item.archive_id,
                 library_file_id=item.library_file_id,
+                # m173: the promoted row prints the bytes the router row already
+                # captured — never a new read of the original (queue-source-spool
+                # spec §7). Both rows then own the blob until the shared cleanup:
+                # the assignment is not a hand-off of the only reference, and this
+                # carry needs no storage guard because the router row is read live
+                # in this same transaction, so the blob cannot be released under
+                # it. The snapshot travels beside the id: it is what keeps the
+                # display name and the plate fallback with the job.
+                queue_source_id=item.queue_source_id,
+                source_snapshot=item.source_snapshot,
                 project_id=item.project_id,
                 project_line_id=item.project_line_id,
                 position=next_pos,
@@ -513,6 +536,12 @@ class AutoQueueScheduler:
                     requirements=requirements,
                     printer_id=printer.id,
                     exact_model=True,
+                    # The promoted row's intent names the blob it was written about,
+                    # and the revision it stamps is that blob's HASH (the
+                    # requirements above were read through the descriptor). Before
+                    # routing v2 this stamped the copy's mtime, which a portable
+                    # restore changes — and the reader had to look away for it.
+                    queue_source_id=item.queue_source_id,
                 ),
                 nozzle_mapping=item.nozzle_mapping,
                 plate_id=plan.resolved_plate_id,

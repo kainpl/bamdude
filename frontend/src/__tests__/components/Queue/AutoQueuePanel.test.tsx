@@ -16,7 +16,7 @@ import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
 import { render } from '../../utils';
 import { AutoQueuePanel } from '../../../components/Queue/AutoQueuePanel';
-import { api } from '../../../api/client';
+import { ApiError, api } from '../../../api/client';
 import type { LibraryFileListItem, LibraryGroupingMetadata, OrderCandidate } from '../../../api/client';
 import type { AutoQueueItem } from '../../../api/client';
 
@@ -232,5 +232,42 @@ describe('AutoQueuePanel — unavailable source', () => {
     expect(screen.getByTitle('Retry')).toBeInTheDocument();
     expect(screen.getByTitle('Assign now')).toBeInTheDocument();
     expect(screen.queryByText('×2')).not.toBeInTheDocument();
+  });
+});
+
+describe('AutoQueuePanel - the copy of the file the router will print', () => {
+  it('marks a row that keeps its own copy and explains one that is still being saved', async () => {
+    vi.mocked(api.getAutoQueue).mockResolvedValue([
+      routerRow({ id: 11, source_storage: 'ready' }),
+      routerRow({ id: 12, source_storage: 'preparing', batch_id: null, library_file_name: 'other.3mf' }),
+    ]);
+    render(<AutoQueuePanel />);
+
+    expect(
+      await screen.findByTitle(
+        'File saved for the queue — this job prints its own copy and no longer needs the original.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTitle('Saving a copy of the file for the queue. The job waits here until the copy is finished.'),
+    ).toBeInTheDocument();
+  });
+
+  it('says nothing was queued, and to try again, when the queue is already saving files', async () => {
+    // The router tier is ONE request, so there is one answer to «was it added?»
+    // — and a busy spool is the expected outcome of a burst, not a fault.
+    vi.spyOn(api, 'addToAutoQueue').mockRejectedValue(
+      new ApiError('server text for source_copy_busy', 503, 'source_copy_busy'),
+    );
+    const user = userEvent.setup();
+
+    await openTheDialog(user);
+    await user.click(screen.getByRole('button', { name: /^add to queue$/i }));
+
+    expect(
+      await screen.findByText(
+        'Nothing was added to the queue. The queue is already saving other files — try again in a moment.',
+      ),
+    ).toBeInTheDocument();
   });
 });

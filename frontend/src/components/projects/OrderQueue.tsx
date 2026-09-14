@@ -6,6 +6,7 @@ import { api, withStreamToken } from '../../api/client';
 import type { PrintQueueItem } from '../../api/client';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { usePendingQueueItems, usePrintingQueueItems } from '../../hooks/useQueueItems';
+import { useQueueRowPicture } from '../../hooks/useQueueRowPicture';
 import { formatDuration, formatETA, type TimeFormat } from '../../utils/date';
 
 interface OrderQueueProps {
@@ -113,14 +114,23 @@ function LineLabel({ name }: { name: string | undefined }) {
  * paths, not URLs — they say a picture exists, and the id says where to ask
  * for it. Feeding the path straight to an `<img src>` is a broken image on
  * every row that has one.
+ *
+ * ⚠️ **The job's own render comes first** (m173, spec §4 / A09). A job keeps an
+ * immutable copy of the bytes it prints, so it still prints — and must still
+ * show itself — after its library file or archive is deleted, and neither of the
+ * two URLs above can be built for a row with no ids. Its own copy also outranks
+ * a surviving original, which may have been re-sliced since the job accepted its
+ * bytes (A03). `source_thumbnail` says whether there is one to ask for, so
+ * nothing here guesses and nothing renders a broken image.
  */
 function PendingRow({ item, lineName }: { item: PrintQueueItem; lineName: string | undefined }) {
-  const thumbnail =
+  const original =
     item.archive_id != null && item.archive_thumbnail
       ? api.getArchiveThumbnail(item.archive_id)
       : item.library_file_id != null && item.library_file_thumbnail
         ? api.getLibraryFileThumbnailUrl(item.library_file_id)
         : null;
+  const thumbnail = useQueueRowPicture(item.source_thumbnail ? item.id : null, original);
   const name = item.archive_name || item.library_file_name || `#${item.id}`;
 
   return (

@@ -148,8 +148,40 @@ def event_loop():
 
 
 @pytest.fixture
-async def test_engine():
-    """Create a test database engine."""
+async def test_engine(monkeypatch):
+    """Create a test database engine — and make the module-level session use it.
+
+    ``backend.app.core.database.async_session`` is how every service that owns its
+    own transaction opens one: the dispatcher, the schedulers, and (since the
+    queue spool) ``queue_sources.publish``, which deliberately does not borrow the
+    request's session because a publication must commit on its own. Left alone in
+    a test, that factory is bound to the engine built at import time — a *second*
+    in-memory SQLite database with no tables in it — so a service that opened it
+    failed with "no such table", naming a table the test had just created.
+
+    The ``client`` fixtures have patched it for exactly this reason since they
+    existed; binding it here gives every test with a database the same thing, so
+    a service under test writes into the database the assertions read. Tests that
+    want their own factory (``monkeypatch.setattr(bd, "async_session", ...)``)
+    still win — this is the default, not an override.
+
+    ⚠️ Two caveats, both about what this does NOT give you.
+
+    An **autouse** fixture that patched the same attribute without depending on
+    ``test_engine`` would be overridden here rather than the other way round:
+    pytest sets up the fixture a test asks for (directly or through
+    ``db_session`` / ``client``) after the autouse ones. None exists today; one
+    written later has to take ``test_engine`` as an argument to win.
+
+    And with ONE factory over one in-memory SQLite engine, every session shares a
+    single DBAPI connection (``StaticPool``), so a publication cannot *block* on a
+    transaction the caller left open — it silently joins it. A test that means to
+    prove a transaction was released before some long call therefore has to assert
+    the session's own state (``in_transaction()``); a probe write from another
+    session shows only that nothing rolled it back. The one place this is
+    load-bearing says so out loud:
+    ``integration/test_queue_add_captures_once.py::test_the_long_transaction_is_released_before_the_copy``.
+    """
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 
     # The same connect listener production uses: pragmas plus the Unicode
@@ -173,6 +205,14 @@ async def test_engine():
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    from backend.app.core import database as database_module
+
+    monkeypatch.setattr(
+        database_module,
+        "async_session",
+        async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False),
+    )
 
     yield engine
 
@@ -866,3 +906,29 @@ async def raw_gcode_source(db_session, tmp_path):
     db_session.add(source)
     await db_session.commit()
     return source
+
+
+@pytest.fixture
+def a_direct_capture():
+    """Take the capture a direct print takes before it claims a printer (m173).
+
+    ``queue_batch.claim_printer_for_direct_print`` refuses ``origin="direct"``
+    without one: BamDude captures what it sends (queue-source-spool spec S1), and
+    only the external claim — a print it never sent — has nothing to snapshot. A
+    test that only cares about the claim's bookkeeping still has to hand it a real
+    receipt, and this is that one line.
+
+    A **factory**, not a value: a receipt may be published once, so a test that
+    claims two printers needs two captures.
+
+    ⚠️ The source is named at the call and has no default. This used to fall back to
+    ``raw_gcode_source``, which made the fixture dependency materialise that row for
+    every test that took a capture — including the three that capture a file of
+    their own, where it left a library row nothing referenced.
+    """
+    from backend.app.services.queue_source_capture import capture_staged, plan_capture
+
+    async def capture(source=None, *, archive=None):
+        return await capture_staged(plan_capture(archive=archive, library_file=source))
+
+    return capture

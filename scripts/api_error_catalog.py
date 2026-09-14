@@ -286,6 +286,16 @@ def _sync(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A Windows console is cp1252 by default, while this script prints both the
+    # Ukrainian catalogue and an arrow in its own summary line -- so on the
+    # maintainer's machine it wrote the file correctly and THEN died in the
+    # print, which reads as a failed sync. Say the encoding out loud rather
+    # than trusting the console's.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("report")

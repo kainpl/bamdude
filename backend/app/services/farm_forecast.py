@@ -28,6 +28,7 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
+from backend.app.services.filament_intake import loaded_descriptor
 from backend.app.services.order_filing import priority_rank
 from backend.app.services.plan_engine import OrderPlan, plan_for_orders
 from backend.app.services.queue_times import print_time_for_row
@@ -495,7 +496,14 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
         (
             await db.execute(
                 select(PrintQueueItem)
-                .options(selectinload(PrintQueueItem.archive), selectinload(PrintQueueItem.library_file))
+                .options(
+                    selectinload(PrintQueueItem.archive),
+                    selectinload(PrintQueueItem.library_file),
+                    # m173: a pending job is timed from the bytes it OWNS, which
+                    # outlive both rows above — the forecast and the queue card must
+                    # agree, and they share ``print_time_for_row`` to do it.
+                    selectinload(PrintQueueItem.queue_source),
+                )
                 .where(PrintQueueItem.status == "pending", PrintQueueItem.queue_id.in_(list(machines)))
                 .order_by(PrintQueueItem.queue_id, PrintQueueItem.position, PrintQueueItem.id)
             )
@@ -507,7 +515,12 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
         machine = machines.get(item.queue_id)
         if machine is None:
             continue
-        seconds = print_time_for_row(archive=item.archive, library_file=item.library_file, plate_id=item.plate_id)
+        seconds = print_time_for_row(
+            archive=item.archive,
+            library_file=item.library_file,
+            plate_id=item.plate_id,
+            descriptor=loaded_descriptor(item),
+        )
         machine.queued.append(QueuedRow(order_id=item.project_id, seconds=seconds))
     return FarmSnapshot(printers=list(machines.values()), staged=staged)
 

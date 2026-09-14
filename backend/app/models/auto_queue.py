@@ -22,7 +22,7 @@ See ``temp/auto-queue-adaptation-variants.md`` §12 for the full design.
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -39,10 +39,27 @@ class AutoQueueItem(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
 
     # Source file (mirrors print_queue: archive_id XOR library_file_id)
-    archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="CASCADE"), nullable=True)
+    #
+    # ⚠️ SET NULL, not CASCADE (m173) — same reasoning as the per-printer row:
+    # purging an archive used to delete the router row that named it, which is
+    # exactly the "my source went away" case the queue source exists to survive
+    # (queue-source-spool spec §4, §10). SQLite enforces no FK rule; the detach
+    # there is code, beside the delete paths.
+    archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
     library_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True
     )
+
+    # The immutable local copy of the bytes this row's work prints (m173) and the
+    # versioned per-job metadata about it. An assigned row keeps its reference
+    # until the shared cleanup releases it, so the promoted per-printer item and
+    # its router half hold the blob together (spec §7, §9). See
+    # ``models/print_queue.py`` for the full note on both columns.
+    queue_source_id: Mapped[int | None] = mapped_column(
+        ForeignKey("queue_sources.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    source_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     project_line_id: Mapped[int | None] = mapped_column(
         ForeignKey("project_lines.id", ondelete="SET NULL"), nullable=True, index=True
@@ -143,10 +160,14 @@ class AutoQueueItem(Base):
     project: Mapped["Project | None"] = relationship()
     created_by: Mapped["User | None"] = relationship()
     assigned_to: Mapped["PrintQueueItem | None"] = relationship(foreign_keys=[assigned_to_item_id])
+    # See ``models/print_queue.py`` — read-only navigation for the synchronous
+    # response builder, which must describe the row from the bytes it owns.
+    queue_source: Mapped["QueueSource | None"] = relationship(viewonly=True)
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.library import LibraryFile  # noqa: E402
 from backend.app.models.print_queue import PrintQueueItem  # noqa: E402
 from backend.app.models.project import Project  # noqa: E402
+from backend.app.models.queue_source import QueueSource  # noqa: E402
 from backend.app.models.user import User  # noqa: E402

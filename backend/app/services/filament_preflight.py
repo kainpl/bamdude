@@ -1,14 +1,19 @@
 """Read-only dispatch preflight and a synchronous guard at the MQTT boundary."""
 
 from dataclasses import dataclass, replace
-from pathlib import Path
 
-from backend.app.services.filament_intake import item_source, read_item_requirements, resolve_source_path
+from backend.app.models.queue_source import FORMAT_GCODE
+from backend.app.services.filament_intake import (
+    item_descriptor,
+    item_source,
+    read_item_requirements,
+    resolve_source_path,
+)
 from backend.app.services.filament_policy import decode, queue_policy, source_scope
-from backend.app.services.filament_requirements import SourceIdentity
+from backend.app.services.filament_requirements import probe_identity, revision_refutes
 from backend.app.services.filament_routing import RoutingDeferred, fingerprint, resolve_filament_routing
 from backend.app.services.printer_manager import printer_manager
-from backend.app.services.source_io import SourceUnavailable, source_probe
+from backend.app.services.source_io import SourceUnavailable
 
 
 @dataclass(frozen=True)
@@ -30,10 +35,16 @@ class DispatchRoutingGuard:
 
 
 def revision_for(req, policy, snapshot):
+    """The fingerprint stored as ``runtime.blocked_revision`` — it outlives the tick.
+
+    It therefore uses the same portable revision the intent stores: for a captured
+    source the hash, never the copy's mtime, or a restore would clear every
+    recorded block and re-ask a question whose answer had not changed.
+    """
     identity = req.source_identity
     return fingerprint(
         {
-            "source": [identity.size, identity.mtime_ns] if identity else None,
+            "source": identity.revision() if identity else None,
             "policy": policy.fingerprint,
             "snapshot": snapshot.marker,
         }
@@ -41,12 +52,22 @@ def revision_for(req, policy, snapshot):
 
 
 async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None):
-    archive, library = await item_source(db, item)
-    path = resolve_source_path(archive, library)
+    # The captured source when there is one (m173): a snapshot-backed job is
+    # answered from its blob, and the archive / library rows it was built from
+    # may be gone — which is the whole point of having copied it (spec §7).
+    descriptor = await item_descriptor(db, item)
+    if descriptor is None:
+        archive, library = await item_source(db, item)
+        path = resolve_source_path(archive, library)
+        raw_gcode = bool(path) and path.suffix.lower() == ".gcode"
+    else:
+        # The object is stored under its hash, so its own name would answer this
+        # wrongly for a raw source; the format the capture verified is the answer.
+        raw_gcode = descriptor.format == FORMAT_GCODE
     # These flags come from a server-created queue row, never request options.
     if item.is_calibration and item.calibration_session_id is not None:
         return None
-    if path and path.suffix.lower() == ".gcode" and item.source_auto_item_id is None:
+    if raw_gcode and item.source_auto_item_id is None:
         return None
     req = await read_item_requirements(db, item, cache)
     if req.status != "ok":
@@ -58,16 +79,32 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
     scope = saved.get("source_identity", {})
     if not isinstance(scope, dict) or not isinstance(saved.get("runtime", {}), dict):
         raise RoutingDeferred("mapping_review_required")
-    if scope and {k: scope.get(k) for k in ("kind", "id")} != source_scope(item.archive_id, item.library_file_id):
+    # ⚠️ The ``{kind, id}`` scope is asked of a LEGACY row only, and that is the
+    # narrowing this whole feature is for: it describes the ORIGINAL the intent was
+    # written about, and it answered "source_changed" the moment a trashed library
+    # file nulled the reference — refusing to dispatch a job whose bytes had not
+    # moved. A captured job's scope question is its *revision* instead (below),
+    # which compares content and not references. ``source_identity`` also records
+    # ``queue_source_id`` for such a row, and it is deliberately NOT compared here:
+    # ``queue_sources.id`` is reused by SQLite after a delete, so an id match is
+    # weaker evidence than the hash that follows it.
+    if (
+        scope
+        and descriptor is None
+        and {k: scope.get(k) for k in ("kind", "id")} != source_scope(item.archive_id, item.library_file_id)
+    ):
         raise RoutingDeferred("source_changed")
     if saved.get("printer_id") not in (None, printer_id):
         raise RoutingDeferred("mapping_review_required")
     if saved.get("resolved_plate_id") not in (None, 0, req.resolved_plate_id):
         raise RoutingDeferred("plate_selection_required")
-    if scope.get("revision") and req.source_identity:
-        current = {"size": req.source_identity.size, "mtime_ns": req.source_identity.mtime_ns}
-        if current != scope["revision"]:
-            raise RoutingDeferred("source_changed")
+    # ⚠️ Asked of EVERY row now, legacy and snapshot-backed alike — the writer
+    # stamps a portable revision for a captured source (its hash), so the reader
+    # no longer has to look away. What it still refuses to do is read a v1 stamp
+    # of a snapshot's mtime as an identity; ``revision_refutes`` owns that rule
+    # and the reason, and an unrecognised revision shape fails closed.
+    if revision_refutes(scope.get("revision"), req.source_identity):
+        raise RoutingDeferred("source_changed")
     # Reuse the established inventory/Spoolman ranking adapter, not the legacy
     # matcher. Ranking is a preference; source compatibility comes from the
     # fresh snapshot and the complete resolver below.
@@ -111,7 +148,7 @@ async def final_guard(guard, printer_id):
         return None
     identity = guard.requirements.source_identity
     try:
-        current = await source_probe(("identity", identity.path), SourceIdentity.of, Path(identity.path))
+        current = await probe_identity(identity)
     except SourceUnavailable as exc:
         raise RoutingDeferred(exc.reason) from exc
     if current != identity:

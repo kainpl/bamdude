@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useId, useMemo, useState, type ReactElement } from 'react';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Check, Copy, FileBox, Printer as PrinterIcon } from 'lucide-react';
@@ -9,6 +9,7 @@ import { Button } from './Button';
 import { Modal } from './Modal';
 import type { SequencedFile } from './QueueSequencer';
 import { copyTargets, type CopyableItem } from '../lib/copyQueue';
+import { useQueueRowPicture } from '../hooks/useQueueRowPicture';
 import { groupByLocation } from '../utils/locationGroups';
 import { readStoredQueueSort, sortQueues } from '../utils/queueOrder';
 import { forecastById } from '../utils/etaSort';
@@ -20,8 +21,6 @@ interface CopyQueueModalProps {
    *  pending items in queue order. Built by the card, because only it knows
    *  whether the running print has a queue row at all. */
   items: CopyableItem[];
-  /** How many queue rows had no file behind them and were left out upstream. */
-  droppedCount?: number;
   onCancel: () => void;
   /** Never called with an empty side. */
   onConfirm: (files: SequencedFile[], printerIds: number[]) => void;
@@ -42,13 +41,20 @@ interface CopyQueueModalProps {
  * Items start ticked, printers do not. The queue is what you came to copy; the
  * machines are the decision.
  */
-export function CopyQueueModal({ source, items, droppedCount = 0, onCancel, onConfirm }: CopyQueueModalProps) {
+export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueueModalProps) {
   const { t } = useTranslation();
   const headingId = useId();
 
-  const [pickedItems, setPickedItems] = useState<Set<number>>(
-    () => new Set(items.map((_, index) => index)),
+  // ⚠️ Only the rows a copy could actually be made from start ticked, and only
+  // those can ever BE ticked (m173). A row whose library file or archive is gone
+  // is still listed — it is on this queue, and hiding it made an independent job
+  // vanish from the operator's own queue — but a copy is an ordinary add and has
+  // nothing to read again, so it is shown with the reason instead.
+  const copyableIndexes = useMemo(
+    () => items.flatMap((entry, index) => (entry.file ? [index] : [])),
+    [items],
   );
+  const [pickedItems, setPickedItems] = useState<Set<number>>(() => new Set(copyableIndexes));
   const [pickedPrinters, setPickedPrinters] = useState<Set<number>>(new Set());
 
   const { data: queues } = useQuery({ queryKey: ['queues'], queryFn: api.getQueues });
@@ -157,65 +163,24 @@ export function CopyQueueModal({ source, items, droppedCount = 0, onCancel, onCo
               {t('copyQueue.whatCount', { count: pickedItems.size })}
             </h3>
             {bulkButtons(
-              () => setPickedItems(new Set(items.map((_, index) => index))),
+              () => setPickedItems(new Set(copyableIndexes)),
               () => setPickedItems(new Set()),
-              pickedItems.size === items.length,
+              pickedItems.size === copyableIndexes.length,
             )}
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             {items.length === 0 ? (
               <p className="text-sm text-bambu-gray italic p-4 text-center">{t('copyQueue.nothingToCopy')}</p>
             ) : (
-              items.map(({ file, printing, orderName, printTimeSeconds, filamentGrams, thumbnailUrl }, index) => {
-                const checked = pickedItems.has(index);
-                return (
-                  <button
-                    key={`${file.source}-${file.id}-${index}`}
-                    type="button"
-                    aria-pressed={checked}
-                    onClick={() => setPickedItems((prev) => toggle(prev, index))}
-                    className={`w-full flex items-center gap-3 p-2 rounded border text-left transition-colors ${
-                      checked
-                        ? 'border-bambu-green bg-bambu-green/10'
-                        : 'border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green/50'
-                    }`}
-                  >
-                    {tick(checked)}
-                    <span className="w-12 h-12 shrink-0 rounded bg-bambu-dark-tertiary overflow-hidden flex items-center justify-center">
-                      {thumbnailUrl ? (
-                        <img
-                          src={thumbnailUrl}
-                          alt=""
-                          className="w-full h-full object-contain"
-                        />
-                      ) : (
-                        <FileBox className="w-5 h-5 text-bambu-gray/50" />
-                      )}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-sm text-white truncate">{file.name}</span>
-                      <span className="block text-xs text-bambu-gray truncate">
-                        {[
-                          printing ? t('copyQueue.printingNow') : null,
-                          file.plateId != null ? t('copyQueue.plate', { n: file.plateId }) : null,
-                          // The copy files under this order without asking —
-                          // so it is said here, where the item can still be unticked.
-                          orderName ? t('copyQueue.forOrder', { name: orderName }) : null,
-                          printTimeSeconds ? formatDuration(printTimeSeconds) : null,
-                          filamentGrams ? `${Math.round(filamentGrams)} g` : null,
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })
-            )}
-            {droppedCount > 0 && (
-              <p className="text-xs text-bambu-gray italic pt-1">
-                {t('copyQueue.notCopyable', { count: droppedCount })}
-              </p>
+              items.map((entry, index) => (
+                <ItemRow
+                  key={entry.key}
+                  entry={entry}
+                  checked={pickedItems.has(index)}
+                  onToggle={() => setPickedItems((prev) => toggle(prev, index))}
+                  tick={tick}
+                />
+              ))
             )}
           </div>
         </div>
@@ -300,8 +265,17 @@ export function CopyQueueModal({ source, items, droppedCount = 0, onCancel, onCo
       <div className="flex items-center justify-between gap-2 p-4 border-t border-bambu-dark shrink-0">
         {/* Says where the copies land before you press it — appending is what
             everything else in BamDude does with a busy printer, and a copy
-            that jumped the running queue would be the surprise. */}
-        <span className="text-xs text-bambu-gray">{t('copyQueue.appendsHint')}</span>
+            that jumped the running queue would be the surprise.
+
+            ⚠️ And what a copy IS (m173): an ordinary add, which reads the
+            original file again and saves its own copy of it. So a job that is
+            self-contained here can still refuse to be copied when its original
+            is gone — said before the button rather than discovered after it. */}
+        <span className="text-xs text-bambu-gray">
+          {t('copyQueue.appendsHint')}
+          {' '}
+          {t('copyQueue.readsOriginalHint')}
+        </span>
         <div className="flex items-center gap-2">
           <Button variant="ghost" onClick={onCancel}>
             {t('common.cancel')}
@@ -310,7 +284,10 @@ export function CopyQueueModal({ source, items, droppedCount = 0, onCancel, onCo
             disabled={!canCopy}
             onClick={() =>
               onConfirm(
-                items.filter((_, index) => pickedItems.has(index)).map((entry) => entry.file),
+                // `flatMap` over a nullable file, not `map`: an un-copyable row can
+                // never be ticked, and this is where that would stop being true
+                // silently if it ever were.
+                items.flatMap((entry, index) => (pickedItems.has(index) && entry.file ? [entry.file] : [])),
                 [...pickedPrinters],
               )
             }
@@ -321,5 +298,88 @@ export function CopyQueueModal({ source, items, droppedCount = 0, onCancel, onCo
         </div>
       </div>
     </Modal>
+  );
+}
+
+
+/**
+ * One row of "what to copy".
+ *
+ * ⚠️ Two shapes, one layout: a copyable row is a button that ticks, and a row
+ * whose original is gone is plain text that says so. It is NOT a disabled button
+ * — there is nothing to press and nothing to explain by greying, and the reason
+ * is worth a sentence.
+ *
+ * The picture comes from the job's OWN bytes when it has them (m173): the
+ * original may have been re-sliced since, and a row with no original left has no
+ * other picture at all. No picture is the `FileBox` placeholder — never a broken
+ * `<img>`.
+ */
+function ItemRow({
+  entry,
+  checked,
+  onToggle,
+  tick,
+}: {
+  entry: CopyableItem;
+  checked: boolean;
+  onToggle: () => void;
+  tick: (checked: boolean) => ReactElement;
+}) {
+  const { t } = useTranslation();
+  const picture = useQueueRowPicture(entry.pictureItemId, entry.thumbnailUrl);
+  const detail = [
+    entry.printing ? t('copyQueue.printingNow') : null,
+    entry.plateId != null ? t('copyQueue.plate', { n: entry.plateId }) : null,
+    // The copy files under this order without asking — so it is said here,
+    // where the item can still be unticked.
+    entry.orderName ? t('copyQueue.forOrder', { name: entry.orderName }) : null,
+    entry.printTimeSeconds ? formatDuration(entry.printTimeSeconds) : null,
+    entry.filamentGrams ? `${Math.round(entry.filamentGrams)} g` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const body = (
+    <>
+      <span className="w-12 h-12 shrink-0 rounded bg-bambu-dark-tertiary overflow-hidden flex items-center justify-center">
+        {picture ? (
+          <img src={picture} alt="" className="w-full h-full object-contain" />
+        ) : (
+          <FileBox className="w-5 h-5 text-bambu-gray/50" />
+        )}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm text-white truncate">{entry.name}</span>
+        <span className="block text-xs text-bambu-gray truncate">
+          {entry.file ? detail : [detail, t('copyQueue.originalGone')].filter(Boolean).join(' · ')}
+        </span>
+      </span>
+    </>
+  );
+
+  if (!entry.file) {
+    return (
+      <div className="w-full flex items-center gap-3 p-2 rounded border border-bambu-dark-tertiary bg-bambu-dark/50 opacity-70">
+        <span className="w-4 h-4 shrink-0" />
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      aria-pressed={checked}
+      onClick={onToggle}
+      className={`w-full flex items-center gap-3 p-2 rounded border text-left transition-colors ${
+        checked
+          ? 'border-bambu-green bg-bambu-green/10'
+          : 'border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green/50'
+      }`}
+    >
+      {tick(checked)}
+      {body}
+    </button>
   );
 }

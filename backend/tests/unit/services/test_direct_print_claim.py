@@ -10,6 +10,7 @@ scheduler's own dispatch reaches before it uploads, so the dispatch CAS
 import pytest
 from sqlalchemy import select
 
+from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.queue_batch import claim_printer_for_direct_print
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
@@ -25,11 +26,18 @@ async def _queue(db_session, printer_factory):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_the_claim_is_a_printing_row_the_scheduler_cannot_pick_up(db_session, printer_factory, raw_gcode_source):
+async def test_the_claim_is_a_printing_row_the_scheduler_cannot_pick_up(
+    db_session, printer_factory, raw_gcode_source, a_direct_capture
+):
     printer, queue = await _queue(db_session, printer_factory)
 
     item = await claim_printer_for_direct_print(
-        db_session, printer_id=printer.id, origin="direct", library_file_id=raw_gcode_source.id, created_by_id=None
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        created_by_id=None,
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     assert item is not None
@@ -40,11 +48,17 @@ async def test_the_claim_is_a_printing_row_the_scheduler_cannot_pick_up(db_sessi
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_the_queue_is_claimed_and_points_at_the_item(db_session, printer_factory, raw_gcode_source):
+async def test_the_queue_is_claimed_and_points_at_the_item(
+    db_session, printer_factory, raw_gcode_source, a_direct_capture
+):
     printer, queue = await _queue(db_session, printer_factory)
 
     item = await claim_printer_for_direct_print(
-        db_session, printer_id=printer.id, origin="direct", library_file_id=raw_gcode_source.id
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     await db_session.refresh(queue)
@@ -54,12 +68,18 @@ async def test_the_queue_is_claimed_and_points_at_the_item(db_session, printer_f
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_it_does_not_disturb_the_pending_ordering(db_session, printer_factory, raw_gcode_source):
+async def test_it_does_not_disturb_the_pending_ordering(
+    db_session, printer_factory, raw_gcode_source, a_direct_capture
+):
     """⚠️ position 0 and status printing: MAX(position) is taken over pending
     rows only, so the next queued item must still land at 1."""
     printer, queue = await _queue(db_session, printer_factory)
     await claim_printer_for_direct_print(
-        db_session, printer_id=printer.id, origin="direct", library_file_id=raw_gcode_source.id
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     from backend.app.services.queue_batch import enqueue_batch_copies
@@ -73,7 +93,7 @@ async def test_it_does_not_disturb_the_pending_ordering(db_session, printer_fact
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_the_print_options_land_on_the_row(db_session, printer_factory, raw_gcode_source):
+async def test_the_print_options_land_on_the_row(db_session, printer_factory, raw_gcode_source, a_direct_capture):
     """The row is what the queue UI renders and what the dispatcher reads back."""
     printer, queue = await _queue(db_session, printer_factory)
 
@@ -83,6 +103,7 @@ async def test_the_print_options_land_on_the_row(db_session, printer_factory, ra
         origin="direct",
         library_file_id=raw_gcode_source.id,
         options={"plate_id": 3, "ams_mapping": [1, -1], "timelapse": True, "layer_inspect": True},
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     assert item.plate_id == 3
@@ -93,7 +114,7 @@ async def test_the_print_options_land_on_the_row(db_session, printer_factory, ra
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_the_owner_is_carried(db_session, printer_factory, raw_gcode_source):
+async def test_the_owner_is_carried(db_session, printer_factory, raw_gcode_source, a_direct_capture):
     """``queue:read_own`` filters on it — an ownerless row is invisible to whoever made it."""
     from backend.app.models.user import User
 
@@ -103,7 +124,12 @@ async def test_the_owner_is_carried(db_session, printer_factory, raw_gcode_sourc
     await db_session.commit()
 
     item = await claim_printer_for_direct_print(
-        db_session, printer_id=printer.id, origin="direct", created_by_id=user.id, library_file_id=raw_gcode_source.id
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        created_by_id=user.id,
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     assert item.created_by_id == user.id
@@ -111,14 +137,20 @@ async def test_the_owner_is_carried(db_session, printer_factory, raw_gcode_sourc
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_printer_with_no_queue_row_gets_one_and_the_claim(db_session, printer_factory, raw_gcode_source):
+async def test_a_printer_with_no_queue_row_gets_one_and_the_claim(
+    db_session, printer_factory, raw_gcode_source, a_direct_capture
+):
     """d93977c8: every printer has a queue, created on demand under the printer's
     own id — the Telegram add path never created one, and a direct print must not
     be refused for it."""
     printer = await printer_factory()
 
     item = await claim_printer_for_direct_print(
-        db_session, printer_id=printer.id, origin="direct", library_file_id=raw_gcode_source.id
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(raw_gcode_source),
     )
 
     assert item is not None
@@ -172,7 +204,9 @@ async def _order_over_a_file(db_session, tmp_path, *, lines=1):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_print_now_files_the_line_the_order_did_not_name(db_session, printer_factory, tmp_path):
+async def test_a_print_now_files_the_line_the_order_did_not_name(
+    db_session, printer_factory, tmp_path, a_direct_capture
+):
     """⚠️ The one queue writer that was NOT filing it. The Print dialog offers an
     order for a direct print too, and "print now" with quantity 1 skips
     ``enqueue_batch_copies`` entirely — so without this the operator answered
@@ -188,6 +222,7 @@ async def test_a_print_now_files_the_line_the_order_did_not_name(db_session, pri
         library_file_id=file.id,
         options={"plate_id": 1},
         project_id=project.id,
+        staged=await a_direct_capture(file),
     )
 
     assert item.project_id == project.id
@@ -196,7 +231,9 @@ async def test_a_print_now_files_the_line_the_order_did_not_name(db_session, pri
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_two_alike_lines_leave_the_claim_unfiled_rather_than_guessing(db_session, printer_factory, tmp_path):
+async def test_two_alike_lines_leave_the_claim_unfiled_rather_than_guessing(
+    db_session, printer_factory, tmp_path, a_direct_capture
+):
     """Two lines of one product in one material: the plate cannot tell them
     apart, and filing somebody's print against work nobody ordered is worse than
     leaving it to the plan's implicit branch, which re-asks on every read."""
@@ -210,6 +247,7 @@ async def test_two_alike_lines_leave_the_claim_unfiled_rather_than_guessing(db_s
         library_file_id=file.id,
         options={"plate_id": 1},
         project_id=project.id,
+        staged=await a_direct_capture(file),
     )
 
     assert item.project_id == project.id
@@ -218,7 +256,7 @@ async def test_two_alike_lines_leave_the_claim_unfiled_rather_than_guessing(db_s
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_line_the_caller_named_is_never_re_decided(db_session, printer_factory, tmp_path):
+async def test_a_line_the_caller_named_is_never_re_decided(db_session, printer_factory, tmp_path, a_direct_capture):
     printer, _row = await _queue(db_session, printer_factory)
     file, project, lines = await _order_over_a_file(db_session, tmp_path, lines=2)
 
@@ -230,6 +268,45 @@ async def test_a_line_the_caller_named_is_never_re_decided(db_session, printer_f
         options={"plate_id": 1},
         project_id=project.id,
         project_line_id=lines[1].id,
+        staged=await a_direct_capture(file),
     )
 
     assert item.project_line_id == lines[1].id
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_direct_claim_without_a_capture_is_refused_outright(db_session, printer_factory, raw_gcode_source):
+    """m173: the §2 exemption belongs to the EXTERNAL print, and to nothing else.
+
+    This one helper writes the claim for both, and it expresses "no snapshot" as a
+    value — which is only safe while the decision is a real one. A new dispatch
+    path that reached here without copying its source would otherwise leave a
+    runnable row printing bytes nobody owns, and the row would look exactly like a
+    legitimate external claim afterwards.
+    """
+    printer, queue = await _queue(db_session, printer_factory)
+
+    with pytest.raises(ValueError, match="must be captured before it claims"):
+        await claim_printer_for_direct_print(
+            db_session, printer_id=printer.id, origin="direct", library_file_id=raw_gcode_source.id
+        )
+
+    assert (await db_session.execute(select(PrintQueueItem))).scalars().all() == []
+    await db_session.refresh(queue)
+    assert queue.status != "printing", "a refused claim must not leave the printer taken"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_an_external_claim_still_takes_no_snapshot(db_session, printer_factory):
+    """The other side of the same rule: a print BamDude never sent has no source
+    to copy at the moment its row is created (spec §2), and is not refused."""
+    printer, queue = await _queue(db_session, printer_factory)
+
+    item = await claim_printer_for_direct_print(db_session, printer_id=printer.id, origin="external")
+
+    assert item is not None
+    assert item.origin == "external"
+    assert item.queue_source_id is None
+    assert item.source_snapshot is None

@@ -31,14 +31,24 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.app.models.queue_source import QueueSource
 from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import mode_to_bool
 from backend.app.schemas.print_queue import PrintQueueItemCreate
-from backend.app.services.filament_intake import require_source_requirements, routing_detail
-from backend.app.services.filament_policy import choices_policy, serialize_policy
+from backend.app.services import queue_sources
+from backend.app.services.filament_intake import routing_detail
+from backend.app.services.filament_policy import choices_policy, record_queue_source, serialize_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.order_filing import resolve_line_id
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.queue_source_capture import (
+    StagedSource,
+    capture_staged,
+    discard_staged,
+    plan_capture,
+    publish_staged,
+    staged_requirements,
+)
 from backend.app.utils.filename import InvalidFilenameError, is_sliced_file, validate_print_filename
 from backend.app.utils.printer_models import is_gcode_compatible
 
@@ -159,38 +169,6 @@ async def add_items_to_printer_queue(
                 f"File was sliced for {sliced_for} and cannot be dispatched to a {printer_model} printer",
             )
 
-    requirements = await require_source_requirements(
-        PrintRequirementsCache(), archive, library_file, data.plate_id, allow_raw_gcode=True
-    )
-    if requirements is not None:
-        used_slots = {filament["slot_id"] for filament in requirements.used_filaments}
-        if any(override.slot_id not in used_slots for override in data.filament_overrides or []):
-            raise HTTPException(422, routing_detail("override_slot_not_used"))
-        data = data.model_copy(update={"plate_id": requirements.resolved_plate_id})
-
-    # Serialize concurrent inserts into the same queue so two appends can't both
-    # read the same MAX(position) and land on a duplicate position in an empty
-    # scope (upstream #1625-followup TOCTOU fix). A transaction-scoped Postgres
-    # advisory lock keyed on the queue closes the window and releases at
-    # commit/rollback; different queues don't contend. SQLite serialises writes
-    # implicitly so this is a no-op there. The dialect is read from the live
-    # session binding (not settings/is_sqlite()) because a test fixture can bind
-    # SQLite while settings.database_url still points at Postgres.
-    bind = db.get_bind()
-    if bind.dialect.name == "postgresql":
-        scope_key = data.queue_id if data.queue_id is not None else 0
-        # classid 1625 namespaces the lock so it can't collide with other
-        # advisory locks elsewhere in the codebase.
-        await db.execute(text("SELECT pg_advisory_xact_lock(1625, :k)"), {"k": scope_key})
-
-    # Get next position for this queue
-    result = await db.execute(
-        select(func.max(PrintQueueItem.position))
-        .where(PrintQueueItem.queue_id == data.queue_id)
-        .where(PrintQueueItem.status == "pending")
-    )
-    max_pos = result.scalar() or 0
-
     # Validate project exists before insert so a bogus ID yields 404, not an FK-constraint 500
     if data.project_id is not None:
         project_result = await db.execute(select(Project).where(Project.id == data.project_id))
@@ -204,36 +182,109 @@ async def add_items_to_printer_queue(
     # An order LINE has to be a line of the order named alongside it, or this
     # row would report progress against work nobody ordered. Naming only the
     # line is enough — the order it belongs to is derived from it.
-    project_line_id = data.project_line_id
-    if project_line_id is not None:
-        line = await db.get(ProjectLine, project_line_id)
+    # ⚠️ Asked HERE, before the copy (§5 step 1 lists the order/plate choices
+    # among what is checked first) — a bogus id must cost no walk over a share.
+    # Which line an unnamed one resolves TO is asked later, inside the
+    # publication's transaction, because that answer needs the plate the
+    # captured bytes resolved.
+    if data.project_line_id is not None:
+        line = await db.get(ProjectLine, data.project_line_id)
         if line is None or (data.project_id is not None and line.project_id != data.project_id):
             raise HTTPException(status_code=404, detail="Order line not found in this project")
         effective_project_id = line.project_id
-    elif effective_project_id is not None:
-        # The caller named the order and not the line — file the line ourselves
-        # when the plate points at exactly one (spec pass 7, Decision 4a).
-        # Without it the row counts nowhere in the order's plan block, which is
-        # how "still needed: 5" survived four of them being queued. ``None`` is
-        # an ordinary answer: an ambiguous plate is left unfiled, and the plan's
-        # implicit branch re-asks the same question on every read.
-        project_line_id = await resolve_line_id(
-            db,
-            project_id=effective_project_id,
-            library_file_id=data.library_file_id,
-            plate_index=data.plate_id,
-        )
 
+    # ⚠️ ONE capture for the whole request, however many copies come out of it
+    # (spec §5's fan-out rule, A01) — and the request's transaction is released
+    # first. The copy can take minutes over a share, and this function committed
+    # at the end anyway: the commit here only moves earlier, which is what stops
+    # an add holding a read snapshot (on SQLite, the write lock) for the length
+    # of a walk over somebody's NAS while nothing else can write.
+    #
+    # Both answers this function still needs from the QUEUE are read before that
+    # commit, as values: everything after it belongs to another transaction, and a
+    # relationship reached across the commit would be a lazy load on an async
+    # session (a ``MissingGreenlet``) the day somebody builds a session with
+    # ``expire_on_commit=True``.
+    printer_swap_on = bool(queue.printer and queue.printer.swap_mode_enabled)
+    printer_id = queue.printer_id
+    plan = plan_capture(archive=archive, library_file=library_file)
+    await db.commit()
+    staged = await capture_staged(plan)
+    try:
+        # §5 step 4 — the requirements, the resolved plate and the policy below
+        # are built from the CAPTURED bytes. That is also what makes the plate
+        # check real: a request naming a plate this file does not have is refused
+        # here, with the staged copy still in hand and nothing published.
+        requirements = await staged_requirements(
+            staged, PrintRequirementsCache(), archive, library_file, data.plate_id, allow_raw_gcode=True
+        )
+        if requirements is not None:
+            used_slots = {filament["slot_id"] for filament in requirements.used_filaments}
+            if any(override.slot_id not in used_slots for override in data.filament_overrides or []):
+                raise HTTPException(422, routing_detail("override_slot_not_used"))
+            data = data.model_copy(update={"plate_id": requirements.resolved_plate_id})
+        created_ids = await _publish_items(
+            data,
+            staged,
+            requirements,
+            printer_id,
+            printer_swap_on,
+            effective_project_id,
+            current_user,
+            archive,
+            library_file,
+        )
+    except BaseException:
+        await discard_staged(staged)
+        raise
+
+    # Re-read in the CALLER's session: the rows were written by the publication's
+    # own transaction, and the route builds its response through relationships
+    # only a live session can load.
+    items = list(
+        (
+            await db.execute(
+                select(PrintQueueItem).where(PrintQueueItem.id.in_(created_ids)).order_by(PrintQueueItem.position)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return items, queue
+
+
+async def _publish_items(
+    data: PrintQueueItemCreate,
+    staged: StagedSource,
+    requirements,
+    printer_id: int | None,
+    printer_swap_on: bool,
+    effective_project_id: int | None,
+    current_user: User | None,
+    archive,
+    library_file,
+) -> list[int]:
+    """Publish the captured bytes and write the rows in ONE transaction (§5 step 6).
+
+    Everything that has to be atomic with the blob's row lives in ``attach``: the
+    advisory lock, the position, the line the plate resolved to, the items and
+    the queue's counters. ``publish`` runs it under the storage-mutation guard
+    and commits it — after the file is in its final place, never before.
+
+    The heavy read (the 3MF parse) is deliberately already done by the caller:
+    the guard is process-wide, so a ZIP parse under it would serialise every
+    other publication behind this one.
+    """
     # For quantity > 1, group copies under a shared batch_id
     batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
     ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
 
     # Swap-macro execution is only meaningful when (a) the target printer has
-    # swap mode on AND (b) the source file does not already carry swap macros
-    # baked in by third-party tooling (``swap_compatible``). Otherwise force
-    # the feature off so stored state never lies about what fires at dispatch
-    # and we don't double-execute macros.
-    printer_swap_on = bool(queue.printer and queue.printer.swap_mode_enabled)
+    # swap mode on (read from the queue's printer by the caller) AND (b) the
+    # source file does not already carry swap macros baked in by third-party
+    # tooling (``swap_compatible``). Otherwise force the feature off so stored
+    # state never lies about what fires at dispatch and we don't double-execute
+    # macros.
     source_has_baked_macros = bool(
         (archive and getattr(archive, "swap_compatible", False))
         or (library_file and getattr(library_file, "swap_compatible", False))
@@ -249,64 +300,112 @@ async def add_items_to_printer_queue(
 
     routing = (
         serialize_policy(
-            choices_policy(data.model_dump(), printer_manager.get_feed_snapshot(queue.printer_id)),
+            choices_policy(data.model_dump(), printer_manager.get_feed_snapshot(printer_id)),
             archive_id=data.archive_id,
             library_file_id=data.library_file_id,
             requirements=requirements,
             plate_id=data.plate_id,
-            printer_id=queue.printer_id,
+            printer_id=printer_id,
         )
         if requirements
         else None
     )
-    items: list[PrintQueueItem] = []
-    for i in range(data.quantity):
-        items.append(
-            PrintQueueItem(
-                queue_id=data.queue_id,
-                archive_id=data.archive_id,
-                library_file_id=data.library_file_id,
-                scheduled_time=data.scheduled_time,
-                auto_off_after=data.auto_off_after,
-                manual_start=data.manual_start,
-                require_previous_success=data.require_previous_success,
-                ams_mapping=ams_mapping_json,
-                filament_routing=routing,
-                plate_id=data.plate_id,
-                bed_levelling=mode_to_bool(data.bed_levelling),
-                bed_levelling_mode=data.bed_levelling,
-                flow_cali=mode_to_bool(data.flow_cali),
-                flow_cali_mode=data.flow_cali,
-                layer_inspect=data.layer_inspect,
-                timelapse=data.timelapse,
-                timelapse_storage=data.timelapse_storage,
-                use_ams=data.use_ams,
-                nozzle_offset_cali=mode_to_bool(data.nozzle_offset_cali),
-                nozzle_offset_cali_mode=data.nozzle_offset_cali,
-                mesh_mode_fast_check=data.mesh_mode_fast_check,
-                execute_swap_macros=execute_swap_macros,
-                swap_macro_events=swap_macro_events_json,
-                selected_macro_ids=selected_macro_ids_json,
-                gcode_injection=data.gcode_injection,
-                preheat_override=data.preheat_override,
-                preheat_chamber_target_override=data.preheat_chamber_target_override,
-                project_id=effective_project_id,
-                project_line_id=project_line_id,
-                position=max_pos + 1 + i,
-                status="pending",
-                batch_id=batch_id,
-                created_by_id=current_user.id if current_user else None,
-            )
+    created_ids: list[int] = []
+
+    async def attach(session: AsyncSession, source: QueueSource) -> None:
+        # Serialize concurrent inserts into the same queue so two appends can't
+        # both read the same MAX(position) and land on a duplicate position in an
+        # empty scope (upstream #1625-followup TOCTOU fix). A transaction-scoped
+        # Postgres advisory lock keyed on the queue closes the window and releases
+        # at commit/rollback; different queues don't contend. SQLite serialises
+        # writes implicitly so this is a no-op there — it is not, and never was,
+        # cross-process safety on SQLite. The dialect is read from the live
+        # session binding (not settings/is_sqlite()) because a test fixture can
+        # bind SQLite while settings.database_url still points at Postgres.
+        bind = session.get_bind()
+        if bind.dialect.name == "postgresql":
+            scope_key = data.queue_id if data.queue_id is not None else 0
+            # classid 1625 namespaces the lock so it can't collide with other
+            # advisory locks elsewhere in the codebase.
+            await session.execute(text("SELECT pg_advisory_xact_lock(1625, :k)"), {"k": scope_key})
+
+        # Get next position for this queue
+        result = await session.execute(
+            select(func.max(PrintQueueItem.position))
+            .where(PrintQueueItem.queue_id == data.queue_id)
+            .where(PrintQueueItem.status == "pending")
         )
-    db.add_all(items)
-    await db.commit()
-    for it in items:
-        await db.refresh(it)
+        max_pos = result.scalar() or 0
 
-    # Update queue counters (full recount for accuracy)
-    from backend.app.services.queue_counters import update_queue_counters
+        project_line_id = data.project_line_id
+        if project_line_id is None and effective_project_id is not None:
+            # The caller named the order and not the line — file the line
+            # ourselves when the plate points at exactly one (spec pass 7,
+            # Decision 4a). Without it the row counts nowhere in the order's plan
+            # block, which is how "still needed: 5" survived four of them being
+            # queued. ``None`` is an ordinary answer: an ambiguous plate is left
+            # unfiled, and the plan's implicit branch re-asks the same question on
+            # every read. Asked with the plate the captured bytes resolved.
+            project_line_id = await resolve_line_id(
+                session,
+                project_id=effective_project_id,
+                library_file_id=data.library_file_id,
+                plate_index=data.plate_id,
+            )
 
-    await update_queue_counters(db, data.queue_id)
-    await db.commit()
+        # Hoisted: every copy shares one intent, so the JSON is parsed and
+        # re-serialised once rather than per row (review m5).
+        stamped_routing = record_queue_source(routing, source)
+        items: list[PrintQueueItem] = []
+        for i in range(data.quantity):
+            items.append(
+                PrintQueueItem(
+                    queue_source_id=source.id,
+                    source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
+                    queue_id=data.queue_id,
+                    archive_id=data.archive_id,
+                    library_file_id=data.library_file_id,
+                    scheduled_time=data.scheduled_time,
+                    auto_off_after=data.auto_off_after,
+                    manual_start=data.manual_start,
+                    require_previous_success=data.require_previous_success,
+                    ams_mapping=ams_mapping_json,
+                    filament_routing=stamped_routing,
+                    plate_id=data.plate_id,
+                    bed_levelling=mode_to_bool(data.bed_levelling),
+                    bed_levelling_mode=data.bed_levelling,
+                    flow_cali=mode_to_bool(data.flow_cali),
+                    flow_cali_mode=data.flow_cali,
+                    layer_inspect=data.layer_inspect,
+                    timelapse=data.timelapse,
+                    timelapse_storage=data.timelapse_storage,
+                    use_ams=data.use_ams,
+                    nozzle_offset_cali=mode_to_bool(data.nozzle_offset_cali),
+                    nozzle_offset_cali_mode=data.nozzle_offset_cali,
+                    mesh_mode_fast_check=data.mesh_mode_fast_check,
+                    execute_swap_macros=execute_swap_macros,
+                    swap_macro_events=swap_macro_events_json,
+                    selected_macro_ids=selected_macro_ids_json,
+                    gcode_injection=data.gcode_injection,
+                    preheat_override=data.preheat_override,
+                    preheat_chamber_target_override=data.preheat_chamber_target_override,
+                    project_id=effective_project_id,
+                    project_line_id=project_line_id,
+                    position=max_pos + 1 + i,
+                    status="pending",
+                    batch_id=batch_id,
+                    created_by_id=current_user.id if current_user else None,
+                )
+            )
+        session.add_all(items)
+        await session.flush()
+        created_ids.extend(item.id for item in items)
 
-    return items, queue
+        # Update queue counters (full recount for accuracy) — in the same
+        # transaction as the rows they count.
+        from backend.app.services.queue_counters import update_queue_counters
+
+        await update_queue_counters(session, data.queue_id)
+
+    await publish_staged(staged, attach)
+    return created_ids

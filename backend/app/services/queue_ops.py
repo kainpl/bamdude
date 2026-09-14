@@ -3,6 +3,11 @@
 Batch-aware reorder / bump / clone / status transitions for print queue
 items.  Pure async functions — no FastAPI types, no logging beyond info.
 Used by the new queue command endpoints.
+
+⚠️ **No FastAPI types** is why a clone whose bytes are no longer printable raises
+the capture service's own ``QueueSourceError`` from here and the route turns it
+into a status with ``queue_source_capture.refusal`` — one taxonomy, mapped once
+(spec §6).
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.services.queue_source_capture import reusing_sources
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +216,12 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
         queue_id=src.queue_id,
         archive_id=src.archive_id,
         library_file_id=src.library_file_id,
+        # m173: the clone prints the SAME bytes and becomes a second owner of the
+        # same blob — never a new read of the original (queue-source-spool spec
+        # §9). The snapshot travels beside the id because that is what keeps the
+        # display name and the plate fallback with the copy.
+        queue_source_id=src.queue_source_id,
+        source_snapshot=src.source_snapshot,
         project_id=src.project_id,
         project_line_id=src.project_line_id,
         # Carried, not reset to "queue": a retry of an external print is still
@@ -259,6 +271,11 @@ async def clone_item(db: AsyncSession, item_id: int, keep_batch: bool = True) ->
     ``keep_batch=True`` shares ``batch_id`` — new copy becomes a sibling
     in the same batch.  ``keep_batch=False`` creates a solo item with
     ``batch_id=NULL``.
+
+    ⚠️ m173: the copy becomes a **second owner of the same blob** (spec §9), so the
+    row is written inside :func:`reusing_sources` — asked under the storage guard,
+    then written under it. A blob that is not ``ready`` refuses the clone instead of
+    producing a row that could only ever fail at dispatch.
     """
     src = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
     if src is None:
@@ -274,10 +291,11 @@ async def clone_item(db: AsyncSession, item_id: int, keep_batch: bool = True) ->
     ).scalar() or 0
 
     new_batch_id = src.batch_id if keep_batch else None
-    clone = _copy_item_fields(src, new_batch_id, max_pos + 1)
-    db.add(clone)
-    await db.commit()
-    await db.refresh(clone)
+    async with reusing_sources(db, [src.queue_source_id]):
+        clone = _copy_item_fields(src, new_batch_id, max_pos + 1)
+        db.add(clone)
+        await db.commit()
+        await db.refresh(clone)
     logger.info("Cloned queue item %s → %s (keep_batch=%s)", src.id, clone.id, keep_batch)
     return clone
 
@@ -286,6 +304,18 @@ async def clone_batch(db: AsyncSession, batch_id: str) -> list[PrintQueueItem]:
     """Create a fresh batch (new batch_id) duplicating every pending item
     in the source batch.  Copies appended to end of queue, preserve
     intra-batch order.
+
+    ⚠️ **Every sibling's blob**, in one acquisition of the guard: a batch normally
+    shares one source, but nothing in the model requires it (rows can be grouped
+    into a batch after the fact), and a per-row guard would let the collector act
+    between two copies of the same batch.
+
+    ⚠️ The ``refresh`` loop is deliberately **outside** the guard. The rows are
+    already committed by then and no refresh can affect who owns a blob, while the
+    guard is the most contended lock in the process and every holder of it is
+    already bounded by SQLite's 15-second busy timeout on the commit above (the
+    real bound on a hold, not the batch size). One reload per clone under that lock
+    buys nothing.
     """
     siblings = await get_batch_pending_items(db, batch_id)
     if not siblings:
@@ -302,12 +332,13 @@ async def clone_batch(db: AsyncSession, batch_id: str) -> list[PrintQueueItem]:
     ).scalar() or 0
 
     clones: list[PrintQueueItem] = []
-    for i, src in enumerate(siblings):
-        clone = _copy_item_fields(src, new_batch_id, max_pos + 1 + i)
-        db.add(clone)
-        clones.append(clone)
+    async with reusing_sources(db, [src.queue_source_id for src in siblings]):
+        for i, src in enumerate(siblings):
+            clone = _copy_item_fields(src, new_batch_id, max_pos + 1 + i)
+            db.add(clone)
+            clones.append(clone)
 
-    await db.commit()
+        await db.commit()
     for c in clones:
         await db.refresh(c)
     logger.info("Cloned batch %s into new batch %s (%d items)", batch_id, new_batch_id, len(clones))

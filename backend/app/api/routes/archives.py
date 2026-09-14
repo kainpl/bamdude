@@ -1904,12 +1904,20 @@ async def get_archive_delete_impact(
     items, so this is what warns the user the whole batch will disappear.
     """
     from backend.app.services.archive_purge import archive_purge_service
+    from backend.app.services.queue_source_release import delete_impact
 
     user, can_read_all = auth_result
     service = ArchiveService(db)
     archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
     total, in_flight = await archive_purge_service.count_related_queue_items(db, archive.id)
-    return {"related_queue_items": total, "currently_printing": in_flight}
+    impact = await delete_impact(db, archive_ids=[archive.id])
+    return {
+        "related_queue_items": total,
+        "currently_printing": in_flight,
+        "pending_queue_items": impact.pending_total,
+        "pending_self_contained": impact.self_contained,
+        "pending_needs_original": impact.needs_original,
+    }
 
 
 @router.delete("/{archive_id}")

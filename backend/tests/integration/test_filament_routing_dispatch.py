@@ -85,6 +85,13 @@ async def test_auto_intake_tick_and_publish_sparse_external(
         mqtt._client.publish.assert_not_called()
         return
     assert item.plate_id == 15
+    # m173: the promotion carries the captured source onto the per-printer row —
+    # the assignment re-reads nothing from the share, and both rows own the blob
+    # until the shared cleanup (queue-source-spool spec §7).
+    auto_row = (await db_session.execute(select(AutoQueueItem))).scalar_one()
+    assert auto_row.queue_source_id is not None
+    assert item.queue_source_id == auto_row.queue_source_id
+    assert item.source_snapshot == auto_row.source_snapshot
     assert not item.use_ams
     assert json.loads(item.ams_mapping) == [-1, -1, 254]
     assert deserialize_policy(item.filament_routing).mode == "auto"

@@ -128,6 +128,10 @@ async def build_virtual_current_print(
         "id": -printer_id,  # negative sentinel, never collides with real ids
         "queue_id": queue_row.id,
         "printer_id": printer_id,
+        # m173: a synthesised row has no queue source and never will — there is
+        # no job here to hydrate. Stated rather than left to the schema default,
+        # which would report this running print as ``legacy`` (spec §2, §8).
+        "source_storage": "exempt",
         "waiting_reason": None,
         "archive_id": archive.id,
         "library_file_id": None,

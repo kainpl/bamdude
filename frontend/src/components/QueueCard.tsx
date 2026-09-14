@@ -66,6 +66,7 @@ import { queueResumePayload } from '../utils/queueStatus';
 import { invalidateQueueViews } from '../utils/queryInvalidation';
 import { usePlateDefects } from '../hooks/usePlateDefects';
 import { PlateDefectsRow } from './PlateDefectsRow';
+import { QueueSourceIndicator } from './QueueSourceIndicator';
 
 interface QueueCardProps {
   queue: PrinterQueue;
@@ -538,14 +539,12 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
     () => withCurrentPrint(copyableItems(queueRows), status),
     [queueRows, status],
   );
-  const copyDroppedCount = queueRows.length - copyableItems(queueRows).length;
   const canCopyQueue = copySourceItems.length > 0;
 
   const copyQueueModal = copyOpen ? (
     <CopyQueueModal
       source={queue}
       items={copySourceItems}
-      droppedCount={copyDroppedCount}
       onCancel={() => setCopyOpen(false)}
       onConfirm={(files, printerIds) => {
         setCopyOpen(false);
@@ -1279,6 +1278,14 @@ function PendingItemRow({
                 />
               );
             })()}
+            {/* Does this job own the bytes it prints (m173)? Same place and
+                same size as the plate icon above, for the same reason: it lines
+                up down the column and the row keeps its geometry. Renders
+                nothing at all for an external print or an older server. */}
+            <QueueSourceIndicator
+              state={item.source_storage}
+              className="w-3 h-3"
+            />
             <p className="text-xs text-white truncate flex-1">{name}</p>
             {isInBatch && batchAccent && (
               <span className={`text-[9px] px-1 rounded ${batchAccent.badge} font-medium`}>
@@ -1586,6 +1593,14 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
             return (
               <div key={item.id} className="flex items-center gap-2 py-1 px-2 rounded bg-red-500/5 group">
                 <X className="w-3 h-3 text-red-600 dark:text-red-400 flex-shrink-0" />
+                {/* A failed row keeps its saved file ON PURPOSE, so Retry has
+                    something to print — the tooltip says so where the operator
+                    is looking at the row that is holding it (spec §10). */}
+                <QueueSourceIndicator
+                  state={item.source_storage}
+                  held
+                  className="w-3 h-3"
+                />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-white truncate">{name}</p>
                   {item.error_message && (
@@ -1618,6 +1633,11 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
             return (
               <div key={item.id} className="flex items-center gap-2 py-1 px-2 rounded bg-bambu-dark-tertiary/40 group">
                 <Ban className="w-3 h-3 text-bambu-gray flex-shrink-0" />
+                <QueueSourceIndicator
+                  state={item.source_storage}
+                  held
+                  className="w-3 h-3"
+                />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-white truncate">{name}</p>
                   {item.error_message && (
@@ -1650,6 +1670,11 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
             return (
               <div key={item.id} className="flex items-center gap-2 py-1 px-2 rounded bg-yellow-500/5 group">
                 <Pause className="w-3 h-3 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
+                <QueueSourceIndicator
+                  state={item.source_storage}
+                  held
+                  className="w-3 h-3"
+                />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-white truncate">{name}</p>
                 </div>

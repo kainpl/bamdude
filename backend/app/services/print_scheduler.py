@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -12,7 +13,6 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.config import settings
 from backend.app.core.database import async_session
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
@@ -25,7 +25,12 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.schemas.calibration_mode import derive_mode
 from backend.app.services import chamber_history
-from backend.app.services.filament_intake import routing_detail
+from backend.app.services.filament_intake import (
+    item_descriptor,
+    resolve_source_path,
+    routing_detail,
+    source_display_filename,
+)
 from backend.app.services.filament_preflight import preflight_item
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.filament_routing import RoutingDeferred
@@ -2489,6 +2494,15 @@ class PrintScheduler:
             library_file = result.scalar_one_or_none()
             if library_file:
                 return library_file.filename.replace(".gcode.3mf", "").replace(".3mf", "")
+        # A job whose original rows are gone still knows what it is called: the
+        # snapshot carries the human filename precisely so the hash never has to
+        # stand in for it (§4, A04) — and when the payload cannot answer, the job
+        # number is the honest label. Never the object's name: this one goes into
+        # a notification, where a 64-hex string tells the operator nothing.
+        descriptor = await item_descriptor(db, item)
+        if descriptor is not None:
+            with suppress(SourceUnavailable):
+                return source_display_filename(descriptor).replace(".gcode.3mf", "").replace(".3mf", "")
         return f"Job #{item.id}"
 
     async def _get_printer(self, db: AsyncSession, printer_id: int) -> Printer | None:
@@ -2603,40 +2617,58 @@ class PrintScheduler:
             await self._power_off_if_needed(db, item)
             return
 
-        # Determine source: archive or library file. file_path is kept so we
-        # can still do the "file exists on disk" guard before delegating.
+        # Determine source: the captured copy when this job has one (m173), else
+        # its archive or library original. ``file_path`` is kept so we can still
+        # do the "file exists on disk" guard before delegating.
+        #
+        # ⚠️ A job with a ``queue_source_id`` and no original reference at all is
+        # a first-class job (spec §7): the rows below are read for what only THEY
+        # know (the slice's nozzle diameter, the display name, which runner), and
+        # their absence is not a refusal any more — the bytes come from the
+        # descriptor either way, and this is the fourth of the four places that
+        # used to build a source path of its own.
         archive = None
         library_file = None
-        file_path: Path | None = None
+        descriptor = await item_descriptor(db, item)
 
         if item.archive_id:
             result = await db.execute(select(PrintArchive).where(PrintArchive.id == item.archive_id))
             archive = result.scalar_one_or_none()
-            if not archive:
+            if not archive and descriptor is None:
                 await self._fail_source_item(db, item, "source_unreadable")
                 logger.error("Queue item %s: Archive %s not found", item.id, item.archive_id)
                 return
 
-            file_path = settings.base_dir / archive.file_path
-
         elif item.library_file_id:
             result = await db.execute(LibraryFile.active().where(LibraryFile.id == item.library_file_id))
             library_file = result.scalar_one_or_none()
-            if not library_file:
+            if not library_file and descriptor is None:
                 await self._fail_source_item(db, item, "source_unreadable")
                 logger.error("Queue item %s: Library file %s not found", item.id, item.library_file_id)
                 return
-            lib_path = Path(library_file.file_path)
-            file_path = lib_path if lib_path.is_absolute() else settings.base_dir / library_file.file_path
 
-        else:
-            # Neither archive nor library file specified
+        elif descriptor is None:
+            # Neither a snapshot nor an archive nor a library file
             await self._fail_source_item(db, item, "source_unreadable")
             logger.error("Queue item %s: No archive_id or library_file_id specified", item.id)
             return
 
-        # Check file exists on disk (fast fail before any dispatch work).
+        file_path: Path | None = resolve_source_path(archive, library_file, descriptor=descriptor)
+        if file_path is None:
+            # A source row with an empty ``file_path`` (a pending archive) — the
+            # same refusal the missing-row branches above give.
+            await self._fail_source_item(db, item, "source_unreadable")
+            logger.error("Queue item %s: source row carries no file", item.id)
+            return
+
+        # Check file exists on disk (fast fail before any dispatch work) — and,
+        # for a job the snapshot has to name, that the snapshot can name it. Both
+        # answer with the same refusal and both must happen before the
+        # pending→printing flip below, so they share this one try.
+        snapshot_name: str | None = None
         try:
+            if descriptor is not None:
+                snapshot_name = source_display_filename(descriptor)
             await require_source_file(file_path)
         except SourceUnavailable as exc:
             if exc.reason in SOURCE_FAILURES:
@@ -2673,6 +2705,20 @@ class PrintScheduler:
         # nozzles yet, we fall through and dispatch exactly as before. On
         # dual-nozzle printers (H2D) a match against EITHER installed nozzle
         # passes, so a 0.6 slice is fine as long as one hotend is a 0.6.
+        #
+        # ⚠️ Since m173 ``archive`` can be None for a job that still dispatches
+        # (its snapshot holds the bytes, its archive row was purged), so the
+        # question would be asked of unknown data — except that it is not asked at
+        # all in that case, and the reason is worth having written down rather than
+        # re-derived: the block is gated on ``guard is None``, and a preflight
+        # guard is None for exactly two kinds of job — a calibration job (§2's
+        # exemption: never captured, so ``archive`` is None only if its own library
+        # asset vanished, and it carries no ``nozzle_diameter`` either) and a raw
+        # ``.gcode`` job (whose nozzle diameter cannot exist: the value is 3MF
+        # metadata). Every job that HAS a snapshot and an archive-shaped source
+        # gets a guard, so it never reaches this line. If a future change makes a
+        # 3MF job guard-less, read the diameter off the snapshot rather than
+        # letting "unknown" mean "dispatch".
         sliced_nozzle = archive.nozzle_diameter if archive else None
         if sliced_nozzle and guard is None:
             installed = _installed_nozzle_diameters(printer_manager.get_status(item.queue_id))
@@ -2790,6 +2836,7 @@ class PrintScheduler:
             "calibration_session_id": item.calibration_session_id,
         }
 
+        dispatch_source_id: int | None
         if archive:
             dispatch_kind: Literal["reprint_archive", "print_library_file"] = "reprint_archive"
             dispatch_source_id = archive.id
@@ -2798,6 +2845,20 @@ class PrintScheduler:
             dispatch_kind = "print_library_file"
             dispatch_source_id = library_file.id
             dispatch_source_name = library_file.filename
+        elif descriptor is not None and snapshot_name is not None:
+            # No original row left — the snapshot carries everything the runner
+            # needs, so ``source_id`` is None and the runner looks nothing up.
+            # The provenance decides which runner only so that the archive row,
+            # the log lines and the panel keep saying "reprint" for a reprint;
+            # the bytes are the same either way (§4: provenance is navigation).
+            # ⚠️ A payload whose provenance is unreadable never gets here: it has
+            # no usable name either, and ``source_display_filename`` above already
+            # refused it — so this mapping is never applied to a guessed ``{}``.
+            dispatch_kind = (
+                "reprint_archive" if descriptor.provenance.get("kind") == "archive" else "print_library_file"
+            )
+            dispatch_source_id = None
+            dispatch_source_name = snapshot_name
         else:
             # Should have been caught above, but belt-and-braces.
             await self._fail_item(db, item, "No source file specified")
@@ -2848,7 +2909,7 @@ class PrintScheduler:
         printer_name: str,
         printer_serial: str | None,
         dispatch_kind: Literal["reprint_archive", "print_library_file"],
-        dispatch_source_id: int,
+        dispatch_source_id: int | None,
         dispatch_source_name: str,
         options: dict[str, Any],
         requested_by_user_id: int | None,

@@ -14,7 +14,9 @@ def write_routing_3mf(
     settings: dict | None = None,
     gcode_plates: list[int] | None = None,
     nozzle_groups: dict[int, int] | None = None,
-    prediction: int = 3600,
+    prediction: int | None = 3600,
+    bed_type: str | None = None,
+    plate_pngs: dict[int, bytes] | None = None,
 ) -> Path:
     """Preserve supplied usage strings and sparse IDs, including invalid data.
 
@@ -27,12 +29,32 @@ def write_routing_3mf(
     the two agree: the plan reads the metadata, the writers read the file, and a
     row whose stored estimate came from a 3MF that says something else is a
     fixture that proves nothing.
+
+    ``prediction=None`` omits the key entirely, which is a real 3MF: a plate whose
+    slicer wrote no estimate. It is not the same as ``0`` — a reader can tell "no
+    answer" from "zero seconds", and the queue card has to.
+
+    ``bed_type`` writes the plate's ``curr_bed_type`` — the third value the queue
+    card's per-plate reader takes out of a 3MF, beside the estimate and the
+    filament weight. Omitted by default so every existing caller's file is
+    byte-identical.
+
+    ``plate_pngs`` writes ``Metadata/plate_<N>.png`` — the slicer's render of a
+    plate, which is the picture a queue row shows. Per plate and opt-in, because
+    "this plate has no render" is a real 3MF (an STL-sourced convert, a raw
+    G-code source) and a fixture that always had one could not tell the two
+    apart.
     """
     root = Element("config")
     for plate_id, filaments in plates.items():
         plate = SubElement(root, "plate")
-        for key, value in (("index", plate_id), ("printer_model_id", model), ("prediction", prediction)):
+        facts = [("index", plate_id), ("printer_model_id", model)]
+        if prediction is not None:
+            facts.append(("prediction", prediction))
+        for key, value in facts:
             SubElement(plate, "metadata", key=key, value=str(value))
+        if bed_type is not None:
+            SubElement(plate, "metadata", key="curr_bed_type", value=bed_type)
         for filament in filaments:
             SubElement(plate, "filament", {k: str(v) for k, v in filament.items() if v is not None})
         for group_id, extruder_id in (nozzle_groups or {}).items():
@@ -43,6 +65,8 @@ def write_routing_3mf(
             zf.writestr("Metadata/project_settings.config", json.dumps(settings))
         for plate_id in plates if gcode_plates is None else gcode_plates:
             zf.writestr(f"Metadata/plate_{plate_id}.gcode", f"; printer_model = {model}\n; plate {plate_id}\n")
+        for plate_id, png in (plate_pngs or {}).items():
+            zf.writestr(f"Metadata/plate_{plate_id}.png", png)
     return path
 
 

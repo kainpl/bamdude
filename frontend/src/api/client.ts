@@ -17,10 +17,23 @@ import { createPrinterStatusBatcher } from './printerStatusBatch';
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /**
+   * The machine-readable refusal code, when the server sent one.
+   *
+   * ⚠️ **The message is prose and must never be branched on** (CLAUDE.md). A
+   * refusal the frontend has to REACT to carries a code in its detail —
+   * `{code, params, message}` for the filament-routing / queue-source family,
+   * `{error, message}` elsewhere — and this is where that code arrives, so a
+   * caller can tell `source_copy_busy` (ask again) from `source_unreadable`
+   * (the file is gone) without matching English sentences that are translated
+   * server-side anyway.
+   */
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -427,6 +440,7 @@ function formatErrorDetail(detail: unknown, status: number): string {
 async function handleErrorResponse(response: Response, __isRetry: boolean): Promise<void> {
   const error = await response.json().catch(() => ({}));
   const message = formatErrorDetail(error.detail, response.status);
+  const code = refusalCode(error.detail);
 
   if (response.status === 401) {
     const refreshable = !__isRetry && REFRESH_ERROR_MESSAGES.some(m => message.includes(m));
@@ -452,7 +466,24 @@ async function handleErrorResponse(response: Response, __isRetry: boolean): Prom
     }
   }
 
-  throw new ApiError(message, response.status);
+  throw new ApiError(message, response.status, code);
+}
+
+/**
+ * The machine code inside a refusal detail, or `undefined`.
+ *
+ * Two shapes are in the wild and both are canon: `{code, params, message}`
+ * (filament routing and the queue-source taxonomy) and `{error, message}`
+ * (everything the frontend has to branch on elsewhere). Read in that order and
+ * only when the value is a string — a Pydantic 422's `detail` is an array, and
+ * a bare-string detail has no code at all.
+ */
+function refusalCode(detail: unknown): string | undefined {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
+  const d = detail as Record<string, unknown>;
+  if (typeof d.code === 'string') return d.code;
+  if (typeof d.error === 'string') return d.error;
+  return undefined;
 }
 
 // Resolved once: it cannot change without the page being reloaded, and calling
@@ -4121,6 +4152,14 @@ export interface DiscoveredTasmotaDevice {
  *  string form. 'auto' is only offered on models whose firmware supports it. */
 export type CalibrationMode = 'off' | 'auto' | 'on';
 
+/** Whether a queued job owns a local copy of the bytes it prints (m173).
+ *  `ready` — the copy is there and verified, so the job no longer depends on the
+ *  share, the library row or the archive it came from; `preparing` — being
+ *  captured right now; `legacy` — no copy yet, it still depends on its original
+ *  source; `broken` — a copy was taken and no longer answers for it; `exempt` —
+ *  an external print or a calibration job, which never had a source to copy. */
+export type QueueSourceStorage = 'ready' | 'preparing' | 'legacy' | 'broken' | 'exempt';
+
 // Print Queue types
 export interface PrintQueueItem {
   filament_routing?: FilamentRoutingSnapshot | null;
@@ -4180,6 +4219,20 @@ export interface PrintQueueItem {
   error_message: string | null;
   created_at: string;
   batch_id?: string | null;
+  /** Whether this job owns a local copy of the bytes it prints (m173). */
+  source_storage?: QueueSourceStorage;
+  /** Size of that copy, where known. */
+  source_size_bytes?: number | null;
+  /**
+   * Whether `getQueueItemSourceThumbnail(id)` has a picture for this row: the
+   * render of the job's own plate inside the bytes it captured (m173, spec §4).
+   *
+   * ⚠️ A boolean, unlike the two `*_thumbnail` fields below, which are server
+   * DISK PATHS — they say a picture exists and the id says where to ask for it.
+   * A job whose original rows are gone has no such id, which is exactly why it
+   * needs this. `false` means draw the empty state; never ask and never guess.
+   */
+  source_thumbnail?: boolean;
   archive_name?: string | null;
   archive_thumbnail?: string | null;
   library_file_name?: string | null;
@@ -4479,6 +4532,12 @@ export interface AutoQueueItem {
   print_time_seconds: number | null;
   been_jumped: boolean;
   batch_id: string | null;
+  /** Whether this row owns a local copy of the bytes its work prints (m173).
+   *  Never `exempt` — the external and calibration exceptions only ever reach a
+   *  per-printer row. */
+  source_storage?: QueueSourceStorage;
+  /** Size of that copy, where known. */
+  source_size_bytes?: number | null;
   /** m171: set when the rebalancer moved this row's work here from another model. */
   rebalanced_at?: string | null;
   rebalanced_from_model?: string | null;
@@ -8902,6 +8961,30 @@ export const api = {
     return request<PrintQueueItem[]>(`/queue/?${params}`);
   },
   getQueueItem: (id: number) => request<PrintQueueItem>(`/queue/${id}`),
+  /**
+   * The picture of a queued job's OWN captured bytes (m173, spec §4 / A09).
+   *
+   * ⚠️ **Fetched, not linked.** Unlike `getArchiveThumbnail` /
+   * `getLibraryFileThumbnailUrl`, whose routes are deliberately public, this one
+   * is behind the same `queue:read_all` / `queue:read_own` split as the queue
+   * list itself — a picture is content, and a reader who cannot see the row may
+   * not see its picture. An `<img src>` cannot carry a bearer token, and the
+   * camera stream token beside it carries no identity, so it could not express
+   * "their row, not yours". Hence the blob dance, the same one
+   * `downloadProductExport` does for a permissioned file: the bytes are fetched
+   * with the session's token and `useQueueRowPicture` hands `<img>` an object
+   * URL. Ask only when the row's `source_thumbnail` is true.
+   */
+  getQueueItemSourceThumbnail: async (id: number): Promise<Blob> => {
+    const headers: Record<string, string> = {};
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/queue/${id}/source-thumbnail`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new ApiError(formatErrorDetail(error.detail, response.status), response.status);
+    }
+    return response.blob();
+  },
   addToQueue: (data: PrintQueueItemCreate) =>
     request<PrintQueueItem>('/queue/', {
       method: 'POST',

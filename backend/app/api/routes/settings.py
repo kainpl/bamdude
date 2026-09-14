@@ -556,15 +556,28 @@ async def _create_backup_zip(output_path: Path | None) -> tuple[Path, str]:
     from backend.app.core.database import Base, engine
     from backend.app.core.db_portable import _file_work, dump_to_sqlite
     from backend.app.core.paths import resolve_data_dir
-    from backend.app.services.backup_files import stage_files, stage_zigbee_db, write_manifest, write_zip
+    from backend.app.services import queue_sources
+    from backend.app.services.backup_files import (
+        stage_files,
+        stage_queue_spool,
+        stage_zigbee_db,
+        write_manifest,
+        write_zip,
+    )
 
     filename = f"bamdude-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
     with tempfile.TemporaryDirectory() as temp_dir:
         staging = Path(temp_dir)
-        await dump_to_sqlite(engine, Base.metadata, staging / "bamdude.db")
-        await _file_work(stage_files, app_settings, resolve_data_dir(), staging)
-        await _file_work(stage_zigbee_db, resolve_data_dir(), staging)
-        await _file_work(write_manifest, staging)
+        # The pin starts before the DB export and remains until every referenced
+        # object was copied. GC therefore cannot unlink a row the portable
+        # snapshot still names while this backup is being assembled.
+        async with queue_sources.pin_backup():
+            await dump_to_sqlite(engine, Base.metadata, staging / "bamdude.db")
+            data_dir = resolve_data_dir()
+            await _file_work(stage_files, app_settings, data_dir, staging)
+            await _file_work(stage_zigbee_db, data_dir, staging)
+            await _file_work(stage_queue_spool, data_dir, staging, staging / "bamdude.db")
+            await _file_work(write_manifest, staging)
         if output_path is not None:
             zip_file = output_path / filename  # SEC-PATH-OK: trusted output directory and server-generated filename.
         else:
@@ -648,7 +661,8 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
         validate_sqlite_backup,
     )
     from backend.app.core.paths import resolve_data_dir
-    from backend.app.services.backup_files import FileRestore, extract_zip
+    from backend.app.services import queue_sources
+    from backend.app.services.backup_files import FileRestore, extract_zip, validate_staged_queue_spool
 
     if not file.filename or not file.filename.endswith(".zip"):
         raise HTTPException(400, "Invalid backup file: must be a .zip file")
@@ -677,6 +691,7 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
             zigbee_db = staging / "zigbee/zigbee.db"
             if zigbee_db.exists():
                 await _file_work(validate_sqlite_backup, zigbee_db)
+            await _file_work(validate_staged_queue_spool, staging, backup_db)
         except ValueError as exc:
             logger.warning("Restore preflight rejected database: %s", exc)
             raise HTTPException(400, "Invalid backup database: damaged or incompatible. Check server logs.") from exc
@@ -709,27 +724,34 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
 
                 # Own the transaction BEFORE entering a worker: cancellation waits
                 # for the worker, then finally can undo every completed move.
-                await _file_work(files.prepare)
-                await db.close()
-                await close_all_connections()
-                await _file_work(files.apply)
+                # A restore changes both the database references and the spool
+                # tree. The same guard used by capture/publication prevents a
+                # dispatcher from observing half of that change; receipts that
+                # started before the swap are invalidated only after all file
+                # staging has succeeded.
+                async with queue_sources.storage_mutation():
+                    await _file_work(files.prepare)
+                    queue_sources.invalidate_receipts()
+                    await db.close()
+                    await close_all_connections()
+                    await _file_work(files.apply)
 
-                logger.info("Restoring database from backup...")
-                if is_sqlite():
-                    db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
+                    logger.info("Restoring database from backup...")
+                    if is_sqlite():
+                        db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
 
-                    def replace_sqlite():
-                        # Online backup writes through the live DB's WAL. Mark
-                        # commit inside the worker even if its await is cancelled.
-                        _snapshot_sqlite(backup_db, db_path)
-                        files.committed = True
+                        def replace_sqlite():
+                            # Online backup writes through the live DB's WAL. Mark
+                            # commit inside the worker even if its await is cancelled.
+                            _snapshot_sqlite(backup_db, db_path)
+                            files.committed = True
 
-                    await _file_work(replace_sqlite)
-                else:
-                    from backend.app.core.database import engine
+                        await _file_work(replace_sqlite)
+                    else:
+                        from backend.app.core.database import engine
 
-                    await import_sqlite_to_postgres(engine, Base.metadata, backup_db)
-                    files.committed = True  # No await between DB success and this flag.
+                        await import_sqlite_to_postgres(engine, Base.metadata, backup_db)
+                        files.committed = True  # No await between DB success and this flag.
             finally:
                 await _file_work(files.finish)
 

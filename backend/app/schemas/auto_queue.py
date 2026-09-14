@@ -20,6 +20,7 @@ from backend.app.schemas.filament_routing import FilamentOverride
 from backend.app.schemas.print_queue import serialize_utc_datetime
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 from backend.app.schemas.timelapse import TimelapseStorage
+from backend.app.services.queue_source_descriptor import SourceStorageState
 
 UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)]
 
@@ -175,6 +176,12 @@ class AutoQueueItemResponse(BaseModel):
     been_jumped: bool
 
     batch_id: str | None
+    # Whether this row owns a local copy of the bytes its work prints (m173,
+    # spec §8). Add-only and read-only; no auto row is ``exempt`` — the external
+    # and calibration exceptions only ever reach a per-printer row. The raw spool
+    # path is deliberately not exposed (§10).
+    source_storage: SourceStorageState = "legacy"
+    source_size_bytes: int | None = None
     # m171: set when the rebalancer moved this row's work here from another model.
     rebalanced_at: UTCDatetime = None
     rebalanced_from_model: str | None = None

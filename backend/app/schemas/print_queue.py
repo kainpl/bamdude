@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, PlainSerializer, model_validator
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.filament_routing import FilamentRoutingChoices
 from backend.app.schemas.timelapse import TimelapseStorage
+from backend.app.services.queue_source_descriptor import SourceStorageState
 from backend.app.utils.temperature_limits import MAX_CHAMBER_TEMP_C
 
 
@@ -160,6 +161,26 @@ class PrintQueueItemResponse(BaseModel):
     error_message: str | None
     created_at: UTCDatetime
     batch_id: str | None = None
+    # Whether this job owns a local copy of the bytes it prints (m173, spec §8).
+    # Add-only and read-only: ``ready`` is set for an attached, verified blob and
+    # never inferred from the kind of the original source; ``exempt`` is an
+    # external print or a calibration job; ``legacy`` is a row the background
+    # hydration has still to reach. The raw spool path is deliberately NOT
+    # exposed — there is no "print an arbitrary hash" surface (§10).
+    source_storage: SourceStorageState = "legacy"
+    source_size_bytes: int | None = None
+    # Whether ``GET /queue/{id}/source-thumbnail`` has a picture to serve for this
+    # row: the render of the job's OWN plate inside the bytes it captured (spec §4
+    # — the thumbnail is recoverable from the stored 3MF, and the UI must not
+    # require the original's).
+    #
+    # ⚠️ A **boolean**, unlike the ``*_thumbnail`` fields below, which are the
+    # server's disk paths and only say that a picture exists somewhere. This one
+    # answers "may I ask for it", so a row with no recoverable picture says
+    # ``False`` and the UI draws its honest empty state instead of a broken image.
+    # ``False`` for every legacy row, whose picture still comes from whichever
+    # original row it names.
+    source_thumbnail: bool = False
 
     # Nested info for UI
     archive_name: str | None = None

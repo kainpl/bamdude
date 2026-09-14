@@ -220,14 +220,18 @@ def dispatch_db(monkeypatch, db_session):
     monkeypatch.setattr("backend.app.services.background_dispatch.async_session", _session_ctx)
 
 
-async def _real_claim(db_session, printer_factory, raw_gcode_source):
-    """The claim a direct print actually takes at submit, through its own writer."""
+async def _real_claim(db_session, printer_factory, raw_gcode_source, staged):
+    """The claim a direct print actually takes at submit, through its own writer.
+
+    ``staged`` because a direct print is captured before it claims (m173): the
+    writer refuses ``origin="direct"`` without a receipt, so "the claim a direct
+    print actually takes" now includes its copy of the source."""
     from backend.app.models.printer_queue import PrinterQueue
     from backend.app.services.queue_batch import claim_printer_for_direct_print
 
     printer = await printer_factory()
     item = await claim_printer_for_direct_print(
-        db_session, printer_id=printer.id, origin="direct", library_file_id=raw_gcode_source.id
+        db_session, printer_id=printer.id, origin="direct", library_file_id=raw_gcode_source.id, staged=staged
     )
     await db_session.commit()
     queue = await db_session.get(PrinterQueue, item.queue_id)
@@ -247,13 +251,15 @@ async def _real_claim(db_session, printer_factory, raw_gcode_source):
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_a_refusal_fails_the_item_and_leaves_the_queue_idle(
-    db_session, printer_factory, dispatch_db, raw_gcode_source
+    db_session, printer_factory, dispatch_db, raw_gcode_source, a_direct_capture
 ):
     """⚠️ Ruling 13. ``check_queue`` skips every item in a queue whose status is
     ``error``, so failing the queue for a refusal would freeze exactly the queue
     strict mode exists to protect."""
     service = BackgroundDispatchService()
-    queue, item, job = await _real_claim(db_session, printer_factory, raw_gcode_source)
+    queue, item, job = await _real_claim(
+        db_session, printer_factory, raw_gcode_source, await a_direct_capture(raw_gcode_source)
+    )
 
     await service._release_direct_claim(job, status="failed", queue_error=False)
 
@@ -267,10 +273,14 @@ async def test_a_refusal_fails_the_item_and_leaves_the_queue_idle(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_real_failure_still_puts_the_queue_in_error(db_session, printer_factory, dispatch_db, raw_gcode_source):
+async def test_a_real_failure_still_puts_the_queue_in_error(
+    db_session, printer_factory, dispatch_db, raw_gcode_source, a_direct_capture
+):
     """The default did not move: a dispatch that broke still stops the queue."""
     service = BackgroundDispatchService()
-    queue, item, job = await _real_claim(db_session, printer_factory, raw_gcode_source)
+    queue, item, job = await _real_claim(
+        db_session, printer_factory, raw_gcode_source, await a_direct_capture(raw_gcode_source)
+    )
 
     await service._release_direct_claim(job, status="failed")
 
