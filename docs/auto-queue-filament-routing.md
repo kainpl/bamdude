@@ -8,8 +8,11 @@ AutoQueue reads the selected plate from the sliced 3MF and checks every filament
 - **AMS only** requires AMS sources for every used channel.
 - **External only** allows supported external feeds even when the printer has an AMS attached.
 - **Require exact colors**, off by default, requires the file's colors. With it off, exact matches are preferred, while another color of the required material may be used. A color pinned on an individual channel remains required.
+- **Allow match by base material**, on by default, uses the resolved filament family's `filament_type` such as `PETG`, rather than the sliced profile name, vendor, or product variant. A child profile inherits that field through its base preset: a custom 333Print PETG profile can therefore use Generic PETG. When the switch is off, the profile's own type is required and a known `tray_info_idx` variant remains a restriction. An explicit per-channel material override takes precedence over the family material.
 
 The number of copies does not change these choices. Different channels always need distinct physical sources. Multicolor jobs remain supported: two channels cannot be assigned to a single external spool. Supported dual-nozzle printers can use separate external feeds or AMS on one nozzle and external on the other when the file and live printer configuration establish the correct nozzle bindings. This applies to the shared model capability registry, including models beyond X2D.
+
+Material names use the shared case-insensitive compatibility table; at present only `PA-CF`, `PA12-CF`, and `PAHT-CF` are one interchangeable group. Exact colour preference remains ahead of “Drain the emptiest spool first”. That farm setting is on by default and ranks only otherwise-equivalent automatic sources: inventory/Spoolman tracked AMS grams first, then firmware-only remaining percentages, with unknown values last. It never overrides material, nozzle, source policy, a physical pin, or a strict-colour requirement, and is skipped when AMS Filament Backup is known to be off.
 
 ## Files and waiting
 
@@ -18,6 +21,8 @@ A whole-file choice is accepted when the file contains one unambiguous printable
 A valid job can wait when no printer is currently compatible or ready. A temporary failure to obtain live compatibility information does not prevent adding a valid source. The preview is advisory and does not reserve a printer.
 
 The server checks routing again before preparing a print and immediately before publishing its start command. A changed spool, connection, source file, or queue claim can defer the attempt. A queued job returns to waiting with a reason; a direct Print Now refusal does not schedule a future print. An aborted preparation is excluded from print and production counts, and its original source is retained.
+
+The router searches for a complete mapping rather than taking the first usable slot: a flexible channel cannot consume the only source required by a pinned or strict-colour channel. Remaining filament is a ranking signal, not a reservation or a check that the reported grams cover the slicer's estimated demand.
 
 ## Editing, copying, and existing queues
 
