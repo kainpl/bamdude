@@ -127,9 +127,9 @@ class ArchivePurgeService:
         # was false on the backend most installs run. m173 made the rule SET
         # NULL: a job that owns a local copy of its bytes has to survive its
         # archive going away. The cancel below is therefore the whole of what
-        # happens to a pending row, on both dialects, and the code-level detach
-        # of the rows that remain — the one SQLite needs because it honours no FK
-        # action — lands with Task 9 of the queue-source-spool plan.
+        # happens to a pending row, on both dialects — the link is NOT cut here,
+        # because a trashed archive can be restored; the code-level detach SQLite
+        # needs runs at hard-delete time, in ``ArchiveService.delete_archive``.
         await ArchivePurgeService._cancel_pending_queue_items(db, archive.id)
         await db.commit()
         await db.refresh(archive)
@@ -137,24 +137,24 @@ class ArchivePurgeService:
 
     @staticmethod
     async def _cancel_pending_queue_items(db: AsyncSession, archive_id: int) -> None:
-        """Cancel pending queue items pointing at a now-trashed archive.
+        """Cancel the pending jobs that cannot print once this archive is gone.
 
         Only ``pending`` rows are touched — ``printing`` is a rare race the
         printer-side fail path catches anyway, and completed / failed /
         cancelled rows are historical. Does not commit; the caller's
         transaction does.
-        """
-        from backend.app.models.print_queue import PrintQueueItem
 
-        result = await db.execute(
-            select(PrintQueueItem).where(
-                PrintQueueItem.archive_id == archive_id,
-                PrintQueueItem.status == "pending",
-            )
+        ⚠️ **Two things this did not do, both answered in one place now (§10).** It
+        reached ``print_queue`` only, so a pending auto-queue row naming the same
+        archive was told nothing at all and merely stopped being routable; and it
+        cancelled every pending row, including the ones that hold their own copy of
+        the bytes and print perfectly well without this archive.
+        """
+        from backend.app.services import queue_source_release
+
+        await queue_source_release.source_trashed(
+            db, archive_ids=[archive_id], reason=queue_source_release.REASON_ARCHIVE_DELETED
         )
-        for qi in result.scalars().all():
-            qi.status = "cancelled"
-            qi.waiting_reason = "Source archive deleted"
 
     @staticmethod
     async def count_related_queue_items(db: AsyncSession, archive_id: int) -> tuple[int, int]:

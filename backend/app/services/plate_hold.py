@@ -98,6 +98,19 @@ async def clean_up_finished_row(
         )
         return False
 
+    # A completed queue row is the last owner of its queue-spool bytes until
+    # the archive has a separate, readable copy.  Do not make cleanup erase
+    # both representations while an archive download is still retrying.
+    if queue_item.queue_source_id is not None:
+        from backend.app.services.queue_source_release import independent_archive_bytes
+
+        missing = await independent_archive_bytes(db, queue_item.archive_id)
+        if missing is not None:
+            queue_item.waiting_reason = f"Keeping queued file while archive download retries: {missing}"
+            await db.commit()
+            logger.info("Keeping completed queue item %s: %s", queue_item.id, missing)
+            return False
+
     item_id, archive_id, queue_id = queue_item.id, queue_item.archive_id, queue_item.queue_id
     await detach_print_queue_refs(db, [item_id])
     await db.delete(queue_item)

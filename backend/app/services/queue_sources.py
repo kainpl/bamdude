@@ -129,6 +129,16 @@ OBJECTS_DIRNAME = "objects"
 STAGING_DIRNAME = "staging"
 _HEX = frozenset("0123456789abcdef")
 
+#: What makes a job an owner of a blob — §9's owner table, as columns.
+#:
+#: **Written once on purpose.** :func:`_owned_ids` reads it to decide what the
+#: collector may release, and ``services/queue_source_release.py`` reads the same
+#: two tables to tell a delete pre-flight which jobs survive their original. A
+#: second list of "who owns a snapshot" is how those two answers start to
+#: disagree, and the disagreement shows up as a file unlinked under a running
+#: print. Status is deliberately not part of it — see :func:`_owned_ids`.
+OWNER_COLUMNS = (PrintQueueItem.queue_source_id, AutoQueueItem.queue_source_id)
+
 
 # --------------------------------------------------------------------------- #
 # Errors — the taxonomy the API maps (§6). The HTTP status lives with the class
@@ -1320,7 +1330,7 @@ async def _owned_ids(session: AsyncSession) -> set[int]:
     reference is the row going away.
     """
     owned: set[int] = set()
-    for column in (PrintQueueItem.queue_source_id, AutoQueueItem.queue_source_id):
+    for column in OWNER_COLUMNS:
         rows = await session.scalars(select(column).where(column.is_not(None)).distinct())
         owned.update(int(value) for value in rows)
     return owned

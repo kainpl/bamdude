@@ -776,6 +776,7 @@ async def delete_printer(
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer_queue import PrinterQueue
     from backend.app.services.archive import ArchiveService
+    from backend.app.services.queue_counters import detach_print_queue_refs
 
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
@@ -845,6 +846,14 @@ async def delete_printer(
     # long-lived queue ever held just to delete it row by row.
     queue_ids = (await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalars().all()
     if queue_ids:
+        # A printer-side item may be the dispatched half of an auto-queue row.
+        # Bulk DELETE bypasses the ordinary queue endpoint, so do its explicit
+        # SQLite-safe cleanup first: otherwise the router row keeps the queue
+        # source alive for ever after its printer is gone.
+        item_ids = (
+            (await db.execute(select(PrintQueueItem.id).where(PrintQueueItem.queue_id.in_(queue_ids)))).scalars().all()
+        )
+        await detach_print_queue_refs(db, item_ids)
         await db.execute(sql_delete(PrintQueueItem).where(PrintQueueItem.queue_id.in_(queue_ids)))
 
     # Everything whose FK already says it dies with the printer.
