@@ -889,6 +889,57 @@ def expand_to_project_slots(zf: zipfile.ZipFile, used: list[dict]) -> list[dict]
     return out
 
 
+def _first_plate_index(zf: zipfile.ZipFile) -> int | None:
+    """The index of the file's first declared plate, or ``None`` when unknown.
+
+    Only callers that name no plate of their own use this.  The legacy archive
+    preview may guess plate 1 for incomplete metadata, but a queue row must not:
+    it would present a render for a plate the row cannot prove it represents.
+    """
+    if "Metadata/slice_info.config" not in zf.namelist():
+        return None
+    try:
+        root = ET.fromstring(zf.read("Metadata/slice_info.config").decode())
+    except Exception:  # a truncated or non-XML config — not a plate statement
+        return None
+    plates = root.findall(".//plate")
+    if not plates:
+        return None
+    for metadata in plates[0].findall("metadata"):
+        if metadata.get("key") == "index":
+            try:
+                return int(metadata.get("value") or "")
+            except ValueError:
+                return None
+    return None
+
+
+def plate_picture_entry(zf: zipfile.ZipFile, plate_id: int | None) -> str | None:
+    """The ZIP entry holding the slicer's render of one plate, or ``None``.
+
+    The picture a queued job shows is recoverable from the bytes it owns (spec
+    §4, A09), and this is where the entry is named — once, so the queue's flag
+    and the route that serves it cannot disagree about which plate was meant.
+
+    ⚠️ Bambu identifies a plate with ``<metadata key="index" value="N"/>``
+    **inside** ``<plate>``, never a ``plate_idx`` attribute, so a caller that
+    names no plate is answered through the same child metadata
+    :func:`_plates_in_scope` reads — the trap that made ``plate_number`` inert
+    for months.
+
+    **No fallback to another plate's render**, deliberately, and unlike the
+    legacy ``archives.get_plate_preview`` chain: plate 1's picture shown for a
+    plate-3 job is a lying picture, and the plate is exactly what a multi-plate
+    queue row is about. ``Metadata/plate_N_small.png`` is not the picture either
+    — it is the printer's list icon, a different image at a different size.
+    """
+    index = plate_id if plate_id is not None else _first_plate_index(zf)
+    if index is None:
+        return None
+    entry = f"Metadata/plate_{index}.png"
+    return entry if entry in zf.namelist() else None
+
+
 # paint_color attr on <triangle> elements (per-face filament painting).
 _PAINT_COLOR_ATTR_RE = re.compile(rb'paint_color="([0-9A-Fa-f]+)"')
 # Min share of painted triangles an extruder must cover to count as "used"

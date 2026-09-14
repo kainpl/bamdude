@@ -23,7 +23,11 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.services.product_composition import plate_filaments
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor
-from backend.app.utils.threemf_tools import extract_bed_type_from_3mf, extract_filament_usage_from_3mf
+from backend.app.utils.threemf_tools import (
+    extract_bed_type_from_3mf,
+    extract_filament_usage_from_3mf,
+    plate_picture_entry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +173,75 @@ def plate_filaments_cached(file_path: Path, plate_id: int | None) -> list[dict] 
     would be counted as "needs nothing").
     """
     return [dict(f) for f in _plate_facts(file_path, plate_id).filaments] or None
+
+
+# The same discipline for the row's PICTURE (m173, spec §4 / A09). A queue row
+# has to say whether it HAS one before anything asks for it — otherwise the UI is
+# guessing, and a list of fifty rows must not become fifty archive reads. So the
+# question "which entry is this plate's render" is answered from the container's
+# central directory (a namelist read, no decompression) and cached under the same
+# key shape as the metadata above: an unchanged file is asked once.
+#
+# ⚠️ Separate from ``_PLATE_META_CACHE`` on purpose rather than a fourth value in
+# its tuple: that tuple is returned by a public helper with three callers outside
+# this module, and widening it would reach all of them for a value none of them
+# wants. Both caches carry the same key and the same LRU bound.
+#
+# ⚠️ **Nothing has to invalidate either one.** The key is the file's own revision
+# (path + mtime + size), so a replaced file re-reads itself — and a snapshot's
+# path is content-addressed and immutable (S3), which makes the entry provably
+# still valid for exactly the files this reader is for.
+_PLATE_PICTURE_CACHE: "OrderedDict[tuple, str | None]" = OrderedDict()
+_PLATE_PICTURE_LOCK = Lock()
+_PLATE_PICTURE_MAX = 512
+
+
+def plate_picture_cached(file_path: Path, plate_id: int | None) -> str | None:
+    """The ZIP entry of a plate's render inside ``file_path``, cached by revision.
+
+    ``None`` for a file that is missing, is not a container, or simply does not
+    render that plate — a missing picture is not an error (spec §4: the UI shows
+    its honest empty state), so nothing here raises and nothing logs per poll.
+    """
+    try:
+        st = file_path.stat()
+    except OSError:
+        return None
+    key = (str(file_path), plate_id, st.st_mtime_ns, st.st_size)
+    with _PLATE_PICTURE_LOCK:
+        if key in _PLATE_PICTURE_CACHE:
+            _PLATE_PICTURE_CACHE.move_to_end(key)
+            return _PLATE_PICTURE_CACHE[key]
+
+    entry: str | None = None
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            entry = plate_picture_entry(zf, plate_id)
+    except (OSError, zipfile.BadZipFile):
+        entry = None
+
+    with _PLATE_PICTURE_LOCK:
+        _PLATE_PICTURE_CACHE[key] = entry
+        _PLATE_PICTURE_CACHE.move_to_end(key)
+        while len(_PLATE_PICTURE_CACHE) > _PLATE_PICTURE_MAX:
+            _PLATE_PICTURE_CACHE.popitem(last=False)
+    return entry
+
+
+def plate_picture_for_row(*, plate_id: int | None, descriptor: QueueSourceDescriptor | None) -> str | None:
+    """The entry holding the picture of a job's OWN captured bytes, or ``None``.
+
+    ``None`` for a legacy row — it has no snapshot, so its picture still comes
+    from whichever original row it names — and ``None`` for a snapshot whose
+    object is gone, broken, or carries no render of this plate. Never a fall back
+    to another file (S7) and never to another plate.
+
+    The plate precedence is the one every other snapshot reader uses:
+    ``plate_id or descriptor.plate_fallback``.
+    """
+    if descriptor is None:
+        return None
+    return plate_picture_cached(descriptor.path, plate_id or descriptor.plate_fallback)
 
 
 def plate_metadata_for_row(

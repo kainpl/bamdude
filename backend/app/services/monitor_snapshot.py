@@ -1,5 +1,6 @@
 """Read-only, bounded-query projection. Never asks the scheduler to run."""
 
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import get_args
@@ -27,9 +28,11 @@ from backend.app.schemas.monitor import (
     RestrictedJob,
 )
 from backend.app.services.background_dispatch import background_dispatch
+from backend.app.services.filament_intake import loaded_descriptor, source_display_filename
 from backend.app.services.hms_errors import PAUSE_REASON_LABELS
 from backend.app.services.printer_manager import display_temperatures, get_derived_status_name, printer_manager
 from backend.app.services.queue_wait_reason import WaitCode
+from backend.app.services.source_io import SourceUnavailable
 
 
 @dataclass(frozen=True)
@@ -53,11 +56,26 @@ def _utc(value: datetime | None) -> datetime | None:
 
 
 def _job(item: PrintQueueItem, access: MonitorAccess):
+    """What the wall calls a job.
+
+    ⚠️ The job's OWN snapshot is the last answer, not the first (m173, spec §4):
+    exactly the precedence ``print_queue._enrich_response`` uses, so the wall and
+    the queue card cannot name one job two ways. Without it a job whose library
+    row or archive has been deleted — which still prints perfectly from its own
+    copy — appeared on the wall as a nameless tile. ``source_display_filename``
+    refuses to hand over the object's hash as a name (§4, A04), and a job it
+    cannot name stays nameless rather than showing one.
+    """
     if not access.visible(item):
         return RestrictedJob()
     name = (item.archive.print_name or item.archive.filename) if item.archive else None
     if not name and item.library_file:
         name = item.library_file.filename
+    if not name:
+        descriptor = loaded_descriptor(item)
+        if descriptor is not None:
+            with suppress(SourceUnavailable):
+                name = source_display_filename(descriptor)
     return MonitorJob(name=name, item_id=item.id)
 
 
@@ -142,9 +160,16 @@ async def build_snapshot(db: AsyncSession, view: MonitorView, access: MonitorAcc
                     PrintQueueItem.waiting_reason,
                     PrintQueueItem.waiting_reason_code,
                     PrintQueueItem.waiting_reason_checked_at,
+                    # m173: the two columns ``loaded_descriptor`` reads. Deferred
+                    # columns are a MissingGreenlet in an async handler, not a
+                    # lazy load, so a name that comes out of the snapshot has to
+                    # be asked for here.
+                    PrintQueueItem.queue_source_id,
+                    PrintQueueItem.source_snapshot,
                 ),
                 selectinload(PrintQueueItem.archive).load_only(PrintArchive.print_name, PrintArchive.filename),
                 selectinload(PrintQueueItem.library_file).load_only(LibraryFile.filename),
+                selectinload(PrintQueueItem.queue_source),
             )
         )
         heads = {(item.queue_id, item.status): item for item in rows}

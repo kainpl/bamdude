@@ -317,3 +317,116 @@ def test_a_blank_file_path_is_not_parsed_as_a_zip(monkeypatch, tmp_path):
     assert queue_times.plate_filaments_cached(tmp_path, 1) is None
     assert queue_times.plate_metadata_cached(tmp_path, 1) == (None, 0.0, None)
     assert parses == []
+
+
+# --------------------------------------------------------------------------- #
+# The row's picture (m173, spec §4 / A09)
+# --------------------------------------------------------------------------- #
+
+
+def a_3mf_with_pictures(path: Path, plates: dict[int, bytes]) -> Path:
+    from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+
+    return write_routing_3mf(
+        path,
+        {plate: [{"id": 1, "type": "PLA", "color": "#FF0000", "used_g": "1"}] for plate in plates},
+        plate_pngs=plates,
+    )
+
+
+def test_a_legacy_row_has_no_snapshot_picture(tmp_path):
+    """``None`` means "ask the original rows", which is what the card did before."""
+    queue_times._PLATE_PICTURE_CACHE.clear()
+    assert queue_times.plate_picture_for_row(plate_id=1, descriptor=None) is None
+
+
+def test_the_snapshot_picture_follows_the_jobs_plate(tmp_path):
+    queue_times._PLATE_PICTURE_CACHE.clear()
+    path = a_3mf_with_pictures(tmp_path / "object.3mf", {2: b"two", 7: b"seven"})
+    descriptor = a_descriptor(path)
+    assert queue_times.plate_picture_for_row(plate_id=7, descriptor=descriptor) == "Metadata/plate_7.png"
+    assert queue_times.plate_picture_for_row(plate_id=2, descriptor=descriptor) == "Metadata/plate_2.png"
+    # A plate the file does not render: no picture, never another plate's.
+    assert queue_times.plate_picture_for_row(plate_id=9, descriptor=descriptor) is None
+
+
+def test_the_archive_plate_fallback_names_the_plate_when_the_job_does_not(tmp_path):
+    queue_times._PLATE_PICTURE_CACHE.clear()
+    path = a_3mf_with_pictures(tmp_path / "object.3mf", {15: b"fifteen"})
+    descriptor = a_descriptor(path, plate_fallback=15)
+    assert queue_times.plate_picture_for_row(plate_id=None, descriptor=descriptor) == "Metadata/plate_15.png"
+
+
+def test_a_missing_object_is_no_picture_and_not_an_error(tmp_path):
+    queue_times._PLATE_PICTURE_CACHE.clear()
+    assert queue_times.plate_picture_for_row(plate_id=1, descriptor=a_descriptor(tmp_path / "gone.3mf")) is None
+
+
+def test_an_unreadable_object_is_no_picture_and_not_an_error(tmp_path):
+    queue_times._PLATE_PICTURE_CACHE.clear()
+    broken = tmp_path / "broken.3mf"
+    broken.write_bytes(b"not a zip at all")
+    assert queue_times.plate_picture_for_row(plate_id=1, descriptor=a_descriptor(broken)) is None
+
+
+def test_the_answer_is_cached_by_revision_so_a_poll_opens_the_object_once(monkeypatch, tmp_path):
+    """A list of fifty rows must not become fifty archive reads (decision 1)."""
+    queue_times._PLATE_PICTURE_CACHE.clear()
+    path = a_3mf_with_pictures(tmp_path / "object.3mf", {2: b"two"})
+    opened: list[str] = []
+    real = queue_times.zipfile.ZipFile
+
+    def counting(file, *args, **kwargs):
+        opened.append(str(file))
+        return real(file, *args, **kwargs)
+
+    monkeypatch.setattr(queue_times.zipfile, "ZipFile", counting)
+    descriptor = a_descriptor(path)
+    for _ in range(5):
+        assert queue_times.plate_picture_for_row(plate_id=2, descriptor=descriptor) == "Metadata/plate_2.png"
+    assert len(opened) == 1, opened
+    # Another plate of the same object is another question, asked once too.
+    for _ in range(3):
+        assert queue_times.plate_picture_for_row(plate_id=9, descriptor=descriptor) is None
+    assert len(opened) == 2, opened
+
+
+def test_rewriting_the_file_under_the_key_re_reads_it(tmp_path):
+    """The key is the file's own revision, so nothing has to invalidate it."""
+    queue_times._PLATE_PICTURE_CACHE.clear()
+    path = a_3mf_with_pictures(tmp_path / "object.3mf", {2: b"two"})
+    assert queue_times.plate_picture_for_row(plate_id=2, descriptor=a_descriptor(path)) == "Metadata/plate_2.png"
+    a_3mf_with_pictures(path, {5: b"five"})
+    assert queue_times.plate_picture_for_row(plate_id=2, descriptor=a_descriptor(path)) is None
+
+
+def test_the_cache_is_bounded(monkeypatch, tmp_path):
+    queue_times._PLATE_PICTURE_CACHE.clear()
+    monkeypatch.setattr(queue_times, "_PLATE_PICTURE_MAX", 4)
+    path = a_3mf_with_pictures(tmp_path / "object.3mf", {2: b"two"})
+    for plate in range(20):
+        queue_times.plate_picture_for_row(plate_id=plate, descriptor=a_descriptor(path))
+    assert len(queue_times._PLATE_PICTURE_CACHE) <= 4
+
+
+def test_a_rotted_member_is_no_picture_and_not_an_exception(tmp_path):
+    """Round 1, M-1: a damaged deflate stream raises ``zlib.error``, which is not
+    an ``OSError`` and is not ``BadZipFile`` — and a reader that let it out would
+    turn a rotted object into a 500 on a route that promises it never 500s."""
+    import zipfile
+
+    queue_times._PLATE_PICTURE_CACHE.clear()
+    path = a_3mf_with_pictures(tmp_path / "object.3mf", {2: b"two"})
+    rotted = tmp_path / "rotted.3mf"
+    # Keep the central directory intact (so the namelist still answers) and
+    # destroy the compressed bytes of the member the plate lookup must read.
+    with zipfile.ZipFile(path) as src, zipfile.ZipFile(rotted, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            dst.writestr(info.filename, src.read(info.filename))
+    raw = bytearray(rotted.read_bytes())
+    offset = raw.index(b"Metadata/slice_info.config") + len("Metadata/slice_info.config")
+    raw[offset : offset + 40] = b"\x00" * 40
+    rotted.write_bytes(bytes(raw))
+
+    # No plate named, so the reader has to read slice_info to resolve one.
+    assert queue_times.plate_picture_for_row(plate_id=None, descriptor=a_descriptor(rotted)) is None

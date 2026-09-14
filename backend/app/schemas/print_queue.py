@@ -169,6 +169,18 @@ class PrintQueueItemResponse(BaseModel):
     # exposed — there is no "print an arbitrary hash" surface (§10).
     source_storage: SourceStorageState = "legacy"
     source_size_bytes: int | None = None
+    # Whether ``GET /queue/{id}/source-thumbnail`` has a picture to serve for this
+    # row: the render of the job's OWN plate inside the bytes it captured (spec §4
+    # — the thumbnail is recoverable from the stored 3MF, and the UI must not
+    # require the original's).
+    #
+    # ⚠️ A **boolean**, unlike the ``*_thumbnail`` fields below, which are the
+    # server's disk paths and only say that a picture exists somewhere. This one
+    # answers "may I ask for it", so a row with no recoverable picture says
+    # ``False`` and the UI draws its honest empty state instead of a broken image.
+    # ``False`` for every legacy row, whose picture still comes from whichever
+    # original row it names.
+    source_thumbnail: bool = False
 
     # Nested info for UI
     archive_name: str | None = None

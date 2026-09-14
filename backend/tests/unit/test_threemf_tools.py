@@ -19,6 +19,7 @@ from backend.app.utils.threemf_tools import (
     get_cumulative_usage_at_layer,
     mm_to_grams,
     parse_gcode_layer_filament_usage,
+    plate_picture_entry,
 )
 
 
@@ -796,3 +797,106 @@ class TestExpandToProjectSlots:
         used = self._used(2)
         with _make_3mf_with({"Metadata/project_settings.config": "{not json"}) as zf:
             assert expand_to_project_slots(zf, used) == used
+
+
+class TestPlatePictureEntry:
+    """Which ZIP entry is a plate's slicer render (m173, spec §4).
+
+    The queue row's picture is recoverable from the stored 3MF, so something has
+    to name the entry — and the plate is the whole question: Bambu identifies a
+    plate with ``<metadata key="index" value="N"/>`` INSIDE ``<plate>``, never a
+    ``plate_idx`` attribute.
+    """
+
+    @staticmethod
+    @contextmanager
+    def _zip(entries: dict[str, bytes]):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as writer:
+            for name, blob in entries.items():
+                writer.writestr(name, blob)
+        with zipfile.ZipFile(buffer) as zf:
+            yield zf
+
+    @staticmethod
+    def _slice_info(*plate_indexes: int) -> bytes:
+        plates = "".join(f'<plate><metadata key="index" value="{n}"/></plate>' for n in plate_indexes)
+        return f"<config>{plates}</config>".encode()
+
+    def test_the_asked_plate_is_the_one_answered(self):
+        with self._zip(
+            {
+                "Metadata/slice_info.config": self._slice_info(1, 2, 3),
+                "Metadata/plate_1.png": b"one",
+                "Metadata/plate_2.png": b"two",
+                "Metadata/plate_3.png": b"three",
+            }
+        ) as zf:
+            assert plate_picture_entry(zf, 2) == "Metadata/plate_2.png"
+            assert plate_picture_entry(zf, 3) == "Metadata/plate_3.png"
+
+    def test_a_plate_without_a_render_never_borrows_another_plates(self):
+        """A picture of plate 1 shown for a plate-3 job is a lying picture."""
+        with self._zip({"Metadata/slice_info.config": self._slice_info(1, 3), "Metadata/plate_1.png": b"one"}) as zf:
+            assert plate_picture_entry(zf, 3) is None
+
+    def test_no_plate_asked_reads_the_files_own_first_plate(self):
+        """The child ``index`` metadata, not the position in the archive — the
+        file's only plate here is 15, so plate_1.png would be the wrong guess."""
+        with self._zip({"Metadata/slice_info.config": self._slice_info(15), "Metadata/plate_15.png": b"fifteen"}) as zf:
+            assert plate_picture_entry(zf, None) == "Metadata/plate_15.png"
+
+    def test_a_plate_idx_attribute_is_not_how_bambu_says_it(self):
+        """The trap that made ``plate_number`` inert for months.
+
+        The two disagree on purpose: the attribute says 1 and the child metadata
+        — which is what Bambu actually writes — says 15. A reader that took the
+        attribute would ask for ``plate_1.png``, which is not in this container.
+        """
+        info = b'<config><plate plate_idx="1"><metadata key="index" value="15"/></plate></config>'
+        with self._zip({"Metadata/slice_info.config": info, "Metadata/plate_15.png": b"fifteen"}) as zf:
+            assert plate_picture_entry(zf, None) == "Metadata/plate_15.png"
+
+    def test_a_file_that_says_nothing_about_plates_names_no_plate(self):
+        """Superseded ruling (round 1, m-5): this used to read as plate 1.
+
+        A container that does not say which plates it holds cannot say that its
+        first one is 1 — and answering ``plate_1.png`` for a job that named no
+        plate is the "lying picture" this helper's own docstring refuses.
+        """
+        with self._zip({"Metadata/plate_1.png": b"one"}) as zf:
+            assert plate_picture_entry(zf, None) is None
+
+    def test_a_malformed_slice_info_names_no_plate(self):
+        """A damaged plate statement is unreadable, not a statement that it is 1."""
+        with self._zip({"Metadata/slice_info.config": b"<config", "Metadata/plate_1.png": b"one"}) as zf:
+            assert plate_picture_entry(zf, None) is None
+
+    def test_a_slice_info_with_no_plate_element_names_no_plate(self):
+        with self._zip({"Metadata/slice_info.config": b"<config/>", "Metadata/plate_1.png": b"one"}) as zf:
+            assert plate_picture_entry(zf, None) is None
+
+    def test_a_plate_that_states_no_index_names_no_plate(self):
+        info = b"<config><plate><metadata key=" + b'"prediction" value="60"' + b"/></plate></config>"
+        with self._zip({"Metadata/slice_info.config": info, "Metadata/plate_1.png": b"one"}) as zf:
+            assert plate_picture_entry(zf, None) is None
+
+    def test_an_asked_plate_is_answered_even_when_the_plate_statement_is_damaged(self):
+        """The refusal is about GUESSING a plate, never about the job's own."""
+        with self._zip({"Metadata/slice_info.config": b"<config", "Metadata/plate_4.png": b"four"}) as zf:
+            assert plate_picture_entry(zf, 4) == "Metadata/plate_4.png"
+
+    def test_an_unparseable_plate_index_is_no_picture_rather_than_a_guess(self):
+        info = b'<config><plate><metadata key="index" value="seven"/></plate></config>'
+        with self._zip({"Metadata/slice_info.config": info, "Metadata/plate_1.png": b"one"}) as zf:
+            assert plate_picture_entry(zf, None) is None
+
+    def test_a_container_with_no_render_at_all_answers_none(self):
+        with self._zip({"Metadata/slice_info.config": self._slice_info(1)}) as zf:
+            assert plate_picture_entry(zf, 1) is None
+
+    def test_the_small_render_is_not_the_picture(self):
+        with self._zip(
+            {"Metadata/slice_info.config": self._slice_info(1), "Metadata/plate_1_small.png": b"thumb"}
+        ) as zf:
+            assert plate_picture_entry(zf, 1) is None

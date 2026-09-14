@@ -537,14 +537,12 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     () => withCurrentPrint(copyableItems(queueRows), status),
     [queueRows, status],
   );
-  const copyDroppedCount = queueRows.length - copyableItems(queueRows).length;
   const canCopyQueue = copySourceItems.length > 0;
 
   const copyQueueModal = copyOpen ? (
     <CopyQueueModal
       source={queue}
       items={copySourceItems}
-      droppedCount={copyDroppedCount}
       onCancel={() => setCopyOpen(false)}
       onConfirm={(files, printerIds) => {
         setCopyOpen(false);
