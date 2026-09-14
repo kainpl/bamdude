@@ -9842,7 +9842,7 @@ export function PrintersPage() {
             <div className="relative min-w-0 flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
               <input
-                type="search"
+                type="text"
                 name="printer-search"
                 autoComplete="off"
                 data-1p-ignore

@@ -113,6 +113,12 @@ describe('QueuePage', () => {
       });
     });
 
+    it('uses the custom search clear control instead of the browser search affordance', async () => {
+      render(<QueuePage />);
+      const search = await screen.findByPlaceholderText(/search queues/i);
+      expect(search).toHaveAttribute('type', 'text');
+    });
+
     it('renders view-mode selector buttons', async () => {
       render(<QueuePage />);
       await waitFor(() => {

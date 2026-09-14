@@ -345,6 +345,7 @@ describe('PrintersPage', () => {
     it('finds a printer by its tag name in the search box', async () => {
       render(<PrintersPage />);
       await screen.findByText('X1 Carbon');
+      expect(screen.getByPlaceholderText(/search/i)).toHaveAttribute('type', 'text');
       await userEvent.type(screen.getByPlaceholderText(/search/i), 'Phase 2');
       await waitFor(() => expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument());
       expect(screen.queryByText('A1 Spare')).not.toBeInTheDocument();
