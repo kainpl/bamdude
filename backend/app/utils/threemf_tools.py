@@ -890,30 +890,28 @@ def expand_to_project_slots(zf: zipfile.ZipFile, used: list[dict]) -> list[dict]
 
 
 def _first_plate_index(zf: zipfile.ZipFile) -> int | None:
-    """The index of the file's FIRST plate, or ``1`` when the file does not say.
+    """The index of the file's first declared plate, or ``None`` when unknown.
 
-    Only for the caller that names no plate of its own. ``1`` is what
-    ``archives.get_plate_preview`` has always assumed for a container without a
-    readable ``slice_info.config``, and an unreadable index is ``None`` rather
-    than ``1``: a file that names a plate and names it wrongly is not a file
-    whose first plate is 1.
+    Only callers that name no plate of their own use this.  The legacy archive
+    preview may guess plate 1 for incomplete metadata, but a queue row must not:
+    it would present a render for a plate the row cannot prove it represents.
     """
     if "Metadata/slice_info.config" not in zf.namelist():
-        return 1
+        return None
     try:
         root = ET.fromstring(zf.read("Metadata/slice_info.config").decode())
     except Exception:  # a truncated or non-XML config — not a plate statement
-        return 1
+        return None
     plates = root.findall(".//plate")
     if not plates:
-        return 1
+        return None
     for metadata in plates[0].findall("metadata"):
         if metadata.get("key") == "index":
             try:
                 return int(metadata.get("value") or "")
             except ValueError:
                 return None
-    return 1
+    return None
 
 
 def plate_picture_entry(zf: zipfile.ZipFile, plate_id: int | None) -> str | None:

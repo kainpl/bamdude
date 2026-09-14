@@ -857,13 +857,34 @@ class TestPlatePictureEntry:
         with self._zip({"Metadata/slice_info.config": info, "Metadata/plate_15.png": b"fifteen"}) as zf:
             assert plate_picture_entry(zf, None) == "Metadata/plate_15.png"
 
-    def test_a_file_that_says_nothing_about_plates_is_read_as_plate_one(self):
-        with self._zip({"Metadata/plate_1.png": b"one"}) as zf:
-            assert plate_picture_entry(zf, None) == "Metadata/plate_1.png"
+    def test_a_file_that_says_nothing_about_plates_names_no_plate(self):
+        """Superseded ruling (round 1, m-5): this used to read as plate 1.
 
-    def test_a_malformed_slice_info_is_read_as_plate_one(self):
+        A container that does not say which plates it holds cannot say that its
+        first one is 1 — and answering ``plate_1.png`` for a job that named no
+        plate is the "lying picture" this helper's own docstring refuses.
+        """
+        with self._zip({"Metadata/plate_1.png": b"one"}) as zf:
+            assert plate_picture_entry(zf, None) is None
+
+    def test_a_malformed_slice_info_names_no_plate(self):
+        """A damaged plate statement is unreadable, not a statement that it is 1."""
         with self._zip({"Metadata/slice_info.config": b"<config", "Metadata/plate_1.png": b"one"}) as zf:
-            assert plate_picture_entry(zf, None) == "Metadata/plate_1.png"
+            assert plate_picture_entry(zf, None) is None
+
+    def test_a_slice_info_with_no_plate_element_names_no_plate(self):
+        with self._zip({"Metadata/slice_info.config": b"<config/>", "Metadata/plate_1.png": b"one"}) as zf:
+            assert plate_picture_entry(zf, None) is None
+
+    def test_a_plate_that_states_no_index_names_no_plate(self):
+        info = b"<config><plate><metadata key=" + b'"prediction" value="60"' + b"/></plate></config>"
+        with self._zip({"Metadata/slice_info.config": info, "Metadata/plate_1.png": b"one"}) as zf:
+            assert plate_picture_entry(zf, None) is None
+
+    def test_an_asked_plate_is_answered_even_when_the_plate_statement_is_damaged(self):
+        """The refusal is about GUESSING a plate, never about the job's own."""
+        with self._zip({"Metadata/slice_info.config": b"<config", "Metadata/plate_4.png": b"four"}) as zf:
+            assert plate_picture_entry(zf, 4) == "Metadata/plate_4.png"
 
     def test_an_unparseable_plate_index_is_no_picture_rather_than_a_guess(self):
         info = b'<config><plate><metadata key="index" value="seven"/></plate></config>'

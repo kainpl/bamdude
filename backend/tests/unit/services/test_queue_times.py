@@ -286,3 +286,26 @@ def test_the_cache_is_bounded(monkeypatch, tmp_path):
     for plate in range(20):
         queue_times.plate_picture_for_row(plate_id=plate, descriptor=a_descriptor(path))
     assert len(queue_times._PLATE_PICTURE_CACHE) <= 4
+
+
+def test_a_rotted_member_is_no_picture_and_not_an_exception(tmp_path):
+    """Round 1, M-1: a damaged deflate stream raises ``zlib.error``, which is not
+    an ``OSError`` and is not ``BadZipFile`` — and a reader that let it out would
+    turn a rotted object into a 500 on a route that promises it never 500s."""
+    import zipfile
+
+    queue_times._PLATE_PICTURE_CACHE.clear()
+    path = a_3mf_with_pictures(tmp_path / "object.3mf", {2: b"two"})
+    rotted = tmp_path / "rotted.3mf"
+    # Keep the central directory intact (so the namelist still answers) and
+    # destroy the compressed bytes of the member the plate lookup must read.
+    with zipfile.ZipFile(path) as src, zipfile.ZipFile(rotted, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            dst.writestr(info.filename, src.read(info.filename))
+    raw = bytearray(rotted.read_bytes())
+    offset = raw.index(b"Metadata/slice_info.config") + len("Metadata/slice_info.config")
+    raw[offset : offset + 40] = b"\x00" * 40
+    rotted.write_bytes(bytes(raw))
+
+    # No plate named, so the reader has to read slice_info to resolve one.
+    assert queue_times.plate_picture_for_row(plate_id=None, descriptor=a_descriptor(rotted)) is None
