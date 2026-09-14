@@ -4,7 +4,7 @@ import { api, ApiError, recordLivePrinterStatus } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useConnection } from '../contexts/ConnectionContext';
 import { useTranslation } from 'react-i18next';
-import { inventoryLocationsQueryKey } from '../utils/inventoryQueries';
+import { forecastQueryKeys, inventoryLocationsQueryKey } from '../utils/inventoryQueries';
 import { ORDER_VIEW_KEYS } from '../utils/queryInvalidation';
 import { prioritizeLiveStatusEntries } from '../utils/liveStatusPriority';
 
@@ -15,6 +15,7 @@ import { prioritizeLiveStatusEntries } from '../utils/liveStatusPriority';
 // as terminal so we don't respawn the /auth/ws-token loop.
 const WS_CLOSE_UNAUTHORIZED = 4401;
 const STATUS_CACHE_APPLY_CHUNK_SIZE = 10;
+type DebouncedQueryKey = readonly unknown[];
 
 /**
  * How long invalidations are coalesced before any of them fires, and how far
@@ -83,7 +84,7 @@ export function useWebSocket() {
   const { t } = useTranslation();
 
   // Debounce invalidations to prevent rapid re-render cascades
-  const pendingInvalidations = useRef<Set<string>>(new Set());
+  const pendingInvalidations = useRef<Map<string, DebouncedQueryKey>>(new Map());
   const invalidationTimeoutRef = useRef<number | null>(null);
 
   // Throttle printer status updates to prevent freeze during rapid messages
@@ -364,9 +365,15 @@ export function useWebSocket() {
     }
   }, [applyPendingPrinterStatus]);
 
-  // Debounced invalidation helper - coalesces multiple rapid invalidations
-  const debouncedInvalidate = useCallback((queryKey: string) => {
-    pendingInvalidations.current.add(queryKey);
+  // Debounced invalidation helper - coalesces multiple rapid invalidations.
+  // It accepts full TanStack keys: `inventory-forecast-chart` is not a child
+  // of `inventory-forecast`, so a string-only helper could never refresh all
+  // forecast feeds from one inventory event.
+  const debouncedInvalidate = useCallback((...queryKeys: Array<string | DebouncedQueryKey>) => {
+    for (const queryKey of queryKeys) {
+      const key = typeof queryKey === 'string' ? [queryKey] : queryKey;
+      pendingInvalidations.current.set(JSON.stringify(key), key);
+    }
 
     // Clear existing timeout
     if (invalidationTimeoutRef.current) {
@@ -375,7 +382,7 @@ export function useWebSocket() {
 
     // Schedule invalidation after a delay (3s to prevent browser freeze on print completion)
     invalidationTimeoutRef.current = window.setTimeout(() => {
-      const keys = Array.from(pendingInvalidations.current);
+      const keys = Array.from(pendingInvalidations.current.values());
       pendingInvalidations.current.clear();
       invalidationTimeoutRef.current = null;
 
@@ -387,7 +394,7 @@ export function useWebSocket() {
       let delay = 0;
       keys.forEach((key) => {
         setTimeout(() => {
-          queryClient.invalidateQueries({ queryKey: [key] });
+          queryClient.invalidateQueries({ queryKey: key });
         }, delay);
         delay += INVALIDATION_STAGGER_MS;
       });
@@ -721,19 +728,25 @@ export function useWebSocket() {
         // carries the weight), so the assignments queries must refresh too —
         // without them the card showed the pre-print weight until the 30s
         // staleTime lapsed (2026-08-28).
-        debouncedInvalidate('inventory-spools');
-        debouncedInvalidate('spool-assignments');
-        debouncedInvalidate('spoolman-inventory-spools');
-        debouncedInvalidate('spoolman-slot-assignments');
+        debouncedInvalidate(
+          'inventory-spools',
+          'spool-assignments',
+          'spoolman-inventory-spools',
+          'spoolman-slot-assignments',
+          ...forecastQueryKeys,
+        );
         break;
 
       case 'inventory_changed':
         // Spool/location created/updated/deleted/archived/restored - refresh
         // inventory across all tabs plus the storage-location catalog counts.
-        debouncedInvalidate('inventory-spools');
-        debouncedInvalidate('spoolman-inventory-spools');
-        debouncedInvalidate('spool-assignments');
-        debouncedInvalidate(inventoryLocationsQueryKey[0]);
+        debouncedInvalidate(
+          'inventory-spools',
+          'spoolman-inventory-spools',
+          'spool-assignments',
+          inventoryLocationsQueryKey,
+          ...forecastQueryKeys,
+        );
         break;
 
       case 'macro_executed': {

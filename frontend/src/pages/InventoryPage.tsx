@@ -2028,13 +2028,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // ⚠️ In grouped server mode `totalRows` counts GROUPS (meta.total counts
   // what the list pages over) — the flat spool total is deliberately not
   // fetched twice.
-  // Under the Forecast tab there IS no list meta (the feed is disabled), so
-  // the count — and the header buttons that gate on "is there anything at
-  // all" — read the already-fetched stats instead of collapsing to 0 and
-  // disabling themselves over a full inventory.
+  // Under the History tab there is no spool-list meta, so its count reads the
+  // already-fetched stats. Forecast deliberately has no list-scoped controls:
+  // its rows are SKU forecasts (including recently archived history), not the
+  // Active/Archived spool table the parent filter controls.
   const totalRows = spoolmanMode
     ? clientTotalRows
-    : forecastViewActive || historyViewActive
+    : historyViewActive
       ? (serverStats?.active_spools ?? 0)
       : (serverMeta?.total ?? 0);
   const totalPages = spoolmanMode ? clientTotalPages : (serverMeta?.last_page ?? 1);
@@ -2227,7 +2227,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           {/* Bulk edit — internal inventory only (not Spoolman mode). Opens a
               modal that lets the user pick which of the filtered spools to edit
               and which fields to change. */}
-          {!spoolmanMode && hasPermission('inventory:update') && (
+          {!forecastViewActive && !historyViewActive && !spoolmanMode && hasPermission('inventory:update') && (
             <Button
               variant="outline"
               size="sm"
@@ -2239,7 +2239,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               {t('inventory.bulkEdit.button')}
             </Button>
           )}
-          <Button
+          {!forecastViewActive && !historyViewActive && <Button
             variant="outline"
             size="sm"
             disabled={spoolmanMode ? filteredSpools.length === 0 : totalRows === 0}
@@ -2263,7 +2263,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           >
             <Printer className="w-4 h-4" />
             {t('inventory.labels.printLabels')}
-          </Button>
+          </Button>}
           {/* CSV import/export (#1576). Operates on BamDude's local inventory.
               In Spoolman mode the buttons stay visible (feature parity) but are
               disabled with a hint pointing at Spoolman's own CSV export, since
@@ -2423,14 +2423,12 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         </div>
       )}
 
-      {/* Toolbar: Search + View toggle */}
-      <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
-        {/* ONE search box, in one place, whichever view is open — the History
-            view is fed from this same input (it debounces the text and asks the
-            server), rather than growing a second box a row lower that appears
-            when you switch tabs. Only the placeholder changes, because what it
-            searches does. */}
-        <div className="relative flex-1 max-w-md">
+      {/* Toolbar: list/history search + view toggle. Forecast owns its own
+          SKU filters, so the spool-list search is hidden there. */}
+      <div className={`flex flex-col sm:flex-row gap-3 items-start sm:items-center ${forecastViewActive ? 'justify-end' : 'justify-between'}`}>
+        {/* One search box for the views it actually filters: the spool list
+            and History. Forecast owns its server-side SKU filters instead. */}
+        {!forecastViewActive && <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
           <input
             type="text"
@@ -2447,7 +2445,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               <X className="w-4 h-4" />
             </button>
           )}
-        </div>
+        </div>}
 
         <div className="flex items-center gap-2">
           {/* Columns button (table view only) */}
@@ -2461,10 +2459,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               <span className="hidden sm:inline">{t('inventory.columnsLabel')}</span>
             </button>
           )}
-          {/* Group similar toggle. Hidden under History for the same reason the
-              chips row is: it groups SPOOLS, and there is no spool list under
-              it to group. */}
-          {!historyViewActive && (
+          {/* Group similar toggle. Hidden under History and Forecast: both
+              views are not spool lists. */}
+          {!historyViewActive && !forecastViewActive && (
           <button
             onClick={toggleGroupSimilar}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border rounded-lg transition-colors ${
@@ -2539,13 +2536,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         </div>
       </div>
 
-      {/* Filter chips row. Hidden under the History view: every chip here
-          filters SPOOLS (archived, unused, low stock, assigned) and the count
-          beside them counts spools — over a list of consumption events they
-          would be controls that visibly do nothing. Left un-indented on
-          purpose: re-indenting three hundred lines to add one guard buries the
-          change nobody could then find. */}
-      {!historyViewActive && (
+      {/* Filter chips are only for the spool list. History has consumption
+          events; Forecast has SKU projections that intentionally retain recent
+          archived history, so neither can honestly accept these filters. */}
+      {!historyViewActive && !forecastViewActive && (
       <div className="flex flex-wrap items-center gap-2">
         {/* Active / Archived chips */}
         <div className="flex items-center rounded-lg border border-bambu-dark-tertiary overflow-hidden">

@@ -10,6 +10,7 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider, useQueries } from '@tanstack/react-query';
 import { ToastProvider } from '../../contexts/ToastContext';
+import { forecastQueryKeys } from '../../utils/inventoryQueries';
 import { ORDER_VIEW_KEYS } from '../../utils/queryInvalidation';
 import { clearLiveStatusPriority, setLiveStatusPriority } from '../../utils/liveStatusPriority';
 
@@ -705,6 +706,36 @@ describe('useWebSocket hook', () => {
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'] });
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-slot-assignments'] });
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-inventory-spools'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    it('refreshes every forecast feed when inventory or usage changes arrive', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket, INVALIDATION_DEBOUNCE_MS, INVALIDATION_STAGGER_MS } = await import(
+        '../../hooks/useWebSocket'
+      );
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
+
+      act(() => {
+        ws.simulateMessage({ type: 'inventory_changed' });
+        ws.simulateMessage({ type: 'spool_usage_logged' });
+      });
+
+      // Both events name the same forecast keys. The debounce must dedupe them
+      // while preserving every distinct full query key.
+      await act(async () => {
+        vi.advanceTimersByTime(INVALIDATION_DEBOUNCE_MS + 9 * INVALIDATION_STAGGER_MS);
+      });
+
+      for (const queryKey of forecastQueryKeys) {
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey });
+      }
 
       vi.useRealTimers();
       vi.unstubAllGlobals();

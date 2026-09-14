@@ -725,6 +725,8 @@ describe('InventoryPage — the Forecast tab is not a second list (final review,
   /** Land straight on the Forecast tab, the way a returning operator does. */
   const onForecastTab = () =>
     localStorage.setItem('bamdude-inventory-filters', JSON.stringify({ viewMode: 'forecast' }));
+  const onHistoryTab = () =>
+    localStorage.setItem('bamdude-inventory-filters', JSON.stringify({ viewMode: 'history' }));
 
   it('fetches NO page of spool rows under the Forecast tab — and a persisted "All" cannot resurrect a full-table fetch there (F4)', async () => {
     // The sharp half of the finding: `pageSize` persists and accepts -1 →
@@ -766,32 +768,41 @@ describe('InventoryPage — the Forecast tab is not a second list (final review,
     expect(screen.getAllByText(/2 spools/).length).toBeGreaterThan(0);
   });
 
-  it('a spool mutation made WHILE the Forecast tab is open refreshes the forecast (F3)', async () => {
-    // The review's scenario, in the cheapest reachable form: the stats bar
-    // renders on the Forecast tab, so its "Reset all counters" action is a
-    // spool mutation fired with the panel mounted. Resetting usage flips whole
-    // spools out of the engine's history rate tier — before the fix the panel
-    // kept the pre-mutation rate, days-left and banners for the whole sitting.
+  it('hides parent spool filters and bulk actions on the Forecast tab', async () => {
+    // Forecast rows are SKU projections, deliberately retaining recent
+    // archived history. The parent controls filter an Active/Archived spool
+    // list, so showing them here claims an effect they do not have.
     onForecastTab();
+    render(<InventoryPageRouter />);
+
+    await waitFor(() => expect(screen.getByText('eSun PLA Blue')).toBeInTheDocument());
+    expect(screen.queryByPlaceholderText('Search spools...')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Active' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Archived' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Bulk edit' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Print labels/ })).toBeNull();
+  });
+
+  it('hides spool bulk actions on the History tab while keeping its ledger search', async () => {
+    onHistoryTab();
     server.use(
-      http.get('/api/v1/inventory/stats', () =>
-        HttpResponse.json({ ...STATS, total_consumed_g: 1234, total_spools: 2 })
+      http.get('/api/v1/inventory/usage/facets', () =>
+        HttpResponse.json({ statuses: [], printers: [], materials: [], brands: [] })
       ),
-      http.post('/api/v1/inventory/spools/reset-consumed-counter-bulk', () =>
-        HttpResponse.json({ reset: 2 })
+      http.get('/api/v1/inventory/usage', () =>
+        HttpResponse.json({
+          items: [],
+          meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 },
+          totals: { weight_used: 0, cost: null },
+        })
       ),
     );
     render(<InventoryPageRouter />);
 
-    await waitFor(() => expect(screen.getByText('eSun PLA Blue')).toBeInTheDocument());
-    const before = forecastRequests.length;
-    expect(before).toBeGreaterThan(0);
-
-    fireEvent.click(await screen.findByLabelText('Reset all counters'));
-    await waitFor(() => expect(fullSetRequests().length).toBe(1)); // ids arrive on arming
-    fireEvent.click(screen.getByRole('button', { name: 'Reset counter' }));
-
-    await waitFor(() => expect(forecastRequests.length).toBeGreaterThan(before));
+    await waitFor(() => expect(screen.getByText('No usage recorded yet')).toBeInTheDocument());
+    expect(screen.getByPlaceholderText('Search by print, spool or printer…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Bulk edit' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Print labels/ })).toBeNull();
   });
 
   it('a plain visit fires no PAGE-LESS full array either — that shape is modal-gated (F9)', async () => {
