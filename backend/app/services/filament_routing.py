@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from backend.app.services.printer_feed_snapshot import FeedSource, PrinterFeedSnapshot
-from backend.app.utils.filament_types import canonical_filament_type
+from backend.app.utils.filament_types import filament_types_compatible
 from backend.app.utils.printer_models import is_gcode_compatible, normalize_model_name
 
 if TYPE_CHECKING:
@@ -41,6 +41,7 @@ class RoutingPolicy:
     mode: Literal["auto", "pinned"] = "auto"
     feed_policy: FeedPolicy = "auto"
     force_color_match: bool = False
+    allow_base_material_match: bool = True
     filament_overrides: tuple[dict, ...] = ()
     physical_pins: dict[int, dict] = field(default_factory=dict)
     review_required: bool = False
@@ -139,9 +140,10 @@ def resolve_filament_routing(
     for slot in slots:
         override = overrides.get(slot["slot_id"], {})
         if override.get("type"):
-            if canonical_filament_type(override["type"]) != canonical_filament_type(slot["type"]):
+            if not filament_types_compatible(override["type"], slot["type"]):
                 slot["tray_info_idx"] = override.get("tray_info_idx")
             slot["type"] = override["type"]
+            slot.pop("filament_type", None)
         if override.get("tray_info_idx"):
             slot["tray_info_idx"] = override["tray_info_idx"]
         if override.get("color"):
@@ -152,6 +154,8 @@ def resolve_filament_routing(
     colors = {}
     for slot in slots:
         sid = slot["slot_id"]
+        use_family_type = policy.allow_base_material_match and bool(slot.get("filament_type"))
+        target_type = slot["filament_type"] if use_family_type else slot["type"]
         nozzle = slot.get("nozzle_id") if slot.get("nozzle_id") is not None else 0
         diameter = _required_diameter(requirements, nozzle)
         if diameter is not None:
@@ -177,10 +181,10 @@ def resolve_filament_routing(
                 continue
             if pin and source.id != pin["source_id"]:
                 continue
-            if canonical_filament_type(source.material) != canonical_filament_type(slot["type"]):
+            if not filament_types_compatible(source.material, target_type):
                 continue
             variant = slot.get("tray_info_idx")
-            if variant and source.variant and variant != source.variant:
+            if variant and source.variant and variant != source.variant and not use_family_type:
                 reason = "variant_mismatch"
                 continue
             if not source.nozzles:
@@ -209,7 +213,10 @@ def resolve_filament_routing(
                     or not expected_color
                     or not color
                     or color != expected_color
-                    or canonical_filament_type(expected_type) != canonical_filament_type(source.material)
+                    or not filament_types_compatible(
+                        expected_type,
+                        source.material,
+                    )
                     or (expected_variant and source.variant and expected_variant != source.variant)
                 ):
                     reason = "mapping_review_required"

@@ -14,11 +14,10 @@ import {
 import { api, type PrinterStatus } from '../../api/client';
 import { getColorName } from '../../utils/colors';
 import {
-  normalizeColorForCompare,
-  colorsAreSimilar,
   autoMatchFilament,
   filterFilamentsByNozzle,
-  filamentTypesCompatible,
+  filamentColorMatches,
+  filamentRequirementMatches,
 } from '../../utils/amsHelpers';
 import type { PrinterSelectorProps } from './types';
 import type { PrinterMappingResult, PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
@@ -98,6 +97,9 @@ function InlineMappingEditor({
 
     if (currentMapping !== undefined) {
       loaded = printerResult.loadedFilaments.find((f) => f.globalTrayId === currentMapping);
+      if (loaded && req.strict_color_match && !filamentColorMatches(req, loaded)) {
+        loaded = undefined;
+      }
       isManual = true;
     } else {
       const usedTrayIds = new Set<number>(Object.values(printerResult.config.manualMappings));
@@ -115,10 +117,8 @@ function InlineMappingEditor({
     // Determine status
     let status: 'match' | 'type_only' | 'mismatch' = 'mismatch';
     if (loaded) {
-      const typeMatch = filamentTypesCompatible(loaded.type, req.type);
-      const colorMatch =
-        normalizeColorForCompare(loaded.color) === normalizeColorForCompare(req.color) ||
-        colorsAreSimilar(loaded.color, req.color);
+      const typeMatch = filamentRequirementMatches(req, loaded);
+      const colorMatch = filamentColorMatches(req, loaded);
 
       if (typeMatch && colorMatch) {
         status = 'match';

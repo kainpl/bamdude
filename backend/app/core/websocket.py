@@ -295,6 +295,20 @@ class ConnectionManager:
             }
         )
 
+    async def send_queue_changed(self, printer_id: int) -> None:
+        """Notify clients that a per-printer queue changed outside an API call.
+
+        Auto-queue promotion happens in a scheduler transaction, so no browser
+        mutation can invalidate the cache that renders the target printer card.
+        This deliberately names the printer rather than serialising a queue row:
+        each active view refetches its own compact representation.
+        """
+        await self.broadcast({"type": "queue_changed", "printer_id": printer_id})
+
+    async def send_stagger_changed(self) -> None:
+        """Notify queue views that the stagger gate gained or lost capacity."""
+        await self.broadcast({"type": "stagger_changed"})
+
     async def send_print_paused(self, printer_id: int, data: dict):
         """Notify clients that a print transitioned RUNNING→PAUSE.
 

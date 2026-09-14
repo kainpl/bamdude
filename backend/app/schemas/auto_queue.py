@@ -39,6 +39,7 @@ class AutoQueueItemCreate(BaseModel):
     required_filament_types: list[str] | None = None  # auto-extracted from 3MF if omitted
     filament_overrides: list[FilamentOverride] | None = None
     force_color_match: bool = False
+    allow_base_material_match: bool = True
 
     # Multi-plate: pass a list of plate IDs to fan out N rows (one per plate).
     # Single plate_id also accepted for parity with print_queue API.
@@ -111,6 +112,7 @@ class AutoQueueItemUpdate(BaseModel):
     required_filament_types: list[str] | None = None
     filament_overrides: list[FilamentOverride] | None = None
     force_color_match: bool | None = None
+    allow_base_material_match: bool | None = None
     scheduled_time: datetime | None = None
     manual_start: bool | None = None
     auto_off_after: bool | None = None
@@ -146,6 +148,7 @@ class AutoQueueItemResponse(BaseModel):
     required_filament_types: list[str] | None = None
     filament_overrides: list[FilamentOverride] | None = None
     force_color_match: bool
+    allow_base_material_match: bool
 
     plate_id: int | None
     position: int

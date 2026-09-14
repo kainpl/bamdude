@@ -103,6 +103,16 @@ def test_known_variant_mismatch_is_not_relaxed_by_colour_policy():
     assert resolve_filament_routing(req, RoutingPolicy(), snapshot(feed())).status == "compatible"
 
 
+def test_family_material_match_uses_filament_type_not_a_profile_name():
+    req = requirements({"type": "333Print PETG", "filament_type": "PETG", "tray_info_idx": "P333PETG"})
+    state = snapshot(feed(material="PETG", variant="GFG99"))
+    assert resolve_filament_routing(req, RoutingPolicy(), state).status == "compatible"
+    assert (
+        resolve_filament_routing(req, RoutingPolicy(allow_base_material_match=False), state).reason
+        == "material_mismatch"
+    )
+
+
 def test_explicit_external_only_works_even_with_ams():
     result = resolve_filament_routing(
         requirements({}), RoutingPolicy(feed_policy="external_only"), snapshot(feed(), feed(0, kind="ams"))

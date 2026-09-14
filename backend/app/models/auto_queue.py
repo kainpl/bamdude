@@ -80,6 +80,7 @@ class AutoQueueItem(Base):
     filament_overrides: Mapped[str | None] = mapped_column(Text, nullable=True)
     feed_policy: Mapped[str] = mapped_column(String(20), default="auto", server_default="auto", nullable=False)
     force_color_match: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    allow_base_material_match: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
 
     # Multi-plate: one plate = one row (plate_id is 1-indexed)
     plate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

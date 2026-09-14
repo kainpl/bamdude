@@ -9,7 +9,12 @@ from sqlalchemy import select
 from backend.app.core.permissions import Permission
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
-from backend.app.services.filament_intake import item_source, resolve_source_path, routing_detail
+from backend.app.services.filament_intake import (
+    enrich_family_filament_types,
+    item_source,
+    resolve_source_path,
+    routing_detail,
+)
 from backend.app.services.filament_policy import choices_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.filament_routing import resolve_filament_routing
@@ -65,6 +70,7 @@ async def routing_preview(db, data, user):
         req = await cache.read(
             resolve_source_path(archive, library), plate, archive_plate_id=archive.plate_index if archive else None
         )
+        req = await enrich_family_filament_types(db, req)
         groups = {}
         if req.status == "ok":
             for printer, queue in printers:

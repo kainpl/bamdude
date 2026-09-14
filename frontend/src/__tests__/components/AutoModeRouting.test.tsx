@@ -32,9 +32,16 @@ describe('AutoQueue routing options', () => {
   it('keeps relaxed default and emits an explicit feed policy', async () => {
     const onChange = vi.fn();
     render(<AutoModeOptions options={DEFAULT_AUTO_MODE_OPTIONS} onChange={onChange} printers={[]} preview={preview} />);
-    expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByRole('switch', { name: 'Force exact color match' })).toHaveAttribute('aria-checked', 'false');
     await userEvent.selectOptions(screen.getByLabelText('Filament source'), 'external_only');
     expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_AUTO_MODE_OPTIONS, feed_policy: 'external_only' });
+  });
+
+  it('uses the family filament type by default and lets the operator require the exact preset', async () => {
+    const onChange = vi.fn();
+    render(<AutoModeOptions options={DEFAULT_AUTO_MODE_OPTIONS} onChange={onChange} printers={[]} preview={preview} />);
+    await userEvent.click(screen.getByRole('switch', { name: 'Allow base-material match' }));
+    expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_AUTO_MODE_OPTIONS, allow_base_material_match: false });
   });
 
   it('pins a used channel without changing the global color policy', async () => {
@@ -64,7 +71,7 @@ it('queues a valid source with unavailable live compatibility and keeps the sele
   const button = await screen.findByRole('button', { name: /Add to Queue/i });
   await waitFor(() => expect(button).toBeEnabled());
   expect(screen.getByText(/Live printer compatibility is unavailable/)).toBeInTheDocument();
-  await userEvent.click(screen.getByRole('switch'));
+  await userEvent.click(screen.getByRole('switch', { name: 'Force exact color match' }));
   await waitFor(() => expect(button).toBeEnabled());
   await userEvent.click(button);
   await waitFor(() => expect(posts).toHaveLength(1));
@@ -100,12 +107,12 @@ it('waits for source requirements and keeps an explicit false when an older prev
   expect(button).toBeDisabled();
   await act(async () => { releaseInitial(); });
   await waitFor(() => expect(button).toBeEnabled());
-  await userEvent.click(screen.getByRole('switch'));
+  await userEvent.click(screen.getByRole('switch', { name: 'Force exact color match' }));
   await waitFor(() => expect(strictStarted).toBe(true));
-  await userEvent.click(screen.getByRole('switch'));
+  await userEvent.click(screen.getByRole('switch', { name: 'Force exact color match' }));
   await act(async () => { releaseStrict(); });
   await waitFor(() => expect(button).toBeEnabled());
-  expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
+  expect(screen.getByRole('switch', { name: 'Force exact color match' })).toHaveAttribute('aria-checked', 'false');
   await userEvent.click(button);
   await waitFor(() => expect(posts).toHaveLength(1));
   expect(posts[0].force_color_match).toBe(false);

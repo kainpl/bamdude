@@ -154,6 +154,10 @@
 
 ### Fixed
 
+- **Custom filament presets use a generic loaded spool by material by default.** Print and queue routing now compares the `filament_type` of the preset family — for example PETG — rather than treating a vendor preset such as 3DPrint PETG as incompatible with Generic PETG. Turn off *Allow base material match* only where the exact preset is required; exact colour remains an independent, enforceable choice.
+
+- **Staggered start no longer blocks the next job after the last one has finished.** A slot returns to the pool when its printer has come back to idle after the print, or when the bounded start-acknowledgement window expires. The queue banner now refreshes this state instead of showing a completed printer as still heating.
+
 - **System Information now distinguishes BamDude from the machine.** It shows when the BamDude process started and how long it has been running alongside the host/container uptime and start time. Restarting the service resets only the BamDude values, which makes an unexpected service restart visible on native installations.
 
 - **Inventory remaining bars use readable kilograms for large totals.** The number beside a remaining-filament bar now follows the same 5 kg threshold and precision rule as the inventory weight columns in both table and card views. A grouped 19 kg row shows `19.00kg` rather than `19000g`; individual spool-scale readings remain in grams.

@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.filament_intake import (
+    enrich_family_filament_types,
     item_descriptor,
     item_source,
     require_source_requirements,
@@ -73,6 +74,7 @@ async def prepare_routing(
     )
     if req is None:
         return None, options.get("plate_id")
+    req = await enrich_family_filament_types(db, req)
     policy = choices_policy(options, printer_manager.get_feed_snapshot(printer_id))
     used = {f["slot_id"] for f in req.used_filaments}
     if any(o["slot_id"] not in used for o in policy.filament_overrides):

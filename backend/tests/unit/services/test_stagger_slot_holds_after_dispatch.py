@@ -27,11 +27,12 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from backend.app.services.print_scheduler import _DISPATCH_SETTLE_SECONDS, PrintScheduler
+from backend.app.services.stagger_groups import StaggerGroupResolver
 
 
 class _FakeManager:
@@ -128,6 +129,22 @@ class TestTheSlotStillEndsWhenItShould:
 
         assert len(scheduler._stagger_slots) == 1
 
+    def test_idle_after_the_print_was_active_releases_its_slot(self, scheduler):
+        scheduler._register_stagger_start(1, 120)
+
+        _cleanup(scheduler, {1: "RUNNING"})
+        _cleanup(scheduler, {1: "IDLE"})
+
+        assert scheduler._stagger_slots == []
+
+    def test_idle_past_the_dispatch_grace_period_releases_its_slot(self, scheduler):
+        scheduler._register_stagger_start(1, 120)
+        scheduler._stagger_slots[0].started_at = time.monotonic() - _DISPATCH_SETTLE_SECONDS - 1
+
+        _cleanup(scheduler, {1: "IDLE"})
+
+        assert scheduler._stagger_slots == []
+
     def test_an_unknown_printer_is_left_alone(self, scheduler):
         """No status at all (not connected yet) is not evidence of anything."""
         scheduler._register_stagger_start(1, 120)
@@ -135,3 +152,87 @@ class TestTheSlotStillEndsWhenItShould:
         _cleanup(scheduler, {})
 
         assert len(scheduler._stagger_slots) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_empty_queue_releases_an_expired_idle_stagger_slot(scheduler):
+    """The final job must not leave the cap occupied after it returns to IDLE."""
+    scheduler._register_stagger_start(1, 0)
+    scheduler._stagger_slots[0].started_at = time.monotonic() - _DISPATCH_SETTLE_SECONDS - 1
+
+    pending_result = MagicMock()
+    pending_result.scalars.return_value.all.return_value = []
+    busy_result = MagicMock()
+    busy_result.all.return_value = []
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=[pending_result, busy_result])
+
+    class _FakeSessionCtx:
+        async def __aenter__(self_inner):
+            return db
+
+        async def __aexit__(self_inner, *args):
+            return False
+
+    scheduler._check_auto_drying = AsyncMock()
+    with (
+        patch("backend.app.services.print_scheduler.async_session", return_value=_FakeSessionCtx()),
+        patch.object(PrintScheduler, "_get_stagger_settings", AsyncMock(return_value=(True, 1, 0, True))),
+        patch("backend.app.services.print_scheduler.printer_manager", _FakeManager({1: "IDLE"})),
+    ):
+        assert await scheduler.check_queue() is False
+
+    assert scheduler._stagger_slots == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_releases_an_expired_idle_stagger_slot(scheduler):
+    scheduler._register_stagger_start(1, 0)
+    scheduler._stagger_slots[0].started_at = time.monotonic() - _DISPATCH_SETTLE_SECONDS - 1
+
+    with (
+        patch.object(PrintScheduler, "_get_stagger_settings", AsyncMock(return_value=(True, 1, 0, True))),
+        patch.object(
+            PrintScheduler,
+            "_load_stagger_resolver",
+            AsyncMock(return_value=StaggerGroupResolver.global_only()),
+        ),
+        patch("backend.app.services.print_scheduler.printer_manager", _FakeManager({1: "IDLE"})),
+    ):
+        snapshot = await scheduler.get_stagger_state_snapshot(db=None)
+
+    assert snapshot["groups"][0]["occupied"] == 0
+
+
+@pytest.mark.asyncio
+async def test_releasing_stagger_slot_broadcasts_capacity_change(scheduler):
+    scheduler._register_stagger_start(1, 120)
+    broadcast = AsyncMock()
+
+    with patch(
+        "backend.app.services.print_scheduler.ws_manager.send_stagger_changed",
+        broadcast,
+    ):
+        await scheduler.release_prepared_dispatch(1)
+
+    assert scheduler._stagger_slots == []
+    broadcast.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_expired_stagger_slot_broadcasts_capacity_change(scheduler):
+    scheduler._register_stagger_start(1, 0)
+    scheduler._stagger_slots[0].started_at = time.monotonic() - _DISPATCH_SETTLE_SECONDS - 1
+    broadcast = AsyncMock()
+
+    with (
+        patch("backend.app.services.print_scheduler.printer_manager", _FakeManager({1: "IDLE"})),
+        patch(
+            "backend.app.services.print_scheduler.ws_manager.send_stagger_changed",
+            broadcast,
+        ),
+    ):
+        assert await scheduler._refresh_stagger_slots(wait_for_bed=True)
+
+    assert scheduler._stagger_slots == []
+    broadcast.assert_awaited_once_with()

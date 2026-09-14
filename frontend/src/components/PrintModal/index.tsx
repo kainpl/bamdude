@@ -353,14 +353,16 @@ export function PrintModal({
         target_model: autoQueueItem.target_model,
         target_location_id: autoQueueItem.target_location_id,
         force_color_match: autoQueueItem.force_color_match,
+        allow_base_material_match: autoQueueItem.allow_base_material_match ?? true,
         feed_policy: autoQueueItem.feed_policy ?? (autoQueueItem.use_ams ? 'auto' : 'external_only'),
       };
     }
     const storedRouting = queueItem?.filament_routing ?? initialRouting;
-    if (storedRouting?.version === 1) return {
+    if (storedRouting) return {
       ...DEFAULT_AUTO_MODE_OPTIONS,
       feed_policy: storedRouting.feed_policy,
       force_color_match: storedRouting.force_color_match,
+      allow_base_material_match: storedRouting.allow_base_material_match ?? true,
     };
     if (seededAnswer) return seededAnswer.autoModeOptions;
     return DEFAULT_AUTO_MODE_OPTIONS;
@@ -376,6 +378,7 @@ export function PrintModal({
     target_location_id: autoModeOptions.target_location_id,
     feed_policy: autoModeOptions.feed_policy ?? 'auto',
     force_color_match: autoModeOptions.force_color_match,
+    allow_base_material_match: autoModeOptions.allow_base_material_match,
     filament_overrides: autoOverrides,
   };
   const routingPreview = useQuery({
@@ -751,6 +754,32 @@ export function PrintModal({
     : isLibraryFile
       ? libraryFilamentReqs
       : archiveFilamentReqs;
+  // The picker keeps the profile's display name, while its matcher can use the
+  // resolved family material when the operator opts in.  The original profile
+  // identity stays present as a preference for display and matching, while the
+  // material type keeps a generic PETG spool eligible.
+  const applyRoutingPolicy = useCallback((requirements: FilamentReqsData | undefined) => {
+    // The source query may temporarily contain an error/fallback payload while
+    // it settles. Leave that untouched; the normal source-read gate will keep
+    // submission disabled instead of crashing the modal during the transition.
+    if (!requirements?.filaments) return requirements;
+    return {
+      ...requirements,
+      filaments: requirements.filaments.map(filament => ({
+        ...filament,
+        ...(filament.filament_type
+          ? autoModeOptions.allow_base_material_match
+            ? { type: filament.filament_type }
+            : { strict_profile_match: true }
+          : {}),
+        strict_color_match: autoModeOptions.force_color_match,
+      })),
+    };
+  }, [autoModeOptions.allow_base_material_match, autoModeOptions.force_color_match]);
+  const routingFilamentReqs = useMemo(
+    () => applyRoutingPolicy(effectiveFilamentReqs),
+    [applyRoutingPolicy, effectiveFilamentReqs],
+  );
   // Whether that one query gave up. Only the self-submit below reads it: a
   // silent run must be able to tell "this plate needs no filament" from "we do
   // not know yet / we never will", which `effectiveFilamentReqs` alone cannot.
@@ -787,7 +816,7 @@ export function PrintModal({
   });
 
   // Get AMS mapping from hook (only when single printer selected)
-  const { amsMapping } = useFilamentMapping(effectiveFilamentReqs, printerStatus, manualMappings);
+  const { amsMapping } = useFilamentMapping(routingFilamentReqs, printerStatus, manualMappings);
 
   // --- Per-plate filament mapping (multi-plate submissions) ---------------
   // Each plate prints its own subset of the file's slots and needs its own AMS
@@ -911,14 +940,15 @@ export function PrintModal({
     const byPlate = new Map<number, FilamentReqsData>();
     selectedPlateIds.forEach((plateId, i) => {
       const data = perPlateReqQueries[i]?.data;
-      if (data) byPlate.set(plateId, data);
+      const routed = applyRoutingPolicy(data);
+      if (routed) byPlate.set(plateId, routed);
     });
     return byPlate;
     // Keyed on each query's last update stamp, not on the query objects (fresh every
     // render) and not on a spread of their data (a dep array whose *length* changes
     // with the plate count, which React treats as always-changed and warns about).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPlateIds, perPlateReqQueries.map((q) => q.dataUpdatedAt).join('|')]);
+  }, [applyRoutingPolicy, selectedPlateIds, perPlateReqQueries.map((q) => q.dataUpdatedAt).join('|')]);
 
   // Manual slot overrides are per plate: slot 3 of plate 1 and slot 3 of plate 2
   // are different prints and may want different trays.
@@ -966,7 +996,7 @@ export function PrintModal({
   const multiPrinterMapping = useMultiPrinterFilamentMapping(
     selectedPrinters,
     printers,
-    effectiveFilamentReqs,
+    routingFilamentReqs,
     manualMappings,
     perPrinterConfigs,
     setPerPrinterConfigs
@@ -1446,6 +1476,7 @@ export function PrintModal({
           target_model: autoModeOptions.target_model ?? null,
           target_location_id: autoModeOptions.target_location_id ?? null,
           force_color_match: autoModeOptions.force_color_match,
+          allow_base_material_match: autoModeOptions.allow_base_material_match,
           feed_policy: autoModeOptions.feed_policy ?? 'auto',
           filament_overrides: autoOverrides,
           bed_levelling: printOptions.bed_levelling,
@@ -1499,6 +1530,7 @@ export function PrintModal({
           target_model: autoModeOptions.target_model ?? undefined,
           target_location_id: autoModeOptions.target_location_id ?? undefined,
           force_color_match: autoModeOptions.force_color_match,
+          allow_base_material_match: autoModeOptions.allow_base_material_match,
           feed_policy: autoModeOptions.feed_policy ?? 'auto',
           filament_overrides: autoOverrides,
           plate_ids: platesToQueue.length > 1 ? platesToQueue : undefined,
@@ -1779,11 +1811,12 @@ export function PrintModal({
         Object.keys(manualMappings).length === 0 && Object.keys(manualMappingsByPlate).length === 0 &&
         !Object.values(perPrinterConfigs).some(config => !config.useDefault && !config.autoConfigured)
         ? undefined : getMappingForPrinter(printerId, plateId),
-      ...((initialRouting || queueItem?.filament_routing) ? {
+      ...{
         feed_policy: autoModeOptions.feed_policy,
         force_color_match: autoModeOptions.force_color_match,
+        allow_base_material_match: autoModeOptions.allow_base_material_match,
         filament_overrides: autoOverrides,
-      } : {}),
+      },
       plate_id: plateId,
       scheduled_time: scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
         ? new Date(scheduleOptions.scheduledTime).toISOString()
@@ -1857,6 +1890,10 @@ export function PrintModal({
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
+                feed_policy: autoModeOptions.feed_policy,
+                force_color_match: autoModeOptions.force_color_match,
+                allow_base_material_match: autoModeOptions.allow_base_material_match,
+                filament_overrides: autoOverrides,
                 ...printOptions,
                 ...swapPayload,
                 selected_macro_ids: selectedMacroIds,
@@ -1873,6 +1910,10 @@ export function PrintModal({
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
+                feed_policy: autoModeOptions.feed_policy,
+                force_color_match: autoModeOptions.force_color_match,
+                allow_base_material_match: autoModeOptions.allow_base_material_match,
+                filament_overrides: autoOverrides,
                 ...printOptions,
                 ...swapPayload,
                 selected_macro_ids: selectedMacroIds,
@@ -2541,7 +2582,7 @@ export function PrintModal({
               {t(initialRouting.mode === 'pinned' ? 'filamentRouting.copyReview' : 'filamentRouting.copyRules')}
             </p>}
 
-            {!isAutoMode && (initialRouting || queueItem?.filament_routing) && <div className="space-y-2 text-sm">
+            {!isAutoMode && <div className="space-y-2 text-sm">
               <label className="block text-bambu-gray">{t('filamentRouting.feedPolicy')}
                 <select value={autoModeOptions.feed_policy ?? 'auto'} className="ml-2 bg-bambu-dark-secondary text-white rounded p-1"
                   onChange={event => setAutoModeOptions(previous => ({ ...previous, feed_policy: event.target.value as AutoModeOptionsState['feed_policy'] }))}>
@@ -2554,6 +2595,11 @@ export function PrintModal({
                 <input type="checkbox" checked={autoModeOptions.force_color_match}
                   onChange={event => setAutoModeOptions(previous => ({ ...previous, force_color_match: event.target.checked }))} />
                 {t('printModal.autoMode.forceColorMatch')}
+              </label>
+              <label className="flex gap-2 items-center text-white">
+                <input type="checkbox" checked={autoModeOptions.allow_base_material_match}
+                  onChange={event => setAutoModeOptions(previous => ({ ...previous, allow_base_material_match: event.target.checked }))} />
+                <span>{t('filamentRouting.baseMaterialMatch')}</span>
               </label>
             </div>}
 
@@ -2601,7 +2647,7 @@ export function PrintModal({
                 // printers ships no mapping at all (the scheduler maps each plate against
                 // the printer it picks), so the editor would be collecting tray choices it
                 // then throws away. Withhold its input (upstream #2552).
-                filamentReqs={isMultiPlateSelection ? undefined : effectiveFilamentReqs}
+                filamentReqs={isMultiPlateSelection ? undefined : routingFilamentReqs}
                 onAutoConfigurePrinter={multiPrinterMapping.autoConfigurePrinter}
                 onUpdatePrinterConfig={multiPrinterMapping.updatePrinterConfig}
                 slicedForModel={slicedForModel}
@@ -2651,9 +2697,10 @@ export function PrintModal({
             {!isAutoMode && showFilamentMapping && !archiveDataMissing && selectedPrinters.length === 1 && (
               <FilamentMapping
                 printerId={effectivePrinterId!}
-                filamentReqs={effectiveFilamentReqs}
+                filamentReqs={routingFilamentReqs}
                 manualMappings={manualMappings}
                 onManualMappingChange={setManualMappings}
+                requireExactColor={autoModeOptions.force_color_match}
                 defaultExpanded={!!initialSelectedPrinterIds?.length || (settings?.per_printer_mapping_expanded ?? false)}
                 currencySymbol={currencySymbol}
                 defaultCostPerKg={defaultCostPerKg}

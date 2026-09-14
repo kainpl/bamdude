@@ -175,6 +175,42 @@ describe('useWebSocket hook', () => {
     globalThis.WebSocket = originalWebSocket;
   });
 
+  it('refreshes the affected queue immediately after auto-queue promotion', async () => {
+    const { useWebSocket } = await import('../../hooks/useWebSocket');
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+    const ws = await waitForWs();
+
+    act(() => {
+      ws.open();
+      ws.simulateMessage({ type: 'queue_changed', printer_id: 42 });
+    });
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 42] });
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 'all'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queues'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue-forecast'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['auto-queue'] });
+  });
+
+  it('refreshes stagger capacity when the scheduler releases a slot', async () => {
+    const { useWebSocket } = await import('../../hooks/useWebSocket');
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+    const ws = await waitForWs();
+
+    act(() => {
+      ws.open();
+      ws.simulateMessage({ type: 'stagger_changed' });
+    });
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['stagger-state'] });
+    });
+  });
+
   it('applies all 50 WS states and acknowledges them while every REST request is still pending', async () => {
     const { useWebSocket } = await import('../../hooks/useWebSocket');
     const reads = vi.fn(() => new Promise<Record<string, unknown>>(() => {}));

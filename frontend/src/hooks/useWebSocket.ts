@@ -467,6 +467,26 @@ export function useWebSocket() {
         }
         break;
 
+      case 'queue_changed':
+        // Auto-queue promotion creates a per-printer row in a scheduler
+        // transaction, not through this tab's mutation. Refresh only the
+        // affected card plus farm-wide aggregate views immediately; polling is
+        // the disconnected-socket fallback, not the primary update path.
+        if (message.printer_id !== undefined) {
+          queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
+        }
+        queryClient.invalidateQueries({ queryKey: ['queue', 'all'] });
+        queryClient.invalidateQueries({ queryKey: ['queues'] });
+        queryClient.invalidateQueries({ queryKey: ['queue-forecast'] });
+        queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
+        break;
+
+      case 'stagger_changed':
+        // Stagger slots are owned by the scheduler process, so no browser
+        // mutation can update the banner when one becomes available.
+        queryClient.invalidateQueries({ queryKey: ['stagger-state'] });
+        break;
+
       case 'filament_deficit': {
         // Informative only — the print is already running. The decision was to
         // warn, never to gate: a farm finishes a spool mid-plate on purpose.

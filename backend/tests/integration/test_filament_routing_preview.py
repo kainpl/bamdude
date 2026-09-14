@@ -2,6 +2,9 @@ import json
 
 import pytest
 
+from backend.app.models.user_filament import UserFilamentFamily
+from backend.app.services.printer_manager import printer_manager
+from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
 pytestmark = pytest.mark.integration
@@ -37,6 +40,44 @@ async def test_preview_uses_strict_reader_and_never_exposes_paths(
     )
     assert strict.json()["plates"][0]["groups"][0]["compatible"] == 0
     assert strict.json()["plates"][0]["groups"][0]["reasons"][0]["code"] == "color_mismatch"
+
+
+async def test_preview_uses_profile_family_type_by_default_and_can_require_the_exact_preset(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch
+):
+    source, printer, _, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    write_routing_3mf(
+        tmp_path / source.filename,
+        {15: [{"id": 3, "type": "333Print PETG", "tray_info_idx": "P333PETG", "used_g": "0.0001"}]},
+    )
+    db_session.add(
+        UserFilamentFamily(
+            filament_id="P333PETG",
+            ecosystem="bambu",
+            alias="333Print PETG",
+            vendor="333Print",
+            filament_type="PETG",
+            origin="cloud_bambu",
+        )
+    )
+    await db_session.commit()
+    mqtt._process_message(
+        {"print": {"command": "push_status", "ams": {"ams": []}, "vt_tray": {"id": 254, "tray_type": "PETG"}}}
+    )
+    assert printer_manager.get_feed_snapshot(printer.id).sources[0].material == "PETG"
+
+    strict = await committing_client.post(
+        "/api/v1/auto-queue/routing-preview",
+        json={"library_file_id": source.id, "plate_ids": [15], "allow_base_material_match": False},
+    )
+    default = await committing_client.post(
+        "/api/v1/auto-queue/routing-preview",
+        json={"library_file_id": source.id, "plate_ids": [15]},
+    )
+    assert strict.status_code == default.status_code == 200
+    assert strict.json()["plates"][0]["groups"][0]["reasons"][0]["code"] == "material_mismatch"
+    assert default.json()["plates"][0]["filaments"][0]["filament_type"] == "PETG"
+    assert default.json()["plates"][0]["groups"][0]["compatible"] == 1
 
 
 async def test_preview_missing_plate_is_unavailable_not_fallback(

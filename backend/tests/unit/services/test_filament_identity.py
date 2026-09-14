@@ -8,6 +8,8 @@ import pytest
 
 from backend.app.models.user_filament import UserFilamentFamily, UserFilamentPreset
 from backend.app.services import filament_identity as fi
+from backend.app.services.filament_intake import enrich_family_filament_types
+from backend.app.services.filament_requirements import PrintRequirements
 
 
 @pytest.mark.asyncio
@@ -60,6 +62,49 @@ async def test_resolve_raw_finds_cloud_mirror_by_cloud_id(db_session):
     assert resolved.family.filament_id == "P122e532"
     assert resolved.origin == "cloud_bambu"
     assert resolved.setting_id == "PFUS_CUSTOM_ROOT"
+
+
+@pytest.mark.asyncio
+async def test_child_profile_inherits_the_family_filament_type_for_routing(db_session):
+    db_session.add(
+        UserFilamentFamily(
+            filament_id="P333PETG",
+            ecosystem="bambu",
+            alias="333Print PETG",
+            vendor="333Print",
+            filament_type="PETG",
+            origin="cloud_bambu",
+        )
+    )
+    db_session.add(
+        UserFilamentPreset(
+            owner_user_id=None,
+            ecosystem="bambu",
+            source="cloud_bambu",
+            cloud_id="PFUS_333_CHILD",
+            name="333Print PETG @ Bambu Lab P1S 0.4 nozzle",
+            family_filament_id="P333PETG",
+            filament_type=None,
+        )
+    )
+    await db_session.commit()
+
+    requirements = PrintRequirements(
+        "ok",
+        used_filaments=(
+            {
+                "slot_id": 1,
+                "type": "333Print PETG",
+                "color": None,
+                "tray_info_idx": "PFUS_333_CHILD",
+                "used_grams": 1,
+                "nozzle_id": 0,
+            },
+        ),
+    )
+    enriched = await enrich_family_filament_types(db_session, requirements)
+    assert enriched.used_filaments[0]["type"] == "333Print PETG"
+    assert enriched.used_filaments[0]["filament_type"] == "PETG"
 
 
 @pytest.mark.asyncio

@@ -167,7 +167,7 @@ def test_the_blocked_revision_fingerprint_follows_the_hash_not_the_mtime():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_writer_stamps_version_two_with_the_blob_and_its_hash():
+def test_the_writer_stamps_version_three_with_the_blob_and_its_hash():
     stored = json.loads(
         serialize_policy(
             a_pinned_policy(),
@@ -178,7 +178,7 @@ def test_the_writer_stamps_version_two_with_the_blob_and_its_hash():
             queue_source_id=4,
         )
     )
-    assert stored["version"] == 2 == VERSION
+    assert stored["version"] == 3 == VERSION
     assert stored["source_identity"] == {
         "kind": "library",
         "id": 7,
@@ -204,7 +204,7 @@ def test_a_source_that_could_not_be_identified_records_no_revision():
 
 
 # --------------------------------------------------------------------------- #
-# The decoder reads 1 and 2, and nothing else
+# The decoder reads 1, 2 and 3, and nothing else
 # --------------------------------------------------------------------------- #
 
 
@@ -216,7 +216,7 @@ def test_a_version_one_payload_still_decodes_to_exactly_what_it_meant():
     assert deserialize_policy(json.dumps(v1)) == policy
 
 
-def test_a_version_two_payload_keeps_its_pins_scope_and_review_rules():
+def test_a_version_three_payload_keeps_its_pins_scope_and_review_rules():
     policy = a_pinned_policy()
     stored = serialize_policy(
         policy,
@@ -235,7 +235,7 @@ def test_a_version_two_payload_keeps_its_pins_scope_and_review_rules():
 
 
 def test_upgrading_a_version_one_intent_carries_every_semantic_choice():
-    """Re-writing a v1 intent as v2 is only allowed to change the identity.
+    """Re-writing a v1 intent as v3 is only allowed to change the identity.
 
     The one thing an edit is entitled to replace is the evidence about the FILE;
     the pins, the feed policy, the overrides, the printer scope, the resolved
@@ -245,7 +245,7 @@ def test_upgrading_a_version_one_intent_carries_every_semantic_choice():
     policy = a_pinned_policy()
     v1 = json.loads(serialize_policy(policy, library_file_id=7, plate_id=15, printer_id=3, exact_model=True))
     v1["version"] = 1
-    v2 = json.loads(
+    v3 = json.loads(
         serialize_policy(
             deserialize_policy(json.dumps(v1)),
             library_file_id=v1["source_identity"]["id"],
@@ -255,14 +255,14 @@ def test_upgrading_a_version_one_intent_carries_every_semantic_choice():
             queue_source_id=4,
         )
     )
-    assert v2["version"] == 2
-    assert {k: v for k, v in v2.items() if k not in ("version", "source_identity")} == {
+    assert v3["version"] == 3
+    assert {k: v for k, v in v3.items() if k not in ("version", "source_identity")} == {
         k: v for k, v in v1.items() if k not in ("version", "source_identity")
     }
-    assert deserialize_policy(json.dumps(v2)) == deserialize_policy(json.dumps(v1)) == policy
+    assert deserialize_policy(json.dumps(v3)) == deserialize_policy(json.dumps(v1)) == policy
 
 
-@pytest.mark.parametrize("version", [0, 3, 99, -1, "2", 2.0, None, True])
+@pytest.mark.parametrize("version", [0, 4, 99, -1, "3", 3.0, None, True])
 def test_an_unknown_version_is_still_a_refusal(version):
     """Accepting two versions must not become accepting whatever arrives.
 
@@ -279,8 +279,8 @@ def test_an_unknown_version_is_still_a_refusal(version):
     assert deserialize_policy(json.dumps(payload)).review_required
 
 
-def test_the_supported_versions_are_exactly_one_and_two():
-    assert SUPPORTED_VERSIONS == (1, 2)
+def test_the_supported_versions_are_exactly_one_two_and_three():
+    assert SUPPORTED_VERSIONS == (1, 2, 3)
     assert VERSION in SUPPORTED_VERSIONS
 
 
@@ -297,7 +297,7 @@ class _Row:
         self.queue_source_id = columns.get("queue_source_id")
 
 
-@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("version", [1, 2, 3])
 def test_repeat_restores_the_source_of_a_payload_this_version_understands(version):
     payload = json.loads(
         serialize_policy(
@@ -320,7 +320,7 @@ def test_repeat_restores_the_source_of_a_payload_this_version_understands(versio
 
 def test_repeat_leaves_a_payload_it_cannot_read_alone():
     payload = json.loads(serialize_policy(RoutingPolicy(), library_file_id=7))
-    payload["version"] = 3
+    payload["version"] = 4
     row = _Row(json.dumps(payload), archive_id=88)
     restore_routing_source(row)
     assert (row.library_file_id, row.archive_id) == (None, 88)

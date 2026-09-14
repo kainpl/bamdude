@@ -22,6 +22,7 @@ class FilamentOverride(BaseModel):
 class FilamentRoutingChoices(BaseModel):
     feed_policy: Literal["auto", "ams_only", "external_only"] | None = None
     force_color_match: bool = False
+    allow_base_material_match: bool = True
     filament_overrides: list[FilamentOverride] | None = None
 
 

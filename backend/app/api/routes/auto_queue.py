@@ -131,6 +131,7 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         required_filament_types=required_types,
         filament_overrides=overrides,
         force_color_match=item.force_color_match,
+        allow_base_material_match=item.allow_base_material_match,
         plate_id=item.plate_id,
         position=item.position,
         scheduled_time=item.scheduled_time,

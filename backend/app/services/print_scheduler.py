@@ -15,6 +15,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.core.database import async_session
 from backend.app.core.tasks import spawn_background_task
+from backend.app.core.websocket import ws_manager
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
@@ -358,6 +359,15 @@ class PrintScheduler:
             dispatched = False
 
             if not items:
+                # A stale stagger slot must not survive just because its print
+                # was the final queue item.  The normal path below performs
+                # this maintenance before inspecting pending work, but this
+                # early return used to skip it indefinitely.
+                if self._stagger_slots:
+                    stagger_enabled, _, _, stagger_wait_bed = await self._get_stagger_settings(db)
+                    if stagger_enabled:
+                        await self._refresh_stagger_slots(stagger_wait_bed)
+
                 # No pending items - still check auto-drying on idle printers.
                 # Seed busy_printers from currently-printing printers (same
                 # authoritative source as the full path below — PrinterQueue.status
@@ -445,8 +455,7 @@ class PrintScheduler:
                 db
             )
             if stagger_enabled:
-                self._update_stagger_temps()
-                self._cleanup_stagger_slots(stagger_wait_bed)
+                await self._refresh_stagger_slots(stagger_wait_bed)
                 stagger_resolver = await self._load_stagger_resolver(db)
             else:
                 stagger_resolver = StaggerGroupResolver.global_only()
@@ -1344,6 +1353,11 @@ class PrintScheduler:
             }
         """
         enabled, concurrent, interval_seconds, wait_for_bed = await self._get_stagger_settings(db)
+        if enabled:
+            # The banner is also a maintenance read: without this, an empty
+            # queue could expose a slot that the next scheduler pass would
+            # have released.
+            await self._refresh_stagger_slots(wait_for_bed)
         resolver = await self._load_stagger_resolver(db) if enabled else StaggerGroupResolver.global_only()
         now = time.monotonic()
 
@@ -1413,8 +1427,9 @@ class PrintScheduler:
         wait_for_bed = await self._get_bool_setting(db, "stagger_wait_for_bed")
         return True, max(concurrent, 1), interval_min * 60, wait_for_bed
 
-    def _update_stagger_temps(self) -> None:
+    def _update_stagger_temps(self) -> bool:
         """Check bed temps for printers in stagger slots, mark reached."""
+        changed = False
         for slot in self._stagger_slots:
             if slot.temp_reached_at is not None:
                 continue
@@ -1425,14 +1440,16 @@ class PrintScheduler:
             target = state.temperatures.get("bed_target", 0)
             if target > 0 and abs(bed - target) <= 1.0:
                 slot.temp_reached_at = time.monotonic()
+                changed = True
                 logger.info(
                     "Stagger: printer %d bed reached %.1f°C (target %.1f°C), slot freed",
                     slot.printer_id,
                     bed,
                     target,
                 )
+        return changed
 
-    def _cleanup_stagger_slots(self, wait_for_bed: bool) -> None:
+    def _cleanup_stagger_slots(self, wait_for_bed: bool) -> bool:
         """Remove slots that are fully expired (temp reached + interval elapsed)."""
         now = time.monotonic()
         active = []
@@ -1447,7 +1464,18 @@ class PrintScheduler:
                 # state below really does mean the slot's work is over.
                 slot.saw_active = True
 
-            if state and live not in ("RUNNING", "PREPARE", "IDLE", "PAUSE"):
+            if live == "IDLE":
+                # IDLE immediately after dispatch still describes the prior
+                # print on some firmware, so it needs the same bounded grace
+                # period as FINISH/FAILED.  Once this slot has observed its
+                # own active state, or that window expires, IDLE means it is
+                # no longer heating and must not keep the cap occupied.
+                if slot.saw_active or now - slot.started_at >= _DISPATCH_SETTLE_SECONDS:
+                    continue
+                active.append(slot)
+                continue
+
+            if state and live not in ("RUNNING", "PREPARE", "PAUSE"):
                 # ⚠️ A printer that has been dispatched to but has not started
                 # yet still reports the PREVIOUS print's terminal state —
                 # FINISH for seconds to half a minute while the file uploads and
@@ -1477,7 +1505,22 @@ class PrintScheduler:
             else:
                 if now - slot.started_at < iv:
                     active.append(slot)  # interval not elapsed
+        changed = len(active) != len(self._stagger_slots)
         self._stagger_slots = active
+        return changed
+
+    async def _refresh_stagger_slots(self, wait_for_bed: bool) -> bool:
+        """Refresh stagger capacity and notify views if its visible state changed."""
+        changed = self._update_stagger_temps()
+        changed = self._cleanup_stagger_slots(wait_for_bed) or changed
+        if changed:
+            try:
+                await ws_manager.send_stagger_changed()
+            except Exception:
+                # A disconnected browser must not prevent the scheduler from
+                # releasing capacity for the next printer.
+                logger.exception("Could not broadcast stagger capacity change")
+        return changed
 
     async def _load_stagger_resolver(self, db: AsyncSession) -> StaggerGroupResolver:
         """The groups printers heat in, as Settings describe them right now."""
@@ -1572,8 +1615,7 @@ class PrintScheduler:
             async with self._stagger_acquire_lock:
                 # Re-check inside the lock so a parallel acquirer can't slip
                 # past us between the check and the register.
-                self._update_stagger_temps()
-                self._cleanup_stagger_slots(stagger_wait_bed)
+                await self._refresh_stagger_slots(stagger_wait_bed)
                 if any(s.printer_id == printer_id for s in self._stagger_slots):
                     return  # already registered (queue pre-register, or prior loop)
                 if self._can_start_staggered(stagger_concurrent, printer_id, resolver):
@@ -1617,8 +1659,7 @@ class PrintScheduler:
             if not enabled:
                 return False
             resolver = await self._load_stagger_resolver(db)
-        self._update_stagger_temps()
-        self._cleanup_stagger_slots(wait_for_bed)
+        await self._refresh_stagger_slots(wait_for_bed)
         return not self._can_start_staggered(concurrent, printer_id, resolver)
 
     def _mark_printer_dispatched(
@@ -1639,10 +1680,16 @@ class PrintScheduler:
             pre_state = ""
         self._dispatch_holds[printer_id] = (time.monotonic(), pre_state, pre_subtask_id)
 
-    def release_prepared_dispatch(self, printer_id: int) -> None:
+    async def release_prepared_dispatch(self, printer_id: int) -> None:
         """The owner of a refused pre-publish attempt releases its reservations."""
+        had_slot = any(slot.printer_id == printer_id for slot in self._stagger_slots)
         self._stagger_slots = [slot for slot in self._stagger_slots if slot.printer_id != printer_id]
         self._release_dispatch_hold(printer_id)
+        if had_slot:
+            try:
+                await ws_manager.send_stagger_changed()
+            except Exception:
+                logger.exception("Could not broadcast released stagger slot for printer %d", printer_id)
 
     def _release_dispatch_hold(self, printer_id: int) -> None:
         """Drop the dispatch hold for ``printer_id`` (called by the watchdog)."""
@@ -3005,7 +3052,7 @@ class PrintScheduler:
                 )
                 await db.commit()
                 if restored:
-                    self.release_prepared_dispatch(printer_id)
+                    await self.release_prepared_dispatch(printer_id)
                 return
 
             if not outcome.get("success"):

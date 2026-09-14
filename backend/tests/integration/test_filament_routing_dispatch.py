@@ -12,6 +12,7 @@ from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
+from backend.app.models.user_filament import UserFilamentFamily
 from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
 from backend.app.services.bambu_mqtt import BambuMQTTClient
 from backend.app.services.filament_deferred import defer_claim
@@ -129,6 +130,42 @@ async def test_publish_boundary_catches_change_after_final_preflight(
             routing_guard=guard,
         )
     mqtt._client.publish.assert_not_called()
+
+
+async def test_per_printer_routing_uses_the_profile_family_material_when_enabled(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    from backend.app.services.filament_policy_write import prepare_routing
+
+    source, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    path = write_routing_3mf(
+        tmp_path / source.filename,
+        {15: [{"id": 3, "type": "333Print PETG", "tray_info_idx": "P333PETG", "used_g": "0.0001"}]},
+    )
+    source.file_path = str(path)
+    db_session.add(
+        UserFilamentFamily(
+            filament_id="P333PETG",
+            ecosystem="bambu",
+            alias="333Print PETG",
+            vendor="333Print",
+            filament_type="PETG",
+            origin="cloud_bambu",
+        )
+    )
+    mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_type": "PETG", "tray_color": "FF0000"}}})
+    await db_session.commit()
+
+    routing, plate = await prepare_routing(
+        db_session,
+        printer_id=printer.id,
+        library_file_id=source.id,
+        options={"allow_base_material_match": True},
+    )
+    item = PrintQueueItem(queue_id=queue.id, library_file_id=source.id, plate_id=plate, filament_routing=routing)
+    db_session.add(item)
+    await db_session.commit()
+    assert (await preflight_item(db_session, item, printer.id)).plan is not None
 
 
 @pytest.mark.parametrize("race", ["none", "cancel", "reclaim", "delete"])

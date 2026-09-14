@@ -184,7 +184,14 @@ class TestAutoQueueSchedulerTick:
         await db_session.commit()
 
         p_elig, p_sched, p_ams = _patch_printer_manager({printer.id})
-        with p_elig, p_sched, p_ams:
+        with (
+            p_elig,
+            p_sched,
+            p_ams,
+            patch(
+                "backend.app.services.auto_queue_scheduler.ws_manager.send_queue_changed", new_callable=AsyncMock
+            ) as queue_changed,
+        ):
             await scheduler.tick()
 
         await db_session.refresh(item)
@@ -201,6 +208,7 @@ class TestAutoQueueSchedulerTick:
         assert len(pq_items) == 1
         assert pq_items[0].source_auto_item_id == item.id
         assert pq_items[0].position == 1
+        queue_changed.assert_awaited_once_with(printer.id)
 
     @pytest.mark.asyncio
     @pytest.mark.integration

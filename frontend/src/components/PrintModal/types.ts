@@ -370,6 +370,7 @@ export interface AutoModeOptionsState {
   target_model: string | null;
   target_location_id: number | null;
   force_color_match: boolean;
+  allow_base_material_match: boolean;
 }
 
 export const DEFAULT_AUTO_MODE_OPTIONS: AutoModeOptionsState = {
@@ -377,6 +378,7 @@ export const DEFAULT_AUTO_MODE_OPTIONS: AutoModeOptionsState = {
   target_model: null,
   target_location_id: null,
   force_color_match: false,
+  allow_base_material_match: true,
 };
 
 /**
@@ -470,6 +472,12 @@ export interface FilamentReqsData {
      *  = user custom). Used to resolve the "original" filament label in
      *  FilamentMapping against the builtin + cloud user-preset maps. #1718. */
     tray_info_idx?: string;
+    /** Structured material resolved through the profile family, e.g. PETG. */
+    filament_type?: string;
+    /** UI-only matcher policy; never sent as part of the raw 3MF requirement. */
+    strict_profile_match?: boolean;
+    /** UI-only matcher policy; never sent as part of the raw 3MF requirement. */
+    strict_color_match?: boolean;
   }>;
 }
 
@@ -491,6 +499,8 @@ export interface FilamentMappingProps {
   forceColorMatch?: Record<number, boolean>;
   /** Called when a slot's force-color-match checkbox is toggled. */
   onForceColorMatchChange?: (slotId: number, value: boolean) => void;
+  /** Make a different loaded colour a refusal in the live mapping preview. */
+  requireExactColor?: boolean;
   /** Names the plate this panel maps, when one panel is rendered per selected
    *  plate. Each plate prints its own subset of the file's slots and gets its
    *  own AMS mapping, so the panels have to be told apart (upstream #2551). */

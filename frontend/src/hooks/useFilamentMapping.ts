@@ -5,11 +5,11 @@ import {
   sortByRemainAscending,
   normalizeColor,
   normalizeColorForCompare,
-  colorsAreSimilar,
   formatSlotLabel,
   getGlobalTrayId,
   matchLoadedExtruderTray,
-  filamentTypesCompatible,
+  filamentRequirementMatches,
+  filamentColorMatches,
 } from '../utils/amsHelpers';
 import { api } from '../api/client';
 import type { PrinterStatus } from '../api/client';
@@ -171,12 +171,22 @@ export interface FilamentRequirement {
   tray_info_idx?: string;
   /** Target nozzle for dual-nozzle printers (0=right, 1=left) */
   nozzle_id?: number;
+  /** Structured material of the resolved profile family, e.g. PETG. */
+  filament_type?: string;
+  /** Keep the slicer's family/profile identity strict unless base matching was enabled. */
+  strict_profile_match?: boolean;
+  /** Reject a differently-coloured loaded slot instead of merely warning. */
+  strict_color_match?: boolean;
 }
 
 /**
  * Status of filament comparison between required and loaded.
  */
 export type FilamentStatus = 'match' | 'type_only' | 'mismatch' | 'empty';
+
+function loadedFilamentMatches(req: FilamentRequirement, loaded: LoadedFilament): boolean {
+  return filamentRequirementMatches(req, loaded);
+}
 
 /**
  * Result of comparing a required filament with loaded filaments.
@@ -269,10 +279,8 @@ export function buildFilamentComparison(
       const manualLoaded = loadedFilaments.find((f) => f.globalTrayId === manualTrayId);
 
       if (manualLoaded) {
-        const typeMatch = filamentTypesCompatible(manualLoaded.type, req.type);
-        const colorMatch =
-          normalizeColorForCompare(manualLoaded.color) === normalizeColorForCompare(req.color) ||
-          colorsAreSimilar(manualLoaded.color, req.color);
+        const typeMatch = loadedFilamentMatches(req, manualLoaded);
+        const colorMatch = filamentColorMatches(req, manualLoaded);
 
         let status: FilamentStatus;
         if (typeMatch && colorMatch) {
@@ -285,8 +293,11 @@ export function buildFilamentComparison(
 
         return {
           ...req,
-          loaded: manualLoaded,
-          hasFilament: true,
+          // A strict-colour change must actively unassign a manually picked
+          // wrong-colour tray; otherwise the dialog would pin a mapping the
+          // backend correctly rejects at dispatch.
+          loaded: req.strict_color_match && !colorMatch ? undefined : manualLoaded,
+          hasFilament: !(req.strict_color_match && !colorMatch),
           typeMatch,
           colorMatch,
           status,
@@ -322,6 +333,9 @@ export function buildFilamentComparison(
     const extruderTray = isSingleFilament
       ? matchLoadedExtruderTray(req, available, trayNow)
       : undefined;
+    const compatibleExtruderTray = extruderTray && loadedFilamentMatches(req, extruderTray) && filamentColorMatches(req, extruderTray)
+      ? extruderTray
+      : undefined;
 
     let exactMatch: LoadedFilament | undefined;
     let similarMatch: LoadedFilament | undefined;
@@ -347,22 +361,22 @@ export function buildFilamentComparison(
       const idxMatches = available.filter((f) => f.trayInfoIdx === reqTrayInfoIdx);
       exactMatch = idxMatches.find(
         (f) =>
-          filamentTypesCompatible(f.type, req.type) &&
+          loadedFilamentMatches(req, f) &&
           normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
       );
       if (!exactMatch) {
         similarMatch = idxMatches.find(
           (f) =>
-            filamentTypesCompatible(f.type, req.type) &&
-            colorsAreSimilar(f.color, req.color)
+            loadedFilamentMatches(req, f) &&
+            filamentColorMatches(req, f)
         );
       }
       if (!exactMatch && !similarMatch) {
         // Right variant, wrong colour. Held back as a last resort so it cannot
         // block the search below from finding a correctly-coloured tray.
-        idxTypeOnly = idxMatches.find(
-          (f) => filamentTypesCompatible(f.type, req.type)
-        );
+        idxTypeOnly = req.strict_color_match
+          ? undefined
+          : idxMatches.find((f) => loadedFilamentMatches(req, f));
       }
     }
 
@@ -370,25 +384,32 @@ export function buildFilamentComparison(
     if (!exactMatch && !similarMatch && !typeOnlyMatch) {
       exactMatch = available.find(
         (f) =>
-          filamentTypesCompatible(f.type, req.type) &&
+          loadedFilamentMatches(req, f) &&
           normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
       );
       if (!exactMatch) {
         similarMatch = available.find(
           (f) =>
-            filamentTypesCompatible(f.type, req.type) &&
-            colorsAreSimilar(f.color, req.color)
+            loadedFilamentMatches(req, f) &&
+            filamentColorMatches(req, f)
         );
       }
       if (!exactMatch && !similarMatch) {
-        typeOnlyMatch = available.find(
-          (f) => filamentTypesCompatible(f.type, req.type)
-        );
+        typeOnlyMatch = req.strict_color_match
+          ? undefined
+          : available.find((f) => loadedFilamentMatches(req, f));
       }
     }
 
     const loaded =
-      extruderTray || exactMatch || similarMatch || typeOnlyMatch || idxTypeOnly || undefined;
+      compatibleExtruderTray || exactMatch || similarMatch || typeOnlyMatch || idxTypeOnly || undefined;
+    // Keep the colour reason visible while still leaving the mapping empty.
+    // Otherwise strict-colour mode would correctly unassign the black spool
+    // but misleadingly claim that PETG itself was missing.
+    const strictColorMismatch =
+      req.strict_color_match === true &&
+      !loaded &&
+      available.some((f) => loadedFilamentMatches(req, f));
 
     // Mark this tray as used so it won't be assigned to another slot
     if (loaded) {
@@ -398,19 +419,18 @@ export function buildFilamentComparison(
     const hasFilament = !!loaded;
     // Every match path (cascade tiers + extruderTray) requires a
     // type-compatible tray, so anything loaded is a type match.
-    const typeMatch = hasFilament;
+    const typeMatch = hasFilament || strictColorMismatch;
     // #2687: judge the colour on the tray we actually picked, never on which
     // branch found it. A requirement with no colour at all is not a mismatch —
     // the 3MF simply did not ask for one, and any loaded colour satisfies it.
-    const requiredColor = normalizeColorForCompare(req.color);
     const colorMatch =
       hasFilament &&
-      (!requiredColor ||
-        normalizeColorForCompare(loaded?.color) === requiredColor ||
-        colorsAreSimilar(loaded?.color, req.color));
+      filamentColorMatches(req, loaded ?? {});
 
     // Status: match (type+colour), type_only (type ok, colour off), mismatch (type not found)
-    const status: FilamentStatus = !hasFilament ? 'mismatch' : colorMatch ? 'match' : 'type_only';
+    const status: FilamentStatus = !hasFilament
+      ? strictColorMismatch ? 'type_only' : 'mismatch'
+      : colorMatch ? 'match' : 'type_only';
 
     return {
       ...req,

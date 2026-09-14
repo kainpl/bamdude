@@ -190,6 +190,46 @@ describe('FilamentMapping — FTS routing', () => {
     expect(screen.queryByLabelText(/Force color match/i)).not.toBeInTheDocument();
   });
 
+  it('shows a colour-only assignment as a refusal when exact colour is required', async () => {
+    server.use(
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(createStatus({ fila_switch: null, ams_extruder_map: { '0': 1 } }))),
+    );
+    render(
+      <FilamentMapping
+        printerId={1}
+        filamentReqs={{ filaments: [{ ...mockFilamentReqs.filaments[0], color: '#FF00FF', strict_color_match: true }] }}
+        manualMappings={{}}
+        onManualMappingChange={() => {}}
+        currencySymbol="$"
+        defaultCostPerKg={0}
+        defaultExpanded
+        requireExactColor
+      />,
+    );
+    await waitFor(() => expect(screen.getAllByText(/Color mismatch/i)).toHaveLength(2));
+    expect(screen.getByTitle(/Color mismatch/i)).toBeInTheDocument();
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('');
+  });
+
+  it('keeps a different profile family incompatible until base matching is enabled', async () => {
+    server.use(
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(createStatus({ fila_switch: null, ams_extruder_map: { '0': 1 } }))),
+    );
+    render(
+      <FilamentMapping
+        printerId={1}
+        filamentReqs={{ filaments: [{ ...mockFilamentReqs.filaments[0], tray_info_idx: 'P333PETG', filament_type: 'PETG', strict_profile_match: true }] }}
+        manualMappings={{}}
+        onManualMappingChange={() => {}}
+        currencySymbol="$"
+        defaultCostPerKg={0}
+        defaultExpanded
+      />,
+    );
+    await waitFor(() => expect(screen.getAllByText(/Type not found/i)).not.toHaveLength(0));
+    expect(screen.getByTitle(/Filament type not loaded/i)).toBeInTheDocument();
+  });
+
   it('offers cross-extruder slots when FTS is null (#1722)', async () => {
     server.use(
       http.get(

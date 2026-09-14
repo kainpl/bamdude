@@ -266,6 +266,7 @@ async def _publish_items(
                         required_filament_types=required_types_json,
                         filament_overrides=plate_overrides_json,
                         force_color_match=data.force_color_match,
+                        allow_base_material_match=data.allow_base_material_match,
                         plate_id=plate_id,
                         bed_levelling=mode_to_bool(data.bed_levelling),
                         flow_cali=mode_to_bool(data.flow_cali),

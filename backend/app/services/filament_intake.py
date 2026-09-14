@@ -8,6 +8,8 @@ answer it differently — and so that **no path falls back to the original after
 capture** (S7: a bad spool must not make anything read another file).
 """
 
+from collections.abc import Iterable
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -22,6 +24,33 @@ from backend.app.models.queue_source import FORMAT_GCODE, QueueSource
 from backend.app.services.filament_requirements import PrintRequirements, PrintRequirementsCache
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor, stored_descriptor
 from backend.app.services.source_io import SourceUnavailable
+
+
+async def enrich_family_filament_rows(db, filaments: Iterable[dict]) -> list[dict]:
+    """Attach each 3MF channel's family material without trusting its name."""
+    from backend.app.services.filament_identity import resolve_raw, resolve_tray
+
+    resolved_by_id = {}
+    enriched = []
+    for filament in filaments:
+        family_id = filament.get("tray_info_idx")
+        if family_id not in resolved_by_id:
+            resolved = await resolve_tray(db, family_id)
+            resolved_by_id[family_id] = resolved if resolved.family else await resolve_raw(db, family_id)
+        filament_type = resolved_by_id[family_id].filament_type
+        if not filament_type:
+            enriched.append(filament)
+            continue
+        enriched.append({**filament, "filament_type": filament_type})
+    return enriched
+
+
+async def enrich_family_filament_types(db, requirements: PrintRequirements) -> PrintRequirements:
+    """Add family material to parsed requirements when the source was readable."""
+    if requirements.status != "ok":
+        return requirements
+    filaments = await enrich_family_filament_rows(db, requirements.used_filaments)
+    return replace(requirements, used_filaments=tuple(filaments))
 
 
 async def fail_auto_source(db, item, reason):
@@ -151,7 +180,7 @@ async def read_item_requirements(db, item, cache: PrintRequirementsCache | None 
         # No ``item_source`` call at all: the archive and library rows are
         # navigation now, and one of them may be trashed or gone — which for a
         # snapshot-backed job changes nothing about what it prints.
-        return await (cache or PrintRequirementsCache()).read(
+        requirements = await (cache or PrintRequirementsCache()).read(
             descriptor.path,
             item.plate_id,
             archive_plate_id=descriptor.plate_fallback,
@@ -160,10 +189,12 @@ async def read_item_requirements(db, item, cache: PrintRequirementsCache | None 
             # claim-time re-probes — survive a restore (spec §7).
             sha256=descriptor.sha256,
         )
+        return await enrich_family_filament_types(db, requirements)
     archive, library = await item_source(db, item)
-    return await (cache or PrintRequirementsCache()).read(
+    requirements = await (cache or PrintRequirementsCache()).read(
         resolve_source_path(archive, library), item.plate_id, archive_plate_id=archive.plate_index if archive else None
     )
+    return await enrich_family_filament_types(db, requirements)
 
 
 async def require_source_requirements(

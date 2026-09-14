@@ -40,7 +40,7 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 from xml.etree.ElementTree import Element
 
 from defusedxml import ElementTree as ET
@@ -191,6 +191,9 @@ class UsedFilament(TypedDict):
     tray_info_idx: str | None
     used_grams: float
     nozzle_id: int | None
+    # The family-owned material class resolved from ``tray_info_idx`` after
+    # parsing.  It is absent when the 3MF does not carry a resolvable family.
+    filament_type: NotRequired[str]
 
 
 @dataclass(frozen=True)

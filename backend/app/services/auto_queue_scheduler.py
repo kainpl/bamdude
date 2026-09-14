@@ -39,6 +39,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import async_session
+from backend.app.core.websocket import ws_manager
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
@@ -129,6 +130,7 @@ class AutoQueueScheduler:
 
             # 3. Iterate and assign
             placed = 0
+            changed_queue_printer_ids: set[int] = set()
             blocked: list[str] = []
             # The first item that could not be placed, kept to name *something*
             # concrete in the notification below — "4 jobs are waiting" is far
@@ -184,6 +186,7 @@ class AutoQueueScheduler:
 
                 busy_printers.add(printer.id)
                 placed += 1
+                changed_queue_printer_ids.add(printer.id)
 
                 if sjf:
                     await self._mark_jumped_peers(db, item)
@@ -225,6 +228,18 @@ class AutoQueueScheduler:
             # failed to persist.
             if announce and first_blocked is not None:
                 await self._notify_stall(db, *first_blocked)
+
+            # The new PrintQueueItem is durable now. Tell open Queue pages to
+            # refetch the one affected printer immediately instead of waiting
+            # for their independent 15/30-second polling clocks.
+            for printer_id in changed_queue_printer_ids:
+                try:
+                    await ws_manager.send_queue_changed(printer_id)
+                except Exception:
+                    # A WebSocket failure must never make a durable placement
+                    # look like a failed scheduler tick; REST polling remains
+                    # the fallback for a disconnected browser.
+                    logger.exception("Failed to announce queue change for printer %s", printer_id)
 
     def _log_stall(self, items: list, placed: int, blocked: list[str], busy_printers: set[int]) -> bool:
         """Say once, at INFO, that a tick could place nothing — and why.

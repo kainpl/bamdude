@@ -285,6 +285,7 @@ async def enqueue_batch_copies(
     library_file: LibraryFile | None = None,
     feed_policy: str | None = None,
     force_color_match: bool = False,
+    allow_base_material_match: bool = True,
     filament_overrides: list[dict] | None = None,
     requirements_cache=None,
 ) -> tuple[list[PrintQueueItem], str | None]:
@@ -342,6 +343,7 @@ async def enqueue_batch_copies(
                 "use_ams": use_ams,
                 "feed_policy": feed_policy,
                 "force_color_match": force_color_match,
+                "allow_base_material_match": allow_base_material_match,
                 "filament_overrides": filament_overrides,
             },
         )

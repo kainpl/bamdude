@@ -1670,6 +1670,7 @@ class BackgroundDispatchService:
             "source_archive_id": job.original_archive_id,
             "source_library_file_id": job.original_library_file_id,
         }
+        released = False
         async with async_session() as db:
             await abort_execution_archive(db, job.execution_archive_id, reason)
             if not job.awaited_by_scheduler:
@@ -1684,9 +1685,9 @@ class BackgroundDispatchService:
                     source_library_file_id=job.original_library_file_id,
                     restore_source=True,
                 )
-                if released:
-                    scheduler.release_prepared_dispatch(job.printer_id)
             await db.commit()
+        if released:
+            await scheduler.release_prepared_dispatch(job.printer_id)
         logger.info("Dispatch %s deferred before publish: %s", job.id, exc.reason)
         if not job.awaited_by_scheduler:
             await self._mark_job_finished(job, failed=False, message=reason["message"], deferred=True)

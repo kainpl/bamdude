@@ -4345,6 +4345,7 @@ export interface FarmNeeds { rows: FarmRow[]; orders_count: number; unknown_prin
 export interface PrintQueueItemCreate {
   feed_policy?: FeedPolicy;
   force_color_match?: boolean;
+  allow_base_material_match?: boolean;
   filament_overrides?: AutoQueueFilamentOverride[];
   queue_id: number;  // Required - which printer's queue
   /** Put this new block before other pending work on the selected printer. */
@@ -4393,6 +4394,7 @@ export interface QueueCopySourceProfile {
 export interface PrintQueueItemUpdate {
   feed_policy?: FeedPolicy;
   force_color_match?: boolean;
+  allow_base_material_match?: boolean;
   filament_overrides?: AutoQueueFilamentOverride[];
   queue_id?: number | null;  // Move to different queue
   position?: number;
@@ -4477,6 +4479,7 @@ export interface FilamentRoutingSnapshot {
   mode: 'auto' | 'pinned';
   feed_policy: FeedPolicy;
   force_color_match: boolean;
+  allow_base_material_match?: boolean;
   filament_overrides: AutoQueueFilamentOverride[];
   review_required?: boolean;
 }
@@ -4521,6 +4524,7 @@ export interface AutoQueueItem {
   required_filament_types: string[] | null;
   filament_overrides: AutoQueueFilamentOverride[] | null;
   force_color_match: boolean;
+  allow_base_material_match?: boolean;
   plate_id: number | null;
   position: number;
   scheduled_time: string | null;
@@ -4585,6 +4589,7 @@ export interface AutoQueueItemCreate {
   required_filament_types?: string[] | null;
   filament_overrides?: AutoQueueFilamentOverride[] | null;
   force_color_match?: boolean;
+  allow_base_material_match?: boolean;
   plate_id?: number | null;
   plate_ids?: number[] | null;
   /** Runs wanted per plate, keyed by plate index. A plate left out takes
@@ -4615,6 +4620,7 @@ export interface AutoQueueItemUpdate {
   required_filament_types?: string[] | null;
   filament_overrides?: AutoQueueFilamentOverride[] | null;
   force_color_match?: boolean | null;
+  allow_base_material_match?: boolean | null;
   scheduled_time?: string | null;
   manual_start?: boolean | null;
   auto_off_after?: boolean | null;
@@ -8518,6 +8524,7 @@ export const api = {
         used_grams: number;
         used_meters: number;
         used_in_plate?: boolean;
+        filament_type?: string;
       }>;
     }>(`/archives/${archiveId}/filament-requirements${qs ? `?${qs}` : ''}`);
   },
@@ -8534,6 +8541,10 @@ export const api = {
       plate_id?: number;
       plate_name?: string;
       ams_mapping?: number[];
+      feed_policy?: FeedPolicy;
+      force_color_match?: boolean;
+      allow_base_material_match?: boolean;
+      filament_overrides?: AutoQueueFilamentOverride[];
       timelapse?: boolean;
       bed_levelling?: CalibrationMode;
       flow_cali?: CalibrationMode;
@@ -9097,6 +9108,7 @@ export const api = {
   },
   previewAutoQueueRouting: (data: { archive_id?: number; library_file_id?: number; plate_ids: number[];
     target_location_id?: number | null; feed_policy?: FeedPolicy; force_color_match: boolean;
+    allow_base_material_match: boolean;
     filament_overrides?: AutoQueueFilamentOverride[] }) =>
     request<RoutingPreview>('/auto-queue/routing-preview', { method: 'POST', body: JSON.stringify(data) }),
   getAutoQueueStats: () => request<AutoQueueStats>('/auto-queue/stats'),
@@ -11047,6 +11059,10 @@ export const api = {
       plate_id?: number;
       plate_name?: string;
       ams_mapping?: number[];
+      feed_policy?: FeedPolicy;
+      force_color_match?: boolean;
+      allow_base_material_match?: boolean;
+      filament_overrides?: AutoQueueFilamentOverride[];
       bed_levelling?: CalibrationMode;
       flow_cali?: CalibrationMode;
       layer_inspect?: boolean;
@@ -11120,6 +11136,7 @@ export const api = {
         used_grams: number;
         used_meters: number;
         used_in_plate?: boolean;
+        filament_type?: string;
       }>;
     }>(`/library/files/${fileId}/filament-requirements${qs ? `?${qs}` : ''}`);
   },

@@ -38,7 +38,7 @@ class TestBackgroundDispatchArchivesAPI:
         ):
             response = await async_client.post(
                 f"/api/v1/archives/{archive.id}/reprint?printer_id={printer.id}",
-                json={"plate_id": 2},
+                json={"plate_id": 2, "allow_base_material_match": True},
             )
 
         assert response.status_code == 200
@@ -52,6 +52,7 @@ class TestBackgroundDispatchArchivesAPI:
         kwargs = mock_dispatch.await_args.kwargs
         assert kwargs["archive_name"].endswith("• Plate 2")
         assert kwargs["options"]["plate_id"] == 2
+        assert kwargs["options"]["allow_base_material_match"] is True
 
     @pytest.mark.asyncio
     @pytest.mark.integration

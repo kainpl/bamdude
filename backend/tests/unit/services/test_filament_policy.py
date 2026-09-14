@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from backend.app.migrations.m169_auto_queue_filament_routing import upgrade
+from backend.app.migrations.m174_auto_queue_base_material_match import upgrade as upgrade_base_material_match
 from backend.app.services.filament_policy import (
     auto_policy,
     choices_policy,
@@ -45,10 +46,18 @@ def test_manual_mapping_outranks_legacy_boolean_and_captures_selected_color():
 
 
 def test_auto_global_color_policy_survives_without_overrides():
-    item = SimpleNamespace(use_ams=True, filament_overrides=None, force_color_match=True)
+    item = SimpleNamespace(
+        use_ams=True,
+        filament_overrides=None,
+        force_color_match=True,
+        allow_base_material_match=True,
+    )
     policy = auto_policy(item)
     assert policy.force_color_match
-    assert deserialize_policy(serialize_policy(policy)).force_color_match
+    assert policy.allow_base_material_match
+    restored = deserialize_policy(serialize_policy(policy))
+    assert restored.force_color_match
+    assert restored.allow_base_material_match
 
 
 @pytest.mark.parametrize(
@@ -105,7 +114,12 @@ async def assert_migration_contract(conn):
     assert unknown["review_required"]
     await conn.execute(text("UPDATE auto_queue_items SET feed_policy = 'auto' WHERE id = 1"))
     await upgrade(conn)
+    await upgrade_base_material_match(conn)
     assert (await conn.execute(text("SELECT feed_policy FROM auto_queue_items WHERE id = 1"))).scalar_one() == "auto"
+    assert (
+        await conn.execute(text("SELECT allow_base_material_match FROM auto_queue_items WHERE id = 1"))
+    ).scalar_one()
+    await upgrade_base_material_match(conn)
     assert (await conn.execute(text("SELECT filament_routing FROM print_queue ORDER BY id"))).scalars().all() == values
 
 

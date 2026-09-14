@@ -3622,6 +3622,9 @@ async def get_filament_requirements(
     except Exception as e:
         logger.warning("Failed to parse filament requirements from archive %s: %s", archive_id, e)
 
+    from backend.app.services.filament_intake import enrich_family_filament_rows
+
+    filaments = await enrich_family_filament_rows(db, filaments)
     return {
         "archive_id": archive_id,
         "filename": archive.filename,
@@ -3725,6 +3728,7 @@ async def reprint_archive(
             use_ams=body.use_ams,
             feed_policy=body.feed_policy,
             force_color_match=bool(body.force_color_match),
+            allow_base_material_match=body.allow_base_material_match,
             filament_overrides=[o.model_dump() for o in body.filament_overrides] if body.filament_overrides else None,
             nozzle_offset_cali=body.nozzle_offset_cali,
             mesh_mode_fast_check=body.mesh_mode_fast_check,

@@ -5,22 +5,19 @@ from dataclasses import asdict
 
 from backend.app.services.filament_routing import RoutingPolicy
 
-#: The version every writer stamps. **2** since m173: a job's identity is the
-#: captured snapshot's hash, not the original file's ``(size, mtime_ns)``.
-VERSION = 2
+#: The version every writer stamps. **3** adds the base-material matcher;
+#: **2** switched a captured job's identity to its hash.
+VERSION = 3
 
 #: Every version this build can read, and the list is closed on purpose.
 #:
-#: v1 rows are read unchanged — the semantic half of the payload (mode, feed
-#: policy, overrides, pins, printer scope, resolved plate, ``exact_model``, the
-#: review flag) never changed shape, and only ``source_identity`` gained
-#: ``queue_source_id`` and a second revision shape. What must NOT happen is this
+#: v1/v2 rows predate the choice and inherit its default.  What must NOT happen is this
 #: tuple turning into "any integer": the payload IS the meaning here, so an
 #: intent written by a newer build is ``review_required`` and a human looks at
 #: it, rather than a dispatch proceeding on pins it could not parse.
-SUPPORTED_VERSIONS = (1, 2)
+SUPPORTED_VERSIONS = (1, 2, 3)
 FEED_POLICIES = {"auto", "ams_only", "external_only"}
-CHOICE_FIELDS = {"feed_policy", "force_color_match", "filament_overrides"}
+CHOICE_FIELDS = {"feed_policy", "force_color_match", "allow_base_material_match", "filament_overrides"}
 
 
 def decode(value, fallback=None):
@@ -63,6 +60,7 @@ def auto_policy(item):
     return RoutingPolicy(
         feed_policy=feed_policy(getattr(item, "feed_policy", None), item.use_ams),
         force_color_match=bool(item.force_color_match),
+        allow_base_material_match=bool(getattr(item, "allow_base_material_match", True)),
         filament_overrides=tuple(overrides),
     )
 
@@ -91,6 +89,7 @@ def choices_policy(choices, snapshot=None):
         mode="pinned" if mapping is not None else "auto",
         feed_policy=policy,
         force_color_match=bool(choices.get("force_color_match", False)),
+        allow_base_material_match=bool(choices.get("allow_base_material_match", True)),
         filament_overrides=tuple(decode(choices.get("filament_overrides"), []) or []),
         physical_pins=pins,
     )
@@ -204,13 +203,15 @@ def deserialize_policy(value):
         ):
             raise ValueError("Invalid pins")
         if any(
-            k in data and type(data[k]) is not bool for k in ("force_color_match", "review_required", "exact_model")
+            k in data and type(data[k]) is not bool
+            for k in ("force_color_match", "allow_base_material_match", "review_required", "exact_model")
         ):
             raise ValueError("Invalid policy flags")
         return RoutingPolicy(
             mode=data["mode"],
             feed_policy=data["feed_policy"],
             force_color_match=bool(data.get("force_color_match", False)),
+            allow_base_material_match=bool(data.get("allow_base_material_match", True)),
             filament_overrides=tuple(overrides),
             physical_pins=pins,
             review_required=bool(data.get("review_required", False)),

@@ -127,6 +127,24 @@ export function AutoModeOptions({ options, onChange, printers, slicedForModel, l
         </button>
       </label>
 
+      <label className="flex items-center justify-between gap-3 cursor-pointer">
+        <div className="min-w-0 flex-1">
+          <span className="text-sm text-white">{t('filamentRouting.baseMaterialMatch')}</span>
+          <p className="text-xs text-bambu-gray">{t('filamentRouting.baseMaterialMatchDesc')}</p>
+        </div>
+        <button type="button" role="switch" aria-checked={options.allow_base_material_match}
+          aria-label={t('filamentRouting.baseMaterialMatch')}
+          className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+            options.allow_base_material_match ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+          }`}
+          onClick={() => onChange({ ...options, allow_base_material_match: !options.allow_base_material_match })}
+        >
+          <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+            options.allow_base_material_match ? 'translate-x-5' : 'translate-x-0.5'
+          }`} />
+        </button>
+      </label>
+
       <div aria-live="polite" className="space-y-3 text-xs">
         {loading && <p className="text-bambu-gray">{t('filamentRouting.loading')}</p>}
         {failed && <div className="text-amber-300">
