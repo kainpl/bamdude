@@ -3110,6 +3110,18 @@ class ArchiveService:
         if not archive:
             return False
 
+        # Archive rows are navigation/provenance after a queue item has a
+        # ready queue source of its own.  Hard deletion therefore only cancels
+        # legacy dependents and explicitly clears both queue tiers; SQLite does
+        # not enforce the model's ON DELETE SET NULL rule.
+        from backend.app.services import queue_source_release
+
+        await queue_source_release.source_purged(
+            self.db,
+            archive_ids=[archive_id],
+            reason=queue_source_release.REASON_ARCHIVE_DELETED,
+        )
+
         # Detach spool-usage history before removing the archive. The
         # ``spool_usage_history.archive_id`` FK has no ``ON DELETE`` clause (the
         # row must outlive the archive so the spool keeps its consumption record),

@@ -5514,6 +5514,52 @@ async def delete_file(
 # ============ File Content Endpoints ============
 
 
+@router.get("/files/{file_id}/delete-impact")
+async def get_library_file_delete_impact(
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_DELETE_ALL,
+            Permission.LIBRARY_DELETE_OWN,
+        )
+    ),
+):
+    """Describe queued work that deleting this library file would affect.
+
+    The delete route still owns the actual refusal for a live print. This
+    read-only pre-flight lets its confirmation say which pending jobs already
+    own their bytes and which legacy jobs would be cancelled.
+    """
+    from backend.app.services.queue_source_release import delete_impact
+
+    user, can_modify_all = auth_result
+    result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+    file = result.scalar_one_or_none()
+    if file is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not can_modify_all and (user is None or file.created_by_id != user.id):
+        raise HTTPException(status_code=403, detail="You can only delete your own files")
+
+    impact = await delete_impact(db, library_file_ids=[file.id])
+    currently_printing = (
+        await db.scalar(
+            select(func.count())
+            .select_from(PrintQueueItem)
+            .where(
+                PrintQueueItem.library_file_id == file.id,
+                PrintQueueItem.status.in_(("printing", "paused")),
+            )
+        )
+    ) or 0
+    return {
+        "currently_printing": int(currently_printing),
+        "pending_queue_items": impact.pending_total,
+        "pending_self_contained": impact.self_contained,
+        "pending_needs_original": impact.needs_original,
+    }
+
+
 @router.get("/files/{file_id}/download")
 async def download_file(
     file_id: int,
