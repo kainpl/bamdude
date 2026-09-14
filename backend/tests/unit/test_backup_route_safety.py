@@ -119,7 +119,15 @@ async def test_zip_write_failure_preserves_previous_backup(tmp_path, monkeypatch
     monkeypatch.setattr(route, "datetime", SimpleNamespace(now=lambda: datetime(2026, 9, 11)))
 
     async def dump(engine, metadata, destination):
-        destination.write_bytes(b"synthetic database payload")
+        # The production exporter always writes SQLite. The queue-spool stage
+        # now reads that portable snapshot, so this focused ZIP-write test uses
+        # the smallest valid snapshot rather than opaque placeholder bytes.
+        with closing(sqlite3.connect(destination)) as db:
+            db.execute(
+                """CREATE TABLE queue_sources (
+                    sha256 TEXT, size_bytes INTEGER, relative_path TEXT, format TEXT, state TEXT
+                )"""
+            )
 
     monkeypatch.setattr("backend.app.core.db_portable.dump_to_sqlite", dump)
     path, _ = await route.create_backup_zip(output)
