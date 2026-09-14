@@ -71,13 +71,15 @@ import {
  * - 'edit-queue-item': Edit an existing per-printer queue item (supports multi-printer)
  * - 'edit-auto-item': Edit an existing auto-queue row (no printer; the auto-queue routes it later)
  *
- * Both archiveId and libraryFileId are supported. Library files can be printed immediately
- * or added to queue (archive is created at print start time, not when queued).
+ * Archive, library, and managed queue-source inputs share one dialog.  A queue
+ * source is add-to-queue only: it preserves saved bytes and cannot enter the
+ * auto-queue or immediate-reprint routes, which require an archive/library id.
  */
 export function PrintModal({
   mode,
   archiveId,
   libraryFileId,
+  sourceQueueItemId,
   archiveName,
   queueItem,
   autoQueueItem,
@@ -112,8 +114,9 @@ export function PrintModal({
   const { hasPermission } = useAuth();
   const headingId = useId();
 
-  // Determine if we're printing a library file
-  const isLibraryFile = !!libraryFileId && !archiveId;
+  const isSnapshotSource = sourceQueueItemId !== undefined;
+  const isLibraryFile = !isSnapshotSource && !!libraryFileId && !archiveId;
+  const isArchiveSource = !isSnapshotSource && !!archiveId && !isLibraryFile;
 
   type FilamentWarningItem = {
     printerName: string;
@@ -361,11 +364,11 @@ export function PrintModal({
     return DEFAULT_AUTO_MODE_OPTIONS;
   });
   // edit-auto-item is auto mode by definition: the row belongs to the router.
-  const isAutoMode = (mode === 'add-to-queue' && dispatchMode === 'auto') || mode === 'edit-auto-item';
+  const isAutoMode = !isSnapshotSource && ((mode === 'add-to-queue' && dispatchMode === 'auto') || mode === 'edit-auto-item');
 
   const [autoOverrides, setAutoOverrides] = useState<AutoQueueFilamentOverride[]>(autoQueueItem?.filament_overrides ?? queueItem?.filament_routing?.filament_overrides ?? initialRouting?.filament_overrides ?? []);
   const routingPreviewInput = {
-    archive_id: isLibraryFile ? undefined : archiveId,
+    archive_id: isArchiveSource ? archiveId : undefined,
     library_file_id: isLibraryFile ? libraryFileId : undefined,
     plate_ids: selectedPlates.size ? [...selectedPlates].sort((a, b) => a - b) : [0],
     target_location_id: autoModeOptions.target_location_id,
@@ -648,7 +651,7 @@ export function PrintModal({
   const { data: archiveDetails } = useQuery({
     queryKey: ['archive', archiveId],
     queryFn: () => api.getArchive(archiveId!),
-    enabled: !!archiveId && !isLibraryFile,
+    enabled: isArchiveSource,
   });
 
   // Fetch library file details to get sliced_for_model
@@ -658,8 +661,18 @@ export function PrintModal({
     enabled: isLibraryFile && !!libraryFileId,
   });
 
+  // A copied queued job is self-contained.  Fetch one profile from its managed
+  // bytes instead of touching its archive/library records, which may no longer
+  // exist or may now point at a re-sliced revision.
+  const { data: queueSourceProfile, isError: queueSourceProfileError } = useQuery({
+    queryKey: ['queue-copy-source', sourceQueueItemId],
+    queryFn: () => api.getQueueCopySource(sourceQueueItemId!),
+    enabled: isSnapshotSource,
+    retry: false,
+  });
+
   // Get sliced_for_model from archive or library file
-  const slicedForModel = archiveDetails?.sliced_for_model || libraryFileDetails?.sliced_for_model || null;
+  const slicedForModel = queueSourceProfile?.sliced_for_model || archiveDetails?.sliced_for_model || libraryFileDetails?.sliced_for_model || null;
 
   // ⚠️ The file's model arrives asynchronously, so the target cannot be seeded
   // from props — it is filled in when the details land. Only when pinned: a
@@ -673,13 +686,13 @@ export function PrintModal({
   }, [lockAutoTarget, slicedForModel]);
 
   // Check swap compatibility
-  const swapCompatible = archiveDetails?.swap_compatible || libraryFileDetails?.swap_compatible || false;
+  const swapCompatible = queueSourceProfile?.swap_compatible || archiveDetails?.swap_compatible || libraryFileDetails?.swap_compatible || false;
 
   // Fetch plates for archives
   const { data: archivePlatesData, isError: archivePlatesError } = useQuery({
     queryKey: ['archive-plates', archiveId],
     queryFn: () => api.getArchivePlates(archiveId!),
-    enabled: !!archiveId && !isLibraryFile,
+    enabled: isArchiveSource,
     retry: false,
   });
 
@@ -694,14 +707,14 @@ export function PrintModal({
     retry: false,
   });
 
-  // Combine plates data from either source
-  const platesData = isLibraryFile ? libraryPlatesData : archivePlatesData;
+  // Combine plates data from the immutable source profile or the regular file endpoints.
+  const platesData = isSnapshotSource ? queueSourceProfile : isLibraryFile ? libraryPlatesData : archivePlatesData;
 
   // Fetch filament requirements for archives
   const { data: archiveFilamentReqs, isError: archiveFilamentReqsError } = useQuery({
     queryKey: ['archive-filaments', archiveId, selectedPlate],
     queryFn: () => api.getArchiveFilamentRequirements(archiveId!, selectedPlate ?? undefined),
-    enabled: !!archiveId && !isLibraryFile && (selectedPlate !== null || !platesData?.is_multi_plate),
+    enabled: isArchiveSource && (selectedPlate !== null || !platesData?.is_multi_plate),
     retry: false,
   });
 
@@ -717,15 +730,33 @@ export function PrintModal({
     retry: false,
   });
 
-  // Track if archive data couldn't be loaded (archive deleted or file missing)
-  const archiveDataMissing = !isLibraryFile && (archivePlatesError || archiveFilamentReqsError);
+  const snapshotFilamentReqs = useMemo<FilamentReqsData | undefined>(() => {
+    if (!queueSourceProfile) return undefined;
+    const plate = queueSourceProfile.plates.find((entry) => entry.index === selectedPlate)
+      ?? (queueSourceProfile.is_multi_plate ? undefined : queueSourceProfile.plates[0]);
+    return plate ? { filaments: plate.filaments } : { filaments: [] };
+  }, [queueSourceProfile, selectedPlate]);
+
+  // Track a settled source failure; mapped UI is shared because neither a
+  // deleted archive nor a broken managed source can be safely queued.
+  const archiveDataMissing = isSnapshotSource
+    ? queueSourceProfileError
+    : !isLibraryFile && (archivePlatesError || archiveFilamentReqsError);
 
   // Combine filament requirements from either source
-  const effectiveFilamentReqs = isLibraryFile ? libraryFilamentReqs : archiveFilamentReqs;
+  const effectiveFilamentReqs = isSnapshotSource
+    ? snapshotFilamentReqs
+    : isLibraryFile
+      ? libraryFilamentReqs
+      : archiveFilamentReqs;
   // Whether that one query gave up. Only the self-submit below reads it: a
   // silent run must be able to tell "this plate needs no filament" from "we do
   // not know yet / we never will", which `effectiveFilamentReqs` alone cannot.
-  const effectiveFilamentReqsError = isLibraryFile ? libraryFilamentReqsError : archiveFilamentReqsError;
+  const effectiveFilamentReqsError = isSnapshotSource
+    ? queueSourceProfileError
+    : isLibraryFile
+      ? libraryFilamentReqsError
+      : archiveFilamentReqsError;
   // How many layers the storage question is about. ⚠️ Per PLATE — a container's
   // plates routinely differ by hundreds, so the file has no single answer. With
   // several plates picked, the largest is the honest worst case for "will it
@@ -844,14 +875,20 @@ export function PrintModal({
 
   const perPlateReqQueries = useQueries({
     queries: (isMultiPlateSelection ? selectedPlateIds : []).map((plateId) => ({
-      queryKey: isLibraryFile
+      queryKey: isSnapshotSource
+        ? ['queue-copy-source-plate', sourceQueueItemId, plateId]
+        : isLibraryFile
         ? ['library-file-filaments', libraryFileId, plateId]
         : ['archive-filaments', archiveId, plateId],
       queryFn: () =>
-        isLibraryFile
+        isSnapshotSource
+          ? Promise.resolve({
+              filaments: queueSourceProfile?.plates.find((plate) => plate.index === plateId)?.filaments ?? [],
+            })
+          : isLibraryFile
           ? api.getLibraryFileFilamentRequirements(libraryFileId!, plateId)
           : api.getArchiveFilamentRequirements(archiveId!, plateId),
-      enabled: isLibraryFile ? !!libraryFileId : !!archiveId,
+      enabled: isSnapshotSource ? !!queueSourceProfile : isLibraryFile ? !!libraryFileId : !!archiveId,
       // Same policy as the single-plate query above: these keys are shared, and a
       // retrying observer would leave the plate looking merely slow for seconds.
       retry: false,
@@ -1450,7 +1487,7 @@ export function PrintModal({
         const platesToQueue =
           selectedPlates.size > 0 ? [...selectedPlates] : selectedPlate !== null ? [selectedPlate] : [];
         const payload: AutoQueueItemCreate = {
-          archive_id: isLibraryFile ? undefined : archiveId,
+          archive_id: isArchiveSource ? archiveId : undefined,
           library_file_id: isLibraryFile ? libraryFileId : undefined,
           project_id: submitProjectId,
           project_line_id: submitProjectLineId,
@@ -1725,9 +1762,10 @@ export function PrintModal({
       return {
       queue_id: printerId,  // queue_id == printer_id (always per-printer queue)
       selected_macro_ids: selectedMacroIds,
-      // Use library_file_id for library files, archive_id for archives
-      archive_id: isLibraryFile ? undefined : archiveId,
+      // A saved queue source is its own mutually-exclusive input.
+      archive_id: isArchiveSource ? archiveId : undefined,
       library_file_id: isLibraryFile ? libraryFileId : undefined,
+      source_queue_item_id: isSnapshotSource ? sourceQueueItemId : undefined,
       auto_off_after: scheduleOptions.autoOffAfter,
       manual_start: scheduleOptions.scheduleType === 'manual',
       require_previous_success: scheduleOptions.requirePreviousSuccess,
@@ -1980,6 +2018,9 @@ export function PrintModal({
 
   const canSubmit = useMemo(() => {
     if (isPending) return false;
+    // The payload names only this queue row. Until its source profile has
+    // arrived, or after it has refused, there is no safe substitute source.
+    if (isSnapshotSource && (!queueSourceProfile || queueSourceProfileError)) return false;
 
     // Auto mode: no specific printer required (router picks one). Plate gate still applies.
     if (isAutoMode) {
@@ -2009,6 +2050,9 @@ export function PrintModal({
     isMultiPlate,
     selectedPlates.size,
     isPending,
+    isSnapshotSource,
+    queueSourceProfile,
+    queueSourceProfileError,
     perPlateReqsPending,
     perPlateReqsFailed,
   ]);
@@ -2052,7 +2096,10 @@ export function PrintModal({
     if (!canSubmit) {
       // A per-plate requirements query that ERRORED. `retry: false`, so nothing
       // is coming, and multi-plate members are the normal case for a grouped run.
-      const reqsWillNeverAnswer = perPlateReqsFailed || (isAutoMode && !routingPreview.isPending && !routingSourceReady);
+      const reqsWillNeverAnswer =
+        perPlateReqsFailed ||
+        queueSourceProfileError ||
+        (isAutoMode && !routingPreview.isPending && !routingSourceReady);
       // No printer, and nothing left that could choose one. The single-printer
       // auto-select is the only filler, and it fires from the effect above in
       // this same commit — so ask whether it EXISTS (`soleActivePrinterId`)
@@ -2154,6 +2201,7 @@ export function PrintModal({
     effectiveFilamentReqs,
     effectiveFilamentReqsError,
     perPlateReqsFailed,
+    queueSourceProfileError,
     printersFetched,
     soleActivePrinterId,
     orderAnswerPending,
@@ -2247,7 +2295,7 @@ export function PrintModal({
   // - For archives: plate is selected (for multi-plate) or not required (single-plate)
   // - For library files: always show (no plate selection)
   const showFilamentMapping = effectivePrinterId && selectedPlates.size <= 1 && (
-    isLibraryFile || (isMultiPlate ? selectedPlate !== null : true)
+    isLibraryFile || isSnapshotSource || (isMultiPlate ? selectedPlate !== null : true)
   );
 
   // Several plates on one printer: one mapping panel per plate, each mapping only

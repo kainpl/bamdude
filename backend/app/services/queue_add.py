@@ -36,7 +36,12 @@ from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import mode_to_bool
 from backend.app.schemas.print_queue import PrintQueueItemCreate
 from backend.app.services import queue_sources
-from backend.app.services.filament_intake import routing_detail
+from backend.app.services.filament_intake import (
+    item_descriptor,
+    require_source_requirements,
+    routing_detail,
+    source_display_filename,
+)
 from backend.app.services.filament_policy import choices_policy, record_queue_source, serialize_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.order_filing import resolve_line_id
@@ -47,8 +52,10 @@ from backend.app.services.queue_source_capture import (
     discard_staged,
     plan_capture,
     publish_staged,
+    reusing_sources,
     staged_requirements,
 )
+from backend.app.services.source_io import SourceUnavailable
 from backend.app.utils.filename import InvalidFilenameError, is_sliced_file, validate_print_filename
 from backend.app.utils.printer_models import is_gcode_compatible
 
@@ -64,9 +71,11 @@ async def add_items_to_printer_queue(
     so the caller can build its own response without re-querying for the
     printer's name.
     """
-    # Validate that either archive_id or library_file_id is provided
-    if not data.archive_id and not data.library_file_id:
-        raise HTTPException(400, "Either archive_id or library_file_id must be provided")
+    sources = sum(bool(value) for value in (data.archive_id, data.library_file_id, data.source_queue_item_id))
+    if sources != 1:
+        raise HTTPException(400, "Provide exactly one of archive_id, library_file_id, or source_queue_item_id")
+    if data.source_queue_item_id:
+        return await _add_items_from_queue_source(db, data, current_user)
 
     # Validate queue exists
     result = await db.execute(
@@ -241,6 +250,213 @@ async def add_items_to_printer_queue(
     # Re-read in the CALLER's session: the rows were written by the publication's
     # own transaction, and the route builds its response through relationships
     # only a live session can load.
+    items = list(
+        (
+            await db.execute(
+                select(PrintQueueItem).where(PrintQueueItem.id.in_(created_ids)).order_by(PrintQueueItem.position)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return items, queue
+
+
+async def _add_items_from_queue_source(
+    db: AsyncSession,
+    data: PrintQueueItemCreate,
+    current_user: User | None,
+) -> tuple[list[PrintQueueItem], PrinterQueue]:
+    """Append rows backed by an existing job's managed source.
+
+    This is deliberately a separate path from capture.  Once a queue row owns
+    a ``QueueSource``, its original archive/library file is only navigation
+    metadata: copying the row must neither stat nor reopen it.  The source is
+    re-read under ``reusing_sources`` immediately before the insert, which is
+    the GC-safe hand-off for adding another owner of immutable bytes.
+    """
+    result = await db.execute(
+        select(PrinterQueue).options(selectinload(PrinterQueue.printer)).where(PrinterQueue.id == data.queue_id)
+    )
+    queue = result.scalar_one_or_none()
+    if queue is None:
+        raise HTTPException(400, "Queue not found")
+    if queue.printer is not None and queue.printer.archived:
+        raise HTTPException(404, "Printer not found")
+
+    source_item = (
+        await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == data.source_queue_item_id))
+    ).scalar_one_or_none()
+    if source_item is None:
+        raise HTTPException(404, "Queue item not found")
+    if (
+        current_user is not None
+        and not current_user.has_permission(Permission.QUEUE_READ_ALL.value)
+        and (source_item.created_by_id is None or source_item.created_by_id != current_user.id)
+    ):
+        raise HTTPException(404, "Queue item not found")
+
+    descriptor = await item_descriptor(db, source_item)
+    if descriptor is None or descriptor.queue_source_id is None:
+        raise HTTPException(422, routing_detail("source_unreadable"))
+    try:
+        filename = source_display_filename(descriptor)
+    except SourceUnavailable:
+        raise HTTPException(422, routing_detail("source_unreadable")) from None
+    try:
+        validate_print_filename(filename)
+    except InvalidFilenameError as exc:
+        raise HTTPException(422, routing_detail("source_unreadable")) from exc
+    if not is_sliced_file(filename):
+        raise HTTPException(422, routing_detail("source_unreadable"))
+
+    # Read only the immutable object, pinned against collection.  The original
+    # archive/library rows are intentionally not loaded on this route.
+    try:
+        async with queue_sources.pin(descriptor.queue_source_id):
+            requirements = await require_source_requirements(
+                PrintRequirementsCache(),
+                plate_id=data.plate_id,
+                allow_raw_gcode=True,
+                descriptor=descriptor,
+            )
+    except HTTPException:
+        raise
+    except (OSError, SourceUnavailable):
+        raise HTTPException(422, routing_detail("source_unreadable")) from None
+
+    if requirements is not None:
+        used_slots = {filament["slot_id"] for filament in requirements.used_filaments}
+        if any(override.slot_id not in used_slots for override in data.filament_overrides or []):
+            raise HTTPException(422, routing_detail("override_slot_not_used"))
+        data = data.model_copy(update={"plate_id": requirements.resolved_plate_id})
+        if requirements.model and queue.printer_id is not None:
+            from backend.app.models.printer import Printer
+
+            printer_model = (
+                await db.execute(select(Printer.model).where(Printer.id == queue.printer_id))
+            ).scalar_one_or_none()
+            if not is_gcode_compatible(requirements.model, printer_model):
+                raise HTTPException(
+                    400,
+                    f"File was sliced for {requirements.model} and cannot be dispatched to a {printer_model} printer",
+                )
+
+    if data.project_id is not None:
+        project_result = await db.execute(select(Project).where(Project.id == data.project_id))
+        if not project_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Project not found")
+    effective_project_id = data.project_id
+    if data.project_line_id is not None:
+        line = await db.get(ProjectLine, data.project_line_id)
+        if line is None or (data.project_id is not None and line.project_id != data.project_id):
+            raise HTTPException(status_code=404, detail="Order line not found in this project")
+        effective_project_id = line.project_id
+
+    printer_swap_on = bool(queue.printer and queue.printer.swap_mode_enabled)
+    printer_id = queue.printer_id
+    batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
+    ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
+    filename_lower = filename.lower()
+    source_has_baked_macros = (
+        filename_lower.endswith((".swap.3mf", ".swaps.3mf"))
+        or ".swap." in filename_lower
+        or ".swaps." in filename_lower
+    )
+    execute_swap_macros = bool(data.execute_swap_macros) and printer_swap_on and not source_has_baked_macros
+    swap_macro_events_json = (
+        json.dumps(data.swap_macro_events) if execute_swap_macros and data.swap_macro_events else None
+    )
+    selected_macro_ids_json = json.dumps(data.selected_macro_ids) if data.selected_macro_ids is not None else None
+    routing = (
+        serialize_policy(
+            choices_policy(data.model_dump(), printer_manager.get_feed_snapshot(printer_id)),
+            archive_id=source_item.archive_id,
+            library_file_id=source_item.library_file_id,
+            requirements=requirements,
+            plate_id=data.plate_id,
+            printer_id=printer_id,
+        )
+        if requirements
+        else None
+    )
+    created_ids: list[int] = []
+
+    # Re-read state under the storage guard and commit the new owner while the
+    # guard is held.  Do not put ZIP reads here: this section must stay short.
+    try:
+        async with reusing_sources(db, [descriptor.queue_source_id]) as sources:
+            source = sources[descriptor.queue_source_id]
+            bind = db.get_bind()
+            if bind.dialect.name == "postgresql":
+                await db.execute(text("SELECT pg_advisory_xact_lock(1625, :k)"), {"k": data.queue_id})
+            max_pos = (
+                await db.execute(
+                    select(func.max(PrintQueueItem.position))
+                    .where(PrintQueueItem.queue_id == data.queue_id)
+                    .where(PrintQueueItem.status == "pending")
+                )
+            ).scalar() or 0
+            project_line_id = data.project_line_id
+            if project_line_id is None and effective_project_id is not None:
+                project_line_id = await resolve_line_id(
+                    db,
+                    project_id=effective_project_id,
+                    library_file_id=source_item.library_file_id,
+                    plate_index=data.plate_id,
+                )
+            stamped_routing = record_queue_source(routing, source)
+            rows = [
+                PrintQueueItem(
+                    queue_source_id=source.id,
+                    source_snapshot=source_item.source_snapshot,
+                    queue_id=data.queue_id,
+                    archive_id=source_item.archive_id,
+                    library_file_id=source_item.library_file_id,
+                    scheduled_time=data.scheduled_time,
+                    auto_off_after=data.auto_off_after,
+                    manual_start=data.manual_start,
+                    require_previous_success=data.require_previous_success,
+                    ams_mapping=ams_mapping_json,
+                    filament_routing=stamped_routing,
+                    plate_id=data.plate_id,
+                    bed_levelling=mode_to_bool(data.bed_levelling),
+                    bed_levelling_mode=data.bed_levelling,
+                    flow_cali=mode_to_bool(data.flow_cali),
+                    flow_cali_mode=data.flow_cali,
+                    layer_inspect=data.layer_inspect,
+                    timelapse=data.timelapse,
+                    timelapse_storage=data.timelapse_storage,
+                    use_ams=data.use_ams,
+                    nozzle_offset_cali=mode_to_bool(data.nozzle_offset_cali),
+                    nozzle_offset_cali_mode=data.nozzle_offset_cali,
+                    mesh_mode_fast_check=data.mesh_mode_fast_check,
+                    execute_swap_macros=execute_swap_macros,
+                    swap_macro_events=swap_macro_events_json,
+                    selected_macro_ids=selected_macro_ids_json,
+                    gcode_injection=data.gcode_injection,
+                    preheat_override=data.preheat_override,
+                    preheat_chamber_target_override=data.preheat_chamber_target_override,
+                    project_id=effective_project_id,
+                    project_line_id=project_line_id,
+                    position=max_pos + 1 + offset,
+                    status="pending",
+                    batch_id=batch_id,
+                    created_by_id=current_user.id if current_user else None,
+                )
+                for offset in range(data.quantity)
+            ]
+            db.add_all(rows)
+            await db.flush()
+            created_ids.extend(row.id for row in rows)
+            from backend.app.services.queue_counters import update_queue_counters
+
+            await update_queue_counters(db, data.queue_id)
+            await db.commit()
+    except queue_sources.QueueSourceError as exc:
+        await db.rollback()
+        raise HTTPException(exc.http_status, routing_detail(exc.reason)) from exc
+
     items = list(
         (
             await db.execute(

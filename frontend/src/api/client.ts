@@ -10,7 +10,7 @@
  * rendered them regardless). A union narrower than the wire does not prevent
  * the value arriving; it only makes TypeScript describe a payload nobody sends.
  */
-import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateObjectsResponse } from '../types/plates';
+import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateMetadata, PlateObjectsResponse } from '../types/plates';
 import type { MonitorSnapshot, MonitorView } from '../features/monitor/types';
 import { isMonitorKioskLocation } from '../features/monitor/location';
 import { createPrinterStatusBatcher } from './printerStatusBatch';
@@ -4349,6 +4349,8 @@ export interface PrintQueueItemCreate {
   queue_id: number;  // Required - which printer's queue
   archive_id?: number | null;
   library_file_id?: number | null;
+  /** Existing queued row whose immutable managed source is reused. */
+  source_queue_item_id?: number | null;
   scheduled_time?: string | null;
   auto_off_after?: boolean;
   manual_start?: boolean;
@@ -4374,6 +4376,16 @@ export interface PrintQueueItemCreate {
   project_id?: number;
   // Pass 2: and which line of it the resulting print counts against.
   project_line_id?: number | null;
+}
+
+/** Source metadata for copying a saved queue row without reopening its original. */
+export interface QueueCopySourceProfile {
+  item_id: number;
+  filename: string;
+  sliced_for_model: string | null;
+  swap_compatible: boolean;
+  plates: PlateMetadata[];
+  is_multi_plate: boolean;
 }
 
 export interface PrintQueueItemUpdate {
@@ -8990,6 +9002,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  getQueueCopySource: (itemId: number) => request<QueueCopySourceProfile>(`/queue/${itemId}/copy-source`),
   updateQueueItem: (id: number, data: PrintQueueItemUpdate) =>
     request<PrintQueueItem>(`/queue/${id}`, {
       method: 'PATCH',

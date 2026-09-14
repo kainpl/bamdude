@@ -22,6 +22,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
+from backend.app.models.queue_source import FORMAT_GCODE, STATE_READY, QueueSource
 from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import derive_mode, normalize_mode
 from backend.app.schemas.farm_forecast import FarmForecastOut
@@ -33,11 +34,19 @@ from backend.app.schemas.print_queue import (
     PrintQueueItemResponse,
     PrintQueueItemUpdate,
     PrintQueueReorder,
+    QueueCopySourceProfile,
 )
 from backend.app.services import farm_forecast, queue_sources
-from backend.app.services.filament_intake import item_descriptor, loaded_descriptor, source_display_filename
+from backend.app.services.filament_intake import (
+    item_descriptor,
+    loaded_descriptor,
+    require_source_requirements,
+    routing_detail,
+    source_display_filename,
+)
 from backend.app.services.filament_policy import decode
 from backend.app.services.filament_policy_write import routing_update
+from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.notification_service import notification_service
 from backend.app.services.queue_add import add_items_to_printer_queue
 from backend.app.services.queue_source_capture import refusal, reusing_sources
@@ -395,7 +404,13 @@ async def add_to_queue(
     )
     item = result.scalar_one()
 
-    source_name = f"archive {data.archive_id}" if data.archive_id else f"library file {data.library_file_id}"
+    source_name = (
+        f"queue source {data.source_queue_item_id}"
+        if data.source_queue_item_id
+        else f"archive {data.archive_id}"
+        if data.archive_id
+        else f"library file {data.library_file_id}"
+    )
     target_desc = queue.printer.name if queue.printer else f"queue {data.queue_id}"
     logger.info("Added %s to queue for %s", source_name, target_desc)
 
@@ -505,6 +520,90 @@ async def bulk_update_queue_items(
         skipped_count=skipped_count,
         message=f"Updated {updated_count} items"
         + (f", skipped {skipped_count} non-pending/not-owned" if skipped_count else ""),
+    )
+
+
+def _read_copy_source_plates(path: Path) -> list[dict]:
+    """Parse one managed 3MF off the event loop for the Copy Queue dialog."""
+    from backend.app.services.archive import parse_plates_from_3mf
+
+    with zipfile.ZipFile(path, "r") as zf:
+        plates = parse_plates_from_3mf(zf)
+    # The existing archive/library thumbnail URLs name their mutable originals.
+    # A profile must never produce one; the selected source row's own thumbnail
+    # endpoint remains the only snapshot picture surface.
+    return [{**plate, "thumbnail_url": None} for plate in plates]
+
+
+@router.get("/{item_id}/copy-source", response_model=QueueCopySourceProfile)
+async def get_queue_copy_source(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.QUEUE_READ_ALL,
+            Permission.QUEUE_READ_OWN,
+        )
+    ),
+):
+    """Return the saved source profile needed to copy one queue row.
+
+    This endpoint is deliberately queue-read scoped and refuses a legacy or
+    broken source.  It never loads the item's archive or library relationship:
+    those rows may have been deleted, and their current bytes are irrelevant.
+    """
+    current_user, can_read_all = auth_result
+    item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(404, "Queue item not found")
+    if (
+        current_user is not None
+        and not can_read_all
+        and (item.created_by_id is None or item.created_by_id != current_user.id)
+    ):
+        raise HTTPException(404, "Queue item not found")
+
+    descriptor = await item_descriptor(db, item)
+    if descriptor is None or descriptor.queue_source_id is None:
+        raise HTTPException(422, routing_detail("source_unreadable"))
+    source = await db.get(QueueSource, descriptor.queue_source_id)
+    if source is None or source.state != STATE_READY:
+        raise HTTPException(422, routing_detail("source_unreadable"))
+    try:
+        filename = source_display_filename(descriptor)
+    except SourceUnavailable:
+        raise HTTPException(422, routing_detail("source_unreadable")) from None
+
+    try:
+        async with queue_sources.pin(descriptor.queue_source_id):
+            requirements = await require_source_requirements(
+                PrintRequirementsCache(),
+                plate_id=item.plate_id,
+                allow_raw_gcode=True,
+                descriptor=descriptor,
+            )
+            plates = (
+                []
+                if descriptor.format == FORMAT_GCODE
+                else await asyncio.to_thread(_read_copy_source_plates, descriptor.path)
+            )
+    except HTTPException:
+        raise
+    except (OSError, SourceUnavailable, zipfile.BadZipFile):
+        raise HTTPException(422, routing_detail("source_unreadable")) from None
+
+    filename_lower = filename.lower()
+    return QueueCopySourceProfile(
+        item_id=item.id,
+        filename=filename,
+        sliced_for_model=requirements.model if requirements is not None else None,
+        swap_compatible=(
+            filename_lower.endswith((".swap.3mf", ".swaps.3mf"))
+            or ".swap." in filename_lower
+            or ".swaps." in filename_lower
+        ),
+        plates=plates,
+        is_multi_plate=len(plates) > 1,
     )
 
 

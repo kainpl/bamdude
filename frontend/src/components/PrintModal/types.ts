@@ -86,7 +86,7 @@ export interface PrintModalAnswer {
 /**
  * Props for the unified PrintModal component.
  *
- * Either archiveId or libraryFileId must be provided.
+ * Exactly one archiveId, libraryFileId, or sourceQueueItemId must be provided.
  * - archiveId: For reprinting/queueing archives
  * - libraryFileId: For printing library files directly
  */
@@ -99,6 +99,8 @@ export interface PrintModalProps {
   archiveId?: number;
   /** Library file ID to print (mutually exclusive with archiveId) */
   libraryFileId?: number;
+  /** Queue row whose immutable saved bytes are copied (mutually exclusive with both file ids). */
+  sourceQueueItemId?: number;
   /** Display name for the print */
   archiveName: string;
   /** Existing queue item (only for edit-queue-item mode) */

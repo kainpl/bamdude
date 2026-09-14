@@ -181,6 +181,48 @@ async def test_a_clone_carries_the_blob_and_never_reads_the_original(
     assert await blob_count(db_session) == 1, "a clone must not capture a second copy of the same bytes"
 
 
+async def test_copy_queue_add_reuses_a_snapshot_after_its_original_is_gone(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """Copy Queue attaches the source job's managed bytes, never its old path."""
+    from backend.app.services.queue_add import add_items_to_printer_queue
+
+    item, _printer, queue, source, original = await a_captured_item(db_session, tmp_path, printer_factory, monkeypatch)
+    blob_id, snapshot = item.queue_source_id, dict(item.source_snapshot)
+    await lose_the_original(db_session, item, original, row=source)
+
+    touched = forbid_reads(monkeypatch, original)
+    copies, _queue = await add_items_to_printer_queue(
+        db_session,
+        PrintQueueItemCreate(queue_id=queue.id, source_queue_item_id=item.id, plate_id=PLATE),
+        None,
+    )
+
+    assert touched == []
+    assert len(copies) == 1
+    assert copies[0].queue_source_id == blob_id
+    assert copies[0].source_snapshot == snapshot
+    assert copies[0].archive_id is None and copies[0].library_file_id is None
+    assert await blob_count(db_session) == 1
+
+
+async def test_copy_source_profile_comes_from_snapshot_after_original_is_gone(
+    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    item, _printer, _queue, source, original = await a_captured_item(db_session, tmp_path, printer_factory, monkeypatch)
+    await lose_the_original(db_session, item, original, row=source)
+
+    response = await async_client.get(f"/api/v1/queue/{item.id}/copy-source")
+
+    assert response.status_code == 200, response.text
+    profile = response.json()
+    assert profile["item_id"] == item.id
+    assert profile["filename"] == "lamp.gcode.3mf"
+    assert profile["sliced_for_model"] == "P1P"
+    assert [plate["index"] for plate in profile["plates"]] == [PLATE, SECOND_PLATE]
+    assert all(plate["thumbnail_url"] is None for plate in profile["plates"])
+
+
 async def test_a_batch_clone_carries_every_siblings_blob(db_session, tmp_path, printer_factory, monkeypatch, sessions):
     from backend.app.services.queue_add import add_items_to_printer_queue
 

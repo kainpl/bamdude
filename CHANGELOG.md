@@ -9,6 +9,8 @@
 
 ### Added
 
+- **Copy Queue now works after the original file has gone.** A ready queued job is copied from the immutable `data/queue-sources/` object it already owns, so copying it to another compatible printer does not reopen an archive, a library record, an SMB path, or a laptop folder. The copy shares that one verified object and still asks for fresh target-printer, AMS mapping, schedule and print-option choices. Legacy rows keep their original-file behavior; a missing or broken saved source stays visible but cannot be copied.
+
 - **Camera Wall now opens live video only when the operator asks for it.** Every tile starts as a snapshot, so opening a large wall creates no MJPEG viewers. Click a tile to make it the one LIVE camera; click another to move LIVE there, or the same tile again to return it to snapshots. Errors and pauses stay visibly red or yellow even when ordinary status overlays are hidden, but never start video on their own. Each signed-in tile also opens the existing M-size printer card without changing the chosen camera; a token kiosk remains passive and redacted.
 
 - **Camera viewing respects the browser transport.** HTTP/1.x or an unknown protocol caps live cameras at two per tab, shared by the wall and floating camera; confirmed HTTP/2 or HTTP/3 permits up to 16 requested viewers. Camera Wall itself asks for only one explicit LIVE viewer, while the floating camera can use the remaining budget. Refresh, replacement, minimize and close cancel the actual MJPEG image request so detached images cannot accumulate connections. Saved multiple-camera lists restore only the last camera.

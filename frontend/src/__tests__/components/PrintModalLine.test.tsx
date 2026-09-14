@@ -235,4 +235,41 @@ describe('PrintModal — order line', () => {
       expect(add).toHaveBeenCalledWith(expect.objectContaining({ project_id: 3, project_line_id: 10 })),
     );
   });
+
+  it('queues a saved source without falling back to an archive or library id', async () => {
+    server.use(
+      http.get('/api/v1/queue/:id/copy-source', () =>
+        HttpResponse.json({
+          item_id: 42,
+          filename: 'saved.gcode.3mf',
+          sliced_for_model: 'X1C',
+          swap_compatible: false,
+          plates: [],
+          is_multi_plate: false,
+        }),
+      ),
+    );
+    const add = vi.spyOn(api, 'addToQueue').mockResolvedValue({ id: 1 } as never);
+    const user = userEvent.setup();
+
+    render(
+      <PrintModal
+        mode="add-to-queue"
+        sourceQueueItemId={42}
+        archiveName="saved.gcode.3mf"
+        initialSelectedPrinterIds={[1]}
+        lockPrinterSelection
+        lockDispatchMode
+        onClose={() => {}}
+      />,
+    );
+
+    await user.click(await screen.findByRole('button', { name: /^add to queue$/i }));
+
+    await waitFor(() => expect(add).toHaveBeenCalled());
+    const payload = add.mock.calls[0][0];
+    expect(payload).toMatchObject({ queue_id: 1, source_queue_item_id: 42 });
+    expect(payload.archive_id).toBeUndefined();
+    expect(payload.library_file_id).toBeUndefined();
+  });
 });

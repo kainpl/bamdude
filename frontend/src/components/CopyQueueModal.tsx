@@ -263,18 +263,12 @@ export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueue
       </div>
 
       <div className="flex items-center justify-between gap-2 p-4 border-t border-bambu-dark shrink-0">
-        {/* Says where the copies land before you press it — appending is what
-            everything else in BamDude does with a busy printer, and a copy
-            that jumped the running queue would be the surprise.
-
-            ⚠️ And what a copy IS (m173): an ordinary add, which reads the
-            original file again and saves its own copy of it. So a job that is
-            self-contained here can still refuse to be copied when its original
-            is gone — said before the button rather than discovered after it. */}
+        {/* Says where copies land before confirmation. A ready queue source is
+            reused as-is; legacy rows retain their original-file fallback. */}
         <span className="text-xs text-bambu-gray">
           {t('copyQueue.appendsHint')}
           {' '}
-          {t('copyQueue.readsOriginalHint')}
+          {t('copyQueue.sourceHint')}
         </span>
         <div className="flex items-center gap-2">
           <Button variant="ghost" onClick={onCancel}>
@@ -352,7 +346,14 @@ function ItemRow({
       <span className="min-w-0 flex-1">
         <span className="block text-sm text-white truncate">{entry.name}</span>
         <span className="block text-xs text-bambu-gray truncate">
-          {entry.file ? detail : [detail, t('copyQueue.originalGone')].filter(Boolean).join(' · ')}
+          {entry.file
+            ? detail
+            : [
+                detail,
+                t(entry.unavailableReason === 'sourceUnavailable' ? 'copyQueue.sourceUnavailable' : 'copyQueue.originalGone'),
+              ]
+                .filter(Boolean)
+                .join(' · ')}
         </span>
       </span>
     </>

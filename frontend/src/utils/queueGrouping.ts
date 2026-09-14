@@ -89,7 +89,7 @@ export interface DecidedUnit {
   itemId: number;
   fileId: number;
   fileName: string;
-  source: 'library' | 'archive';
+  source: 'library' | 'archive' | 'queue_snapshot';
   /** Already resolved by the caller: a queue item's null plate means plate 1
    *  (`print_queue.plate_id`'s own comment). Always a number here. */
   plateIndex: number;

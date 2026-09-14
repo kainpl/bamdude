@@ -14,6 +14,8 @@ export interface CopyableItem {
    * row, not a reason to hide it.
    */
   file: SequencedFile | null;
+  /** Why a visible row cannot be selected. */
+  unavailableReason?: 'originalGone' | 'sourceUnavailable';
   /** Stable list key — the queue row, or the live print's archive. */
   key: string;
   /** What to call the row, copyable or not. */
@@ -43,12 +45,12 @@ export interface CopyableItem {
 /**
  * Every row of this queue, and for each one whether it can be queued elsewhere.
  *
- * ⚠️ **A row with neither backing id is listed, not dropped** (m173). It used to
- * be filtered out, which meant a job that had outlived its library file — and
- * that prints perfectly from its own saved copy — disappeared from the operator's
- * own queue in this dialog. Vanishing is worse than being un-copyable, so it is
- * shown, with its picture, saying why the copy cannot be made: a copy is an
- * ordinary add and needs an original to read again.
+ * A ready snapshot is the primary source, even when its old archive or library
+ * row still exists.  That preserves the exact bytes the source queue accepted
+ * and avoids an SMB/library read for every target.  Legacy rows retain the
+ * previous original-file route; broken snapshots stay visible but cannot be
+ * selected, because falling back after a snapshot was captured could print a
+ * different revision.
  *
  * ⚠️ **The plate travels with the item.** Copying onto another printer of the
  * same model means literally the same file, so the plate it was queued with
@@ -64,10 +66,25 @@ export function copyableItems(items: readonly PrintQueueItem[]): CopyableItem[] 
     const fromLibrary = item.library_file_id != null;
     const id = item.library_file_id ?? item.archive_id ?? null;
     const name = item.library_file_name || item.archive_name || `#${item.id}`;
+    const snapshotReady = item.source_storage === 'ready';
+    const snapshotBroken = item.source_storage === 'broken';
     return {
       file:
-        id === null
-          ? null
+        snapshotReady
+          ? {
+              // `id` is the queue row id for this source kind, never a library
+              // id. It is passed as source_queue_item_id by PrintModal.
+              id: item.id,
+              source: 'queue_snapshot' as const,
+              name,
+              plateId: item.plate_id,
+              routing: item.filament_routing ?? undefined,
+              itemId: item.id,
+              batchId: item.batch_id,
+              orderFiling: { projectId: item.project_id ?? null, projectLineId: item.project_line_id ?? null },
+            }
+          : id === null || snapshotBroken
+            ? null
           : {
               id,
               source: fromLibrary ? ('library' as const) : ('archive' as const),
@@ -83,6 +100,7 @@ export function copyableItems(items: readonly PrintQueueItem[]): CopyableItem[] 
               orderFiling: { projectId: item.project_id ?? null, projectLineId: item.project_line_id ?? null },
             },
       key: `item-${item.id}`,
+      unavailableReason: snapshotBroken ? 'sourceUnavailable' : id === null ? 'originalGone' : undefined,
       name,
       plateId: item.plate_id ?? null,
       orderName: item.project_name,

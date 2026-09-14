@@ -4602,15 +4602,11 @@ export default {
     idle: 'Idle',
     offline: 'Offline',
     nothingToCopy: 'Nothing on this queue can be copied.',
-    // Listed, with its picture, but not tickable: m173 kept this job's own bytes,
-    // and a copy is an ordinary add that needs an original to read again.
     originalGone: 'cannot be copied, its original file is gone',
+    sourceUnavailable: 'cannot be copied, its saved source is unavailable',
     noOtherPrinters: 'No other {{model}} printers to copy onto.',
     appendsHint: 'Copies go to the end of each queue.',
-    // A copy is an ordinary add, so it reads the original file again — a print
-    // whose original is gone still prints HERE from its saved copy, but it
-    // cannot be copied anywhere. Said before the button, not after it fails.
-    readsOriginalHint: 'A copy is a new add: the original file is read again and saved for each copy.',
+    sourceHint: 'Saved jobs reuse their accepted file; legacy jobs read the original file.',
     copy: 'Copy',
   },
 

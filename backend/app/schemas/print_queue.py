@@ -22,9 +22,12 @@ UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)
 
 class PrintQueueItemCreate(FilamentRoutingChoices):
     queue_id: int  # Required - which printer's queue to add to
-    # Either archive_id OR library_file_id must be provided
+    # Exactly one source is required. ``source_queue_item_id`` reuses the
+    # immutable managed bytes of an existing queued job; it is intentionally
+    # not a file path and never makes the server read that job's original again.
     archive_id: int | None = None
     library_file_id: int | None = None
+    source_queue_item_id: int | None = Field(default=None, gt=0)
     scheduled_time: datetime | None = None  # None = ASAP
     auto_off_after: bool = False
     manual_start: bool = False
@@ -65,6 +68,22 @@ class PrintQueueItemCreate(FilamentRoutingChoices):
     project_id: int | None = None
     # The order line this print is for; travels queue → dispatcher → archive.
     project_line_id: int | None = None
+
+
+class QueueCopySourceProfile(BaseModel):
+    """Everything PrintModal needs from a queue row's immutable source.
+
+    This intentionally carries parsed metadata, not a source path or a download
+    URL.  It lets the copy UI make current AMS and print-option choices after
+    the archive/library record has disappeared.
+    """
+
+    item_id: int
+    filename: str
+    sliced_for_model: str | None = None
+    swap_compatible: bool = False
+    plates: list[dict]
+    is_multi_plate: bool = False
 
 
 class PrintQueueItemUpdate(FilamentRoutingChoices):

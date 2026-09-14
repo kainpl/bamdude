@@ -115,8 +115,8 @@ describe('a job whose original rows are both gone', () => {
     expect(rows[0].name).toBe('lamp.gcode.3mf');
   });
 
-  it('is listed as something that cannot be copied — there is nothing to re-read', () => {
-    expect(copyableItems([independent()])[0].file).toBeNull();
+  it('can be copied from its own saved bytes', () => {
+    expect(copyableItems([independent()])[0].file).toMatchObject({ id: 42, source: 'queue_snapshot' });
   });
 
   it('shows its own snapshot, so it is not a nameless pictureless row', () => {
@@ -159,8 +159,8 @@ describe('a row whose original is still here', () => {
     expect(only.thumbnailUrl).toBe(api.getLibraryFileThumbnailUrl(10));
   });
 
-  it('can still be copied', () => {
-    expect(copyableItems([item()])[0].file).toMatchObject({ id: 10, source: 'library' });
+  it('uses the job’s saved bytes even while its original is still present', () => {
+    expect(copyableItems([item({ id: 7, source_storage: 'ready' })])[0].file).toMatchObject({ id: 7, source: 'queue_snapshot' });
   });
 });
 
@@ -195,24 +195,23 @@ describe('the copy dialog', () => {
     vi.spyOn(api, 'getQueueItemSourceThumbnail').mockResolvedValue(new Blob([new Uint8Array([1])]));
   });
 
-  it('lists an independent job and says why it cannot be copied', async () => {
+  it('lists an independent job as a selectable saved source', async () => {
     renderModal([item({ id: 1 }), independent()]);
 
     expect(await screen.findByText('lamp.gcode.3mf')).toBeInTheDocument();
-    expect(screen.getByText(/original file is gone/i)).toBeInTheDocument();
+    expect(screen.queryByText(/original file is gone/i)).not.toBeInTheDocument();
   });
 
-  it('does not tick it, and «Select all» does not either', async () => {
+  it('ticks it, and «Select all» retains every saved source', async () => {
     renderModal([item({ id: 1 }), independent()]);
     const user = userEvent.setup();
 
-    // Two rows, one of them copyable — so the count is 1, not 2.
-    expect(await screen.findByText(/What to copy \(1\)/i)).toBeInTheDocument();
+    expect(await screen.findByText(/What to copy \(2\)/i)).toBeInTheDocument();
     await user.click(screen.getAllByText(/^Select all$/i)[0]);
-    expect(screen.getByText(/What to copy \(1\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/What to copy \(2\)/i)).toBeInTheDocument();
   });
 
-  it('never hands an uncopyable row to the run', async () => {
+  it('hands a saved source to the run alongside legacy rows', async () => {
     const { onConfirm } = renderModal([item({ id: 1 }), independent()]);
     const user = userEvent.setup();
 
@@ -221,11 +220,12 @@ describe('the copy dialog', () => {
 
     expect(onConfirm).toHaveBeenCalledTimes(1);
     const [files] = onConfirm.mock.calls[0];
-    expect(files).toHaveLength(1);
+    expect(files).toHaveLength(2);
     expect(files[0]).toMatchObject({ id: 10, source: 'library' });
+    expect(files[1]).toMatchObject({ id: 42, source: 'queue_snapshot' });
   });
 
-  it('will not copy when the only tickable row is unticked', async () => {
+  it('still needs a target printer before it can copy a saved source', async () => {
     renderModal([independent()]);
 
     expect(await screen.findByRole('button', { name: /^Copy$/i })).toBeDisabled();
