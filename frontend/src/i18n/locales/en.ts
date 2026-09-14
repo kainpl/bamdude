@@ -6261,7 +6261,7 @@ export default {
       optDot: 'Dot (.)',
       optUtf8Bom: 'UTF-8 + BOM (Excel)',
       exportTitle: 'Export spools to CSV',
-      exportHint: 'Match your spreadsheet: a European locale wants semicolons and comma decimals; Excel on Windows needs UTF-8 + BOM.',
+      exportHint: 'Exports every spool matching the current filters, not just this page. Match your spreadsheet: a European locale wants semicolons and comma decimals; Excel on Windows needs UTF-8 + BOM.',
     },
     title: 'Spool Inventory',
     addSpool: 'Add Spool',

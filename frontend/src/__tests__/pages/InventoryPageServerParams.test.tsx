@@ -781,6 +781,8 @@ describe('InventoryPage — the Forecast tab is not a second list (final review,
     expect(screen.queryByRole('button', { name: 'Archived' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Bulk edit' })).toBeNull();
     expect(screen.queryByRole('button', { name: /Print labels/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Import CSV/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Export CSV/ })).toBeNull();
   });
 
   it('hides spool bulk actions on the History tab while keeping its ledger search', async () => {
@@ -803,6 +805,8 @@ describe('InventoryPage — the Forecast tab is not a second list (final review,
     expect(screen.getByPlaceholderText('Search by print, spool or printer…')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Bulk edit' })).toBeNull();
     expect(screen.queryByRole('button', { name: /Print labels/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Import CSV/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Export CSV/ })).toBeNull();
   });
 
   it('a plain visit fires no PAGE-LESS full array either — that shape is modal-gated (F9)', async () => {

@@ -1487,20 +1487,47 @@ async def export_spools_csv(
     delimiter: Literal["comma", "semicolon", "tab"] = Query("comma"),
     decimal: Literal["dot", "comma"] = Query("dot"),
     encoding: Literal["utf-8", "utf-8-bom"] = Query("utf-8"),
+    archived: Literal["active", "archived"] = Query("active"),
+    usage: Literal["used", "new", "lowstock"] | None = Query(None),
+    material: str | None = Query(None),
+    brand: str | None = Query(None),
+    colors: list[str] = Query(default_factory=list),
+    color_rgbas: list[str] = Query(default_factory=list),
+    category: str | None = Query(None),
+    catalog_id: int | None = Query(None),
+    location_id: str | None = Query(None, pattern=_LOCATION_ID_PATTERN),
+    stock: Literal["stock", "configured"] | None = Query(None),
+    assigned: Literal["assigned", "unassigned"] | None = Query(None),
+    q: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
-    """Export the active inventory as CSV (same schema the importer accepts).
+    """Export every spool matching the inventory-list filters as CSV.
 
     The locale knobs exist because a spreadsheet is usually the next stop:
     a European locale wants ``;`` cells and ``,`` decimals to see columns and
-    numbers, and Windows Excel needs the BOM to read UTF-8 at all.
+    numbers, and Windows Excel needs the BOM to read UTF-8 at all. Pagination
+    is intentionally absent: an export is the complete matching set, never
+    merely the page currently visible in the table.
     """
     from datetime import datetime, timezone
 
-    query = select(Spool).where(Spool.archived_at.is_(None)).order_by(Spool.material, Spool.brand, Spool.color_name)
-    result = await db.execute(query)
-    spools = list(result.scalars().all())
+    filters = await inventory_service.build_spool_filters(
+        db,
+        archived=archived,
+        usage=usage,
+        material=material,
+        brand=brand,
+        colors=colors or None,
+        color_rgbas=color_rgbas or None,
+        category=category,
+        catalog_id=catalog_id,
+        location_id=location_id,
+        stock=stock,
+        assigned=assigned,
+        q=q,
+    )
+    spools = await inventory_service.list_spools(db, filters=filters)
     content = serialize(spools, delimiter=delimiter, decimal=decimal, bom=encoding == "utf-8-bom")
     # Date-stamp the filename so repeat exports don't overwrite each other in
     # the browser's default download folder.

@@ -1,7 +1,7 @@
 import { useState, useRef, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Upload, FileText, Loader2, CheckCircle, XCircle, MinusCircle, Wand2, AlertTriangle, Copy } from 'lucide-react';
-import { api, type CsvExportOptions, type CsvImportOptions, type CsvImportPreview, type CsvImportRow } from '../api/client';
+import { api, type CsvExportOptions, type CsvImportOptions, type CsvImportPreview, type CsvImportRow, type SpoolListParams } from '../api/client';
 import { getSwatchStyle } from '../utils/colors';
 import { Button } from './Button';
 import { Modal } from './Modal';
@@ -334,7 +334,7 @@ export function SpoolCsvImportModal({ onClose, onImported }: SpoolCsvImportModal
  * a European locale wants ';' cells and ',' decimals, and Windows Excel needs
  * the BOM to read UTF-8 at all.
  */
-export function SpoolCsvExportModal({ onClose }: { onClose: () => void }) {
+export function SpoolCsvExportModal({ onClose, filters }: { onClose: () => void; filters: SpoolListParams }) {
   const { t } = useTranslation();
   const [options, setOptions] = useState<CsvExportOptions>(() =>
     loadOpts<CsvExportOptions>(EXPORT_OPTS_KEY, { encoding: 'utf-8', delimiter: 'comma', decimal: 'dot' }));
@@ -351,7 +351,7 @@ export function SpoolCsvExportModal({ onClose }: { onClose: () => void }) {
     setExporting(true);
     setError(null);
     try {
-      await api.exportSpoolsCsv(options);
+      await api.exportSpoolsCsv(options, filters);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : t('inventory.csv.exportError', 'Export failed'));
@@ -363,7 +363,7 @@ export function SpoolCsvExportModal({ onClose }: { onClose: () => void }) {
     <Modal onClose={onClose} title={t('inventory.csv.exportTitle', 'Export spools to CSV')} size="md">
       <div className="p-4 space-y-4">
         <p className="text-xs text-bambu-gray">
-          {t('inventory.csv.exportHint', 'Match your spreadsheet: a European locale wants semicolons and comma decimals; Excel on Windows needs UTF-8 + BOM.')}
+          {t('inventory.csv.exportHint', 'Exports every spool matching the current filters, not just this page. Match your spreadsheet: a European locale wants semicolons and comma decimals; Excel on Windows needs UTF-8 + BOM.')}
         </p>
         <div className="flex flex-wrap gap-3">
           <OptionSelect

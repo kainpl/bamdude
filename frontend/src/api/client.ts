@@ -9673,10 +9673,13 @@ export const api = {
     uploadSpoolsCsv<CsvImportPreview>(file, true, options),
   importSpoolsCsv: (file: File, options?: CsvImportOptions): Promise<CsvImportResult> =>
     uploadSpoolsCsv<CsvImportResult>(file, false, options),
-  exportSpoolsCsv: async (options?: CsvExportOptions): Promise<void> => {
+  exportSpoolsCsv: async (options?: CsvExportOptions, filters?: SpoolListParams): Promise<void> => {
     const headers: Record<string, string> = {};
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-    const params = new URLSearchParams();
+    // Export is the complete CURRENT filtered set, not the current table page.
+    // Reuse the ids endpoint's builder because it preserves every list filter
+    // while deliberately stripping page, page size, grouping and sorting.
+    const params = spoolFilterSearchParams(filters ?? { archived: 'active' });
     if (options?.delimiter && options.delimiter !== 'comma') params.set('delimiter', options.delimiter);
     if (options?.decimal && options.decimal !== 'dot') params.set('decimal', options.decimal);
     if (options?.encoding && options.encoding !== 'utf-8') params.set('encoding', options.encoding);

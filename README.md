@@ -359,7 +359,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - **A History view — the whole farm's filament ledger in one list.** A third view mode beside Table and Cards: every consumption record there is, with what was printed, off which spool, on which printer, how many grams and what it cost. Search, filters (printer, material, brand, outcome, a date range, and the spool's own active/archived and in-printer/on-shelf state), sorting and paging are all computed by the server, and the running total is for the whole filter rather than the page on screen. Rows for spools you have since archived or deleted are kept and marked, not hidden — the grams they carry were still printed.
 - **Inventory search matches the name you see.** The list shows a name built from your own template, and the search box matches that composed name — so `LU/PET` finds a spool named `SUNLU/PETG`. A spool's id and lot number are searchable whatever the template says.
 - **The manager remembers what you filtered to** — material, brand, colour, category, name, the archived tab, the usage and stock chips, the search box and the view all survive leaving the page, and "Clear filters" clears the memory too
-- **CSV import / export** of the local inventory
+- **CSV import / export** of the local inventory — export takes every spool matching the current list filters, not just the visible page
 - Opt-out toggle for auto-adding unknown RFID spools
 - Spoolman integration
 

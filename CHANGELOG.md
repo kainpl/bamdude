@@ -154,7 +154,7 @@
 
 ### Fixed
 
-- **Forecast stays current after another part of the farm changes inventory.** An inventory edit, archive or usage record received through the live connection now refreshes the forecast table, its chart and its logistics data together. The Inventory page also stops showing spool-list filters, grouping, bulk editing and label printing on Forecast or filament History: those views respectively show SKU projections and usage records, so an Active/Archived spool control there could not honestly affect what was on screen.
+- **Forecast stays current after another part of the farm changes inventory.** An inventory edit, archive or usage record received through the live connection now refreshes the forecast table, its chart and its logistics data together. The Inventory page also stops showing spool-list filters, grouping, bulk editing, label printing or CSV import/export on Forecast or filament History: those views respectively show SKU projections and usage records, so an Active/Archived spool control there could not honestly affect what was on screen. CSV export from Table or Cards now includes every spool matching the current filters, rather than only a page or the whole active inventory.
 
 - **A long-running completion can no longer undo a newer queue pause.** Queue release now performs its ``printing → idle`` transition atomically in the database. If an operator paused or errored the queue while FTP, MQTT, a macro, or preheat was awaited, the stale dispatch session leaves that newer state and its active-item pointer intact.
 

@@ -2268,14 +2268,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               In Spoolman mode the buttons stay visible (feature parity) but are
               disabled with a hint pointing at Spoolman's own CSV export, since
               Spoolman owns the data store in that mode. */}
-          <Button variant="outline" size="sm" disabled={spoolmanMode} onClick={() => setCsvImportOpen(true)} title={spoolmanCsvHint}>
-            <Upload className="w-4 h-4" />
-            {t('inventory.csv.importButton', 'Import CSV')}
-          </Button>
-          <Button variant="outline" size="sm" disabled={spoolmanMode} onClick={() => setCsvExportOpen(true)} title={spoolmanCsvHint}>
-            <Download className="w-4 h-4" />
-            {t('inventory.csv.exportButton', 'Export CSV')}
-          </Button>
+          {!forecastViewActive && !historyViewActive && <>
+            <Button variant="outline" size="sm" disabled={spoolmanMode} onClick={() => setCsvImportOpen(true)} title={spoolmanCsvHint}>
+              <Upload className="w-4 h-4" />
+              {t('inventory.csv.importButton', 'Import CSV')}
+            </Button>
+            <Button variant="outline" size="sm" disabled={spoolmanMode} onClick={() => setCsvExportOpen(true)} title={spoolmanCsvHint}>
+              <Download className="w-4 h-4" />
+              {t('inventory.csv.exportButton', 'Export CSV')}
+            </Button>
+          </>}
           <Button variant="outline" size="sm" onClick={() => setLocationsModalOpen(true)}>
             <MapPin className="w-4 h-4" />
             {t('locations.manage')}
@@ -3176,7 +3178,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       )}
 
       {/* CSV import modal (#1576) */}
-      {csvExportOpen && <SpoolCsvExportModal onClose={() => setCsvExportOpen(false)} />}
+      {csvExportOpen && <SpoolCsvExportModal onClose={() => setCsvExportOpen(false)} filters={filterParams} />}
 
       {csvImportOpen && (
         <SpoolCsvImportModal
