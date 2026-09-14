@@ -154,6 +154,13 @@ def record_queue_source(routing, source):
     intent that lacks the id is not degraded and nothing compares it — see
     ``QueueSourceDescriptor.queue_source_id`` for why an id would be the weaker
     key anyway.
+
+    ⚠️ It never mutates what it is handed. ``decode`` returns a *dict* unchanged
+    when given one, so writing into that dict would edit a caller's payload while
+    also returning a new string — and the writers call this once per copy inside a
+    fan-out loop, which is exactly where a shared-object edit becomes a bug report
+    nobody can reproduce. Callers hoist it above their loop; it is cheap either way,
+    but the copy is what makes it safe.
     """
     if routing is None or source is None:
         return routing
@@ -163,8 +170,8 @@ def record_queue_source(routing, source):
     identity = data.get("source_identity")
     if not isinstance(identity, dict):
         return routing
-    identity["queue_source_id"] = source.id
-    return json.dumps(data, separators=(",", ":"))
+    stamped = {**data, "source_identity": {**identity, "queue_source_id": source.id}}
+    return json.dumps(stamped, separators=(",", ":"))
 
 
 def deserialize_policy(value):

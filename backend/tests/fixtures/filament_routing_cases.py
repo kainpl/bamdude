@@ -14,7 +14,7 @@ def write_routing_3mf(
     settings: dict | None = None,
     gcode_plates: list[int] | None = None,
     nozzle_groups: dict[int, int] | None = None,
-    prediction: int = 3600,
+    prediction: int | None = 3600,
     bed_type: str | None = None,
 ) -> Path:
     """Preserve supplied usage strings and sparse IDs, including invalid data.
@@ -29,6 +29,10 @@ def write_routing_3mf(
     row whose stored estimate came from a 3MF that says something else is a
     fixture that proves nothing.
 
+    ``prediction=None`` omits the key entirely, which is a real 3MF: a plate whose
+    slicer wrote no estimate. It is not the same as ``0`` — a reader can tell "no
+    answer" from "zero seconds", and the queue card has to.
+
     ``bed_type`` writes the plate's ``curr_bed_type`` — the third value the queue
     card's per-plate reader takes out of a 3MF, beside the estimate and the
     filament weight. Omitted by default so every existing caller's file is
@@ -37,7 +41,10 @@ def write_routing_3mf(
     root = Element("config")
     for plate_id, filaments in plates.items():
         plate = SubElement(root, "plate")
-        for key, value in (("index", plate_id), ("printer_model_id", model), ("prediction", prediction)):
+        facts = [("index", plate_id), ("printer_model_id", model)]
+        if prediction is not None:
+            facts.append(("prediction", prediction))
+        for key, value in facts:
             SubElement(plate, "metadata", key=key, value=str(value))
         if bed_type is not None:
             SubElement(plate, "metadata", key="curr_bed_type", value=bed_type)

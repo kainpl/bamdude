@@ -15,6 +15,7 @@ before this version — a v1 stamp of a snapshot's mtime — must still dispatch
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -350,3 +351,30 @@ def test_a_captured_read_still_refuses_a_file_that_moved_under_the_parse(tmp_pat
     monkeypatch.setattr(SourceIdentity, "of", moving)
     result = fr.read_print_requirements(source, sha256=SHA)
     assert result.reason == "source_changed"
+
+
+def test_an_intent_about_a_captured_blob_refuses_a_file_that_is_not_that_blob():
+    """The OTHER shape mismatch, and it is never legitimate (review m1).
+
+    Stored hash-shaped against a stat-anchored read means the intent was written
+    about a captured object and is being checked against a file that is not that
+    object. ``item_descriptor`` documents exactly how a row gets there — a
+    ``queue_source_id`` whose row is gone "reads as legacy, its own original" —
+    and such a row would otherwise dispatch a possibly re-sliced original with no
+    changed-file check at all.
+    """
+    stored = a_captured_identity().revision()
+    assert revision_refutes(stored, a_legacy_identity())
+    # And the legitimate direction stays silent: a pre-v2 stamp of a snapshot.
+    assert not revision_refutes(a_legacy_identity().revision(), a_captured_identity())
+
+
+def test_recording_the_blob_does_not_mutate_the_callers_payload():
+    """``decode`` hands a dict straight back, and the writers call this in a loop."""
+    from backend.app.services.filament_policy import record_queue_source
+
+    payload = json.loads(serialize_policy(RoutingPolicy(), library_file_id=7))
+    before = json.loads(json.dumps(payload))
+    stamped = json.loads(record_queue_source(payload, SimpleNamespace(id=4)))
+    assert payload == before
+    assert stamped["source_identity"]["queue_source_id"] == 4

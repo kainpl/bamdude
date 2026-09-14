@@ -379,6 +379,9 @@ async def enqueue_batch_copies(
                     file=library_file,
                 )
 
+            # Hoisted for the same reason as ``queue_add`` (review m5): one intent
+            # for every copy, parsed once.
+            stamped_routing = record_queue_source(routing, source)
             items: list[PrintQueueItem] = []
             for i in range(count):
                 items.append(
@@ -389,7 +392,7 @@ async def enqueue_batch_copies(
                         archive_id=archive_id,
                         library_file_id=library_file_id,
                         ams_mapping=ams_mapping_json,
-                        filament_routing=record_queue_source(routing, source),
+                        filament_routing=stamped_routing,
                         plate_id=plate_id,
                         bed_levelling=bed_mode == "on",
                         bed_levelling_mode=bed_mode,

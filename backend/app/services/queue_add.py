@@ -353,6 +353,9 @@ async def _publish_items(
                 plate_index=data.plate_id,
             )
 
+        # Hoisted: every copy shares one intent, so the JSON is parsed and
+        # re-serialised once rather than per row (review m5).
+        stamped_routing = record_queue_source(routing, source)
         items: list[PrintQueueItem] = []
         for i in range(data.quantity):
             items.append(
@@ -367,7 +370,7 @@ async def _publish_items(
                     manual_start=data.manual_start,
                     require_previous_success=data.require_previous_success,
                     ams_mapping=ams_mapping_json,
-                    filament_routing=record_queue_source(routing, source),
+                    filament_routing=stamped_routing,
                     plate_id=data.plate_id,
                     bed_levelling=mode_to_bool(data.bed_levelling),
                     bed_levelling_mode=data.bed_levelling,
