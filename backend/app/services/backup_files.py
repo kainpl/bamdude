@@ -15,7 +15,8 @@ from pathlib import Path, PurePosixPath
 
 logger = logging.getLogger(__name__)
 MANIFEST = "backup-manifest.json"
-QUEUE_SPOOL = "queue-spool"
+QUEUE_SOURCES_DIR = "queue-sources"
+LEGACY_QUEUE_SOURCES_DIR = "queue-spool"
 _operation_lock = asyncio.Lock()
 
 
@@ -183,6 +184,7 @@ def _queue_source_records(backup_db: Path) -> list[tuple[str, int, str]]:
         ).fetchall()
 
     records: list[tuple[str, int, str]] = []
+    roots: set[str] = set()
     for sha256, size_bytes, relative_path, fmt in rows:
         if not isinstance(sha256, str) or len(sha256) != 64 or any(c not in "0123456789abcdef" for c in sha256):
             raise ValueError("Backup database has an invalid queue source hash")
@@ -190,10 +192,14 @@ def _queue_source_records(backup_db: Path) -> list[tuple[str, int, str]]:
             raise ValueError("Backup database has an invalid queue source size")
         if fmt not in ("3mf", "gcode"):
             raise ValueError("Backup database has an invalid queue source format")
-        expected = f"{QUEUE_SPOOL}/objects/{sha256[:2]}/{sha256}.{fmt}"
-        if relative_path != expected:
-            raise ValueError("Backup database has a queue source outside its spool")
-        records.append((expected, size_bytes, sha256))
+        expected = f"{QUEUE_SOURCES_DIR}/objects/{sha256[:2]}/{sha256}.{fmt}"
+        legacy = f"{LEGACY_QUEUE_SOURCES_DIR}/objects/{sha256[:2]}/{sha256}.{fmt}"
+        if relative_path not in (expected, legacy):
+            raise ValueError("Backup database has a queue source outside queue-sources")
+        roots.add(relative_path.split("/", 1)[0])
+        records.append((relative_path, size_bytes, sha256))
+    if len(roots) > 1:
+        raise ValueError("Backup database mixes queue-source directory versions")
     return records
 
 
@@ -211,10 +217,12 @@ def stage_queue_spool(data_dir: Path, staging: Path, backup_db: Path) -> None:
     fail instead of producing a restore that can dispatch only part of its
     queue.
     """
-    target_root = staging / QUEUE_SPOOL
-    (target_root / "objects").mkdir(parents=True, exist_ok=True)
-    source_root = data_dir / QUEUE_SPOOL
-    for relative, size_bytes, sha256 in _queue_source_records(backup_db):
+    records = _queue_source_records(backup_db)
+    root_name = records[0][0].split("/", 1)[0] if records else QUEUE_SOURCES_DIR
+    (staging / root_name / "objects").mkdir(parents=True, exist_ok=True)
+    for relative, size_bytes, sha256 in records:
+        root_name = relative.split("/", 1)[0]
+        source_root = data_dir / root_name
         source = data_dir / relative  # SEC-PATH-OK: exact validated queue object layout.
         target = staging / relative  # SEC-PATH-OK: exact validated queue object layout.
         try:
@@ -228,14 +236,16 @@ def stage_queue_spool(data_dir: Path, staging: Path, backup_db: Path) -> None:
 def validate_staged_queue_spool(staging: Path, backup_db: Path) -> None:
     """Reject a restore whose ready queue rows and files do not agree."""
     records = _queue_source_records(backup_db)
-    root = staging / QUEUE_SPOOL
-    expected = {Path(relative).relative_to(QUEUE_SPOOL).as_posix() for relative, _, _ in records}
-    if root.exists():
-        actual = {name for name, (is_dir, _) in inventory(root).items() if name != "." and not is_dir}
-    else:
-        actual = set()
+    expected = {relative for relative, _, _ in records}
+    actual = {
+        f"{root_name}/{name}"
+        for root_name in (QUEUE_SOURCES_DIR, LEGACY_QUEUE_SOURCES_DIR)
+        if (root := staging / root_name).exists()
+        for name, (is_dir, _) in inventory(root).items()
+        if name != "." and not is_dir
+    }
     if actual != expected:
-        raise ValueError("Backup queue spool does not match the database snapshot")
+        raise ValueError("Backup queue-sources does not match the database snapshot")
     for relative, size_bytes, sha256 in records:
         _verify_queue_object(staging / relative, size_bytes=size_bytes, sha256=sha256)
 
@@ -407,8 +417,9 @@ class FileRestore:
 
     def __init__(self, staging: Path, settings, data_dir: Path):
         self.targets = [(staging / n, p, True) for n, p in directories(settings).items() if (staging / n).exists()]
-        if (staging / QUEUE_SPOOL).exists():
-            self.targets.append((staging / QUEUE_SPOOL, data_dir / QUEUE_SPOOL, True))
+        for directory in (QUEUE_SOURCES_DIR, LEGACY_QUEUE_SOURCES_DIR):
+            if (staging / directory).exists():
+                self.targets.append((staging / directory, data_dir / directory, True))
         for name in (".mfa_encryption_key", ".install_id", "zigbee/zigbee.db"):
             if (staging / name).exists():
                 self.targets.append((staging / name, data_dir / name, False))  # SEC-PATH-OK: fixed allowlist above.

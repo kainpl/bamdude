@@ -72,7 +72,7 @@ class SourceIdentity:
     """What "the same source" means for one file — and it is not always the mtime.
 
     ``sha256`` is set only for a **captured snapshot** (spec §4/§7): the object
-    under ``queue-spool`` is immutable and content-addressed, so its hash is its
+    under ``queue-sources`` is immutable and content-addressed, so its hash is its
     identity and its ``mtime_ns`` is the time BamDude copied the bytes. That
     timestamp changes on a portable restore, on a file-level restore and on any
     tooling that rewrites the spool, while every byte stays the same — so an

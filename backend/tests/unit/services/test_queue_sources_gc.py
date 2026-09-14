@@ -174,6 +174,29 @@ def objects() -> list[Path]:
     return sorted(p for p in root.rglob("*") if p.is_file()) if root.exists() else []
 
 
+async def test_startup_moves_the_pre_release_directory_and_repoints_rows(sessions, tmp_path):
+    """An install that briefly used ``queue-spool`` keeps every queued job."""
+    source = await publish_blob(sessions, tmp_path / "share" / "job.3mf")
+    old_root = queue_sources.legacy_spool_root()
+    new_root = queue_sources.spool_root()
+    new_root.replace(old_root)
+
+    async with sessions() as session:
+        row = await session.get(QueueSource, source.id)
+        assert row is not None
+        row.relative_path = f"queue-spool/objects/{source.sha256[:2]}/{source.sha256}.3mf"
+        await session.commit()
+
+    assert await queue_sources.migrate_legacy_spool(session_factory=sessions)
+    expected = queue_sources.object_relative_path(source.sha256, FORMAT_3MF)
+    assert (Path(settings.data_dir) / expected).is_file()
+    assert not old_root.exists()
+
+    async with sessions() as session:
+        row = await session.get(QueueSource, source.id)
+        assert row is not None and row.relative_path == expected
+
+
 def age(path: Path, moment: float) -> None:
     os.utime(path, (moment, moment))
 

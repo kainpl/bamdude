@@ -356,7 +356,7 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
 
     staged = None
     try:
-        # \u26a0\ufe0f The file is copied into ``queue-spool`` BEFORE the row exists (spec
+        # \u26a0\ufe0f The file is copied into ``queue-sources`` BEFORE the row exists (spec
         # \u00a75): the operator pressed a button on a phone, and the job has to
         # survive the machine that file came from being shut down. The session is
         # closed for the copy \u2014 it can take minutes over a share \u2014 and the row is

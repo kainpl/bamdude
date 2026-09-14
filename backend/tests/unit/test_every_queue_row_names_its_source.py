@@ -183,14 +183,14 @@ def test_every_queue_row_is_built_from_a_captured_source(where, scope, line, cal
 
     assert not missing, (
         f"{where}:{line} ({scope}) builds a {call.func.id} without {missing}. A queued job "
-        "must print bytes BamDude has already copied into queue-spool (spec S1): capture "
+        "must print bytes BamDude has already copied into queue-sources (spec S1): capture "
         "through services/queue_source_capture.py and pass queue_source_id + source_snapshot. "
         "If this row genuinely has nothing to capture (spec section 2: an external print, a "
         "calibration job), add it to _EXEMPT_SITES with the reason."
     )
     assert not blanked, (
         f"{where}:{line} ({scope}) passes {blanked} as a literal None, which is opting out of "
-        "the queue spool without saying so. If the row can have no source, decide it per call "
+        "queue-sources without saying so. If the row can have no source, decide it per call "
         "the way queue_batch does for an external print, or name this site in _EXEMPT_SITES."
     )
 

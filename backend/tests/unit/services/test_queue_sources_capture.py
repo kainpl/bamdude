@@ -176,7 +176,7 @@ async def test_publishing_renames_the_staged_file_into_its_sharded_object_path(t
     assert published.sha256 == sha
     assert published.size_bytes == len(raw)
     assert published.state == STATE_READY
-    assert published.relative_path == f"queue-spool/objects/{sha[:2]}/{sha}.3mf"
+    assert published.relative_path == f"queue-sources/objects/{sha[:2]}/{sha}.3mf"
     on_disk = Path(settings.base_dir) / published.relative_path
     assert on_disk.read_bytes() == raw
     assert not staged.exists()
@@ -484,7 +484,7 @@ async def test_the_snapshot_payload_comes_from_task_ones_builder(tmp_path, sessi
     }
     # §4: the hash and the path are not duplicated into the job's JSON.
     assert published.sha256 not in str(payload)
-    assert "queue-spool" not in str(payload)
+    assert "queue-sources" not in str(payload)
     descriptor = receipt.descriptor(published)
     assert descriptor.path == Path(settings.base_dir) / published.relative_path
     assert descriptor.sha256 == published.sha256

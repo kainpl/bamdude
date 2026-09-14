@@ -1047,7 +1047,7 @@ class VirtualPrinterInstance:
                 return
 
             # Step 2: pick a queue based on the library row's metadata, copy the
-            # file into the queue spool and link the queue items to that copy.
+            # file into queue-sources and link the queue items to that copy.
             from backend.app.models.print_queue import PrintQueueItem
             from backend.app.services import queue_sources
             from backend.app.services.queue_source_capture import (
@@ -1182,7 +1182,7 @@ class VirtualPrinterInstance:
 
             # ⚠️ The session is CLOSED for the copy (spec §5 step 1): the slicer's
             # upload is already on our disk, but it lands in the VP's own inbox and
-            # the library — the queue prints from ``queue-spool``, and copying
+            # the library — the queue prints from ``queue-sources``, and copying
             # there must not hold a read snapshot (on SQLite, the write lock) of
             # the whole database. ONE capture serves every plate of a Send All.
             staged = await capture_staged(plan)

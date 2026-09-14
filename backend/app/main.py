@@ -8738,7 +8738,7 @@ _queue_source_gc_task: asyncio.Task | None = None
 
 
 async def _queue_source_sweep_once() -> None:
-    """Adopt what the previous process left in ``DATA_DIR/queue-spool``.
+    """Adopt what the previous process left in ``DATA_DIR/queue-sources``.
 
     ⚠️ **Nothing escapes this coroutine.** It is fire-and-forget, so an exception
     would surface only through the background-task logger, and a
@@ -8751,9 +8751,9 @@ async def _queue_source_sweep_once() -> None:
 
         await sweep_after_restart()
     except asyncio.CancelledError:
-        log.debug("Queue spool sweep cancelled")
+        log.debug("Queue-source sweep cancelled")
     except Exception:
-        log.warning("Queue spool sweep failed", exc_info=True)
+        log.warning("Queue-source sweep failed", exc_info=True)
 
 
 async def _queue_source_gc_loop() -> None:
@@ -8772,7 +8772,7 @@ async def _queue_source_gc_loop() -> None:
             report = await queue_sources.collect()
             if report.touched():
                 log.info(
-                    "Queue spool GC: released %d blob(s), %d orphan object(s), %d stray staging file(s), "
+                    "Queue-source GC: released %d blob(s), %d orphan object(s), %d stray staging file(s), "
                     "%d marked, %d failed",
                     report.released,
                     report.orphan_objects,
@@ -9564,7 +9564,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         logging.getLogger(__name__).warning("library scan sweep failed", exc_info=True)
 
-    # ⚠️ The queue spool can hold three kinds of leftover from a process that
+    # ⚠️ queue-sources can hold three kinds of leftover from a process that
     # died: a `deleting` tombstone mid-unlink, a `.part` from a capture that
     # never finished, and a fully renamed object whose row was never committed.
     # Swept in the background, never in the lifespan — it walks a directory tree

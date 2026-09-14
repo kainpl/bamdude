@@ -1,7 +1,7 @@
 """Shared source validation at the queue's write boundaries.
 
 Since m173 a job's bytes are its own: a row with a ``queue_source_id`` reads the
-captured copy under ``DATA_DIR/queue-spool`` and never its original again (spec
+captured copy under ``DATA_DIR/queue-sources`` and never its original again (spec
 §7, S2). :func:`item_descriptor` is where that is decided, once, so that the
 requirements reader, the routing writer, eligibility and preflight cannot each
 answer it differently — and so that **no path falls back to the original after a

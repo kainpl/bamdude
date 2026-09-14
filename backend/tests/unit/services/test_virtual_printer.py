@@ -56,7 +56,7 @@ def _routing_library(library, path):
 def publishing_into(mock_db, *, max_position=None):
     """Send the queue-source publication's rows into this test's mock session.
 
-    Since m173 a VP upload is copied into ``queue-spool`` before any row exists,
+    Since m173 a VP upload is copied into ``queue-sources`` before any row exists,
     and the rows are then written by ``queue_sources.publish``, which deliberately
     opens its **own** session: the blob's row and the job rows have to commit
     together, after the file is in place (queue-source-spool spec §5 step 6). A
@@ -81,7 +81,7 @@ def publishing_into(mock_db, *, max_position=None):
             sha256=staged.receipt.sha256,
             size_bytes=staged.receipt.size_bytes,
             format=staged.format,
-            relative_path=f"queue-spool/objects/aa/{staged.receipt.sha256}.{staged.format}",
+            relative_path=f"queue-sources/objects/aa/{staged.receipt.sha256}.{staged.format}",
             state="ready",
         )
         await attach(mock_db, source)

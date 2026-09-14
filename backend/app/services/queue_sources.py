@@ -4,7 +4,7 @@ Spec: ``60-specs/queue-source-spool-spec.md``. This module is the two halves of
 §5's seven-step sequence that nothing else may own:
 
 * **the worker** (steps 2–4) — a daemon thread that opens the *original* file,
-  streams it in 1 MiB chunks into ``queue-spool/staging/<token>.part`` hashing as
+  streams it in 1 MiB chunks into ``queue-sources/staging/<token>.part`` hashing as
   it goes, fsyncs it, checks the source did not change under it and validates the
   container. It has no DB session, no printer API and no way to publish
   anything: a late worker must not be able to create work (S6).
@@ -124,7 +124,8 @@ ORPHAN_GRACE_SECONDS = 60 * 60.0
 #: Every capture thread is named with this prefix so a leaked one is visible.
 THREAD_NAME_PREFIX = "queue-source-capture"
 
-SPOOL_DIRNAME = "queue-spool"
+SPOOL_DIRNAME = "queue-sources"
+LEGACY_SPOOL_DIRNAME = "queue-spool"
 OBJECTS_DIRNAME = "objects"
 STAGING_DIRNAME = "staging"
 _HEX = frozenset("0123456789abcdef")
@@ -226,6 +227,11 @@ def spool_root() -> Path:
     return Path(settings.data_dir) / SPOOL_DIRNAME
 
 
+def legacy_spool_root() -> Path:
+    """The one pre-release directory name, retained only for an upgrade move."""
+    return Path(settings.data_dir) / LEGACY_SPOOL_DIRNAME
+
+
 def objects_root() -> Path:
     return spool_root() / OBJECTS_DIRNAME
 
@@ -251,6 +257,58 @@ def object_path(sha256: str, fmt: str) -> Path:
     _check_hash(sha256)
     _check_format(fmt)
     return safe_join_under(objects_root(), sha256[:2], f"{sha256}.{fmt}", http=False)
+
+
+def _relocate_legacy_spool(old_root: Path, new_root: Path) -> bool:
+    """Atomically rename the old root; two roots are an unsafe manual state."""
+    if not old_root.exists():
+        return False
+    if new_root.exists():
+        raise RuntimeError(f"Both queue-source directories exist: {old_root} and {new_root}")
+    old_root.replace(new_root)
+    return True
+
+
+async def migrate_legacy_spool(*, session_factory: async_sessionmaker | None = None) -> bool:
+    """Rename the pre-release directory and repoint its persisted source rows.
+
+    The move deliberately precedes the database update. A killed process finds
+    ``queue-sources`` at the next start and completes the idempotent row update.
+    If both roots exist, leave them intact instead of guessing which queued bytes
+    should win.
+    """
+    legacy_prefix = f"{LEGACY_SPOOL_DIRNAME}/{OBJECTS_DIRNAME}/"
+    async with storage_mutation():
+        old_root = legacy_spool_root()
+        new_root = spool_root()
+        try:
+            moved = await _file_work(_relocate_legacy_spool, old_root, new_root)
+        except RuntimeError as exc:
+            logger.error("Queue-source directory migration skipped: %s", exc)
+            return False
+        if not new_root.exists():
+            return False
+
+        factory = session_factory or database.async_session
+        async with factory() as session:
+            rows = list(
+                await session.scalars(
+                    select(QueueSource).where(QueueSource.relative_path.startswith(legacy_prefix))
+                )
+            )
+            for row in rows:
+                row.relative_path = object_relative_path(row.sha256, row.format)
+            if rows:
+                await session.commit()
+
+    if moved or rows:
+        logger.info(
+            "Queue-source directory migrated from %s to %s (%d row(s))",
+            LEGACY_SPOOL_DIRNAME,
+            SPOOL_DIRNAME,
+            len(rows),
+        )
+    return moved or bool(rows)
 
 
 def _check_hash(sha256: str) -> None:
@@ -588,7 +646,7 @@ def _drop(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError as exc:
         # Never pretend a completed rollback when the storage call failed (§6).
-        logger.warning("Could not remove queue-spool file %s: %s", path, exc)
+        logger.warning("Could not remove queue-source file %s: %s", path, exc)
 
 
 def _fsync_dir(path: Path) -> None:
@@ -620,7 +678,7 @@ def _install_object(part: Path, target: Path) -> None:
     try:
         assert_under(objects_root(), target, http=False)
     except PathTraversalError as exc:
-        raise WriteFailed(f"{target} is not inside the queue spool") from exc
+        raise WriteFailed(f"{target} is not inside queue-sources") from exc
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         os.replace(part, target)
@@ -946,7 +1004,7 @@ async def publish(
                 receipt.state = "discarded"
                 _unpin_staging(receipt.staging_path)
                 await _file_work(_drop, receipt.staging_path)
-                raise StorageReplaced("the queue spool was replaced while this capture was in flight")
+                raise StorageReplaced("queue-sources was replaced while this capture was in flight")
 
             factory = session_factory or database.async_session
             async with factory() as session:
@@ -1522,7 +1580,7 @@ async def _sweep_orphans(
         try:
             await _file_work(_unlink_blob, path)
         except (OSError, PathTraversalError) as exc:
-            logger.warning("Orphan queue-spool object %s could not be removed: %s", path, exc)
+            logger.warning("Orphan queue-source object %s could not be removed: %s", path, exc)
             report.failed += 1
             continue
         report.orphan_objects += 1
@@ -1535,14 +1593,14 @@ async def _sweep_orphans(
         try:
             await _file_work(_unlink_part, path)
         except (OSError, PathTraversalError) as exc:
-            logger.warning("Stray queue-spool staging file %s could not be removed: %s", path, exc)
+            logger.warning("Stray queue-source staging file %s could not be removed: %s", path, exc)
             report.failed += 1
             continue
         report.orphan_parts += 1
 
 
 async def sweep_after_restart(*, session_factory: async_sessionmaker | None = None) -> None:
-    """Adopt what the previous process left in the spool — §9's tail and §11.
+    """Move the legacy root, then adopt what the previous process left — §9's tail and §11.
 
     Three kinds of leftovers, not two:
 
@@ -1565,10 +1623,11 @@ async def sweep_after_restart(*, session_factory: async_sessionmaker | None = No
     the interval and the ``.part`` grace waived, so there is only one set of rules
     to be right about.
     """
+    await migrate_legacy_spool(session_factory=session_factory)
     report = await collect(session_factory=session_factory, force=True, part_grace_seconds=0.0)
     if report.touched():
         logger.info(
-            "Queue spool sweep: released %d blob(s), %d orphan object(s), %d stray staging file(s); "
+            "Queue-source sweep: released %d blob(s), %d orphan object(s), %d stray staging file(s); "
             "%d tombstone(s), %d revived, %d broken, %d failed, %d skipped",
             report.released,
             report.orphan_objects,

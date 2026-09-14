@@ -21,7 +21,7 @@ The server checks routing again before preparing a print and immediately before 
 
 ## Editing, copying, and existing queues
 
-When a job is accepted, BamDude takes one verified immutable copy of the actual bytes into its data directory. The queue then reads that copy for routing, preparation and upload. A laptop may sleep, an SMB share may disconnect, an external library file may move or be deleted, and archive retention may run without changing an already accepted job. The same bytes queued many times occupy one shared copy. The portable backup includes every ready copy named by its database snapshot, so restoring on a different machine does not need the original folders.
+When a job is accepted, BamDude takes one verified immutable copy of the actual bytes into `data/queue-sources/`. The queue then reads that copy for routing, preparation and upload. A laptop may sleep, an SMB share may disconnect, an external library file may move or be deleted, and archive retention may run without changing an already accepted job. The same bytes queued many times occupy one shared copy. The portable backup includes every ready copy named by its database snapshot, so restoring on a different machine does not need the original folders.
 
 Rows created before this change remain legacy rows until they are next captured. A snapshot that is missing or fails its checksum, or a legacy source that disappears, is marked **File error** and skipped. Other jobs continue; the printer queue is not paused and this does not count as a failed physical print. AutoQueue keeps the failed row visible, and a printer's queue shows it under Issues. Restore access only for a legacy row, then use **Retry**. A ready snapshot never retries an old NAS path.
 

@@ -51,7 +51,7 @@ def _source(**kwargs) -> QueueSource:
     defaults = {
         "sha256": "a" * 64,
         "size_bytes": 1234,
-        "relative_path": "queue-spool/objects/aa/" + "a" * 64 + ".3mf",
+        "relative_path": "queue-sources/objects/aa/" + "a" * 64 + ".3mf",
         "format": "3mf",
         "state": STATE_READY,
     }
@@ -85,7 +85,7 @@ async def test_the_same_bytes_are_one_row(db_session):
     db_session.add(_source())
     await db_session.commit()
 
-    db_session.add(_source(relative_path="queue-spool/objects/aa/other.3mf"))
+    db_session.add(_source(relative_path="queue-sources/objects/aa/other.3mf"))
     with pytest.raises(IntegrityError):
         await db_session.commit()
     await db_session.rollback()
@@ -275,7 +275,7 @@ def test_the_descriptor_is_frozen():
     """S3: after capture the file is immutable, and so is what names it — a
     reader that could re-point ``path`` would be a second source of truth."""
     descriptor = QueueSourceDescriptor(
-        path=Path("queue-spool/objects/aa/aa.3mf"),
+        path=Path("queue-sources/objects/aa/aa.3mf"),
         format="3mf",
         sha256="a" * 64,
         size_bytes=10,
@@ -306,7 +306,7 @@ def test_the_display_name_is_not_the_hash():
     """Spec §4: the human name travels beside the bytes; the hash may never
     replace it in the UI or on the printer."""
     descriptor = QueueSourceDescriptor(
-        path=Path("queue-spool/objects/aa/" + "a" * 64 + ".3mf"),
+        path=Path("queue-sources/objects/aa/" + "a" * 64 + ".3mf"),
         format="3mf",
         sha256="a" * 64,
         size_bytes=10,
@@ -332,7 +332,7 @@ def test_the_snapshot_is_built_from_the_descriptor_and_stamped():
     plate fallback). A capture that hand-wrote the dict would be free to drop a
     key every later reader expects."""
     descriptor = QueueSourceDescriptor(
-        path=Path("queue-spool/objects/aa/" + "a" * 64 + ".3mf"),
+        path=Path("queue-sources/objects/aa/" + "a" * 64 + ".3mf"),
         format="3mf",
         sha256="a" * 64,
         size_bytes=4096,

@@ -1082,7 +1082,7 @@ class BackgroundDispatchService:
         project_line_id: int | None = None,
         cleanup_library_after_dispatch: bool = False,
     ) -> dict[str, Any]:
-        # ⚠️ The source is copied into the queue spool BEFORE the printer is
+        # ⚠️ The source is copied into queue-sources BEFORE the printer is
         # claimed, and outside ``_lock`` (spec §5 steps 1-3). A copy can take
         # minutes over a share: claiming first would park the machine for all of
         # it — and, on a failure, for nothing — while holding ``_lock`` would stop

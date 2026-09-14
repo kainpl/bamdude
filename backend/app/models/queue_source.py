@@ -3,7 +3,7 @@
 Spec: ``60-specs/queue-source-spool-spec.md`` (the vault note; §4 is the file
 and data model). A job's independence from the laptop, the SMB share, the
 library row and the archive is this table plus the file it names under
-``settings.data_dir / "queue-spool"``.
+``settings.data_dir / "queue-sources"``.
 
 **One row per distinct content, never per job.** The same 3MF queued a hundred
 times across both tiers, several plates, several printers and several people is
@@ -24,7 +24,7 @@ was *last seen* to have let go; it is never on its own proof that nobody owns
 the row.
 
 **``state`` has exactly three values**, and none of them is ``preparing``: a
-half-written capture lives in ``queue-spool/staging/<token>.part`` and has no
+half-written capture lives in ``queue-sources/staging/<token>.part`` and has no
 row at all until it is renamed into place, so "being prepared" is not a state
 this table can be in (§4, §5). ``preparing`` is an API word only, derived from
 the live supervisor — see

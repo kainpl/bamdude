@@ -43,7 +43,7 @@ OTHER_SHA = "b" * 64
 
 def a_captured_identity(*, sha256: str = SHA, size: int = 4096, mtime_ns: int = 111) -> SourceIdentity:
     """What a read of a published snapshot produces."""
-    return SourceIdentity("/data/queue-spool/aa/bb/object.3mf", size, mtime_ns, sha256)
+    return SourceIdentity("/data/queue-sources/aa/bb/object.3mf", size, mtime_ns, sha256)
 
 
 def a_legacy_identity(*, size: int = 4096, mtime_ns: int = 111) -> SourceIdentity:

@@ -98,7 +98,7 @@ async def clean_up_finished_row(
         )
         return False
 
-    # A completed queue row is the last owner of its queue-spool bytes until
+    # A completed queue row is the last owner of its queue-source bytes until
     # the archive has a separate, readable copy.  Do not make cleanup erase
     # both representations while an archive download is still retrying.
     if queue_item.queue_source_id is not None:

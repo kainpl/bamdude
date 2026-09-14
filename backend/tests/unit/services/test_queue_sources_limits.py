@@ -184,11 +184,11 @@ def test_the_error_taxonomy_is_the_one_the_api_will_map():
 def test_the_spool_root_is_read_from_the_settings_at_call_time(tmp_path, monkeypatch):
     from backend.app.core.config import settings
 
-    assert queue_sources.spool_root() == Path(settings.data_dir) / "queue-spool"
+    assert queue_sources.spool_root() == Path(settings.data_dir) / "queue-sources"
     monkeypatch.setattr(settings, "data_dir", tmp_path / "moved", raising=False)
-    assert queue_sources.spool_root() == tmp_path / "moved" / "queue-spool"
+    assert queue_sources.spool_root() == tmp_path / "moved" / "queue-sources"
     sha = "a" * 64
-    assert queue_sources.object_relative_path(sha, FORMAT_3MF) == f"queue-spool/objects/aa/{sha}.3mf"
+    assert queue_sources.object_relative_path(sha, FORMAT_3MF) == f"queue-sources/objects/aa/{sha}.3mf"
     with pytest.raises(ValueError):
         queue_sources.object_path("not-a-hash", FORMAT_3MF)
 

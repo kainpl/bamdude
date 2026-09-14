@@ -402,7 +402,7 @@ async def _add_to_auto_queue(
 
     ⚠️ A file the server cannot read is REFUSED here, and deliberately so: the
     writer reads the requirements out of the 3MF it has just copied into the
-    queue spool, and a source it cannot parse has no plate, no filaments and
+    queue-sources, and a source it cannot parse has no plate, no filaments and
     nothing to print. The refusal carries its own reason (see the handler below),
     which is what the operator needs — the target they picked was fine, the file
     was not.
