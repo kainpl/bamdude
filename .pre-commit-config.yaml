@@ -64,7 +64,9 @@ repos:
         # roughly doubles the hook. The app is what ships, so the hook checks the
         # app (~43 s); `npm run typecheck` — `tsc -b --noEmit` over all three
         # projects, tests included — is what CI runs and what a release verifies.
-        entry: bash -c 'cd frontend && npx tsc -b tsconfig.app.json --noEmit'
+        # Keep this shell-free: Windows may resolve `bash` to the WSL launcher
+        # even when the repository is used with Git for Windows.
+        entry: npx --prefix frontend tsc -b frontend/tsconfig.app.json --noEmit
         language: system
         pass_filenames: false
         files: ^frontend/src/
