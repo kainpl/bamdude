@@ -2992,10 +2992,10 @@ function PrinterCard({
   const getImageSize = () => {
     switch (cardSize) {
       case 1: return 'w-10 h-10';
-      case 2: return 'w-14 h-14';
-      case 3: return 'w-16 h-16';
-      case 4: return 'w-20 h-20';
-      default: return 'w-14 h-14';
+      case 2: return 'w-12 h-12';
+      case 3: return 'w-12 h-12';
+      case 4: return 'w-14 h-14';
+      default: return 'w-12 h-12';
     }
   };
   const getTitleSize = () => {
