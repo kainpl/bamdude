@@ -117,6 +117,38 @@ describe('the print dialog while the queue saves the file', () => {
     await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith('Print queued'));
   });
 
+  it('sends selected plates as one urgent block for the printer', async () => {
+    let submitted: { items: Array<{ queue_id: number; plate_id: number; enqueue_position: string }> } | undefined;
+    server.use(
+      http.get('/api/v1/archives/:id/plates', () =>
+        HttpResponse.json({
+          is_multi_plate: true,
+          plates: [
+            { index: 1, name: 'Base', objects: [], filaments: [] },
+            { index: 2, name: 'Lid', objects: [], filaments: [] },
+          ],
+        }),
+      ),
+      http.post('/api/v1/queue/next-block', async ({ request }) => {
+        submitted = await request.json() as typeof submitted;
+        return HttpResponse.json([
+          { id: 11, status: 'pending', plate_id: 1 },
+          { id: 12, status: 'pending', plate_id: 2 },
+        ]);
+      }),
+    );
+    mount([1], [1, 2]);
+
+    fireEvent.click(await screen.findByLabelText('Run next'));
+    fireEvent.click(screen.getByRole('button', { name: /^queue 2 plates$/i }));
+
+    await waitFor(() => expect(submitted).toBeDefined());
+    expect(submitted!.items).toEqual([
+      expect.objectContaining({ queue_id: 1, plate_id: 1, enqueue_position: 'next' }),
+      expect.objectContaining({ queue_id: 1, plate_id: 2, enqueue_position: 'next' }),
+    ]);
+  });
+
   it('ignores a second submit while the first is still in flight', async () => {
     server.use(
       http.post('/api/v1/queue/', async () => {

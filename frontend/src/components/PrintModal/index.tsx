@@ -249,6 +249,7 @@ export function PrintModal({
       return {
         scheduleType,
         scheduledTime,
+        enqueuePosition: 'end',
         autoOffAfter: autoQueueItem.auto_off_after,
         requirePreviousSuccess: autoQueueItem.require_previous_success ?? false,
       };
@@ -271,6 +272,7 @@ export function PrintModal({
       return {
         scheduleType,
         scheduledTime,
+        enqueuePosition: 'end',
         autoOffAfter: queueItem.auto_off_after,
         // ?? false: a response cached from before this field existed would make
         // the checkbox uncontrolled for the rest of the modal's life.
@@ -1350,6 +1352,9 @@ export function PrintModal({
   const addToQueueMutation = useMutation({
     mutationFn: (data: PrintQueueItemCreate) => api.addToQueue(data),
   });
+  const addNextQueueBlockMutation = useMutation({
+    mutationFn: (items: PrintQueueItemCreate[]) => api.addNextQueueBlock(items),
+  });
 
   // Update queue item mutation
   const updateQueueMutation = useMutation({
@@ -1761,6 +1766,7 @@ export function PrintModal({
       const plateId = plateOverride !== undefined ? plateOverride : selectedPlate;
       return {
       queue_id: printerId,  // queue_id == printer_id (always per-printer queue)
+      enqueue_position: scheduleOptions.enqueuePosition,
       selected_macro_ids: selectedMacroIds,
       // A saved queue source is its own mutually-exclusive input.
       archive_id: isArchiveSource ? archiveId : undefined,
@@ -1790,9 +1796,46 @@ export function PrintModal({
       };
     };
 
+    const isNextBlock = mode === 'add-to-queue' && scheduleOptions.enqueuePosition === 'next';
+
     // Loop through plates × printers
     let progressCounter = 0;
-    for (const plate of platesToQueue) {
+    if (isNextBlock) {
+      // One request per printer keeps a multi-plate urgent job contiguous. A
+      // batch is never shared between printers: their queues are independent.
+      for (const printerId of selectedPrinters) {
+        const entries = platesToQueue
+          .map((plate) => ({ plate, plateId: plate ? plate.index : selectedPlate }))
+          .filter(({ plateId }) => dealtCopies(plateId, printerId) > 0);
+        if (entries.length === 0) continue;
+
+        progressCounter += entries.length;
+        setSubmitProgress({ current: progressCounter, total: totalCount });
+        const printerName = printers?.find(p => p.id === printerId)?.name || `Printer ${printerId}`;
+        try {
+          const added = await addNextQueueBlockMutation.mutateAsync(
+            entries.map(({ plateId }) => getQueueData(printerId, plateId)),
+          );
+          createdItemIds.push(...added.map(item => item.id));
+          landedOn.add(printerId);
+          for (const { plateId } of entries) {
+            const copies = dealtCopies(plateId, printerId);
+            results.success++;
+            results.queued += copies;
+            queuedByPlate.set(plateId ?? 0, (queuedByPlate.get(plateId ?? 0) ?? 0) + copies);
+          }
+        } catch (error) {
+          if (isUnknownOutcome(error)) unknownOutcomes += entries.length;
+          for (const { plate } of entries) {
+            results.failed++;
+            const plateName = plate ? (plate.name || t('printModal.plateNFallback', { index: plate.index })) : '';
+            const label = plateName ? `${printerName} (${plateName})` : printerName;
+            failures.push({ label, error });
+            results.errors.push(`${label}: ${(error as Error).message}`);
+          }
+        }
+      }
+    } else for (const plate of platesToQueue) {
       const plateId = plate ? plate.index : selectedPlate;
 
       for (let i = 0; i < selectedPrinters.length; i++) {
@@ -2014,7 +2057,7 @@ export function PrintModal({
     }
   };
 
-  const isPending = isSubmitting || updateQueueMutation.isPending;
+  const isPending = isSubmitting || updateQueueMutation.isPending || addNextQueueBlockMutation.isPending;
 
   const canSubmit = useMemo(() => {
     if (isPending) return false;
@@ -2751,6 +2794,7 @@ export function PrintModal({
                 dateFormat={settings?.date_format || 'system'}
                 timeFormat={settings?.time_format || 'system'}
                 canControlPrinter={hasPermission('printers:control')}
+                showRunNext={mode === 'add-to-queue' && !isAutoMode && hasPermission('queue:reorder')}
               />
             )}
 

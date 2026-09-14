@@ -94,6 +94,40 @@ async def _positions(db_session, queue_id: int) -> list[tuple[int, int]]:
     return [(r.id, r.position) for r in rows]
 
 
+class TestPlacePendingBlock:
+    async def test_next_precedes_and_reindexes_only_pending_rows(self, db_session, queue):
+        old_a = await _add_item(db_session, queue.id, position=4)
+        old_b = await _add_item(db_session, queue.id, position=9)
+        printing = await _add_item(db_session, queue.id, position=0, status="printing")
+        urgent_a = PrintQueueItem(queue_id=queue.id, status="pending")
+        urgent_b = PrintQueueItem(queue_id=queue.id, status="pending")
+
+        async with queue_ops.queue_scope_lock(db_session, queue.id):
+            await queue_ops.place_pending_block(db_session, queue.id, [urgent_a, urgent_b], enqueue_position="next")
+            db_session.add_all([urgent_a, urgent_b])
+            await db_session.commit()
+
+        assert await _positions(db_session, queue.id) == [
+            (urgent_a.id, 0),
+            (urgent_b.id, 1),
+            (old_a.id, 2),
+            (old_b.id, 3),
+        ]
+        await db_session.refresh(printing)
+        assert printing.position == 0
+
+    async def test_end_preserves_existing_positions(self, db_session, queue):
+        old = await _add_item(db_session, queue.id, position=9)
+        appended = PrintQueueItem(queue_id=queue.id, status="pending")
+
+        async with queue_ops.queue_scope_lock(db_session, queue.id):
+            await queue_ops.place_pending_block(db_session, queue.id, [appended])
+            db_session.add(appended)
+            await db_session.commit()
+
+        assert await _positions(db_session, queue.id) == [(old.id, 9), (appended.id, 10)]
+
+
 # ── resolve_block_ids / get_batch_pending_items ──────────────────────────────
 
 

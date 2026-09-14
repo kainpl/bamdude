@@ -4,6 +4,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from backend.app.models.print_queue import PrintQueueItem
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
 
@@ -230,6 +231,86 @@ class TestPrintQueueAPI:
         assert len(created) == 3, "one id per row the call made"
         assert len(set(created)) == 3, "distinct rows"
         assert created[0] == result["id"], "the response's own item is the first of them"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_run_next_inserts_before_existing_pending_rows(
+        self, async_client: AsyncClient, printer_factory, archive_factory, queue_item_factory, db_session
+    ):
+        """Urgent work shifts pending rows but never touches a current print."""
+        _printer, queue = await printer_factory()
+        existing_archive = await archive_factory()
+        old_a = await queue_item_factory(queue_id=queue.id, archive_id=existing_archive.id, position=4)
+        old_b = await queue_item_factory(queue_id=queue.id, archive_id=existing_archive.id, position=9)
+        urgent = await archive_factory()
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={"queue_id": queue.id, "archive_id": urgent.id, "enqueue_position": "next"},
+        )
+
+        assert response.status_code == 200, response.text
+        urgent_id = response.json()["id"]
+        ordered = list(
+            (
+                await db_session.execute(
+                    select(PrintQueueItem.id)
+                    .where(PrintQueueItem.queue_id == queue.id)
+                    .where(PrintQueueItem.status == "pending")
+                    .order_by(PrintQueueItem.position, PrintQueueItem.id)
+                )
+            ).scalars()
+        )
+        assert ordered == [urgent_id, old_a.id, old_b.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_run_next_batch_keeps_plates_contiguous(
+        self, async_client: AsyncClient, printer_factory, archive_factory, queue_item_factory, db_session
+    ):
+        """A multi-plate urgent submit is one transaction, not two inserts."""
+        _printer, queue = await printer_factory()
+        existing_archive = await archive_factory()
+        old = await queue_item_factory(queue_id=queue.id, archive_id=existing_archive.id, position=0)
+        urgent = await archive_factory()
+        payload = {
+            "items": [
+                {"queue_id": queue.id, "archive_id": urgent.id, "plate_id": 1, "enqueue_position": "next"},
+                {"queue_id": queue.id, "archive_id": urgent.id, "plate_id": 2, "enqueue_position": "next"},
+            ]
+        }
+
+        response = await async_client.post("/api/v1/queue/next-block", json=payload)
+
+        assert response.status_code == 200, response.text
+        created = response.json()
+        assert [item["plate_id"] for item in created] == [1, 2]
+        ordered = list(
+            (
+                await db_session.execute(
+                    select(PrintQueueItem.id)
+                    .where(PrintQueueItem.queue_id == queue.id)
+                    .where(PrintQueueItem.status == "pending")
+                    .order_by(PrintQueueItem.position, PrintQueueItem.id)
+                )
+            ).scalars()
+        )
+        assert ordered == [created[0]["id"], created[1]["id"], old.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_run_next_rejects_manual_or_scheduled_work(
+        self, async_client: AsyncClient, printer_factory, archive_factory
+    ):
+        _printer, queue = await printer_factory()
+        archive = await archive_factory()
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={"queue_id": queue.id, "archive_id": archive.id, "enqueue_position": "next", "manual_start": True},
+        )
+
+        assert response.status_code == 422
 
     @pytest.mark.asyncio
     @pytest.mark.integration

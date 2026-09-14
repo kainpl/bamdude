@@ -9,6 +9,8 @@
 
 ### Added
 
+- **Put a newly added job next with one tick.** In the Schedule dialog for selected printers, choose **Run next** to place the new ASAP job before the queue's other pending work. The physical print already running is never interrupted. A multi-plate job is inserted as one contiguous block on each selected printer, and each printer's result remains independent; Auto-Queue, scheduled jobs and Queue Only deliberately keep their existing ordering.
+
 - **Copy Queue now works after the original file has gone.** A ready queued job is copied from the immutable `data/queue-sources/` object it already owns, so copying it to another compatible printer does not reopen an archive, a library record, an SMB path, or a laptop folder. The copy shares that one verified object and still asks for fresh target-printer, AMS mapping, schedule and print-option choices. Legacy rows keep their original-file behavior; a missing or broken saved source stays visible but cannot be copied.
 
 - **Camera Wall now opens live video only when the operator asks for it.** Every tile starts as a snapshot, so opening a large wall creates no MJPEG viewers. Click a tile to make it the one LIVE camera; click another to move LIVE there, or the same tile again to return it to snapshots. Errors and pauses stay visibly red or yellow even when ordinary status overlays are hidden, but never start video on their own. Each signed-in tile also opens the existing M-size printer card without changing the chosen camera; a token kiosk remains passive and redacted.

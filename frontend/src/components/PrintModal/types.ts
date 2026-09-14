@@ -342,6 +342,8 @@ export type ScheduleType = 'asap' | 'scheduled' | 'manual';
 export interface ScheduleOptions {
   scheduleType: ScheduleType;
   scheduledTime: string;
+  /** Put this newly submitted block before existing pending work. */
+  enqueuePosition: 'end' | 'next';
   autoOffAfter: boolean;
   /** Hold this job when the printer's last print failed (m116). */
   requirePreviousSuccess: boolean;
@@ -353,6 +355,7 @@ export interface ScheduleOptions {
 export const DEFAULT_SCHEDULE_OPTIONS: ScheduleOptions = {
   scheduleType: 'asap',
   scheduledTime: '',
+  enqueuePosition: 'end',
   autoOffAfter: false,
   // Off by default: a gate nobody asked for is a stalled farm.
   requirePreviousSuccess: false,
@@ -549,4 +552,6 @@ export interface ScheduleOptionsProps {
   timeFormat?: 'system' | '12h' | '24h';
   /** Whether the user has permission to control printers (for auto power off) */
   canControlPrinter?: boolean;
+  /** A selected-printer add may move its new block ahead of pending work. */
+  showRunNext?: boolean;
 }

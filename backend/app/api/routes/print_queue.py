@@ -33,6 +33,7 @@ from backend.app.schemas.print_queue import (
     PrintQueueItemCreate,
     PrintQueueItemResponse,
     PrintQueueItemUpdate,
+    PrintQueueNextBatchCreate,
     PrintQueueReorder,
     QueueCopySourceProfile,
 )
@@ -48,7 +49,8 @@ from backend.app.services.filament_policy import decode
 from backend.app.services.filament_policy_write import routing_update
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.notification_service import notification_service
-from backend.app.services.queue_add import add_items_to_printer_queue
+from backend.app.services.queue_add import add_items_to_printer_queue, add_next_block_to_printer_queue
+from backend.app.services.queue_ops import queue_scope_lock
 from backend.app.services.queue_source_capture import refusal, reusing_sources
 from backend.app.services.queue_source_descriptor import source_storage_state
 from backend.app.services.queue_sources import QueueSourceError
@@ -380,6 +382,15 @@ async def add_to_queue(
     current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
 ):
     """Add an item to the print queue."""
+    # Queue creation alone may append work, but moving it in front of someone
+    # else's pending jobs is a reorder operation. API keys map both permissions
+    # to their existing ``can_queue`` scope; a signed-in user is checked here.
+    if (
+        data.enqueue_position == "next"
+        and current_user is not None
+        and not current_user.has_permission(Permission.QUEUE_REORDER.value)
+    ):
+        raise HTTPException(403, "Missing permission: queue:reorder")
     # Every gate, the advisory lock, the position and the build live in
     # ``services/queue_add`` so the file manager's bulk add cannot become a
     # second definition of what a queue item is.
@@ -451,6 +462,32 @@ async def add_to_queue(
     response = _enrich_response(item)
     response.created_item_ids = created_item_ids
     return response
+
+
+@router.post("/next-block", response_model=list[PrintQueueItemResponse])
+async def add_next_block_to_queue(
+    data: PrintQueueNextBatchCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
+):
+    """Insert several plates as one contiguous urgent block for one printer."""
+    if current_user is not None and not current_user.has_permission(Permission.QUEUE_REORDER.value):
+        raise HTTPException(403, "Missing permission: queue:reorder")
+    items, _queue = await add_next_block_to_printer_queue(db, data.items, current_user)
+    result = await db.execute(
+        select(PrintQueueItem)
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.library_file),
+            selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
+        )
+        .where(PrintQueueItem.id.in_([item.id for item in items]))
+        .order_by(PrintQueueItem.position, PrintQueueItem.id)
+    )
+    return [_enrich_response(item) for item in result.scalars().all()]
 
 
 @router.patch("/bulk", response_model=PrintQueueBulkUpdateResponse)
@@ -1353,7 +1390,7 @@ async def unskip_item(
     from backend.app.services.filament_policy import restore_routing_source
 
     try:
-        async with reusing_sources(db, [item.queue_source_id]):
+        async with reusing_sources(db, [item.queue_source_id]), queue_scope_lock(db, item.queue_id):
             if item.require_previous_success:
                 await _acknowledge_blocking_failure(db, item.queue_id)
 
@@ -1433,7 +1470,7 @@ async def retry_failed_item(
     from backend.app.services.filament_policy import restore_routing_source
 
     try:
-        async with reusing_sources(db, [item.queue_source_id]):
+        async with reusing_sources(db, [item.queue_source_id]), queue_scope_lock(db, item.queue_id):
             max_pos = (
                 await db.execute(
                     select(func.max(PrintQueueItem.position))

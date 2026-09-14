@@ -72,6 +72,9 @@ def publishing_into(mock_db, *, max_position=None):
     """
     from backend.app.services import queue_source_capture
 
+    # Queue writes use the shared ordering lock. This remains a SQLite-shaped
+    # mock publication: production's AsyncSession.get_bind() is synchronous.
+    mock_db.get_bind = MagicMock(return_value=SimpleNamespace(dialect=SimpleNamespace(name="sqlite")))
     if max_position is not None:
         mock_db.scalar = AsyncMock(return_value=max_position)
 

@@ -4347,6 +4347,8 @@ export interface PrintQueueItemCreate {
   force_color_match?: boolean;
   filament_overrides?: AutoQueueFilamentOverride[];
   queue_id: number;  // Required - which printer's queue
+  /** Put this new block before other pending work on the selected printer. */
+  enqueue_position?: 'end' | 'next';
   archive_id?: number | null;
   library_file_id?: number | null;
   /** Existing queued row whose immutable managed source is reused. */
@@ -9001,6 +9003,11 @@ export const api = {
     request<PrintQueueItem>('/queue/', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+  addNextQueueBlock: (items: PrintQueueItemCreate[]) =>
+    request<PrintQueueItem[]>('/queue/next-block', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
     }),
   getQueueCopySource: (itemId: number) => request<QueueCopySourceProfile>(`/queue/${itemId}/copy-source`),
   updateQueueItem: (id: number, data: PrintQueueItemUpdate) =>

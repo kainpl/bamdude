@@ -206,6 +206,43 @@ async def test_copy_queue_add_reuses_a_snapshot_after_its_original_is_gone(
     assert await blob_count(db_session) == 1
 
 
+async def test_copy_queue_run_next_keeps_two_plates_as_one_saved_source_block(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """Urgent multi-plate copies reuse bytes and do not reverse their plates."""
+    from backend.app.services.queue_add import add_next_block_to_printer_queue
+
+    item, _printer, queue, source, original = await a_captured_item(db_session, tmp_path, printer_factory, monkeypatch)
+    blob_id = item.queue_source_id
+    await lose_the_original(db_session, item, original, row=source)
+
+    touched = forbid_reads(monkeypatch, original)
+    copies, _queue = await add_next_block_to_printer_queue(
+        db_session,
+        [
+            PrintQueueItemCreate(
+                queue_id=queue.id,
+                source_queue_item_id=item.id,
+                plate_id=PLATE,
+                enqueue_position="next",
+            ),
+            PrintQueueItemCreate(
+                queue_id=queue.id,
+                source_queue_item_id=item.id,
+                plate_id=SECOND_PLATE,
+                enqueue_position="next",
+            ),
+        ],
+        None,
+    )
+
+    assert touched == []
+    assert [copy.plate_id for copy in copies] == [PLATE, SECOND_PLATE]
+    assert [copy.position for copy in copies] == [0, 1]
+    assert all(copy.queue_source_id == blob_id for copy in copies)
+    assert await blob_count(db_session) == 1
+
+
 async def test_copy_source_profile_comes_from_snapshot_after_original_is_gone(
     async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
 ):

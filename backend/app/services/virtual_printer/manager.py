@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from backend.app.core.config import settings as app_settings
+from backend.app.services.queue_ops import queue_scope_lock
 from backend.app.services.virtual_printer.bind_server import BindServer
 from backend.app.services.virtual_printer.certificate import CertificateService
 from backend.app.services.virtual_printer.ftp_server import VirtualPrinterFTPServer, compute_passive_port_slice
@@ -1212,65 +1213,66 @@ class VirtualPrinterInstance:
                 queue_item_ids: list[int] = []
 
                 async def attach(db, source) -> None:
-                    # Append at the tail: MAX(position) for this queue, then hand
-                    # consecutive positions to each plate so a Send All keeps
-                    # plate-order execution. A hardcoded position=1 stacked every
-                    # VP-queued print at the head, so two slicer Sends in a row
-                    # collided on position 1 and their order became arbitrary
-                    # (upstream Bambuddy v0.2.4.5). Read inside the publication's
-                    # transaction, which is also the one that inserts.
-                    from sqlalchemy import func as sa_func, select as sa_select
+                    from sqlalchemy import func, select
 
-                    base_pos = (
-                        await db.scalar(
-                            sa_select(sa_func.coalesce(sa_func.max(PrintQueueItem.position), 0)).where(
-                                PrintQueueItem.queue_id == queue_id
+                    async with queue_scope_lock(db, queue_id):
+                        # Append at the tail: MAX(position) for this queue, then hand
+                        # consecutive positions to each plate so a Send All keeps
+                        # plate-order execution. A hardcoded position=1 stacked every
+                        # VP-queued print at the head, so two slicer Sends in a row
+                        # collided on position 1 and their order became arbitrary
+                        # (upstream Bambuddy v0.2.4.5). Read inside the publication's
+                        # transaction, which is also the one that inserts.
+                        base_pos = (
+                            await db.scalar(
+                                select(func.coalesce(func.max(PrintQueueItem.position), 0)).where(
+                                    PrintQueueItem.queue_id == queue_id
+                                )
                             )
+                            or 0
                         )
-                        or 0
-                    )
-                    # ⚠️ No ``created_by_id`` here, and that is the answer rather
-                    # than a gap. A VirtualPrinter carries no owner, and the obvious
-                    # substitute is wrong rather than incomplete: one admin
-                    # typically configures the VP while everyone slices through it,
-                    # so crediting these to that admin would make the "added by"
-                    # column lie and drop other people's jobs into their queue.
-                    # Every other path that builds a queue item DOES set it —
-                    # ``queue:read_own`` filters on it — so a missing value here has
-                    # to stay a deliberate, documented one.
-                    for offset, (routing, plate_id) in enumerate(routed_plates, start=1):
-                        queue_item = PrintQueueItem(
-                            queue_source_id=source.id,
-                            source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
-                            queue_id=queue_id,
-                            library_file_id=library_file.id,
-                            archive_id=None,  # archive created at print-start by _run_print_library_file
-                            plate_id=plate_id,
-                            position=base_pos + offset,
-                            status="pending",
-                            manual_start=not self.auto_dispatch,
-                            bed_levelling=bed_levelling,
-                            flow_cali=flow_cali,
-                            layer_inspect=layer_inspect,
-                            timelapse=timelapse,
-                            timelapse_storage=timelapse_storage,
-                            use_ams=use_ams,
-                            # Stamp the slicer's H2C rack nozzle pick on every plate
-                            # of a multi-plate Send All so each plate replays the
-                            # same pick (mirrors the #1697 / #1733 per-plate loop).
-                            nozzle_mapping=nozzle_mapping_json,
-                            # None unless this VP opted in — see above.
-                            ams_mapping=ams_mapping_json,
-                            filament_routing=record_queue_source(routing, source),
-                            # Per-VP opt-in for auto-print G-code injection (#1516).
-                            # Default off; when on, the dispatcher still no-ops unless
-                            # gcode_snippets are configured for the target model, so
-                            # it's effectively "inject when enabled AND snippets exist".
-                            gcode_injection=self.gcode_injection,
-                        )
-                        db.add(queue_item)
-                        await db.flush()  # populate queue_item.id before logging
-                        queue_item_ids.append(queue_item.id)
+                        # ⚠️ No ``created_by_id`` here, and that is the answer rather
+                        # than a gap. A VirtualPrinter carries no owner, and the obvious
+                        # substitute is wrong rather than incomplete: one admin
+                        # typically configures the VP while everyone slices through it,
+                        # so crediting these to that admin would make the "added by"
+                        # column lie and drop other people's jobs into their queue.
+                        # Every other path that builds a queue item DOES set it —
+                        # ``queue:read_own`` filters on it — so a missing value here has
+                        # to stay a deliberate, documented one.
+                        for offset, (routing, plate_id) in enumerate(routed_plates, start=1):
+                            queue_item = PrintQueueItem(
+                                queue_source_id=source.id,
+                                source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
+                                queue_id=queue_id,
+                                library_file_id=library_file.id,
+                                archive_id=None,  # archive created at print-start by _run_print_library_file
+                                plate_id=plate_id,
+                                position=base_pos + offset,
+                                status="pending",
+                                manual_start=not self.auto_dispatch,
+                                bed_levelling=bed_levelling,
+                                flow_cali=flow_cali,
+                                layer_inspect=layer_inspect,
+                                timelapse=timelapse,
+                                timelapse_storage=timelapse_storage,
+                                use_ams=use_ams,
+                                # Stamp the slicer's H2C rack nozzle pick on every plate
+                                # of a multi-plate Send All so each plate replays the
+                                # same pick (mirrors the #1697 / #1733 per-plate loop).
+                                nozzle_mapping=nozzle_mapping_json,
+                                # None unless this VP opted in — see above.
+                                ams_mapping=ams_mapping_json,
+                                filament_routing=record_queue_source(routing, source),
+                                # Per-VP opt-in for auto-print G-code injection (#1516).
+                                # Default off; when on, the dispatcher still no-ops unless
+                                # gcode_snippets are configured for the target model, so
+                                # it's effectively "inject when enabled AND snippets exist".
+                                gcode_injection=self.gcode_injection,
+                            )
+                            db.add(queue_item)
+                            await db.flush()  # populate queue_item.id before logging
+                            queue_item_ids.append(queue_item.id)
 
                 # The rows and the blob's own row are committed together, after the
                 # file is in its final place (§5 step 6).

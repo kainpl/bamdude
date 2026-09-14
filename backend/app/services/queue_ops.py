@@ -14,15 +14,60 @@ from __future__ import annotations
 
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.services.queue_source_capture import reusing_sources
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def queue_scope_lock(db: AsyncSession, queue_id: int):
+    """Serialize a short mutation or claim for one printer queue.
+
+    PostgreSQL needs an explicit transaction-scoped lock because two writers
+    otherwise both observe the same pending order. SQLite already serializes a
+    short write transaction, so it deliberately takes no process-local lock.
+    Callers must keep file I/O, MQTT and other long work outside this scope.
+    """
+    if db.get_bind().dialect.name == "postgresql":
+        # 1625 is the existing namespace used for per-queue append locks.
+        await db.execute(text("SELECT pg_advisory_xact_lock(1625, :queue_id)"), {"queue_id": queue_id})
+    yield
+
+
+async def place_pending_block(
+    db: AsyncSession,
+    queue_id: int,
+    new_items: list[PrintQueueItem],
+    *,
+    enqueue_position: str = "end",
+) -> None:
+    """Assign one new pending block at the end or before existing pending work.
+
+    The caller holds :func:`queue_scope_lock`. ``next`` reindexes every pending
+    row to make its block deterministic; ``end`` preserves legacy positions
+    and only assigns positions to the new rows. Terminal and printing rows are
+    never read or moved.
+    """
+    if enqueue_position not in {"end", "next"}:
+        raise ValueError(f"Unsupported enqueue position: {enqueue_position}")
+
+    existing = await _pending_items_in_queue(db, queue_id)
+    if enqueue_position == "end":
+        next_position = max((item.position for item in existing), default=-1) + 1
+        for offset, item in enumerate(new_items):
+            item.position = next_position + offset
+        return
+
+    ordered = [*new_items, *existing]
+    for position, item in enumerate(ordered):
+        item.position = position
 
 
 @dataclass
@@ -41,7 +86,7 @@ async def get_batch_pending_items(db: AsyncSession, batch_id: str) -> list[Print
         select(PrintQueueItem)
         .where(PrintQueueItem.batch_id == batch_id)
         .where(PrintQueueItem.status == "pending")
-        .order_by(PrintQueueItem.position)
+        .order_by(PrintQueueItem.position, PrintQueueItem.id)
     )
     return list(result.scalars().all())
 
@@ -68,12 +113,18 @@ async def _pending_items_in_queue(db: AsyncSession, queue_id: int) -> list[Print
         select(PrintQueueItem)
         .where(PrintQueueItem.queue_id == queue_id)
         .where(PrintQueueItem.status == "pending")
-        .order_by(PrintQueueItem.position)
+        .order_by(PrintQueueItem.position, PrintQueueItem.id)
     )
     return list(result.scalars().all())
 
 
 async def reorder_block(db: AsyncSession, queue_id: int, block_ids: list[int], direction: str) -> int:
+    """Move a block while serializing with all other queue writers."""
+    async with queue_scope_lock(db, queue_id):
+        return await _reorder_block_unlocked(db, queue_id, block_ids, direction)
+
+
+async def _reorder_block_unlocked(db: AsyncSession, queue_id: int, block_ids: list[int], direction: str) -> int:
     """Move a contiguous or non-contiguous *block* one step up/down.
 
     Algorithm: find the anchor position of the block (min position of
@@ -128,6 +179,12 @@ async def reorder_block(db: AsyncSession, queue_id: int, block_ids: list[int], d
 
 
 async def bump_block_to_top(db: AsyncSession, queue_id: int, block_ids: list[int]) -> int:
+    """Move a block to the top while serializing with queue writers."""
+    async with queue_scope_lock(db, queue_id):
+        return await _bump_block_to_top_unlocked(db, queue_id, block_ids)
+
+
+async def _bump_block_to_top_unlocked(db: AsyncSession, queue_id: int, block_ids: list[int]) -> int:
     """Move the block to the very top (lowest positions) of the queue.
 
     Preserves intra-block order.  Returns how many items shifted.
@@ -162,6 +219,12 @@ async def bump_block_to_top(db: AsyncSession, queue_id: int, block_ids: list[int
 
 
 async def bump_block_to_bottom(db: AsyncSession, queue_id: int, block_ids: list[int]) -> int:
+    """Move a block to the bottom while serializing with queue writers."""
+    async with queue_scope_lock(db, queue_id):
+        return await _bump_block_to_bottom_unlocked(db, queue_id, block_ids)
+
+
+async def _bump_block_to_bottom_unlocked(db: AsyncSession, queue_id: int, block_ids: list[int]) -> int:
     """Move the block to the very bottom (highest positions) of the queue.
 
     Preserves intra-block order.  Returns how many items shifted.
@@ -281,17 +344,16 @@ async def clone_item(db: AsyncSession, item_id: int, keep_batch: bool = True) ->
     if src is None:
         return None
 
-    # New copy appended to end of its queue.
-    max_pos = (
-        await db.execute(
-            select(func.max(PrintQueueItem.position))
-            .where(PrintQueueItem.queue_id == src.queue_id)
-            .where(PrintQueueItem.status == "pending")
-        )
-    ).scalar() or 0
-
     new_batch_id = src.batch_id if keep_batch else None
-    async with reusing_sources(db, [src.queue_source_id]):
+    async with reusing_sources(db, [src.queue_source_id]), queue_scope_lock(db, src.queue_id):
+        # New copy appended to end of its queue.
+        max_pos = (
+            await db.execute(
+                select(func.max(PrintQueueItem.position))
+                .where(PrintQueueItem.queue_id == src.queue_id)
+                .where(PrintQueueItem.status == "pending")
+            )
+        ).scalar() or 0
         clone = _copy_item_fields(src, new_batch_id, max_pos + 1)
         db.add(clone)
         await db.commit()
@@ -323,16 +385,15 @@ async def clone_batch(db: AsyncSession, batch_id: str) -> list[PrintQueueItem]:
 
     new_batch_id = str(uuid.uuid4())
     queue_id = siblings[0].queue_id
-    max_pos = (
-        await db.execute(
-            select(func.max(PrintQueueItem.position))
-            .where(PrintQueueItem.queue_id == queue_id)
-            .where(PrintQueueItem.status == "pending")
-        )
-    ).scalar() or 0
-
     clones: list[PrintQueueItem] = []
-    async with reusing_sources(db, [src.queue_source_id for src in siblings]):
+    async with reusing_sources(db, [src.queue_source_id for src in siblings]), queue_scope_lock(db, queue_id):
+        max_pos = (
+            await db.execute(
+                select(func.max(PrintQueueItem.position))
+                .where(PrintQueueItem.queue_id == queue_id)
+                .where(PrintQueueItem.status == "pending")
+            )
+        ).scalar() or 0
         for i, src in enumerate(siblings):
             clone = _copy_item_fields(src, new_batch_id, max_pos + 1 + i)
             db.add(clone)

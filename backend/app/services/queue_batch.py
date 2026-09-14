@@ -28,6 +28,7 @@ from backend.app.services.filament_policy import record_queue_source
 from backend.app.services.filament_policy_write import prepare_routing
 from backend.app.services.order_filing import resolve_line_id
 from backend.app.services.queue_counters import set_queue_printing, update_queue_counters
+from backend.app.services.queue_ops import queue_scope_lock
 from backend.app.services.queue_source_capture import (
     StagedSource,
     capture_staged,
@@ -357,71 +358,72 @@ async def enqueue_batch_copies(
         created_ids: list[int] = []
 
         async def attach(session: AsyncSession, source: QueueSource) -> None:
-            result = await session.execute(
-                select(func.max(PrintQueueItem.position))
-                .where(PrintQueueItem.queue_id == queue_id)
-                .where(PrintQueueItem.status == "pending")
-            )
-            max_pos = result.scalar() or 0
-
-            # The order named without its line — file the line when this plate
-            # points at exactly one (spec pass 7, Decision 4a). Every copy of a
-            # batch is the same plate, so this is asked once for all of them. An
-            # explicit line is never overridden; an ambiguous plate stays ``NULL``
-            # and the plan's implicit branch re-asks on every read.
-            line_id = project_line_id
-            if project_id is not None and line_id is None:
-                line_id = await resolve_line_id(
-                    session,
-                    project_id=project_id,
-                    library_file_id=library_file_id,
-                    plate_index=plate_id,
-                    file=library_file,
+            async with queue_scope_lock(session, queue_id):
+                result = await session.execute(
+                    select(func.max(PrintQueueItem.position))
+                    .where(PrintQueueItem.queue_id == queue_id)
+                    .where(PrintQueueItem.status == "pending")
                 )
+                max_pos = result.scalar() or 0
 
-            # Hoisted for the same reason as ``queue_add`` (review m5): one intent
-            # for every copy, parsed once.
-            stamped_routing = record_queue_source(routing, source)
-            items: list[PrintQueueItem] = []
-            for i in range(count):
-                items.append(
-                    PrintQueueItem(
-                        queue_source_id=source.id,
-                        source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
-                        queue_id=queue_id,
-                        archive_id=archive_id,
-                        library_file_id=library_file_id,
-                        ams_mapping=ams_mapping_json,
-                        filament_routing=stamped_routing,
-                        plate_id=plate_id,
-                        bed_levelling=bed_mode == "on",
-                        bed_levelling_mode=bed_mode,
-                        flow_cali=flow_mode == "on",
-                        flow_cali_mode=flow_mode,
-                        layer_inspect=layer_inspect,
-                        timelapse=timelapse,
-                        timelapse_storage=timelapse_storage,
-                        use_ams=use_ams,
-                        nozzle_offset_cali=nozzle_mode == "on",
-                        nozzle_offset_cali_mode=nozzle_mode,
-                        mesh_mode_fast_check=mesh_mode_fast_check,
-                        gcode_injection=gcode_injection,
-                        execute_swap_macros=execute_swap_macros,
-                        swap_macro_events=swap_macro_events_json,
-                        selected_macro_ids=selected_macro_ids_json,
-                        auto_off_after=auto_off_after,
-                        position=max_pos + 1 + i,
-                        status="pending",
-                        batch_id=batch_id,
-                        created_by_id=created_by_id,
+                # The order named without its line — file the line when this plate
+                # points at exactly one (spec pass 7, Decision 4a). Every copy of a
+                # batch is the same plate, so this is asked once for all of them. An
+                # explicit line is never overridden; an ambiguous plate stays ``NULL``
+                # and the plan's implicit branch re-asks on every read.
+                line_id = project_line_id
+                if project_id is not None and line_id is None:
+                    line_id = await resolve_line_id(
+                        session,
                         project_id=project_id,
-                        project_line_id=line_id,
+                        library_file_id=library_file_id,
+                        plate_index=plate_id,
+                        file=library_file,
                     )
-                )
-            session.add_all(items)
-            await session.flush()
-            created_ids.extend(item.id for item in items)
-            await update_queue_counters(session, queue_id)
+
+                # Hoisted for the same reason as ``queue_add`` (review m5): one intent
+                # for every copy, parsed once.
+                stamped_routing = record_queue_source(routing, source)
+                items: list[PrintQueueItem] = []
+                for i in range(count):
+                    items.append(
+                        PrintQueueItem(
+                            queue_source_id=source.id,
+                            source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
+                            queue_id=queue_id,
+                            archive_id=archive_id,
+                            library_file_id=library_file_id,
+                            ams_mapping=ams_mapping_json,
+                            filament_routing=stamped_routing,
+                            plate_id=plate_id,
+                            bed_levelling=bed_mode == "on",
+                            bed_levelling_mode=bed_mode,
+                            flow_cali=flow_mode == "on",
+                            flow_cali_mode=flow_mode,
+                            layer_inspect=layer_inspect,
+                            timelapse=timelapse,
+                            timelapse_storage=timelapse_storage,
+                            use_ams=use_ams,
+                            nozzle_offset_cali=nozzle_mode == "on",
+                            nozzle_offset_cali_mode=nozzle_mode,
+                            mesh_mode_fast_check=mesh_mode_fast_check,
+                            gcode_injection=gcode_injection,
+                            execute_swap_macros=execute_swap_macros,
+                            swap_macro_events=swap_macro_events_json,
+                            selected_macro_ids=selected_macro_ids_json,
+                            auto_off_after=auto_off_after,
+                            position=max_pos + 1 + i,
+                            status="pending",
+                            batch_id=batch_id,
+                            created_by_id=created_by_id,
+                            project_id=project_id,
+                            project_line_id=line_id,
+                        )
+                    )
+                session.add_all(items)
+                await session.flush()
+                created_ids.extend(item.id for item in items)
+                await update_queue_counters(session, queue_id)
 
         await publish_staged(staged, attach)
     except BaseException:

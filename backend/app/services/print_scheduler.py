@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -41,6 +41,7 @@ from backend.app.services.printer_manager import (
     supports_drying,
     supports_drying_while_printing,
 )
+from backend.app.services.queue_ops import queue_scope_lock
 from backend.app.services.queue_wait_reason import set_wait_reason
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, require_source_file
@@ -2747,29 +2748,50 @@ class PrintScheduler:
         # cancelled print would dispatch anyway (#1853). Gate the flip on the row still
         # being 'pending'; if it moved on (cancelled / deleted / already picked up), bail
         # before enqueuing any dispatch work.
+        #
+        # The same queue-scope lock is used by ``enqueue_position=next``. Its
+        # final check sees the current first runnable row, so an older scheduler
+        # snapshot cannot steal a start ahead of a next job that committed while
+        # its source/AMS work was in progress. Scheduled/manual rows remain
+        # deliberately ignorable here: the regular scheduler can progress past
+        # them, and this barrier must preserve that existing behavior.
         now = datetime.now(timezone.utc)
-        cas_result = await db.execute(
-            update(PrintQueueItem)
-            .where(PrintQueueItem.id == item.id)
-            .where(PrintQueueItem.status == "pending")
-            .values(
-                status="printing",
-                started_at=now,
-                waiting_reason=None,
-                waiting_reason_code=None,
-                waiting_reason_checked_at=None,
+        async with queue_scope_lock(db, item.queue_id):
+            first_runnable_id = await db.scalar(
+                select(PrintQueueItem.id)
+                .where(PrintQueueItem.queue_id == item.queue_id)
+                .where(PrintQueueItem.status == "pending")
+                .where(PrintQueueItem.manual_start.is_(False))
+                .where(or_(PrintQueueItem.scheduled_time.is_(None), PrintQueueItem.scheduled_time <= now))
+                .order_by(PrintQueueItem.position, PrintQueueItem.id)
+                .limit(1)
             )
-        )
-        if cas_result.rowcount == 0:
-            await db.rollback()
-            logger.info("Queue item %s: no longer pending at dispatch (cancelled or removed) — skipping", item.id)
-            return
-        item.status = "printing"
-        item.gate_acknowledged = False
-        item.started_at = now
-        await set_queue_printing(db, item.queue_id, item.id)
-        await update_queue_counters(db, item.queue_id)
-        await db.commit()
+            if first_runnable_id != item.id:
+                await db.rollback()
+                logger.info("Queue item %s: no longer first runnable pending item — skipping", item.id)
+                return
+            cas_result = await db.execute(
+                update(PrintQueueItem)
+                .where(PrintQueueItem.id == item.id)
+                .where(PrintQueueItem.status == "pending")
+                .values(
+                    status="printing",
+                    started_at=now,
+                    waiting_reason=None,
+                    waiting_reason_code=None,
+                    waiting_reason_checked_at=None,
+                )
+            )
+            if cas_result.rowcount == 0:
+                await db.rollback()
+                logger.info("Queue item %s: no longer pending at dispatch (cancelled or removed) — skipping", item.id)
+                return
+            item.status = "printing"
+            item.gate_acknowledged = False
+            item.started_at = now
+            await set_queue_printing(db, item.queue_id, item.id)
+            await update_queue_counters(db, item.queue_id)
+            await db.commit()
 
         # Parse per-item options into the shape background_dispatch expects.
         ams_mapping: list[int] | None = None

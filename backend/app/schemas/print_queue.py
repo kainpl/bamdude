@@ -22,6 +22,9 @@ UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)
 
 class PrintQueueItemCreate(FilamentRoutingChoices):
     queue_id: int  # Required - which printer's queue to add to
+    # One-time placement for this newly created block. It is intentionally not
+    # stored on the row: after insertion normal queue ordering takes over.
+    enqueue_position: Literal["end", "next"] = "end"
     # Exactly one source is required. ``source_queue_item_id`` reuses the
     # immutable managed bytes of an existing queued job; it is intentionally
     # not a file path and never makes the server read that job's original again.
@@ -68,6 +71,26 @@ class PrintQueueItemCreate(FilamentRoutingChoices):
     project_id: int | None = None
     # The order line this print is for; travels queue → dispatcher → archive.
     project_line_id: int | None = None
+
+
+class PrintQueueNextBatchCreate(BaseModel):
+    """Several ASAP queue entries inserted as one contiguous next block."""
+
+    items: list[PrintQueueItemCreate] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def _validate_next_block(self) -> "PrintQueueNextBatchCreate":
+        first = self.items[0]
+        source = (first.archive_id, first.library_file_id, first.source_queue_item_id)
+        if any(item.queue_id != first.queue_id for item in self.items):
+            raise ValueError("All next-block items must target one queue")
+        if any((item.archive_id, item.library_file_id, item.source_queue_item_id) != source for item in self.items):
+            raise ValueError("All next-block items must use one source")
+        if any(item.enqueue_position != "next" for item in self.items):
+            raise ValueError("Next-block items must use enqueue_position=next")
+        if any(item.manual_start or item.scheduled_time is not None for item in self.items):
+            raise ValueError("Run next is available only for ASAP jobs")
+        return self
 
 
 class QueueCopySourceProfile(BaseModel):
