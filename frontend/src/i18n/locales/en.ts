@@ -8827,7 +8827,13 @@ export default {
     timeframe: 'Timeframe',
     // Chart
     chartTitle: 'Projected Stock - Top 5 Materials',
+    usageChartTitle: 'Actual Usage - Top 5 Materials',
+    stockForecast: 'Stock forecast',
+    actualUsage: 'Actual usage',
     dashedLinesROP: 'Dashed lines = reorder points',
+    usageChartHint: 'Grams used per day',
+    noUsageInPeriod: 'No recorded consumption in this period.',
+    perDayUnit: '/day',
     stockLevel: 'Stock Level',
     reorderPoint: 'Reorder Point',
     safetyMargin: 'Safety Margin',

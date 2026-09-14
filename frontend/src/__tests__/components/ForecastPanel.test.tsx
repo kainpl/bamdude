@@ -335,6 +335,49 @@ describe('ForecastPanel — a renderer of server-computed rows', () => {
     await waitFor(() => expect(chartRequests.some((u) => u.searchParams.get('days') === '7')).toBe(true));
   });
 
+  it('switches the chart to the served daily usage without mixing it with projected stock', async () => {
+    setupHandlers({
+      chart: [
+        {
+          sku: { material: 'PLA', subtype: null, brand: 'eSun', color_name: 'Blue' },
+          rgba: '0000FFFF',
+          rop_g: 200,
+          usage: [['2026-08-25', 40]],
+          projection: [
+            ['2026-08-30', 400],
+            ['2026-08-31', 390],
+          ],
+        },
+      ],
+    });
+    render(<ForecastPanel />);
+
+    expect(await screen.findByText('Projected Stock - Top 5 Materials')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Actual usage' }));
+
+    expect(screen.getByText('Actual Usage - Top 5 Materials')).toBeInTheDocument();
+    expect(screen.getByText('Grams used per day')).toBeInTheDocument();
+    expect(screen.queryByText('Dashed lines = reorder points')).toBeNull();
+  });
+
+  it('states when the selected usage period has no recorded consumption', async () => {
+    setupHandlers({
+      chart: [
+        {
+          sku: { material: 'PLA', subtype: null, brand: 'eSun', color_name: 'Blue' },
+          rgba: '0000FFFF',
+          rop_g: 200,
+          usage: [],
+          projection: [['2026-08-30', 400]],
+        },
+      ],
+    });
+    render(<ForecastPanel />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Actual usage' }));
+    expect(screen.getByText('No recorded consumption in this period.')).toBeInTheDocument();
+  });
+
   it('hides the chart when the server sends no series', async () => {
     setupHandlers({ chart: [] });
     render(<ForecastPanel />);

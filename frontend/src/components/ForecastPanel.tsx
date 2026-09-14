@@ -44,6 +44,7 @@ type SortKey = 'material' | 'spools' | 'used' | 'days_left' | 'stock' | 'empty_b
 type SpoolSortKey = 'id' | 'remaining' | 'used' | 'label';
 type SortDir = 'asc' | 'desc';
 type ChartDays = 7 | 30 | 180;
+type ChartMode = 'projection' | 'usage';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -147,6 +148,13 @@ function formatDate(date: Date): string {
 
 function formatDateShort(date: Date): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/** A local calendar day matching `servedDate()` — never UTC-shift an axis label. */
+function formatIsoDay(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -636,10 +644,9 @@ const CHART_TIMEFRAMES: { label: string; value: ChartDays }[] = [
 ];
 
 /**
- * Renders the SERVED top-5 projection series verbatim — dates, gram values
- * and per-series ROP reference lines all come off the wire. The series also
- * carries a day-bucketed `usage` history (new server capability); the shipped
- * chart draws the projection only, so usage stays unrendered for parity.
+ * Renders either top-5 projection series or their served day-bucketed usage.
+ * Both modes use the same SKU cohort but keep their incompatible units apart:
+ * remaining stock vs grams consumed on each calendar day.
  */
 function UsageChart({ series: served, days: maxDays, onDaysChange }: {
   series: ForecastChartSeriesEntry[];
@@ -647,18 +654,27 @@ function UsageChart({ series: served, days: maxDays, onDaysChange }: {
   onDaysChange: (d: ChartDays) => void;
 }) {
   const { t } = useTranslation();
+  const [mode, setMode] = useState<ChartMode>('projection');
+  const isUsage = mode === 'usage';
 
   const series = served.map((s, idx) => ({
     key: skuKey(s.sku.material, s.sku.subtype, s.sku.brand, s.sku.color_name),
     label: rowLabel({ ...s.sku }),
     color: CHART_COLORS[idx % CHART_COLORS.length],
+    swatch: s.rgba ? getSwatchStyle(s.rgba) : { backgroundColor: '#4B5563' },
     rop: s.rop_g,
-    byDate: new Map(s.projection.map(([d, g]) => [d, g])),
+    byDate: new Map((isUsage ? s.usage : s.projection).map(([d, g]) => [d, g])),
   }));
 
-  // Served projections are day-consecutive from today and stop at their first
-  // zero — the sorted union of dates IS the x-axis, already trimmed.
-  const dates = [...new Set(served.flatMap((s) => s.projection.map(([d]) => d)))].sort();
+  // Projections are consecutive and stop at their first zero. Usage is sparse
+  // by contract, so build its whole served window and fill missed days with 0:
+  // joining only non-zero points would draw a false continuous burn between
+  // two prints several days apart.
+  const projectionDates = [...new Set(served.flatMap((s) => s.projection.map(([d]) => d)))].sort();
+  const usageEnd = projectionDates[0] ? servedDate(projectionDates[0]) : new Date();
+  const dates = isUsage
+    ? Array.from({ length: maxDays + 1 }, (_, i) => formatIsoDay(addDays(usageEnd, i - maxDays)))
+    : projectionDates;
   const chartData = dates.map((d) => {
     const row: Record<string, number | string> = { label: formatDateShort(servedDate(d)) };
     for (const s of series) row[s.key] = s.byDate.get(d) ?? 0;
@@ -666,13 +682,31 @@ function UsageChart({ series: served, days: maxDays, onDaysChange }: {
   });
 
   const ropLines = series.filter((s) => s.rop > 0);
+  const hasUsage = served.some((s) => s.usage.length > 0);
+  const title = isUsage ? t('forecast.usageChartTitle') : t('forecast.chartTitle');
+  const subtitle = isUsage ? t('forecast.usageChartHint') : t('forecast.dashedLinesROP');
 
   return (
     <div className="bg-bambu-dark-secondary rounded-lg overflow-hidden border border-bambu-dark-tertiary p-4">
       <div className="flex items-center gap-2 mb-4">
         <TrendingDown className="w-4 h-4 text-bambu-green" />
-        <h3 className="text-sm font-semibold text-white">{t('forecast.chartTitle')}</h3>
-        <span className="text-xs text-bambu-gray ml-1 hidden sm:inline">{t('forecast.dashedLinesROP')}</span>
+        <h3 className="text-sm font-semibold text-white">{title}</h3>
+        <span className="text-xs text-bambu-gray ml-1 hidden sm:inline">{subtitle}</span>
+        <div className="flex items-center bg-bambu-dark-tertiary rounded-lg p-0.5">
+          {(['projection', 'usage'] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={mode === value}
+              onClick={() => setMode(value)}
+              className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                mode === value ? 'bg-bambu-dark-secondary text-white shadow' : 'text-bambu-gray hover:text-white'
+              }`}
+            >
+              {value === 'projection' ? t('forecast.stockForecast') : t('forecast.actualUsage')}
+            </button>
+          ))}
+        </div>
         <div className="ml-auto flex items-center bg-bambu-dark-tertiary rounded-lg p-0.5">
           {CHART_TIMEFRAMES.map((tf) => (
             <button
@@ -689,7 +723,11 @@ function UsageChart({ series: served, days: maxDays, onDaysChange }: {
           ))}
         </div>
       </div>
-      <ResponsiveContainer width="100%" height={220}>
+      {isUsage && !hasUsage ? (
+        <div className="h-[220px] flex items-center justify-center text-sm text-bambu-gray">
+          {t('forecast.noUsageInPeriod')}
+        </div>
+      ) : <ResponsiveContainer width="100%" height={220}>
         <AreaChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
           <defs>
             {series.map((s) => (
@@ -724,10 +762,10 @@ function UsageChart({ series: served, days: maxDays, onDaysChange }: {
                     const s = series.find((x) => x.key === String(p.dataKey));
                     if (typeof p.value !== 'number') return null;
                     return (
-                      <div key={String(p.dataKey)} style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#E5E7EB', marginBottom: 2 }}>
-                        <span style={{ color: s?.color ?? '#9CA3AF', fontSize: 10 }}>●</span>
+                        <div key={String(p.dataKey)} style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#E5E7EB', marginBottom: 2 }}>
+                        <span className="inline-block w-2 h-2 rounded-sm border border-white/30" style={s?.swatch} />
                         <span>{s?.label ?? String(p.dataKey)}</span>
-                        <span style={{ color: '#9CA3AF', marginLeft: 4 }}>{p.value}g</span>
+                        <span style={{ color: '#9CA3AF', marginLeft: 4 }}>{p.value}g{isUsage ? t('forecast.perDayUnit') : ''}</span>
                       </div>
                     );
                   })}
@@ -738,7 +776,12 @@ function UsageChart({ series: served, days: maxDays, onDaysChange }: {
           <Legend
             formatter={(value) => {
               const s = series.find((x) => x.key === value);
-              return <span style={{ color: '#9CA3AF', fontSize: 11 }}>{s?.label ?? value}</span>;
+              return (
+                <span className="inline-flex items-center gap-1" style={{ color: '#9CA3AF', fontSize: 11 }}>
+                  <span className="inline-block w-2 h-2 rounded-sm border border-white/30" style={s?.swatch} />
+                  {s?.label ?? value}
+                </span>
+              );
             }}
           />
           {series.map((s) => (
@@ -753,7 +796,7 @@ function UsageChart({ series: served, days: maxDays, onDaysChange }: {
               activeDot={{ r: 3 }}
             />
           ))}
-          {ropLines.map((s) => (
+          {!isUsage && ropLines.map((s) => (
             <ReferenceLine
               key={`rop-${s.key}`}
               y={s.rop}
@@ -763,7 +806,7 @@ function UsageChart({ series: served, days: maxDays, onDaysChange }: {
             />
           ))}
         </AreaChart>
-      </ResponsiveContainer>
+      </ResponsiveContainer>}
     </div>
   );
 }

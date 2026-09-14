@@ -9,6 +9,8 @@
 
 ### Added
 
+- **See actual filament use beside the Forecast.** The chart switches between projected remaining stock and grams burned each day for the same five SKUs; the two units remain separate, and a period with no usage says so instead of drawing a misleading line.
+
 - **Put a newly added job next with one tick.** In the Schedule dialog for selected printers, choose **Run next** to place the new ASAP job before the queue's other pending work. The physical print already running is never interrupted. A multi-plate job is inserted as one contiguous block on each selected printer, and each printer's result remains independent; Auto-Queue, scheduled jobs and Queue Only deliberately keep their existing ordering.
 
 - **Copy Queue now works after the original file has gone.** A ready queued job is copied from the immutable `data/queue-sources/` object it already owns, so copying it to another compatible printer does not reopen an archive, a library record, an SMB path, or a laptop folder. The copy shares that one verified object and still asks for fresh target-printer, AMS mapping, schedule and print-option choices. Legacy rows keep their original-file behavior; a missing or broken saved source stays visible but cannot be copied.

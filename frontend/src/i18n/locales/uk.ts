@@ -8891,7 +8891,13 @@ export default {
     timeframe: 'Період',
     // Графік
     chartTitle: 'Прогноз запасів - Топ-5 матеріалів',
+    usageChartTitle: 'Фактичне споживання - Топ-5 матеріалів',
+    stockForecast: 'Прогноз запасу',
+    actualUsage: 'Фактичне споживання',
     dashedLinesROP: 'Пунктир = точки повторного замовлення',
+    usageChartHint: 'Витрачено грамів за день',
+    noUsageInPeriod: 'За цей період споживання не записано.',
+    perDayUnit: '/день',
     stockLevel: 'Рівень запасу',
     reorderPoint: 'Точка повторного замовлення',
     safetyMargin: 'Запас безпеки',
