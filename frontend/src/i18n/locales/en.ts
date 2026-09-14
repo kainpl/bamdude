@@ -5922,6 +5922,10 @@ export default {
     failedToLoad: 'Failed to load system information',
     version: 'Version',
     uptime: 'Uptime',
+    bamdudeUptime: 'BamDude uptime',
+    bamdudeStarted: 'BamDude started',
+    systemUptime: 'System uptime',
+    systemStarted: 'System started',
     hostname: 'Hostname',
     // Sections
     application: 'Application',

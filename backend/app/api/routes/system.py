@@ -529,6 +529,16 @@ async def get_system_info(
         boot_time = datetime.fromtimestamp(psutil.boot_time(), tz=timezone.utc)
     uptime_seconds = (datetime.now(timezone.utc) - boot_time).total_seconds()
 
+    # PID 1 describes the container or host. The current process is the
+    # BamDude service on native installs, so it answers the separate question
+    # "did BamDude restart?" without changing the established system fields.
+    try:
+        app_started_at = datetime.fromtimestamp(psutil.Process().create_time(), tz=timezone.utc)
+        app_uptime_seconds: float | None = max(0.0, time.time() - app_started_at.timestamp())
+    except (psutil.Error, OSError):
+        app_started_at = None
+        app_uptime_seconds = None
+
     # Python and system info
     import sys
 
@@ -547,6 +557,9 @@ async def get_system_info(
             "version": APP_VERSION,
             "base_dir": str(settings.base_dir),
             "archive_dir": str(archive_dir),
+            "started_at": app_started_at.isoformat() if app_started_at else None,
+            "uptime_seconds": app_uptime_seconds,
+            "uptime_formatted": format_uptime(app_uptime_seconds) if app_uptime_seconds is not None else None,
         },
         "database": {
             "engine": engine_name,

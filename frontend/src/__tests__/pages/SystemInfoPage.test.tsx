@@ -82,6 +82,9 @@ const mockSystemInfo = {
     version: '0.1.5b',
     base_dir: '/opt/bamdude',
     archive_dir: '/opt/bamdude/archives',
+    started_at: '2024-12-11T02:00:00+00:00',
+    uptime_seconds: 7200,
+    uptime_formatted: '2h',
   },
   database: {
     archives: 150,
@@ -186,6 +189,11 @@ describe('SystemInfoPage', () => {
     expect(screen.getByText('v0.1.5b')).toBeInTheDocument();
     expect(screen.getByText('bamdude-server')).toBeInTheDocument();
     expect(screen.getByText('1d')).toBeInTheDocument();
+    expect(screen.getByText('BamDude uptime')).toBeInTheDocument();
+    expect(screen.getByText('BamDude started')).toBeInTheDocument();
+    expect(screen.getByText('System uptime')).toBeInTheDocument();
+    expect(screen.getByText('System started')).toBeInTheDocument();
+    expect(screen.getByText('2h')).toBeInTheDocument();
   });
 
   it('displays database statistics', async () => {

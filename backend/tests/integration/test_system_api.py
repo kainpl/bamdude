@@ -71,6 +71,9 @@ class TestSystemAPI:
         assert "version" in app_info
         assert "base_dir" in app_info
         assert "archive_dir" in app_info
+        assert "started_at" in app_info
+        assert "uptime_seconds" in app_info
+        assert "uptime_formatted" in app_info
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -295,7 +298,40 @@ class TestSystemAPI:
             result["system"]["boot_time"] == _dt.fromtimestamp(1700345600.0, tz=_tz.utc).isoformat()
         )  # PID 1 value, not host boot
         # PID 1 was queried with pid=1 (not the worker pid).
-        mock_psutil.Process.assert_called_with(1)
+        mock_psutil.Process.assert_any_call(1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_app_uptime_uses_the_current_bamdude_process(self, async_client: AsyncClient):
+        """The service can restart without changing the host/container uptime."""
+        with (
+            patch("backend.app.api.routes.system.psutil") as mock_psutil,
+            patch("backend.app.api.routes.system.time.time", return_value=1700351000.0),
+        ):
+            mock_psutil.disk_usage.return_value = MagicMock(
+                total=500000000000, used=250000000000, free=250000000000, percent=50.0
+            )
+            mock_psutil.virtual_memory.return_value = MagicMock(
+                total=16000000000, available=8000000000, used=8000000000, percent=50.0
+            )
+            mock_psutil.cpu_count.return_value = 4
+            mock_psutil.cpu_percent.return_value = 25.0
+            pid1 = MagicMock()
+            pid1.create_time.return_value = 1700000000.0
+            bamdude = MagicMock()
+            bamdude.create_time.return_value = 1700345600.0
+            mock_psutil.Process.side_effect = lambda pid=None: pid1 if pid == 1 else bamdude
+
+            response = await async_client.get("/api/v1/system/info")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["system"]["boot_time"] != result["app"]["started_at"]
+        assert result["app"]["started_at"] == "2023-11-18T22:13:20+00:00"
+        assert result["app"]["uptime_seconds"] == 5400.0
+        assert result["app"]["uptime_formatted"] == "1h 30m"
+        mock_psutil.Process.assert_any_call(1)
+        mock_psutil.Process.assert_any_call()
 
     @pytest.mark.asyncio
     @pytest.mark.integration

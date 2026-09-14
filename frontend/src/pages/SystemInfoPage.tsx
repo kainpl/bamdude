@@ -272,13 +272,13 @@ export function SystemInfoPage() {
           />
           <StatCard
             icon={Clock}
-            label={t('system.uptime', 'System Uptime')}
-            value={systemInfo.system.uptime_formatted}
+            label={t('system.bamdudeUptime', 'BamDude Uptime')}
+            value={systemInfo.app.uptime_formatted || '-'}
           />
           <StatCard
-            icon={Server}
-            label={t('system.hostname', 'Hostname')}
-            value={systemInfo.system.hostname}
+            icon={Clock}
+            label={t('system.bamdudeStarted', 'BamDude Started')}
+            value={systemInfo.app.started_at ? formatDateTime(systemInfo.app.started_at, timeFormat) : '-'}
           />
         </div>
       </Section>
@@ -943,7 +943,7 @@ export function SystemInfoPage() {
 
       {/* System Details */}
       <Section title={t('system.systemDetails', 'System Details')} icon={Server}>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
           <StatCard
             icon={Server}
             label={t('system.os', 'Operating System')}
@@ -962,8 +962,18 @@ export function SystemInfoPage() {
           />
           <StatCard
             icon={Clock}
-            label={t('system.bootTime', 'Boot Time')}
+            label={t('system.systemUptime', 'System Uptime')}
+            value={systemInfo.system.uptime_formatted}
+          />
+          <StatCard
+            icon={Clock}
+            label={t('system.systemStarted', 'System Started')}
             value={formatDateTime(systemInfo.system.boot_time, timeFormat)}
+          />
+          <StatCard
+            icon={Server}
+            label={t('system.hostname', 'Hostname')}
+            value={systemInfo.system.hostname}
           />
         </div>
       </Section>

@@ -11553,6 +11553,9 @@ export interface SystemInfo {
     version: string;
     base_dir: string;
     archive_dir: string;
+    started_at: string | null;
+    uptime_seconds: number | null;
+    uptime_formatted: string | null;
   };
   database: {
     engine: 'SQLite' | 'PostgreSQL';

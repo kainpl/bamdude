@@ -148,6 +148,8 @@
 
 ### Fixed
 
+- **System Information now distinguishes BamDude from the machine.** It shows when the BamDude process started and how long it has been running alongside the host/container uptime and start time. Restarting the service resets only the BamDude values, which makes an unexpected service restart visible on native installations.
+
 - **Inventory remaining bars use readable kilograms for large totals.** The number beside a remaining-filament bar now follows the same 5 kg threshold and precision rule as the inventory weight columns in both table and card views. A grouped 19 kg row shows `19.00kg` rather than `19000g`; individual spool-scale readings remain in grams.
 
 - **The printers page keeps the sort order you chose.** Sorting by status, by current job or by "free at" reads each printer's live status, which arrives a moment after the page does — and the order was worked out once, before any of it was there, so the page opened alphabetically and only obeyed the saved order after you re-picked it by hand. The order now follows the statuses as they land, and the orders that do not need them poll nothing extra. The same order is also called the same thing everywhere now: the printers page called it "ETA (завдання)" while the monitor called it "ETA (друк)".
