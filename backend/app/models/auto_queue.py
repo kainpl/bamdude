@@ -85,15 +85,15 @@ class AutoQueueItem(Base):
     # Multi-plate: one plate = one row (plate_id is 1-indexed)
     plate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Print options — copied verbatim into print_queue on assignment
+    # Legacy submission values.  The scheduler resolves the originating
+    # operator's per-model profile when it promotes this model-agnostic row;
+    # these columns remain for API compatibility with older writers.
     bed_levelling: Mapped[bool] = mapped_column(Boolean, default=True)
     flow_cali: Mapped[bool] = mapped_column(Boolean, default=True)
     layer_inspect: Mapped[bool] = mapped_column(Boolean, default=False)
     timelapse: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Copied onto the per-printer item by the distributor — see
-    # ``PrintQueueItem.timelapse_storage``. ⚠️ The router row is model-agnostic:
-    # a choice made here may land on a machine with no internal storage at all,
-    # which is why resolving it belongs at dispatch and not here.
+    # Retained for legacy clients.  A target-model profile supplies the value
+    # used by ``PrintQueueItem.timelapse_storage`` at promotion.
     timelapse_storage: Mapped[str | None] = mapped_column(String(20), nullable=True)
     use_ams: Mapped[bool] = mapped_column(Boolean, default=True)
     mesh_mode_fast_check: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -104,8 +104,8 @@ class AutoQueueItem(Base):
     execute_swap_macros: Mapped[bool] = mapped_column(Boolean, default=True)
     swap_macro_events: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Copied onto the per-printer item by the distributor — see
-    # ``PrintQueueItem.selected_macro_ids``.
+    # Retained for legacy clients.  The profile's deselected event macros are
+    # resolved against the target model at promotion.
     selected_macro_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # The slicer's per-filament physical-nozzle array (#1780), captured by a

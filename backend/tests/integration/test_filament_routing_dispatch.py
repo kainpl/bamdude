@@ -10,9 +10,12 @@ from sqlalchemy import select
 
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
+from backend.app.models.macro import Macro
+from backend.app.models.print_options_preference import PrintOptionsPreference
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.user_filament import UserFilamentFamily
+from backend.app.schemas.print_options_preference import PrintOptionsPreferenceData
 from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
 from backend.app.services.bambu_mqtt import BambuMQTTClient
 from backend.app.services.filament_deferred import defer_claim
@@ -96,6 +99,11 @@ async def test_auto_intake_tick_and_publish_sparse_external(
     assert not item.use_ams
     assert json.loads(item.ams_mapping) == [-1, -1, 254]
     assert deserialize_policy(item.filament_routing).mode == "auto"
+    # With no operator or system profile, promotion uses the concrete queue's
+    # defaults — and a non-Swap target never inherits AutoQueue's old default.
+    assert item.bed_levelling_mode == "on" and item.flow_cali_mode == "on"
+    assert item.nozzle_offset_cali_mode == "on"
+    assert item.execute_swap_macros is False and item.selected_macro_ids is None
     guard = await preflight_item(db_session, item, printer.id)
     guard = await final_guard(guard, printer.id)
     assert printer_manager.start_print(
@@ -106,6 +114,89 @@ async def test_auto_intake_tick_and_publish_sparse_external(
     assert command["use_ams"] is False
     assert command["ams_mapping"] == [0, 0, 0]  # existing no-AMS wire convention
     assert "ams_mapping2" not in command
+
+
+@pytest.mark.parametrize(
+    ("swap_mode_enabled", "source_has_baked_swap_macros", "expect_swap_macros"),
+    [(False, False, False), (True, False, True), (True, True, False)],
+)
+async def test_auto_promotion_uses_the_target_model_profile(
+    committing_client,
+    db_session,
+    tmp_path,
+    printer_factory,
+    monkeypatch,
+    swap_mode_enabled,
+    source_has_baked_swap_macros,
+    expect_swap_macros,
+):
+    """A mixed-model auto row is configured only after its winner is known.
+
+    This is the path that makes a P1S-only light macro arrive after Auto Queue
+    promotion. Swap settings remain subject to the target printer and source
+    safety gates, rather than merely being present in the saved profile.
+    """
+    source, printer, _queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    printer.model = "P1S"
+    printer.swap_mode_enabled = swap_mode_enabled
+    source.swap_compatible = source_has_baked_swap_macros
+    await db_session.commit()
+
+    response = await committing_client.post(
+        "/api/v1/auto-queue/", json={"library_file_id": source.id, "target_model": "P1S"}
+    )
+    assert response.status_code == 200, response.text
+    auto = (await db_session.execute(select(AutoQueueItem))).scalar_one()
+    assert auto.created_by_id is not None
+
+    light = Macro(name="P1S light", event="print_started", gcode="M355 S1", printer_models='["P1S"]')
+    db_session.add(light)
+    await db_session.flush()
+    db_session.add(
+        PrintOptionsPreference(
+            user_id=auto.created_by_id,
+            printer_model="P1S",
+            options=PrintOptionsPreferenceData.model_validate(
+                {
+                    "print_options": {
+                        "bed_levelling": "auto",
+                        "flow_cali": "off",
+                        "layer_inspect": True,
+                        "timelapse": True,
+                        "timelapse_storage": "external",
+                        "mesh_mode_fast_check": False,
+                        "gcode_injection": True,
+                        "nozzle_offset_cali": "off",
+                    },
+                    "swap_macros": {"execute": True, "events": ["swap_mode_start"]},
+                    "event_macros": {"deselected_ids": []},
+                }
+            ).model_dump(),
+        )
+    )
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def session():
+        yield db_session
+
+    monkeypatch.setattr("backend.app.services.auto_queue_scheduler.async_session", session)
+    await AutoQueueScheduler().tick()
+
+    item = (await db_session.execute(select(PrintQueueItem))).scalar_one()
+    assert item.bed_levelling is False and item.bed_levelling_mode == "auto"
+    assert item.flow_cali is False and item.flow_cali_mode == "off"
+    assert item.layer_inspect is True
+    assert item.timelapse is True and item.timelapse_storage == "external"
+    assert item.mesh_mode_fast_check is False
+    assert item.gcode_injection is True
+    assert item.nozzle_offset_cali is False and item.nozzle_offset_cali_mode == "off"
+    assert json.loads(item.selected_macro_ids) == [light.id]
+    assert item.execute_swap_macros is expect_swap_macros
+    if expect_swap_macros:
+        assert json.loads(item.swap_macro_events) == ["swap_mode_start"]
+    else:
+        assert item.swap_macro_events is None
 
 
 async def test_publish_boundary_catches_change_after_final_preflight(

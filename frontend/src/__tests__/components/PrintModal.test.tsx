@@ -18,7 +18,15 @@ import type { PrintQueueItem } from '../../api/client';
 
 const mockPrinters = [
   { id: 1, name: 'X1 Carbon', model: 'X1C', ip_address: '192.168.1.100', enabled: true, is_active: true },
-  { id: 2, name: 'P1S', model: 'P1S', ip_address: '192.168.1.101', enabled: true, is_active: true },
+  {
+    id: 2,
+    name: 'P1S',
+    model: 'P1S',
+    ip_address: '192.168.1.101',
+    enabled: true,
+    is_active: true,
+    swap_mode_enabled: true,
+  },
   { id: 3, name: 'A1 Mini', model: 'A1M', ip_address: '192.168.1.102', enabled: true, is_active: true },
 ];
 
@@ -510,6 +518,42 @@ describe('PrintModal', () => {
   });
 
   describe('dispatch-mode toggle (add-to-queue)', () => {
+    it('leaves model-specific options and macros to the target profile in auto mode', async () => {
+      server.use(
+        http.get('/api/v1/macros/', () =>
+          HttpResponse.json([
+            {
+              id: 7,
+              name: 'P1S chamber light',
+              event: 'print_started',
+              printer_models: ['P1S'],
+              enabled: true,
+              swap_mode_only: false,
+            },
+          ]),
+        ),
+      );
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          libraryFileId={42}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+        />,
+      );
+
+      await user.click(await screen.findByText('P1S'));
+      expect(await screen.findByText('Print Options')).toBeInTheDocument();
+      expect(await screen.findByText('Swap Macros')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('radio', { name: /Auto-distribute/i }));
+      await waitFor(() => {
+        expect(screen.queryByText('Print Options')).not.toBeInTheDocument();
+        expect(screen.queryByText('Swap Macros')).not.toBeInTheDocument();
+      });
+    });
+
     it('shows the Specific/Auto toggle by default', () => {
       render(
         <PrintModal

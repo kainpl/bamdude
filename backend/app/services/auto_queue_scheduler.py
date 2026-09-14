@@ -47,12 +47,15 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.settings import Settings
+from backend.app.models.user import User
+from backend.app.schemas.calibration_mode import normalize_mode
 from backend.app.services import queue_rebalance
 from backend.app.services.auto_queue_eligibility import busy_printer_ids, find_eligible_printer, offline_candidates_for
 from backend.app.services.filament_intake import fail_auto_source, read_item_requirements
 from backend.app.services.filament_policy import auto_policy, serialize_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache, probe_identity
 from backend.app.services.filament_routing import resolve_filament_routing
+from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_ops import queue_scope_lock
 from backend.app.services.queue_rebalance import REBALANCE_SETTING_KEY
@@ -463,6 +466,31 @@ class AutoQueueScheduler:
                 raise ValueError("No complete filament routing plan")
             ams_mapping_json = json.dumps(plan.mapping)
 
+            # The auto queue has no one physical printer to configure.  Resolve
+            # options only now, for the printer that actually won the routing
+            # decision.  In particular this selects the originating operator's
+            # P1S event macros rather than whatever happened to be visible when
+            # the file was put into a mixed-model auto queue.
+            owner = await db.get(User, item.created_by_id) if item.created_by_id is not None else None
+            profile = await preference_options(db, owner, printer.model)
+            options = profile.for_printer_queue() if profile else {}
+
+            # A queued row must retain the full calibration mode, unlike the
+            # model-agnostic auto row which only has bool mirrors.
+            bed_mode = normalize_mode(options.get("bed_levelling", True))
+            flow_mode = normalize_mode(options.get("flow_cali", True))
+            nozzle_mode = normalize_mode(options.get("nozzle_offset_cali", True))
+
+            # Swap macros are an exception to the profile: their applicability
+            # depends on the chosen printer and the source bytes.  If source
+            # metadata has gone away, fail closed rather than double-firing a
+            # baked-in plate-change sequence.
+            source_has_baked_swap_macros = await self._source_has_baked_swap_macros(db, item)
+            execute_swap_macros = bool(options.get("execute_swap_macros", False))
+            if not printer.swap_mode_enabled or source_has_baked_swap_macros:
+                execute_swap_macros = False
+            swap_macro_events = options.get("swap_macro_events") if execute_swap_macros else None
+
             # 2. Find target queue for this printer
             queue_result = await db.execute(
                 select(PrinterQueue).where(PrinterQueue.printer_id == printer.id).with_for_update()
@@ -528,7 +556,7 @@ class AutoQueueScheduler:
                 ):
                     raise ValueError("Filament routing evidence changed while claiming assignment")
 
-                # 4. Build the new per-printer item with copied options
+                # 4. Build the per-printer item with the target model's profile.
                 new_item = PrintQueueItem(
                     queue_id=printer_queue.id,
                     archive_id=item.archive_id,
@@ -570,17 +598,23 @@ class AutoQueueScheduler:
                     ),
                     nozzle_mapping=item.nozzle_mapping,
                     plate_id=plan.resolved_plate_id,
-                    bed_levelling=item.bed_levelling,
-                    flow_cali=item.flow_cali,
-                    layer_inspect=item.layer_inspect,
-                    timelapse=item.timelapse,
-                    timelapse_storage=item.timelapse_storage,
+                    bed_levelling=bed_mode == "on",
+                    bed_levelling_mode=bed_mode,
+                    flow_cali=flow_mode == "on",
+                    flow_cali_mode=flow_mode,
+                    layer_inspect=bool(options.get("layer_inspect", False)),
+                    timelapse=bool(options.get("timelapse", False)),
+                    timelapse_storage=options.get("timelapse_storage"),
                     use_ams=plan.use_ams,
-                    mesh_mode_fast_check=item.mesh_mode_fast_check,
-                    gcode_injection=item.gcode_injection,
-                    execute_swap_macros=item.execute_swap_macros,
-                    swap_macro_events=item.swap_macro_events,
-                    selected_macro_ids=item.selected_macro_ids,
+                    nozzle_offset_cali=nozzle_mode == "on",
+                    nozzle_offset_cali_mode=nozzle_mode,
+                    mesh_mode_fast_check=bool(options.get("mesh_mode_fast_check", True)),
+                    gcode_injection=bool(options.get("gcode_injection", False)),
+                    execute_swap_macros=execute_swap_macros,
+                    swap_macro_events=json.dumps(swap_macro_events) if swap_macro_events else None,
+                    selected_macro_ids=(
+                        json.dumps(options["selected_macro_ids"]) if "selected_macro_ids" in options else None
+                    ),
                     status="pending",
                     batch_id=item.batch_id,
                     created_by_id=item.created_by_id,
@@ -604,6 +638,21 @@ class AutoQueueScheduler:
                     new_item.id,
                 )
                 return new_item
+
+    async def _source_has_baked_swap_macros(self, db: AsyncSession, item: AutoQueueItem) -> bool:
+        """Whether the source already supplies its own swap macro sequence.
+
+        A captured source can outlive its archive or library row.  Without that
+        metadata we cannot prove the source is safe to augment, so the only
+        safe answer is to suppress our swap macros.
+        """
+        if item.archive_id is not None:
+            value = await db.scalar(select(PrintArchive.swap_compatible).where(PrintArchive.id == item.archive_id))
+            return bool(value) if value is not None else True
+        if item.library_file_id is not None:
+            value = await db.scalar(select(LibraryFile.swap_compatible).where(LibraryFile.id == item.library_file_id))
+            return bool(value) if value is not None else True
+        return True
 
     async def _mark_jumped_peers(self, db: AsyncSession, started_item: AutoQueueItem) -> None:
         """SJF starvation guard — mark peers that were skipped.

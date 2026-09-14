@@ -1479,16 +1479,6 @@ export function PrintModal({
           allow_base_material_match: autoModeOptions.allow_base_material_match,
           feed_policy: autoModeOptions.feed_policy ?? 'auto',
           filament_overrides: autoOverrides,
-          bed_levelling: printOptions.bed_levelling,
-          flow_cali: printOptions.flow_cali,
-          layer_inspect: printOptions.layer_inspect,
-          timelapse: printOptions.timelapse,
-          timelapse_storage: printOptions.timelapse_storage,
-          mesh_mode_fast_check: printOptions.mesh_mode_fast_check,
-          execute_swap_macros: !swapCompatible && swapMacros.execute && swapMacros.events.length > 0,
-          swap_macro_events:
-            !swapCompatible && swapMacros.execute && swapMacros.events.length > 0 ? swapMacros.events : null,
-          selected_macro_ids: selectedMacroIds,
           scheduled_time:
             scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
               ? new Date(scheduleOptions.scheduledTime).toISOString()
@@ -1535,11 +1525,6 @@ export function PrintModal({
           filament_overrides: autoOverrides,
           plate_ids: platesToQueue.length > 1 ? platesToQueue : undefined,
           plate_id: platesToQueue.length === 1 ? platesToQueue[0] : null,
-          ...printOptions,
-          execute_swap_macros: !swapCompatible && swapMacros.execute && swapMacros.events.length > 0,
-          swap_macro_events:
-            !swapCompatible && swapMacros.execute && swapMacros.events.length > 0 ? swapMacros.events : null,
-          selected_macro_ids: selectedMacroIds,
           scheduled_time:
             scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
               ? new Date(scheduleOptions.scheduledTime).toISOString()
@@ -1558,7 +1543,6 @@ export function PrintModal({
             : undefined,
         };
         await api.addToAutoQueue(payload);
-        persistPreference();
         reportAnswer();
         const queuedCount = platesToQueue.length > 0
           ? platesToQueue.reduce((sum, index) => sum + quantityForPlate(index), 0)
@@ -2730,33 +2714,27 @@ export function PrintModal({
               );
             })}
 
-            {/* Print options */}
-            {(mode === 'reprint' || effectivePrinterCount > 0 || isAutoMode) && (
+            {/* Auto Queue has no concrete model yet. Its promotion applies the
+                target printer model's saved profile, so these controls would
+                imply one answer can safely describe a mixed-model fleet. */}
+            {!isAutoMode && (mode === 'reprint' || effectivePrinterCount > 0) && (
               <PrintOptionsPanel options={printOptions} onChange={(o) => { touchedOptionsRef.current = true; setPrintOptions(o); }} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} autoCaps={autoCaps} timelapseBlockers={timelapseBlockers} selectedPrinterCount={selectedPrinters.length} timelapseLowSpace={timelapseLowSpace} canChooseTimelapseStorage={canChooseTimelapseStorage} onFreeTimelapseSpace={(id) => freeTimelapseSpace.mutate(id)} freeingTimelapseSpace={freeTimelapseSpace.isPending} />
             )}
 
-            {/* Swap-mode macros — only relevant when at least one selected
-                printer has swap mode enabled AND the source file does not
-                already carry swap macros baked in by third-party tooling
-                (swap_compatible flag). In auto mode show whenever the file
-                isn't swap-compatible (the scheduler will route to a
-                swap-enabled printer if one is needed). */}
-            {!swapCompatible && (
-              isAutoMode
-                ? (printers ?? []).some(p => p.swap_mode_enabled)
-                : selectedPrinters.some(id => printers?.find(p => p.id === id)?.swap_mode_enabled)
-            ) && (
+            {/* Swap-mode macros apply only to a known, selected printer. */}
+            {!isAutoMode && !swapCompatible && selectedPrinters.some(id => printers?.find(p => p.id === id)?.swap_mode_enabled) && (
               <SwapMacrosPanel options={swapMacros} onChange={(o) => { touchedOptionsRef.current = true; setSwapMacros(o); }} />
             )}
 
-            {/* Which of the other macros run for this print. Outside the swap
-                condition above on purpose — these have nothing to do with swap
-                mode, and the panel hides itself when nothing applies. */}
-            <EventMacrosPanel
-              macros={applicableMacros}
-              selectedIds={selectedMacroIds}
-              onChange={setSelectedMacroIds}
-            />
+            {/* Event macros also come from the selected printer model's profile
+                when Auto Queue promotes the item. */}
+            {!isAutoMode && (
+              <EventMacrosPanel
+                macros={applicableMacros}
+                selectedIds={selectedMacroIds}
+                onChange={setSelectedMacroIds}
+              />
+            )}
 
 
             {/* Quantity (batch) - not for edit mode */}

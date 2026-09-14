@@ -156,6 +156,8 @@
 
 ### Fixed
 
+- **AutoQueue now applies the print profile of the printer it actually chose.** The auto-distribute dialog no longer offers one misleading set of print options, event macros and Swap macros to a mixed-model fleet. When a job reaches a real printer queue, it receives the creating operator's saved profile for that printer model (or that model's system/default profile), including its ordinary event macros — so a P1S light macro runs after AutoQueue promotion. Swap macros still run only on a Swap-enabled target and never on a file that already contains them.
+
 - **Forecast stays current after another part of the farm changes inventory.** An inventory edit, archive or usage record received through the live connection now refreshes the forecast table, its chart and its logistics data together. The Inventory page also stops showing spool-list filters, grouping, bulk editing, label printing or CSV import/export on Forecast or filament History: those views respectively show SKU projections and usage records, so an Active/Archived spool control there could not honestly affect what was on screen. CSV export from Table or Cards now includes every spool matching the current filters, rather than only a page or the whole active inventory.
 
 - **A long-running completion can no longer undo a newer queue pause.** Queue release now performs its ``printing → idle`` transition atomically in the database. If an operator paused or errored the queue while FTP, MQTT, a macro, or preheat was awaited, the stale dispatch session leaves that newer state and its active-item pointer intact.

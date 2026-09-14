@@ -52,10 +52,9 @@ class AutoQueueItemCreate(BaseModel):
     # keeps its meaning.
     plate_quantities: dict[int, int] | None = None
 
-    # Print options (copied to print_queue on assignment). Tri-state accepted
-    # (off/auto/on, or legacy bool), but auto-queue has no *_mode column, so
-    # 'auto' degrades to its bool mirror on assignment — auto only survives the
-    # primary PrintModal queue path (SAFE spec §2.1/§3.5).
+    # Legacy print-option inputs. The router is model-agnostic, so promotion
+    # resolves the owner's saved profile (or model fallback) for the selected
+    # printer instead. Kept accepted for non-modal API clients.
     bed_levelling: CalibrationMode = "on"
     flow_cali: CalibrationMode = "on"
     layer_inspect: bool = False

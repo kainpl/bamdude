@@ -14,6 +14,14 @@ The number of copies does not change these choices. Different channels always ne
 
 Material names use the shared case-insensitive compatibility table; at present only `PA-CF`, `PA12-CF`, and `PAHT-CF` are one interchangeable group. Exact colour preference remains ahead of “Drain the emptiest spool first”. That farm setting is on by default and ranks only otherwise-equivalent automatic sources: inventory/Spoolman tracked AMS grams first, then firmware-only remaining percentages, with unknown values last. It never overrides material, nozzle, source policy, a physical pin, or a strict-colour requirement, and is skipped when AMS Filament Backup is known to be off.
 
+## Print profiles and macros
+
+An AutoQueue dialog intentionally contains routing and scheduling choices only. It does not show print-option, event-macro, or Swap-macro controls: before a printer is selected, one set of values would be misleading on a mixed-model farm.
+
+When the router promotes a job into a concrete printer queue, it resolves **Saved print profiles** for that printer's model and for the operator who created the AutoQueue item. This supplies calibration modes, recording and G-code options, and the enabled event macros for that model. If the operator has no profile, the system profile for that same model is used; if neither exists, ordinary queue defaults apply. A P1S-only light macro, for example, is selected when the job lands on a P1S, not when it was initially added to AutoQueue.
+
+Swap macros are also read from that target model profile, but run only when that specific printer has Swap mode enabled and the source file does not already contain baked-in swap macros. A normal printer, a source with baked-in macros, or missing source metadata always suppresses them to avoid a double plate-change sequence.
+
 ## Files and waiting
 
 A whole-file choice is accepted when the file contains one unambiguous printable plate; its actual plate number is retained. A multi-plate file needs an explicit selection. Missing G-code, incomplete filament usage, or missing nozzle bindings produce a source error before a new job is added. Project quantities and recipe whole-file selections are preserved; queued jobs receive the resolved printable plate.
