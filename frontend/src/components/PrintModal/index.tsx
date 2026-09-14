@@ -975,7 +975,7 @@ export function PrintModal({
             manualMappingsByPlate[plateId] ?? {},
             ftsActive,
             printerStatus?.tray_now,
-            settings?.prefer_lowest_filament ?? false,
+            settings?.prefer_lowest_filament ?? true,
           ),
         ),
       );

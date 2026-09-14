@@ -115,7 +115,7 @@ class AutoQueueScheduler:
         """Single iteration: assign pending auto items to eligible printers."""
         async with async_session() as db:
             sjf = await _get_bool_setting(db, SJF_SETTING_KEY)
-            prefer_lowest = await _get_bool_setting(db, PREFER_LOWEST_SETTING_KEY)
+            prefer_lowest = await _get_bool_setting(db, PREFER_LOWEST_SETTING_KEY, default=True)
 
             # 1. Busy set — see ``busy_printer_ids`` for why "any pending row" is part of it.
             busy_printers = await busy_printer_ids(db)

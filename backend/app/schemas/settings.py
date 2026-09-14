@@ -208,7 +208,7 @@ class AppSettings(BaseModel):
         default=False, description="Automatically dry AMS filament between queued prints"
     )
     prefer_lowest_filament: bool = Field(
-        default=False,
+        default=True,
         description="When multiple AMS trays match, prefer the one with lowest remaining filament",
     )
     queue_shortest_first: bool = Field(

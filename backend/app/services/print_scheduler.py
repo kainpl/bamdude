@@ -821,7 +821,7 @@ class PrintScheduler:
             return None
 
         # Check if user prefers lowest remaining filament when multiple spools match
-        prefer_lowest = await self._get_bool_setting(db, "prefer_lowest_filament")
+        prefer_lowest = await self._get_bool_setting(db, "prefer_lowest_filament", default=True)
 
         # AMS Filament Backup gates prefer-lowest (#1766): with backup OFF the printer won't
         # switch between same-material spools mid-print, so spreading a job across the lowest

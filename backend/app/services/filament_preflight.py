@@ -111,7 +111,7 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
     from backend.app.services.print_scheduler import scheduler
 
     if prefer_lowest is None:
-        prefer_lowest = await scheduler._get_bool_setting(db, "prefer_lowest_filament")
+        prefer_lowest = await scheduler._get_bool_setting(db, "prefer_lowest_filament", default=True)
     snapshot = printer_manager.get_feed_snapshot(printer_id)
     source_priority = None
     if prefer_lowest and snapshot.backup_enabled is not False and policy.mode == "auto":

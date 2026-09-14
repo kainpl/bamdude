@@ -326,7 +326,7 @@ export function useMultiPrinterFilamentMapping(
   // whole Print -> pick printer -> Add to queue path. Reads the same cached
   // ['settings'] query the modal already issues, so this costs no extra fetch.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
-  const preferLowest = settings?.prefer_lowest_filament ?? false;
+  const preferLowest = settings?.prefer_lowest_filament ?? true;
 
   // Fetch printer status for all selected printers in parallel
   const statusQueries = useQueries({

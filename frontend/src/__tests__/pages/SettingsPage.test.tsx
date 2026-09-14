@@ -528,17 +528,17 @@ describe('SettingsPage', () => {
       await screen.findByText(LABEL);
     };
 
-    it('renders the toggle off when the server has never set it', async () => {
+    it('renders the toggle on when the server has never set it', async () => {
       const user = userEvent.setup();
       render(<SettingsPage />);
       await switchToFilamentTab(user);
 
-      // mockSettings omits the key entirely — the `?? false` fallback is what
+      // mockSettings omits the key entirely — the `?? true` fallback is what
       // keeps an old server's response from rendering an indeterminate box.
-      expect(toggleFor(LABEL)).not.toBeChecked();
+      expect(toggleFor(LABEL)).toBeChecked();
     });
 
-    it('sends prefer_lowest_filament: true once switched on', async () => {
+    it('sends prefer_lowest_filament: false once switched off', async () => {
       let receivedBody: Record<string, unknown> | null = null;
       server.use(
         // The page saves with PUT; the shared beforeEach only mocks PATCH, so
@@ -559,13 +559,13 @@ describe('SettingsPage', () => {
       // Assert the local flip first: if the click were swallowed (missing
       // settings:update, say) the PUT wait below would time out with nothing
       // to say about why.
-      await waitFor(() => expect(toggleFor(LABEL)).toBeChecked());
+      await waitFor(() => expect(toggleFor(LABEL)).not.toBeChecked());
 
       // The save is debounced by 500ms.
       await waitFor(
         () => {
           expect(receivedBody).not.toBeNull();
-          expect(receivedBody!.prefer_lowest_filament).toBe(true);
+          expect(receivedBody!.prefer_lowest_filament).toBe(false);
         },
         { timeout: 5000 }
       );

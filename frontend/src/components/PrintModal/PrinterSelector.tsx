@@ -85,7 +85,7 @@ function InlineMappingEditor({
   // mapping this dialog pinned, so "prefer lowest remaining filament" has to be
   // applied at pin time or not at all.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
-  const preferLowest = settings?.prefer_lowest_filament ?? false;
+  const preferLowest = settings?.prefer_lowest_filament ?? true;
 
   // Compute current slot assignments
   const slotAssignments = filamentReqs.map((req) => {

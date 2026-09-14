@@ -38,6 +38,17 @@ class TestSettingsAPI:
         result = response.json()
         # Verify some default values
         assert isinstance(result["currency"], str)
+        assert result["prefer_lowest_filament"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_prefer_lowest_filament_can_be_disabled(self, async_client: AsyncClient):
+        """The enabled default must not overwrite an operator's explicit opt-out."""
+        response = await async_client.put("/api/v1/settings/", json={"prefer_lowest_filament": False})
+
+        assert response.status_code == 200
+        assert response.json()["prefer_lowest_filament"] is False
+        assert (await async_client.get("/api/v1/settings/")).json()["prefer_lowest_filament"] is False
 
     # ========================================================================
     # Update settings

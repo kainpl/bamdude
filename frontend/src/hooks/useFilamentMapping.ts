@@ -483,7 +483,7 @@ export function useFilamentMapping(
   // it is honoured nowhere on this path. Reads the ['settings'] query the modal
   // already has cached.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
-  const preferLowest = settings?.prefer_lowest_filament ?? false;
+  const preferLowest = settings?.prefer_lowest_filament ?? true;
 
   // FTS routes any AMS slot to any extruder, so per-nozzle slot restriction
   // doesn't apply when it's installed (upstream #1162).

@@ -1259,7 +1259,7 @@ export function SettingsPage() {
       (baseline.slow_query_ms ?? 0) !== (localSettings.slow_query_ms ?? 0) ||
       (baseline.slow_request_ms ?? 0) !== (localSettings.slow_request_ms ?? 0) ||
       baseline.disable_filament_warnings !== localSettings.disable_filament_warnings ||
-      (baseline.prefer_lowest_filament ?? false) !== (localSettings.prefer_lowest_filament ?? false) ||
+      (baseline.prefer_lowest_filament ?? true) !== (localSettings.prefer_lowest_filament ?? true) ||
       (baseline.runout_zero_point_enabled ?? true) !== (localSettings.runout_zero_point_enabled ?? true) ||
       (baseline.ams_sync_bidirectional ?? true) !== (localSettings.ams_sync_bidirectional ?? true) ||
       (baseline.runout_purge_grams ?? 0) !== (localSettings.runout_purge_grams ?? 0) ||
@@ -5546,7 +5546,7 @@ export function SettingsPage() {
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={localSettings.prefer_lowest_filament ?? false}
+                      checked={localSettings.prefer_lowest_filament ?? true}
                       onChange={(e) => updateSetting('prefer_lowest_filament', e.target.checked)}
                       className="sr-only peer"
                     />
