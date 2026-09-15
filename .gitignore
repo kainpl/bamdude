@@ -82,13 +82,6 @@ site/
 # some dev setups drop into a repo-local bin/ — never part of the source tree.
 bin/
 
-# Internal planning docs (specs, plans, design exploration). Local workflow
-# artifacts; not part of the public repo.
-#
-# ⚠️ Scoped to the subfolder on purpose. This used to be a bare `docs/`, which
-# meant the repo could never carry a public docs directory at all — the first
-# place a contributor looks.
-docs/superpowers/
 graphify-out/
 
 # Subagent-driven-development scratch (ledger, briefs, review packages).
