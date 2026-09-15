@@ -16,6 +16,7 @@
 
 export type SettingsSearchTab =
   | 'general'
+  | 'slicing'
   | 'printing'
   | 'filament'
   | 'notifications'
