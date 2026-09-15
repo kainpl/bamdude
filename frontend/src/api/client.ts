@@ -968,6 +968,8 @@ export interface PrinterStatus {
   developer_mode: boolean | null;
   // AMS Filament Backup (auto_switch_filament): true = on, false = off, null = unknown (#1766)
   ams_auto_switch_filament: boolean | null;
+  // Firmware-reported ``filam_bak`` groups: extruder id -> global AMS tray ids.
+  ams_backup_groups?: Record<string, number[][]> | null;
   // Currently executing macro name (null = no macro running)
   macro_executing: string | null;
   // Queue plate-clear gate (#961): true means the printer is waiting on user

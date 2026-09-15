@@ -1700,6 +1700,16 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     # cover only three of them, and not the second auxiliary fan at all. Without
     # this the whole tile updated only when something unrelated moved.
     airduct_key = tuple((pid, (part or {}).get("state")) for pid, part in sorted((state.airduct_parts or {}).items()))
+    # Preserve the member order inside every firmware group (it is the printer's
+    # reported rotation order), while sorting extruder keys for stable dedup.
+    ams_backup_key = (
+        tuple(
+            (extruder, tuple(tuple(group) for group in groups))
+            for extruder, groups in sorted(state.ams_backup_groups.items())
+        )
+        if state.ams_backup_groups is not None
+        else None
+    )
     status_key = (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:"
         f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:"
@@ -1725,7 +1735,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         f"{state.store_to_sdcard}:{state.timelapse}:{state.ipcam}:"
         f"{state.firmware_version}:{state.mc_print_sub_stage}:"
         f"{state.firmware_consistency_request}:{state.firmware_force_upgrade}:"
-        f"{ams_dry_key}:{ams_tray_key}:{state.ams_auto_switch_filament}:"
+        f"{ams_dry_key}:{ams_tray_key}:{state.ams_auto_switch_filament}:{ams_backup_key}:"
         # The bounds the temperature inputs are drawn with. They arrive late and
         # rarely — a reported range, or the mains-voltage bit that lowers the bed
         # ceiling — and land in no other field here, so without them the browser

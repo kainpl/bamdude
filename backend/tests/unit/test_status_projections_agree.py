@@ -73,6 +73,7 @@ LIVE_FIELDS = [
     "mc_print_sub_stage",
     "firmware_consistency_request",
     "firmware_force_upgrade",
+    "ams_backup_groups",
 ]
 
 # Carried to the browser, but deliberately not allowed to CAUSE a broadcast.
@@ -103,7 +104,11 @@ class TestAChangeCanTriggerABroadcast:
         # airduct_fans is represented by a signature over the parts it is built
         # from — the list itself is derived, and hashing the derived objects
         # would rebuild them on every push.
-        needle = "airduct_key" if field == "airduct_fans" else field
+        key_aliases = {
+            "airduct_fans": "airduct_key",
+            "ams_backup_groups": "ams_backup_key",
+        }
+        needle = key_aliases.get(field, field)
         assert needle in _STATUS_KEY, f"{field} does not appear in status_key — changing it alone broadcasts nothing"
 
 

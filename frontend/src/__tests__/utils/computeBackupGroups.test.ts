@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeBackupGroups, type AmsUnitLike } from '../../utils/amsHelpers';
+import { computeBackupGroups, resolveBackupGroups, type AmsUnitLike } from '../../utils/amsHelpers';
 
 const tray = (id: number, type: string | null, preset: string | null, color: string | null) => ({
   id,
@@ -99,5 +99,44 @@ describe('computeBackupGroups', () => {
   it('returns nothing when there are no AMS units', () => {
     expect(computeBackupGroups([], undefined, false)).toEqual([]);
     expect(computeBackupGroups(undefined, undefined, false)).toEqual([]);
+  });
+
+  it('uses firmware-reported membership instead of the local material estimate', () => {
+    const { groups, usesFallback } = resolveBackupGroups(
+      [unit(0, [
+        tray(0, 'PLA', 'GFA00', 'FF0000'),
+        tray(1, 'PETG', 'GFG00', '00FF00'),
+        tray(2, 'ABS', 'GFB00', '0000FF'),
+        tray(3, 'TPU', 'GFU00', 'FFFFFF'),
+      ])],
+      undefined,
+      false,
+      { '0': [[0, 1, 2, 3]] },
+    );
+    expect(usesFallback).toBe(false);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].members.map((member) => member.globalTrayId)).toEqual([0, 1, 2, 3]);
+  });
+
+  it('honours an explicit empty firmware group list', () => {
+    const { groups, usesFallback } = resolveBackupGroups(
+      [unit(0, [tray(0, 'PLA', 'GFA00', 'FF0000'), tray(1, 'PLA', 'GFA00', 'FF0000')])],
+      undefined,
+      false,
+      { '0': [] },
+    );
+    expect(usesFallback).toBe(false);
+    expect(groups).toEqual([]);
+  });
+
+  it('labels the local identity calculation as a fallback when firmware is absent', () => {
+    const { groups, usesFallback } = resolveBackupGroups(
+      [unit(0, [tray(0, 'PLA', 'GFA00', 'FF0000'), tray(1, 'PLA', 'GFA00', 'FF0000')])],
+      undefined,
+      false,
+      null,
+    );
+    expect(usesFallback).toBe(true);
+    expect(groups[0].members.map((member) => member.globalTrayId)).toEqual([0, 1]);
   });
 });

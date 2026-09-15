@@ -26,7 +26,7 @@ import { useTranslation } from 'react-i18next';
 import { Modal } from './Modal';
 import { Toggle } from './Toggle';
 import {
-  computeBackupGroups,
+  resolveBackupGroups,
   normalizeColor,
   type AmsUnitLike,
   type BackupGroup,
@@ -37,6 +37,7 @@ interface AmsBackupModalProps {
   state: boolean | null;
   amsUnits: AmsUnitLike[] | undefined;
   amsExtruderMap: Record<string, number> | undefined;
+  firmwareGroups: Record<string, number[][]> | null | undefined;
   isDualNozzle: boolean;
   canToggle: boolean;
   pending: boolean;
@@ -187,6 +188,7 @@ export function AmsBackupModal({
   state,
   amsUnits,
   amsExtruderMap,
+  firmwareGroups,
   isDualNozzle,
   canToggle,
   pending,
@@ -204,24 +206,27 @@ export function AmsBackupModal({
   const textPrimary = 'var(--text-primary)';
   const textSecondary = 'var(--text-secondary)';
 
-  // Effective dual-nozzle detection: only split per extruder if the map
-  // actually carries 2 distinct values across the AMS units we have data
-  // for. Empty / single-value maps collapse to a single section to avoid
-  // misleading badges.
+  // An explicit left-side AMS mapping or a firmware group for extruder 1 is
+  // enough to label a one-AMS X2D correctly; waiting for a second AMS would
+  // silently render that configuration as a single-nozzle printer.
   const effectiveDualNozzle = (() => {
     if (!isDualNozzle) return false;
-    if (!amsExtruderMap) return false;
     const distinctValues = new Set<number>();
     for (const ams of amsUnits || []) {
-      const raw = amsExtruderMap[String(ams.id)];
+      const raw = amsExtruderMap?.[String(ams.id)];
       if (raw === undefined) continue;
       distinctValues.add(Number(raw));
-      if (distinctValues.size > 1) return true;
     }
-    return false;
+    const reportedLeft = Object.keys(firmwareGroups || {}).some((extruder) => Number(extruder) === 1);
+    return distinctValues.size > 1 || distinctValues.has(1) || reportedLeft;
   })();
 
-  const groups = computeBackupGroups(amsUnits, amsExtruderMap, effectiveDualNozzle);
+  const { groups, usesFallback } = resolveBackupGroups(
+    amsUnits,
+    amsExtruderMap,
+    isDualNozzle,
+    firmwareGroups,
+  );
   const trayCountByAms = new Map<number, number>(
     (amsUnits || []).map((u) => [u.id, u.tray.length]),
   );
@@ -258,6 +263,11 @@ export function AmsBackupModal({
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-6">
+        <p className="text-xs text-center mb-5" style={{ color: textSecondary }}>
+          {usesFallback
+            ? t('printers.amsBackup.firmwareEstimate')
+            : t('printers.amsBackup.firmwareReported')}
+        </p>
         {pairs.length === 0 ? (
           <p
             className="text-sm text-center py-8"

@@ -1447,6 +1447,7 @@ async def _build_printer_status(
         firmware_version=state.firmware_version,
         developer_mode=state.developer_mode if state else None,
         ams_auto_switch_filament=state.ams_auto_switch_filament if state else None,
+        ams_backup_groups=state.ams_backup_groups if state else None,
         macro_executing=state.macro_executing if state else None,
         awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
         repeat_available=(

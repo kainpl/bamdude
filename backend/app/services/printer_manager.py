@@ -2106,6 +2106,9 @@ def printer_state_to_dict(
         ),
         # AMS Filament Backup (auto_switch_filament): True/False/None (#1766)
         "ams_auto_switch_filament": state.ams_auto_switch_filament,
+        # Firmware-reported backup groups (``filam_bak``); None is distinct
+        # from an explicit empty group list.
+        "ams_backup_groups": state.ams_backup_groups,
         # Per-AMS extruder map: {ams_id: extruder_id} where 0=right, 1=left
         "ams_extruder_map": ams_extruder_map,
         # WiFi signal strength

@@ -476,6 +476,8 @@ export default {
       modalTitle: 'AMS Filament Backup',
       modalHelp: 'When the printing slot runs out, the printer switches to another slot holding the same filament — same Bambu profile and same colour — and keeps going. It cannot switch across extruders.',
       modalNoPairs: 'No slots currently back each other up. Two slots pair only when they carry the same Bambu filament profile in the same colour.',
+      firmwareReported: 'Groups reported by the printer firmware.',
+      firmwareEstimate: 'This printer did not report backup groups; these are estimated from the loaded slots.',
       stateOn: 'Backup is on',
       stateOff: 'Backup is off',
       stateUnknown: 'This printer does not report the backup setting',

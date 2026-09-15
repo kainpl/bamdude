@@ -297,6 +297,35 @@ def a2l_lite_wire_ids(ams_id: int, tray_id: int) -> tuple[int, int, int] | None:
     )
 
 
+def decode_filam_bak_groups(value: object) -> list[list[int]] | None:
+    """Decode firmware ``filam_bak`` masks into global tray ids.
+
+    ``None`` means the field was unusable or absent and callers must preserve
+    their last known value. An explicit empty list is meaningful: the printer
+    has reported that this extruder currently has no backup group.
+    """
+    if not isinstance(value, list):
+        return None
+
+    groups: list[list[int]] = []
+    for raw_mask in value:
+        if isinstance(raw_mask, bool):
+            continue
+        try:
+            mask = int(raw_mask, 0) if isinstance(raw_mask, str) else int(raw_mask)
+        except (TypeError, ValueError):
+            continue
+        if mask < 0:
+            continue
+
+        members = [bit for bit in range(16) if mask & (1 << bit)]
+        members.extend(128 + bit for bit in range(8) if mask & (1 << (16 + bit)))
+        members.extend(24 + bit for bit in range(4) if mask & (1 << (24 + bit)))
+        if members:
+            groups.append(members)
+    return groups
+
+
 # --- H2C nozzle-rack dispatch mapping ---------------------------------------
 #
 # Physical nozzle IDs the H2C reports for its six rack slots, verified on
@@ -1250,6 +1279,10 @@ class PrinterState:
     ams_mapping: list = field(default_factory=list)
     # Per-AMS extruder map: {ams_id: extruder_id} where 0=right/main, 1=left/deputy
     ams_extruder_map: dict = field(default_factory=dict)
+    # Firmware-reported fallback groups, keyed by extruder id. ``None`` means
+    # this firmware has not reported ``filam_bak``; ``{0: []}`` is an explicit
+    # report that the primary extruder has no fallback group.
+    ams_backup_groups: dict[int, list[list[int]]] | None = None
     # ---------- AMS system-level user settings (BS "AMS Settings" dialog) ----------
     # Each flag mirrors the corresponding push field from print.ams (insert_flag,
     # power_on_flag, calibrate_remain_flag) and the cfg bitfield (auto_switch
@@ -2807,6 +2840,15 @@ class BambuMQTTClient:
                     self._handle_ams_data(print_data["ams"])
                 except Exception as e:
                     logger.error("[%s] Error handling AMS data from print: %s", self.serial_number, e)
+
+            # ``filam_bak`` is the firmware's authoritative grouping for AMS
+            # filament backup. It is a list of bitmasks: regular AMS slots are
+            # bits 0..15, AMS HT slots 16..23 (global ids 128..135), and A2L
+            # slots 24..27. Older single-nozzle firmware puts it at print level.
+            if "filam_bak" in print_data:
+                _groups = decode_filam_bak_groups(print_data["filam_bak"])
+                if _groups is not None:
+                    self.state.ams_backup_groups = {0: _groups}
 
             # AMS Settings dialog echoes: the printer reflects the most recently
             # accepted ``print_option`` values directly under the ``print`` key.
@@ -5806,18 +5848,27 @@ class BambuMQTTClient:
         # reads the same bit for the same reason.
         _ext = (data.get("device") or {}).get("extruder") if isinstance(data.get("device"), dict) else None
         if isinstance(_ext, dict) and isinstance(_ext.get("info"), list):
+            _backup_groups = dict(self.state.ams_backup_groups or {})
+            _backup_groups_changed = False
             for _idx, _entry in enumerate(_ext["info"]):
-                if not isinstance(_entry, dict) or "info" not in _entry:
-                    continue
-                try:
-                    _info_int = int(_entry["info"])
-                except (TypeError, ValueError):
+                if not isinstance(_entry, dict):
                     continue
                 _ext_id = _entry.get("id")
                 try:
                     _ext_id = int(_ext_id)
                 except (TypeError, ValueError):
                     _ext_id = _idx
+                if "filam_bak" in _entry:
+                    _groups = decode_filam_bak_groups(_entry["filam_bak"])
+                    if _groups is not None:
+                        _backup_groups[_ext_id] = _groups
+                        _backup_groups_changed = True
+                if "info" not in _entry:
+                    continue
+                try:
+                    _info_int = int(_entry["info"])
+                except (TypeError, ValueError):
+                    continue
                 self.state.ext_has_filament[_ext_id] = bool((_info_int >> 1) & 0x1)
                 # Bit 3 of the same word — BS ``m_has_nozzle``, which gates the
                 # nozzle temperature control. ⚠️ Absence is NOT "no hotend": BS
@@ -5825,6 +5876,8 @@ class BambuMQTTClient:
                 # series does not support nozzle detection"), so only a machine
                 # that reports the word at all may ever answer False here.
                 self.state.ext_has_nozzle[_ext_id] = bool((_info_int >> 3) & 0x1)
+            if _backup_groups_changed:
+                self.state.ams_backup_groups = _backup_groups
 
         _ams_fw = _upgrade_state.get("mc_for_ams_firmware") if isinstance(_upgrade_state, dict) else None
         if isinstance(_ams_fw, dict):

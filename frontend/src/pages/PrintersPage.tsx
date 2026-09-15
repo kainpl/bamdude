@@ -7006,6 +7006,7 @@ function PrinterCard({
         state={status?.ams_auto_switch_filament ?? null}
         amsUnits={status?.ams}
         amsExtruderMap={cachedAmsExtruderMap.current ?? status?.ams_extruder_map}
+        firmwareGroups={status?.ams_backup_groups}
         isDualNozzle={printer.nozzle_count === 2 || status?.temperatures?.nozzle_2 !== undefined}
         canToggle={hasPermission('printers:update')}
         pending={amsBackupToggleMutation.isPending}

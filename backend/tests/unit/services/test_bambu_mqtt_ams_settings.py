@@ -164,6 +164,61 @@ def test_parser_reads_air_print_detect_echo(mqtt_client):
     assert mqtt_client.state.ams_air_print_detect is False
 
 
+# ---------- push parser: firmware filam_bak groups ----------
+
+
+def test_parser_reads_single_nozzle_filam_bak_groups(mqtt_client):
+    # Bit 0..3 are the four regular AMS slots on unit 0.
+    msg = {"print": {"filam_bak": [15], "command": "push_status"}}
+    mqtt_client._on_message(None, None, _FakeMQTTMsg(msg))
+    assert mqtt_client.state.ams_backup_groups == {0: [[0, 1, 2, 3]]}
+
+
+def test_parser_keeps_explicit_empty_filam_bak_groups(mqtt_client):
+    msg = {"print": {"filam_bak": [], "command": "push_status"}}
+    mqtt_client._on_message(None, None, _FakeMQTTMsg(msg))
+    assert mqtt_client.state.ams_backup_groups == {0: []}
+
+
+def test_parser_decodes_ams_lite_filam_bak_bits(mqtt_client):
+    # A1-series mixed AMS Lite uses bits 24..27, normalised to global ids 24..27.
+    msg = {"print": {"filam_bak": [(1 << 24) | (1 << 27)], "command": "push_status"}}
+    mqtt_client._on_message(None, None, _FakeMQTTMsg(msg))
+    assert mqtt_client.state.ams_backup_groups == {0: [[24, 27]]}
+
+
+def test_parser_reads_dual_nozzle_filam_bak_groups(mqtt_client):
+    msg = {
+        "print": {
+            "device": {
+                "extruder": {
+                    "info": [
+                        {"id": 0, "filam_bak": [3]},
+                        # Bits 16 and 17 resolve to AMS HT global ids 128, 129.
+                        {"id": 1, "filam_bak": [3 << 16]},
+                    ]
+                }
+            },
+            "command": "push_status",
+        }
+    }
+    mqtt_client._on_message(None, None, _FakeMQTTMsg(msg))
+    assert mqtt_client.state.ams_backup_groups == {0: [[0, 1]], 1: [[128, 129]]}
+
+
+def test_parser_ignores_malformed_filam_bak_without_erasing_last_value(mqtt_client):
+    mqtt_client.state.ams_backup_groups = {0: [[0, 1]]}
+    msg = {"print": {"filam_bak": "not-a-list", "command": "push_status"}}
+    mqtt_client._on_message(None, None, _FakeMQTTMsg(msg))
+    assert mqtt_client.state.ams_backup_groups == {0: [[0, 1]]}
+
+
+def test_parser_keeps_last_filam_bak_groups_on_partial_push(mqtt_client):
+    mqtt_client.state.ams_backup_groups = {0: [[0, 1]]}
+    mqtt_client._on_message(None, None, _FakeMQTTMsg({"print": {"gcode_state": "IDLE"}}))
+    assert mqtt_client.state.ams_backup_groups == {0: [[0, 1]]}
+
+
 # ---------- push parser: print.cfg hex bitfield (newer firmware) ----------
 
 

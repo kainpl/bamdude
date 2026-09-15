@@ -9,6 +9,8 @@
 
 ### Added
 
+- **AMS backup rings now follow the printer's own decision.** The printer card's AMS Backup dialog reads the firmware-reported fallback groups, so four trays the printer treats as one refill group appear as one ring even when their local metadata differs. The result is live over the normal status connection and remains separated by nozzle on dual-nozzle machines. Older firmware that does not report groups keeps the previous local estimate, now labelled as an estimate instead of a fact. This view remains informational: it does not alter AutoQueue, routing, refill settings or filament accounting.
+
 - **Library search now starts across the whole library.** Searching while a folder is open no longer hides matches elsewhere — managed storage, nested folders, root files and linked external folders are all included. When a specific subtree is what you need, choose **This folder and subfolders** beside the search box; that choice is visible and lasts only for the current search. The search field also has a one-click clear control.
 
 - **A compact library folder tree by default.** The sidebar initially shows only the folders directly under Internal and External; open a folder to reveal its children. A link to a deeply nested folder still opens precisely the ancestor chain needed to show it. Existing people who explicitly chose **Expand folders by default** keep that preference.
