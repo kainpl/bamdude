@@ -2458,6 +2458,7 @@ export default {
     // Tab names
     tabs: {
       general: 'General',
+      slicing: 'Slicing',
       printing: 'Printing',
       smartPlugs: 'Smart Plugs',
       notifications: 'Notifications',

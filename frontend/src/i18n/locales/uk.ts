@@ -2456,6 +2456,7 @@ export default {
     // Tab names
     tabs: {
       general: 'Загальне',
+      slicing: 'Слайсинг',
       printing: 'Друк',
       smartPlugs: 'Розумні розетки',
       notifications: 'Сповіщення',

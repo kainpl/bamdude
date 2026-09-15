@@ -7,6 +7,10 @@
 - **Frontend dependencies bumped on Dependabot security advisories:** `@tiptap/core` 3.19 → 3.31, `fflate` 0.8.2 → 0.8.3, `@humanfs/node` 0.16.7 → 0.16.8 (transitive; the rich-text editor and the 3MF reader keep working as before).
 - **A second round of frontend dependency bumps:** `vitest` 4.1.9 → 4.1.11 with its coverage plugin and mocker (a path-traversal advisory in the test mocker — development only), `js-yaml` 4.3.1 → 4.3.2 (a CPU-exhaustion advisory), `@tiptap/core` 3.31.0 → 3.31.3 and `baseline-browser-mapping` 2.11.21 → 2.11.22. `npm audit` reports nothing; the test suite passes on the new runner.
 
+### Changed
+
+- **Slicer settings have their own Settings tab.** **Slicing** now sits between General and Printing, keeping the slice engine, preferred desktop slicer, server-side sidecar controls, URLs, health checks, timeout and saved slice settings together. Existing values and the ordinary Save flow are unchanged; Saved Print Profiles stay under Printing because they configure a submitted print rather than a slicer.
+
 ### Added
 
 - **AMS backup rings now follow the printer's own decision.** The printer card's AMS Backup dialog reads the firmware-reported fallback groups, so four trays the printer treats as one refill group appear as one ring even when their local metadata differs. The result is live over the normal status connection and remains separated by nozzle on dual-nozzle machines. Older firmware that does not report groups keeps the previous local estimate, now labelled as an estimate instead of a fact. This view remains informational: it does not alter AutoQueue, routing, refill settings or filament accounting.

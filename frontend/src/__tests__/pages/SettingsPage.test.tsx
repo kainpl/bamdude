@@ -127,23 +127,6 @@ describe('SettingsPage', () => {
       });
     });
 
-    it('shows preferred slicer setting', async () => {
-      render(<SettingsPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Preferred Slicer')).toBeInTheDocument();
-      });
-    });
-
-    it('shows slicer dropdown with both options', async () => {
-      render(<SettingsPage />);
-
-      await waitFor(() => {
-        const slicerSelect = screen.getAllByDisplayValue('Bambu Studio');
-        expect(slicerSelect.length).toBeGreaterThan(0);
-      });
-    });
-
     it('shows appearance section', async () => {
       render(<SettingsPage />);
 
@@ -160,6 +143,47 @@ describe('SettingsPage', () => {
         expect(screen.getByText('Check for updates')).toBeInTheDocument();
         expect(screen.getByText('Check printer firmware')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('slicing settings', () => {
+    it('keeps slicer configuration out of General and opens it from Slicing', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await screen.findByText('Date Format');
+      expect(screen.queryByText('Preferred Slicer')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Slicing' }));
+
+      expect(await screen.findByText('Preferred Slicer')).toBeInTheDocument();
+      expect(screen.getByText('Open in Slicer')).toBeInTheDocument();
+      expect(screen.getByText('Enable server-side slicing')).toBeInTheDocument();
+      expect(screen.getAllByDisplayValue('Bambu Studio')).toHaveLength(1);
+
+      // Tab selection is intentionally reflected in the URL. Restore the
+      // default so this test does not leak ?tab=slicing into the next one.
+      await user.click(screen.getByRole('button', { name: 'General' }));
+      await screen.findByText('Date Format');
+    });
+
+    it('shows saved slice settings on Slicing, not Printing', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, use_slicer_api: true })),
+        http.get('/api/v1/slicer-pipelines/', () => HttpResponse.json({ pipelines: [] })),
+        http.get('/api/v1/slicer/presets', () => HttpResponse.json({ printers: [], processes: [], filaments: [] })),
+      );
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await user.click(await screen.findByRole('button', { name: 'Slicing' }));
+      expect(await screen.findByText('Slice settings')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Printing' }));
+      expect(screen.queryByText('Slice settings')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'General' }));
+      await screen.findByText('Date Format');
     });
   });
 

@@ -71,7 +71,7 @@ import { CloudLinkSettings } from '../components/settings/CloudLinkSettings';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
 import { adoptUntouchedServerChanges } from '../utils/settingsReconcile';
 
-const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
+const validTabs = ['general', 'slicing', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
 type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
 /** ⚠️ Everything about labels lives under `marking` — the designs AND the
@@ -84,6 +84,10 @@ type FilamentSubTab = 'general' | 'marking';
 // for the design note. Adding a narrower `anchor="card-xyz"` entry + id on the
 // target Card is the upgrade path when keyword searches miss something.
 registerSettingsSearch({ labelKey: 'settings.tabs.general', tab: 'general', keywords: 'general language date time format printer model cards appearance theme dark light archive auto save thumbnails camera external video stream currency cost kwh price file manager disk updates version firmware beta sidebar links navigation', anchor: 'tab-general' });
+registerSettingsSearch({ labelKey: 'settings.tabs.slicing', tab: 'slicing', keywords: 'slicing slicer sidecar orcaslicer bambu studio url api preset profile slice engine open desktop stall timeout', anchor: 'tab-slicing' });
+registerSettingsSearch({ labelKey: 'settings.preferredSlicer', tab: 'slicing', keywords: 'preferred slicer orcaslicer bambu studio desktop open in slicer slice engine', anchor: 'card-slicer-configuration' });
+registerSettingsSearch({ labelKey: 'settings.useSlicerApi', tab: 'slicing', keywords: 'server side slicing sidecar api url health timeout orcaslicer bambu studio', anchor: 'card-slicer-configuration' });
+registerSettingsSearch({ labelKey: 'settings.pipelines.title', tab: 'slicing', keywords: 'saved slice settings pipeline preset printer process filament bed', anchor: 'card-slicer-pipelines' });
 registerSettingsSearch({ labelKey: 'settings.tabs.printing', tab: 'printing', keywords: 'printing bed leveling flow calibration vibration first layer timelapse staggered batch delay start group plate clear confirm auto queue gcode injection farmloop swapmod autoclear drying presets temperature humidity ams ftp retry upload', anchor: 'tab-printing' });
 registerSettingsSearch({ labelKey: 'printOptionsPrefs.cardTitle', labelFallback: 'Saved Print Profiles', tab: 'printing', keywords: 'print options profile preferences saved per user model toggles bed leveling flow timelapse mesh swap macros copy', anchor: 'card-print-options-prefs' });
 registerSettingsSearch({ labelKey: 'labelEditor.title', tab: 'filament', subTab: 'marking', keywords: 'label template design editor sticker niimbot barcode qr code placeholder print printer bridge cassette', anchor: 'card-label-designs' });
@@ -143,6 +147,7 @@ const getStorageColor = (key: string, index: number) =>
 // while the internal tab ids use kebab / shortened forms.
 const TAB_I18N_KEY: Record<TabType, string> = {
   general: 'general',
+  slicing: 'slicing',
   printing: 'printing',
   filament: 'filament',
   notifications: 'notifications',
@@ -1592,6 +1597,17 @@ export function SettingsPage() {
             {t('settings.tabs.general')}
           </button>
           <button
+            onClick={() => handleTabChange('slicing')}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              activeTab === 'slicing'
+                ? 'text-bambu-green border-bambu-green'
+                : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+            }`}
+          >
+            <ScanEye className="w-4 h-4" />
+            {t('settings.tabs.slicing')}
+          </button>
+          <button
             onClick={() => handleTabChange('printing')}
             className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
               activeTab === 'printing'
@@ -1866,204 +1882,6 @@ export function SettingsPage() {
                 <p className="text-xs text-bambu-gray mt-1">
                   {t('settings.defaultPrinterDescription')}
                 </p>
-              </div>
-              {/* Where slicing runs. Rendered only once more than one engine is
-                  actually usable — while the sidecar is the only one, a picker
-                  with a single entry is noise, and an entry the user can see
-                  but never select reads as a broken feature. Adding a browser
-                  engine to lib/sliceEngines.ts is what makes this appear. */}
-              {hasEngineChoice() && (
-                <div>
-                  <label className="block text-sm text-bambu-gray mb-1">{t('settings.sliceEngine')}</label>
-                  <div className="relative">
-                    <select
-                      value={resolveEngine(localSettings.slice_engine)}
-                      onChange={(e) => updateSetting('slice_engine', e.target.value as SliceEngineId)}
-                      className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                    >
-                      {availableEngines().map((engine) => (
-                        <option key={engine.id} value={engine.id}>
-                          {t(engine.labelKey)}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                  </div>
-                  <p className="text-xs text-bambu-gray mt-1">
-                    {t(
-                      availableEngines().find((e) => e.id === resolveEngine(localSettings.slice_engine))
-                        ?.descriptionKey ?? 'settings.sliceEngineSidecarHint',
-                    )}
-                  </p>
-                </div>
-              )}
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.preferredSlicer')}
-                </label>
-                <div className="relative">
-                  <select
-                    value={localSettings.preferred_slicer ?? 'bambu_studio'}
-                    onChange={(e) => updateSetting('preferred_slicer', e.target.value as 'bambu_studio' | 'orcaslicer')}
-                    className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                  >
-                    <option value="bambu_studio">{t('settings.slicerBambuStudio')}</option>
-                    <option value="orcaslicer">{t('settings.slicerOrcaSlicer')}</option>
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                </div>
-                <p className="text-xs text-bambu-gray mt-1">
-                  {t('settings.preferredSlicerDescription')}
-                </p>
-                {/* Upstream OrcaSlicer 2.3.2 / 2.4.0-dev have two known
-                    CLI bugs that block slicing many Bambu-authored 3MFs:
-                    a SIGSEGV on painted multi-extruder 3MFs (#12426) and
-                    a strict range-check on sentinel parameter values
-                    BambuStudio writes by default. Until the upstream
-                    fixes land, surface a clear warning when a user has
-                    OrcaSlicer selected so they know what to expect; we
-                    don't auto-switch them in case they're testing. */}
-                {(localSettings.preferred_slicer ?? 'bambu_studio') === 'orcaslicer' && (
-                  <div
-                    role="alert"
-                    className="text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700/40 rounded p-2 mt-2"
-                  >
-                    {t(
-                      'settings.orcaslicerKnownIssuesWarning',
-                      'OrcaSlicer 2.3.2 / 2.4.0-dev have known CLI bugs that block slicing many Bambu-authored 3MFs — see upstream issues #12426 (segfault on painted multi-extruder files) and #13386 (parameter-range strict-validation reject). Bambu Studio is recommended until the upstream fixes land.',
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Desktop "Open in Slicer" override (#1329). Independent of the
-                  API slicer so a user can slice via the Bambu Studio sidecar
-                  but open files locally in OrcaSlicer, or vice versa. */}
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.openInSlicerLabel')}
-                </label>
-                <div className="relative">
-                  <select
-                    value={localSettings.open_in_slicer ?? ''}
-                    onChange={(e) =>
-                      updateSetting(
-                        'open_in_slicer',
-                        e.target.value === '' ? null : (e.target.value as 'bambu_studio' | 'orcaslicer'),
-                      )
-                    }
-                    className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                  >
-                    <option value="">{t('settings.openInSlicerInherit')}</option>
-                    <option value="bambu_studio">{t('settings.slicerBambuStudio')}</option>
-                    <option value="orcaslicer">{t('settings.slicerOrcaSlicer')}</option>
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                </div>
-                <p className="text-xs text-bambu-gray mt-1">
-                  {t('settings.openInSlicerDescription')}
-                </p>
-              </div>
-
-              {/* Server-side slicing sidecar (B.4 — Phase 2 of 0.5.x cycle).
-                  When the toggle is on, BamDude routes /slice requests to
-                  the running OrcaSlicer / BambuStudio HTTP sidecar so the
-                  user can slice 3MF/STL/STEP straight from the UI. The
-                  per-engine URL fields override the env defaults; both must
-                  be reachable from the BamDude container. */}
-              <div className="border-t border-bambu-dark-tertiary/40 pt-4 space-y-4">
-                <label className="flex items-start gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.use_slicer_api ?? false}
-                    onChange={(e) => updateSetting('use_slicer_api', e.target.checked)}
-                    className="accent-bambu-green mt-0.5 w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                  />
-                  <span className="flex-1">
-                    <span className="block text-sm text-white">
-                      {t('settings.useSlicerApi', 'Enable server-side slicing')}
-                    </span>
-                    <span className="block text-xs text-bambu-gray mt-0.5">
-                      {t(
-                        'settings.useSlicerApiDescription',
-                        'Surface the Slice action on STL/3MF/STEP files. Requires a running OrcaSlicer or BambuStudio HTTP sidecar.',
-                      )}
-                    </span>
-                  </span>
-                </label>
-                {(localSettings.use_slicer_api ?? false) && (
-                  <>
-                    <p className="text-xs text-bambu-gray/80 italic">
-                      {t(
-                        'settings.bothSlicersHint',
-                        'When both URLs are set and reachable, the Slice modal lets you pick which slicer to use per file.',
-                      )}
-                    </p>
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="block text-sm text-bambu-gray">
-                          {t('settings.orcaslicerApiUrl', 'OrcaSlicer API URL')}
-                        </label>
-                        <SlicerHealthIndicator slicer="orcaslicer" variant="inline" />
-                      </div>
-                      <input
-                        type="text"
-                        value={localSettings.orcaslicer_api_url ?? ''}
-                        onChange={(e) => updateSetting('orcaslicer_api_url', e.target.value)}
-                        placeholder="http://localhost:3003"
-                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                      />
-                      <p className="text-xs text-bambu-gray mt-1">
-                        {t(
-                          'settings.orcaslicerApiUrlDescription',
-                          'Empty falls back to the SLICER_API_URL env default.',
-                        )}
-                      </p>
-                    </div>
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="block text-sm text-bambu-gray">
-                          {t('settings.bambuStudioApiUrl', 'BambuStudio API URL')}
-                        </label>
-                        <SlicerHealthIndicator slicer="bambu_studio" variant="inline" />
-                      </div>
-                      <input
-                        type="text"
-                        value={localSettings.bambu_studio_api_url ?? ''}
-                        onChange={(e) => updateSetting('bambu_studio_api_url', e.target.value)}
-                        placeholder="http://localhost:3001"
-                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                      />
-                      <p className="text-xs text-bambu-gray mt-1">
-                        {t(
-                          'settings.bambuStudioApiUrlDescription',
-                          'Empty falls back to the BAMBU_STUDIO_API_URL env default.',
-                        )}
-                      </p>
-                    </div>
-                    <div>
-                      <label className="block text-sm text-bambu-gray mb-1">
-                        {t('settings.slicerStallTimeout', 'Slicer stall timeout (minutes)')}
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={240}
-                        value={localSettings.slicer_stall_timeout_minutes ?? 15}
-                        onChange={(e) =>
-                          updateSetting('slicer_stall_timeout_minutes', Number(e.target.value))
-                        }
-                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                      />
-                      <p className="text-xs text-bambu-gray mt-1">
-                        {t(
-                          'settings.slicerStallTimeoutDescription',
-                          'How long to keep waiting with no progress from the sidecar. This is not a limit on how long a model may take — a heavy model that keeps reporting runs to completion. On a sidecar that does not report progress it applies to total slicing time instead.',
-                        )}
-                      </p>
-                    </div>
-                  </>
-                )}
               </div>
             </CardContent>
           </Card>
@@ -3105,6 +2923,223 @@ export function SettingsPage() {
       )}
       {/* ══════ /GENERAL TAB ══════ */}
 
+      {/* ══════ SLICING TAB ══════ */}
+      {activeTab === 'slicing' && localSettings && (
+        <div id="tab-slicing" className="space-y-4">
+          <Card id="card-slicer-configuration">
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                <ScanEye className="w-5 h-5" />
+                {t('settings.tabs.slicing')}
+              </h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Where slicing runs. Rendered only once more than one engine is
+                  actually usable — while the sidecar is the only one, a picker
+                  with a single entry is noise, and an entry the user can see
+                  but never select reads as a broken feature. Adding a browser
+                  engine to lib/sliceEngines.ts is what makes this appear. */}
+              {hasEngineChoice() && (
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('settings.sliceEngine')}</label>
+                  <div className="relative">
+                    <select
+                      value={resolveEngine(localSettings.slice_engine)}
+                      onChange={(e) => updateSetting('slice_engine', e.target.value as SliceEngineId)}
+                      className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
+                    >
+                      {availableEngines().map((engine) => (
+                        <option key={engine.id} value={engine.id}>
+                          {t(engine.labelKey)}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                  </div>
+                  <p className="text-xs text-bambu-gray mt-1">
+                    {t(
+                      availableEngines().find((e) => e.id === resolveEngine(localSettings.slice_engine))
+                        ?.descriptionKey ?? 'settings.sliceEngineSidecarHint',
+                    )}
+                  </p>
+                </div>
+              )}
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">
+                  {t('settings.preferredSlicer')}
+                </label>
+                <div className="relative">
+                  <select
+                    value={localSettings.preferred_slicer ?? 'bambu_studio'}
+                    onChange={(e) => updateSetting('preferred_slicer', e.target.value as 'bambu_studio' | 'orcaslicer')}
+                    className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
+                  >
+                    <option value="bambu_studio">{t('settings.slicerBambuStudio')}</option>
+                    <option value="orcaslicer">{t('settings.slicerOrcaSlicer')}</option>
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                </div>
+                <p className="text-xs text-bambu-gray mt-1">
+                  {t('settings.preferredSlicerDescription')}
+                </p>
+                {/* Upstream OrcaSlicer 2.3.2 / 2.4.0-dev have two known
+                    CLI bugs that block slicing many Bambu-authored 3MFs:
+                    a SIGSEGV on painted multi-extruder 3MFs (#12426) and
+                    a strict range-check on sentinel parameter values
+                    BambuStudio writes by default. Until the upstream
+                    fixes land, surface a clear warning when a user has
+                    OrcaSlicer selected so they know what to expect; we
+                    don't auto-switch them in case they're testing. */}
+                {(localSettings.preferred_slicer ?? 'bambu_studio') === 'orcaslicer' && (
+                  <div
+                    role="alert"
+                    className="text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700/40 rounded p-2 mt-2"
+                  >
+                    {t(
+                      'settings.orcaslicerKnownIssuesWarning',
+                      'OrcaSlicer 2.3.2 / 2.4.0-dev have known CLI bugs that block slicing many Bambu-authored 3MFs — see upstream issues #12426 (segfault on painted multi-extruder files) and #13386 (parameter-range strict-validation reject). Bambu Studio is recommended until the upstream fixes land.',
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Desktop "Open in Slicer" override. Independent of the API
+                  slicer so a user can slice via one sidecar but open files
+                  locally in the other application. */}
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">
+                  {t('settings.openInSlicerLabel')}
+                </label>
+                <div className="relative">
+                  <select
+                    value={localSettings.open_in_slicer ?? ''}
+                    onChange={(e) =>
+                      updateSetting(
+                        'open_in_slicer',
+                        e.target.value === '' ? null : (e.target.value as 'bambu_studio' | 'orcaslicer'),
+                      )
+                    }
+                    className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
+                  >
+                    <option value="">{t('settings.openInSlicerInherit')}</option>
+                    <option value="bambu_studio">{t('settings.slicerBambuStudio')}</option>
+                    <option value="orcaslicer">{t('settings.slicerOrcaSlicer')}</option>
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                </div>
+                <p className="text-xs text-bambu-gray mt-1">
+                  {t('settings.openInSlicerDescription')}
+                </p>
+              </div>
+
+              {/* Server-side slicing sidecar. The per-engine URL fields override
+                  env defaults; both must be reachable from BamDude. */}
+              <div className="border-t border-bambu-dark-tertiary/40 pt-4 space-y-4">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.use_slicer_api ?? false}
+                    onChange={(e) => updateSetting('use_slicer_api', e.target.checked)}
+                    className="accent-bambu-green mt-0.5 w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                  />
+                  <span className="flex-1">
+                    <span className="block text-sm text-white">
+                      {t('settings.useSlicerApi', 'Enable server-side slicing')}
+                    </span>
+                    <span className="block text-xs text-bambu-gray mt-0.5">
+                      {t(
+                        'settings.useSlicerApiDescription',
+                        'Surface the Slice action on STL/3MF/STEP files. Requires a running OrcaSlicer or BambuStudio HTTP sidecar.',
+                      )}
+                    </span>
+                  </span>
+                </label>
+                {(localSettings.use_slicer_api ?? false) && (
+                  <>
+                    <p className="text-xs text-bambu-gray/80 italic">
+                      {t(
+                        'settings.bothSlicersHint',
+                        'When both URLs are set and reachable, the Slice modal lets you pick which slicer to use per file.',
+                      )}
+                    </p>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-sm text-bambu-gray">
+                          {t('settings.orcaslicerApiUrl', 'OrcaSlicer API URL')}
+                        </label>
+                        <SlicerHealthIndicator slicer="orcaslicer" variant="inline" />
+                      </div>
+                      <input
+                        type="text"
+                        value={localSettings.orcaslicer_api_url ?? ''}
+                        onChange={(e) => updateSetting('orcaslicer_api_url', e.target.value)}
+                        placeholder="http://localhost:3003"
+                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      />
+                      <p className="text-xs text-bambu-gray mt-1">
+                        {t(
+                          'settings.orcaslicerApiUrlDescription',
+                          'Empty falls back to the SLICER_API_URL env default.',
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-sm text-bambu-gray">
+                          {t('settings.bambuStudioApiUrl', 'BambuStudio API URL')}
+                        </label>
+                        <SlicerHealthIndicator slicer="bambu_studio" variant="inline" />
+                      </div>
+                      <input
+                        type="text"
+                        value={localSettings.bambu_studio_api_url ?? ''}
+                        onChange={(e) => updateSetting('bambu_studio_api_url', e.target.value)}
+                        placeholder="http://localhost:3001"
+                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      />
+                      <p className="text-xs text-bambu-gray mt-1">
+                        {t(
+                          'settings.bambuStudioApiUrlDescription',
+                          'Empty falls back to the BAMBU_STUDIO_API_URL env default.',
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">
+                        {t('settings.slicerStallTimeout', 'Slicer stall timeout (minutes)')}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={240}
+                        value={localSettings.slicer_stall_timeout_minutes ?? 15}
+                        onChange={(e) =>
+                          updateSetting('slicer_stall_timeout_minutes', Number(e.target.value))
+                        }
+                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      />
+                      <p className="text-xs text-bambu-gray mt-1">
+                        {t(
+                          'settings.slicerStallTimeoutDescription',
+                          'How long to keep waiting with no progress from the sidecar. This is not a limit on how long a model may take — a heavy model that keeps reporting runs to completion. On a sidecar that does not report progress it applies to total slicing time instead.',
+                        )}
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {(localSettings.use_slicer_api ?? false) && (
+            <div id="card-slicer-pipelines">
+              <SlicerPipelinesPanel />
+            </div>
+          )}
+        </div>
+      )}
+      {/* ══════ /SLICING TAB ══════ */}
+
       {/* ══════ PRINTING TAB ══════ */}
       {activeTab === 'printing' && localSettings && (
       <div className="flex flex-col lg:flex-row gap-4">
@@ -3333,14 +3368,6 @@ export function SettingsPage() {
               </CardContent>
             </Card>
           )}
-
-          {/* Saved slice settings — the named printer/process/filament/bed
-              bundles you save from the Slice dialog. Sits where the old Slicer
-              Bundles card was: this is pre-slice profile state the operator
-              manages outside the slice flow, and it is far too small a thing
-              to justify a settings tab of its own. Hidden without the sidecar,
-              since there is nothing to slice with. */}
-          {(localSettings.use_slicer_api ?? false) && <SlicerPipelinesPanel />}
 
           {/* Cost Tracking */}
           <Card>
