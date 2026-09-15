@@ -252,9 +252,8 @@ A **new** permission must also:
 - Colour names come from the `color_catalog` table through `utils/colors.ts`;
   don't add a hardcoded colour table.
 - Tailwind 4, React 19, strict TypeScript. ESLint is the style gate.
-- The styling idiom — semantic tokens over raw colours, the type ramp, which
-  parts come from the component library — is written down in
-  [`docs/ui/README.md`](docs/ui/README.md). A new screen follows it.
+- The styling idiom uses semantic tokens over raw colours, the established type
+  ramp and the component library. A new screen follows it.
 
 ### Don't commit `static/`
 
@@ -371,9 +370,8 @@ The bot is a full aiogram 3.x interface, not just a notification channel.
   docs PR there — or at least a paragraph in your PR description that the
   maintainer can lift into one.
 - The README's feature list is for headline features only.
-- Engineering documents live in `docs/`: the [release guide](docs/release-guide.md)
-  (how a version is cut and why the CI gate is the run on `dev`) and the
-  [UI conventions](docs/ui/README.md).
+- Engineering contracts live in the code, tests and `CLAUDE.md`; release
+  operations are maintainer-only.
 - In code, prefer a comment that says *why* over one that says *what*. If you
   tried an approach and rejected it, leave one line saying so next to the code
   that won — the repository only keeps the winner otherwise.

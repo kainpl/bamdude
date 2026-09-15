@@ -184,7 +184,7 @@ Each `mNNN_*.py` has `version`, `name`, `async def upgrade(conn)` (DDL), optiona
 - `main` — production; `kainpl/bamdude:latest` + `ghcr.io/kainpl/bamdude:latest` track it.
 - `dev` — active dev; CI on push+PR. A push to `dev` publishes no image (the `Docker Build` CI job only builds and probes one); `:dev` moves with every pre-release tag.
 - `feature/*` — short-lived; long-running upstream-port branches track `dev` via periodic merges.
-- **Channels** (the whole procedure: `docs/release-guide.md`):
+- **Channels**:
   - **Stable** `vX.Y.Z` on main → `:latest` + `:X.Y.Z`. `gh release create` after dev→main FF. **Docker publishes itself** — pushing a `v*` tag fires `docker-publish-tag.yml` (GHCR + Docker Hub, both arches), `windows-installer.yml` and `publish-code-graph.yml`; never also run the script.
   - **Beta** `vX.Y.ZbN` on dev → `:X.Y.ZbN` + `:dev` (no `:latest`).
   - **`:dev`** = the latest beta, moved by that tag (since 2026-08-18); `docker-publish-dev.yml` is a manual `workflow_dispatch` for the raw `dev` head only.
