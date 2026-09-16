@@ -44,3 +44,30 @@ async def test_translucent_canonical_color_is_refused(async_client, printer_fact
         json={"ams_policies": {"backup_compatibility": {"canonical_color_rgba": "00000080"}}},
     )
     assert resp.status_code == 422
+
+
+async def test_bulk_apply_refuses_while_printing_and_previews_without_mqtt(async_client, printer_factory):
+    from unittest.mock import AsyncMock, patch
+
+    printer = await printer_factory(ams_policies={"backup_compatibility": {"normalize_color": True}})
+    preview_outcome = {"dry_run": True, "rows": [], "applied": 0, "skipped": 0, "would_apply": 0}
+    with (
+        patch("backend.app.api.routes.printers.printer_manager") as pm,
+        patch("backend.app.api.routes.printers.bulk_apply", new=AsyncMock(return_value=preview_outcome)),
+    ):
+        pm.is_print_active.return_value = True
+        pm.get_client.return_value = None
+        url = f"/api/v1/printers/{printer.id}/ams-policies/backup-compatibility/apply"
+        preview = await async_client.post(url, json={"dry_run": True})
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["dry_run"] is True
+        busy = await async_client.post(url, json={"dry_run": False})
+        assert busy.status_code == 409 and busy.json()["detail"]
+        # Idle but unreachable: an apply has nothing to publish through.
+        pm.is_print_active.return_value = False
+        offline = await async_client.post(url, json={"dry_run": False})
+        assert offline.status_code == 400 and offline.json()["detail"]
+        missing = await async_client.post(
+            "/api/v1/printers/999999/ams-policies/backup-compatibility/apply", json={"dry_run": True}
+        )
+        assert missing.status_code == 404

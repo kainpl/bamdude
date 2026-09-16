@@ -35,6 +35,7 @@ from backend.app.schemas.printer import (
     AmsLabelBody,
     AMSTray,
     AMSUnit,
+    BackupCompatibilityApplyRequest,
     DefectsWriteIn,
     DiagnosticRequest,
     FilaSwitchResponse,
@@ -56,6 +57,7 @@ from backend.app.schemas.printer import (
 )
 from backend.app.schemas.timelapse import TimelapseStorage
 from backend.app.services import archive_parts
+from backend.app.services.ams_backup_compatibility_apply import bulk_apply
 from backend.app.services.archive import find_archive_for_sd_file, parse_plates_from_3mf, sd_stem
 from backend.app.services.archive_defects import DefectsResult, DefectsWrite, record_defects
 from backend.app.services.bambu_ftp import (
@@ -2907,6 +2909,35 @@ async def configure_ams_slot(
         "success": True,
         "message": f"Configured AMS {ams_id} tray {tray_id} with {tray_sub_brands}",
     }
+
+
+@router.post("/{printer_id}/ams-policies/backup-compatibility/apply")
+async def apply_backup_compatibility(
+    printer_id: int,
+    body: BackupCompatibilityApplyRequest,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-advertise every assigned, loaded, non-RFID slot under the printer's backup-compatibility policy.
+
+    ``dry_run`` (default) answers the preview without touching MQTT. A real apply
+    is refused while a print runs — the firmware ignores slot changes mid-print
+    unpredictably — and needs a connected client.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+    client = printer_manager.get_client(printer_id)
+    if not body.dry_run:
+        if printer_manager.is_print_active(printer_id):
+            raise HTTPException(status_code=409, detail="Printer is printing")
+        if client is None or not client.state.connected:
+            raise HTTPException(status_code=400, detail="Printer not connected")
+    outcome = await bulk_apply(db, printer, client, dry_run=body.dry_run)
+    if not body.dry_run and client is not None:
+        client.request_status_update()  # nudge a pushall so read-back verification and the overlay see the echo soon
+    return outcome
 
 
 @router.post("/{printer_id}/ams/{ams_id}/tray/{tray_id}/reset")

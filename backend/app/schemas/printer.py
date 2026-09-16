@@ -46,6 +46,12 @@ class AmsPoliciesPatch(BaseModel):
     backup_compatibility: BackupCompatibilityPolicy | None = None
 
 
+class BackupCompatibilityApplyRequest(BaseModel):
+    """Bulk re-advertise. Preview by default — a real apply must be asked for."""
+
+    dry_run: bool = True
+
+
 class PrinterBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     serial_number: str = Field(..., min_length=1, max_length=50)
