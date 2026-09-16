@@ -55,6 +55,52 @@ describe('groupTraysForBackup', () => {
     expect(groups.get(1)?.key).toBe('x|GFA00|#00FF00');
   });
 
+  it('⚠️ pools slots the printer was TOLD are identical, whatever the real spools are', () => {
+    // Backup-compatibility emulation: two manually assigned spools are
+    // advertised under one canonical profile precisely so the firmware pools
+    // them for auto-refill. `buildLoadedFilaments` reports the real spool in
+    // `color`/`trayInfoIdx` — keying on that would split the pot the printer
+    // actually feeds from and warn about a plate it can finish by swapping.
+    const groups = groupTraysForBackup(
+      [
+        tray({
+          globalTrayId: 0,
+          trayInfoIdx: 'GFG00',
+          color: '#FF0000',
+          advertisedTrayInfoIdx: 'GFG99',
+          advertisedColor: '#000000',
+        }),
+        tray({
+          globalTrayId: 1,
+          trayInfoIdx: 'GFG00',
+          color: '#0000FF',
+          advertisedTrayInfoIdx: 'GFG99',
+          advertisedColor: '#000000',
+        }),
+      ],
+      true
+    );
+
+    expect(groups.get(0)).toBe(groups.get(1));
+    expect(groups.get(0)?.key).toBe('x|GFG99|#000000');
+    expect(groups.get(0)?.trayIds).toEqual([0, 1]);
+  });
+
+  it('keeps reading the live fields when nothing was advertised', () => {
+    // No `advertised*` on the tray ⇒ the spool IS what the printer sees, so the
+    // key is unchanged from before the overlay existed.
+    const groups = groupTraysForBackup(
+      [
+        tray({ globalTrayId: 0, trayInfoIdx: 'GFG00', color: '#FF0000' }),
+        tray({ globalTrayId: 1, trayInfoIdx: 'GFG00', color: '#0000FF' }),
+      ],
+      true
+    );
+
+    expect(groups.get(0)).not.toBe(groups.get(1));
+    expect(groups.get(0)?.key).toBe('x|GFG00|#FF0000');
+  });
+
   it('⚠️ keeps different presets apart even in the same colour — Basic is not Matte', () => {
     const groups = groupTraysForBackup(
       [

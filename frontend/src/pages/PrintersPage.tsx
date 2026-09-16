@@ -4963,7 +4963,7 @@ function PrinterCard({
                                     || cloudInfo?.name
                                     || tray.tray_sub_brands
                                     || tray.tray_type,
-                                  colorName: resolveMultiColorName(trayActual?.cols ?? tray.cols)
+                                  colorName: resolveMultiColorName(trayActual ? (trayActual.cols ?? null) : tray.cols)
                                     ?? getColorName((trayActual?.tray_color ?? tray.tray_color) || ''),
                                   colorHex: (trayActual?.tray_color ?? tray.tray_color) || null,
                                   kFactor: formatKValue(tray.k),
@@ -5337,7 +5337,7 @@ function PrinterCard({
                             || cloudInfo?.name
                             || tray.tray_sub_brands
                             || tray.tray_type,
-                          colorName: resolveMultiColorName(htTrayActual?.cols ?? tray.cols)
+                          colorName: resolveMultiColorName(htTrayActual ? (htTrayActual.cols ?? null) : tray.cols)
                             ?? getColorName((htTrayActual?.tray_color ?? tray.tray_color) || ''),
                           colorHex: (htTrayActual?.tray_color ?? tray.tray_color) || null,
                           kFactor: formatKValue(tray.k),

@@ -93,8 +93,19 @@ export function groupTraysForBackup(loaded: LoadedFilament[], backupOn: boolean)
     // has to agree or the swap would change the part's colour mid-print. Trays
     // with no preset fall back to the type, tagged so a preset that happens to
     // read like a type name cannot collide with it.
-    const filament = tray.trayInfoIdx ? tray.trayInfoIdx : `type:${tray.type}`;
-    const key = `${tray.extruderId ?? 'x'}|${filament}|${tray.color}`;
+    //
+    // ⚠️ Read the ADVERTISED preset and colour where the slot has one — the same
+    // firmware-vs-spool split documented in `buildLoadedFilaments` and
+    // `computeBackupGroups`. Under the backup-compatibility policy several
+    // slots are told one canonical profile precisely so the firmware pools
+    // them; keying on the real spool would split that pot in two and warn
+    // "not enough filament" for a print the printer finishes by swapping. The
+    // pot's WEIGHT still comes from the assigned inventory spools, i.e. from
+    // what is really loaded.
+    const idx = tray.advertisedTrayInfoIdx ?? tray.trayInfoIdx;
+    const color = tray.advertisedColor ?? tray.color;
+    const filament = idx ? idx : `type:${tray.type}`;
+    const key = `${tray.extruderId ?? 'x'}|${filament}|${color}`;
     let group = byKey.get(key);
     if (!group) {
       group = { key, trayIds: [], labels: [] };
