@@ -5,7 +5,7 @@ caller's ``user_id``; there is no administrative view of somebody else's inbox.
 Static paths are declared before ``/{item_id}`` ones on purpose.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -63,7 +63,17 @@ class InboxFilters:
         if self.event_type:
             stmt = stmt.where(UserNotification.event_type == self.event_type)
         if self.since is not None:
-            stmt = stmt.where(UserNotification.created_at >= self.since.replace(tzinfo=None))
+            # ⚠️ An AWARE value is CONVERTED to UTC, never stripped: the column is
+            # UTC-naive (the whole DB is), so dropping "+03:00" off noon would ask
+            # for noon UTC — three hours off. This filter is shared by list,
+            # read-all AND clear, so the same skew would decide which rows are
+            # marked read and which are DELETED. A naive value is left alone;
+            # calling ``astimezone`` on it would assume the server's local zone
+            # and introduce the mirror-image bug.
+            value = self.since
+            if value.tzinfo is not None:
+                value = value.astimezone(timezone.utc)
+            stmt = stmt.where(UserNotification.created_at >= value.replace(tzinfo=None))
         return stmt
 
 
