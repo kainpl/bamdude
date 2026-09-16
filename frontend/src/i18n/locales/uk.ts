@@ -8565,7 +8565,6 @@ export default {
     },
     // User email notification preferences
     userEmail: {
-      title: 'Сповіщення',
       emailNotifications: 'Email сповіщення',
       emailNotificationsDesc: 'Отримувати email сповіщення про ваші завдання друку. Листи надсилаються через системні налаштування SMTP, налаштовані у розширеній автентифікації.',
       sendingTo: 'Сповіщення будуть надіслані на',

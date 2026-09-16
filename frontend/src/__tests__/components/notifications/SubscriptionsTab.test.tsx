@@ -50,6 +50,9 @@ describe('SubscriptionsTab', () => {
   it('reset sends null', async () => {
     render(<SubscriptionsTab />);
     await userEvent.click(await screen.findByLabelText('Print completed'));
+    // Reset is disabled while the toggle's PUT is in flight, and a click on a
+    // disabled button is a silent no-op — so wait for the first save to land.
+    await waitFor(() => expect(puts).toHaveLength(1));
     await userEvent.click(await screen.findByRole('button', { name: 'Reset to defaults' }));
     await waitFor(() => expect(puts.at(-1)).toEqual({ events: null }));
   });

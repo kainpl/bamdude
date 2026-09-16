@@ -23,6 +23,7 @@ import { SeverityIcon } from './SeverityIcon';
 // invalidates that prefix, and this tab must not drift out of it.
 const KEY = [...INBOX_QUERY_KEY, 'subscriptions'] as const;
 // Display order of the groups — the server already orders events inside a group.
+// This list decides ORDER only, never membership: see `groups` below.
 const GROUP_ORDER = ['print', 'printer', 'filament', 'ams', 'queue', 'inventory', 'sensors'];
 
 export function SubscriptionsTab() {
@@ -57,7 +58,15 @@ export function SubscriptionsTab() {
     save.mutate(next);
   };
 
-  const groups = GROUP_ORDER.filter((g) => data.events.some((e) => e.group === g));
+  // The groups we name come first, in our order; anything else the server sent
+  // is appended in its own order. A group this file does not know about must
+  // never be DROPPED — that would leave a user holding subscriptions they can
+  // neither see nor edit, and the backend catalog grows without asking us.
+  const sent = new Set(data.events.map((e) => e.group));
+  const groups = [
+    ...GROUP_ORDER.filter((g) => sent.has(g)),
+    ...[...sent].filter((g) => !GROUP_ORDER.includes(g)),
+  ];
 
   return (
     <div className="space-y-4">
@@ -82,16 +91,27 @@ export function SubscriptionsTab() {
       {groups.map((group) => (
         <Card key={group}>
           <CardHeader>
-            <h2 className="text-white font-semibold">{t(`notifications.center.groups.${group}`)}</h2>
+            {/* An unnamed group falls back to its own key rather than to a
+                rendered `notifications.center.groups.…` path. */}
+            <h2 className="text-white font-semibold">
+              {t(`notifications.center.groups.${group}`, { defaultValue: group })}
+            </h2>
           </CardHeader>
           <CardContent className="grid gap-2 sm:grid-cols-2">
             {data.events
               .filter((e) => e.group === group)
               .map((e) => (
                 <label key={e.event_type} className="flex items-center gap-2 text-sm text-bambu-gray-light">
+                  {/* Disabled while a save is in flight, exactly as Reset is:
+                      `useMutation` neither cancels nor serialises, so two quick
+                      clicks race and whichever response lands LAST wins the
+                      cache — silently reverting a toggle both requests
+                      accepted. The optimistic update has already shown the
+                      click landing, so the gap costs the user nothing. */}
                   <input
                     type="checkbox"
                     checked={e.subscribed}
+                    disabled={save.isPending}
                     onChange={(ev) => toggle(e.event_type, ev.target.checked)}
                   />
                   <SeverityIcon severity={e.severity} className="w-4 h-4" />

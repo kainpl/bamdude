@@ -8500,7 +8500,6 @@ export default {
     },
     // User email notification preferences
     userEmail: {
-      title: 'Notifications',
       emailNotifications: 'Email Notifications',
       emailNotificationsDesc: 'Receive email notifications for your own print jobs. Emails are sent using the system SMTP settings configured in Advanced Authentication.',
       sendingTo: 'Notifications will be sent to',
