@@ -36,6 +36,7 @@ ruling:
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import NamedTuple
@@ -48,6 +49,7 @@ from backend.app.models.filament_sku_settings import FilamentSkuSettings
 from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.services.filament_needs import Needs, colour_matches, names_of_hex_loader, needs_grams_of_farm
 
 # 90 days = three of the rate model's 30-day half-lives; beyond that the decay
 # weight is under 12.5%. The same span bounds the archived-only retention, so
@@ -178,6 +180,12 @@ class RowFinish:
     stock_break_alert: bool
     reorder_alert: bool
     alerts_snoozed: bool
+    # vault 60-specs/forecast-reserved-by-orders-spec §5.1 - what active orders
+    # have promised out of this stock, its complement, and whether the promise
+    # exceeds the shelf. 0 / remaining / False when nothing is promised.
+    reserved_g: float
+    free_g: float
+    over_committed: bool
 
 
 def finish_row(
@@ -190,6 +198,7 @@ def finish_row(
     total_remaining_g: float,
     now: datetime,
     snoozed: bool,
+    reserved_g: float = 0.0,
 ) -> RowFinish:
     """Safety stock, ROP, dates and alert flags — ForecastPanel.tsx verbatim.
 
@@ -201,8 +210,19 @@ def finish_row(
     reorder is mutually exclusive with break (break wins); the trigger date
     clamps at today while ``days_until_rop`` keeps its raw negative. Dates are
     UTC calendar days.
+
+    ``reserved_g`` (vault 60-specs/forecast-reserved-by-orders-spec §5.1) is what
+    active orders have promised out of this stock. It moves the REORDER side
+    only: ``free_g = max(0, remaining - reserved)`` feeds ``days_until_rop``, the
+    trigger date and the reorder flag. The empty date and the stock break stay on
+    the physical remaining - the consumption rate already contains those orders
+    being printed, and subtracting them there too would count the same grams
+    twice. At ``reserved_g == 0`` every field equals the pre-reserved arithmetic.
     """
     today = _as_utc(now).date()
+
+    free_g = max(0.0, total_remaining_g - reserved_g)
+    over_committed = reserved_g > total_remaining_g
 
     sigma = std_dev if std_dev is not None else (rate * _ASSUMED_SPREAD if rate is not None else 0.0)
     if margin_unit == "g":
@@ -218,7 +238,7 @@ def finish_row(
     if rate is not None and rate > 0:
         days_remaining = math.floor(total_remaining_g / rate)
         projected_empty_date = today + timedelta(days=days_remaining)
-        days_until_rop = math.floor((total_remaining_g - reorder_point_g) / rate)
+        days_until_rop = math.floor((free_g - reorder_point_g) / rate)
         reorder_trigger_date = today + timedelta(days=max(0, days_until_rop))
         stock_break_alert = eff_lead_time_days > 0 and days_remaining <= eff_lead_time_days
         reorder_alert = (not stock_break_alert) and days_until_rop <= 0
@@ -240,6 +260,9 @@ def finish_row(
         stock_break_alert=stock_break_alert,
         reorder_alert=reorder_alert,
         alerts_snoozed=snoozed,
+        reserved_g=reserved_g,
+        free_g=free_g,
+        over_committed=over_committed,
     )
 
 
@@ -279,6 +302,73 @@ class SkuForecastRow:
     reorder_alert: bool
     alerts_snoozed: bool
     spool_ids: list[int]
+    # spec §5: what active orders have promised out of this stock, its complement,
+    # and whether the promise exceeds the shelf. 0 / remaining / False with no orders.
+    reserved_g: float
+    free_g: float
+    over_committed: bool
+
+
+class LiveSku(NamedTuple):
+    """One live SKU group as the projection sees it."""
+
+    key: tuple[str, str, str, str]
+    fields: tuple[str | None, str | None, str | None, str | None]
+    rgba: str | None
+    remaining_g: float
+
+
+@dataclass(frozen=True)
+class UnmatchedReserved:
+    """Need in a material+colour no live SKU carries - reported, never spread (spec §0)."""
+
+    material: str
+    colour: str | None
+    grams: float
+
+
+@dataclass
+class ForecastResult:
+    rows: list[SkuForecastRow]
+    unmatched_reserved: list[UnmatchedReserved]
+
+
+def reserved_by_sku(
+    needs: Needs, groups: list[LiveSku], names_of_hex: Callable[[str], set[str]]
+) -> tuple[dict[tuple[str, str, str, str], float], list[UnmatchedReserved]]:
+    """Project need keys (material, colour) onto live SKU groups (spec §5.2).
+
+    Same material; if the need names a colour, the group's own name or its
+    catalog hex must say so (``colour_matches`` - the rule the order pages
+    use). Grams split proportionally to what is left; all-empty candidates
+    split equally (they are all over-committed, and that is the truth). A key
+    with no live candidate is returned unmatched rather than smeared over the
+    material. Gramless keys reserve nothing - an unknown print promises no
+    grams, and the order pages already count it as unknown.
+    """
+    reserved: dict[tuple[str, str, str, str], float] = {}
+    unmatched: list[UnmatchedReserved] = []
+    for key in sorted(needs.grams, key=lambda k: (k.material, k.colour or "")):
+        grams = needs.grams[key]
+        if grams <= 0:
+            continue
+        candidates = [g for g in groups if (g.fields[0] or "").strip().upper() == key.material]
+        if key.colour is not None:
+            candidates = [
+                g
+                for g in candidates
+                if colour_matches(
+                    g.fields[3], (g.rgba or "").replace("#", "").lower()[:6] or None, key.colour, names_of_hex
+                )
+            ]
+        if not candidates:
+            unmatched.append(UnmatchedReserved(key.material, key.colour, round(grams, 1)))
+            continue
+        total = sum(g.remaining_g for g in candidates)
+        for g in candidates:
+            share = grams * (g.remaining_g / total) if total > 0 else grams / len(candidates)
+            reserved[g.key] = reserved.get(g.key, 0.0) + share
+    return reserved, unmatched
 
 
 def _day_bucket_expr():
@@ -372,10 +462,15 @@ class _Group:
         self.last_usage_at: datetime | None = None
 
 
-async def compute_forecast(db: AsyncSession, *, now: datetime | None = None) -> list[SkuForecastRow]:
-    """Every SKU's forecast, fully finished — the module's one entry point.
+async def compute_forecast_full(
+    db: AsyncSession, *, now: datetime | None = None, reserved: Needs | None = None
+) -> ForecastResult:
+    """Every SKU's forecast, fully finished, plus the reserved need no SKU could take.
 
-    Consumers: the forecast endpoints (Task 3) and the 6-hour alert task.
+    ``reserved`` is the farm's need (``filament_needs.needs_grams_of_farm``);
+    ``None`` loads it, an explicit ``Needs()`` means "no orders" - the tests'
+    way of pinning the zero invariant. Consumers: the forecast list endpoint
+    (this), and ``compute_forecast`` for everything that only wants rows.
     """
     now = _as_utc(now) or datetime.now(timezone.utc)
     now_naive = now.astimezone(timezone.utc).replace(tzinfo=None)
@@ -501,6 +596,19 @@ async def compute_forecast(db: AsyncSession, *, now: datetime | None = None) -> 
         day = date.fromisoformat(str(row.day))
         g.buckets[day] = g.buckets.get(day, 0.0) + float(row.grams or 0.0)
 
+    # ── Project what active orders have promised onto the live groups ────────
+    if reserved is None:
+        reserved = await needs_grams_of_farm(db)
+    live = [
+        LiveSku(key, g.fields, g.rgba_live or g.rgba_archived, g.remaining_g)
+        for key, g in groups.items()
+        if g.fields is not None and g.live_spools > 0
+    ]
+    if reserved.grams:
+        reserved_by_key, unmatched = reserved_by_sku(reserved, live, await names_of_hex_loader(db))
+    else:
+        reserved_by_key, unmatched = {}, []
+
     # ── Finish every retained group ──────────────────────────────────────────
     rows: list[SkuForecastRow] = []
     for key in sorted(groups):
@@ -547,6 +655,7 @@ async def compute_forecast(db: AsyncSession, *, now: datetime | None = None) -> 
             total_remaining_g=g.remaining_g,
             now=now,
             snoozed=snoozed,
+            reserved_g=reserved_by_key.get(key, 0.0),
         )
 
         # The client's ``allSpools`` mean, with the zero refused: a SKU whose
@@ -582,10 +691,20 @@ async def compute_forecast(db: AsyncSession, *, now: datetime | None = None) -> 
                 reorder_alert=finish.reorder_alert,
                 alerts_snoozed=finish.alerts_snoozed,
                 spool_ids=g.spool_ids,
+                reserved_g=finish.reserved_g,
+                free_g=finish.free_g,
+                over_committed=finish.over_committed,
             )
         )
 
-    return rows
+    return ForecastResult(rows=rows, unmatched_reserved=unmatched)
+
+
+async def compute_forecast(
+    db: AsyncSession, *, now: datetime | None = None, reserved: Needs | None = None
+) -> list[SkuForecastRow]:
+    """The rows alone - the chart, logistics, CSV and alert consumers' entry point."""
+    return (await compute_forecast_full(db, now=now, reserved=reserved)).rows
 
 
 async def usage_day_series(

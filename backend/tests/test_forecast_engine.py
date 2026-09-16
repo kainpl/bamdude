@@ -59,6 +59,7 @@ from backend.app.models.filament_sku_settings import FilamentSkuSettings
 from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.services.filament_needs import NeedKey, Needs
 
 VECTORS_PATH = Path(__file__).parent / "forecast_vectors" / "rate_vectors.json"
 VECTORS = json.loads(VECTORS_PATH.read_text(encoding="utf-8"))
@@ -500,6 +501,63 @@ class TestFinishRowHandVectors:
         assert row.days_remaining == 1
 
 
+class TestFinishRowReserved:
+    """spec 5.1 - free stock drives the reorder date; the shelf's own emptying does not move."""
+
+    def test_zero_reserved_is_the_row_as_before(self, engine):
+        # Called WITHOUT the new argument (every pre-existing caller) and with an explicit 0.0.
+        before = engine.finish_row(
+            rate=10.0,
+            std_dev=4.0,
+            eff_lead_time_days=9,
+            margin_value=2,
+            margin_unit="days",
+            total_remaining_g=500.0,
+            now=NOW,
+            snoozed=False,
+        )
+        after = _finish(engine, reserved_g=0.0)
+        for field in (
+            "safety_stock_g",
+            "reorder_point_g",
+            "days_remaining",
+            "projected_empty_date",
+            "days_until_rop",
+            "reorder_trigger_date",
+            "stock_break_alert",
+            "reorder_alert",
+        ):
+            assert getattr(after, field) == getattr(before, field), field
+        assert after.reserved_g == 0.0 and after.free_g == 500.0 and after.over_committed is False
+
+    def test_reserved_moves_the_reorder_date_but_not_the_empty_date(self, engine):
+        # ROP = 10*9 + 39.8 = 129.8. Unreserved: floor((500-129.8)/10) = 37.
+        base = _finish(engine)
+        row = _finish(engine, reserved_g=200.0)
+        assert row.free_g == 300.0 and row.over_committed is False
+        assert row.days_until_rop == 17  # floor((300-129.8)/10)
+        assert row.reorder_trigger_date == TODAY + timedelta(days=17)
+        assert row.days_remaining == base.days_remaining == 50
+        assert row.projected_empty_date == base.projected_empty_date
+        assert row.stock_break_alert is False and row.reorder_alert is False
+
+    def test_over_committed_clamps_free_and_fires_the_reorder_alert(self, engine):
+        row = _finish(engine, reserved_g=600.0)
+        assert row.free_g == 0.0 and row.over_committed is True
+        assert row.days_until_rop == -13  # floor((0-129.8)/10), raw negative kept
+        assert row.reorder_trigger_date == TODAY  # clamped at today
+        assert row.reorder_alert is True and row.stock_break_alert is False  # 50 days left > 9 lead
+
+    def test_exactly_reserved_is_not_over_committed(self, engine):
+        row = _finish(engine, reserved_g=500.0)
+        assert row.free_g == 0.0 and row.over_committed is False
+
+    def test_no_rate_still_reports_free_and_over_committed(self, engine):
+        row = _finish(engine, rate=None, std_dev=None, reserved_g=700.0)
+        assert row.free_g == 0.0 and row.over_committed is True
+        assert row.days_until_rop is None and row.reorder_alert is False
+
+
 # ── The dataclass contract ────────────────────────────────────────────────────
 
 
@@ -532,6 +590,9 @@ class TestTheRowContract:
             "reorder_alert",
             "alerts_snoozed",
             "spool_ids",
+            "reserved_g",
+            "free_g",
+            "over_committed",
         }
 
 
@@ -593,6 +654,102 @@ async def _rows_by_key(engine, db) -> dict[tuple, object]:
 
 
 _PLA_BLACK = ("PLA", None, "Bambu", "Black")
+
+
+def _names_of_hex(h):
+    return {"black"} if h == "000000" else ({"white"} if h == "ffffff" else set())
+
+
+def _live(engine, material, brand, color_name, rgba, remaining):
+    return engine.LiveSku(
+        engine.sku_key(material, None, brand, color_name), (material, None, brand, color_name), rgba, remaining
+    )
+
+
+class TestReservedBySku:
+    """spec 5.2 - need keys land on live SKU groups proportionally to what is left."""
+
+    def test_one_matching_sku_takes_the_whole_need(self, engine):
+        groups = [_live(engine, "PLA", "Bambu", "Black", "000000FF", 800.0)]
+        reserved, unmatched = engine.reserved_by_sku(Needs({NeedKey("PLA", "black"): 500.0}), groups, _names_of_hex)
+        assert reserved == {groups[0].key: 500.0} and unmatched == []
+
+    def test_two_brands_split_by_remaining(self, engine):
+        a = _live(engine, "PLA", "Bambu", "Black", "000000FF", 800.0)
+        b = _live(engine, "PLA", "eSun", "Black", "000000FF", 200.0)
+        reserved, _ = engine.reserved_by_sku(Needs({NeedKey("PLA", "black"): 500.0}), [a, b], _names_of_hex)
+        assert reserved[a.key] == pytest.approx(400.0) and reserved[b.key] == pytest.approx(100.0)
+
+    def test_colour_matches_by_catalog_hex_when_the_spool_has_no_name(self, engine):
+        g = _live(engine, "PLA", "Bambu", None, "000000FF", 300.0)
+        reserved, unmatched = engine.reserved_by_sku(Needs({NeedKey("PLA", "black"): 30.0}), [g], _names_of_hex)
+        assert reserved == {g.key: 30.0} and unmatched == []
+
+    def test_a_need_without_a_colour_spreads_over_the_material(self, engine):
+        black = _live(engine, "PLA", "Bambu", "Black", "000000FF", 300.0)
+        white = _live(engine, "PLA", "Bambu", "White", "FFFFFFFF", 100.0)
+        petg = _live(engine, "PETG", "Bambu", "Black", "000000FF", 900.0)
+        reserved, _ = engine.reserved_by_sku(Needs({NeedKey("PLA", None): 40.0}), [black, white, petg], _names_of_hex)
+        assert reserved[black.key] == pytest.approx(30.0) and reserved[white.key] == pytest.approx(10.0)
+        assert petg.key not in reserved
+
+    def test_a_colour_nobody_stocks_is_reported_not_spread(self, engine):
+        groups = [_live(engine, "PLA", "Bambu", "Black", "000000FF", 800.0)]
+        reserved, unmatched = engine.reserved_by_sku(Needs({NeedKey("PLA", "coral"): 50.0}), groups, _names_of_hex)
+        assert reserved == {} and unmatched == [engine.UnmatchedReserved("PLA", "coral", 50.0)]
+
+    def test_all_empty_candidates_split_equally(self, engine):
+        a = _live(engine, "PLA", "Bambu", "Black", "000000FF", 0.0)
+        b = _live(engine, "PLA", "eSun", "Black", "000000FF", 0.0)
+        reserved, _ = engine.reserved_by_sku(Needs({NeedKey("PLA", "black"): 100.0}), [a, b], _names_of_hex)
+        assert reserved[a.key] == pytest.approx(50.0) and reserved[b.key] == pytest.approx(50.0)
+
+    def test_gramless_keys_reserve_nothing(self, engine):
+        needs = Needs()
+        needs.unknown_by_key[NeedKey("PLA", "black")] += 3
+        reserved, unmatched = engine.reserved_by_sku(
+            needs, [_live(engine, "PLA", "Bambu", "Black", "000000FF", 1.0)], _names_of_hex
+        )
+        assert reserved == {} and unmatched == []
+
+
+class TestComputeForecastReserved:
+    async def test_reserved_rides_the_row_and_the_unmatched_ride_the_result(self, engine, db_session):
+        bambu = await _spool(db_session, weight_used=200.0)  # PLA Bambu Black, 800 left
+        await _spool(db_session, brand="eSun", weight_used=800.0)  # PLA eSun Black, 200 left
+        await _usage(db_session, bambu.id, 2.0, 100.0)
+        await _usage(db_session, bambu.id, 1.0, 100.0)
+        needs = Needs({NeedKey("PLA", "black"): 500.0, NeedKey("PLA", "coral"): 50.0})
+
+        result = await engine.compute_forecast_full(db_session, now=NOW, reserved=needs)
+        rows = {(r.material, r.subtype, r.brand, r.color_name): r for r in result.rows}
+        assert rows[_PLA_BLACK].reserved_g == pytest.approx(400.0)
+        assert rows[_PLA_BLACK].free_g == pytest.approx(400.0)
+        assert rows[("PLA", None, "eSun", "Black")].reserved_g == pytest.approx(100.0)
+        assert result.unmatched_reserved == [engine.UnmatchedReserved("PLA", "coral", 50.0)]
+
+    async def test_an_archived_only_sku_is_never_a_candidate(self, engine, db_session):
+        gone = await _spool(db_session, weight_used=100.0, archived_at=_naive(NOW - timedelta(days=1)))
+        await _usage(db_session, gone.id, 1.0, 50.0)  # recent enough to keep the archived-only row
+        result = await engine.compute_forecast_full(
+            db_session, now=NOW, reserved=Needs({NeedKey("PLA", "black"): 10.0})
+        )
+        assert [r.reserved_g for r in result.rows] == [0.0]
+        assert result.unmatched_reserved == [engine.UnmatchedReserved("PLA", "black", 10.0)]
+
+    async def test_no_orders_is_the_forecast_as_before(self, engine, db_session):
+        spool = await _spool(db_session, weight_used=300.0)
+        await _usage(db_session, spool.id, 2.0, 100.0)
+        await _usage(db_session, spool.id, 1.0, 100.0)
+        row = (await _rows_by_key(engine, db_session))[_PLA_BLACK]  # loads needs from the (orderless) DB
+        assert row.reserved_g == 0.0 and row.free_g == row.total_remaining_g and row.over_committed is False
+        # The pre-change formula, verbatim: the reorder countdown from the physical remaining.
+        assert row.days_until_rop == math.floor((row.total_remaining_g - row.reorder_point_g) / row.rate_g_day)
+
+    async def test_compute_forecast_still_returns_the_rows(self, engine, db_session):
+        await _spool(db_session)
+        rows = await engine.compute_forecast(db_session, now=NOW, reserved=Needs())
+        assert isinstance(rows, list) and rows and hasattr(rows[0], "reserved_g")
 
 
 # ── The edge matrix, compute_forecast level ───────────────────────────────────

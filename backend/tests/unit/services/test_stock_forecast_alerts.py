@@ -26,6 +26,8 @@ from backend.app.models.filament_sku_settings import FilamentSkuSettings
 from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.services import forecast_engine
+from backend.app.services.filament_needs import NeedKey, Needs
 from backend.app.services.forecast_engine import sku_key
 from backend.app.services.stock_forecast_alerts import (
     StockForecastAlerts,
@@ -252,6 +254,21 @@ class TestTheReorderPoint:
         await db_session.commit()
 
         assert await find_stock_alerts(db_session, NOW) == []
+
+    @pytest.mark.asyncio
+    async def test_over_committed_stock_is_a_reorder_alert(self, db_session):
+        """spec 7 - with a rate, promising more than the shelf holds trips the reorder alert today.
+
+        No new template and no new code path: the promise pushes ``days_until_rop``
+        to zero or below, which is the reorder alert this class already describes.
+        """
+        spool = await _spool(db_session, weight_used=100.0)
+        for days_ago in (2.0, 1.0):
+            await _usage(db_session, spool.id, days_ago, 10.0)
+
+        promised = Needs({NeedKey("PLA", "black"): 5000.0})
+        with patch.object(forecast_engine, "needs_grams_of_farm", AsyncMock(return_value=promised)):
+            assert [a.key for a in await _reorders(db_session, NOW)] == [sku_key("PLA", None, "Bambu", "Black")]
 
 
 class TestTheDeliberateBehaviorChanges:
