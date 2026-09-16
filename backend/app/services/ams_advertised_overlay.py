@@ -96,8 +96,11 @@ def forget_all() -> None:
 
 
 def replace_printer(printer_id: int, entries: dict[tuple[int, int], OverlayEntry]) -> None:
+    # Normalised on the way in like every other write: a rebuild hands over keys
+    # it built from assignment rows, and a caller that once passed an HT unit's
+    # live tray id would write an entry ``effective`` could never find.
     if entries:
-        _store[printer_id] = dict(entries)
+        _store[printer_id] = {slot_key(*key): entry for key, entry in entries.items()}
     else:
         _store.pop(printer_id, None)
 

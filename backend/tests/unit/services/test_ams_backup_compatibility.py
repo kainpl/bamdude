@@ -188,6 +188,22 @@ def test_printer_busy_is_not_a_reason_the_preview_can_carry():
     assert "printer_busy" not in compat.REASONS
 
 
+def test_the_closed_list_of_reasons_is_the_one_both_locales_carry():
+    """The other half of this pin is ``frontend/src/__tests__/i18n/amsCompatReasons.test.ts``,
+    which asserts the same six keys under ``printers.amsCompat.reason`` in en and
+    uk. A new reason therefore breaks BOTH sides until its two strings exist —
+    the preview renders every reason through ``t()``, so an unlisted one would
+    reach the operator as its raw key."""
+    assert sorted(compat.REASONS) == [
+        "base_material_not_allowed",
+        "external_slot_excluded",
+        "generic_preset_unavailable",
+        "policy_off",
+        "rfid_slot_excluded",
+        "slot_empty",
+    ]
+
+
 def test_from_printer_reads_the_namespace():
     class P:
         ams_policies = {"backup_compatibility": {"generic_base_material": True}}

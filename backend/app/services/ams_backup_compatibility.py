@@ -34,9 +34,12 @@ REASON_BASE_MATERIAL = "base_material_not_allowed"
 REASON_GENERIC_PRESET = "generic_preset_unavailable"
 # Bulk-apply only (services/ams_backup_compatibility_apply.py). There is
 # deliberately no "printer is busy" reason: a busy printer is refused by the
-# route with a 409 before any slot is walked, so a row could never carry it —
-# and every member here has a ``printers.amsCompat.reason.*`` string in BOTH
-# locales.
+# route with a 409 before any slot is walked, so a row could never carry it.
+# ⚠️ Every member here has a ``printers.amsCompat.reason.*`` string in BOTH
+# locales, and that is enforced from both ends — the closed list is pinned by
+# ``tests/unit/services/test_ams_backup_compatibility.py`` and by
+# ``frontend/src/__tests__/i18n/amsCompatReasons.test.ts``, so a new reason is
+# two red tests until its two strings exist.
 REASON_SLOT_EMPTY = "slot_empty"
 REASONS = frozenset(
     {

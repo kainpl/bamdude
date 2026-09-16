@@ -338,10 +338,12 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
 def _entries_for_walk(walk: SlotWalk) -> dict[tuple[int, int], overlay.OverlayEntry]:
     entries: dict[tuple[int, int], overlay.OverlayEntry] = {}
     for c in walk.candidates:
+        # ``slot_key``, not a hand-built tuple: the store answers on that key
+        # alone, and an HT slot is the one place the two can differ.
         if c.projection.projected:
-            entries[(c.ams_id, c.tray_id)] = overlay.entry_from(c.projection, c.source)
+            entries[overlay.slot_key(c.ams_id, c.tray_id)] = overlay.entry_from(c.projection, c.source)
         elif c.recovered is not None:
-            entries[(c.ams_id, c.tray_id)] = c.recovered
+            entries[overlay.slot_key(c.ams_id, c.tray_id)] = c.recovered
     return entries
 
 
@@ -463,7 +465,9 @@ async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
         # ``recovered`` answers the same question for a slot whose entry this
         # process never held: after a restart with the switches already off the
         # store is empty, and only the reconstruction knows the tray is masked.
-        revert = not c.projection.projected and ((c.ams_id, c.tray_id) in remembered or c.recovered is not None)
+        revert = not c.projection.projected and (
+            overlay.slot_key(c.ams_id, c.tray_id) in remembered or c.recovered is not None
+        )
         if not loaded:
             action = "skip"
         elif c.projection.projected:

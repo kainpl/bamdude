@@ -80,6 +80,18 @@ def test_an_ht_entry_is_found_whatever_tray_id_the_printer_reports():
     assert overlay.entries_for(7) == {}
 
 
+def test_replace_printer_normalises_the_keys_it_is_handed():
+    """The rebuild builds its map before it ever reaches the store, so this is
+    the one write that could still put an entry under a key nothing reads."""
+    echoed = {"tray_info_idx": "GFG99", "tray_color": "000000FF"}
+    overlay.replace_printer(7, {(128, 4): overlay.entry_from(_projection(), "internal")})
+    assert overlay.effective(7, 128, 4, echoed) is not None
+    assert overlay.effective(7, 128, 0, echoed) is not None
+    # And every reader that looks the raw map up asks for the key the same way.
+    assert overlay.entries_for(7).get(overlay.slot_key(128, 4)) is not None
+    assert set(overlay.entries_for(7)) == {(128, 0)}
+
+
 def test_replace_printer_is_atomic_and_entries_for_is_a_copy():
     overlay.replace_printer(7, {(0, 0): overlay.entry_from(_projection(), "internal")})
     snapshot = overlay.entries_for(7)

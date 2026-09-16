@@ -2394,7 +2394,9 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         # after a successful publish.
                         from backend.app.services import ams_advertised_overlay as _overlay
 
-                        _entry = _overlay.entries_for(printer_id).get((assignment.ams_id, assignment.tray_id))
+                        _entry = _overlay.entries_for(printer_id).get(
+                            _overlay.slot_key(assignment.ams_id, assignment.tray_id)
+                        )
                         if _entry is not None and _overlay.matches_live(_entry, current_tray):
                             logger.info(
                                 "Auto-unlink: spool %d AMS%d-T%d - tray matches the advertised profile "
