@@ -969,15 +969,14 @@ async def link_spool(
                 # linked calibration when one exists; otherwise the generic
                 # family of the material — resolved inside the builder, no
                 # hand-rolled realignment.
-                from backend.app.services import ams_advertised_overlay as overlay  # noqa: PLC0415
                 from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
-                    BackupCompatibilityPolicy,
                     kprofile_allowed,
                     live_tray_for,
-                    project_slot_assignment,
                 )
                 from backend.app.services.slot_assignment import build_slot_assignment  # noqa: PLC0415
-                from backend.app.services.slot_assignment_publish import publish_slot_plan  # noqa: PLC0415
+                from backend.app.services.slot_assignment_publish import (  # noqa: PLC0415
+                    publish_projected_slot,
+                )
 
                 supports_user_preset = bool(getattr(state, "support_user_preset", False))
                 # Model cache, not PrinterInfo — see configure_ams_slot.
@@ -997,47 +996,31 @@ async def link_spool(
                 # The K half below keys off the ACTUAL family, never the advertised one.
                 effective_tray_info_idx = plan.tray_info_idx
 
-                # The advertised profile (spec: ams-backup-compatibility-emulation).
-                # The actual plan stays the spool's truth; only what the printer
-                # is told changes.
+                # Project under the printer's policy, publish, remember what was
+                # masked — the one helper all three assignment paths share. The
+                # actual plan stays the spool's truth; only what the printer is
+                # told changes.
                 printer_row = (await db.execute(select(Printer).where(Printer.id == p_id))).scalar_one_or_none()
-                projection = await project_slot_assignment(
+                _, projection = await publish_projected_slot(
                     db,
-                    actual=plan,
-                    policy=BackupCompatibilityPolicy.from_printer(printer_row),
+                    mqtt_client,
+                    printer=printer_row,
+                    printer_id=p_id,
+                    ams_id=a_id,
+                    tray_id=t_id,
+                    actual_plan=plan,
                     live_tray=live_tray_for(state, a_id, t_id),
                     spool_tag_uid=mapped.get("tag_uid"),
                     spool_tray_uuid=mapped.get("tray_uuid"),
-                    ams_id=a_id,
                     material=tray_type,
                     extra_colors=None,
                     printer_model=printer_model,
                     nozzle_diameter=nozzle_diameter,
                     supports_user_preset=supports_user_preset,
-                )
-                if projection.projected:
-                    logger.info(
-                        "Spoolman link: advertising %s for AMS%d-T%d (%s)",
-                        projection.applied,
-                        a_id,
-                        t_id,
-                        projection.reasons,
-                    )
-                sent = publish_slot_plan(
-                    mqtt_client,
-                    ams_id=a_id,
-                    tray_id=t_id,
-                    plan=projection.advertised,
                     tray_sub_brands=tray_sub_brands,
                     tray_type_fallback=tray_type,
+                    source="spoolman",
                 )
-                # Remember only a payload that actually left the process — see
-                # inventory.apply_spool_to_slot_via_mqtt, which also explains why
-                # writing the store BEFORE this route's commit is the safe order
-                # (an entry without its row is inert; a row without its entry is
-                # not).
-                if sent:
-                    overlay.remember(p_id, a_id, t_id, projection, "spoolman")
 
                 from backend.app.services.calibration_service import (  # noqa: PLC0415
                     apply_active_calibration_to_slot,

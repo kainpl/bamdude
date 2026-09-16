@@ -204,15 +204,9 @@ async def apply_spool_to_slot_via_mqtt(
     # inside the builder). current_tray_info_idx / current_tray_type are
     # accepted for signature stability but no longer consulted — the family
     # model does not reuse a foreign tray id.
-    from backend.app.services import ams_advertised_overlay as overlay
-    from backend.app.services.ams_backup_compatibility import (
-        BackupCompatibilityPolicy,
-        kprofile_allowed,
-        live_tray_for,
-        project_slot_assignment,
-    )
+    from backend.app.services.ams_backup_compatibility import kprofile_allowed, live_tray_for
     from backend.app.services.slot_assignment import build_slot_assignment
-    from backend.app.services.slot_assignment_publish import publish_slot_plan
+    from backend.app.services.slot_assignment_publish import publish_projected_slot
 
     # ⚠️ The model lives in the manager's model cache, NOT on PrinterInfo
     # (name + serial only) — ``info.model`` was an AttributeError on every
@@ -229,52 +223,35 @@ async def apply_spool_to_slot_via_mqtt(
     for note in plan.warnings:
         logger.info("Spool assign: %s", note)
 
-    # The advertised profile (spec: ams-backup-compatibility-emulation). The
-    # actual plan stays the spool's truth; only what the printer is told changes.
+    # The K-profile half below keys off the ACTUAL family, never the advertised
+    # one — the spool's own calibration is what should be printed with.
+    effective_tray_info_idx = plan.tray_info_idx
+
+    # a. Project under the printer's policy, set the filament setting (and
+    # register its read-back verification), remember what was masked. One
+    # helper for all three assignment paths — the actual plan stays the spool's
+    # truth, only what the printer is told changes.
     printer_row = await db.get(Printer, printer_id)
-    projection = await project_slot_assignment(
+    _, projection = await publish_projected_slot(
         db,
-        actual=plan,
-        policy=BackupCompatibilityPolicy.from_printer(printer_row),
+        client,
+        printer=printer_row,
+        printer_id=printer_id,
+        ams_id=ams_id,
+        tray_id=tray_id,
+        actual_plan=plan,
         live_tray=live_tray_for(state, ams_id, tray_id),
         spool_tag_uid=spool.tag_uid,
         spool_tray_uuid=spool.tray_uuid,
-        ams_id=ams_id,
         material=spool.material,
         extra_colors=spool.extra_colors,
         printer_model=printer_model,
         nozzle_diameter=nozzle_diameter,
         supports_user_preset=supports_user_preset,
-    )
-    if projection.projected:
-        logger.info(
-            "Spool assign: advertising %s for AMS%d-T%d (%s)", projection.applied, ams_id, tray_id, projection.reasons
-        )
-    # The K-profile half below keys off the ACTUAL family, never the advertised
-    # one — the spool's own calibration is what should be printed with.
-    effective_tray_info_idx = plan.tray_info_idx
-
-    # a. Set filament setting (and register its read-back verification).
-    sent = publish_slot_plan(
-        client,
-        ams_id=ams_id,
-        tray_id=tray_id,
-        plan=projection.advertised,
         tray_sub_brands=tray_sub_brands,
         tray_type_fallback=tray_type,
+        source="internal",
     )
-    # Only what actually left the process is remembered: a disconnected printer
-    # never gets the advertised profile, so nothing is masked and routing must
-    # keep reading the live tray.
-    #
-    # The store is written HERE, before the caller commits its assignment row —
-    # and that direction is the safe one. An entry without its row is inert: it
-    # is keyed by slot and only speaks while the printer still echoes what we
-    # published, and the very next rebuild (or a failed commit's re-assign)
-    # replaces it. A row without its entry is the harmful order — routing would
-    # read the mask as the spool for the whole life of the process.
-    if sent:
-        overlay.remember(printer_id, ams_id, tray_id, projection, "internal")
 
     # b. Push extrusion calibration via the unified helper. The helper
     # re-resolves cali_idx live (stable-identity match) and fires

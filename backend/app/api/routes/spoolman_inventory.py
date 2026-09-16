@@ -1574,15 +1574,12 @@ async def assign_spoolman_slot(
             # ONE identity path (spec A §5.2): the family catalog builds the
             # payload — family from the linked calibration when one exists,
             # else the generic family of the material, inside the builder.
-            from backend.app.services import ams_advertised_overlay as overlay  # noqa: PLC0415
             from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
-                BackupCompatibilityPolicy,
                 kprofile_allowed,
                 live_tray_for,
-                project_slot_assignment,
             )
             from backend.app.services.slot_assignment import build_slot_assignment  # noqa: PLC0415
-            from backend.app.services.slot_assignment_publish import publish_slot_plan  # noqa: PLC0415
+            from backend.app.services.slot_assignment_publish import publish_projected_slot  # noqa: PLC0415
 
             supports_user_preset = bool(getattr(state, "support_user_preset", False))
             # Model cache, not PrinterInfo — see configure_ams_slot.
@@ -1602,45 +1599,30 @@ async def assign_spoolman_slot(
             # The K half below keys off the ACTUAL family, never the advertised one.
             effective_tray_info_idx = plan.tray_info_idx
 
-            # The advertised profile (spec: ams-backup-compatibility-emulation).
-            # The actual plan stays the spool's truth; only what the printer is
-            # told changes.
-            projection = await project_slot_assignment(
+            # Project under the printer's policy, publish, remember what was
+            # masked — the one helper all three assignment paths share. The
+            # actual plan stays the spool's truth; only what the printer is told
+            # changes.
+            _, projection = await publish_projected_slot(
                 db,
-                actual=plan,
-                policy=BackupCompatibilityPolicy.from_printer(printer),
+                mqtt_client,
+                printer=printer,
+                printer_id=body.printer_id,
+                ams_id=body.ams_id,
+                tray_id=body.tray_id,
+                actual_plan=plan,
                 live_tray=live_tray_for(state, body.ams_id, body.tray_id),
                 spool_tag_uid=mapped.get("tag_uid"),
                 spool_tray_uuid=mapped.get("tray_uuid"),
-                ams_id=body.ams_id,
                 material=tray_type,
                 extra_colors=None,
                 printer_model=printer_model,
                 nozzle_diameter=nozzle_diameter,
                 supports_user_preset=supports_user_preset,
-            )
-            if projection.projected:
-                logger.info(
-                    "Spoolman assign: advertising %s for AMS%d-T%d (%s)",
-                    projection.applied,
-                    body.ams_id,
-                    body.tray_id,
-                    projection.reasons,
-                )
-            sent = publish_slot_plan(
-                mqtt_client,
-                ams_id=body.ams_id,
-                tray_id=body.tray_id,
-                plan=projection.advertised,
                 tray_sub_brands=tray_sub_brands,
                 tray_type_fallback=tray_type,
+                source="spoolman",
             )
-            # Remember only a payload that actually left the process — see
-            # inventory.apply_spool_to_slot_via_mqtt, which also explains why
-            # writing the store BEFORE this route's commit is the safe order (an
-            # entry without its row is inert; a row without its entry is not).
-            if sent:
-                overlay.remember(body.printer_id, body.ams_id, body.tray_id, projection, "spoolman")
 
             from backend.app.services.calibration_service import (  # noqa: PLC0415
                 apply_active_calibration_to_slot,
