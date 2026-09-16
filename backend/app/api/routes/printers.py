@@ -520,6 +520,17 @@ async def update_printer(
             update_data["plate_detection_roi_w"] = None
             update_data["plate_detection_roi_h"] = None
 
+    # One namespaced JSON object: merge the namespace sent, keep every other key
+    # (a future policy must not be wiped by a form that never heard of it), and
+    # assign a NEW dict — SQLAlchemy JSON does not see in-place mutation.
+    if "ams_policies" in update_data:
+        update_data.pop("ams_policies")
+        merged = dict(printer.ams_policies or {})
+        patch = printer_data.ams_policies
+        if patch is not None and patch.backup_compatibility is not None:
+            merged["backup_compatibility"] = patch.backup_compatibility.model_dump()
+        update_data["ams_policies"] = merged
+
     for field, value in update_data.items():
         setattr(printer, field, value)
 

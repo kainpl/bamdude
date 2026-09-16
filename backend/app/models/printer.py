@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -149,6 +149,12 @@ class Printer(Base):
     swap_profile: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # Require user to confirm plate is cleared before next queued print starts
     require_plate_clear: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Persisted per-printer AMS policies, ONE namespaced JSON object (m175):
+    # {"backup_compatibility": {...}}. Read through
+    # services/ams_backup_compatibility.BackupCompatibilityPolicy.from_printer;
+    # written only by update_printer, which merges a namespace and assigns a NEW
+    # dict — SQLAlchemy JSON does not track in-place mutation.
+    ams_policies: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     # Persisted plate-clear gate: set True at print-end when require_plate_clear
     # is on; cleared when the user confirms or dispatch runs. Persisting it in
     # DB (vs the previous in-memory set) means Auto Off power cycles can't

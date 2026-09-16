@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -5,6 +6,44 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 from backend.app.schemas.printer_tag import PrinterTagOut
+
+
+class BackupCompatibilityPolicy(BaseModel):
+    """The ``backup_compatibility`` namespace of ``Printer.ams_policies``."""
+
+    normalize_color: bool = False
+    canonical_color_rgba: str = "000000FF"
+    generic_base_material: bool = False
+
+    @field_validator("canonical_color_rgba")
+    @classmethod
+    def _opaque_rrggbbff(cls, value: str) -> str:
+        """Only an opaque colour is a canonical colour.
+
+        The alpha byte is what the firmware compares when it decides whether two
+        trays are interchangeable, so a translucent value would emulate a
+        profile no spool can ever match — a silent no-op rather than a refusal.
+        """
+        value = (value or "").strip().lstrip("#").upper()
+        if not re.fullmatch(r"[0-9A-F]{6}FF", value):
+            raise ValueError("canonical_color_rgba must be an opaque RRGGBBFF colour")
+        return value
+
+
+class AmsPolicies(BaseModel):
+    """Every persisted AMS policy of a printer, one namespace per key.
+
+    Read off the ORM row, so a namespace a future release adds is simply
+    ignored here rather than breaking the response.
+    """
+
+    backup_compatibility: BackupCompatibilityPolicy = Field(default_factory=BackupCompatibilityPolicy)
+
+
+class AmsPoliciesPatch(BaseModel):
+    """What a PATCH may carry — a namespace left out is left alone, not reset."""
+
+    backup_compatibility: BackupCompatibilityPolicy | None = None
 
 
 class PrinterBase(BaseModel):
@@ -105,6 +144,7 @@ class PrinterUpdate(BaseModel):
     swap_mode_enabled: bool | None = None
     swap_profile: str | None = None
     require_plate_clear: bool | None = None
+    ams_policies: AmsPoliciesPatch | None = None
 
 
 class PrinterResponse(PrinterBase):
@@ -136,6 +176,10 @@ class PrinterResponse(PrinterBase):
     stagger_interval_minutes: int = 0
     swap_mode_enabled: bool = False
     swap_profile: str | None = None
+    # The whole namespaced object, defaults filled in — a row written before
+    # m175, or one whose namespace was never set, still answers with the
+    # policy that is in force rather than with an empty dict.
+    ams_policies: AmsPolicies = Field(default_factory=AmsPolicies)
     created_at: datetime
     updated_at: datetime
 
