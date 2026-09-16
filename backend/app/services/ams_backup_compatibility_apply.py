@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from enum import Enum
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -33,6 +34,22 @@ from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kp
 logger = logging.getLogger(__name__)
 
 
+class RebuildOutcome(Enum):
+    """Why a rebuild stopped — three answers, not two.
+
+    ``COMPLETE`` replaced the printer's map. ``DEFERRED`` means the Spoolman
+    half could not be read and the map was left ALONE. ``FAILED`` means the
+    walk threw: also nothing written, but it is a bug to be retried, not a
+    startup race to be waited out, and the two must not share a code path —
+    marking a printer rebuilt because the walk crashed is how an overlay stays
+    empty for the life of the process.
+    """
+
+    COMPLETE = "complete"
+    DEFERRED = "deferred"
+    FAILED = "failed"
+
+
 @dataclass
 class SlotCandidate:
     ams_id: int
@@ -42,6 +59,9 @@ class SlotCandidate:
     projection: SlotProjection
     live_tray: dict | None
     kprofile_filament_id: str | None
+    # What we must ALREADY have advertised on this slot, reconstructed when the
+    # current policy no longer projects it (see ``_recover_advertised``).
+    recovered: overlay.OverlayEntry | None = None
 
 
 @dataclass
@@ -80,6 +100,63 @@ def _slot_extruder(state, ams_id: int, tray_id: int) -> int | None:
     return extruder_map.get(str(ams_id))
 
 
+async def _spoolman_mode(db) -> bool:
+    """Whether this install's inventory IS Spoolman (spec §4.3: the walk covers
+    the slots of the CURRENT mode).
+
+    Read exactly as ``print_scheduler._is_spoolman_mode`` reads it. In internal
+    mode the Spoolman client will never come up, so a walk that waited for it
+    would defer forever in a hot MQTT callback; leftover
+    ``spoolman_slot_assignments`` rows from a previous mode are not this
+    install's slots.
+    """
+    try:
+        from backend.app.api.routes.settings import get_setting  # noqa: PLC0415
+
+        value = await get_setting(db, "spoolman_enabled")
+        return bool(value) and str(value).lower() == "true"
+    except Exception:  # noqa: BLE001 — an unreadable setting is not Spoolman mode
+        return False
+
+
+async def _recover_advertised(
+    db, *, actual, policy: BackupCompatibilityPolicy, live_tray: dict | None, source: str, **project_kwargs
+) -> overlay.OverlayEntry | None:
+    """What we advertised on a slot the CURRENT policy no longer projects.
+
+    A restart with the switches off would otherwise strand every masked slot:
+    the walk projects ``policy_off`` for all of them, the overlay is emptied,
+    routing believes the masked live values and the bulk button never offers a
+    ``revert`` — the section hides, because it renders off the entries. So each
+    candidate policy we could once have been running under is re-projected
+    (colour with the STORED canonical colour even though the switch is off,
+    generic, both) and the one whose ADVERTISED plan the live tray still equals
+    is the one we must have sent.
+
+    A live tray matching none of them was never ours — no entry, and the
+    existing auto-unlink semantics decide its fate as before. A tray matching
+    one that somebody set by hand on the printer screen is indistinguishable
+    from ours and is adopted; that is the accepted cost of not stranding the
+    real case, and it can only ever report the slot's own assigned spool.
+    """
+    stored = policy.canonical_color_rgba
+    candidates = (
+        BackupCompatibilityPolicy(normalize_color=True, canonical_color_rgba=stored),
+        BackupCompatibilityPolicy(generic_base_material=True),
+        BackupCompatibilityPolicy(normalize_color=True, canonical_color_rgba=stored, generic_base_material=True),
+    )
+    for candidate in candidates:
+        projection = await project_slot_assignment(
+            db, actual=actual, policy=candidate, live_tray=live_tray, **project_kwargs
+        )
+        if not projection.projected:
+            continue
+        entry = overlay.entry_from(projection, source)
+        if overlay.matches_live(entry, live_tray):
+            return entry
+    return None
+
+
 def _slot_loaded(live_tray: dict | None) -> bool:
     from backend.app.api.routes.inventory import tray_holds_filament  # noqa: PLC0415 — the route owns the reading
 
@@ -116,26 +193,37 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
             logger.info("bulk projection: skipping AMS%d-T%d: %s", row.ams_id, row.tray_id, exc)
             continue
         live = live_tray_for(state, row.ams_id, row.tray_id)
-        projection = await project_slot_assignment(
-            db,
-            actual=actual,
-            policy=policy,
-            live_tray=live,
-            spool_tag_uid=spool.tag_uid,
-            spool_tray_uuid=spool.tray_uuid,
-            ams_id=row.ams_id,
-            material=spool.material,
-            extra_colors=spool.extra_colors,
+        project_kwargs = {
+            "spool_tag_uid": spool.tag_uid,
+            "spool_tray_uuid": spool.tray_uuid,
+            "ams_id": row.ams_id,
+            "material": spool.material,
+            "extra_colors": spool.extra_colors,
             **common,
+        }
+        projection = await project_slot_assignment(db, actual=actual, policy=policy, live_tray=live, **project_kwargs)
+        recovered = (
+            None
+            if projection.projected
+            else await _recover_advertised(
+                db, actual=actual, policy=policy, live_tray=live, source="internal", **project_kwargs
+            )
         )
         label = " ".join(p for p in (f"#{spool.id}", spool.brand or "", spool.material) if p)
-        out.append(SlotCandidate(row.ams_id, row.tray_id, "internal", label, projection, live, actual.tray_info_idx))
+        out.append(
+            SlotCandidate(row.ams_id, row.tray_id, "internal", label, projection, live, actual.tray_info_idx, recovered)
+        )
 
     sm_rows = (
         (await db.execute(select(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.printer_id == printer.id)))
         .scalars()
         .all()
     )
+    if sm_rows and not await _spoolman_mode(db):
+        # Not this install's inventory — the rows are leftovers of a mode that
+        # was switched off, and nothing will ever read them. Absent, not
+        # deferred: deferring would retry on every AMS push forever.
+        sm_rows = []
     if sm_rows:
         from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool  # noqa: PLC0415
         from backend.app.services.spoolman import get_spoolman_client  # noqa: PLC0415
@@ -154,7 +242,12 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
             try:
                 mapped = _map_spoolman_spool(await client.get_spool(row.spoolman_spool_id))
             except Exception as exc:  # noqa: BLE001 — Spoolman down must not break the walk
+                # Unreachable is the same answer as "the client is not up yet":
+                # the slot HAS a spool, we just could not read it. Counting it
+                # as absent would make an incomplete walk look complete, and
+                # the rebuild would replace a correct overlay with a halved one.
                 logger.info("bulk projection: Spoolman spool %s unreadable: %s", row.spoolman_spool_id, exc)
+                walk.spoolman_deferred = True
                 continue
             tray_type = mapped.get("material") or ""
             color = (mapped.get("rgba") or "808080FF").upper()
@@ -183,17 +276,23 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
                 logger.info("bulk projection: skipping Spoolman AMS%d-T%d: %s", row.ams_id, row.tray_id, exc)
                 continue
             live = live_tray_for(state, row.ams_id, row.tray_id)
-            projection = await project_slot_assignment(
-                db,
-                actual=actual,
-                policy=policy,
-                live_tray=live,
-                spool_tag_uid=mapped.get("tag_uid"),
-                spool_tray_uuid=mapped.get("tray_uuid"),
-                ams_id=row.ams_id,
-                material=tray_type,
-                extra_colors=None,
+            project_kwargs = {
+                "spool_tag_uid": mapped.get("tag_uid"),
+                "spool_tray_uuid": mapped.get("tray_uuid"),
+                "ams_id": row.ams_id,
+                "material": tray_type,
+                "extra_colors": None,
                 **common,
+            }
+            projection = await project_slot_assignment(
+                db, actual=actual, policy=policy, live_tray=live, **project_kwargs
+            )
+            recovered = (
+                None
+                if projection.projected
+                else await _recover_advertised(
+                    db, actual=actual, policy=policy, live_tray=live, source="spoolman", **project_kwargs
+                )
             )
             label = " ".join(
                 p for p in (f"Spoolman #{row.spoolman_spool_id}", mapped.get("brand") or "", tray_type) if p
@@ -207,6 +306,7 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
                     projection,
                     live,
                     linked.filament_id if linked else actual.tray_info_idx,
+                    recovered,
                 )
             )
 
@@ -214,39 +314,58 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
     return walk
 
 
-async def refresh_overlay(db, printer) -> bool:
+def _entries_for_walk(walk: SlotWalk) -> dict[tuple[int, int], overlay.OverlayEntry]:
+    entries: dict[tuple[int, int], overlay.OverlayEntry] = {}
+    for c in walk.candidates:
+        if c.projection.projected:
+            entries[(c.ams_id, c.tray_id)] = overlay.entry_from(c.projection, c.source)
+        elif c.recovered is not None:
+            entries[(c.ams_id, c.tray_id)] = c.recovered
+    return entries
+
+
+async def refresh_overlay(db, printer) -> RebuildOutcome:
     """Rebuild this printer's overlay from the registries + policy.
 
-    Returns whether the answer was INCOMPLETE because the Spoolman client was
-    not up yet — the caller then leaves the printer unmarked and asks again on
-    its next AMS push. A live entry is exact; this one is derived, so it is a
-    recovery after a restart, not the normal way entries appear.
+    A live entry is exact; this one is derived, so it is a recovery after a
+    restart, not the normal way entries appear — which is why ONLY a complete
+    walk replaces the map. An incomplete one (Spoolman unreadable) and a walk
+    that threw both leave whatever the assignment routes have written since
+    exactly where it is; replacing on a half answer would delete the exact
+    entries of every Spoolman slot and call the result a rebuild.
     """
     try:
         walk = await iter_slot_projections(db, printer)
     except Exception:  # noqa: BLE001 — never fail a callback over an overlay
         logger.exception("overlay refresh failed for printer %s", printer.id)
-        return False
-    overlay.replace_printer(
-        printer.id,
-        {
-            (c.ams_id, c.tray_id): overlay.entry_from(c.projection, c.source)
-            for c in walk.candidates
-            if c.projection.projected
-        },
-    )
-    return walk.spoolman_deferred
+        return RebuildOutcome.FAILED
+    if walk.spoolman_deferred:
+        return RebuildOutcome.DEFERRED
+    overlay.replace_printer(printer.id, _entries_for_walk(walk))
+    return RebuildOutcome.COMPLETE
 
 
 # Which printers this process has already rebuilt. Once per process, because
 # the live entries written by the assignment routes afterwards are exact and a
 # second derived pass could only overwrite them with a guess.
 _rebuilt: set[int] = set()
+# How many times each printer's rebuild came back incomplete. This runs inside
+# ``on_ams_change``, which fires several times a minute per printer: a Spoolman
+# that never comes back must not buy an unbounded retry on a hot callback.
+_deferred_attempts: dict[int, int] = {}
+MAX_DEFERRED_ATTEMPTS = 5
 
 
 def reset_rebuilt() -> None:
     """Tests only — the set is process-global and outlives a test."""
     _rebuilt.clear()
+    _deferred_attempts.clear()
+
+
+def forget_printer_rebuild(printer_id: int) -> None:
+    """A deleted printer's id is free again; nothing about it may be remembered."""
+    _rebuilt.discard(printer_id)
+    _deferred_attempts.pop(printer_id, None)
 
 
 async def rebuild_once(printer_id: int) -> None:
@@ -271,10 +390,22 @@ async def rebuild_once(printer_id: int) -> None:
         ).scalar_one_or_none()
         if printer is None:
             return
-        deferred = await refresh_overlay(db, printer)
-    if deferred:
-        logger.info("overlay rebuild for printer %s deferred: Spoolman client not ready", printer_id)
+        outcome = await refresh_overlay(db, printer)
+    if outcome is RebuildOutcome.FAILED:
+        # Nothing was written and nothing is known — ask again on the next push
+        # rather than spend this printer's one rebuild on an exception.
         return
+    if outcome is RebuildOutcome.DEFERRED:
+        attempts = _deferred_attempts[printer_id] = _deferred_attempts.get(printer_id, 0) + 1
+        if attempts < MAX_DEFERRED_ATTEMPTS:
+            logger.info("overlay rebuild for printer %s deferred: Spoolman not readable", printer_id)
+            return
+        logger.warning(
+            "overlay rebuild for printer %s gave up after %d deferred attempts: Spoolman stayed unreadable, "
+            "Spoolman-assigned slots keep their live profile until they are re-assigned",
+            printer_id,
+            attempts,
+        )
     _rebuilt.add(printer_id)
 
 
@@ -295,7 +426,8 @@ def _slot_label(ams_id: int, tray_id: int) -> str:
 
 
 async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
-    candidates = (await iter_slot_projections(db, printer)).candidates
+    walk = await iter_slot_projections(db, printer)
+    candidates = walk.candidates
     nozzle = _nozzle(printer_manager.get_status(printer.id))
     remembered = overlay.entries_for(printer.id)
     rows: list[dict] = []
@@ -306,7 +438,10 @@ async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
             reasons.append(REASON_SLOT_EMPTY)
         # "revert": the policy no longer projects this slot but we once told the
         # printer something else — re-advertise the ACTUAL plan and forget.
-        revert = not c.projection.projected and (c.ams_id, c.tray_id) in remembered
+        # ``recovered`` answers the same question for a slot whose entry this
+        # process never held: after a restart with the switches already off the
+        # store is empty, and only the reconstruction knows the tray is masked.
+        revert = not c.projection.projected and ((c.ams_id, c.tray_id) in remembered or c.recovered is not None)
         if not loaded:
             action = "skip"
         elif c.projection.projected:
@@ -341,6 +476,9 @@ async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
             "applied": 0,
             "skipped": len(rows) - would_apply,
             "would_apply": would_apply,
+            # The list is HALVED, not empty, when Spoolman could not be read —
+            # say so, or the operator reads "3 slots" as the whole farm.
+            "spoolman_unavailable": walk.spoolman_deferred,
         }
 
     applied = 0
@@ -369,4 +507,10 @@ async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
                 r["kprofile"] = "kept"
             else:
                 r["kprofile"] = "skipped"
-    return {"dry_run": False, "rows": rows, "applied": applied, "skipped": len(rows) - applied}
+    return {
+        "dry_run": False,
+        "rows": rows,
+        "applied": applied,
+        "skipped": len(rows) - applied,
+        "spoolman_unavailable": walk.spoolman_deferred,
+    }

@@ -72,7 +72,12 @@ class BackupCompatibilityPolicy:
 
     @classmethod
     def from_dict(cls, raw: dict | None) -> BackupCompatibilityPolicy:
-        raw = raw or {}
+        # A persisted namespace is whatever the column holds: a list, a string
+        # or a bare ``true`` all reach here from a hand-edited row or a future
+        # writer, and ``.get`` on any of them is an AttributeError inside an
+        # MQTT callback. Unreadable means default-off, like absent.
+        if not isinstance(raw, dict):
+            raw = {}
         color = str(raw.get("canonical_color_rgba") or DEFAULT_CANONICAL_COLOR).strip().lstrip("#").upper()
         if not _OPAQUE_RGBA.fullmatch(color):
             color = DEFAULT_CANONICAL_COLOR
@@ -92,8 +97,10 @@ class BackupCompatibilityPolicy:
 class SlotProjection:
     """Both halves of one slot: what the spool IS and what the printer is told.
 
-    ``reasons`` explains a projection that did NOT happen — it is why the
-    advertised plan is the actual one, never a complaint about an applied mode.
+    ``reasons`` is why a MODE did not apply — never a complaint about one that
+    did, and never a status of its own: a projection with both a reason and an
+    applied mode is normal (generic refused, colour applied). ``.projected`` is
+    the one question a caller asks; a non-empty ``reasons`` answers nothing.
     """
 
     actual: SlotAssignmentPlan
@@ -172,12 +179,17 @@ async def project_slot_assignment(
     supports_user_preset: bool,
 ) -> SlotProjection:
     """Pure with respect to MQTT and DB writes; the only await is the catalog builder."""
+    # Gate order is the spec's (§6.1): the switch, then the two hard
+    # exclusions in the order they matter to the operator — an RFID spool is
+    # never masked wherever it sits, and only then is the external slot out of
+    # MVP scope. A slot that is both reports the RFID reason, which is the one
+    # that would still hold after external slots are covered.
     if not policy.enabled:
         return SlotProjection(actual, actual, reasons=(REASON_POLICY_OFF,))
-    if ams_id in (254, 255):
-        return SlotProjection(actual, actual, reasons=(REASON_EXTERNAL,))
     if slot_is_rfid(live_tray, spool_tag_uid, spool_tray_uuid):
         return SlotProjection(actual, actual, reasons=(REASON_RFID,))
+    if ams_id in (254, 255):
+        return SlotProjection(actual, actual, reasons=(REASON_EXTERNAL,))
 
     advertised = actual
     applied: list[str] = []
@@ -223,7 +235,18 @@ async def project_slot_assignment(
         # cols/ctype go too: a multi-colour tray the firmware sees as gradient
         # can never match a flat canonical colour, so leaving them would make
         # the colour mode a no-op on exactly the spools that need it.
-        advertised = replace(advertised, tray_color=policy.canonical_color_rgba, cols=[], ctype=0)
+        # ``warnings`` is copied, not shared: with generic mode off the
+        # advertised plan is ``replace``d straight off the ACTUAL one, and
+        # ``SlotAssignmentPlan.warnings`` is a mutable list — a caller
+        # appending to the advertised plan's notes would otherwise write into
+        # the spool's own plan.
+        advertised = replace(
+            advertised,
+            tray_color=policy.canonical_color_rgba,
+            cols=[],
+            ctype=0,
+            warnings=list(advertised.warnings),
+        )
         applied.append(APPLIED_COLOR)
 
     return SlotProjection(actual, advertised, tuple(applied), tuple(reasons))

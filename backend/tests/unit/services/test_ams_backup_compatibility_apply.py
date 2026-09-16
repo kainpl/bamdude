@@ -4,9 +4,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import delete
 
 from backend.app.models.filament_calibration import FilamentCalibration
 from backend.app.models.printer import Printer
+from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_k_profile import SpoolmanKProfile
@@ -151,6 +153,9 @@ async def test_refresh_overlay_rebuilds_from_the_registry(db_session):
 
 async def _spoolman_slot(db_session, printer, state, *, with_kprofile: bool) -> None:
     state.raw_data["ams"][0]["tray"].append(dict(MANUAL, id=3, tray_type="PETG", tray_color="00FF00FF"))
+    # The walk covers the slots of the CURRENT inventory mode (spec §4.3), so a
+    # Spoolman row is only this install's slot while Spoolman is the inventory.
+    db_session.add(Settings(key="spoolman_enabled", value="true"))
     db_session.add(SpoolmanSlotAssignment(printer_id=printer.id, ams_id=0, tray_id=3, spoolman_spool_id=SPOOLMAN_SPOOL))
     await db_session.commit()
     if not with_kprofile:
@@ -228,7 +233,7 @@ async def test_the_walk_says_when_the_spoolman_client_is_not_up_yet(db_session):
 @pytest.mark.asyncio
 async def test_rebuild_once_walks_a_printer_once_per_process(db_session):
     printer, _ = await _farm(db_session)
-    with patch.object(bulk, "refresh_overlay", new=AsyncMock(return_value=False)) as refresh:
+    with patch.object(bulk, "refresh_overlay", new=AsyncMock(return_value=bulk.RebuildOutcome.COMPLETE)) as refresh:
         await bulk.rebuild_once(printer.id)
         await bulk.rebuild_once(printer.id)
     refresh.assert_awaited_once()
@@ -239,7 +244,7 @@ async def test_rebuild_once_retries_while_the_spoolman_client_is_not_up(db_sessi
     """A rebuild that silently dropped the whole Spoolman registry must not
     count as the one rebuild this process gets."""
     printer, _ = await _farm(db_session)
-    with patch.object(bulk, "refresh_overlay", new=AsyncMock(return_value=True)) as refresh:
+    with patch.object(bulk, "refresh_overlay", new=AsyncMock(return_value=bulk.RebuildOutcome.DEFERRED)) as refresh:
         await bulk.rebuild_once(printer.id)
         await bulk.rebuild_once(printer.id)
     assert refresh.await_count == 2
@@ -250,3 +255,146 @@ async def test_rebuild_once_ignores_a_printer_that_is_gone(db_session):
     with patch.object(bulk, "refresh_overlay", new=AsyncMock()) as refresh:
         await bulk.rebuild_once(999999)
     refresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_spoolman_spool_defers_the_walk_too(db_session):
+    """ "Spoolman is down" and "the client is not up yet" are the same answer.
+
+    A per-spool ``continue`` left the walk looking COMPLETE, and the rebuild
+    then replaced a correct overlay with one missing every Spoolman slot."""
+    printer, state = await _farm(db_session)
+    await _spoolman_slot(db_session, printer, state, with_kprofile=False)
+    stub = SimpleNamespace(get_spool=AsyncMock(side_effect=RuntimeError("connection refused")))
+    with (
+        patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm,
+        patch("backend.app.services.spoolman.get_spoolman_client", new=AsyncMock(return_value=stub)),
+    ):
+        pm.get_status.return_value = state
+        walk = await bulk.iter_slot_projections(db_session, printer)
+    assert walk.spoolman_deferred is True
+    assert all(c.source == "internal" for c in walk.candidates)
+
+
+@pytest.mark.asyncio
+async def test_internal_mode_reads_no_spoolman_rows_and_never_defers(db_session):
+    """Leftover rows of a mode that was switched off are absent, not deferred —
+    the Spoolman client is never coming up, and the retry rides a hot callback."""
+    printer, state = await _farm(db_session)
+    await _spoolman_slot(db_session, printer, state, with_kprofile=False)
+    await db_session.execute(delete(Settings).where(Settings.key == "spoolman_enabled"))
+    await db_session.commit()
+    with (
+        patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm,
+        patch("backend.app.services.spoolman.get_spoolman_client", new=AsyncMock(return_value=None)) as client,
+    ):
+        pm.get_status.return_value = state
+        walk = await bulk.iter_slot_projections(db_session, printer)
+    assert walk.spoolman_deferred is False
+    assert all(c.source == "internal" for c in walk.candidates)
+    client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_walk_leaves_the_existing_entries_alone(db_session):
+    """A half answer may not replace the map: the entries the assign routes
+    wrote are EXACT, and every Spoolman slot would be dropped from them."""
+    printer, state = await _farm(db_session)
+    await _spoolman_slot(db_session, printer, state, with_kprofile=False)
+    from backend.app.services.ams_advertised_overlay import OverlayEntry
+
+    exact = {(0, 3): OverlayEntry("PETG", "00FF00FF", "GFG99", (), "000000FF", "GFG99", "spoolman")}
+    overlay.replace_printer(printer.id, exact)
+    with (
+        patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm,
+        patch("backend.app.services.spoolman.get_spoolman_client", new=AsyncMock(return_value=None)),
+    ):
+        pm.get_status.return_value = state
+        outcome = await bulk.refresh_overlay(db_session, printer)
+    assert outcome is bulk.RebuildOutcome.DEFERRED
+    assert overlay.entries_for(printer.id) == exact
+
+
+@pytest.mark.asyncio
+async def test_a_walk_that_threw_is_not_a_rebuild(db_session):
+    """ "Complete" and "threw" answered the same before — so one exception in a
+    hot callback spent the printer's one rebuild and left the overlay empty."""
+    printer, _ = await _farm(db_session)
+    with patch.object(bulk, "iter_slot_projections", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        outcome = await bulk.refresh_overlay(None, printer)
+    assert outcome is bulk.RebuildOutcome.FAILED
+    assert overlay.entries_for(printer.id) == {}
+    with patch.object(bulk, "refresh_overlay", new=AsyncMock(return_value=bulk.RebuildOutcome.FAILED)) as refresh:
+        await bulk.rebuild_once(printer.id)
+        await bulk.rebuild_once(printer.id)
+    assert refresh.await_count == 2  # not marked done, asked again on the next push
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_gives_up_after_five_deferred_attempts(db_session, caplog):
+    """The retry rides ``on_ams_change``, which fires several times a minute per
+    printer. A Spoolman that never comes back must not buy an unbounded walk."""
+    printer, _ = await _farm(db_session)
+    with (
+        patch.object(bulk, "refresh_overlay", new=AsyncMock(return_value=bulk.RebuildOutcome.DEFERRED)) as refresh,
+        caplog.at_level("WARNING"),
+    ):
+        for _ in range(bulk.MAX_DEFERRED_ATTEMPTS + 3):
+            await bulk.rebuild_once(printer.id)
+    assert refresh.await_count == bulk.MAX_DEFERRED_ATTEMPTS
+    assert str(printer.id) in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_bulk_apply_says_when_the_list_is_only_half_the_farm(db_session):
+    printer, state = await _farm(db_session)
+    await _spoolman_slot(db_session, printer, state, with_kprofile=False)
+    with (
+        patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm,
+        patch("backend.app.services.spoolman.get_spoolman_client", new=AsyncMock(return_value=None)),
+    ):
+        pm.get_status.return_value = state
+        preview = await bulk.bulk_apply(db_session, printer, MagicMock(), dry_run=True)
+    assert preview["spoolman_unavailable"] is True
+    assert all(r["source"] == "internal" for r in preview["rows"])
+
+
+async def _policy_switched_off(db_session, live_color: str):
+    printer, state = await _farm(db_session)
+    printer.ams_policies = {}
+    await db_session.commit()
+    state.raw_data["ams"][0]["tray"][0]["tray_color"] = live_color
+    return printer, state
+
+
+@pytest.mark.asyncio
+async def test_a_restart_with_the_policy_off_recovers_what_we_advertised(db_session):
+    """Otherwise a restart STRANDS every masked slot: the walk projects
+    ``policy_off`` for all of them, the overlay is emptied, routing believes the
+    masked live values and the bulk button never offers the revert that would
+    undo them — the section renders off the very entries it just lost."""
+    printer, state = await _policy_switched_off(db_session, "000000FF")
+    with patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm:
+        pm.get_status.return_value = state
+        assert await bulk.refresh_overlay(db_session, printer) is bulk.RebuildOutcome.COMPLETE
+    entry = overlay.entries_for(printer.id)[(0, 0)]
+    assert (entry.actual_color, entry.advertised_color) == ("FF0000FF", "000000FF")
+    with patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm:
+        pm.get_status.return_value = state
+        preview = await bulk.bulk_apply(db_session, printer, MagicMock(), dry_run=True)
+    row = next(r for r in preview["rows"] if (r["ams_id"], r["tray_id"]) == (0, 0))
+    assert row["action"] == "revert" and row["advertised"]["tray_color"] == "FF0000FF"
+
+
+@pytest.mark.asyncio
+async def test_a_live_colour_we_could_never_have_advertised_is_not_ours(db_session):
+    """Somebody set this slot from the printer's screen. No entry — the live
+    tray stays the truth and the existing auto-unlink rule decides its fate."""
+    printer, state = await _policy_switched_off(db_session, "123456FF")
+    with patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm:
+        pm.get_status.return_value = state
+        await bulk.refresh_overlay(db_session, printer)
+        preview = await bulk.bulk_apply(db_session, printer, MagicMock(), dry_run=True)
+    assert overlay.entries_for(printer.id) == {}
+    row = next(r for r in preview["rows"] if (r["ams_id"], r["tray_id"]) == (0, 0))
+    assert row["action"] == "skip" and row["reasons"] == ["policy_off"]
