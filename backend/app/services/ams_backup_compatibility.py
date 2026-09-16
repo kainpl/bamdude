@@ -188,6 +188,14 @@ async def project_slot_assignment(
         if generic is None:
             reasons.append(REASON_BASE_MATERIAL)
         else:
+            # The gradient comes off the ACTUAL plan, not off the caller. The
+            # builder writes cols as ``[base] + stops``, so the stops are
+            # already there; asking a caller to hand them over a second time is
+            # a two-arguments-in-sync footgun that fails silently — the rebuilt
+            # plan would come back flat (cols=[], ctype=0) and the printer would
+            # simply be told a one-colour tray, with colour mode off.
+            if extra_colors is None and len(actual.cols) > 1:
+                extra_colors = ",".join(actual.cols[1:])
             try:
                 # A whole rebuild, not a field swap: the generic family carries
                 # its OWN setting_id and per-printer temps, and a tray whose

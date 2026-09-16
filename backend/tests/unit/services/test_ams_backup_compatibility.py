@@ -60,6 +60,19 @@ async def test_generic_mode_rebuilds_a_whole_generic_preset(db_session):
 
 
 @pytest.mark.asyncio
+async def test_generic_only_keeps_a_gradient_spools_cols(db_session):
+    """Colour mode off means the WHOLE colour stays real, gradient included.
+
+    The caller need not hand the stops over twice: ``actual.cols`` already
+    carries them, so a caller that omits ``extra_colors`` must not silently
+    flatten a gradient tray to one colour."""
+    actual = await _actual(db_session, extra_colors="00FF00FF,0000FFFF")
+    p = await _project(db_session, actual, compat.BackupCompatibilityPolicy(generic_base_material=True))
+    assert p.applied == ("generic",)
+    assert p.advertised.cols == actual.cols and p.advertised.ctype == 1
+
+
+@pytest.mark.asyncio
 async def test_generic_mode_never_flattens_a_filled_material(db_session):
     actual = await build_slot_assignment(db_session, family_id="GFG99", material_override="PETG-CF", **P1S)
     p = await _project(
