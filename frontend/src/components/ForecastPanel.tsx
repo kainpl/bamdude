@@ -40,7 +40,8 @@ import { PaginationBar } from './PaginationBar';
 // ≈g hint) — the spec's explicit carve-out.
 
 type MarginUnit = 'days' | 'g' | 'kg';
-type SortKey = 'material' | 'spools' | 'used' | 'days_left' | 'stock' | 'empty_by' | 'reorder_by';
+type SortKey = 'material' | 'spools' | 'used' | 'days_left' | 'stock' | 'empty_by' | 'reorder_by'
+  | 'reserved' | 'free';
 type SpoolSortKey = 'id' | 'remaining' | 'used' | 'label';
 type SortDir = 'asc' | 'desc';
 type ChartDays = 7 | 30 | 180;
@@ -58,7 +59,7 @@ const FORECAST_SPOOL_SORT_KEY = 'bamdude-forecast-spool-sort';
 // is a REAL 400 over there — every persisted value passes sanitizeSort()
 // below BEFORE it can reach a request.
 const SORT_KEYS: readonly SortKey[] = [
-  'material', 'spools', 'used', 'days_left', 'stock', 'empty_by', 'reorder_by',
+  'material', 'spools', 'used', 'days_left', 'stock', 'reserved', 'free', 'empty_by', 'reorder_by',
 ];
 
 // The server caps per_page at 200; -1 is PaginationBar's "all" → `all=true`.
@@ -482,6 +483,9 @@ export function ForecastPanel() {
                   <SortableTh col="stock" active={sortKey} dir={sortDir} onSort={handleSort}>
                     {t('forecast.stock')}
                   </SortableTh>
+                  <SortableTh col="reserved" active={sortKey} dir={sortDir} onSort={handleSort}>
+                    <span title={t('forecast.reservedHint')}>{t('forecast.reserved')}</span>
+                  </SortableTh>
                   <SortableTh col="used" active={sortKey} dir={sortDir} onSort={handleSort}>
                     {t('forecast.dailyRate')}
                   </SortableTh>
@@ -517,6 +521,16 @@ export function ForecastPanel() {
               </tbody>
             </table>
           </div>
+
+          {/* Need in colours the shelf does not carry: a note, never a row - it has no SKU (spec 8). */}
+          {(forecastQuery.data?.unmatched_reserved?.length ?? 0) > 0 && (
+            <p className="px-4 py-2 text-xs text-bambu-gray border-t border-bambu-dark-tertiary/50">
+              {t('forecast.unmatchedReserved')}:{' '}
+              {(forecastQuery.data?.unmatched_reserved ?? [])
+                .map((u) => `${u.material}${u.colour ? ` ${u.colour}` : ''} ${Math.round(u.grams)}g`)
+                .join(' · ')}
+            </p>
+          )}
 
           {/* Pagination — counts from the served meta, archives-style */}
           {meta && (
@@ -607,6 +621,8 @@ function AlertBanner({ row: r, onCart }: { row: SkuForecastRow; onCart: () => vo
   const { t } = useTranslation();
   const label = rowLabel(r);
   const isBreak = r.stock_break_alert;
+  // An over-commitment IS the reorder alert's cause here; say the cause, not the effect.
+  const isOver = !isBreak && r.over_committed;
 
   return (
     <div className={`flex items-center gap-3 px-4 py-3 rounded-lg border text-sm ${
@@ -618,6 +634,10 @@ function AlertBanner({ row: r, onCart }: { row: SkuForecastRow; onCart: () => vo
         {isBreak ? (
           <span className="ml-2 text-xs opacity-80">
             {t('forecast.stockBreakRisk')} — {t('forecast.stockBreakDetail', { days: r.days_remaining, lt: r.eff_lead_time_days })}
+          </span>
+        ) : isOver ? (
+          <span className="ml-2 text-xs opacity-80">
+            {t('forecast.overCommitted')} — {t('forecast.overCommittedDetail', { grams: Math.round(r.reserved_g - r.total_remaining_g) })}
           </span>
         ) : (
           <span className="ml-2 text-xs opacity-80">
@@ -1026,6 +1046,24 @@ function ForecastRow({
           </div>
         </td>
 
+        {/* Reserved by orders (spec 8) */}
+        <td className="px-4 py-3">
+          {row.reserved_g > 0 ? (
+            <div className="flex flex-col">
+              <span className="text-sm text-white">{Math.round(row.reserved_g)}g</span>
+              {row.over_committed ? (
+                <span className="text-[11px] font-medium text-red-600 dark:text-red-400">
+                  {t('forecast.overCommitted')}
+                </span>
+              ) : (
+                <span className="text-xs text-bambu-gray">{t('forecast.free', { grams: Math.round(row.free_g) })}</span>
+              )}
+            </div>
+          ) : (
+            <span className="text-sm text-bambu-gray">&mdash;</span>
+          )}
+        </td>
+
         {/* Rate */}
         <td className="px-4 py-3">
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -1096,7 +1134,7 @@ function ForecastRow({
       {/* ── Expanded detail row ── */}
       {expanded && (
         <tr className="bg-bambu-dark-tertiary/10">
-          <td colSpan={9} className="px-4 py-4">
+          <td colSpan={10} className="px-4 py-4">
             <div className="space-y-3">
 
               {/* Single compact row: read-only stats + editable settings */}

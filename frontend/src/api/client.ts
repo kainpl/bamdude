@@ -5979,6 +5979,20 @@ export interface SkuForecastRow {
   /** LIVE spools of the group, ascending id — the lazy expanded row's exact
    *  membership (the spool list cannot filter on subtype or NULL fields). */
   spool_ids: number[];
+  /** Promised to active orders - plan not yet printed plus what waits in the
+   *  queues - projected onto this SKU by the server. 0 with no orders. */
+  reserved_g: number;
+  /** max(0, total_remaining_g - reserved_g). Drives Reorder By and the reorder alert. */
+  free_g: number;
+  /** reserved_g > total_remaining_g - orders need more than the shelf holds. */
+  over_committed: boolean;
+}
+
+/** Need in a material+colour no live SKU carries - listed under the table, never a row. */
+export interface UnmatchedReserved {
+  material: string;
+  colour: string | null;
+  grams: number;
 }
 
 export interface ForecastListPage {
@@ -5987,6 +6001,7 @@ export interface ForecastListPage {
   /** Un-snoozed alert rows across the WHOLE farm — filters never move it. */
   alert_count: number;
   global_lead_time_days: number;
+  unmatched_reserved: UnmatchedReserved[];
 }
 
 export interface ForecastListParams {

@@ -8932,6 +8932,12 @@ export default {
     daysLeft: 'Days Left',
     emptyBy: 'Empty By',
     reorderBy: 'Reorder By',
+    reserved: 'Reserved',
+    reservedHint: 'Promised to active orders — plan not yet printed plus what waits in the queues',
+    free: '{{grams}}g free',
+    overCommitted: 'Over-committed',
+    overCommittedDetail: 'orders need {{grams}}g more than the shelf holds',
+    unmatchedReserved: 'Reserved for colours not on the shelf',
     actions: 'Actions',
     // Rate tier badges
     trend: 'Trend',

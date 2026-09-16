@@ -141,6 +141,9 @@ const FORECAST_ROWS: SkuForecastRow[] = SPOOLS.map((s) => ({
   reorder_alert: false,
   alerts_snoozed: false,
   spool_ids: [s.id],
+  reserved_g: 0,
+  free_g: 1000,
+  over_committed: false,
 }));
 
 function setupHandlers() {
@@ -160,6 +163,7 @@ function setupHandlers() {
         items: FORECAST_ROWS,
         meta: { total: FORECAST_ROWS.length, current_page: 1, per_page: 50, last_page: 1 },
         alert_count: 0,
+        unmatched_reserved: [],
         global_lead_time_days: 0,
       });
     }),

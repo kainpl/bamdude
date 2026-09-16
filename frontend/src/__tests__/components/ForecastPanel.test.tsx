@@ -57,6 +57,9 @@ function row(over: Partial<SkuForecastRow> = {}): SkuForecastRow {
     reorder_alert: false,
     alerts_snoozed: false,
     spool_ids: [1, 2],
+    reserved_g: 0,
+    free_g: 1500,
+    over_committed: false,
     ...over,
   };
 }
@@ -94,6 +97,7 @@ function setupHandlers({
   chart = [] as ForecastChartSeriesEntry[],
   shoppingList = [] as unknown[],
   detailSpools = [detailSpool(1), detailSpool(2)],
+  unmatched = [] as { material: string; colour: string | null; grams: number }[],
 }: {
   rows?: SkuForecastRow[];
   alertCount?: number;
@@ -101,6 +105,7 @@ function setupHandlers({
   chart?: ForecastChartSeriesEntry[];
   shoppingList?: unknown[];
   detailSpools?: ReturnType<typeof detailSpool>[];
+  unmatched?: { material: string; colour: string | null; grams: number }[];
 } = {}) {
   forecastRequests = [];
   chartRequests = [];
@@ -125,6 +130,7 @@ function setupHandlers({
         },
         alert_count: alertCount,
         global_lead_time_days: 3,
+        unmatched_reserved: unmatched,
       });
     }),
     http.get('/api/v1/inventory/forecast/chart', ({ request }) => {
@@ -590,6 +596,54 @@ describe('ForecastPanel — a renderer of server-computed rows', () => {
     fireEvent.click(await screen.findByText('By Duration'));
 
     expect(await screen.findByText('4 spools')).toBeInTheDocument();
+  });
+
+  it('shows what orders have promised, and what is left to promise', async () => {
+    setupHandlers({ rows: [row({ reserved_g: 600, free_g: 900 })] });
+    render(<ForecastPanel />);
+    await waitFor(() => expect(screen.getByText('600g')).toBeInTheDocument());
+    expect(screen.getByText('900g free')).toBeInTheDocument();
+    expect(screen.getByText('Reserved')).toBeInTheDocument();
+  });
+
+  it('a row nobody has promised anything from shows a dash, not 0g', async () => {
+    setupHandlers({ rows: [row()] });
+    render(<ForecastPanel />);
+    await waitFor(() => expect(screen.getByText('eSun PLA Blue')).toBeInTheDocument());
+    expect(screen.queryByText('0g free')).not.toBeInTheDocument();
+  });
+
+  it('an over-committed row says so in the cell and in the banner', async () => {
+    setupHandlers({
+      rows: [row({ reserved_g: 2000, free_g: 0, over_committed: true, reorder_alert: true, days_until_rop: -5 })],
+      alertCount: 1,
+    });
+    render(<ForecastPanel />);
+    await waitFor(() => expect(screen.getByText('Over-committed')).toBeInTheDocument()); // the cell
+    // The banners live behind the alert toggle ("1 alert" - forecast.alertCount_one); open it.
+    fireEvent.click(screen.getByText('1 alert'));
+    // The banner names the CAUSE in one sentence; the cell carries the label alone.
+    await waitFor(() =>
+      expect(screen.getByText(/Over-committed.*orders need 500g more than the shelf holds/)).toBeInTheDocument()
+    );
+  });
+
+  it('need in a colour nobody stocks is listed under the table, not as a row', async () => {
+    setupHandlers({ unmatched: [{ material: 'PLA', colour: 'coral', grams: 320 }] });
+    render(<ForecastPanel />);
+    await waitFor(() => expect(screen.getByText(/Reserved for colours not on the shelf/)).toBeInTheDocument());
+    expect(screen.getByText(/PLA coral 320g/)).toBeInTheDocument();
+    expect(screen.getAllByRole('row').filter((r) => r.textContent?.includes('coral'))).toHaveLength(0);
+  });
+
+  it('the Reserved header sorts on the server', async () => {
+    setupHandlers({ total: 3 });
+    render(<ForecastPanel />);
+    await waitFor(() => expect(screen.getByText('eSun PLA Blue')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Reserved'));
+    await waitFor(() =>
+      expect(forecastRequests.some((u) => u.searchParams.get('sort_by') === 'reserved_desc')).toBe(true)
+    );
   });
 
   it('a SKU with no label weight anywhere keeps the documented 1000 g fallback', async () => {
