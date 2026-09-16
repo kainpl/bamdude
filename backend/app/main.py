@@ -2375,6 +2375,32 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         continue
 
                     if not _colors_similar(cur_color, fp_color) or cur_type.upper() != fp_type.upper():
+                        # The tray may have been reconfigured to what WE
+                        # advertised (backup-compatibility emulation): under
+                        # colour mode the printer echoes the canonical colour,
+                        # which matches neither the pre-publish fingerprint nor
+                        # the spool — and unlinking here would delete the
+                        # assignment, forget the overlay and leave routing
+                        # reading the masked slot as the mask. The overlay's own
+                        # ``matches_live`` is the proof it was us: it compares
+                        # the live tray against the advertised plan we recorded
+                        # after a successful publish.
+                        from backend.app.services import ams_advertised_overlay as _overlay
+
+                        _entry = _overlay.entries_for(printer_id).get((assignment.ams_id, assignment.tray_id))
+                        if _entry is not None and _overlay.matches_live(_entry, current_tray):
+                            logger.info(
+                                "Auto-unlink: spool %d AMS%d-T%d - tray matches the advertised profile "
+                                "(%s/%s) — keeping assignment",
+                                assignment.spool_id,
+                                assignment.ams_id,
+                                assignment.tray_id,
+                                _entry.advertised_variant,
+                                _entry.advertised_color,
+                            )
+                            assignment.fingerprint_color = cur_color
+                            assignment.fingerprint_type = cur_type
+                            continue
                         # Fingerprint mismatch - but check if tray now matches the
                         # assigned spool (e.g. auto-configure changed the tray).
                         spool = assignment.spool
