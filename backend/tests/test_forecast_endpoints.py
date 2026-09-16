@@ -819,6 +819,22 @@ class TestForecastReserved:
         assert body["alert_count"] == 1
         assert body["items"][0]["over_committed"] is True and body["items"][0]["reorder_alert"] is False
 
+    async def test_the_chart_logistics_and_csv_never_load_the_farms_need(self, async_client, db_session):
+        """They draw from the physical remaining and read no reorder date, so a
+        plan-engine walk per request would buy nothing (spec 3)."""
+        await _spool(db_session, material="PLA", brand="Bambu", color_name="Black")
+
+        async def _never(db):  # pragma: no cover - the assertion is that this is never reached
+            raise AssertionError("these three read the shelf, never the orders")
+
+        with patch.object(forecast_engine, "needs_grams_of_farm", _never):
+            for url in (
+                "/api/v1/inventory/forecast/chart",
+                "/api/v1/inventory/forecast/logistics",
+                "/api/v1/inventory/shopping-list/export.csv",
+            ):
+                assert (await async_client.get(url)).status_code == 200, url
+
     async def test_a_real_order_reserves_through_the_real_need(self, async_client, db_session, tmp_path):
         """End to end, no mocks: the order pages' arithmetic reaches the forecast row (spec §2)."""
         hook = LibraryFile(

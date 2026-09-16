@@ -67,6 +67,7 @@ from backend.app.schemas.spool_usage import (
     SpoolUsageTotals,
 )
 from backend.app.services import forecast_engine, inventory_service, spool_usage_service
+from backend.app.services.filament_needs import Needs
 from backend.app.services.location_service import (
     DUPLICATE_LOCATION_NAME,
     assign_location_name,
@@ -3529,7 +3530,11 @@ async def get_inventory_forecast_chart(
 
     now = datetime.now(timezone.utc)
     today = now.date()
-    rows = await forecast_engine.compute_forecast(db, now=now)
+    # No orders are read here: the chart, the logistics bumps and the shopping
+    # list all draw from the PHYSICAL remaining and never touch a reorder date
+    # (vault 60-specs/forecast-reserved-by-orders-spec 3), so loading the farm
+    # need would be a plan-engine walk per request for nothing.
+    rows = await forecast_engine.compute_forecast(db, now=now, reserved=Needs())
 
     # The client drops rate-less rows BEFORE ranking (`dailyRateG !== null`),
     # then takes the 5 biggest consumers. The stable sort keeps the collapsed-
@@ -3581,7 +3586,11 @@ async def get_inventory_forecast_logistics(
 
     now = datetime.now(timezone.utc)
     today = now.date()
-    rows = await forecast_engine.compute_forecast(db, now=now)
+    # No orders are read here: the chart, the logistics bumps and the shopping
+    # list all draw from the PHYSICAL remaining and never touch a reorder date
+    # (vault 60-specs/forecast-reserved-by-orders-spec 3), so loading the farm
+    # need would be a plan-engine walk per request for nothing.
+    rows = await forecast_engine.compute_forecast(db, now=now, reserved=Needs())
     by_key = {forecast_engine.sku_key(r.material, r.subtype, r.brand, r.color_name): r for r in rows}
 
     items = (await db.execute(select(ShoppingListItem).order_by(ShoppingListItem.added_at.desc()))).scalars().all()
@@ -3667,7 +3676,11 @@ async def export_shopping_list_csv(
 
     now = datetime.now(timezone.utc)
     today = now.date()
-    rows = await forecast_engine.compute_forecast(db, now=now)
+    # No orders are read here: the chart, the logistics bumps and the shopping
+    # list all draw from the PHYSICAL remaining and never touch a reorder date
+    # (vault 60-specs/forecast-reserved-by-orders-spec 3), so loading the farm
+    # need would be a plan-engine walk per request for nothing.
+    rows = await forecast_engine.compute_forecast(db, now=now, reserved=Needs())
     by_key = {forecast_engine.sku_key(r.material, r.subtype, r.brand, r.color_name): r for r in rows}
     global_lead = await forecast_engine._global_lead_time_days(db)
 
