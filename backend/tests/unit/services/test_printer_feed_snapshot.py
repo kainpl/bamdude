@@ -139,7 +139,7 @@ def test_external_report_alone_cannot_authorize_no_ams_wire_encoding():
     )
 
 
-def _petg_slot(state, color, variant):
+def _ams_slot(state, color, variant, material="PETG"):
     state.feed_telemetry.observe(
         {
             "print": {
@@ -147,7 +147,7 @@ def _petg_slot(state, color, variant):
                     "ams": [
                         {
                             "id": 0,
-                            "tray": [{"id": 1, "tray_type": "PETG", "tray_color": color, "tray_info_idx": variant}],
+                            "tray": [{"id": 1, "tray_type": material, "tray_color": color, "tray_info_idx": variant}],
                         }
                     ]
                 }
@@ -163,7 +163,7 @@ def test_overlay_returns_the_actual_spool_and_moves_the_revision():
     from backend.tests.unit.services.test_filament_routing import requirements
 
     state = PrinterState(connected=True, connection_generation=1)
-    _petg_slot(state, "000000FF", "GFG99")
+    _ams_slot(state, "000000FF", "GFG99")
     plain = snapshot_from_state(1, "P1S", state)
     entry = OverlayEntry("PETG", "FF0000FF", "GFG00", (), "000000FF", "GFG99", "internal")
     overlaid = snapshot_from_state(1, "P1S", state, overlay={(0, 1): entry})
@@ -186,10 +186,33 @@ def test_a_dormant_overlay_entry_is_not_applied():
     # reconfigured the slot on its screen. The actual values are a third pair,
     # so applying the entry would visibly change the source: with actual ==
     # live, dropping the ``matches_live`` guard would still pass.
-    _petg_slot(state, "FF0000FF", "GFG00")
+    _ams_slot(state, "FF0000FF", "GFG00")
     entry = OverlayEntry("PETG", "00FF00FF", "GFA00", (), "000000FF", "GFG99", "internal")
     dormant = snapshot_from_state(1, "P1S", state, overlay={(0, 1): entry})
     assert (dormant.sources[0].color, dormant.sources[0].variant) == ("FF0000FF", "GFG00")
     # And a dormant entry is not a change: it must not move the revision, or
     # every routing decision would be invalidated for nothing.
     assert dormant.revision == snapshot_from_state(1, "P1S", state).revision
+
+
+def test_a_strict_variant_job_does_not_match_the_generic_the_slot_advertises():
+    """Generic mode masks the VARIANT, and a strict job asks for exactly that.
+
+    Mirrors the colour case above: the spool is PLA Matte, the slot is
+    advertised as Generic PLA, and with ``allow_base_material_match=False`` the
+    job is compatible only when routing can see through the mask.
+    """
+    from backend.app.services.ams_advertised_overlay import OverlayEntry
+    from backend.app.services.filament_routing import RoutingPolicy, resolve_filament_routing
+    from backend.tests.unit.services.test_filament_routing import requirements
+
+    state = PrinterState(connected=True, connection_generation=1)
+    _ams_slot(state, "FF0000FF", "GFL99", material="PLA")  # Generic PLA, as advertised
+    plain = snapshot_from_state(1, "P1S", state)
+    entry = OverlayEntry("PLA", "FF0000FF", "GFA01", (), "FF0000FF", "GFL99", "internal")  # really PLA Matte
+    overlaid = snapshot_from_state(1, "P1S", state, overlay={(0, 1): entry})
+
+    matte_job = requirements({"type": "PLA", "color": "#FF0000", "tray_info_idx": "GFA01"}, model="P1S")
+    strict = RoutingPolicy(force_color_match=True, allow_base_material_match=False)
+    assert resolve_filament_routing(matte_job, strict, plain).status != "compatible"
+    assert resolve_filament_routing(matte_job, strict, overlaid).status == "compatible"
