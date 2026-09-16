@@ -36,9 +36,6 @@ from backend.app.services.queue_times import print_time_for_row
 from backend.app.services.stagger_groups import StaggerGroupResolver
 from backend.app.utils.printer_models import normalize_model_name
 
-#: What the simulation does NOT model in this version; every surface shows it.
-ASSUMPTIONS: tuple[str, ...] = ("stagger", "plate_clear", "drying", "prep")
-
 
 def model_key(model: str | None) -> str | None:
     """The auto-queue's comparison key — both sides through the same normaliser."""
@@ -598,6 +595,74 @@ def forecast_orders(
 # ---------- the loader ----------
 
 
+@dataclass(frozen=True)
+class _Gates:
+    """The per-request answers a snapshot is built with (spec §6)."""
+
+    upload: int
+    stage_inherit: int
+    stage_on: int
+    plate_clear: int
+    drying_blocks: bool
+
+    def prep_for(self, override: str | None) -> int:
+        """Upload allowance plus the preheat stage a row with this override will run."""
+        override = (override or "inherit").lower()
+        if override == "off":
+            return self.upload
+        if override == "on":
+            return self.upload + self.stage_on
+        return self.upload + self.stage_inherit
+
+
+async def _load_gates(db: AsyncSession) -> _Gates:
+    # Lazy: the settings route pulls in schemas that would cycle at import — the
+    # same reason ``preheat.py`` imports it this way.
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.services.preheat import planned_stage_seconds
+
+    async def _int(key: str, default: int) -> int:
+        raw = await get_setting(db, key)
+        try:
+            return int(raw) if raw not in (None, "") else default
+        except (TypeError, ValueError):
+            return default
+
+    async def _bool(key: str) -> bool:
+        return ((await get_setting(db, key)) or "").strip().lower() == "true"
+
+    return _Gates(
+        upload=max(0, await _int("forecast_upload_seconds", 120)),
+        stage_inherit=await planned_stage_seconds(db),
+        stage_on=await planned_stage_seconds(db, override="on"),
+        plate_clear=max(0, await _int("forecast_plate_clear_minutes", 10)) * 60,
+        drying_blocks=await _bool("queue_drying_enabled") and await _bool("queue_drying_block"),
+    )
+
+
+async def _load_stagger(db: AsyncSession) -> StaggerPolicy | None:
+    """The scheduler's stagger state as its banner reports it, plus the resolver
+    it gates with — loaded by the scheduler's own loader, never a private copy."""
+    from backend.app.services.print_scheduler import scheduler
+    from backend.app.services.stagger_groups import StaggerSplit
+
+    snap = await scheduler.get_stagger_state_snapshot(db)
+    if not snap.get("enabled"):
+        return None
+    resolver = await StaggerGroupResolver.load(db, await StaggerSplit.from_settings(db))
+    live: dict[int, int] = {}
+    for group in snap.get("groups", []):
+        for slot in group.get("slots", []):  # a wildcard sits in several groups: one entry per printer
+            live[int(slot["printer_id"])] = max(0, int(slot["seconds_to_free"]))
+    return StaggerPolicy(
+        concurrent=max(1, int(snap["concurrent"])),
+        interval_seconds=int(snap["interval_minutes"]) * 60,
+        wait_for_bed=bool(snap["wait_for_bed"]),
+        resolver=resolver,
+        live=live,
+    )
+
+
 async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
     """What the farm already owes, from the database alone.
 
@@ -613,27 +678,71 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
     reader the queue response uses. Staged = pending auto-queue rows nobody has
     handed to a printer yet. ``PrinterQueue.id == printer_id`` is the invariant
     the queued-rows join leans on.
+
+    The gates ride along, read once per request (spec §6): the plate-clear
+    allowance and what the printer awaits now, the blocking drying cycle, the
+    preparation before each not-yet-started print, and the stagger policy with
+    the slots the scheduler holds right now.
     """
+    from backend.app.services.print_scheduler import scheduler
+
+    gates = await _load_gates(db)
+    stagger = await _load_stagger(db)
     # Columns, not the ``Printer`` entity: hydrating the mapped object would
     # fire its ``lazy="selectin"`` relationships (``location``, ``tags``) as a
     # second, unwanted "FROM printers" round trip on every call.
     printers = (
         await db.execute(
-            select(Printer.id, Printer.model, Printer.is_active, PrinterQueue.status, PrinterQueue.is_paused)
+            select(
+                Printer.id,
+                Printer.model,
+                Printer.is_active,
+                Printer.require_plate_clear,
+                Printer.awaiting_plate_clear,
+                Printer.swap_mode_enabled,
+                Printer.stagger_interval_minutes,
+                PrinterQueue.status,
+                PrinterQueue.is_paused,
+            )
             .outerjoin(PrinterQueue, PrinterQueue.printer_id == Printer.id)
             .where(Printer.archived.is_(False))
         )
     ).all()
     machines: dict[int, MachineState] = {}
-    for printer_id, model, is_active, queue_status, is_paused in printers:
+    for (
+        printer_id,
+        model,
+        is_active,
+        require_plate_clear,
+        awaiting_plate_clear,
+        swap_mode_enabled,
+        interval_minutes,
+        queue_status,
+        is_paused,
+    ) in printers:
+        # Swap mode clears the plate by macro; the gate is never armed for it (spec §5.3).
+        gap = gates.plate_clear if (require_plate_clear and not swap_mode_enabled) else 0
+        waiting = gap if awaiting_plate_clear else 0
+        if gates.drying_blocks:
+            waiting = max(waiting, scheduler.drying_remaining_seconds(printer_id))
         machines[printer_id] = MachineState(
             printer_id=printer_id,
             model=model,
             accepts_new_work=bool(is_active) and not is_paused and queue_status not in ("paused", "error"),
+            plate_clear_seconds=float(gap),
+            waiting_seconds=float(waiting),
+            stagger_interval_seconds=(int(interval_minutes) * 60) if interval_minutes else None,
         )
     staged = await _staged(db)
+    caveats: tuple[str, ...] = ("drying",) if gates.drying_blocks else ()
     if not machines:
-        return FarmSnapshot(printers=[], staged=staged)
+        return FarmSnapshot(
+            printers=[],
+            staged=staged,
+            prep_seconds=gates.prep_for("inherit"),
+            stagger=stagger,
+            assumptions=caveats,
+        )
     running = (
         await db.execute(
             select(
@@ -658,7 +767,7 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
             remaining = int(round(max(0.0, estimate - elapsed)))
         # Appended before the pending-rows loop below, while ``queued`` is
         # still empty — this IS the head of the machine's queued work.
-        machine.queued.append(QueuedRow(order_id=project_id, seconds=remaining))
+        machine.queued.append(QueuedRow(order_id=project_id, seconds=remaining, started=True))
     rows = (
         (
             await db.execute(
@@ -688,8 +797,16 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
             plate_id=item.plate_id,
             descriptor=loaded_descriptor(item),
         )
-        machine.queued.append(QueuedRow(order_id=item.project_id, seconds=seconds))
-    return FarmSnapshot(printers=list(machines.values()), staged=staged)
+        machine.queued.append(
+            QueuedRow(order_id=item.project_id, seconds=seconds, prep_seconds=gates.prep_for(item.preheat_override))
+        )
+    return FarmSnapshot(
+        printers=list(machines.values()),
+        staged=staged,
+        prep_seconds=gates.prep_for("inherit"),
+        stagger=stagger,
+        assumptions=caveats,
+    )
 
 
 async def _staged(db: AsyncSession) -> list[StagedJob]:

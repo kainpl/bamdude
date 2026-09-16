@@ -146,6 +146,8 @@ async def get_settings(
                 "stagger_concurrent",
                 "stagger_interval_minutes",
                 "forecast_global_lead_time_days",
+                "forecast_upload_seconds",
+                "forecast_plate_clear_minutes",
                 "firmware_batch_concurrency",
                 "session_max_hours",
             ]:

@@ -2368,6 +2368,24 @@ class PrintScheduler:
             state.pop("running", None)
             state["ended_at"] = time.monotonic()
 
+    def drying_remaining_seconds(self, printer_id: int) -> int:
+        """Seconds left in the drying cycle THIS scheduler runs on ``printer_id`` — 0 when it runs none.
+
+        The forecast's read of the queue gate (``_drying_in_progress`` and
+        ``queue_drying_block`` in ``check_queue``): the same claim, timed by the
+        AMS countdown the printer reports (``dry_time``, minutes; the longest
+        unit wins). A cycle somebody started by hand is not ours and holds
+        nothing here, exactly as it holds nothing at the gate. Vault
+        60-specs/farm-forecast-v2-spec §6.
+        """
+        if not self._drying_in_progress.get(printer_id):
+            return 0
+        state = printer_manager.get_status(printer_id)
+        if not state:
+            return 0
+        minutes = max((int(unit.get("dry_time") or 0) for unit in state.raw_data.get("ams", [])), default=0)
+        return max(0, minutes) * 60
+
     def _sync_drying_state(self):
         """Drop what is no longer true: printers that have stopped drying, and
         claims on cycles that have ended.

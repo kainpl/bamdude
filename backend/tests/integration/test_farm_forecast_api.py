@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from backend.app.api.routes.settings import set_setting
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
@@ -13,6 +14,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.app.models.settings import Settings
 from backend.app.services import farm_forecast
 from backend.tests.unit.services.test_product_composition import counting_statements
 
@@ -65,6 +67,15 @@ async def farm(db_session, printer_factory):
         [
             ProductPlate(product_id=product.id, library_file_id=hook_p1s.id, plate_index=0),
             ProductPlate(product_id=product.id, library_file_id=hook_x1c.id, plate_index=0),
+        ]
+    )
+    # The two v2 allowances default to 120 s and 10 min. The tests below pin the
+    # simulation's bare arithmetic, so the fixture switches both off explicitly;
+    # the gate tests set what they need themselves.
+    db_session.add_all(
+        [
+            Settings(key="forecast_upload_seconds", value="0"),
+            Settings(key="forecast_plate_clear_minutes", value="0"),
         ]
     )
     await db_session.commit()
@@ -212,7 +223,7 @@ async def test_the_batch_route_answers_per_order_with_the_farm_header(committing
     assert body["farm"]["free_seconds"] == 0 and body["farm"]["free_at"].endswith("Z")
     (row,) = body["orders"]  # the duplicate id answers once
     assert row["project_id"] == o and row["now_seconds"] == H and row["now_eta"].endswith("Z")
-    assert row["assumptions"] == ["stagger", "plate_clear", "drying", "prep"]
+    assert row["assumptions"] == []
     assert row["machine_seconds"] == 2 * H and row["unknown_prints"] == 0 and row["unroutable_prints"] == 0
 
 
@@ -285,3 +296,84 @@ async def test_the_queue_route_matches_the_batch_farm_header(committing_client, 
     assert rows[p1.id]["free_seconds"] == H and rows[p1.id]["unknown_prints"] == 1
     assert rows[p1.id]["free_at"].endswith("Z")
     assert all(rows[p.id]["free_seconds"] == 0 and rows[p.id]["unknown_prints"] == 0 for p in farm["printers"][1:])
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_carries_the_gates(db_session, farm):
+    """Plate gap, what the printer awaits now, per-row and default preparation, and the drying line."""
+    p1, p2, x1 = farm["printers"]
+    hook_p1s, _ = farm["files"]
+    await set_setting(db_session, "forecast_upload_seconds", "120")
+    await set_setting(db_session, "forecast_plate_clear_minutes", "10")
+    p1.awaiting_plate_clear = True  # require_plate_clear defaults to True
+    p2.require_plate_clear = False
+    x1.swap_mode_enabled = True  # the change-table macro clears the plate for it
+    db_session.add(PrintQueueItem(queue_id=p2.id, library_file_id=hook_p1s.id, status="pending"))
+    db_session.add(
+        PrintQueueItem(queue_id=p2.id, library_file_id=hook_p1s.id, status="pending", preheat_override="off")
+    )
+    await db_session.commit()
+    snapshot = await farm_forecast.load_snapshot(db_session, NOW)
+    machines = {m.printer_id: m for m in snapshot.printers}
+    assert machines[p1.id].plate_clear_seconds == 600 and machines[p1.id].waiting_seconds == 600
+    assert machines[p2.id].plate_clear_seconds == 0 and machines[p2.id].waiting_seconds == 0
+    assert machines[x1.id].plate_clear_seconds == 0
+    assert [row.prep_seconds for row in machines[p2.id].queued] == [120, 120]  # preheat is off: upload only
+    assert not any(row.started for row in machines[p2.id].queued)
+    assert snapshot.prep_seconds == 120 and snapshot.stagger is None and snapshot.assumptions == ()
+    # The preheat stage rides on top — from its own settings, and per row.
+    await set_setting(db_session, "preheat_enabled", "true")
+    await db_session.commit()
+    snapshot = await farm_forecast.load_snapshot(db_session, NOW)
+    assert snapshot.prep_seconds == 120 + 900 + 300
+    assert sorted(row.prep_seconds for row in {m.printer_id: m for m in snapshot.printers}[p2.id].queued) == [120, 1320]
+    # Drying is a caveat only while it can block the queue.
+    await set_setting(db_session, "queue_drying_enabled", "true")
+    await db_session.commit()
+    assert (await farm_forecast.load_snapshot(db_session, NOW)).assumptions == ()
+    await set_setting(db_session, "queue_drying_block", "true")
+    await db_session.commit()
+    assert (await farm_forecast.load_snapshot(db_session, NOW)).assumptions == ("drying",)
+
+
+@pytest.mark.asyncio
+async def test_the_running_head_is_marked_started(db_session, farm):
+    p1, _p2, _x1 = farm["printers"]
+    db_session.add(
+        PrintArchive(
+            printer_id=p1.id,
+            filename="r",
+            file_path="",
+            file_size=0,
+            status="printing",
+            started_at=NOW - timedelta(minutes=30),
+            print_time_seconds=H,
+        )
+    )
+    db_session.add(PrintQueueItem(queue_id=p1.id, library_file_id=farm["files"][0].id, status="pending"))
+    await db_session.commit()
+    snapshot = await farm_forecast.load_snapshot(db_session, NOW)
+    rows = {m.printer_id: m for m in snapshot.printers}[p1.id].queued
+    assert [(row.started, row.prep_seconds) for row in rows] == [(True, 0), (False, 0)]
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_reads_the_stagger_policy(db_session, farm):
+    p1, p2, _x1 = farm["printers"]
+    assert (await farm_forecast.load_snapshot(db_session, NOW)).stagger is None
+    for key, value in (
+        ("stagger_enabled", "true"),
+        ("stagger_concurrent", "3"),
+        ("stagger_interval_minutes", "4"),
+        ("stagger_wait_for_bed", "false"),
+    ):
+        await set_setting(db_session, key, value)
+    p1.stagger_interval_minutes = 2
+    await db_session.commit()
+    snapshot = await farm_forecast.load_snapshot(db_session, NOW)
+    policy = snapshot.stagger
+    assert policy is not None
+    assert (policy.concurrent, policy.interval_seconds, policy.wait_for_bed, policy.live) == (3, 240, False, {})
+    assert policy.resolver.groups_for(p1.id) == {(None, None)}
+    machines = {m.printer_id: m for m in snapshot.printers}
+    assert machines[p1.id].stagger_interval_seconds == 120 and machines[p2.id].stagger_interval_seconds is None

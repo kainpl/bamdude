@@ -328,6 +328,26 @@ class AppSettings(BaseModel):
         default=True,
         description="Slot frees when bed reaches target temp (±1°C). When off, frees immediately after start.",
     )
+    # ETA forecast allowances (vault 60-specs/farm-forecast-v2-spec §7). Read only
+    # by ``services/farm_forecast.load_snapshot``; the queue never reads them.
+    forecast_upload_seconds: int = Field(
+        default=120,
+        ge=0,
+        le=3600,
+        description=(
+            "Seconds the ETA forecast adds before every print that has not started yet, for sending the file "
+            "to the printer. The preheat stage is added on top from its own settings."
+        ),
+    )
+    forecast_plate_clear_minutes: int = Field(
+        default=10,
+        ge=0,
+        le=1440,
+        description=(
+            "Minutes the ETA forecast allows for the plate-clear confirmation after every print on a printer "
+            "that requires it. 0 = assume the plate is cleared at once."
+        ),
+    )
     # Staggered start by group — electrical phases. Design:
     # docs/superpowers/specs/2026-09-05-stagger-groups-design.md. The id lists
     # are JSON arrays kept as strings like every structured setting here;
@@ -708,6 +728,8 @@ class AppSettingsUpdate(BaseModel):
     stagger_concurrent: int | None = None
     stagger_interval_minutes: int | None = None
     stagger_wait_for_bed: bool | None = None
+    forecast_upload_seconds: int | None = Field(default=None, ge=0, le=3600)
+    forecast_plate_clear_minutes: int | None = Field(default=None, ge=0, le=1440)
     stagger_split_by_tags: bool | None = None
     stagger_group_tag_ids: str | None = None
     stagger_split_by_location: bool | None = None

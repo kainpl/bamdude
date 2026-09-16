@@ -451,7 +451,7 @@ def _order_forecast_fields(f: farm_forecast.OrderForecast) -> dict:
         "unknown_prints": f.unknown_prints,
         "unroutable_prints": f.unroutable_prints,
         "ahead_count": f.ahead_count,
-        "assumptions": list(farm_forecast.ASSUMPTIONS),
+        "assumptions": list(f.assumptions),
     }
 
 
