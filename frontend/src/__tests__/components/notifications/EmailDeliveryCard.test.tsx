@@ -28,6 +28,11 @@ describe('EmailDeliveryCard', () => {
     );
   });
 
+  it('shows a spinner while the preferences are still loading', () => {
+    render(<EmailDeliveryCard />);
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
+  });
+
   it('renders the four switches and saves a toggled one', async () => {
     render(<EmailDeliveryCard />);
     const switches = await screen.findAllByRole('switch');
