@@ -39,6 +39,7 @@ from backend.app.schemas.forecast import (
     ForecastListPage,
     ForecastLogisticsRow,
     SkuForecastRowResponse,
+    UnmatchedReservedResponse,
 )
 from backend.app.schemas.location import LocationCreate, LocationResponse, LocationUpdate
 from backend.app.schemas.spool import (
@@ -3367,7 +3368,9 @@ async def clear_shopping_list(
 # tiebreak the client never needed (it re-sorted a whole in-memory array; a
 # paged walk cannot afford ties resolved by chance).
 
-_FORECAST_SORT_KEYS = frozenset({"material", "spools", "used", "days_left", "stock", "empty_by", "reorder_by"})
+_FORECAST_SORT_KEYS = frozenset(
+    {"material", "spools", "used", "days_left", "stock", "empty_by", "reorder_by", "reserved", "free"}
+)
 _FORECAST_DEFAULT_SORT = "material_asc"  # the client's loadSort fallback: key 'material', dir 'asc'
 _FORECAST_CHART_DAY_CHOICES = (7, 30, 180)  # the client's CHART_TIMEFRAMES
 
@@ -3395,8 +3398,13 @@ def _js_round(value: float) -> int:
 
 
 def _forecast_has_alert(row: forecast_engine.SkuForecastRow) -> bool:
-    """The client's badge predicate: an un-snoozed stock-break or reorder."""
-    return (row.stock_break_alert or row.reorder_alert) and not row.alerts_snoozed
+    """The client's badge predicate: an un-snoozed stock-break, reorder, or over-commitment.
+
+    Over-commitment counts even with no rate (spec §6) — it is a fact about
+    promises, not about pace, and a rate-less row would otherwise hide the one
+    alarm it can raise.
+    """
+    return (row.stock_break_alert or row.reorder_alert or row.over_committed) and not row.alerts_snoozed
 
 
 def _forecast_sort_rows(
@@ -3434,6 +3442,10 @@ def _forecast_sort_rows(
             return row.days_remaining if row.days_remaining is not None else 999999
         if key_name == "stock":
             return row.total_remaining_g
+        if key_name == "reserved":
+            return row.reserved_g
+        if key_name == "free":
+            return row.free_g
         anchor = row.projected_empty_date if key_name == "empty_by" else row.reorder_trigger_date
         return anchor.toordinal() if anchor is not None else dateless
 
@@ -3466,7 +3478,8 @@ async def get_inventory_forecast(
     client's badge read the unfiltered set, so the filters must not move it;
     ``meta.total`` counts the filtered set.
     """
-    rows = await forecast_engine.compute_forecast(db)
+    result = await forecast_engine.compute_forecast_full(db)
+    rows = result.rows
     alert_count = sum(1 for r in rows if _forecast_has_alert(r))
 
     if material is not None:
@@ -3490,6 +3503,10 @@ async def get_inventory_forecast(
         ),
         alert_count=alert_count,
         global_lead_time_days=await forecast_engine._global_lead_time_days(db),
+        unmatched_reserved=[
+            UnmatchedReservedResponse(material=u.material, colour=u.colour, grams=u.grams)
+            for u in result.unmatched_reserved
+        ],
     )
 
 

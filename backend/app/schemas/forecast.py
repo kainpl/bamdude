@@ -43,9 +43,23 @@ class SkuForecastRowResponse(BaseModel):
     reorder_alert: bool
     alerts_snoozed: bool
     spool_ids: list[int]
+    # vault 60-specs/forecast-reserved-by-orders-spec §6 — what active orders have
+    # promised out of this stock, its complement, and whether the promise exceeds
+    # the shelf.
+    reserved_g: float
+    free_g: float
+    over_committed: bool
 
     class Config:
         from_attributes = True
+
+
+class UnmatchedReservedResponse(BaseModel):
+    """Need in a material+colour that no live SKU carries — listed, never spread over rows (spec §0)."""
+
+    material: str
+    colour: str | None
+    grams: float
 
 
 class ForecastListPage(BaseModel):
@@ -60,6 +74,7 @@ class ForecastListPage(BaseModel):
     meta: PaginationMeta
     alert_count: int
     global_lead_time_days: int
+    unmatched_reserved: list[UnmatchedReservedResponse]
 
 
 class ForecastChartSku(BaseModel):

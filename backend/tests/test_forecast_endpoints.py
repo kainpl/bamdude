@@ -35,14 +35,23 @@ from __future__ import annotations
 import csv
 import io
 from datetime import date, datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
 
+from backend.app.models.color_catalog import ColorCatalogEntry
 from backend.app.models.filament_sku_settings import FilamentSkuSettings
+from backend.app.models.library import LibraryFile
+from backend.app.models.product import Product, ProductPart, ProductPlate
+from backend.app.models.project import Project
+from backend.app.models.project_line import ProjectLine
 from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.services import forecast_engine
+from backend.app.services.filament_needs import NeedKey, Needs
+from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
 pytestmark = pytest.mark.asyncio
 
@@ -762,3 +771,121 @@ class TestShoppingListCsv:
         (row,) = _csv_rows(rsp.text)[1:]
         assert row[6] == ""
         assert row[7] == ""
+
+
+def _promised(needs: Needs):
+    """Stand in for the farm's real need — the arithmetic itself has its own suite."""
+    return patch.object(forecast_engine, "needs_grams_of_farm", AsyncMock(return_value=needs))
+
+
+class TestForecastReserved:
+    """spec §6 — the three row fields, the envelope's unmatched list, two sort keys, the badge."""
+
+    async def test_rows_carry_the_three_fields_and_the_envelope_the_unmatched(self, async_client, db_session):
+        black = await _spool(db_session, material="PLA", brand="Bambu", color_name="Black", weight_used=200.0)
+        await _rate_events(db_session, black.id, 10.0)
+        needs = Needs({NeedKey("PLA", "black"): 300.0, NeedKey("ASA", "red"): 20.0})
+
+        with _promised(needs):
+            body = (await async_client.get("/api/v1/inventory/forecast")).json()
+        row = body["items"][0]
+        assert row["reserved_g"] == pytest.approx(300.0)
+        assert row["free_g"] == pytest.approx(500.0)
+        assert row["over_committed"] is False
+        assert body["unmatched_reserved"] == [{"material": "ASA", "colour": "red", "grams": 20.0}]
+
+    async def test_no_orders_means_zero_reserved_and_an_empty_unmatched_list(self, async_client, db_session):
+        await _spool(db_session, material="PLA", brand="Bambu", color_name="Black")
+        body = (await async_client.get("/api/v1/inventory/forecast")).json()
+        assert body["items"][0]["reserved_g"] == 0.0 and body["items"][0]["over_committed"] is False
+        assert body["unmatched_reserved"] == []
+
+    async def test_reserved_and_free_are_sort_keys(self, async_client, db_session):
+        await _spool(db_session, material="PLA", brand="Bambu", color_name="Black")  # 1000 left
+        await _spool(db_session, material="PETG", brand="Bambu", color_name="Black")  # 1000 left
+        needs = Needs({NeedKey("PLA", "black"): 900.0, NeedKey("PETG", "black"): 100.0})
+        with _promised(needs):
+            desc = (await async_client.get("/api/v1/inventory/forecast", params={"sort_by": "reserved_desc"})).json()
+            free_asc = (await async_client.get("/api/v1/inventory/forecast", params={"sort_by": "free_asc"})).json()
+        assert _materials(desc) == ["PLA", "PETG"]
+        assert _materials(free_asc) == ["PLA", "PETG"]  # 100 free before 900 free
+        bad = await async_client.get("/api/v1/inventory/forecast", params={"sort_by": "promised_desc"})
+        assert bad.status_code == 400
+
+    async def test_over_committed_counts_as_an_alert_even_with_no_rate(self, async_client, db_session):
+        await _spool(db_session, material="PLA", brand="Bambu", color_name="Black")  # no usage -> rate None
+        with _promised(Needs({NeedKey("PLA", "black"): 5000.0})):
+            body = (await async_client.get("/api/v1/inventory/forecast", params={"alerts_only": "true"})).json()
+        assert body["alert_count"] == 1
+        assert body["items"][0]["over_committed"] is True and body["items"][0]["reorder_alert"] is False
+
+    async def test_a_real_order_reserves_through_the_real_need(self, async_client, db_session, tmp_path):
+        """End to end, no mocks: the order pages' arithmetic reaches the forecast row (spec §2)."""
+        hook = LibraryFile(
+            filename="hook.gcode.3mf",
+            file_path="hook.gcode.3mf",
+            file_size=1,
+            file_type="gcode",
+            file_metadata={
+                "sliced_for_model": "P1S",
+                "print_time_seconds": 3600,
+                "plates": [
+                    {
+                        "index": 1,
+                        "printable_objects": {"1": "hook"},
+                        "print_time_seconds": 3600,
+                        "filaments": [
+                            {"slot_id": 1, "type": "PETG", "color": "#000000", "used_g": 10.0},
+                            {"slot_id": 2, "type": "PLA", "color": "#ffffff", "used_g": 2.0},
+                        ],
+                    }
+                ],
+            },
+        )
+        hook.file_path = str(
+            write_routing_3mf(
+                tmp_path / hook.filename,
+                {
+                    1: [
+                        {"id": 1, "type": "PETG", "color": "#000000", "used_g": 10.0},
+                        {"id": 2, "type": "PLA", "color": "#ffffff", "used_g": 2.0},
+                    ]
+                },
+                model="P1S",
+            )
+        )
+        product = Product(name="Hook")
+        db_session.add_all([hook, product])
+        await db_session.flush()
+        db_session.add(
+            ProductPart(
+                product_id=product.id, kind="printed", name="hook", name_key="hook", qty_per_unit=1, aliases=["hook"]
+            )
+        )
+        db_session.add(ProductPlate(product_id=product.id, library_file_id=hook.id, plate_index=0))
+        db_session.add_all(
+            [
+                Spool(
+                    material="PETG",
+                    brand="Bambu",
+                    color_name="Black",
+                    rgba="000000FF",
+                    label_weight=1000,
+                    weight_used=200,
+                ),
+                Spool(
+                    material="PLA", brand="Bambu", color_name=None, rgba="FFFFFFFF", label_weight=500, weight_used=100
+                ),
+            ]
+        )
+        db_session.add(ColorCatalogEntry(manufacturer="Bambu Lab", color_name="White", hex_color="#FFFFFF"))
+        project = Project(name="O", status="active")
+        project.lines.append(ProjectLine(product_id=product.id, quantity=3, sort_order=0, color="black"))
+        db_session.add(project)
+        await db_session.commit()
+
+        body = (await async_client.get("/api/v1/inventory/forecast")).json()
+        by_material = {r["material"]: r for r in body["items"]}
+        assert by_material["PETG"]["reserved_g"] == pytest.approx(30.0)  # 3 x 10 g, colour black -> the Black SKU
+        assert by_material["PLA"]["reserved_g"] == 0.0  # the line says black; the PLA spool is white by its hex
+        assert body["unmatched_reserved"] == [{"material": "PLA", "colour": "black", "grams": 6.0}]
