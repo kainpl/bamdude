@@ -10,6 +10,7 @@ from backend.app.services.filament_needs import (
     QueuedNeed,
     SpoolStock,
     colour_matches,
+    coloured_index,
     farm_of,
     key_of,
     need_of_plan,
@@ -20,11 +21,13 @@ from backend.app.services.filament_needs import (
 from backend.app.services.plan_engine import LinePlan, OrderPlan, PlanRow
 
 
-def _plan(rows):
-    """``rows`` = (line_id, plate_id, count)."""
+def _plan(rows, materials=None):
+    """``rows`` = (line_id, plate_id, count); ``materials`` = line_id → the line's material filter."""
     lines: dict[int, LinePlan] = {}
     for line_id, plate_id, count in rows:
-        line = lines.setdefault(line_id, LinePlan(line_id=line_id, product_id=1, material=None))
+        line = lines.setdefault(
+            line_id, LinePlan(line_id=line_id, product_id=1, material=(materials or {}).get(line_id))
+        )
         line.rows.append(
             PlanRow(plate_id=plate_id, library_file_id=plate_id, plate_index=0, filename=f"f{plate_id}", count=count)
         )
@@ -151,3 +154,79 @@ def test_a_key_the_stock_dict_does_not_carry_reads_as_an_unknown_shelf_not_zero(
     needs = need_of_plan(_plan([(10, 100, 1)]), {10: None}, {100: [FilamentLine("PETG", 10.0)]})
     (row,) = rows_of(needs, {})
     assert (row.have_g, row.have_type_g, row.short_g) == (None, None, None)
+
+
+# ---------- the colour goes to ONE filament (spec 2026-09-16 §4) ----------
+
+BODY_AND_SUPPORT = [FilamentLine("PETG", 10.0), FilamentLine("PLA", 2.0)]
+
+
+def test_the_colour_goes_to_the_heaviest_filament_of_the_lines_material():
+    needs = need_of_plan(_plan([(10, 100, 5)], {10: "PETG"}), {10: "black"}, {100: BODY_AND_SUPPORT})
+    assert needs.grams == {NeedKey("PETG", "black"): 50.0, NeedKey("PLA", None): 10.0}
+
+
+def test_the_lines_material_aims_the_colour_at_the_lighter_filament():
+    needs = need_of_plan(_plan([(10, 100, 5)], {10: "pla"}), {10: "black"}, {100: BODY_AND_SUPPORT})
+    assert needs.grams == {NeedKey("PETG", None): 50.0, NeedKey("PLA", "black"): 10.0}
+
+
+def test_a_second_filament_of_the_same_type_keeps_no_colour():
+    """Body and lettering in one PETG: the lettering is almost surely another colour."""
+    plate = [FilamentLine("PETG", 10.0), FilamentLine("PETG", 1.0), FilamentLine("PLA", 2.0)]
+    needs = need_of_plan(_plan([(10, 100, 1)], {10: "PETG"}), {10: "black"}, {100: plate})
+    assert needs.grams == {NeedKey("PETG", "black"): 10.0, NeedKey("PETG", None): 1.0, NeedKey("PLA", None): 2.0}
+
+
+def test_without_a_material_the_heaviest_of_the_plate_takes_the_colour():
+    needs = need_of_plan(_plan([(10, 100, 5)]), {10: "black"}, {100: BODY_AND_SUPPORT})
+    assert needs.grams == {NeedKey("PETG", "black"): 50.0, NeedKey("PLA", None): 10.0}
+
+
+def test_a_tie_names_nobody():
+    two_types = [FilamentLine("PETG", 5.0), FilamentLine("PLA", 5.0)]
+    needs = need_of_plan(_plan([(10, 100, 1)]), {10: "black"}, {100: two_types})
+    assert needs.grams == {NeedKey("PETG", None): 5.0, NeedKey("PLA", None): 5.0}
+    same_type = [FilamentLine("PETG", 5.0), FilamentLine("PETG", 5.0)]
+    needs = need_of_plan(_plan([(10, 100, 1)], {10: "PETG"}), {10: "black"}, {100: same_type})
+    assert needs.grams == {NeedKey("PETG", None): 10.0}  # both without colour, merged into one key
+
+
+def test_a_single_gramless_candidate_still_takes_the_colour():
+    plate = [FilamentLine("PETG", None), FilamentLine("PLA", 2.0)]
+    needs = need_of_plan(_plan([(10, 100, 3)], {10: "PETG"}), {10: "black"}, {100: plate})
+    assert needs.unknown_by_key == {NeedKey("PETG", "black"): 3} and needs.grams == {NeedKey("PLA", None): 6.0}
+
+
+def test_a_gramless_candidate_among_several_names_nobody():
+    plate = [FilamentLine("PETG", None), FilamentLine("PETG", 3.0)]
+    needs = need_of_plan(_plan([(10, 100, 2)], {10: "PETG"}), {10: "black"}, {100: plate})
+    assert needs.unknown_by_key == {NeedKey("PETG", None): 2} and needs.grams == {NeedKey("PETG", None): 6.0}
+
+
+def test_a_material_the_plate_does_not_carry_colours_nobody():
+    needs = need_of_plan(_plan([(10, 100, 1)], {10: "ABS"}), {10: "black"}, {100: BODY_AND_SUPPORT})
+    assert needs.grams == {NeedKey("PETG", None): 10.0, NeedKey("PLA", None): 2.0}
+
+
+def test_queue_rows_follow_the_same_rule():
+    needs = need_of_queue([QueuedNeed("black", BODY_AND_SUPPORT, "PLA"), QueuedNeed("black", BODY_AND_SUPPORT)])
+    assert needs.grams == {
+        NeedKey("PETG", "black"): 10.0,
+        NeedKey("PETG", None): 10.0,
+        NeedKey("PLA", "black"): 2.0,
+        NeedKey("PLA", None): 2.0,
+    }
+
+
+def test_without_a_colour_the_material_changes_nothing():
+    needs = need_of_plan(_plan([(10, 100, 2)], {10: "PETG"}), {10: None}, {100: BODY_AND_SUPPORT})
+    assert needs.grams == {NeedKey("PETG", None): 20.0, NeedKey("PLA", None): 4.0}
+
+
+def test_coloured_index_compares_materials_like_the_line_filter():
+    plate = [FilamentLine(" petg ", 1.0), FilamentLine("PLA", 9.0), FilamentLine(None, 50.0)]
+    assert coloured_index(plate, "PETG") == 0  # spelling-insensitive, like line_accepts_materials
+    assert coloured_index(plate, None) == 1  # the untyped 50 g is no candidate at all
+    assert coloured_index([], "PETG") is None
+    assert coloured_index([FilamentLine("PLA", None)], None) == 0

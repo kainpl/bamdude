@@ -10,6 +10,12 @@ Unknown grams are counted, never defaulted (Decision 5): a plate without
 filaments, or a filament without a type, is an unknown PRINT; a typed filament
 without grams is an unknown print OF ITS KEY. Zero grams is an answer.
 
+The line's colour keys ONE filament of the plate - the heaviest of the line's
+material, or of the whole plate when the line names none, and nobody on a tie
+(vault 60-specs/filament-needs-colour-aims-spec §4). v1 keyed every filament
+with it, and a PLA support under a "black" line read as a shortage of black PLA
+nobody stocks.
+
 ⚠️ **The queue side is deliberately a CONSERVATIVE over-count.** The loader adds
 every pending row of the order, of both queue tiers; the plan engine subtracts
 only the rows it can ATTRIBUTE — a row queued from an archive rather than a
@@ -75,10 +81,48 @@ class FilamentLine:
     grams: float | None
 
 
+def _material_token(value: str | None) -> str:
+    # The spelling ``order_metrics.line_accepts_materials`` compares with - the one
+    # material rule of the order half; it takes a ``ProjectLine`` and a set, so the
+    # comparison is mirrored here rather than called.
+    return (value or "").strip().upper()
+
+
+def coloured_index(filaments: list[FilamentLine], material: str | None) -> int | None:
+    """Which filament of the plate the line's colour names - or nobody.
+
+    The colour is a hint about the MAIN filament of the product, so it goes to
+    exactly one (vault 60-specs/filament-needs-colour-aims-spec §4): the heaviest
+    of the candidates - the plate's filaments of the line's material, or every
+    typed filament when the line names none. A lone candidate wins with or
+    without grams. Among several, a gramless one makes the ranking unknown and a
+    shared maximum makes it a tie; both name nobody - "we do not know" is not "it
+    matches", the same principle as ``line_accepts_materials``. Everything else on
+    the plate - supports, a second colour of the same type - is keyed by its type
+    alone.
+    """
+    wanted = _material_token(material)
+    candidates = [
+        i
+        for i, f in enumerate(filaments)
+        if _material_token(f.material) and (not wanted or _material_token(f.material) == wanted)
+    ]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    grams = [filaments[i].grams for i in candidates]
+    if any(g is None for g in grams):
+        return None
+    top = max(grams)
+    return candidates[grams.index(top)] if grams.count(top) == 1 else None
+
+
 @dataclass
 class QueuedNeed:
     line_colour: str | None
     filaments: list[FilamentLine] | None  # None = the row has no readable plate
+    line_material: str | None = None  # the line's material filter, aiming the colour (spec §4)
 
 
 @dataclass
@@ -95,13 +139,21 @@ class Needs:
     unknown_by_key: Counter[NeedKey] = field(default_factory=Counter)
     unknown_prints: int = 0
 
-    def add(self, filaments: list[FilamentLine] | None, colour: str | None, prints: int) -> None:
+    def add(
+        self,
+        filaments: list[FilamentLine] | None,
+        colour: str | None,
+        prints: int,
+        material: str | None = None,
+    ) -> None:
+        """``material`` is the line's filter - it aims the colour (spec §4); without a colour it changes nothing."""
         if not filaments:
             self.unknown_prints += prints
             return
+        coloured = coloured_index(filaments, material) if (colour or "").strip() else None
         untyped = False
-        for f in filaments:
-            key = key_of(f.material, colour)
+        for i, f in enumerate(filaments):
+            key = key_of(f.material, colour if i == coloured else None)
             if key is None:
                 untyped = True
                 continue
@@ -128,14 +180,18 @@ class Needs:
 def need_of_plan(
     plan: OrderPlan | None, line_colours: dict[int, str | None], plate_filaments: dict[int, list[FilamentLine]]
 ) -> Needs:
-    """Σ count × grams per key over the plan's rows; ``plate_filaments`` is keyed by ``ProductPlate.id``."""
+    """Σ count × grams per key over the plan's rows; ``plate_filaments`` is keyed by ``ProductPlate.id``.
+
+    The line's material (already on ``LinePlan``) aims its colour at one filament
+    of each plate - see :func:`coloured_index`.
+    """
     needs = Needs()
     for line in plan.lines if plan else []:
         colour = line_colours.get(line.line_id)
         for row in line.rows:
             if row.count <= 0:
                 continue
-            needs.add(plate_filaments.get(row.plate_id), colour, row.count)
+            needs.add(plate_filaments.get(row.plate_id), colour, row.count, material=line.material)
     return needs
 
 
@@ -143,7 +199,7 @@ def need_of_queue(rows: Iterable[QueuedNeed]) -> Needs:
     """Σ count × grams per key over the queue rows; each row counts as 1 print."""
     needs = Needs()
     for row in rows:
-        needs.add(row.filaments, row.line_colour, 1)
+        needs.add(row.filaments, row.line_colour, 1, material=row.line_material)
     return needs
 
 
