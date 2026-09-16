@@ -80,9 +80,11 @@ async def test_batch_of_missing_sources_is_probed_once_per_tick(tmp_path, monkey
     calls = []
     original = SourceIdentity.of
 
-    def stat(file):
+    # The real of is keyword-aware (a captured snapshot passes its sha256);
+    # a stub that is not turns the probe under test into a TypeError.
+    def stat(file, *, sha256=None):
         calls.append(file)
-        return original(file)
+        return original(file, sha256=sha256)
 
     monkeypatch.setattr(SourceIdentity, "of", stat)
     cache = PrintRequirementsCache()
