@@ -1414,24 +1414,33 @@ class NotificationService:
         the low-filament warning — believed they bypassed the digest and did
         not. Do not reintroduce it.
         """
+        # The inbox goes out BEFORE any network provider, whatever position it
+        # holds in the list. ``_get_providers_for_event`` appends the channel at
+        # the END (so the callers' ``if not providers: return`` guards see a
+        # non-empty list and no existing order moves), and delivering it in loop
+        # order would put a dead SMTP host's whole connect timeout between the
+        # event and the page — the exact delay this channel exists to avoid.
+        # Never logged to notification_logs: that is the journal of external
+        # deliveries and its provider_id is NOT NULL.
+        for channel in providers:
+            if channel.provider_type != "inbox":
+                continue
+            try:
+                await notification_inbox.deliver(
+                    db,
+                    event_type=event_type,
+                    title=title,
+                    message=message,
+                    printer_id=printer_id,
+                    printer_name=printer_name,
+                    extra_data=extra_data,
+                )
+            except Exception:
+                logger.exception("Inbox delivery failed for %s", event_type)
+
         for provider in providers:
             if provider.provider_type == "inbox":
-                # Delivered first, so the page updates while SMTP is still timing
-                # out; never logged to notification_logs (that is the journal of
-                # external deliveries and its provider_id is NOT NULL).
-                try:
-                    await notification_inbox.deliver(
-                        db,
-                        event_type=event_type,
-                        title=title,
-                        message=message,
-                        printer_id=printer_id,
-                        printer_name=printer_name,
-                        extra_data=extra_data,
-                    )
-                except Exception:
-                    logger.exception("Inbox delivery failed for %s", event_type)
-                continue
+                continue  # already delivered, above the loop
             try:
                 # Always send notification immediately
                 success, error = await self._send_to_provider(

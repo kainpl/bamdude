@@ -49,9 +49,35 @@ INBOX_CHANNEL = InboxChannel()
 
 
 async def recipients(db: AsyncSession, event_type: str) -> list[int]:
-    """Active users whose subscription (NULL = defaults) contains ``event_type``; columns read by name."""
-    rows = (await db.execute(select(User.id, User.is_active, User.inbox_events))).all()
+    """Active users whose subscription (NULL = defaults) contains ``event_type``; columns read by name.
+
+    ⚠️ Under ``no_autoflush``, for the reason ``_get_providers_for_event`` and
+    ``_get_template`` give: a caller routinely holds pending writes when it
+    raises an event, and autoflush would satisfy this SELECT by writing them,
+    opening a write transaction on SQLite. It bites hardest when nobody is
+    subscribed — ``deliver`` then returns WITHOUT committing, so that open
+    transaction is handed straight to the SMTP/ntfy timeout and unrelated
+    background tasks die with "database is locked". Users are committed rows,
+    so a pending change in the caller's session is never one this query wants.
+    """
+    with db.no_autoflush:
+        rows = (await db.execute(select(User.id, User.is_active, User.inbox_events))).all()
     return [r.id for r in rows if r.is_active and wants_inbox_event(r.inbox_events, event_type)]
+
+
+async def has_subscriber(db: AsyncSession, event_type: str) -> bool:
+    """Is anybody at all subscribed to ``event_type``? — the cheap form of ``recipients``.
+
+    For a caller deciding whether the WORK behind an event is worth starting:
+    ``main.py``'s bed-cooldown monitor polls a printer for up to 30 minutes to
+    produce one ``bed_cooled`` row, and must not run that loop for an empty
+    inbox. The NULL-means-defaults rule lives in Python (``wants_inbox_event``),
+    so only the ``is_active`` half can be asked of SQL. ``no_autoflush`` for the
+    same reason as ``recipients``.
+    """
+    with db.no_autoflush:
+        rows = (await db.execute(select(User.inbox_events).where(User.is_active.is_(True)))).scalars().all()
+    return any(wants_inbox_event(subscription, event_type) for subscription in rows)
 
 
 async def unread_count(db: AsyncSession, user_id: int) -> int:
@@ -61,6 +87,19 @@ async def unread_count(db: AsyncSession, user_id: int) -> int:
         .where(UserNotification.user_id == user_id, UserNotification.read_at.is_(None))
     )
     return int((await db.execute(stmt)).scalar_one())
+
+
+async def _unread_counts(db: AsyncSession, user_ids: list[int]) -> dict[int, int]:
+    """Unread totals for several users in ONE round trip — ``deliver``'s fan-out.
+
+    A ``SELECT count(*)`` per recipient is the same numbers at N times the cost.
+    """
+    stmt = (
+        select(UserNotification.user_id, func.count())
+        .where(UserNotification.user_id.in_(user_ids), UserNotification.read_at.is_(None))
+        .group_by(UserNotification.user_id)
+    )
+    return {int(uid): int(total) for uid, total in (await db.execute(stmt)).all()}
 
 
 async def deliver(
@@ -76,7 +115,9 @@ async def deliver(
     """Fan the rendered event out to every subscribed user; one commit; then one live update each.
 
     Returns the recipient ids. Payloads are built BEFORE the commit so nothing is
-    read back from an expired instance afterwards.
+    read back from an expired instance afterwards. ``title`` is truncated to the
+    column's 255 characters — an inbox headline is a headline, and a refusal
+    here would lose a notification over a long filename.
     """
     meta = event_meta(event_type)
     user_ids = await recipients(db, event_type)
@@ -103,11 +144,11 @@ async def deliver(
     payloads = [(row.user_id, InboxItem.from_row(row).model_dump(mode="json")) for row in rows]
     await db.commit()
 
+    counts = await _unread_counts(db, user_ids)
     for uid, item in payloads:
         try:
-            count = await unread_count(db, uid)
             await ws_manager.broadcast_to_user(
-                uid, {"type": "inbox_item", "data": {"item": item, "unread_count": count}}
+                uid, {"type": "inbox_item", "data": {"item": item, "unread_count": counts.get(uid, 0)}}
             )
         except Exception:
             logger.exception("Inbox: live update for user %s failed", uid)

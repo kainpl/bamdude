@@ -161,7 +161,7 @@ async def update_subscriptions(
         unknown = sorted(set(data.events) - set(EVENT_CATALOG))
         if unknown:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Unknown inbox event type: {', '.join(unknown)}"
+                status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"Unknown inbox event type: {', '.join(unknown)}"
             )
         events = sorted(set(data.events))
     await db.execute(update(User).where(User.id == user.id).values(inbox_events=events))

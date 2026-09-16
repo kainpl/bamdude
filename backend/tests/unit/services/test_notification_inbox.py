@@ -11,7 +11,13 @@ from sqlalchemy import select
 from backend.app.models.user import User
 from backend.app.models.user_notification import UserNotification
 from backend.app.services import notification_inbox
-from backend.app.services.notification_inbox import INBOX_CHANNEL, deliver, prune_older_than, unread_count
+from backend.app.services.notification_inbox import (
+    INBOX_CHANNEL,
+    deliver,
+    has_subscriber,
+    prune_older_than,
+    unread_count,
+)
 from backend.app.services.notification_service import NotificationService
 
 
@@ -108,13 +114,23 @@ async def test_the_channel_never_defeats_a_progress_duration_floor(db_session):
 
 
 @pytest.mark.asyncio
-async def test_send_to_providers_delivers_the_channel_first_and_never_logs_it(db_session):
+async def test_send_to_providers_delivers_the_channel_first_and_never_logs_it(
+    db_session, notification_provider_factory
+):
+    """The list arrives with the channel LAST; delivery must still happen FIRST.
+
+    The providers come from the real lookup on purpose. A hand-built
+    ``[INBOX_CHANNEL, provider]`` would only assert the order of its own
+    literal and would pass whatever the dispatcher did — while the order the
+    dispatcher actually receives is provider-then-channel, because
+    ``_get_providers_for_event`` appends the channel at the end. A dead SMTP
+    host ahead of the inbox in the loop is the delay this test exists to catch.
+    """
     service = NotificationService()
-    provider = AsyncMock()
-    provider.provider_type = "ntfy"
-    provider.name = "ntfy"
-    provider.id = 5
-    provider.daily_digest_enabled = False
+    await notification_provider_factory(name="ntfy", on_print_start=True)
+    providers = await service._get_providers_for_event(db_session, "on_print_start", None)
+    assert [p.provider_type for p in providers] == ["ntfy", "inbox"]
+
     order: list[str] = []
 
     async def fake_deliver(db, **kwargs):
@@ -131,7 +147,7 @@ async def test_send_to_providers_delivers_the_channel_first_and_never_logs_it(db
         patch.object(service, "_update_provider_status", new_callable=AsyncMock),
         patch.object(service, "_log_notification", new_callable=AsyncMock) as log_mock,
     ):
-        await service._send_to_providers([INBOX_CHANNEL, provider], "T", "M", db_session, "print_start", 1, "P")
+        await service._send_to_providers(providers, "T", "M", db_session, "print_start", 1, "P")
     assert order == ["inbox", "provider"]
     deliver_mock.assert_awaited_once()
     assert deliver_mock.await_args.kwargs["event_type"] == "print_start"
@@ -167,6 +183,26 @@ async def test_notify_in_app_renders_the_template_and_delivers_without_providers
         await service.notify_in_app(db_session, "print_start", {"printer": "P"}, printer_id=1, printer_name="P")
     rows = (await db_session.execute(select(UserNotification))).scalars().all()
     assert [(r.title, r.message, r.event_type) for r in rows] == [("Ti", "Bo", "print_start")]
+
+
+@pytest.mark.asyncio
+async def test_has_subscriber_answers_for_the_work_behind_an_event(db_session):
+    """What ``main.py``'s bed-cooldown monitor asks before polling a printer for
+    half an hour: is there anybody at the other end at all?"""
+    # bed_cooled is info — nobody receives it under the default subscription.
+    await _user(db_session, "defaults")
+    assert await has_subscriber(db_session, "bed_cooled") is False
+    assert await has_subscriber(db_session, "print_failed") is True  # error, in the defaults
+
+    await _user(db_session, "muted", inbox_events=[])
+    assert await has_subscriber(db_session, "bed_cooled") is False
+
+    inactive = await _user(db_session, "inactive", inbox_events=["bed_cooled"], is_active=False)
+    assert inactive.id is not None
+    assert await has_subscriber(db_session, "bed_cooled") is False
+
+    await _user(db_session, "asked_for_it", inbox_events=["bed_cooled"])
+    assert await has_subscriber(db_session, "bed_cooled") is True
 
 
 @pytest.mark.asyncio

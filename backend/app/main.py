@@ -7220,16 +7220,24 @@ async def on_print_complete(printer_id: int, data: dict):
         """Monitor bed temperature after print and notify when cooled."""
         try:
             from backend.app.api.routes.settings import get_setting
+            from backend.app.services import notification_inbox
 
             # Check threshold setting
             async with async_session() as db:
                 threshold_str = await get_setting(db, "bed_cooled_threshold")
             threshold = float(threshold_str) if threshold_str else 35.0
 
-            # Check if any provider has on_bed_cooled enabled (early exit if none)
+            # Check whether anybody receives bed_cooled at all (early exit if none).
+            # ⚠️ ``not providers`` is no longer the question: the in-app inbox rides
+            # every provider lookup as a channel, so the list is never empty. This
+            # guard decides whether the WORK is worth doing — 120 polls over 30
+            # minutes, with an MQTT status request every fourth — and bed_cooled is
+            # an ``info`` event that no default subscription receives. Ask for a real
+            # provider row, or a user who asked for this event in their inbox.
             async with async_session() as db:
                 providers = await notification_service._get_providers_for_event(db, "on_bed_cooled", printer_id)
-                if not providers:
+                has_network_provider = any(p.provider_type != "inbox" for p in providers)
+                if not has_network_provider and not await notification_inbox.has_subscriber(db, "bed_cooled"):
                     logger.debug("[BED-COOL] No providers enabled for bed_cooled on printer %s", printer_id)
                     return
 
