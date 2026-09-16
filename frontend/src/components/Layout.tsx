@@ -18,6 +18,7 @@ import { useIsSidebarCompact } from '../hooks/useIsSidebarCompact';
 import { usePendingQueueItems } from '../hooks/useQueueItems';
 import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
 import { useUnknownTagPrompt } from '../hooks/useUnknownTagPrompt';
+import { useInboxUnreadCount } from '../hooks/useInboxUnreadCount';
 import { UnknownSpoolModal } from './UnknownSpoolModal';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -260,14 +261,6 @@ export function Layout() {
     }
   }, [defaultSidebarData?.default_sidebar_order, setSidebarOrder, user, authEnabled]);
 
-  // Check advanced auth status for conditional nav items
-  const { data: advancedAuthStatus } = useQuery({
-    queryKey: ['advancedAuthStatus'],
-    queryFn: api.getAdvancedAuthStatus,
-    staleTime: 5 * 60 * 1000, // 5 minutes
-    enabled: authEnabled,
-  });
-
   const { data: updateCheck } = useQuery({
     queryKey: ['updateCheck'],
     queryFn: api.checkForUpdates,
@@ -340,6 +333,10 @@ export function Layout() {
   });
   const pendingQueueCount = (queueItems?.length ?? 0) + (unassignedAutoItems?.length ?? 0);
 
+  // The inbox belongs to whoever holds the permission; with auth off nothing is gated.
+  const inboxVisible = !authEnabled || hasPermission('notifications:inbox');
+  const { data: unreadCount = 0 } = useInboxUnreadCount(inboxVisible);
+
   // Check if any printer with pending queue items needs plate clearing
   const queuePrinterIds = useMemo(() => {
     const ids = new Set<number>();
@@ -407,7 +404,7 @@ export function Layout() {
       makerworld: 'makerworld:view',
       firmware: 'firmware:read',
       settings: 'settings:read',
-      notifications: 'notifications:user_email',
+      notifications: 'notifications:inbox',
       system: 'system:read',
     };
 
@@ -419,8 +416,6 @@ export function Layout() {
           : hasPermission(required);
         if (!granted) return true;
       }
-      // notifications nav item also requires advanced auth to be enabled and user_notifications_enabled setting
-      if (id === 'notifications' && (!authEnabled || !advancedAuthStatus?.advanced_auth_enabled || (settings?.user_notifications_enabled === false))) return true;
       return false;
     };
 
@@ -823,15 +818,32 @@ export function Layout() {
               className="h-8 w-auto"
             />
           </a>
-          {/* Bug report — the compact-layout home of the floating bubble. */}
-          <button
-            onClick={() => setBugReportOpen(true)}
-            className="ml-auto p-2 -mr-2 rounded-lg text-red-500 hover:bg-bambu-dark-tertiary transition-colors"
-            title={t('bugReport.title')}
-            aria-label={t('bugReport.title')}
-          >
-            <Bug className="w-5 h-5" />
-          </button>
+          <div className="ml-auto flex items-center gap-1">
+            {inboxVisible && (
+              <NavLink
+                to="/notifications"
+                className="relative p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
+                title={t('nav.notifications')}
+                aria-label={t('nav.notifications')}
+              >
+                <Bell className="w-5 h-5 text-white" />
+                {unreadCount > 0 && (
+                  <span className="absolute top-0.5 right-0.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-bold rounded-full bg-yellow-500 text-black">
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </span>
+                )}
+              </NavLink>
+            )}
+            {/* Bug report — the compact-layout home of the floating bubble. */}
+            <button
+              onClick={() => setBugReportOpen(true)}
+              className="p-2 -mr-2 rounded-lg text-red-500 hover:bg-bambu-dark-tertiary transition-colors"
+              title={t('bugReport.title')}
+              aria-label={t('bugReport.title')}
+            >
+              <Bug className="w-5 h-5" />
+            </button>
+          </div>
         </header>
       )}
 
@@ -1022,8 +1034,9 @@ export function Layout() {
 
                 const { to, icon: Icon, labelKey } = navItem;
                 const showQueueBadge = id === 'queue' && pendingQueueCount > 0;
-                const badgeCount = showQueueBadge ? pendingQueueCount : 0;
-                const showBadge = showQueueBadge;
+                const showInboxBadge = id === 'notifications' && unreadCount > 0;
+                const badgeCount = showQueueBadge ? pendingQueueCount : showInboxBadge ? unreadCount : 0;
+                const showBadge = showQueueBadge || showInboxBadge;
                 const showClearPlateDot = id === 'printers' && needsClearPlate;
 
                 return (
