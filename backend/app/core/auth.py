@@ -1346,6 +1346,8 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.NOTIFICATIONS_UPDATE,
         Permission.NOTIFICATIONS_DELETE,
         Permission.NOTIFICATIONS_USER_EMAIL,
+        # The inbox belongs to a person: a key has no user to put an item in front of.
+        Permission.NOTIFICATIONS_INBOX,
         Permission.NOTIFICATION_TEMPLATES_UPDATE,
         Permission.EXTERNAL_LINKS_CREATE,
         Permission.EXTERNAL_LINKS_UPDATE,

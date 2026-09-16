@@ -345,6 +345,7 @@ def import_all_models() -> None:
         user,
         user_email_pref,
         user_filament,
+        user_notification,
         user_otp_code,
         user_totp,
         virtual_printer,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, String, func
+from sqlalchemy import JSON, DateTime, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -32,6 +32,9 @@ class User(Base):
     )  # "admin" or "user" (legacy, kept for backward compat)
     auth_source: Mapped[str] = mapped_column(String(20), default="local")  # "local", "ldap", or "oidc"
     is_active: Mapped[bool] = mapped_column(default=True)
+    # In-app inbox subscription (m176). NULL = defaults (every warning/error event),
+    # [] = nothing, [...] = exactly these. Same rule as TelegramChat.notify_events.
+    inbox_events: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=None)
     # I2: Last password change timestamp. JWTs issued before this time are rejected
     # as stale (iat < password_changed_at), so a password reset invalidates all
     # existing sessions for that user. NULL on fresh installs / pre-m012 rows.
@@ -143,6 +146,12 @@ class User(Base):
             return True
         user_permissions = self.get_permissions()
         return any(p in user_permissions for p in permissions)
+
+    def wants_inbox_event(self, event_type: str) -> bool:
+        """Should this user get an inbox row for ``event_type``? Inactive users never do."""
+        from backend.app.services.notification_events import wants_inbox_event
+
+        return bool(self.is_active) and wants_inbox_event(self.inbox_events, event_type)
 
     def __repr__(self) -> str:
         return f"<User {self.username}>"
