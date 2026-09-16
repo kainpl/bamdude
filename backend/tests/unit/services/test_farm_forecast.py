@@ -12,22 +12,50 @@ from backend.app.services.farm_forecast import (
     MachineState,
     QueuedRow,
     StagedJob,
+    StaggerPolicy,
+    _initial_state,
     forecast_orders,
     simulate_farm,
 )
 from backend.app.services.plan_engine import LinePlan, OrderPlan, PlanAlternative, PlanRow
+from backend.app.services.stagger_groups import StaggerGroupResolver, StaggerSplit
 
 NOW = datetime(2026, 9, 6, 12, 0, 0)
 H = 3600
 
 
-def _machine(pid, model="P1S", running=0, queued=(), accepts=True):
+def _machine(pid, model="P1S", running=0, queued=(), accepts=True, gap=0.0, waiting=0.0, interval=None):
     return MachineState(
         printer_id=pid,
         model=model,
         running_seconds=running,
         queued=[QueuedRow(*q) for q in queued],
         accepts_new_work=accepts,
+        plate_clear_seconds=gap,
+        waiting_seconds=waiting,
+        stagger_interval_seconds=interval,
+    )
+
+
+def _stagger(concurrent=1, interval=300, wait_for_bed=False, resolver=None, live=None):
+    return StaggerPolicy(
+        concurrent=concurrent,
+        interval_seconds=interval,
+        wait_for_bed=wait_for_bed,
+        resolver=resolver or StaggerGroupResolver.global_only(),
+        live=dict(live or {}),
+    )
+
+
+def _tag_resolver(tags_by_printer):
+    """Two picked tags, A=10 and B=20; a printer with neither is a wildcard."""
+    return StaggerGroupResolver(
+        StaggerSplit(by_tags=True, tag_ids=frozenset({10, 20})),
+        tags_by_printer={pid: frozenset(tags) for pid, tags in tags_by_printer.items()},
+        tag_names={10: "A", 20: "B"},
+        location_by_printer={},
+        parent_by_location={},
+        location_names={},
     )
 
 
@@ -239,3 +267,121 @@ def test_a_row_whose_own_model_is_absent_routes_to_its_alternative():
     assert f.unroutable_prints == 0
     assert f.lines[0].rows[0].proposed_split == {100: 0, 200: 2}
     assert f.now_seconds == 2 * H
+
+
+# ---------- v2: preparation, plate clear, drying (spec §4, §5) ----------
+
+
+def test_prep_is_paid_before_every_print_that_has_not_started():
+    """The running head pays nothing; each planned print pays the allowance before it starts."""
+    snap = FarmSnapshot(printers=[_machine(1, running=H)], staged=[], prep_seconds=600)
+    assert _one(snap, _plan(7, [(100, 2, H, "P1S", [])])).now_seconds == 3 * H + 1200
+
+
+def test_a_queued_row_pays_its_own_prep():
+    snap = FarmSnapshot(printers=[_machine(1, queued=[(None, H, 300)])], staged=[], prep_seconds=600)
+    assert _one(snap, _plan(7, [(100, 1, H, "P1S", [])])).now_seconds == 2 * H + 900
+
+
+def test_a_plate_clear_gap_follows_every_print_on_a_gated_printer():
+    gated = FarmSnapshot(printers=[_machine(1, running=H, gap=600)], staged=[])
+    assert _one(gated, _plan(7, [(100, 1, H, "P1S", [])])).now_seconds == 2 * H + 600
+    # The machine is free only once its LAST plate is cleared too: the head, then the gap.
+    assert simulate_farm(gated).printers[0].free_seconds == H + 600
+    plain = FarmSnapshot(printers=[_machine(1, running=H)], staged=[])
+    assert _one(plain, _plan(7, [(100, 1, H, "P1S", [])])).now_seconds == 2 * H
+
+
+def test_a_printer_awaiting_its_plate_waits_the_gap_before_its_first_print():
+    snap = FarmSnapshot(printers=[_machine(1, waiting=600)], staged=[])
+    assert _one(snap, _plan(7, [(100, 1, H, "P1S", [])])).now_seconds == H + 600
+    assert simulate_farm(snap).free_seconds == 600
+
+
+def test_a_blocking_drying_cycle_holds_the_printer_no_longer_than_its_head():
+    idle = FarmSnapshot(printers=[_machine(1, waiting=1800)], staged=[])
+    assert _one(idle, _plan(7, [(100, 1, H, "P1S", [])])).now_seconds == H + 1800
+    # A cycle that ends before the running print does adds nothing.
+    busy = FarmSnapshot(printers=[_machine(1, running=H, waiting=1800)], staged=[])
+    assert _one(busy, _plan(7, [(100, 1, H, "P1S", [])])).now_seconds == 2 * H
+
+
+def test_assumptions_travel_from_the_snapshot_to_the_order():
+    plan = _plan(7, [(100, 1, H, "P1S", [])])
+    assert _one(FarmSnapshot(printers=[_machine(1)], staged=[]), plan).assumptions == []
+    drying = FarmSnapshot(printers=[_machine(1)], staged=[], assumptions=("drying",))
+    assert _one(drying, plan).assumptions == ["drying"]
+
+
+# ---------- v2: staggered start (spec §5.2) ----------
+
+
+def test_stagger_serialises_starts_by_cap_and_interval():
+    """Four idle P1S, cap 2, interval 5 min, four one-hour prints: two start now, two five minutes later."""
+    printers = [_machine(i) for i in range(1, 5)]
+    plan = _plan(7, [(100, 4, H, "P1S", [])])
+    staggered = FarmSnapshot(printers=printers, staged=[], stagger=_stagger(concurrent=2, interval=300))
+    assert _one(staggered, plan).now_seconds == H + 300
+    assert _one(FarmSnapshot(printers=printers, staged=[]), plan).now_seconds == H
+
+
+def test_stagger_groups_cap_each_phase_alone():
+    resolver = _tag_resolver({1: {10}, 2: {10}, 3: {20}, 4: {20}})
+    printers = [_machine(i) for i in range(1, 5)]
+    plan = _plan(7, [(100, 4, H, "P1S", [])])
+    by_group = FarmSnapshot(
+        printers=printers, staged=[], stagger=_stagger(concurrent=1, interval=300, resolver=resolver)
+    )
+    assert _one(by_group, plan).now_seconds == H + 300
+    farm_wide = FarmSnapshot(printers=printers, staged=[], stagger=_stagger(concurrent=1, interval=300))
+    assert _one(farm_wide, plan).now_seconds == H + 900
+
+
+def test_a_wildcard_printer_waits_for_room_in_every_group():
+    """Printer 1 (tag A) is heating for another 5 min; untagged printer 5 is in A and B, so it waits."""
+    plan = _plan(7, [(100, 1, H, "P1S", [])])
+    wild = _stagger(concurrent=1, interval=300, resolver=_tag_resolver({1: {10}}), live={1: 300})
+    assert _one(FarmSnapshot(printers=[_machine(5)], staged=[], stagger=wild), plan).now_seconds == H + 300
+    tagged_b = _stagger(concurrent=1, interval=300, resolver=_tag_resolver({1: {10}, 5: {20}}), live={1: 300})
+    assert _one(FarmSnapshot(printers=[_machine(5)], staged=[], stagger=tagged_b), plan).now_seconds == H
+
+
+def test_live_slots_seed_the_ledger():
+    """A slot the scheduler holds right now - on a printer the snapshot may not even list - counts."""
+    snap = FarmSnapshot(printers=[_machine(1)], staged=[], stagger=_stagger(concurrent=1, interval=300, live={9: 200}))
+    assert _one(snap, _plan(7, [(100, 1, H, "P1S", [])])).now_seconds == H + 200
+
+
+def test_a_printer_never_blocks_itself():
+    """Two one-minute prints on one printer, cap 1, interval 5 min: the second starts when the first ends."""
+    snap = FarmSnapshot(printers=[_machine(1)], staged=[], stagger=_stagger(concurrent=1, interval=300))
+    assert _one(snap, _plan(7, [(100, 2, 60, "P1S", [])])).now_seconds == 120
+
+
+def test_wait_for_bed_holds_the_slot_through_prep():
+    printers = [_machine(1), _machine(2)]
+    plan = _plan(7, [(100, 2, H, "P1S", [])])
+    held = FarmSnapshot(printers=printers, staged=[], prep_seconds=600, stagger=_stagger(1, 300, wait_for_bed=True))
+    assert _one(held, plan).now_seconds == H + 1500
+    freed = FarmSnapshot(printers=printers, staged=[], prep_seconds=600, stagger=_stagger(1, 300, wait_for_bed=False))
+    assert _one(freed, plan).now_seconds == H + 900
+
+
+def test_a_printers_own_interval_beats_the_farm_default():
+    printers = [_machine(1), _machine(2, interval=600), _machine(3)]
+    snap = FarmSnapshot(printers=printers, staged=[], stagger=_stagger(concurrent=1, interval=300))
+    assert _one(snap, _plan(7, [(100, 3, H, "P1S", [])])).now_seconds == H + 900
+
+
+def test_the_running_head_takes_no_slot_of_its_own():
+    """The head is past dispatch: only a LIVE slot (from the policy) can hold others back for it."""
+    printers = [_machine(1, running=H), _machine(2)]
+    snap = FarmSnapshot(printers=printers, staged=[], stagger=_stagger(concurrent=1, interval=300))
+    assert _one(snap, _plan(7, [(100, 1, H, "P1S", [])])).now_seconds == H
+
+
+def test_the_routing_clock_is_the_sequenced_finish():
+    """After the walk, ``free_at`` is when the machine is really free - what the next order routes against."""
+    printers = [_machine(1, queued=[(None, H)]), _machine(2, queued=[(None, H)])]
+    state = _initial_state(FarmSnapshot(printers=printers, staged=[], stagger=_stagger(concurrent=1, interval=300)))
+    assert [m.free_at for m in state.machines] == [H, H + 300]
