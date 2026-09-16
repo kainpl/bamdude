@@ -1884,12 +1884,12 @@ class NotificationService:
                 kept.append(p)
                 has_telegram = True
             elif p.provider_type == "inbox":
-                # The inbox has no duration floor of its own, and letting it
-                # count as a recipient would defeat everyone else's: the
-                # "muted by duration floors" exit would never fire again and
+                # The inbox has no duration floor of its own, and counting it
+                # here unconditionally would defeat everyone else's: the "muted
+                # by duration floors" exit would never fire again and
                 # image_supplier() — a live camera fetch — would be paid on
-                # every milestone to fill an inbox that, by default, is not
-                # subscribed to print_progress at all.
+                # every milestone. Whether anybody actually wants it is asked
+                # below, and only once nothing else has cleared.
                 kept.append(p)
             elif self._passes_progress_floor(_own_floor(p), estimated_minutes):
                 kept.append(p)
@@ -1905,6 +1905,15 @@ class NotificationService:
 
             result = await db.execute(_select(TelegramChat).where(TelegramChat.is_active == True))  # noqa: E712
             any_recipients = any(c.should_notify("print_progress") and _chat_passes(c) for c in result.scalars())
+
+        if not any_recipients and any(p.provider_type == "inbox" for p in kept):
+            # The same question the telegram block above asks, for the in-app
+            # channel: somebody who deliberately subscribed to print_progress
+            # should still get the milestone when every provider's floor mutes
+            # it — otherwise that checkbox is inert on exactly the provider-less
+            # farm this inbox exists for. Asked only once nothing else has
+            # cleared, so a farm where nobody subscribed still skips the grab.
+            any_recipients = await notification_inbox.has_subscriber(db, "print_progress")
 
         if not any_recipients:
             logger.info(

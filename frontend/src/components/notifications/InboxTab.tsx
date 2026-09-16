@@ -58,10 +58,11 @@ export function InboxTab() {
     getNextPageParam: (last) => last.next_before_id,
   });
   const items = list.data?.pages.flatMap((p) => p.items) ?? [];
-  // The server counts the unread for us; mark-all-read is gated on THAT, not on
-  // whether the page has rows — an all-read list would otherwise fire a no-op
-  // request and toast "0 marked as read".
-  const unreadCount = list.data?.pages[0]?.unread_count ?? 0;
+  // Mark-all-read acts on the FILTERED set, so it is gated on the filtered set:
+  // the server's `unread_count` is the whole inbox (it feeds the sidebar badge),
+  // and gating on it leaves the button live while you look at a printer whose
+  // rows are all read — firing a no-op that toasts "0 marked as read".
+  const unreadShown = items.some((item) => item.read_at === null);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: INBOX_QUERY_KEY });
   // `appQueryClient` installs a QueryCache onError but no MutationCache, so a
@@ -138,7 +139,7 @@ export function InboxTab() {
           {t('notifications.center.inbox.unreadOnly')}
         </label>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={() => markAll.mutate()} disabled={markAll.isPending || unreadCount === 0}>
+          <Button variant="secondary" size="sm" onClick={() => markAll.mutate()} disabled={markAll.isPending || !unreadShown}>
             <CheckCheck className="w-4 h-4" />
             {t('notifications.center.inbox.markAllRead')}
           </Button>

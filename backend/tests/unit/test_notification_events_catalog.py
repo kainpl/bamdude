@@ -106,3 +106,16 @@ def test_catalog_rows_are_grouped_then_by_severity_then_by_key():
     assert [k for k, _ in rows][:3] == ["print_failed", "print_missing_spool_assignment", "print_paused"]
     group_order = [GROUPS.index(m.group) for _, m in rows]
     assert group_order == sorted(group_order)
+
+
+def test_a_row_with_an_unknown_group_sorts_last_instead_of_raising(monkeypatch):
+    """`catalog_rows` feeds the subscriptions page; a typo must not 500 it."""
+    from backend.app.services import notification_events as ne
+
+    patched = dict(EVENT_CATALOG)
+    patched["made_up_event"] = ne.EventMeta("nonsense", "nowhere")
+    monkeypatch.setattr(ne, "EVENT_CATALOG", patched)
+
+    rows = ne.catalog_rows()
+    assert len(rows) == len(patched)
+    assert rows[-1][0] == "made_up_event"

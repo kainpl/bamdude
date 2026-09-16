@@ -78,6 +78,34 @@ async def test_the_channel_rides_every_provider_lookup(db_session):
 
 
 @pytest.mark.asyncio
+async def test_a_progress_subscriber_is_not_muted_by_somebody_elses_floor(db_session):
+    """print_progress is `info`, so nobody holds it by default — but somebody who ticks it means it.
+
+    The duration floor belongs to each provider, not to the inbox, and an
+    operator who asked for milestones should not lose them because an unrelated
+    ntfy provider is set to ignore short prints.
+    """
+    service = NotificationService()
+    await _user(db_session, "wants-progress", inbox_events=["print_progress"])
+    muted = AsyncMock()
+    muted.provider_type = "ntfy"
+    muted.name = "ntfy"
+    muted.id = 5
+    muted.progress_min_duration_minutes = 60
+
+    with (
+        patch.object(service, "_get_providers_for_event", new_callable=AsyncMock, return_value=[muted, INBOX_CHANNEL]),
+        patch.object(service, "_build_message_from_template", new_callable=AsyncMock, return_value=("T", "M")),
+        patch.object(service, "_send_to_providers", new_callable=AsyncMock) as send,
+    ):
+        await service.on_print_progress(1, "P", "f.3mf", 50, db_session, estimated_minutes=5)
+
+    send.assert_awaited_once()
+    # The muted provider is still excluded — only the channel rides through.
+    assert [p.provider_type for p in send.await_args.args[0]] == ["inbox"]
+
+
+@pytest.mark.asyncio
 async def test_the_channel_never_defeats_a_progress_duration_floor(db_session):
     """The camera grab stays lazy: an inbox nobody subscribed to must not pay for it."""
     service = NotificationService()

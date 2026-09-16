@@ -111,8 +111,19 @@ def wants_inbox_event(inbox_events: list[str] | None, event_type: str) -> bool:
 
 
 def catalog_rows() -> list[tuple[str, EventMeta]]:
-    """The catalog in display order: group, then error → warning → info, then key."""
+    """The catalog in display order: group, then error → warning → info, then key.
+
+    A row whose group or severity is not in the known tuples sorts last rather
+    than raising: this feeds ``GET /inbox/subscriptions``, and a typo in a new
+    catalog entry should cost a misplaced card, not a 500 on the page where a
+    person edits their own subscriptions. ``event_meta`` degrades the same way
+    for the same class of drift.
+    """
     return sorted(
         EVENT_CATALOG.items(),
-        key=lambda kv: (GROUPS.index(kv[1].group), _SEVERITY_RANK[kv[1].severity], kv[0]),
+        key=lambda kv: (
+            GROUPS.index(kv[1].group) if kv[1].group in GROUPS else len(GROUPS),
+            _SEVERITY_RANK.get(kv[1].severity, len(_SEVERITY_RANK)),
+            kv[0],
+        ),
     )

@@ -89,4 +89,17 @@ describe('InboxTab', () => {
     expect(calls.clear[0].searchParams.get('severity')).toBe('error');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
+  it('does not offer mark-all-read when every row on screen is already read', async () => {
+    // The server's unread_count is the WHOLE inbox — it feeds the sidebar badge —
+    // while mark-all-read acts on the filtered set. Filter to rows that are all
+    // read and the button must go quiet, or it fires a no-op that reports zero.
+    server.use(
+      http.get('/api/v1/inbox/', () =>
+        HttpResponse.json({ items: [items[1]], unread_count: 5, next_before_id: null }),
+      ),
+    );
+    render(<InboxTab />);
+    await screen.findByText('Print done');
+    expect(screen.getByRole('button', { name: 'Mark all read' })).toBeDisabled();
+  });
 });
