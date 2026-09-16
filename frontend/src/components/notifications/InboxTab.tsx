@@ -31,7 +31,11 @@ export function InboxTab() {
   const [confirmClear, setConfirmClear] = useState(false);
 
   // `since` is computed when the period changes, not on every render — a fresh
-  // Date per render would be a fresh query key per render.
+  // Date per render would be a fresh query key per render, and so an endless
+  // refetch. The consequence is deliberate: the window FREEZES at the moment
+  // the period was picked, so a tab left open for hours drifts away from a
+  // literal "last 24 hours". It is also what Clear DELETES by — one value
+  // bounds the list, read-all and the DELETE alike.
   const since = useMemo(
     () => (period === 'all' ? undefined : new Date(Date.now() - PERIOD_MS[period]).toISOString()),
     [period],
@@ -54,16 +58,25 @@ export function InboxTab() {
     getNextPageParam: (last) => last.next_before_id,
   });
   const items = list.data?.pages.flatMap((p) => p.items) ?? [];
+  // The server counts the unread for us; mark-all-read is gated on THAT, not on
+  // whether the page has rows — an all-read list would otherwise fire a no-op
+  // request and toast "0 marked as read".
+  const unreadCount = list.data?.pages[0]?.unread_count ?? 0;
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: INBOX_QUERY_KEY });
-  const markRead = useMutation({ mutationFn: api.markInboxRead, onSuccess: invalidate });
-  const remove = useMutation({ mutationFn: api.deleteInboxItem, onSuccess: invalidate });
+  // `appQueryClient` installs a QueryCache onError but no MutationCache, so a
+  // failed mutation is silent unless it says so itself — and two of these four
+  // destroy data.
+  const reportError = (e: Error) => showToast(e.message || t('common.error'), 'error');
+  const markRead = useMutation({ mutationFn: api.markInboxRead, onSuccess: invalidate, onError: reportError });
+  const remove = useMutation({ mutationFn: api.deleteInboxItem, onSuccess: invalidate, onError: reportError });
   const markAll = useMutation({
     mutationFn: () => api.markInboxAllRead(filters),
     onSuccess: (r) => {
       invalidate();
       showToast(t('notifications.center.inbox.markedRead', { count: r.updated }), 'success');
     },
+    onError: reportError,
   });
   const clear = useMutation({
     mutationFn: () => api.clearInbox(filters),
@@ -71,6 +84,12 @@ export function InboxTab() {
       setConfirmClear(false);
       invalidate();
       showToast(t('notifications.center.inbox.cleared', { count: r.deleted }), 'success');
+    },
+    // Close on failure too: the dialog's own spinner stops either way, and a
+    // dialog sitting open with no reason given reads as "nothing happened".
+    onError: (e: Error) => {
+      setConfirmClear(false);
+      reportError(e);
     },
   });
 
@@ -83,7 +102,7 @@ export function InboxTab() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <select
-          aria-label={t('notifications.center.inbox.allSeverities')}
+          aria-label={t('notifications.center.inbox.severityLabel')}
           className={selectClass}
           value={severity}
           onChange={(e) => setSeverity(e.target.value as InboxSeverity | '')}
@@ -94,7 +113,7 @@ export function InboxTab() {
           ))}
         </select>
         <select
-          aria-label={t('notifications.center.inbox.allPrinters')}
+          aria-label={t('notifications.center.inbox.printerLabel')}
           className={selectClass}
           value={printerId}
           onChange={(e) => setPrinterId(e.target.value ? Number(e.target.value) : '')}
@@ -119,7 +138,7 @@ export function InboxTab() {
           {t('notifications.center.inbox.unreadOnly')}
         </label>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={() => markAll.mutate()} disabled={markAll.isPending || items.length === 0}>
+          <Button variant="secondary" size="sm" onClick={() => markAll.mutate()} disabled={markAll.isPending || unreadCount === 0}>
             <CheckCheck className="w-4 h-4" />
             {t('notifications.center.inbox.markAllRead')}
           </Button>
@@ -144,12 +163,21 @@ export function InboxTab() {
             return (
               <li
                 key={item.id}
-                className={`flex gap-3 p-3 rounded-lg cursor-pointer ${unread ? 'bg-bambu-dark-tertiary' : 'bg-bambu-dark'}`}
-                onClick={() => onRowClick(item.id, unread)}
+                className={`flex gap-3 p-3 rounded-lg ${unread ? 'bg-bambu-dark-tertiary' : 'bg-bambu-dark'}`}
               >
                 <SeverityIcon severity={item.severity} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
+                {/* The row body is a real <button>, SIBLING to the delete one —
+                    never its parent: a button inside a button is invalid HTML,
+                    and nesting is what forced the old stopPropagation. Because
+                    <button> takes phrasing content only, everything inside is a
+                    <span>. (Precedent: FolderTreePicker.) */}
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 text-left"
+                  aria-expanded={expandedId === item.id}
+                  onClick={() => onRowClick(item.id, unread)}
+                >
+                  <span className="flex items-center gap-2">
                     {unread && (
                       <span
                         data-testid="unread-dot"
@@ -158,25 +186,23 @@ export function InboxTab() {
                       />
                     )}
                     <span className={`truncate ${unread ? 'text-white font-medium' : 'text-bambu-gray-light'}`}>{item.title}</span>
-                  </div>
-                  <p className={`text-sm text-bambu-gray whitespace-pre-line ${expandedId === item.id ? '' : 'line-clamp-2'}`}>
+                  </span>
+                  <span className={`block text-sm text-bambu-gray whitespace-pre-line ${expandedId === item.id ? '' : 'line-clamp-2'}`}>
                     {item.message}
-                  </p>
-                  <div className="flex items-center gap-2 text-xs text-bambu-gray mt-1">
+                  </span>
+                  <span className="flex items-center gap-2 text-xs text-bambu-gray mt-1">
                     {item.printer_name && (
                       <span className="px-2 py-0.5 rounded bg-bambu-dark-secondary">{item.printer_name}</span>
                     )}
                     <span>{formatRelativeTime(item.created_at, 'system', t)}</span>
-                  </div>
-                </div>
+                  </span>
+                </button>
                 <button
                   type="button"
                   aria-label={t('notifications.center.inbox.delete')}
-                  className="self-start p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-secondary"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    remove.mutate(item.id);
-                  }}
+                  disabled={remove.isPending && remove.variables === item.id}
+                  className="self-start p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={() => remove.mutate(item.id)}
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>

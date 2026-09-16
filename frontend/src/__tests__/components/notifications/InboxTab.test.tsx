@@ -20,11 +20,12 @@ const items = [
 ];
 
 describe('InboxTab', () => {
-  const calls: { read: number[]; readAll: URL[] } = { read: [], readAll: [] };
+  const calls: { read: number[]; readAll: URL[]; clear: URL[] } = { read: [], readAll: [], clear: [] };
 
   beforeEach(() => {
     calls.read = [];
     calls.readAll = [];
+    calls.clear = [];
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json([{ id: 1, name: 'P1' }])),
       http.get('/api/v1/inbox/', ({ request }) => {
@@ -39,6 +40,10 @@ describe('InboxTab', () => {
       http.post('/api/v1/inbox/read-all', ({ request }) => {
         calls.readAll.push(new URL(request.url));
         return HttpResponse.json({ updated: 1 });
+      }),
+      http.delete('/api/v1/inbox/', ({ request }) => {
+        calls.clear.push(new URL(request.url));
+        return HttpResponse.json({ deleted: 1 });
       }),
     );
   });
@@ -60,10 +65,28 @@ describe('InboxTab', () => {
   it('read-all carries the active severity filter', async () => {
     render(<InboxTab />);
     await screen.findAllByRole('listitem');
-    await userEvent.selectOptions(screen.getByLabelText('All levels'), 'error');
+    await userEvent.selectOptions(screen.getByLabelText('Level'), 'error');
     await waitFor(() => expect(screen.getAllByRole('listitem')).toHaveLength(1));
     await userEvent.click(screen.getByRole('button', { name: 'Mark all read' }));
     await waitFor(() => expect(calls.readAll).toHaveLength(1));
     expect(calls.readAll[0].searchParams.get('severity')).toBe('error');
+  });
+
+  // The destructive path: Clear deletes exactly what the filters are showing,
+  // so the filter must reach the DELETE and nothing may go before the confirm.
+  it('clear asks first, then deletes under the active filter', async () => {
+    render(<InboxTab />);
+    await screen.findAllByRole('listitem');
+    await userEvent.selectOptions(screen.getByLabelText('Level'), 'error');
+    await waitFor(() => expect(screen.getAllByRole('listitem')).toHaveLength(1));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(calls.clear).toHaveLength(0);
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(calls.clear).toHaveLength(1));
+    expect(calls.clear[0].searchParams.get('severity')).toBe('error');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });

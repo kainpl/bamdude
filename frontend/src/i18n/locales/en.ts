@@ -8437,6 +8437,8 @@ export default {
         unreadOnly: 'Unread only',
         allSeverities: 'All levels',
         allPrinters: 'All printers',
+        severityLabel: 'Level',
+        printerLabel: 'Printer',
         periodLabel: 'Period',
         period: { day: 'Last 24 hours', week: 'Last 7 days', month: 'Last 30 days', all: 'All time' },
         markAllRead: 'Mark all read',

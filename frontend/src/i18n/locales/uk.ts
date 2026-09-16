@@ -8502,6 +8502,8 @@ export default {
         unreadOnly: 'Лише непрочитані',
         allSeverities: 'Усі рівні',
         allPrinters: 'Усі принтери',
+        severityLabel: 'Рівень',
+        printerLabel: 'Принтер',
         periodLabel: 'Період',
         period: { day: 'Останні 24 години', week: 'Останні 7 днів', month: 'Останні 30 днів', all: 'За весь час' },
         markAllRead: 'Прочитати всі',
