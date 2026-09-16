@@ -648,6 +648,10 @@ export interface BackupGroupsResolution {
  * current AMS payload only for labels/colour. An explicit empty array for an
  * extruder is authoritative: do not silently invent a pair for it. The local
  * identity calculation fills in only extruders the firmware did not report.
+ *
+ * Deliberately LIVE fields, exactly as in ``computeBackupGroups`` below the
+ * fallback: the label and colour of a reported group describe what the FIRMWARE
+ * grouped, and the firmware sees the advertised profile, not ``tray.actual``.
  */
 export function resolveBackupGroups(
   amsUnits: AmsUnitLike[] | undefined,

@@ -4905,7 +4905,11 @@ function PrinterCard({
                                 // print now expects filament in, and the one that ran out.
                                 const isExpectedSlot = expectedTray !== null && expectedTray === globalTrayId;
                                 const isRanOutSlot = previousTray !== null && previousTray === globalTrayId;
-                                // Get cloud preset info if available
+                                // Get cloud preset info if available. Keyed on the LIVE
+                                // tray_info_idx on purpose: on a masked slot that resolves the
+                                // ADVERTISED profile, which is what the badge below shows — and it
+                                // is only ever reached as a fallback, since the assigned spool's
+                                // own name (Spoolman or inventory) wins ahead of it.
                                 const cloudInfo = tray?.tray_info_idx ? filamentInfo?.[tray.tray_info_idx] : null;
 
                                 // Fill level fallback chain: Spoolman link → Spoolman slot-assignment → Inventory → AMS remain
@@ -5291,7 +5295,9 @@ function PrinterCard({
                         // Runout guidance (upstream #2587): expected / ran-out slot on this HT unit.
                         const isExpectedSlot = expectedTray !== null && expectedTray === globalTrayId;
                         const isRanOutSlot = previousTray !== null && previousTray === globalTrayId;
-                        // Get cloud preset info if available
+                        // Get cloud preset info if available — LIVE tray_info_idx, i.e. the
+                        // advertised profile on a masked slot; the assigned spool's own name
+                        // wins ahead of it (see the regular-unit branch above).
                         const cloudInfo = tray?.tray_info_idx ? filamentInfo?.[tray.tray_info_idx] : null;
                         const htSlotId = tray?.id ?? 0;
 
@@ -8295,7 +8301,10 @@ function FirmwareUpdateModal({
   );
 }
 
-function EditPrinterModal({
+// Exported for the same reason AddPrinterModal is: the dialog is mounted
+// directly in a test (PrintersPageEditAmsCompat), which is the only way to
+// exercise what it PATCHes without driving the whole page.
+export function EditPrinterModal({
   printer,
   onClose,
 }: {
@@ -8583,9 +8592,13 @@ function EditPrinterModal({
                 </label>
                 {form.ams_compat.normalize_color && (
                   <div className="flex items-center gap-2 mb-2 pl-6">
+                    {/* The picker's own `#rrggbb` is stored raw: `backupCompatibilityPatch`
+                        is the ONE normaliser (a second one here is a second answer to
+                        the same question), so this must read back both that and the
+                        `RRGGBBFF` the server persists. */}
                     <input type="color" aria-label={t('printers.modal.amsCompat.canonicalColorHint')}
-                      value={`#${form.ams_compat.canonical_color_rgba.slice(0, 6)}`}
-                      onChange={(e) => setForm({ ...form, ams_compat: { ...form.ams_compat, canonical_color_rgba: `${e.target.value.slice(1).toUpperCase()}FF` } })}
+                      value={`#${form.ams_compat.canonical_color_rgba.replace('#', '').slice(0, 6).padEnd(6, '0')}`}
+                      onChange={(e) => setForm({ ...form, ams_compat: { ...form.ams_compat, canonical_color_rgba: e.target.value } })}
                       className="w-7 h-6 bg-transparent" />
                     <span className="text-xs text-bambu-gray">{t('printers.modal.amsCompat.canonicalColorHint')}</span>
                   </div>
