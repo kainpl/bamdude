@@ -181,6 +181,15 @@ def test_a_dormant_overlay_entry_is_not_applied():
     from backend.app.services.ams_advertised_overlay import OverlayEntry
 
     state = PrinterState(connected=True, connection_generation=1)
+    # The slot shows FF0000FF/GFG00, which is NOT what this entry advertised
+    # (000000FF/GFG99) — the printer has not echoed our push, or somebody
+    # reconfigured the slot on its screen. The actual values are a third pair,
+    # so applying the entry would visibly change the source: with actual ==
+    # live, dropping the ``matches_live`` guard would still pass.
     _petg_slot(state, "FF0000FF", "GFG00")
-    entry = OverlayEntry("PETG", "FF0000FF", "GFG00", (), "000000FF", "GFG99", "internal")
-    assert snapshot_from_state(1, "P1S", state, overlay={(0, 1): entry}).sources[0].color == "FF0000FF"
+    entry = OverlayEntry("PETG", "00FF00FF", "GFA00", (), "000000FF", "GFG99", "internal")
+    dormant = snapshot_from_state(1, "P1S", state, overlay={(0, 1): entry})
+    assert (dormant.sources[0].color, dormant.sources[0].variant) == ("FF0000FF", "GFG00")
+    # And a dormant entry is not a change: it must not move the revision, or
+    # every routing decision would be invalidated for nothing.
+    assert dormant.revision == snapshot_from_state(1, "P1S", state).revision

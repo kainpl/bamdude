@@ -277,7 +277,11 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
         "fts": telemetry.fts,
         "incomplete": incomplete,
         "sources": [{k: v for k, v in asdict(s).items() if k != "remain"} for s in sources],
-        "overlay": applied_overlay,
+        # Sorted, because these are collected in ``telemetry.units`` insertion
+        # order: a reordered AMS payload would otherwise move the revision with
+        # nothing semantically changed, and the dispatcher's final guard would
+        # abort a perfectly good print with ``feed_state_changed``.
+        "overlay": sorted(applied_overlay),
     }
     revision = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     return PrinterFeedSnapshot(

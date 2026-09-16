@@ -34,6 +34,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.auto_queue import AutoQueueItem
+from backend.app.services import ams_advertised_overlay as overlay
 from backend.app.services.print_scheduler import _canonical_filament_type
 from backend.app.services.printer_manager import printer_manager
 
@@ -80,13 +81,20 @@ async def get_filament_requirements(db: AsyncSession, item: AutoQueueItem) -> li
     return [dict(f) for f in requirements.used_filaments]
 
 
-def build_loaded_filaments(status) -> list[dict]:
+def build_loaded_filaments(status, printer_id: int | None = None) -> list[dict]:
     """Build the loaded-filaments list from a printer status object.
 
     Each entry: ``{type, color, tray_info_idx, ams_id, tray_id, is_ht,
     is_external, global_tray_id, extruder_id, remain, tray_uuid, tag_uid}``.
 
     Mirrors upstream ``PrintScheduler._build_loaded_filaments``.
+
+    ``printer_id``: when given, an AMS slot we advertised under a different
+    profile (``ams_advertised_overlay``) reports the spool it REALLY holds —
+    the same treatment ``PrintScheduler._build_loaded_filaments`` gets, and for
+    the same reason: every reader that reasons about the SPOOL must see through
+    the mask, or the mapping lands on the wrong tray and the low-filament
+    announcement names a colour nobody loaded.
     """
     filaments: list[dict] = []
     raw = status.raw_data
@@ -101,12 +109,21 @@ def build_loaded_filaments(status) -> list[dict]:
             if not tray_type:
                 continue
             tray_id = int(tray.get("id", 0))
+            tray_color = tray.get("tray_color", "")
+            tray_info_idx = tray.get("tray_info_idx", "")
+            entry = overlay.effective(printer_id, ams_id, tray_id, tray) if printer_id is not None else None
+            if entry is not None:
+                tray_type, tray_color, tray_info_idx = (
+                    entry.actual_material,
+                    entry.actual_color,
+                    entry.actual_variant,
+                )
             global_tray_id = ams_id if ams_id >= 128 else ams_id * 4 + tray_id
             filaments.append(
                 {
                     "type": tray_type,
-                    "color": _normalize_color(tray.get("tray_color", "")),
-                    "tray_info_idx": tray.get("tray_info_idx", ""),
+                    "color": _normalize_color(tray_color),
+                    "tray_info_idx": tray_info_idx,
                     "ams_id": ams_id,
                     "tray_id": tray_id,
                     "is_ht": is_ht,
@@ -312,7 +329,7 @@ async def compute_ams_mapping_for_printer(
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning("Failed to apply filament_overrides for auto item %s: %s", item.id, e)
 
-    loaded = build_loaded_filaments(status)
+    loaded = build_loaded_filaments(status, printer_id)
     if not loaded:
         return None
 

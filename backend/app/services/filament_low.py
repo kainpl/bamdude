@@ -115,7 +115,7 @@ async def evaluate(db: AsyncSession, printer_id: int, status) -> list[LowSlot]:
     is no longer loaded, or that inventory tracking owns, is forgotten.
     """
     threshold = await read_threshold(db)
-    loaded = build_loaded_filaments(status) if status is not None else []
+    loaded = build_loaded_filaments(status, printer_id) if status is not None else []
     loaded_ids = {f["global_tray_id"] for f in loaded}
     for key in [k for k in _announced if k[0] == printer_id and k[1] not in loaded_ids]:
         del _announced[key]

@@ -8,6 +8,7 @@ import pytest
 from backend.app.api.routes.inventory import apply_spool_to_slot_via_mqtt
 from backend.app.models.printer import Printer
 from backend.app.models.spool import Spool
+from backend.app.services import ams_advertised_overlay
 from backend.app.services.slot_assignment import build_slot_assignment
 
 LIVE_MANUAL_TRAY = {
@@ -102,6 +103,27 @@ async def test_color_policy_advertises_black_but_verifies_the_same_family(db_ses
     assert client.register_assignment_verification.call_args.kwargs["tray_color"] == "000000FF"
     assert spool.rgba == "FF0000FF"  # inventory untouched
     cali.assert_awaited_once()  # K-profile still follows the actual spool (GENERIC_MODE_KPROFILE == "actual")
+    # Routing must be able to see the red spool behind the black we advertised.
+    entry = ams_advertised_overlay.entries_for(printer.id)[(0, 1)]
+    assert (entry.actual_color, entry.advertised_color, entry.source) == ("FF0000FF", "000000FF", "internal")
+
+
+@pytest.mark.asyncio
+async def test_a_refused_publish_leaves_no_overlay_entry(db_session):
+    """Nothing was advertised, so there is nothing to see through.
+
+    ``ams_set_filament_setting`` returns False when the client has no live
+    connection. Remembering there would make routing report the spool as
+    something the printer was never told, on a slot still showing its real
+    filament — the mask would exist only in our own head.
+    """
+    printer, spool, state, client = await _fixture(
+        db_session, {"normalize_color": True, "canonical_color_rgba": "000000FF"}
+    )
+    client.ams_set_filament_setting.return_value = False
+    await _run(db_session, printer, spool, state, client)
+    client.register_assignment_verification.assert_not_called()
+    assert ams_advertised_overlay.entries_for(printer.id) == {}
 
 
 @pytest.mark.asyncio
