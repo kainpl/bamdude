@@ -1685,10 +1685,17 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if state.raw_data
         else ()
     )
-    # Include tray states so load/unload transitions (state 11→10) trigger broadcasts (#784)
+    # Include tray states so load/unload transitions (state 11→10) trigger broadcasts (#784).
+    # ⚠️ ``tray_color`` and ``tray_info_idx`` are in here for the advertised-profile
+    # overlay: an entry becomes EFFECTIVE the moment the printer echoes what we
+    # published (``ams_advertised_overlay.matches_live``), and that echo moves
+    # exactly these two fields and nothing else in this key. Without them the
+    # "AMS sees" badge and the real spool behind it waited for the next unrelated
+    # push. Both are short, low-churn strings — they change when somebody
+    # configures a slot, which is a moment that deserves a broadcast anyway.
     ams_tray_key = (
         tuple(
-            (t.get("id"), t.get("tray_type", ""), t.get("state"))
+            (t.get("id"), t.get("tray_type", ""), t.get("state"), t.get("tray_color", ""), t.get("tray_info_idx", ""))
             for a in (state.raw_data.get("ams") or [])
             for t in a.get("tray", [])
         )

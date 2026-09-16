@@ -266,6 +266,13 @@ async def apply_spool_to_slot_via_mqtt(
     # Only what actually left the process is remembered: a disconnected printer
     # never gets the advertised profile, so nothing is masked and routing must
     # keep reading the live tray.
+    #
+    # The store is written HERE, before the caller commits its assignment row —
+    # and that direction is the safe one. An entry without its row is inert: it
+    # is keyed by slot and only speaks while the printer still echoes what we
+    # published, and the very next rebuild (or a failed commit's re-assign)
+    # replaces it. A row without its entry is the harmful order — routing would
+    # read the mask as the spool for the whole life of the process.
     if sent:
         overlay.remember(printer_id, ams_id, tray_id, projection, "internal")
 

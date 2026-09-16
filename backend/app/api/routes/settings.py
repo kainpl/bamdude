@@ -467,7 +467,12 @@ async def update_spoolman_settings(
 
             result = await db.execute(delete(SpoolAssignment))
             # Every overlay entry was born of an assignment row; with the whole
-            # registry gone, so is every spool the masks stood for.
+            # registry gone, so is every spool the masks stood for. Cleared
+            # BEFORE this handler's commit, like every ``remember`` on the
+            # assignment routes: an in-memory store that forgot too early is
+            # inert (the rebuild refills it from the registries), while one that
+            # still claims a spool whose row is gone would answer routing with
+            # an inventory item nobody can see.
             overlay.forget_all()
             logger.info("Cleared %d spool assignments on switch to Spoolman mode", result.rowcount)
         # Switching back to internal mode: clear Spoolman slot assignments — the
@@ -480,7 +485,7 @@ async def update_spoolman_settings(
             from backend.app.services import ams_advertised_overlay as overlay
 
             result = await db.execute(delete(SpoolmanSlotAssignment))
-            overlay.forget_all()
+            overlay.forget_all()  # same reasoning as the switch above
             logger.info("Cleared %d Spoolman slot assignments on switch to internal mode", result.rowcount)
     if "spoolman_url" in settings:
         await set_setting(db, "spoolman_url", settings["spoolman_url"])

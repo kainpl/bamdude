@@ -1032,7 +1032,10 @@ async def link_spool(
                     tray_type_fallback=tray_type,
                 )
                 # Remember only a payload that actually left the process — see
-                # inventory.apply_spool_to_slot_via_mqtt.
+                # inventory.apply_spool_to_slot_via_mqtt, which also explains why
+                # writing the store BEFORE this route's commit is the safe order
+                # (an entry without its row is inert; a row without its entry is
+                # not).
                 if sent:
                     overlay.remember(p_id, a_id, t_id, projection, "spoolman")
 

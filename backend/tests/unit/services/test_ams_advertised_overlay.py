@@ -62,6 +62,24 @@ def test_an_unprojected_projection_forgets_and_unassign_forgets():
     assert overlay.entries_for(7) == {}
 
 
+def test_slot_key_normalises_an_ht_unit_to_its_one_slot():
+    """An AMS HT reports its single tray under an id that need not be 0 — the
+    assignment row always says 0. Written one way and read the other, the entry
+    is simply never found and the slot keeps showing the mask."""
+    assert overlay.slot_key(0, 3) == (0, 3)
+    assert overlay.slot_key(1, 0) == (1, 0)
+    assert overlay.slot_key(128, 4) == (128, 0)
+    assert overlay.slot_key(129, 0) == (129, 0)
+
+
+def test_an_ht_entry_is_found_whatever_tray_id_the_printer_reports():
+    overlay.remember(7, 128, 0, _projection(), "internal")
+    echoed = {"tray_info_idx": "GFG99", "tray_color": "000000FF"}
+    assert overlay.effective(7, 128, 4, echoed) is not None
+    overlay.forget(7, 128, 4)
+    assert overlay.entries_for(7) == {}
+
+
 def test_replace_printer_is_atomic_and_entries_for_is_a_copy():
     overlay.replace_printer(7, {(0, 0): overlay.entry_from(_projection(), "internal")})
     snapshot = overlay.entries_for(7)

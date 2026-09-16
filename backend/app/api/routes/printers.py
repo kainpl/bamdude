@@ -58,6 +58,7 @@ from backend.app.schemas.printer import (
 )
 from backend.app.schemas.timelapse import TimelapseStorage
 from backend.app.services import ams_advertised_overlay, archive_parts
+from backend.app.services.ams_backup_compatibility import NAMESPACE as AMS_BACKUP_COMPAT_NAMESPACE
 from backend.app.services.ams_backup_compatibility_apply import bulk_apply, forget_printer_rebuild
 from backend.app.services.archive import find_archive_for_sd_file, parse_plates_from_3mf, sd_stem
 from backend.app.services.archive_defects import DefectsResult, DefectsWrite, record_defects
@@ -251,6 +252,13 @@ async def create_printer(
     data = printer_data.model_dump()
     tag_ids = data.pop("tag_ids", [])
     await _require_known_tags(db, tag_ids)
+    # One namespaced JSON object, written whole — the validated policy, not the
+    # raw dump (which would carry a ``backup_compatibility: None`` for a create
+    # that sent nothing and shadow the column default).
+    patch = printer_data.ams_policies
+    data.pop("ams_policies", None)
+    if patch is not None and patch.backup_compatibility is not None:
+        data["ams_policies"] = {AMS_BACKUP_COMPAT_NAMESPACE: patch.backup_compatibility.model_dump()}
     printer = Printer(**data)
 
     # Probe MQTT connectivity BEFORE persisting so a mistyped access code or
@@ -523,15 +531,22 @@ async def update_printer(
             update_data["plate_detection_roi_w"] = None
             update_data["plate_detection_roi_h"] = None
 
-    # One namespaced JSON object: merge the namespace sent, keep every other key
-    # (a future policy must not be wiped by a form that never heard of it), and
-    # assign a NEW dict — SQLAlchemy JSON does not see in-place mutation.
+    # One namespaced JSON object. Every OTHER key survives (a future policy must
+    # not be wiped by a form that never heard of it), and the assignment is a NEW
+    # dict — SQLAlchemy JSON does not see in-place mutation.
+    #
+    # ⚠️ The namespace that IS sent is replaced WHOLESALE, defaults included:
+    # this is not a field-level merge, so a caller that sends
+    # ``{"normalize_color": true}`` alone also writes
+    # ``canonical_color_rgba: "000000FF"`` and ``generic_base_material: false``
+    # over whatever was there. A UI must send the full namespace it wants to end
+    # up with — ``printersEditPayload.backupCompatibilityPatch`` is what does
+    # that on our side.
     if "ams_policies" in update_data:
-        update_data.pop("ams_policies")
         merged = dict(printer.ams_policies or {})
         patch = printer_data.ams_policies
         if patch is not None and patch.backup_compatibility is not None:
-            merged["backup_compatibility"] = patch.backup_compatibility.model_dump()
+            merged[AMS_BACKUP_COMPAT_NAMESPACE] = patch.backup_compatibility.model_dump()
         update_data["ams_policies"] = merged
 
     for field, value in update_data.items():
@@ -729,6 +744,11 @@ async def archive_printer(
     await db.commit()
     await db.refresh(printer)
     printer_manager.disconnect_printer(printer_id)
+    # The advertised-profile overlay and the once-per-process rebuild mark are
+    # deliberately LEFT in place: archiving is reversible and the slots still
+    # hold what we published, so an unarchive finds the masks it left. The
+    # DELETE route forgets both (``ams_advertised_overlay.forget_printer`` +
+    # ``forget_printer_rebuild``) — there the id itself becomes free again.
     # A ``CloudLinkPrinter`` row survives archiving on purpose, so the allowlist
     # still names this machine — availability is filtered on the READ side, in
     # ``Uplink.build_snapshot_chunks``. A running link is holding the set that snapshot

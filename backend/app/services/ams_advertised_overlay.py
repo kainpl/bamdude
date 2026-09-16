@@ -39,6 +39,21 @@ class OverlayEntry:
 _store: dict[int, dict[tuple[int, int], OverlayEntry]] = {}
 
 
+def slot_key(ams_id: int, tray_id: int) -> tuple[int, int]:
+    """The key one AMS slot is stored under — HT normalised to slot 0.
+
+    A single-slot unit (AMS HT, id >= 128) reports its one tray under an id
+    that need not be 0: the assignment row says slot 0, the live payload may
+    say 4. Written one way and read the other, the entry is simply never found,
+    and the slot keeps showing the mask.
+
+    Every writer and reader here normalises through this, so two callers cannot
+    disagree; the callers that build a key themselves (routing's
+    ``printer_feed_snapshot``) ask for it by name.
+    """
+    return (ams_id, 0 if ams_id >= 128 else tray_id)
+
+
 def _norm_color(value) -> str:
     """Six hex digits, upper — alpha and '#' are not identity."""
     return str(value or "").strip().lstrip("#").upper()[:6]
@@ -61,13 +76,13 @@ def remember(printer_id: int, ams_id: int, tray_id: int, projection, source: str
     if not projection.projected:
         forget(printer_id, ams_id, tray_id)
         return
-    _store.setdefault(printer_id, {})[(ams_id, tray_id)] = entry_from(projection, source)
+    _store.setdefault(printer_id, {})[slot_key(ams_id, tray_id)] = entry_from(projection, source)
 
 
 def forget(printer_id: int, ams_id: int, tray_id: int) -> None:
     slots = _store.get(printer_id)
     if slots:
-        slots.pop((ams_id, tray_id), None)
+        slots.pop(slot_key(ams_id, tray_id), None)
         if not slots:
             _store.pop(printer_id, None)
 
@@ -101,7 +116,7 @@ def matches_live(entry: OverlayEntry, live_tray: dict | None) -> bool:
 
 
 def effective(printer_id: int, ams_id: int, tray_id: int, live_tray: dict | None) -> OverlayEntry | None:
-    entry = _store.get(printer_id, {}).get((ams_id, tray_id))
+    entry = _store.get(printer_id, {}).get(slot_key(ams_id, tray_id))
     if entry is None or not matches_live(entry, live_tray):
         return None
     return entry

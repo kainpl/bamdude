@@ -20,6 +20,57 @@ async def test_fresh_printer_reports_default_off_policy(async_client, printer_fa
     }
 
 
+async def test_create_persists_a_namespace_the_form_sent(async_client):
+    """The frontend's ``PrinterCreate`` has carried ``ams_policies`` since the
+    policy shipped; without the field on the backend shape a create that sent
+    one was accepted and silently dropped, and the switch came back off."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("backend.app.api.routes.printers.printer_manager") as pm:
+        pm.test_connection = AsyncMock(return_value={"success": True})
+        pm.connect_printer = AsyncMock()
+        created = await async_client.post(
+            "/api/v1/printers/",
+            json={
+                "name": "Policy at birth",
+                "serial_number": "00M09A700000001",
+                "ip_address": "192.168.1.77",
+                "access_code": "12345678",
+                "model": "P1S",
+                "ams_policies": {
+                    "backup_compatibility": {"normalize_color": True, "canonical_color_rgba": "#1a1a1aff"}
+                },
+            },
+        )
+    assert created.status_code == 200, created.text
+    body = (await async_client.get(f"/api/v1/printers/{created.json()['id']}")).json()
+    assert body["ams_policies"]["backup_compatibility"] == {
+        "normalize_color": True,
+        "canonical_color_rgba": "1A1A1AFF",  # normalised on the way in
+        "generic_base_material": False,
+    }
+
+
+async def test_create_without_the_namespace_keeps_the_column_default(async_client):
+    from unittest.mock import AsyncMock, patch
+
+    with patch("backend.app.api.routes.printers.printer_manager") as pm:
+        pm.test_connection = AsyncMock(return_value={"success": True})
+        pm.connect_printer = AsyncMock()
+        created = await async_client.post(
+            "/api/v1/printers/",
+            json={
+                "name": "No policy",
+                "serial_number": "00M09A700000002",
+                "ip_address": "192.168.1.78",
+                "access_code": "12345678",
+                "model": "P1S",
+            },
+        )
+    assert created.status_code == 200, created.text
+    assert created.json()["ams_policies"]["backup_compatibility"]["normalize_color"] is False
+
+
 async def test_patch_writes_namespace_and_keeps_foreign_keys(async_client, db_session, printer_factory):
     printer_id = (await printer_factory(ams_policies={"future_policy": {"x": 1}})).id
     resp = await async_client.patch(

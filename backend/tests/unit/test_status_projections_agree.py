@@ -125,6 +125,18 @@ class TestAnExemptionIsDeliberate:
         assert field not in _STATUS_KEY
 
 
+class TestTheTraySignatureNoticesAnAdvertisedProfile:
+    def test_it_covers_the_two_fields_the_printers_echo_moves(self) -> None:
+        """An overlay entry is dormant until the printer echoes what we
+        published, and that echo moves ``tray_color`` / ``tray_info_idx`` —
+        nothing else in this key. Without them the badge and the real spool
+        behind it waited for the next unrelated push."""
+        source = inspect.getsource(main_module.on_printer_status_change)
+        tray_key = _code_only(source.split("ams_tray_key = ", 1)[1].split("airduct_key = ", 1)[0])
+        assert '"tray_color"' in tray_key and '"tray_info_idx"' in tray_key
+        assert '"state"' in tray_key  # the load/unload transition of #784 stays
+
+
 class TestTheFanSignatureIsAboutSpeeds:
     def test_it_covers_the_part_state(self) -> None:
         """Part id alone would not notice a speed change; the state is the value

@@ -110,6 +110,11 @@ class PrinterCreate(PrinterBase):
     # Direct exposure on PRINTERS_READ would let a Viewer connect to the printer's MQTT
     # and bypass RBAC (upstream 9a432f00).
     access_code: str = Field(..., min_length=1, max_length=20)
+    # The frontend's ``PrinterCreate`` has carried this field since the policy
+    # shipped; without it here a create that sent one was accepted and silently
+    # ignored, and the switch came back off. Same shape as the PATCH: the
+    # namespace is written whole or not at all (then the column default).
+    ams_policies: AmsPoliciesPatch | None = None
 
 
 class PlateDetectionROI(BaseModel):
@@ -189,6 +194,14 @@ class PrinterResponse(PrinterBase):
     # The whole namespaced object, defaults filled in — a row written before
     # m175, or one whose namespace was never set, still answers with the
     # policy that is in force rather than with an empty dict.
+    #
+    # ⚠️ Validated STRICTLY: a namespace whose shape does not parse (a
+    # translucent colour, say) fails this response — and on ``GET /printers/``
+    # that is the whole list, not one row. Acceptable because every writer goes
+    # through the typed schema above, which refuses such a value on the wire;
+    # the only way in is a hand-edited row. The SERVICE-side policy
+    # (``services/ams_backup_compatibility``) is the lenient reader that keeps
+    # the MQTT path working for exactly that case.
     ams_policies: AmsPolicies = Field(default_factory=AmsPolicies)
     created_at: datetime
     updated_at: datetime

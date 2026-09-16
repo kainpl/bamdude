@@ -1837,6 +1837,9 @@ def printer_state_to_dict(
 
     if "ams" in raw_data and isinstance(raw_data["ams"], list):
         for ams_data in raw_data["ams"]:
+            # Read once per unit: the overlay lookup below and the drying badge
+            # further down both key off it.
+            ams_id_int = int(ams_data.get("id", 0))
             trays = []
             for tray in ams_data.get("tray", []):
                 tag_uid = tray.get("tag_uid")
@@ -1875,7 +1878,7 @@ def printer_state_to_dict(
                 # the machine shows and labels it with what is really loaded;
                 # ``None`` whenever nothing was masked on this slot.
                 entry = (
-                    _overlay.effective(printer_id, int(ams_data.get("id", 0)), int(tray.get("id", 0)), tray)
+                    _overlay.effective(printer_id, ams_id_int, int(tray.get("id", 0)), tray)
                     if printer_id is not None
                     else None
                 )
@@ -1943,7 +1946,6 @@ def printer_state_to_dict(
             # push, so prefer the cached target from the last send_drying_command;
             # fall back to the loaded trays, but only when they agree on a
             # filament type — see uniform_tray_drying_hint.
-            ams_id_int = int(ams_data.get("id", 0))
             target = (drying_targets or {}).get(ams_id_int)
             dry_target_temp: int | None = None
             dry_filament: str | None = None

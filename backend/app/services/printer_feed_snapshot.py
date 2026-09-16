@@ -8,7 +8,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 
-from backend.app.services.ams_advertised_overlay import matches_live
+from backend.app.services.ams_advertised_overlay import matches_live, slot_key
 from backend.app.utils.printer_models import is_dual_nozzle_model, is_nozzle_rack_model, normalize_model_name
 
 
@@ -216,7 +216,7 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
     # decision taken while the live values were the only thing we knew.
     applied_overlay: list = []
 
-    def add(tray, sid, kind, nozzles, slot_key=None):
+    def add(tray, sid, kind, nozzles, key=None):
         material = tray.get("tray_type")
         if not material:
             return
@@ -225,10 +225,10 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
         except (TypeError, ValueError):
             remain = -1
         color, variant = tray.get("tray_color"), tray.get("tray_info_idx")
-        entry = overlay.get(slot_key) if overlay and slot_key is not None else None
+        entry = overlay.get(key) if overlay and key is not None else None
         if entry is not None and matches_live(entry, tray):
             material, color, variant = entry.actual_material, entry.actual_color, entry.actual_variant
-            applied_overlay.append([slot_key[0], slot_key[1], material, color, variant])
+            applied_overlay.append([key[0], key[1], material, color, variant])
         sources.append(
             FeedSource(
                 id=sid,
@@ -254,8 +254,9 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
             tid = _integer(tray.get("id"))
             if tid is not None:
                 # The overlay is keyed by (unit, slot) as the assignment rows
-                # are, NOT by the global source id this snapshot sorts on.
-                add(tray, uid if uid >= 128 else uid * 4 + tid, "ams", nozzles, slot_key=(uid, tid if uid < 128 else 0))
+                # are, NOT by the global source id this snapshot sorts on —
+                # ``slot_key`` owns the HT normalisation for every caller.
+                add(tray, uid if uid >= 128 else uid * 4 + tid, "ams", nozzles, key=slot_key(uid, tid))
     for tid, tray in telemetry.external.items():
         nozzle = (255 - tid) if dual else 0
         add(tray, tid, "external", (nozzle,) if nozzle in (0, 1) else ())
