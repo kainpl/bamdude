@@ -1,21 +1,29 @@
+/**
+ * The per-user email switches — everything `/notifications` used to be before
+ * it became the notification centre.
+ *
+ * The card does NOT re-ask whether Advanced Authentication is on or whether
+ * per-user notifications are enabled: the page decides that once, and simply
+ * does not offer the Email tab when the answer is no. That replaces the
+ * redirect to `/settings` the old page performed from an effect.
+ */
+
 import { useState, useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Bell, CheckCircle2, Loader2, Mail, Save } from 'lucide-react';
-import { api } from '../api/client';
-import { useAuth } from '../contexts/AuthContext';
-import { useToast } from '../contexts/ToastContext';
-import { Button } from '../components/Button';
-import { LoadingBlock } from '../components/LoadingBlock';
-import { Card, CardContent, CardHeader } from '../components/Card';
+import { CheckCircle2, Loader2, Mail, Save } from 'lucide-react';
+import { api } from '../../api/client';
+import { useAuth } from '../../contexts/AuthContext';
+import { useToast } from '../../contexts/ToastContext';
+import { Button } from '../Button';
+import { LoadingBlock } from '../LoadingBlock';
+import { Card, CardContent, CardHeader } from '../Card';
 
-export function NotificationsPage() {
+export function EmailDeliveryCard() {
   const { t } = useTranslation();
   const { user } = useAuth();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
 
   const [notifyPrintStart, setNotifyPrintStart] = useState(true);
   const [notifyPrintComplete, setNotifyPrintComplete] = useState(true);
@@ -23,31 +31,11 @@ export function NotificationsPage() {
   const [notifyPrintStopped, setNotifyPrintStopped] = useState(true);
   const [isDirty, setIsDirty] = useState(false);
 
-  // Check advanced auth status - redirect if disabled
-  const { data: advancedAuthStatus, isLoading: isAdvancedAuthLoading } = useQuery({
-    queryKey: ['advancedAuthStatus'],
-    queryFn: api.getAdvancedAuthStatus,
-    staleTime: 5 * 60 * 1000, // 5 minutes
-  });
-
-  const { data: settings, isLoading: isSettingsLoading } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
-    staleTime: 5 * 60 * 1000,
-  });
-
   // Fetch current preferences
   const { data: preferences, isLoading } = useQuery({
     queryKey: ['user-email-preferences'],
     queryFn: () => api.getUserEmailPreferences(),
   });
-
-  // Redirect to settings if Advanced Auth is disabled
-  useEffect(() => {
-    if ((advancedAuthStatus && !advancedAuthStatus.advanced_auth_enabled) || (settings && !settings.user_notifications_enabled)) {
-      navigate('/settings', { replace: true });
-    }
-  }, [advancedAuthStatus, settings, navigate]);
 
   // Populate form when preferences load
   useEffect(() => {
@@ -87,26 +75,12 @@ export function NotificationsPage() {
     setIsDirty(true);
   };
 
-  // The title is drawn before the settings arrive; only the cards below wait.
-  const pageHeader = (
-    <div>
-        <h1 className="text-2xl font-bold text-white flex items-center gap-3"><Bell className="w-6 h-6 text-bambu-green" />{t('notifications.userEmail.title')}</h1>
-    </div>
-  );
-
-  if (isLoading || isAdvancedAuthLoading || isSettingsLoading) {
-    return (
-      <div className="p-4 space-y-4">
-        {pageHeader}
-        <LoadingBlock label={t('common.loading')} className="h-64 text-bambu-gray" />
-      </div>
-    );
+  if (isLoading) {
+    return <LoadingBlock label={t('common.loading')} className="h-64 text-bambu-gray" />;
   }
 
   return (
-    <div className="p-4 space-y-4">
-      {pageHeader}
-
+    <div className="space-y-4">
       {/* Info card */}
       <Card className="mb-6 border-blue-300 bg-blue-50 dark:border-blue-500/30 dark:bg-blue-500/5">
         <CardContent className="py-4">

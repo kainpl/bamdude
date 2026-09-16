@@ -33,7 +33,7 @@ import InventoryPage from './pages/InventoryPage';
 import { SystemInfoPage } from './pages/SystemInfoPage';
 import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
-import { NotificationsPage } from './pages/NotificationsPage';
+import { NotificationCenterPage } from './pages/NotificationCenterPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { usePrintProgressTitle } from './hooks/usePrintProgressTitle';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
@@ -277,7 +277,7 @@ function App() {
                   <Route path="users" element={<Navigate to="/settings?tab=users" replace />} />
                   <Route path="groups" element={<Navigate to="/settings?tab=users" replace />} />
                   <Route path="system" element={<SystemInfoPage />} />
-                  <Route path="notifications" element={<NotificationsPage />} />
+                  <Route path="notifications" element={<PermissionRoute permission="notifications:inbox"><NotificationCenterPage /></PermissionRoute>} />
                   <Route path="external/:id" element={<ExternalLinkPage />} />
                 </Route>
               </Routes>
