@@ -1588,35 +1588,65 @@ async def assign_spoolman_slot(
             # ONE identity path (spec A §5.2): the family catalog builds the
             # payload — family from the linked calibration when one exists,
             # else the generic family of the material, inside the builder.
+            from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
+                BackupCompatibilityPolicy,
+                kprofile_allowed,
+                live_tray_for,
+                project_slot_assignment,
+            )
             from backend.app.services.slot_assignment import build_slot_assignment  # noqa: PLC0415
+            from backend.app.services.slot_assignment_publish import publish_slot_plan  # noqa: PLC0415
 
+            supports_user_preset = bool(getattr(state, "support_user_preset", False))
+            # Model cache, not PrinterInfo — see configure_ams_slot.
+            printer_model = printer_manager.get_model(body.printer_id)
             plan = await build_slot_assignment(
                 db,
                 family_id=matching_fc.filament_id if matching_fc else None,
                 material_override=tray_type,
                 color_rgba=tray_color,
                 temp_overrides=(mapped.get("nozzle_temp_min"), None),
-                # Model cache, not PrinterInfo — see configure_ams_slot.
-                printer_model=printer_manager.get_model(body.printer_id),
+                printer_model=printer_model,
                 nozzle_diameter=nozzle_diameter,
-                supports_user_preset=bool(getattr(state, "support_user_preset", False)),
+                supports_user_preset=supports_user_preset,
             )
             for note in plan.warnings:
                 logger.info("Spoolman assign: %s", note)
+            # The K half below keys off the ACTUAL family, never the advertised one.
             effective_tray_info_idx = plan.tray_info_idx
 
-            mqtt_client.ams_set_filament_setting(
+            # The advertised profile (spec: ams-backup-compatibility-emulation).
+            # The actual plan stays the spool's truth; only what the printer is
+            # told changes.
+            projection = await project_slot_assignment(
+                db,
+                actual=plan,
+                policy=BackupCompatibilityPolicy.from_printer(printer),
+                live_tray=live_tray_for(state, body.ams_id, body.tray_id),
+                spool_tag_uid=mapped.get("tag_uid"),
+                spool_tray_uuid=mapped.get("tray_uuid"),
+                ams_id=body.ams_id,
+                material=tray_type,
+                extra_colors=None,
+                printer_model=printer_model,
+                nozzle_diameter=nozzle_diameter,
+                supports_user_preset=supports_user_preset,
+            )
+            if projection.projected:
+                logger.info(
+                    "Spoolman assign: advertising %s for AMS%d-T%d (%s)",
+                    projection.applied,
+                    body.ams_id,
+                    body.tray_id,
+                    projection.reasons,
+                )
+            publish_slot_plan(
+                mqtt_client,
                 ams_id=body.ams_id,
                 tray_id=body.tray_id,
-                tray_info_idx=plan.tray_info_idx,
-                tray_type=plan.tray_type or tray_type,
+                plan=projection.advertised,
                 tray_sub_brands=tray_sub_brands,
-                tray_color=tray_color,
-                nozzle_temp_min=plan.nozzle_temp_min,
-                nozzle_temp_max=plan.nozzle_temp_max,
-                setting_id=plan.setting_id,
-                cols=plan.cols,
-                ctype=plan.ctype,
+                tray_type_fallback=tray_type,
             )
 
             from backend.app.services.calibration_service import (  # noqa: PLC0415
@@ -1624,7 +1654,7 @@ async def assign_spoolman_slot(
             )
 
             fired = False
-            if matching_fc:
+            if matching_fc and kprofile_allowed(projection):
                 fired, _ = await apply_active_calibration_to_slot(
                     db=db,
                     printer_id=body.printer_id,

@@ -178,7 +178,6 @@ async def apply_spool_to_slot_via_mqtt(
         if spool.subtype
         else spool.material
     )
-    tray_color = spool.rgba or "FFFFFFFF"
 
     nozzle_diameter = "0.4"
     if state and state.nozzles:
@@ -205,53 +204,63 @@ async def apply_spool_to_slot_via_mqtt(
     # inside the builder). current_tray_info_idx / current_tray_type are
     # accepted for signature stability but no longer consulted — the family
     # model does not reuse a foreign tray id.
+    from backend.app.services.ams_backup_compatibility import (
+        BackupCompatibilityPolicy,
+        kprofile_allowed,
+        live_tray_for,
+        project_slot_assignment,
+    )
     from backend.app.services.slot_assignment import build_slot_assignment
+    from backend.app.services.slot_assignment_publish import publish_slot_plan
 
     # ⚠️ The model lives in the manager's model cache, NOT on PrinterInfo
     # (name + serial only) — ``info.model`` was an AttributeError on every
     # call; only mocks (auto-attributes) kept it green.
+    supports_user_preset = bool(getattr(state, "support_user_preset", False))
+    printer_model = printer_manager.get_model(printer_id)
     plan = await build_slot_assignment(
         db,
         spool=spool,
-        printer_model=printer_manager.get_model(printer_id),
+        printer_model=printer_model,
         nozzle_diameter=nozzle_diameter,
-        supports_user_preset=bool(getattr(state, "support_user_preset", False)),
+        supports_user_preset=supports_user_preset,
     )
     for note in plan.warnings:
         logger.info("Spool assign: %s", note)
-    effective_tray_info_idx = plan.tray_info_idx
-    effective_setting_id = plan.setting_id
-    tray_type = plan.tray_type or tray_type
-    temp_min, temp_max = plan.nozzle_temp_min, plan.nozzle_temp_max
 
-    # a. Set filament setting
-    client.ams_set_filament_setting(
+    # The advertised profile (spec: ams-backup-compatibility-emulation). The
+    # actual plan stays the spool's truth; only what the printer is told changes.
+    printer_row = await db.get(Printer, printer_id)
+    projection = await project_slot_assignment(
+        db,
+        actual=plan,
+        policy=BackupCompatibilityPolicy.from_printer(printer_row),
+        live_tray=live_tray_for(state, ams_id, tray_id),
+        spool_tag_uid=spool.tag_uid,
+        spool_tray_uuid=spool.tray_uuid,
         ams_id=ams_id,
-        tray_id=tray_id,
-        tray_info_idx=effective_tray_info_idx,
-        tray_type=tray_type,
-        tray_sub_brands=tray_sub_brands,
-        tray_color=tray_color,
-        nozzle_temp_min=temp_min,
-        nozzle_temp_max=temp_max,
-        setting_id=effective_setting_id,
-        cols=plan.cols,
-        ctype=plan.ctype,
+        material=spool.material,
+        extra_colors=spool.extra_colors,
+        printer_model=printer_model,
+        nozzle_diameter=nozzle_diameter,
+        supports_user_preset=supports_user_preset,
     )
+    if projection.projected:
+        logger.info(
+            "Spool assign: advertising %s for AMS%d-T%d (%s)", projection.applied, ams_id, tray_id, projection.reasons
+        )
+    # The K-profile half below keys off the ACTUAL family, never the advertised
+    # one — the spool's own calibration is what should be printed with.
+    effective_tray_info_idx = plan.tray_info_idx
 
-    # Register a read-back verification so the next AMS pushes can confirm the
-    # tray actually accepted this assignment (upstream #2582). We record the same
-    # effective filament id we pushed; the client fires on_assignment_verified on
-    # match/timeout. Colour is informational only — the match keys on the filament
-    # id the printer echoes back. ``cali_idx`` starts unknown because our K-profile
-    # push below resolves it live inside ``apply_active_calibration_to_slot``,
-    # which calls ``note_assignment_cali_idx`` to fill it in.
-    client.register_assignment_verification(
+    # a. Set filament setting (and register its read-back verification).
+    publish_slot_plan(
+        client,
         ams_id=ams_id,
         tray_id=tray_id,
-        tray_info_idx=effective_tray_info_idx,
-        tray_color=tray_color,
-        cali_idx=None,
+        plan=projection.advertised,
+        tray_sub_brands=tray_sub_brands,
+        tray_type_fallback=tray_type,
     )
 
     # b. Push extrusion calibration via the unified helper. The helper
@@ -266,7 +275,7 @@ async def apply_spool_to_slot_via_mqtt(
         spool=spool, slot_tray_info_idx=effective_tray_info_idx or None, db=db
     )
     nozzle_vt = str(getattr(state, "nozzle_volume_type", "standard") or "standard")
-    if effective_filament_id:
+    if effective_filament_id and kprofile_allowed(projection):
         await apply_active_calibration_to_slot(
             db=db,
             printer_id=printer_id,
