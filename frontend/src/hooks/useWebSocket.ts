@@ -839,6 +839,13 @@ export function useWebSocket() {
         }
         break;
 
+      case 'inbox_item':
+        // A row landed in this user's inbox (server-side fan-out targets the
+        // user, never the farm). The list and the unread counter share the
+        // prefix; no toast — the badge is the signal.
+        queryClient.invalidateQueries({ queryKey: ['inbox'] });
+        break;
+
     }
   }, [queryClient, debouncedInvalidate, invalidateProjectViews, throttledPrinterStatusUpdate, showToast, t]);
 

@@ -196,6 +196,22 @@ describe('useWebSocket hook', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['auto-queue'] });
   });
 
+  it('refreshes the inbox when an item lands', async () => {
+    const { useWebSocket } = await import('../../hooks/useWebSocket');
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+    const ws = await waitForWs();
+
+    act(() => {
+      ws.open();
+      ws.simulateMessage({ type: 'inbox_item', data: { item: { id: 1 }, unread_count: 4 } });
+    });
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inbox'] });
+    });
+  });
+
   it('refreshes stagger capacity when the scheduler releases a slot', async () => {
     const { useWebSocket } = await import('../../hooks/useWebSocket');
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');

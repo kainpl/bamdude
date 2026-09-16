@@ -6228,7 +6228,7 @@ export type Permission =
   | 'camera:view'
   | 'maintenance:read' | 'maintenance:create' | 'maintenance:update' | 'maintenance:delete'
   | 'kprofiles:read' | 'kprofiles:create' | 'kprofiles:update' | 'kprofiles:delete'
-  | 'notifications:read' | 'notifications:create' | 'notifications:update' | 'notifications:delete' | 'notifications:user_email'
+  | 'notifications:read' | 'notifications:create' | 'notifications:update' | 'notifications:delete' | 'notifications:user_email' | 'notifications:inbox'
   | 'notification_templates:read' | 'notification_templates:update'
   | 'external_links:read' | 'external_links:create' | 'external_links:update' | 'external_links:delete'
   | 'discovery:scan'
@@ -6300,6 +6300,56 @@ export interface UserEmailPreferences {
   notify_print_complete: boolean;
   notify_print_failed: boolean;
   notify_print_stopped: boolean;
+}
+
+// In-app inbox (spec: notification-center)
+export type InboxSeverity = 'info' | 'warning' | 'error';
+
+export interface InboxItem {
+  id: number;
+  event_type: string;
+  severity: InboxSeverity;
+  group: string;
+  title: string;
+  message: string;
+  printer_id: number | null;
+  printer_name: string | null;
+  extra_data: Record<string, unknown> | null;
+  created_at: string;
+  read_at: string | null;
+}
+
+export interface InboxListResponse {
+  items: InboxItem[];
+  unread_count: number;
+  next_before_id: number | null;
+}
+
+/** The ONE filter shape. The list reads it, and so do read-all and clear — the
+ *  same filter decides what is shown, what is marked read and what is DELETED. */
+export interface InboxFilters {
+  unread_only?: boolean;
+  severity?: InboxSeverity;
+  printer_id?: number;
+  event_type?: string;
+  /** ISO string in **UTC** — build it with `Date#toISOString()`, never a local
+   *  `toString()`/`toLocaleString()` slice. The backend converts an
+   *  offset-bearing value correctly, but a local time carrying NO offset is
+   *  read as UTC and silently shifts the window — and this same value decides
+   *  what read-all marks and what clear deletes. */
+  since?: string;
+}
+
+export interface InboxSubscriptionEvent {
+  event_type: string;
+  severity: InboxSeverity;
+  group: string;
+  subscribed: boolean;
+}
+
+export interface InboxSubscriptions {
+  is_default: boolean;
+  events: InboxSubscriptionEvent[];
 }
 
 // Per-(user, printer-model) saved PrintModal toggles. Lives on the
@@ -7126,6 +7176,20 @@ const printerStatusReads = createPrinterStatusBatcher(
 // Only tracks outstanding reads; never stores a second status cache.
 export const recordLivePrinterStatus = printerStatusReads.update;
 
+/** Serialise inbox filters ONCE, for every route that takes them (list,
+ *  read-all, clear). Only what is set travels: an empty value must not reach
+ *  the server as a bare `?printer_id=`, and the three routes must agree or a
+ *  bulk action would act on a different set than the one on screen. */
+function inboxQuery(params: InboxFilters): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (params.unread_only) qs.set('unread_only', 'true');
+  if (params.severity) qs.set('severity', params.severity);
+  if (params.printer_id) qs.set('printer_id', String(params.printer_id));
+  if (params.event_type) qs.set('event_type', params.event_type);
+  if (params.since) qs.set('since', params.since);
+  return qs;
+}
+
 export const api = {
   getMonitorSnapshot: (view: MonitorView, signal?: AbortSignal) =>
     request<MonitorSnapshot>(`/monitor/snapshot?view=${view}`, { signal }),
@@ -7305,6 +7369,24 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+
+  // In-app inbox
+  getInbox: (params: InboxFilters & { before_id?: number; limit?: number } = {}) => {
+    const qs = inboxQuery(params);
+    if (params.before_id) qs.set('before_id', String(params.before_id));
+    if (params.limit) qs.set('limit', String(params.limit));
+    return request<InboxListResponse>(`/inbox/?${qs}`);
+  },
+  getInboxUnreadCount: () => request<{ unread_count: number }>('/inbox/unread-count'),
+  markInboxRead: (id: number) => request<InboxItem>(`/inbox/${id}/read`, { method: 'POST' }),
+  markInboxAllRead: (params: InboxFilters = {}) =>
+    request<{ updated: number }>(`/inbox/read-all?${inboxQuery(params)}`, { method: 'POST' }),
+  deleteInboxItem: (id: number) => request<void>(`/inbox/${id}`, { method: 'DELETE' }),
+  clearInbox: (params: InboxFilters = {}) =>
+    request<{ deleted: number }>(`/inbox/?${inboxQuery(params)}`, { method: 'DELETE' }),
+  getInboxSubscriptions: () => request<InboxSubscriptions>('/inbox/subscriptions'),
+  updateInboxSubscriptions: (events: string[] | null) =>
+    request<InboxSubscriptions>('/inbox/subscriptions', { method: 'PUT', body: JSON.stringify({ events }) }),
 
   // Groups
   getPermissions: () => request<PermissionsListResponse>('/groups/permissions'),
