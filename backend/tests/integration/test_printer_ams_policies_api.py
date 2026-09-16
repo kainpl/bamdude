@@ -76,3 +76,59 @@ async def test_bulk_apply_refuses_while_printing_and_previews_without_mqtt(async
             "/api/v1/printers/999999/ams-policies/backup-compatibility/apply", json={"dry_run": True}
         )
         assert missing.status_code == 404
+
+
+async def test_rest_status_carries_the_actual_spool_behind_an_advertised_tray(async_client, printer_factory):
+    """The REST status payload has its OWN shaper.
+
+    ``printer_manager.printer_state_to_dict`` (WebSocket) and
+    ``routes/printers._build_printer_status`` (REST) describe the same tray and
+    the frontend merges them: a field only the socket carries is replaced away
+    by the next refetch, and ``buildLoadedFilaments`` falls back to the mask —
+    which is exactly what the overlay exists to prevent.
+    """
+    from unittest.mock import patch
+
+    from backend.app.services import ams_advertised_overlay as overlay
+    from backend.app.services.ams_advertised_overlay import OverlayEntry
+    from backend.app.services.bambu_mqtt import PrinterState
+
+    printer = await printer_factory()
+    state = PrinterState()
+    state.connected = True
+    state.raw_data = {
+        "ams": [
+            {
+                "id": 0,
+                "tray": [
+                    # Advertised: the canonical black generic we published.
+                    {"id": 1, "tray_type": "PETG", "tray_color": "000000FF", "tray_info_idx": "GFG99"},
+                    # Nothing was ever masked here.
+                    {"id": 2, "tray_type": "PLA", "tray_color": "00FF00FF", "tray_info_idx": "GFL99"},
+                ],
+            }
+        ],
+        "vt_tray": [{"id": 254, "tray_type": "PLA", "tray_color": "0000FFFF"}],
+    }
+    overlay.replace_printer(
+        printer.id,
+        {(0, 1): OverlayEntry("PETG", "FF0000FF", "GFG02", ("FF0000FF",), "000000FF", "GFG99", "internal")},
+    )
+    with patch("backend.app.api.routes.printers.printer_manager") as pm:
+        pm.get_status.return_value = state
+        pm.is_awaiting_plate_clear.return_value = False
+        pm.get_drying_targets.return_value = {}
+        response = await async_client.get(f"/api/v1/printers/{printer.id}/status")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    masked, plain = body["ams"][0]["tray"]
+    # The live fields stay the printer's own words.
+    assert (masked["tray_color"], masked["tray_info_idx"]) == ("000000FF", "GFG99")
+    assert masked["actual"] == {
+        "tray_color": "FF0000FF",
+        "tray_type": "PETG",
+        "tray_info_idx": "GFG02",
+        "cols": ["FF0000FF"],
+    }
+    assert plain["actual"] is None
+    assert all(t["actual"] is None for t in body["vt_tray"])  # external slots are never projected

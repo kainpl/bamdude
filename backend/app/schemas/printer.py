@@ -236,8 +236,29 @@ class HmsActionBody(BaseModel):
     job_id: str | None = Field(default=None, max_length=64)
 
 
+class AmsTrayActual(BaseModel):
+    """The spool BEHIND an advertised profile (backup-compatibility emulation).
+
+    ⚠️ ``PrinterStatus`` is a strict response model, so a field that is not
+    declared here is silently DROPPED from the REST payload — which is what
+    happened until 0.5.7: the WebSocket shaper
+    (``printer_manager.printer_state_to_dict``) carried ``actual`` and the REST
+    one (``routes/printers._build_printer_status``) did not, so every refetch
+    replaced the merged tray object with a masked one and the frontend fell
+    back to the advertised profile. Both shapers fill this; keep them in step.
+    """
+
+    tray_color: str | None = None
+    tray_type: str | None = None
+    tray_info_idx: str | None = None
+    cols: list[str] = []
+
+
 class AMSTray(BaseModel):
     id: int
+    # ``None`` whenever nothing is masked on this slot — the live fields below
+    # stay exactly as the printer reports them either way.
+    actual: AmsTrayActual | None = None
     tray_color: str | None = None
     tray_type: str | None = None
     tray_sub_brands: str | None = None  # Full name like "PLA Basic", "PETG HF"

@@ -34,6 +34,7 @@ from backend.app.schemas.archive import ArchivePartRow
 from backend.app.schemas.printer import (
     AmsLabelBody,
     AMSTray,
+    AmsTrayActual,
     AMSUnit,
     BackupCompatibilityApplyRequest,
     DefectsWriteIn,
@@ -56,8 +57,8 @@ from backend.app.schemas.printer import (
     WaitingPrintOut,
 )
 from backend.app.schemas.timelapse import TimelapseStorage
-from backend.app.services import archive_parts
-from backend.app.services.ams_backup_compatibility_apply import bulk_apply
+from backend.app.services import ams_advertised_overlay, archive_parts
+from backend.app.services.ams_backup_compatibility_apply import bulk_apply, forget_printer_rebuild
 from backend.app.services.archive import find_archive_for_sd_file, parse_plates_from_3mf, sd_stem
 from backend.app.services.archive_defects import DefectsResult, DefectsWrite, record_defects
 from backend.app.services.bambu_ftp import (
@@ -900,6 +901,12 @@ async def delete_printer(
     from backend.app.services.camera_metrics import forget_printer
 
     forget_printer(printer_id)
+    # Both halves of the advertised-profile memory: the entries themselves and
+    # the "this process already rebuilt it" mark. An id is reused by the next
+    # printer created, which would otherwise inherit a stranger's masked slots
+    # and never get a rebuild of its own.
+    ams_advertised_overlay.forget_printer(printer_id)
+    forget_printer_rebuild(printer_id)
     return {"status": "deleted", "archives_deleted": delete_archives}
 
 
@@ -1147,9 +1154,27 @@ async def _build_printer_status(
                     k_value = kprofile_map[cali_idx]
 
                 _tray_cols, _tray_ctype = _tray_colours(tray_data, tray_data.get("tray_color"))
+                # The spool behind an advertised profile, exactly as the
+                # WebSocket shaper builds it (printer_state_to_dict). The two
+                # payloads describe the same tray and the frontend merges them,
+                # so a field only one of them carries flickers away on every
+                # refetch — see AmsTrayActual.
+                _overlay_entry = ams_advertised_overlay.effective(
+                    printer_id, int(ams_data.get("id", 0)), int(tray_data.get("id", 0)), tray_data
+                )
                 trays.append(
                     AMSTray(
                         id=tray_data.get("id", 0),
+                        actual=(
+                            AmsTrayActual(
+                                tray_color=_overlay_entry.actual_color,
+                                tray_type=_overlay_entry.actual_material,
+                                tray_info_idx=_overlay_entry.actual_variant,
+                                cols=list(_overlay_entry.actual_cols),
+                            )
+                            if _overlay_entry
+                            else None
+                        ),
                         tray_color=tray_data.get("tray_color"),
                         cols=_tray_cols,
                         ctype=_tray_ctype,
