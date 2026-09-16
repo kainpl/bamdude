@@ -92,11 +92,12 @@ import {
 import { SelectionBox } from '../components/SelectionBox';
 
 import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router';
-import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken } from '../api/client';
+import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken, DEFAULT_BACKUP_COMPATIBILITY } from '../api/client';
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration, formatTimeOnly, parseUTCDate } from '../utils/date';
 import type { Printer, PrinterCreate, PrinterStatus, AirductFan, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind } from '../api/client';
+import { backupCompatibilityPatch } from './printersEditPayload';
 
 // Source of truth for Spoolman ↔ AMS slot binding (upstream PR #1241).
 // Mirrors backend `spoolman_slot_assignments` rows; PrintersPage subscribes to
@@ -8305,6 +8306,8 @@ function EditPrinterModal({
     swap_mode_enabled: printer.swap_mode_enabled ?? false,
     swap_profile: (printer.swap_profile ?? null) as string | null,
     require_plate_clear: printer.require_plate_clear ?? true,
+    // An older backend sends no `ams_policies` at all, hence the optional read.
+    ams_compat: printer.ams_policies?.backup_compatibility ?? DEFAULT_BACKUP_COMPATIBILITY,
   });
 
   // Swap profile catalog for the dropdown (same query as add-form).
@@ -8346,6 +8349,8 @@ function EditPrinterModal({
       swap_mode_enabled: form.swap_mode_enabled,
       swap_profile: form.swap_mode_enabled ? form.swap_profile : null,
       require_plate_clear: form.swap_mode_enabled ? false : form.require_plate_clear,
+      // PATCH replaces the whole namespace, so the policy always travels in full.
+      ams_policies: backupCompatibilityPatch(form.ams_compat),
     };
     // Only include access_code if it was changed
     if (form.access_code) {
@@ -8552,6 +8557,32 @@ function EditPrinterModal({
                   />
                   <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>
                 </div>
+              </div>
+              <div className="border-t border-bambu-dark-tertiary pt-3">
+                <div className="text-sm text-white mb-1">{t('printers.modal.amsCompat.title')}</div>
+                <p className="text-xs text-bambu-gray mb-2">{t('printers.modal.amsCompat.warning')}</p>
+                <label className="flex items-center gap-2 cursor-pointer mb-2">
+                  <input type="checkbox" checked={form.ams_compat.normalize_color}
+                    onChange={(e) => setForm({ ...form, ams_compat: { ...form.ams_compat, normalize_color: e.target.checked } })}
+                    className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green" />
+                  <span className="text-sm text-white">{t('printers.modal.amsCompat.normalizeColor')}</span>
+                </label>
+                {form.ams_compat.normalize_color && (
+                  <div className="flex items-center gap-2 mb-2 pl-6">
+                    <input type="color" aria-label={t('printers.modal.amsCompat.canonicalColorHint')}
+                      value={`#${form.ams_compat.canonical_color_rgba.slice(0, 6)}`}
+                      onChange={(e) => setForm({ ...form, ams_compat: { ...form.ams_compat, canonical_color_rgba: `${e.target.value.slice(1).toUpperCase()}FF` } })}
+                      className="w-7 h-6 bg-transparent" />
+                    <span className="text-xs text-bambu-gray">{t('printers.modal.amsCompat.canonicalColorHint')}</span>
+                  </div>
+                )}
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={form.ams_compat.generic_base_material}
+                    onChange={(e) => setForm({ ...form, ams_compat: { ...form.ams_compat, generic_base_material: e.target.checked } })}
+                    className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green" />
+                  <span className="text-sm text-white">{t('printers.modal.amsCompat.genericBaseMaterial')}</span>
+                </label>
+                <p className="text-xs text-bambu-gray mt-2">{t('printers.modal.amsCompat.applyHint')}</p>
               </div>
               {(() => {
                 const modelProfiles = (swapProfiles ?? []).filter((p) =>
