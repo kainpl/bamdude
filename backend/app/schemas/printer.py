@@ -1,4 +1,3 @@
-import re
 from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -6,6 +5,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 from backend.app.schemas.printer_tag import PrinterTagOut
+from backend.app.utils.rgba import normalize_opaque_rgba
 
 
 class BackupCompatibilityPolicy(BaseModel):
@@ -23,11 +23,15 @@ class BackupCompatibilityPolicy(BaseModel):
         The alpha byte is what the firmware compares when it decides whether two
         trays are interchangeable, so a translucent value would emulate a
         profile no spool can ever match — a silent no-op rather than a refusal.
+
+        The predicate itself lives in ``utils/rgba``: the policy reads the same
+        shape off a persisted row and CORRECTS it there, and two spellings of
+        "is this an opaque colour" is one spelling too many.
         """
-        value = (value or "").strip().lstrip("#").upper()
-        if not re.fullmatch(r"[0-9A-F]{6}FF", value):
+        normalized = normalize_opaque_rgba(value)
+        if normalized is None:
             raise ValueError("canonical_color_rgba must be an opaque RRGGBBFF colour")
-        return value
+        return normalized
 
 
 class AmsPolicies(BaseModel):

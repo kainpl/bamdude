@@ -508,8 +508,7 @@ export default {
         external_slot_excluded: 'зовнішня котушка — не охоплено',
         base_material_not_allowed: 'не базовий матеріал',
         generic_preset_unavailable: 'немає Generic-пресета для цього принтера',
-        printer_busy: 'принтер друкує',
-        slot_empty: 'слот порожній',
+        slot_empty: 'слот порожній'
       }
     },
     pageView: {

@@ -504,8 +504,7 @@ export default {
         external_slot_excluded: 'external spool — not covered',
         base_material_not_allowed: 'not a base material',
         generic_preset_unavailable: 'no Generic preset for this printer',
-        printer_busy: 'printer is printing',
-        slot_empty: 'slot is empty',
+        slot_empty: 'slot is empty'
       }
     },
     pageView: {

@@ -10,17 +10,16 @@ keep reading the real spool through services/ams_advertised_overlay.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, replace
 from typing import Literal
 
 from backend.app.services.slot_assignment import SlotAssignmentPlan, build_slot_assignment
 from backend.app.services.spool_tag_matcher import is_valid_tag
 from backend.app.utils import filament_catalog as catalog
+from backend.app.utils.rgba import normalize_opaque_rgba
 
 NAMESPACE = "backup_compatibility"
 DEFAULT_CANONICAL_COLOR = "000000FF"
-_OPAQUE_RGBA = re.compile(r"[0-9A-F]{6}FF")
 
 # ⚠️ HARDWARE-DECIDED KNOBS (spec §8). Change only with a capture on P1S+AMS
 # and X2D+AMS 2 Pro recorded in the vault. Nothing else in the codebase may
@@ -33,8 +32,11 @@ REASON_RFID = "rfid_slot_excluded"
 REASON_EXTERNAL = "external_slot_excluded"
 REASON_BASE_MATERIAL = "base_material_not_allowed"
 REASON_GENERIC_PRESET = "generic_preset_unavailable"
-# Bulk-apply only (services/ams_backup_compatibility_apply.py):
-REASON_PRINTER_BUSY = "printer_busy"
+# Bulk-apply only (services/ams_backup_compatibility_apply.py). There is
+# deliberately no "printer is busy" reason: a busy printer is refused by the
+# route with a 409 before any slot is walked, so a row could never carry it —
+# and every member here has a ``printers.amsCompat.reason.*`` string in BOTH
+# locales.
 REASON_SLOT_EMPTY = "slot_empty"
 REASONS = frozenset(
     {
@@ -43,7 +45,6 @@ REASONS = frozenset(
         REASON_EXTERNAL,
         REASON_BASE_MATERIAL,
         REASON_GENERIC_PRESET,
-        REASON_PRINTER_BUSY,
         REASON_SLOT_EMPTY,
     }
 )
@@ -78,9 +79,8 @@ class BackupCompatibilityPolicy:
         # MQTT callback. Unreadable means default-off, like absent.
         if not isinstance(raw, dict):
             raw = {}
-        color = str(raw.get("canonical_color_rgba") or DEFAULT_CANONICAL_COLOR).strip().lstrip("#").upper()
-        if not _OPAQUE_RGBA.fullmatch(color):
-            color = DEFAULT_CANONICAL_COLOR
+        # Same predicate the schema REFUSES on (``utils/rgba``); here it corrects.
+        color = normalize_opaque_rgba(raw.get("canonical_color_rgba")) or DEFAULT_CANONICAL_COLOR
         return cls(
             normalize_color=bool(raw.get("normalize_color", False)),
             canonical_color_rgba=color,
@@ -118,7 +118,13 @@ def slot_is_rfid(live_tray: dict | None, spool_tag_uid: str | None, spool_tray_u
 
     A stale ``tag_uid`` the printer keeps after a Bambu spool was removed makes
     this answer True for a manual spool; that errs on the safe side (no
-    projection, today's payload)."""
+    projection, today's payload).
+
+    ⚠️ A ``None`` live tray (the printer has not pushed this slot yet, or the
+    unit is not reporting) falls through to the SPOOL's own tag fields. That is
+    defence in depth, not a proof of "no RFID": the inventory row is the only
+    thing we can still ask, and it answers for the spool we believe is there.
+    Both halves must say "manual" before anything is masked."""
     if live_tray and is_valid_tag(str(live_tray.get("tag_uid") or ""), str(live_tray.get("tray_uuid") or "")):
         return True
     return is_valid_tag(spool_tag_uid or "", spool_tray_uuid or "")
@@ -150,10 +156,10 @@ def live_tray_for(state, ams_id: int, tray_id: int) -> dict | None:
     for unit in units or []:
         if str(unit.get("id")) != str(ams_id):
             continue
-        for tray in unit.get("tray", []) or []:
+        trays = unit.get("tray", []) or []
+        for tray in trays:
             if str(tray.get("id")) == str(tray_id):
                 return tray
-        trays = unit.get("tray", []) or []
         return trays[0] if ams_id >= 128 and len(trays) == 1 else None
     return None
 
