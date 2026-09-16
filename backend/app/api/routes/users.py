@@ -23,6 +23,7 @@ from backend.app.models.oidc_provider import UserOIDCLink
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
+from backend.app.models.user_notification import UserNotification
 from backend.app.models.user_otp_code import UserOTPCode
 from backend.app.models.user_totp import UserTOTP
 from backend.app.schemas.auth import (
@@ -511,6 +512,8 @@ async def delete_user(
     await db.execute(delete(UserTOTP).where(UserTOTP.user_id == user_id))
     await db.execute(delete(UserOTPCode).where(UserOTPCode.user_id == user_id))
     await db.execute(delete(LongLivedToken).where(LongLivedToken.user_id == user_id))
+    # The in-app inbox is one-to-many per user; SQLite never fires the CASCADE.
+    await db.execute(delete(UserNotification).where(UserNotification.user_id == user_id))
 
     await db.delete(user)
     await db.commit()

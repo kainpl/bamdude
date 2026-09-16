@@ -3085,12 +3085,13 @@ export default {
     externalCameras: 'External Cameras',
     costTracking: 'Cost Tracking',
     retention: {
-      title: 'Measurement history',
-      help: 'How long each kind of reading is kept. Older rows are removed once a day.',
+      title: 'History retention',
+      help: 'How long each kind of record is kept. Older rows are removed once a day.',
       ams: 'AMS humidity and temperature (days)',
       printerSensors: 'Printer temperatures (days)',
       plugPower: 'Smart plug power (days)',
-      sensors: 'Sensor readings (days)'
+      sensors: 'Sensor readings (days)',
+      inbox: 'Inbox notifications (days)'
     },
     dataManagement: 'Data Management',
     storageUsage: 'Storage Usage',

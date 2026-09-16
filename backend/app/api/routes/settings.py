@@ -133,6 +133,7 @@ async def get_settings(
                 "ams_humidity_good",
                 "ams_humidity_fair",
                 "ams_history_retention_days",
+                "inbox_retention_days",
                 "printer_sensor_history_retention_days",
                 "archive_3mf_retention_days",
                 "log_retention_days",

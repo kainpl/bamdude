@@ -8038,6 +8038,7 @@ async def on_print_complete(printer_id: int, data: dict):
 _ams_history_task: asyncio.Task | None = None
 AMS_HISTORY_INTERVAL = 300  # Record every 5 minutes
 AMS_HISTORY_RETENTION_DAYS = 30  # Keep data for 30 days
+INBOX_RETENTION_DAYS = 30  # in-app inbox rows; spec: notification-center §4.4
 _ams_cleanup_counter = 0  # Track recordings to trigger periodic cleanup
 # Track alarm cooldowns (printer_id:ams_id:type -> last_alarm_time)
 _ams_alarm_cooldown: dict[str, datetime] = {}
@@ -8315,6 +8316,21 @@ async def record_ams_history():
                         await prune_finished(db, retention_hours)
                     except Exception as e:
                         logger.warning("Usage-journal retention sweep failed: %s", e)
+
+                    # The inbox rides the same daily tick (spec: notification-center §4.4).
+                    # Its own try/except, like the sweep above: one failing sweep
+                    # must not take the other down.
+                    try:
+                        from backend.app.services.notification_inbox import prune_older_than
+
+                        result = await db.execute(select(Settings).where(Settings.key == "inbox_retention_days"))
+                        setting = result.scalar_one_or_none()
+                        inbox_days = int(setting.value) if setting else INBOX_RETENTION_DAYS
+                        pruned = await prune_older_than(db, inbox_days)
+                        if pruned:
+                            logger.info("Cleaned up %d inbox notifications older than %d days", pruned, inbox_days)
+                    except Exception as e:
+                        logger.warning("Inbox retention sweep failed: %s", e)
 
             # Wait until next recording interval
             await asyncio.sleep(AMS_HISTORY_INTERVAL)

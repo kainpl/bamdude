@@ -8,19 +8,20 @@ interface Props {
 }
 
 /**
- * How long each kind of measurement is kept.
+ * How long each kind of record is kept.
  *
  * Two of these windows have been settable through the API since they were added
  * and have never had a control, so in practice they have been frozen at their
- * defaults. All four are here together because "how long do we keep
- * measurements" is one question, and answering it in four places is how two of
- * them got forgotten.
+ * defaults. All of them are here together because "how long do we keep this"
+ * is one question, and answering it in five places is how two of them got
+ * forgotten. The inbox joined them rather than growing a window of its own.
  */
 const FIELDS = [
   { key: 'ams_history_retention_days', labelKey: 'settings.retention.ams' },
   { key: 'printer_sensor_history_retention_days', labelKey: 'settings.retention.printerSensors' },
   { key: 'plug_power_history_retention_days', labelKey: 'settings.retention.plugPower' },
   { key: 'sensor_history_retention_days', labelKey: 'settings.retention.sensors' },
+  { key: 'inbox_retention_days', labelKey: 'settings.retention.inbox' },
 ] as const;
 
 const DEFAULT_DAYS = 30;
@@ -65,7 +66,7 @@ export function RetentionCard({ values, onSave, saving }: Props) {
         disabled={saving}
         /* Every field, not only the edited one: a patch carrying a single key
            would be fine today, but the whole point of this card is that these
-           four are one answer, and sending them together keeps them that way. */
+           are one answer, and sending them together keeps them that way. */
         onClick={() => onSave(draft)}
       >
         {t('common.save')}
