@@ -501,6 +501,7 @@ export default {
       rowApply: 'буде застосовано',
       rowRevert: 'буде повернуто реальну котушку',
       rowNotPublished: 'не надіслано — принтер відмовив або офлайн',
+      spoolmanUnavailable: 'Spoolman недоступний — слоти, призначені через Spoolman, у цьому списку відсутні.',
       reason: {
         policy_off: 'політику вимкнено',
         rfid_slot_excluded: 'RFID-котушка — не маскується',

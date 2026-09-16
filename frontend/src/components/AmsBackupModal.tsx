@@ -380,6 +380,9 @@ export function AmsBackupModal({
               </button>
             </div>
             {error && <p className="text-xs text-red-400 mt-2" role="alert">{error}</p>}
+            {(result ?? preview)?.spoolman_unavailable && (
+              <p className="text-xs text-amber-400 mt-2" role="status">{t('printers.amsCompat.spoolmanUnavailable')}</p>
+            )}
             {preview && (
               <div className="mt-3 space-y-1">
                 {/* Once the apply has answered, ITS rows are the truth: the
@@ -389,10 +392,13 @@ export function AmsBackupModal({
                   <div key={`${r.ams_id}-${r.tray_id}`} className="flex items-center gap-2 text-xs" style={{ color: textPrimary }}>
                     <span className="w-8 font-mono">{r.slot}</span>
                     <span className="flex-1 truncate">{r.spool}</span>
-                    <span className="inline-block w-3 h-3 rounded-full border shrink-0" style={{ backgroundColor: `#${r.actual.tray_color.slice(0, 6)}` }} />
+                    {/* A plan whose colour the builder left empty would render
+                        as `#` — an invalid colour that paints the swatch black,
+                        i.e. exactly the canonical colour this dialog is about. */}
+                    <span className="inline-block w-3 h-3 rounded-full border shrink-0" style={{ backgroundColor: r.actual.tray_color ? `#${r.actual.tray_color.slice(0, 6)}` : 'transparent' }} />
                     <span>{r.actual.tray_info_idx}</span>
                     <span style={{ color: textSecondary }}>→</span>
-                    <span className="inline-block w-3 h-3 rounded-full border shrink-0" style={{ backgroundColor: `#${r.advertised.tray_color.slice(0, 6)}` }} />
+                    <span className="inline-block w-3 h-3 rounded-full border shrink-0" style={{ backgroundColor: r.advertised.tray_color ? `#${r.advertised.tray_color.slice(0, 6)}` : 'transparent' }} />
                     <span>{r.advertised.tray_info_idx}</span>
                     <span style={{ color: textSecondary }}>
                       {r.published === false

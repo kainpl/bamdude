@@ -700,6 +700,8 @@ export interface BackupCompatibilityApplyResult {
   applied: number;
   skipped: number;
   would_apply?: number;
+  /** The walk could not read Spoolman: the rows are HALF the farm, not all of it. */
+  spoolman_unavailable?: boolean;
 }
 
 /** The spool BEHIND an advertised profile (backup-compatibility emulation). Present only while the printer echoes what we advertised. */

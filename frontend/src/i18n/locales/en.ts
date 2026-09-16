@@ -497,6 +497,7 @@ export default {
       rowApply: 'will apply',
       rowRevert: 'will revert to the real spool',
       rowNotPublished: 'not sent — printer refused or offline',
+      spoolmanUnavailable: 'Spoolman could not be reached — Spoolman-assigned slots are missing from this list.',
       reason: {
         policy_off: 'policy off',
         rfid_slot_excluded: 'RFID spool — never masked',

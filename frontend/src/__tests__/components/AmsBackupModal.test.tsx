@@ -99,6 +99,19 @@ describe('AmsBackupModal bulk apply', () => {
     expect(screen.getByRole('button', { name: /apply to assigned slots/i })).toBeEnabled();
   });
 
+  it('says when the list is only the half of the farm Spoolman was not needed for', async () => {
+    // A halved list reads exactly like a complete one, and the operator would
+    // take "2 slots" for the whole printer.
+    const onPreview = vi.fn().mockResolvedValue({ ...preview, spoolman_unavailable: true });
+    render(
+      <AmsBackupModal isOpen state={true} amsUnits={[]} amsExtruderMap={undefined} firmwareGroups={{}} isDualNozzle={false}
+        canToggle pending={false} onToggle={() => {}} onClose={() => {}}
+        compat={{ policyEnabled: true, canApply: true, onPreview, onApply: vi.fn() }} />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /apply to assigned slots/i }));
+    expect(await screen.findByText(/Spoolman could not be reached/i)).toBeInTheDocument();
+  });
+
   it('explains that the firmware, not BamDude, decides grouping when the policy is on and nothing paired', () => {
     render(
       <AmsBackupModal isOpen state={true} amsUnits={[]} amsExtruderMap={undefined} firmwareGroups={{ '0': [] }} isDualNozzle={false}
