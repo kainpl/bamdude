@@ -982,6 +982,7 @@ async def link_spool(
                 # linked calibration when one exists; otherwise the generic
                 # family of the material — resolved inside the builder, no
                 # hand-rolled realignment.
+                from backend.app.services import ams_advertised_overlay as overlay  # noqa: PLC0415
                 from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
                     BackupCompatibilityPolicy,
                     kprofile_allowed,
@@ -1035,7 +1036,7 @@ async def link_spool(
                         t_id,
                         projection.reasons,
                     )
-                publish_slot_plan(
+                sent = publish_slot_plan(
                     mqtt_client,
                     ams_id=a_id,
                     tray_id=t_id,
@@ -1043,6 +1044,10 @@ async def link_spool(
                     tray_sub_brands=tray_sub_brands,
                     tray_type_fallback=tray_type,
                 )
+                # Remember only a payload that actually left the process — see
+                # inventory.apply_spool_to_slot_via_mqtt.
+                if sent:
+                    overlay.remember(p_id, a_id, t_id, projection, "spoolman")
 
                 from backend.app.services.calibration_service import (  # noqa: PLC0415
                     apply_active_calibration_to_slot,

@@ -8,6 +8,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 
+from backend.app.services.ams_advertised_overlay import matches_live
 from backend.app.utils.printer_models import is_dual_nozzle_model, is_nozzle_rack_model, normalize_model_name
 
 
@@ -203,15 +204,19 @@ class FeedTelemetry:
             pass
 
 
-def snapshot_from_state(printer_id: int, model: str | None, state) -> PrinterFeedSnapshot:
+def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None) -> PrinterFeedSnapshot:
     normalized = normalize_model_name(model)
     dual = is_dual_nozzle_model(normalized)
     telemetry = getattr(state, "feed_telemetry", None)
     if not isinstance(telemetry, FeedTelemetry):
         telemetry = FeedTelemetry()
     sources = []
+    # What the overlay actually changed, folded into the revision below: a slot
+    # whose advertised profile is masked must invalidate every cached routing
+    # decision taken while the live values were the only thing we knew.
+    applied_overlay: list = []
 
-    def add(tray, sid, kind, nozzles):
+    def add(tray, sid, kind, nozzles, slot_key=None):
         material = tray.get("tray_type")
         if not material:
             return
@@ -219,13 +224,18 @@ def snapshot_from_state(printer_id: int, model: str | None, state) -> PrinterFee
             remain = float(tray.get("remain", -1))
         except (TypeError, ValueError):
             remain = -1
+        color, variant = tray.get("tray_color"), tray.get("tray_info_idx")
+        entry = overlay.get(slot_key) if overlay and slot_key is not None else None
+        if entry is not None and matches_live(entry, tray):
+            material, color, variant = entry.actual_material, entry.actual_color, entry.actual_variant
+            applied_overlay.append([slot_key[0], slot_key[1], material, color, variant])
         sources.append(
             FeedSource(
                 id=sid,
                 kind=kind,
                 material=material,
-                color=tray.get("tray_color"),
-                variant=tray.get("tray_info_idx"),
+                color=color,
+                variant=variant,
                 nozzles=nozzles,
                 remain=remain,
                 identity=str(tray.get("tray_uuid") or tray.get("tag_uid") or ""),
@@ -243,7 +253,9 @@ def snapshot_from_state(printer_id: int, model: str | None, state) -> PrinterFee
         for tray in unit.get("tray", []):
             tid = _integer(tray.get("id"))
             if tid is not None:
-                add(tray, uid if uid >= 128 else uid * 4 + tid, "ams", nozzles)
+                # The overlay is keyed by (unit, slot) as the assignment rows
+                # are, NOT by the global source id this snapshot sorts on.
+                add(tray, uid if uid >= 128 else uid * 4 + tid, "ams", nozzles, slot_key=(uid, tid if uid < 128 else 0))
     for tid, tray in telemetry.external.items():
         nozzle = (255 - tid) if dual else 0
         add(tray, tid, "external", (nozzle,) if nozzle in (0, 1) else ())
@@ -265,6 +277,7 @@ def snapshot_from_state(printer_id: int, model: str | None, state) -> PrinterFee
         "fts": telemetry.fts,
         "incomplete": incomplete,
         "sources": [{k: v for k, v in asdict(s).items() if k != "remain"} for s in sources],
+        "overlay": applied_overlay,
     }
     revision = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     return PrinterFeedSnapshot(

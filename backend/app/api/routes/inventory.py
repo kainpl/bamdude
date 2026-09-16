@@ -204,6 +204,7 @@ async def apply_spool_to_slot_via_mqtt(
     # inside the builder). current_tray_info_idx / current_tray_type are
     # accepted for signature stability but no longer consulted — the family
     # model does not reuse a foreign tray id.
+    from backend.app.services import ams_advertised_overlay as overlay
     from backend.app.services.ams_backup_compatibility import (
         BackupCompatibilityPolicy,
         kprofile_allowed,
@@ -254,7 +255,7 @@ async def apply_spool_to_slot_via_mqtt(
     effective_tray_info_idx = plan.tray_info_idx
 
     # a. Set filament setting (and register its read-back verification).
-    publish_slot_plan(
+    sent = publish_slot_plan(
         client,
         ams_id=ams_id,
         tray_id=tray_id,
@@ -262,6 +263,11 @@ async def apply_spool_to_slot_via_mqtt(
         tray_sub_brands=tray_sub_brands,
         tray_type_fallback=tray_type,
     )
+    # Only what actually left the process is remembered: a disconnected printer
+    # never gets the advertised profile, so nothing is masked and routing must
+    # keep reading the live tray.
+    if sent:
+        overlay.remember(printer_id, ams_id, tray_id, projection, "internal")
 
     # b. Push extrusion calibration via the unified helper. The helper
     # re-resolves cali_idx live (stable-identity match) and fires
@@ -2541,6 +2547,12 @@ async def unassign_spool(
 
     await db.delete(assignment)
     await db.commit()
+
+    # With the assignment gone there is no spool left behind the mask, so the
+    # printer's own tray values become the truth again.
+    from backend.app.services import ams_advertised_overlay as overlay
+
+    overlay.forget(printer_id, ams_id, tray_id)
 
     await ws_manager.broadcast(
         {

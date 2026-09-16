@@ -137,3 +137,50 @@ def test_external_report_alone_cannot_authorize_no_ams_wire_encoding():
         resolve_filament_routing(requirements({}), RoutingPolicy(), snapshot_from_state(1, "P1P", state)).plan.use_ams
         is False
     )
+
+
+def _petg_slot(state, color, variant):
+    state.feed_telemetry.observe(
+        {
+            "print": {
+                "ams": {
+                    "ams": [
+                        {
+                            "id": 0,
+                            "tray": [{"id": 1, "tray_type": "PETG", "tray_color": color, "tray_info_idx": variant}],
+                        }
+                    ]
+                }
+            }
+        },
+        "P1S",
+    )
+
+
+def test_overlay_returns_the_actual_spool_and_moves_the_revision():
+    from backend.app.services.ams_advertised_overlay import OverlayEntry
+    from backend.app.services.filament_routing import RoutingPolicy, resolve_filament_routing
+    from backend.tests.unit.services.test_filament_routing import requirements
+
+    state = PrinterState(connected=True, connection_generation=1)
+    _petg_slot(state, "000000FF", "GFG99")
+    plain = snapshot_from_state(1, "P1S", state)
+    entry = OverlayEntry("PETG", "FF0000FF", "GFG00", (), "000000FF", "GFG99", "internal")
+    overlaid = snapshot_from_state(1, "P1S", state, overlay={(0, 1): entry})
+    assert plain.sources[0].color == "000000FF" and overlaid.sources[0].color == "FF0000FF"
+    assert overlaid.sources[0].variant == "GFG00" and overlaid.sources[0].identity == plain.sources[0].identity
+    assert overlaid.revision != plain.revision
+
+    red_job = requirements({"type": "PETG", "color": "#FF0000", "tray_info_idx": "GFG00"}, model="P1S")
+    strict = RoutingPolicy(force_color_match=True, allow_base_material_match=False)
+    assert resolve_filament_routing(red_job, strict, plain).status != "compatible"
+    assert resolve_filament_routing(red_job, strict, overlaid).status == "compatible"
+
+
+def test_a_dormant_overlay_entry_is_not_applied():
+    from backend.app.services.ams_advertised_overlay import OverlayEntry
+
+    state = PrinterState(connected=True, connection_generation=1)
+    _petg_slot(state, "FF0000FF", "GFG00")
+    entry = OverlayEntry("PETG", "FF0000FF", "GFG00", (), "000000FF", "GFG99", "internal")
+    assert snapshot_from_state(1, "P1S", state, overlay={(0, 1): entry}).sources[0].color == "FF0000FF"

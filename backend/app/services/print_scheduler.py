@@ -25,7 +25,7 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.schemas.calibration_mode import derive_mode
-from backend.app.services import chamber_history
+from backend.app.services import ams_advertised_overlay as overlay, chamber_history
 from backend.app.services.filament_intake import (
     item_descriptor,
     resolve_source_path,
@@ -815,7 +815,7 @@ class PrintScheduler:
         # and silently never dispatched, every pass.
 
         # Build loaded filaments from printer status
-        loaded_filaments = self._build_loaded_filaments(status)
+        loaded_filaments = self._build_loaded_filaments(status, printer_id)
         if not loaded_filaments:
             logger.debug("No filaments loaded on printer %s", printer_id)
             return None
@@ -860,11 +860,15 @@ class PrintScheduler:
         item.plate_id = requirements.resolved_plate_id
         return [dict(f) for f in requirements.used_filaments]
 
-    def _build_loaded_filaments(self, status) -> list[dict]:
+    def _build_loaded_filaments(self, status, printer_id: int | None = None) -> list[dict]:
         """Build list of loaded filaments from printer status.
 
         Args:
             status: PrinterState from printer_manager
+            printer_id: When given, an AMS slot we advertised under a different
+                profile (``ams_advertised_overlay``) is reported as the spool it
+                REALLY holds — without it the dispatcher would map a job onto
+                the masked colour/preset and print with the wrong spool.
 
         Returns:
             List of loaded filament dicts with type, color, ams_id, tray_id, global_tray_id
@@ -888,6 +892,16 @@ class PrintScheduler:
                     tray_color = tray.get("tray_color", "")
                     # tray_info_idx identifies the specific spool (e.g., "GFA00", "P4d64437")
                     tray_info_idx = tray.get("tray_info_idx", "")
+                    # The three fields the mapping matches on are exactly the
+                    # three an advertised profile masks, so they are swapped for
+                    # the real spool's before anything downstream compares them.
+                    entry = overlay.effective(printer_id, ams_id, tray_id, tray) if printer_id is not None else None
+                    if entry is not None:
+                        tray_type, tray_color, tray_info_idx = (
+                            entry.actual_material,
+                            entry.actual_color,
+                            entry.actual_variant,
+                        )
                     # Normalize color: remove alpha, add hash
                     color = self._normalize_color(tray_color)
                     # Calculate global tray ID

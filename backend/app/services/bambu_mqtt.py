@@ -7304,7 +7304,11 @@ class BambuMQTTClient:
 
     @_routing_locked
     def get_feed_snapshot(self, printer_id: int):
-        return snapshot_from_state(printer_id, self.model, self.state)
+        # Read fresh on every call — a snapshot taken before the printer echoed
+        # our push must not be the one a later routing decision is made on.
+        from backend.app.services.ams_advertised_overlay import entries_for
+
+        return snapshot_from_state(printer_id, self.model, self.state, overlay=entries_for(printer_id))
 
     @_routing_locked
     def start_print(

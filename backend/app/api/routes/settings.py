@@ -463,8 +463,12 @@ async def update_spoolman_settings(
         # Switching to Spoolman: clear built-in inventory slot assignments
         if old_val.lower() != "true" and new_val.lower() == "true":
             from backend.app.models.spool_assignment import SpoolAssignment
+            from backend.app.services import ams_advertised_overlay as overlay
 
             result = await db.execute(delete(SpoolAssignment))
+            # Every overlay entry was born of an assignment row; with the whole
+            # registry gone, so is every spool the masks stood for.
+            overlay.forget_all()
             logger.info("Cleared %d spool assignments on switch to Spoolman mode", result.rowcount)
         # Switching back to internal mode: clear Spoolman slot assignments — the
         # symmetric counterpart of the clear above. Without this, stale
@@ -473,8 +477,10 @@ async def update_spoolman_settings(
         # assignment notification, which unions both tables — #1473).
         elif old_val.lower() == "true" and new_val.lower() != "true":
             from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+            from backend.app.services import ams_advertised_overlay as overlay
 
             result = await db.execute(delete(SpoolmanSlotAssignment))
+            overlay.forget_all()
             logger.info("Cleared %d Spoolman slot assignments on switch to internal mode", result.rowcount)
     if "spoolman_url" in settings:
         await set_setting(db, "spoolman_url", settings["spoolman_url"])

@@ -227,7 +227,7 @@ async def _warn_on_filament_deficit(db, job, archive) -> None:
         if not requirements:
             return
 
-        loaded = _sched._build_loaded_filaments(status)
+        loaded = _sched._build_loaded_filaments(status, job.printer_id)
         if not loaded:
             return
 

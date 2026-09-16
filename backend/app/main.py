@@ -2411,7 +2411,12 @@ async def on_ams_change(printer_id: int, ams_data: list):
         # fan-out is network I/O to every connected browser and must not hold a
         # pooled DB connection (#2572 discipline). Still inside the `try`, so a
         # failed commit above skips the broadcast entirely.
+        from backend.app.services import ams_advertised_overlay as overlay
+
         for ams_id, tray_id in unlinked_slots:
+            # The slot no longer holds the spool we advertised a profile for,
+            # so there is nothing left to look through the mask at.
+            overlay.forget(printer_id, ams_id, tray_id)
             await ws_manager.broadcast(
                 {
                     "type": "spool_assignment_changed",

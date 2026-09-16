@@ -1588,6 +1588,7 @@ async def assign_spoolman_slot(
             # ONE identity path (spec A §5.2): the family catalog builds the
             # payload — family from the linked calibration when one exists,
             # else the generic family of the material, inside the builder.
+            from backend.app.services import ams_advertised_overlay as overlay  # noqa: PLC0415
             from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
                 BackupCompatibilityPolicy,
                 kprofile_allowed,
@@ -1640,7 +1641,7 @@ async def assign_spoolman_slot(
                     body.tray_id,
                     projection.reasons,
                 )
-            publish_slot_plan(
+            sent = publish_slot_plan(
                 mqtt_client,
                 ams_id=body.ams_id,
                 tray_id=body.tray_id,
@@ -1648,6 +1649,10 @@ async def assign_spoolman_slot(
                 tray_sub_brands=tray_sub_brands,
                 tray_type_fallback=tray_type,
             )
+            # Remember only a payload that actually left the process — see
+            # inventory.apply_spool_to_slot_via_mqtt.
+            if sent:
+                overlay.remember(body.printer_id, body.ams_id, body.tray_id, projection, "spoolman")
 
             from backend.app.services.calibration_service import (  # noqa: PLC0415
                 apply_active_calibration_to_slot,
@@ -1775,11 +1780,15 @@ async def unassign_spoolman_slot(
         logger.error("Failed to delete slot assignment: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to remove slot assignment") from exc
 
+    from backend.app.services import ams_advertised_overlay as overlay  # noqa: PLC0415
+
     # Symmetry with the assign route (spec 2026-09-13 §3.3): a card that
     # refreshes when a spool lands on a slot must refresh when it leaves. Only
     # for rows that actually went — with nothing deleted there is no slot to
     # name and nothing changed.
     for printer_id, ams_id, tray_id in removed_slots:
+        # With the assignment gone there is no spool left behind the mask.
+        overlay.forget(printer_id, ams_id, tray_id)
         await ws_manager.broadcast(
             {
                 "type": "spool_assignment_changed",

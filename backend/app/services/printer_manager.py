@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.printer import Printer
 from backend.app.schemas.printer import AirductFan
+from backend.app.services import ams_advertised_overlay as _overlay
 from backend.app.services.bambu_mqtt import (
     FAN_CTRL,
     BambuMQTTClient,
@@ -1869,9 +1870,30 @@ def printer_state_to_dict(
                 if state_val is None and len(tray) == 1 and "id" in tray:
                     state_val = 9
 
+                # The spool behind an advertised profile. The live fields stay
+                # exactly as the printer reports them — the browser draws what
+                # the machine shows and labels it with what is really loaded;
+                # ``None`` whenever nothing was masked on this slot.
+                entry = (
+                    _overlay.effective(printer_id, int(ams_data.get("id", 0)), int(tray.get("id", 0)), tray)
+                    if printer_id is not None
+                    else None
+                )
+                actual = (
+                    {
+                        "tray_color": entry.actual_color,
+                        "tray_type": entry.actual_material,
+                        "tray_info_idx": entry.actual_variant,
+                        "cols": list(entry.actual_cols),
+                    }
+                    if entry
+                    else None
+                )
+
                 trays.append(
                     {
                         "id": int(tray.get("id", 0)),
+                        "actual": actual,
                         "tray_color": tray.get("tray_color"),
                         "tray_type": tray.get("tray_type"),
                         "tray_sub_brands": tray.get("tray_sub_brands"),
@@ -1995,6 +2017,10 @@ def printer_state_to_dict(
             vt_tray.append(
                 {
                     "id": tray_id,
+                    # External slots are excluded from projection (spec §6.2),
+                    # so this is always None — the key is here so both tray
+                    # shapes stay one shape for the frontend.
+                    "actual": None,
                     "tray_color": vt_data.get("tray_color"),
                     "tray_type": vt_data.get("tray_type"),
                     "tray_sub_brands": vt_data.get("tray_sub_brands"),

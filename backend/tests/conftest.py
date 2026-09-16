@@ -266,6 +266,24 @@ def _clean_zigbee_process_state():
 
 
 @pytest.fixture(autouse=True)
+def _clean_advertised_overlay():
+    """The advertised-profile overlay is process-global and survives a test.
+
+    Every assignment route now writes it (``ams_advertised_overlay.remember``),
+    so a route test leaves an entry keyed by whatever printer id its session
+    happened to allocate — usually 1, the same id the next file's status or
+    routing test uses. That entry is silent until the two also agree on the
+    advertised colour and preset, at which point a reader returns a spool the
+    test never assigned. Same class of leak as the Zigbee caches above.
+    """
+    from backend.app.services import ams_advertised_overlay
+
+    ams_advertised_overlay.forget_all()
+    yield
+    ams_advertised_overlay.forget_all()
+
+
+@pytest.fixture(autouse=True)
 async def _cancel_leaked_asyncio_tasks():
     """Cancel asyncio tasks that leaked past the test body.
 
