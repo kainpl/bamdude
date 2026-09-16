@@ -37,6 +37,7 @@ from backend.app.api.routes import (
     git_backup,
     groups,
     hms as hms_routes,
+    inbox,
     inventory,
     kprofiles,
     label_devices,
@@ -10527,6 +10528,7 @@ app.include_router(kprofiles.router, prefix=app_settings.api_prefix)
 app.include_router(notifications.router, prefix=app_settings.api_prefix)
 app.include_router(notification_templates.router, prefix=app_settings.api_prefix)
 app.include_router(user_notifications.router, prefix=app_settings.api_prefix)
+app.include_router(inbox.router, prefix=app_settings.api_prefix)
 app.include_router(spoolman.router, prefix=app_settings.api_prefix)
 app.include_router(spoolman_inventory.router, prefix=app_settings.api_prefix)
 app.include_router(updates.router, prefix=app_settings.api_prefix)
