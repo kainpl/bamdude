@@ -9,6 +9,7 @@ from backend.app.services.filament_needs import (
     NeedKey,
     QueuedNeed,
     SpoolStock,
+    colour_matches,
     farm_of,
     key_of,
     need_of_plan,
@@ -28,6 +29,14 @@ def _plan(rows):
             PlanRow(plate_id=plate_id, library_file_id=plate_id, plate_index=0, filename=f"f{plate_id}", count=count)
         )
     return OrderPlan(lines=list(lines.values()))
+
+
+def test_colour_matches_is_the_one_rule_both_surfaces_share():
+    names = lambda h: {"black"} if h == "000000" else set()  # noqa: E731
+    assert colour_matches(" Black ", None, "black", names) is True  # by name, casefolded and trimmed
+    assert colour_matches(None, "000000", "black", names) is True  # by catalog hex
+    assert colour_matches("Blue", "0000ff", "black", names) is False
+    assert colour_matches(None, None, "black", names) is False
 
 
 def test_the_key_normalises_material_and_colour():

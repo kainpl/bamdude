@@ -147,10 +147,23 @@ def need_of_queue(rows: Iterable[QueuedNeed]) -> Needs:
     return needs
 
 
-def _matches_colour(spool: SpoolStock, colour: str, names_of_hex: Callable[[str], set[str]]) -> bool:
-    if spool.colour_name and spool.colour_name.strip().casefold() == colour:
+def colour_matches(
+    colour_name: str | None, colour_hex: str | None, colour: str, names_of_hex: Callable[[str], set[str]]
+) -> bool:
+    """The ONE colour rule, shared with the forecast engine (vault 60-specs/forecast-reserved-by-orders-spec §4).
+
+    ``colour`` is a ``NeedKey.colour`` - already casefolded and trimmed. A spool
+    matches when its own name says so, or when the colour catalog names its
+    hex that way. The two surfaces that ask (order pages, reorder forecast)
+    must never disagree about one spool, so neither carries a copy of this.
+    """
+    if colour_name and colour_name.strip().casefold() == colour:
         return True
-    return bool(spool.colour_hex) and colour in names_of_hex(spool.colour_hex)
+    return bool(colour_hex) and colour in names_of_hex(colour_hex)
+
+
+def _matches_colour(spool: SpoolStock, colour: str, names_of_hex: Callable[[str], set[str]]) -> bool:
+    return colour_matches(spool.colour_name, spool.colour_hex, colour, names_of_hex)
 
 
 def stock_by_key(
@@ -502,6 +515,41 @@ async def names_of_hex_loader(db: AsyncSession) -> Callable[[str], set[str]]:
     return lambda h: table.get((h or "").replace("#", "").lower()[:6], set())
 
 
+async def _needs_by_order(db: AsyncSession, active: list[int]) -> dict[int, Needs]:
+    """Plan + pending queue per ACTIVE order - the arithmetic alone, no shelf read.
+
+    ``needs_of_orders`` lays the shelf over this; ``needs_grams_of_farm`` hands
+    it to the forecast engine as is. One place computes, two places consume.
+    """
+    if not active:
+        return {}
+    plans = await plan_for_orders(db, active)
+    plate_ids = {row.plate_id for plan in plans.values() for line in plan.lines for row in line.rows}
+    lines = await line_colours_of(db, active)
+    line_colours = {line_id: colour for line_id, (_, colour) in lines.items()}
+    filaments = await plate_filaments_of(db, plate_ids)
+    queued = await queued_needs_of(db, active, lines)
+    return {
+        pid: need_of_plan(plans.get(pid), line_colours, filaments).merge(need_of_queue(queued.get(pid, [])))
+        for pid in active
+    }
+
+
+async def needs_grams_of_farm(db: AsyncSession) -> Needs:
+    """Every active order's need, merged - grams only (spec §4).
+
+    The reorder forecast's input. That table IS the shelf, so the shelf half of
+    ``needs_of_farm`` is useless to it - and reading it would cost a dead
+    Spoolman's connect timeouts on every forecast request. No shelf, no cache,
+    no Spoolman here.
+    """
+    active = [pid for (pid,) in (await db.execute(select(Project.id).where(Project.status == "active"))).all()]
+    merged = Needs()
+    for needs in (await _needs_by_order(db, active)).values():
+        merged = merged.merge(needs)
+    return merged
+
+
 async def needs_of_orders(db: AsyncSession, project_ids: list[int]) -> dict[int, OrderNeeds]:
     """Per order: the plan's need + the pending queue's need, against the shelf. An unknown id is absent."""
     if not project_ids:
@@ -513,12 +561,7 @@ async def needs_of_orders(db: AsyncSession, project_ids: list[int]) -> dict[int,
         # spools say, and reading them would spend a Spoolman round trip — up
         # to ~16 s when it is down — to decorate nothing (final review I6).
         return {pid: OrderNeeds(pid, [], 0, False) for pid in project_ids if pid in status_of}
-    plans = await plan_for_orders(db, active)
-    plate_ids = {row.plate_id for plan in plans.values() for line in plan.lines for row in line.rows}
-    lines = await line_colours_of(db, active)
-    line_colours = {line_id: colour for line_id, (_, colour) in lines.items()}
-    filaments = await plate_filaments_of(db, plate_ids)
-    queued = await queued_needs_of(db, active, lines)
+    by_order = await _needs_by_order(db, active)
     spools, unavailable = await load_stock(db)
     names_of_hex = await names_of_hex_loader(db)
     out: dict[int, OrderNeeds] = {}
@@ -528,7 +571,7 @@ async def needs_of_orders(db: AsyncSession, project_ids: list[int]) -> dict[int,
         if pid not in active:
             out[pid] = OrderNeeds(pid, [], 0, unavailable)
             continue
-        needs = need_of_plan(plans.get(pid), line_colours, filaments).merge(need_of_queue(queued.get(pid, [])))
+        needs = by_order[pid]
         stock = None if unavailable else stock_by_key(spools, needs.keys(), names_of_hex)
         out[pid] = OrderNeeds(pid, rows_of(needs, stock), needs.unknown_prints, unavailable)
     return out

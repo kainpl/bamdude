@@ -198,6 +198,32 @@ async def test_a_queue_row_with_a_line_but_no_order_id_counts_for_its_order(db_s
 
 
 @pytest.mark.asyncio
+async def test_needs_grams_of_farm_is_the_same_arithmetic_with_no_shelf_read(db_session, shelf, monkeypatch):
+    """The forecast engine's input: every active order's grams, merged, and NOT a Spoolman round trip."""
+    await _order(db_session, shelf["product"].id, 3, colour="black")
+    await _order(db_session, shelf["product"].id, 2)  # no colour -> material-only key
+    await _order(db_session, shelf["product"].id, 9, status="completed")  # closed orders need nothing
+
+    async def _no_shelf(db):  # pragma: no cover - the assertion is that this is never reached
+        raise AssertionError("needs_grams_of_farm must not read the shelf")
+
+    monkeypatch.setattr(filament_needs, "load_stock", _no_shelf)
+    needs = await filament_needs.needs_grams_of_farm(db_session)
+
+    assert needs.grams[filament_needs.NeedKey("PETG", "black")] == pytest.approx(30.0)
+    assert needs.grams[filament_needs.NeedKey("PLA", "black")] == pytest.approx(6.0)
+    assert needs.grams[filament_needs.NeedKey("PETG", None)] == pytest.approx(20.0)
+    assert needs.grams[filament_needs.NeedKey("PLA", None)] == pytest.approx(4.0)
+
+    # And it is the very arithmetic the order pages show.
+    monkeypatch.undo()
+    farm = await filament_needs.needs_of_farm(db_session)
+    by_key = {filament_needs.NeedKey(r.material, r.colour): r.need_g for r in farm.rows}
+    for key, grams in needs.grams.items():
+        assert by_key[key] == pytest.approx(round(grams, 1))
+
+
+@pytest.mark.asyncio
 async def test_a_closed_order_answers_no_rows_and_an_unknown_id_is_absent(db_session, shelf):
     pid, _ = await _order(db_session, shelf["product"].id, 3, status="completed")
     out = await filament_needs.needs_of_orders(db_session, [pid, 999_999])
