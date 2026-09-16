@@ -57,6 +57,7 @@ async def test_bulk_apply_refuses_while_printing_and_previews_without_mqtt(async
     ):
         pm.is_print_active.return_value = True
         pm.get_client.return_value = None
+        pm.get_status.return_value = object()  # live trays are there; only the client is not
         url = f"/api/v1/printers/{printer.id}/ams-policies/backup-compatibility/apply"
         preview = await async_client.post(url, json={"dry_run": True})
         assert preview.status_code == 200, preview.text
@@ -67,6 +68,10 @@ async def test_bulk_apply_refuses_while_printing_and_previews_without_mqtt(async
         pm.is_print_active.return_value = False
         offline = await async_client.post(url, json={"dry_run": False})
         assert offline.status_code == 400 and offline.json()["detail"]
+        # No state at all: even the preview would report every slot as empty.
+        pm.get_status.return_value = None
+        blind = await async_client.post(url, json={"dry_run": True})
+        assert blind.status_code == 400 and blind.json()["detail"]
         missing = await async_client.post(
             "/api/v1/printers/999999/ams-policies/backup-compatibility/apply", json={"dry_run": True}
         )

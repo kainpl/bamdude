@@ -18,7 +18,6 @@ from backend.app.core.permissions import Permission
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.spool_assignment import SpoolAssignment
-from backend.app.models.spoolman_k_profile import SpoolmanKProfile
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
 from backend.app.services.printer_manager import printer_manager
@@ -30,6 +29,7 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
+from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
 
 logger = logging.getLogger(__name__)
 
@@ -943,13 +943,6 @@ async def link_spool(
                     if nd:
                         nozzle_diameter = nd
 
-                kp_result = await db.execute(
-                    select(SpoolmanKProfile).where(
-                        SpoolmanKProfile.spoolman_spool_id == spool_id,
-                        SpoolmanKProfile.printer_id == p_id,
-                    )
-                )
-                kp_rows = list(kp_result.scalars().all())
                 slot_extruder = 0
                 if state and state.ams_extruder_map:
                     if a_id == 255:
@@ -963,19 +956,13 @@ async def link_spool(
                     nozzle_dia_float = 0.4
 
                 # Pick link by matching nozzle on the joined filament_calibration.
-                exact_link = None
-                fallback_link = None
-                for kp in kp_rows:
-                    fc = kp.filament_calibration
-                    if not fc or abs(fc.nozzle_diameter - nozzle_dia_float) > 0.05:
-                        continue
-                    if kp.extruder == slot_extruder:
-                        exact_link = kp
-                        break
-                    if fallback_link is None:
-                        fallback_link = kp
-                matching_link = exact_link or fallback_link
-                matching_fc = matching_link.filament_calibration if matching_link else None
+                matching_fc = await resolve_spoolman_slot_kprofile(
+                    db,
+                    printer_id=p_id,
+                    spoolman_spool_id=spool_id,
+                    nozzle_diameter=nozzle_dia_float,
+                    slot_extruder=slot_extruder,
+                )
 
                 # ONE identity path (spec A §5.2): the family catalog builds the
                 # payload. The Spoolman spool's identity is the family of its

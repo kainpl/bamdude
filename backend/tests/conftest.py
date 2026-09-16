@@ -276,11 +276,15 @@ def _clean_advertised_overlay():
     advertised colour and preset, at which point a reader returns a spool the
     test never assigned. Same class of leak as the Zigbee caches above.
     """
-    from backend.app.services import ams_advertised_overlay
+    from backend.app.services import ams_advertised_overlay, ams_backup_compatibility_apply
 
     ams_advertised_overlay.forget_all()
+    # The deferred rebuild is once per PROCESS, so its "already done" set leaks
+    # between tests exactly like the store it fills.
+    ams_backup_compatibility_apply.reset_rebuilt()
     yield
     ams_advertised_overlay.forget_all()
+    ams_backup_compatibility_apply.reset_rebuilt()
 
 
 @pytest.fixture(autouse=True)

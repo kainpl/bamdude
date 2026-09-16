@@ -57,6 +57,7 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
+from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot
 from backend.app.utils.filament_remaining import grams_remaining
 
@@ -1517,15 +1518,6 @@ async def assign_spoolman_slot(
 
     mapped = _map_spoolman_spool(spool)
 
-    # Fetch K-profiles before the MQTT try block so we can use async DB access.
-    kp_rows_result = await db.execute(
-        select(SpoolmanKProfile).where(
-            SpoolmanKProfile.spoolman_spool_id == body.spoolman_spool_id,
-            SpoolmanKProfile.printer_id == body.printer_id,
-        )
-    )
-    kp_rows = kp_rows_result.scalars().all()
-
     # Auto-configure AMS slot via MQTT (best-effort; slot assignment is already persisted)
     try:
         mqtt_client = printer_manager.get_client(body.printer_id)
@@ -1571,19 +1563,13 @@ async def assign_spoolman_slot(
                 nozzle_dia_float = 0.4
 
             # Pick link by matching nozzle on the joined filament_calibration.
-            exact_link = None
-            fallback_link = None
-            for kp in kp_rows:
-                fc = kp.filament_calibration
-                if not fc or abs(fc.nozzle_diameter - nozzle_dia_float) > 0.05:
-                    continue
-                if slot_extruder is not None and kp.extruder == slot_extruder:
-                    exact_link = kp
-                    break
-                if fallback_link is None:
-                    fallback_link = kp
-            matching_link = exact_link or fallback_link
-            matching_fc = matching_link.filament_calibration if matching_link else None
+            matching_fc = await resolve_spoolman_slot_kprofile(
+                db,
+                printer_id=body.printer_id,
+                spoolman_spool_id=body.spoolman_spool_id,
+                nozzle_diameter=nozzle_dia_float,
+                slot_extruder=slot_extruder,
+            )
 
             # ONE identity path (spec A §5.2): the family catalog builds the
             # payload — family from the linked calibration when one exists,

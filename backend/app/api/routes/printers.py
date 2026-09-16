@@ -2934,6 +2934,10 @@ async def apply_backup_compatibility(
             raise HTTPException(status_code=409, detail="Printer is printing")
         if client is None or not client.state.connected:
             raise HTTPException(status_code=400, detail="Printer not connected")
+    # A preview needs the live trays too: without them every slot reads empty
+    # and the answer is fiction rather than an empty AMS.
+    if printer_manager.get_status(printer_id) is None:
+        raise HTTPException(status_code=400, detail="Printer not connected")
     outcome = await bulk_apply(db, printer, client, dry_run=body.dry_run)
     if not body.dry_run and client is not None:
         client.request_status_update()  # nudge a pushall so read-back verification and the overlay see the echo soon

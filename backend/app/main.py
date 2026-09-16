@@ -2100,6 +2100,20 @@ async def on_ams_change(printer_id: int, ams_data: list):
     """Handle AMS data changes - sync to Spoolman if enabled and auto mode."""
     logger = logging.getLogger(__name__)
 
+    # The advertised-profile overlay is memory only (spec
+    # ams-backup-compatibility §6.3), so a restart would let routing read an
+    # advertised black slot as black. Rebuild it from the assignment
+    # registries here and not at startup: this callback runs after the whole
+    # pushall is parsed, so the device's real capabilities and trays are
+    # known — at startup they are not, and the derived entries would never
+    # match the printer's echo. Once per printer per process, best-effort.
+    try:
+        from backend.app.services.ams_backup_compatibility_apply import rebuild_once
+
+        await rebuild_once(printer_id)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("overlay rebuild skipped for printer %s: %s", printer_id, e)
+
     # Check if a print is actively running on this printer - if so, skip AMS
     # weight sync to avoid double-deducting spool weight (the usage tracker
     # handles weight deduction precisely during prints via 3MF/G-code data).
@@ -8854,24 +8868,6 @@ async def lifespan(app: FastAPI):
         await _embedded_pg.start()
 
     await init_db()
-
-    # Rebuild the advertised-profile overlay from the assignment registries: it
-    # is memory only (spec ams-backup-compatibility §6.3) and a restart would
-    # otherwise let routing read an advertised black slot as black.
-    try:
-        # ``async_session`` is aliased for the same reason the Zigbee block
-        # below aliases it: a later block in this function imports that name
-        # locally, which makes Python treat it as a local for the WHOLE
-        # function (F823).
-        from backend.app.core.database import async_session as _overlay_session
-        from backend.app.models.printer import Printer as _Printer
-        from backend.app.services.ams_backup_compatibility_apply import refresh_overlay
-
-        async with _overlay_session() as _db:
-            for _printer in (await _db.execute(select(_Printer).where(_Printer.archived.is_(False)))).scalars().all():
-                await refresh_overlay(_db, _printer)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception("advertised-profile overlay rebuild failed")
 
     # The worker is opt-in and must establish containment before any camera
     # caller can run. Do not silently leave an inline owner alive when an
