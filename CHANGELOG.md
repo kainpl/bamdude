@@ -170,6 +170,8 @@
 
 ### Fixed
 
+- **Clicking Printers now opens Printers, whatever your start page is.** If you had set a start page other than Printers, the first time you clicked **Printers** after loading the page you were silently sent to that start page instead — the cursor was on Printers, the click landed on Printers, and the Queue (or whichever page you had chosen) opened. Printers is the application's home address, and the "open my start page" rule was being applied to it again on the way in rather than only when the application opens. It now applies once, at the moment you open BamDude, and never to a navigation you made yourself. Anyone whose start page is Printers never saw this.
+
 - **Order costs now say what they include.** An order's actual production cost remains the sum of its finished prints, but now shows its filament and measured-electricity components underneath. The forward-looking plan is explicitly labelled *Filament cost*: it is priced from the slicer's grams and farm filament rate, while electricity is only known after a print is measured.
 
 - **Renamed printers are named correctly immediately.** A rename now refreshes the lightweight callback cache without restarting or reconnecting the printer, so notifications, MQTT relay events, queue and stagger status, and macro-completion messages use the new display name.

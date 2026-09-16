@@ -391,4 +391,68 @@ describe('Layout', () => {
       expect(sidebarLink('/queue')).toBeNull();
     });
   });
+
+  describe('default-view redirect', () => {
+    // `Printers` is the INDEX route (`to: '/'`), so "the app just opened" and
+    // "the user clicked Printers" are the same pathname. Keying the redirect
+    // off every navigation to `/` therefore ate the click: reload anywhere but
+    // `/`, go to any other page, click Printers — and you land on your default
+    // view instead. Once per page load, and invisible to anyone whose default
+    // view IS Printers, which is why it took a screen recording to see.
+    const sidebarLink = (href: string) =>
+      document.querySelector<HTMLAnchorElement>(`aside a[href="${href}"]`);
+
+    afterEach(() => {
+      window.localStorage.removeItem('defaultView');
+      window.history.pushState({}, '', '/');
+    });
+
+    it('redirects to the configured default view when the app is entered at /', async () => {
+      window.localStorage.setItem('defaultView', '/queue');
+      window.history.pushState({}, '', '/');
+      navigateSpy.mockClear();
+
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(navigateSpy).toHaveBeenCalledWith('/queue', { replace: true });
+      });
+    });
+
+    it('does not redirect when the app is entered anywhere else', async () => {
+      window.localStorage.setItem('defaultView', '/queue');
+      window.history.pushState({}, '', '/projects');
+      navigateSpy.mockClear();
+
+      render(<Layout />);
+      await waitFor(() => {
+        expect(sidebarLink('/settings')).toBeInTheDocument();
+      });
+
+      expect(navigateSpy).not.toHaveBeenCalledWith('/queue', { replace: true });
+    });
+
+    it('leaves a later click on Printers where the user aimed it', async () => {
+      window.localStorage.setItem('defaultView', '/queue');
+      window.history.pushState({}, '', '/projects');
+
+      render(<Layout />);
+      await waitFor(() => {
+        expect(sidebarLink('/settings')).toBeInTheDocument();
+      });
+
+      const printers = sidebarLink('/');
+      expect(printers).toBeInTheDocument();
+
+      navigateSpy.mockClear();
+      fireEvent.click(printers!, { button: 0 });
+
+      await waitFor(() => {
+        expect(window.location.pathname).toBe('/');
+      });
+      // The bounce was the Layout effect firing `navigate(defaultView,
+      // { replace: true })` the moment the pathname became `/`.
+      expect(navigateSpy).not.toHaveBeenCalledWith('/queue', { replace: true });
+    });
+  });
 });

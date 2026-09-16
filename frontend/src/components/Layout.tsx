@@ -613,16 +613,23 @@ export function Layout() {
     }
   };
 
-  // Redirect to default view on initial load
+  // Redirect to the default view on initial load — MOUNT-ONLY on purpose.
+  // "Printers" is the index route (`to: '/'`), so this effect cannot key off
+  // every pathname change: a deliberate click on Printers is a navigation to
+  // `/` and was being swallowed by the redirect, landing the user on their
+  // default view instead. It bit exactly once per page load (the ref) and was
+  // invisible to anyone whose default view IS Printers (the `!== '/'` guard),
+  // which is why it survived so long. The question here is "where did the user
+  // ENTER the app", asked once, not "are we at `/` right now".
   useEffect(() => {
-    if (!hasRedirected.current && location.pathname === '/') {
-      const defaultView = getDefaultView();
-      if (defaultView !== '/') {
-        hasRedirected.current = true;
-        navigate(defaultView, { replace: true });
-      }
+    if (hasRedirected.current || location.pathname !== '/') return;
+    const defaultView = getDefaultView();
+    if (defaultView !== '/') {
+      hasRedirected.current = true;
+      navigate(defaultView, { replace: true });
     }
-  }, [location.pathname, navigate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('sidebarExpanded', String(sidebarExpanded));
