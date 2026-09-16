@@ -2833,6 +2833,9 @@ export interface AppSettings {
   stagger_interval_minutes: number;
   stagger_wait_for_bed: boolean;
   stagger_strict_for_direct_dispatch: boolean;
+  // ETA forecast allowances (vault 60-specs/farm-forecast-v2-spec 7)
+  forecast_upload_seconds: number;
+  forecast_plate_clear_minutes: number;
   // Staggered start by group (electrical phases). The id lists are JSON arrays
   // kept as strings on the wire, like every structured setting here.
   stagger_split_by_tags: boolean;

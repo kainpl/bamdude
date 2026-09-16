@@ -137,12 +137,12 @@ describe('OrderFigures', () => {
     render(
       <OrderFigures
         figures={FIGURES}
-        forecast={{ project_id: 1, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: null, after_seconds: null, machine_seconds: 5400, unknown_prints: 2, unroutable_prints: 0, ahead_count: 0, assumptions: ['prep'], lines: [] }}
+        forecast={{ project_id: 1, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: null, after_seconds: null, machine_seconds: 5400, unknown_prints: 2, unroutable_prints: 0, ahead_count: 0, assumptions: ['drying'], lines: [] }}
       />,
     );
     expect(screen.getByText('Ready ≈')).toBeInTheDocument();
     expect(screen.getByText('1:30')).toBeInTheDocument();
     expect(screen.getByText('2 prints without an estimate')).toBeInTheDocument();
-    expect(screen.getByLabelText(/upload and preheat/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/drying between prints/)).toBeInTheDocument();
   });
 });

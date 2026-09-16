@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, MonitorPlay, Tag } from 'lucide-react';
+import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, MonitorPlay, Tag, Clock } from 'lucide-react';
 import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } from '../lib/sliceEngines';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
@@ -88,7 +88,7 @@ registerSettingsSearch({ labelKey: 'settings.tabs.slicing', tab: 'slicing', keyw
 registerSettingsSearch({ labelKey: 'settings.preferredSlicer', tab: 'slicing', keywords: 'preferred slicer orcaslicer bambu studio desktop open in slicer slice engine', anchor: 'card-slicer-configuration' });
 registerSettingsSearch({ labelKey: 'settings.useSlicerApi', tab: 'slicing', keywords: 'server side slicing sidecar api url health timeout orcaslicer bambu studio', anchor: 'card-slicer-configuration' });
 registerSettingsSearch({ labelKey: 'settings.pipelines.title', tab: 'slicing', keywords: 'saved slice settings pipeline preset printer process filament bed', anchor: 'card-slicer-pipelines' });
-registerSettingsSearch({ labelKey: 'settings.tabs.printing', tab: 'printing', keywords: 'printing bed leveling flow calibration vibration first layer timelapse staggered batch delay start group plate clear confirm auto queue gcode injection farmloop swapmod autoclear drying presets temperature humidity ams ftp retry upload', anchor: 'tab-printing' });
+registerSettingsSearch({ labelKey: 'settings.tabs.printing', tab: 'printing', keywords: 'printing bed leveling flow calibration vibration first layer timelapse staggered batch delay start group plate clear confirm auto queue gcode injection farmloop swapmod autoclear drying presets temperature humidity ams ftp retry upload eta forecast file transfer allowance', anchor: 'tab-printing' });
 registerSettingsSearch({ labelKey: 'printOptionsPrefs.cardTitle', labelFallback: 'Saved Print Profiles', tab: 'printing', keywords: 'print options profile preferences saved per user model toggles bed leveling flow timelapse mesh swap macros copy', anchor: 'card-print-options-prefs' });
 registerSettingsSearch({ labelKey: 'labelEditor.title', tab: 'filament', subTab: 'marking', keywords: 'label template design editor sticker niimbot barcode qr code placeholder print printer bridge cassette', anchor: 'card-label-designs' });
 registerSettingsSearch({ labelKey: 'labelSheets.title', tab: 'filament', subTab: 'marking', keywords: 'sheet sheets avery paper page grid columns rows margin gap label stickers a4 a5 letter', anchor: 'card-label-sheets' });
@@ -1283,6 +1283,8 @@ export function SettingsPage() {
       (baseline.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
       (baseline.stagger_wait_for_bed ?? true) !== (localSettings.stagger_wait_for_bed ?? true) ||
       (baseline.stagger_strict_for_direct_dispatch ?? false) !== (localSettings.stagger_strict_for_direct_dispatch ?? false) ||
+      (baseline.forecast_upload_seconds ?? 120) !== (localSettings.forecast_upload_seconds ?? 120) ||
+      (baseline.forecast_plate_clear_minutes ?? 10) !== (localSettings.forecast_plate_clear_minutes ?? 10) ||
       (baseline.stagger_split_by_tags ?? false) !== (localSettings.stagger_split_by_tags ?? false) ||
       (baseline.stagger_group_tag_ids ?? '[]') !== (localSettings.stagger_group_tag_ids ?? '[]') ||
       (baseline.stagger_tag_limits ?? '{}') !== (localSettings.stagger_tag_limits ?? '{}') ||
@@ -1398,6 +1400,8 @@ export function SettingsPage() {
         stagger_split_by_location: localSettings.stagger_split_by_location,
         stagger_group_location_ids: localSettings.stagger_group_location_ids,
         stagger_location_limits: localSettings.stagger_location_limits,
+        forecast_upload_seconds: localSettings.forecast_upload_seconds,
+        forecast_plate_clear_minutes: localSettings.forecast_plate_clear_minutes,
         preheat_enabled: localSettings.preheat_enabled,
         preheat_filament_targets: localSettings.preheat_filament_targets,
         preheat_max_wait_seconds: localSettings.preheat_max_wait_seconds,
@@ -3758,6 +3762,61 @@ export function SettingsPage() {
                     />
                   </>
                 )}
+              </div>
+
+              {/* ETA forecast allowances (vault 60-specs/farm-forecast-v2-spec 7).
+                  Stagger, preheat and each printer's plate-clear setting are read
+                  from their own places; these two are the only figures the
+                  forecast cannot read anywhere else. */}
+              <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center gap-2 text-white">
+                  <Clock className="w-4 h-4 text-bambu-green" />
+                  <span className="font-medium">{t('settings.etaForecastTitle')}</span>
+                </div>
+                <p className="text-xs text-bambu-gray">{t('settings.etaForecastDescription')}</p>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">{t('settings.etaUploadSeconds')}</label>
+                    <p className="text-xs text-bambu-gray mt-0.5">{t('settings.etaUploadSecondsDescription')}</p>
+                  </div>
+                  {/* 0 is a real value here: no allowance at all. */}
+                  <input
+                    type="number"
+                    min="0"
+                    max="3600"
+                    step="10"
+                    value={localSettings.forecast_upload_seconds ?? 120}
+                    onChange={(e) => {
+                      const parsed = parseInt(e.target.value, 10);
+                      updateSetting(
+                        'forecast_upload_seconds',
+                        Number.isNaN(parsed) ? 120 : Math.min(3600, Math.max(0, parsed))
+                      );
+                    }}
+                    className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">{t('settings.etaPlateClearMinutes')}</label>
+                    <p className="text-xs text-bambu-gray mt-0.5">{t('settings.etaPlateClearMinutesDescription')}</p>
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1440"
+                    step="1"
+                    value={localSettings.forecast_plate_clear_minutes ?? 10}
+                    onChange={(e) => {
+                      const parsed = parseInt(e.target.value, 10);
+                      updateSetting(
+                        'forecast_plate_clear_minutes',
+                        Number.isNaN(parsed) ? 10 : Math.min(1440, Math.max(0, parsed))
+                      );
+                    }}
+                    className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
+                  />
+                </div>
               </div>
 
               {/* Auto-queue routing (SJF) */}

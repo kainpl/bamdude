@@ -13,7 +13,7 @@ const row = (over: Partial<OrderListItem>): OrderListItem => ({
 
 const fc = (over: Partial<OrderForecast>): OrderForecast => ({
   project_id: 1, now_eta: null, now_seconds: null, after_eta: null, after_seconds: null, machine_seconds: null,
-  unknown_prints: 0, unroutable_prints: 0, ahead_count: 0, assumptions: ['stagger'], ...over,
+  unknown_prints: 0, unroutable_prints: 0, ahead_count: 0, assumptions: ['drying'], ...over,
 });
 
 describe('OrdersTable', () => {

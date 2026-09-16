@@ -2954,6 +2954,13 @@ export default {
     staggerGroupLimitHint: 'A number beside a picked group caps that group alone; empty means the value above.',
     staggerGroupsNone: 'Nothing chosen yet — the cap stays farm-wide.',
     staggerWildcardHint: 'A printer with none of the chosen tags (or no chosen location above it) counts in every group and starts only when all of them have room.',
+    // ETA forecast allowances (vault 60-specs/farm-forecast-v2-spec 7)
+    etaForecastTitle: 'ETA Forecast',
+    etaForecastDescription: "Allowances the farm forecast adds on top of print times. Staggered start, preheat and each printer's plate-clear setting are read from their own settings; drying is counted only while it blocks the queue.",
+    etaUploadSeconds: 'File transfer per print (seconds)',
+    etaUploadSecondsDescription: 'Added before every print that has not started yet — sending the file to the printer and waiting for it to begin. Preheat is added on top when enabled.',
+    etaPlateClearMinutes: 'Plate-clear confirmation (minutes)',
+    etaPlateClearMinutesDescription: 'Added after every print on a printer that requires plate-clear confirmation. 0 = assume the plate is cleared at once.',
     // Preheat & heat soak (#1468)
     preheatTitle: 'Preheat & Heat Soak',
     preheatDescription: 'Heat the bed (and chamber, if supported) and hold at temperature before each queued print starts. Helpful for engineering filaments (PA, ABS) on printers without an active chamber heater — the bed warms the chamber by radiation while the soak timer runs. The bed target is read from the print file; chamber behaviour depends on printer model.',
@@ -9056,10 +9063,7 @@ export default {
   farmForecast: {
     assumptionsTitle: 'Not counted in this estimate:',
     assumptions: {
-      stagger: 'staggered start',
-      plate_clear: 'plate-clear confirmation',
       drying: 'drying between prints',
-      prep: 'upload and preheat',
       slicer_estimate: 'slicer estimate, not the archive\'s actual usage',
     },
     unavailable: 'No estimate',
