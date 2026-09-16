@@ -66,3 +66,64 @@ async def test_seed_grants_the_permission_to_the_three_system_groups_once(test_e
     by_name = {r.name: r.permissions for r in rows}
     for name in ("Administrators", "Operators", "Viewers"):
         assert by_name[name].count("notifications:inbox") == 1, name
+
+
+class _EmptyResult:
+    """Answers every probe with "nothing is there yet"."""
+
+    def scalar(self):
+        return None
+
+    def fetchall(self):
+        return []
+
+
+class _Recorder:
+    """A connection that records the SQL a migration sends instead of running it.
+
+    The PostgreSQL branch of ``m176.upgrade`` has no other coverage:
+    ``test_migration_ddl_dialects.py`` judges only ``CREATE TABLE`` statements
+    whose table is absent from ``Base.metadata``, and ``user_notifications`` is
+    modelled, so that scan filters m176 out before it looks at a single token.
+    The branch is live all the same — the SQLite→PostgreSQL move imports the
+    file at its own migration level and the chain resumes at N+1 against a
+    reflected schema that has no inbox table.
+    """
+
+    def __init__(self):
+        self.statements: list[str] = []
+
+    async def exec_driver_sql(self, sql):
+        self.statements.append(str(sql))
+        return _EmptyResult()
+
+    async def execute(self, clause, params=None):
+        self.statements.append(str(clause))
+        return _EmptyResult()
+
+
+@pytest.mark.asyncio
+async def test_the_postgresql_branch_speaks_postgresql(monkeypatch):
+    monkeypatch.setattr("backend.app.core.db_dialect.is_postgres", lambda: True)
+    monkeypatch.setattr("backend.app.core.db_dialect.is_sqlite", lambda: False)
+    monkeypatch.setattr("backend.app.migrations.m176_user_inbox.is_sqlite", lambda: False)
+    monkeypatch.setattr("backend.app.migrations.helpers.is_postgres", lambda: True)
+
+    conn = _Recorder()
+    await m176.upgrade(conn)
+    sql = "\n".join(conn.statements)
+
+    create = next(s for s in conn.statements if "CREATE TABLE user_notifications" in s)
+    assert "SERIAL PRIMARY KEY" in create
+    assert "AUTOINCREMENT" not in sql  # SQLite-only spelling; PostgreSQL rejects it
+    assert "DATETIME" not in create  # PostgreSQL wants TIMESTAMP
+    assert create.count("TIMESTAMP") == 2  # created_at and read_at
+    assert "REFERENCES users(id) ON DELETE CASCADE" in create
+
+    # Both indexes are sent outside the table guard, so a fresh install that got
+    # the table from ``create_all`` still gets them.
+    assert sum("CREATE INDEX IF NOT EXISTS" in s for s in conn.statements) == 2
+
+    # And the users column is added with a PostgreSQL-legal type.
+    add_column = next(s for s in conn.statements if "ALTER TABLE users ADD COLUMN inbox_events" in s)
+    assert "JSON" in add_column
