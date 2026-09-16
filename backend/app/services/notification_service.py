@@ -22,6 +22,7 @@ from backend.app.api.routes._url_safety import assert_safe_lan_service_url
 from backend.app.core.config import APP_VERSION
 from backend.app.models.notification import NotificationDigestQueue, NotificationLog, NotificationProvider
 from backend.app.models.notification_template import NotificationTemplate
+from backend.app.services import notification_inbox
 
 logger = logging.getLogger(__name__)
 
@@ -1353,6 +1354,9 @@ class NotificationService:
             rows = [p for p in rows if p.printer_ids is None]
         else:
             rows = [p for p in rows if p.allows_printer(printer_id)]
+        # The in-app inbox is a channel, not a row (spec §5.1): it rides every
+        # lookup so the callers' ``if not providers: return`` guards stay true.
+        rows.append(notification_inbox.INBOX_CHANNEL)
         return rows
 
     async def _log_notification(
@@ -1411,6 +1415,23 @@ class NotificationService:
         not. Do not reintroduce it.
         """
         for provider in providers:
+            if provider.provider_type == "inbox":
+                # Delivered first, so the page updates while SMTP is still timing
+                # out; never logged to notification_logs (that is the journal of
+                # external deliveries and its provider_id is NOT NULL).
+                try:
+                    await notification_inbox.deliver(
+                        db,
+                        event_type=event_type,
+                        title=title,
+                        message=message,
+                        printer_id=printer_id,
+                        printer_name=printer_name,
+                        extra_data=extra_data,
+                    )
+                except Exception:
+                    logger.exception("Inbox delivery failed for %s", event_type)
+                continue
             try:
                 # Always send notification immediately
                 success, error = await self._send_to_provider(
@@ -1474,6 +1495,33 @@ class NotificationService:
                     printer_id=printer_id,
                     printer_name=printer_name,
                 )
+
+    async def notify_in_app(
+        self,
+        db: AsyncSession,
+        event_type: str,
+        variables: dict[str, Any],
+        printer_id: int | None = None,
+        printer_name: str | None = None,
+        extra_data: dict | None = None,
+    ) -> list[int]:
+        """Raise an event for the in-app inbox only (spec §3.3, ``IN_APP_ONLY_EVENTS``).
+
+        Renders through the same templates as every other event and never looks
+        at providers. No caller today; the first in-app-only event brings one.
+        """
+        if printer_name and "printer" not in variables:
+            variables = {**variables, "printer": printer_name}
+        title, message = await self._build_message_from_template(db, event_type, variables)
+        return await notification_inbox.deliver(
+            db,
+            event_type=event_type,
+            title=title,
+            message=message,
+            printer_id=printer_id,
+            printer_name=printer_name,
+            extra_data=extra_data,
+        )
 
     async def on_print_start(
         self,
@@ -1826,6 +1874,14 @@ class NotificationService:
             if p.provider_type == "telegram":
                 kept.append(p)
                 has_telegram = True
+            elif p.provider_type == "inbox":
+                # The inbox has no duration floor of its own, and letting it
+                # count as a recipient would defeat everyone else's: the
+                # "muted by duration floors" exit would never fire again and
+                # image_supplier() — a live camera fetch — would be paid on
+                # every milestone to fill an inbox that, by default, is not
+                # subscribed to print_progress at all.
+                kept.append(p)
             elif self._passes_progress_floor(_own_floor(p), estimated_minutes):
                 kept.append(p)
                 any_recipients = True
