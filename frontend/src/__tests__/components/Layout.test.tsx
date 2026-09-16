@@ -65,7 +65,8 @@ describe('Layout', () => {
       }),
       http.get('/api/v1/printers/developer-mode-warnings', () => {
         return HttpResponse.json([]);
-      })
+      }),
+      http.get('/api/v1/inbox/unread-count', () => HttpResponse.json({ unread_count: 0 }))
     );
   });
 

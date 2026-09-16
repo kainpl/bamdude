@@ -32,6 +32,7 @@ describe('the pending queue is asked once for the whole app', () => {
       http.get('/api/v1/auth/status', () => HttpResponse.json({ auth_enabled: false, requires_setup: false })),
       http.get('/api/v1/printers/developer-mode-warnings', () => HttpResponse.json([])),
       http.get('/api/v1/auto-queue/', () => HttpResponse.json([])),
+      http.get('/api/v1/inbox/unread-count', () => HttpResponse.json({ unread_count: 0 })),
     );
   });
 
