@@ -79,7 +79,11 @@ export function NotificationCenterPage() {
                 type="button"
                 role="tab"
                 aria-selected={tab === key}
-                aria-controls={`notification-panel-${key}`}
+                // Only the selected panel is in the DOM — mounting all three would
+                // start the Inbox tab's queries while the Email tab is open. React
+                // omits the attribute on `undefined`, so an unselected tab points at
+                // nothing rather than at an id that does not exist.
+                aria-controls={tab === key ? `notification-panel-${key}` : undefined}
                 // One tab stop for the whole strip: Tab reaches the selected
                 // tab, Tab again leaves for the panel. Deliberately no
                 // arrow-key roving — three buttons do not need the machinery.
