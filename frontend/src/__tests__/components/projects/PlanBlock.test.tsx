@@ -799,7 +799,9 @@ describe('PlanBlock', () => {
       'Prints',
       'Print time',
       'Filament, g',
-      'Cost',
+      // Renamed by 3759b857 when cost was split into its components: this column
+      // is filament only, and electricity is reported separately.
+      'Filament cost',
       'Actions',
     ]);
   });
