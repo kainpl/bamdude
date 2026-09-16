@@ -98,6 +98,10 @@ interface FilamentData {
   trayUuid?: string | null; // Bambu Lab spool UUID for Spoolman linking
   tagUid?: string | null; // Generic NFC tag UID fallback for linking
   fillSource?: 'ams' | 'spoolman' | 'inventory'; // Source of fill level data
+  // What the printer was TOLD this slot holds (backup-compatibility emulation).
+  // Non-null only while the advertised profile differs from the real spool —
+  // everything else on this card describes the spool itself.
+  advertised?: { colorHex: string | null; profile: string | null } | null;
 }
 
 interface SpoolmanConfig {
@@ -329,6 +333,18 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                   {data.profile}
                 </span>
               </div>
+
+              {/* What the printer was told instead, so the AMS groups this slot
+                  with its peers for auto-refill (backup-compatibility policy). */}
+              {data.advertised && (
+                <div className="mt-1 flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                  <span
+                    className="inline-block w-2.5 h-2.5 rounded-full border"
+                    style={{ backgroundColor: data.advertised.colorHex ? `#${data.advertised.colorHex.replace('#', '').slice(0, 6)}` : 'transparent' }}
+                  />
+                  <span>{t('printers.amsCompat.badge', { profile: data.advertised.profile || '—' })}</span>
+                </div>
+              )}
 
               {/* K Factor */}
               <div className="flex items-center justify-between">

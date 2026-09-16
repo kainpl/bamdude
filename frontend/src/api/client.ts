@@ -633,6 +633,7 @@ export interface Printer {
   swap_mode_enabled: boolean;  // A1 Mini plate swapper
   swap_profile: string | null;  // Active swap-mode variant (see /macros/swap-profiles)
   require_plate_clear: boolean;  // Require plate-clear confirmation before next queued print
+  ams_policies: AmsPolicies;     // What this printer may be TOLD about its manually assigned slots
   created_at: string;
   updated_at: string;
 }
@@ -654,6 +655,59 @@ export interface HMSActionBody {
   print_error: string;  // full_code echoed back (8 or 16 hex chars)
   action: string;  // one of the HMSAction values
   job_id: string | null;  // subtask_id snapshot, optional
+}
+
+// AMS backup-compatibility emulation: a manually assigned slot can be
+// ADVERTISED to the printer under a different profile so the firmware groups it
+// with its peers for auto-refill. The policy says how far the advertised
+// profile may drift from the real spool.
+export interface BackupCompatibilityPolicy {
+  normalize_color: boolean;
+  canonical_color_rgba: string;  // RRGGBBFF, opaque
+  generic_base_material: boolean;
+}
+
+export interface AmsPolicies {
+  backup_compatibility: BackupCompatibilityPolicy;
+}
+
+export const DEFAULT_BACKUP_COMPATIBILITY: BackupCompatibilityPolicy = {
+  normalize_color: false,
+  canonical_color_rgba: '000000FF',
+  generic_base_material: false,
+};
+
+/** One slot in the bulk re-advertise preview / result. */
+export interface BackupCompatibilityApplyRow {
+  ams_id: number;
+  tray_id: number;
+  slot: string;
+  source: 'internal' | 'spoolman';
+  spool: string;
+  actual: { tray_info_idx: string; tray_type: string; tray_color: string; cols: string[]; setting_id: string };
+  advertised: { tray_info_idx: string; tray_type: string; tray_color: string; cols: string[]; setting_id: string };
+  // 'revert' — the policy no longer projects this slot, but it was advertised
+  // before, so the ACTUAL plan is re-published and the overlay forgets it.
+  action: 'apply' | 'revert' | 'skip';
+  reasons: string[];
+  published: boolean | null;
+  kprofile: 'kept' | 'skipped' | null;
+}
+
+export interface BackupCompatibilityApplyResult {
+  dry_run: boolean;
+  rows: BackupCompatibilityApplyRow[];
+  applied: number;
+  skipped: number;
+  would_apply?: number;
+}
+
+/** The spool BEHIND an advertised profile (backup-compatibility emulation). Present only while the printer echoes what we advertised. */
+export interface AmsTrayActual {
+  tray_color: string | null;
+  tray_type: string | null;
+  tray_info_idx: string | null;
+  cols?: string[];
 }
 
 export interface AMSTray {
@@ -683,6 +737,11 @@ export interface AMSTray {
   drying_time: number | null;      // RFID-recommended drying time (hours)
   state: number | null;            // AMS tray state: 9=empty, 10=spool present not loaded, 11=loaded
   exists?: boolean | null;         // Firmware tray_exist_bits: spool physically present (non-RFID → "?" not "Empty")
+  // The real spool while the slot advertises a different profile; null/absent
+  // whenever nothing is masked. Everything that reasons about the SPOOL reads
+  // it; everything that reasons about the FIRMWARE keeps reading the live
+  // fields above, because the firmware only ever sees what we advertised.
+  actual?: AmsTrayActual | null;
 }
 
 export interface AMSUnit {
@@ -1016,6 +1075,7 @@ export interface PrinterCreate {
   swap_mode_enabled?: boolean;
   swap_profile?: string | null;
   require_plate_clear?: boolean;
+  ams_policies?: { backup_compatibility?: BackupCompatibilityPolicy };
 }
 
 // Plate Detection
@@ -7293,6 +7353,14 @@ export const api = {
     request<Printer>(`/printers/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
+    }),
+  // Re-advertise every assigned, loaded, non-RFID slot under the printer's
+  // backup-compatibility policy. A dry run answers the preview without
+  // touching MQTT; a real apply is refused while a print runs.
+  applyAmsBackupCompatibility: (id: number, dryRun: boolean) =>
+    request<BackupCompatibilityApplyResult>(`/printers/${id}/ams-policies/backup-compatibility/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ dry_run: dryRun }),
     }),
   deletePrinter: (id: number, deleteArchives: boolean = true) =>
     request<{ status: string; archives_deleted: boolean }>(

@@ -43,9 +43,14 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
     const isHt = amsUnit.tray.length === 1; // AMS-HT has single tray
     amsUnit.tray.forEach((tray) => {
       if (tray.tray_type) {
-        const color = normalizeColor(tray.tray_color);
+        // The spool, not the advertisement: under the backup-compatibility
+        // policy the live fields are what the printer was TOLD, and `actual`
+        // is what is really on the spool holder. Mapping, the low-filament
+        // reader and every routing decision are about the spool.
+        const actual = tray.actual ?? null;
+        const color = normalizeColor(actual?.tray_color ?? tray.tray_color);
         filaments.push({
-          type: tray.tray_type,
+          type: actual?.tray_type || tray.tray_type,
           color,
           colorName: getColorName(color),
           amsId: amsUnit.id,
@@ -54,10 +59,12 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
           isExternal: false,
           label: formatSlotLabel(amsUnit.id, tray.id, isHt, false),
           globalTrayId: getGlobalTrayId(amsUnit.id, tray.id, false),
-          trayInfoIdx: tray.tray_info_idx || '',
+          trayInfoIdx: (actual?.tray_info_idx ?? tray.tray_info_idx) || '',
           traySubBrands: tray.tray_sub_brands || '',
           extruderId: amsExtruderMap?.[String(amsUnit.id)],
           remain: tray.remain ?? -1,
+          advertisedColor: actual ? normalizeColor(tray.tray_color) : undefined,
+          advertisedTrayInfoIdx: actual ? tray.tray_info_idx || '' : undefined,
         });
       }
     });
@@ -157,6 +164,9 @@ export interface LoadedFilament {
    * remaining filament" auto-match tiebreaker.
    */
   remain?: number;
+  /** Live colour the printer was told (backup-compatibility emulation); set only when `color` came from `actual`. */
+  advertisedColor?: string;
+  advertisedTrayInfoIdx?: string;
 }
 
 /**

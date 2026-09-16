@@ -4942,6 +4942,10 @@ function PrinterCard({
                                   : hasFillLevel ? 'ams' as const
                                   : undefined;
 
+                                // The real spool behind an advertised profile (backup-compatibility
+                                // policy); null whenever the slot advertises what it actually holds.
+                                const trayActual = tray?.actual ?? null;
+
                                 // Build filament data for hover card
                                 const filamentData = tray?.tray_type ? {
                                   vendor: (isBambuLabSpool(tray) ? 'Bambu Lab' : 'Generic') as 'Bambu Lab' | 'Generic',
@@ -4959,13 +4963,15 @@ function PrinterCard({
                                     || cloudInfo?.name
                                     || tray.tray_sub_brands
                                     || tray.tray_type,
-                                  colorName: resolveMultiColorName(tray.cols) ?? getColorName(tray.tray_color || ''),
-                                  colorHex: tray.tray_color || null,
+                                  colorName: resolveMultiColorName(trayActual?.cols ?? tray.cols)
+                                    ?? getColorName((trayActual?.tray_color ?? tray.tray_color) || ''),
+                                  colorHex: (trayActual?.tray_color ?? tray.tray_color) || null,
                                   kFactor: formatKValue(tray.k),
                                   fillLevel: effectiveFill,
                                   trayUuid: tray.tray_uuid || null,
                                   tagUid: tray.tag_uid || null,
                                   fillSource,
+                                  advertised: trayActual ? { colorHex: tray.tray_color, profile: tray.tray_info_idx } : null,
                                 } : null;
 
                                 // Check if this specific slot is being refreshed
@@ -5009,8 +5015,8 @@ function PrinterCard({
                                     )}
                                     {/* Filament color circle with 1-based slot number centered inside */}
                                     <FilamentSlotCircle
-                                      trayColor={tray?.tray_color}
-                                      trayColors={tray?.cols}
+                                      trayColor={trayActual?.tray_color ?? tray?.tray_color}
+                                      trayColors={trayActual ? (trayActual.cols ?? null) : tray?.cols}
                                       ctype={tray?.ctype}
                                       trayType={tray?.tray_type}
                                       isEmpty={isEmpty}
@@ -5319,6 +5325,10 @@ function PrinterCard({
                           : hasFillLevel ? 'ams' as const
                           : undefined;
 
+                        // The real spool behind an advertised profile (backup-compatibility
+                        // policy); null whenever the slot advertises what it actually holds.
+                        const htTrayActual = tray?.actual ?? null;
+
                         // Build filament data for hover card
                         const filamentData = tray?.tray_type ? {
                           vendor: (isBambuLabSpool(tray) ? 'Bambu Lab' : 'Generic') as 'Bambu Lab' | 'Generic',
@@ -5327,13 +5337,15 @@ function PrinterCard({
                             || cloudInfo?.name
                             || tray.tray_sub_brands
                             || tray.tray_type,
-                          colorName: resolveMultiColorName(tray.cols) ?? getColorName(tray.tray_color || ''),
-                          colorHex: tray.tray_color || null,
+                          colorName: resolveMultiColorName(htTrayActual?.cols ?? tray.cols)
+                            ?? getColorName((htTrayActual?.tray_color ?? tray.tray_color) || ''),
+                          colorHex: (htTrayActual?.tray_color ?? tray.tray_color) || null,
                           kFactor: formatKValue(tray.k),
                           fillLevel: htEffectiveFill,
                           trayUuid: tray.tray_uuid || null,
                           tagUid: tray.tag_uid || null,
                           fillSource: htFillSource,
+                          advertised: htTrayActual ? { colorHex: tray.tray_color, profile: tray.tray_info_idx } : null,
                         } : null;
 
                         // Check if this specific slot is being refreshed
@@ -5377,8 +5389,8 @@ function PrinterCard({
                             )}
                             {/* Filament color circle with 1-based slot number centered inside */}
                             <FilamentSlotCircle
-                              trayColor={tray?.tray_color}
-                              trayColors={tray?.cols}
+                              trayColor={htTrayActual?.tray_color ?? tray?.tray_color}
+                              trayColors={htTrayActual ? (htTrayActual.cols ?? null) : tray?.cols}
                               ctype={tray?.ctype}
                               trayType={tray?.tray_type}
                               isEmpty={isEmpty}

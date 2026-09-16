@@ -487,6 +487,9 @@ export default {
       titleOff: 'AMS Filament Backup: Off',
       titleUnknown: 'AMS Filament Backup: Unknown'
     },
+    amsCompat: {
+      badge: 'AMS sees: {{profile}}'
+    },
     pageView: {
       cards: 'Cards',
       camWall: 'Cam wall'

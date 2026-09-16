@@ -491,6 +491,9 @@ export default {
       titleOff: 'Резервування філаменту AMS: вимкнено',
       titleUnknown: 'Резервування філаменту AMS: невідомо'
     },
+    amsCompat: {
+      badge: 'AMS бачить: {{profile}}'
+    },
     pageView: {
       cards: 'Картки',
       camWall: 'Стіна камер'

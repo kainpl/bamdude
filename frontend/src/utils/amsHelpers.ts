@@ -556,6 +556,9 @@ function normalizeColorForId(raw: string | null | undefined): string {
  * On dual-extruder printers (H2D / H2C / X2D), pairs are scoped per extruder
  * side — the firmware can't cross extruders even with the global backup bit
  * set.
+ *
+ * Deliberately LIVE fields: this reconstructs what the FIRMWARE groups, and the
+ * firmware sees the advertised profile, not tray.actual.
  */
 export function computeBackupGroups(
   amsUnits: AmsUnitLike[] | undefined,
