@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { AmsBackupModal } from '../../components/AmsBackupModal';
@@ -36,6 +36,33 @@ describe('AmsBackupModal bulk apply', () => {
     expect(await screen.findByText(/1 slot/i)).toBeInTheDocument();
   });
 
+  it('reports the apply per row, including a slot the printer refused', async () => {
+    const onPreview = vi.fn().mockResolvedValue(preview);
+    // The apply recomputes every row: A2 is projected this time, and the
+    // printer refuses it. Only A1 counts toward `applied`.
+    const onApply = vi.fn().mockResolvedValue({
+      ...preview,
+      dry_run: false,
+      applied: 1,
+      skipped: 1,
+      rows: [
+        { ...preview.rows[0], published: true },
+        { ...preview.rows[1], action: 'apply' as const, reasons: [], published: false },
+      ],
+    });
+    render(
+      <AmsBackupModal isOpen state={true} amsUnits={[]} amsExtruderMap={undefined} firmwareGroups={{}} isDualNozzle={false}
+        canToggle pending={false} onToggle={() => {}} onClose={() => {}}
+        compat={{ policyEnabled: true, canApply: true, onPreview, onApply }} />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /apply to assigned slots/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /confirm/i }));
+    expect(await screen.findByText(/not sent/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 slot/i)).toBeInTheDocument();
+    // The dry-run rows are gone: A2's preview reason is not on screen any more.
+    expect(screen.queryByText(/RFID/i)).not.toBeInTheDocument();
+  });
+
   it('forgets a preview the user walked away from', async () => {
     const onPreview = vi.fn().mockResolvedValue(preview);
     const compat = { policyEnabled: true, canApply: true, onPreview, onApply: vi.fn() };
@@ -50,6 +77,26 @@ describe('AmsBackupModal bulk apply', () => {
     rerender(<AmsBackupModal isOpen={false} {...props} />);
     rerender(<AmsBackupModal isOpen {...props} />);
     expect(screen.queryByText('A1')).not.toBeInTheDocument();
+  });
+
+  it('ignores a preview that lands after the dialog was closed', async () => {
+    let land: (r: BackupCompatibilityApplyResult) => void = () => {};
+    const onPreview = vi.fn().mockImplementation(
+      () => new Promise<BackupCompatibilityApplyResult>((resolve) => { land = resolve; }),
+    );
+    const compat = { policyEnabled: true, canApply: true, onPreview, onApply: vi.fn() };
+    const props = {
+      state: true, amsUnits: [], amsExtruderMap: undefined, firmwareGroups: {}, isDualNozzle: false,
+      canToggle: true, pending: false, onToggle: () => {}, onClose: () => {}, compat,
+    };
+    const { rerender } = render(<AmsBackupModal isOpen {...props} />);
+    await userEvent.click(screen.getByRole('button', { name: /apply to assigned slots/i }));
+    rerender(<AmsBackupModal isOpen={false} {...props} />);
+    await act(async () => { land(preview); });
+    rerender(<AmsBackupModal isOpen {...props} />);
+    expect(screen.queryByText('A1')).not.toBeInTheDocument();
+    // …and the round trip nobody is waiting for did not leave the dialog inert.
+    expect(screen.getByRole('button', { name: /apply to assigned slots/i })).toBeEnabled();
   });
 
   it('explains that the firmware, not BamDude, decides grouping when the policy is on and nothing paired', () => {

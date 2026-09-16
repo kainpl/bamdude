@@ -496,6 +496,7 @@ export default {
       applied: '{{count}} slot(s) re-advertised. Read-back will confirm on the next AMS push.',
       rowApply: 'will apply',
       rowRevert: 'will revert to the real spool',
+      rowNotPublished: 'not sent — printer refused or offline',
       reason: {
         policy_off: 'policy off',
         rfid_slot_excluded: 'RFID spool — never masked',

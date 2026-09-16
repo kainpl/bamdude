@@ -21,7 +21,7 @@
  * Theme-aware via CSS variables, matching AMSHistoryModal — adapts to every
  * background variant the user has picked.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Modal } from './Modal';
@@ -215,15 +215,22 @@ export function AmsBackupModal({
   const [result, setResult] = useState<BackupCompatibilityApplyResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Which request the dialog is still interested in. Bumped on every call and
+  // on every close, so a round trip that lands late cannot paint a plan onto a
+  // dialog that has since been closed, reopened, or asked something newer.
+  const requestToken = useRef(0);
 
   // The dialog only stops RENDERING when it closes — the caller keeps it
   // mounted — so a preview left behind would greet the next visitor as if it
-  // still described the slots, which have moved on since.
+  // still described the slots, which have moved on since. `busy` goes with it:
+  // a request still in flight must not leave the reopened dialog inert.
   useEffect(() => {
     if (!isOpen) {
+      requestToken.current += 1;
       setPreview(null);
       setResult(null);
       setError(null);
+      setBusy(false);
     }
   }, [isOpen]);
 
@@ -269,6 +276,27 @@ export function AmsBackupModal({
   // slots to have merged, and `usesFallback` answers false for want of an
   // extruder to be missing a group for — so ask the payload directly.
   const firmwareReportedGroups = Object.keys(firmwareGroups || {}).length > 0;
+
+  /**
+   * Run one backup-compatibility round trip, dropping its answer if the dialog
+   * has moved on — closed, reopened, or asked a newer question — since it left.
+   */
+  const runCompat = async (
+    call: () => Promise<BackupCompatibilityApplyResult>,
+    keep: (answer: BackupCompatibilityApplyResult) => void,
+  ) => {
+    const token = (requestToken.current += 1);
+    setBusy(true);
+    setError(null);
+    try {
+      const answer = await call();
+      if (requestToken.current === token) keep(answer);
+    } catch (e) {
+      if (requestToken.current === token) setError((e as Error).message);
+    } finally {
+      if (requestToken.current === token) setBusy(false);
+    }
+  };
 
   const isOn = state === true;
   const isUnknown = state === null;
@@ -343,9 +371,9 @@ export function AmsBackupModal({
                 type="button"
                 disabled={!compat.canApply || busy}
                 className="px-3 py-1.5 text-sm rounded-lg bg-bambu-dark-tertiary text-white disabled:opacity-50 shrink-0"
-                onClick={async () => {
-                  setBusy(true); setError(null); setResult(null);
-                  try { setPreview(await compat.onPreview()); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+                onClick={() => {
+                  setResult(null);
+                  void runCompat(() => compat.onPreview(), setPreview);
                 }}
               >
                 {t('printers.amsCompat.applyButton')}
@@ -354,7 +382,10 @@ export function AmsBackupModal({
             {error && <p className="text-xs text-red-400 mt-2" role="alert">{error}</p>}
             {preview && (
               <div className="mt-3 space-y-1">
-                {preview.rows.map((r) => (
+                {/* Once the apply has answered, ITS rows are the truth: the
+                    backend recomputes each action against fresh candidates and
+                    marks `published: false` for a slot the printer refused. */}
+                {(result ?? preview).rows.map((r) => (
                   <div key={`${r.ams_id}-${r.tray_id}`} className="flex items-center gap-2 text-xs" style={{ color: textPrimary }}>
                     <span className="w-8 font-mono">{r.slot}</span>
                     <span className="flex-1 truncate">{r.spool}</span>
@@ -364,11 +395,13 @@ export function AmsBackupModal({
                     <span className="inline-block w-3 h-3 rounded-full border shrink-0" style={{ backgroundColor: `#${r.advertised.tray_color.slice(0, 6)}` }} />
                     <span>{r.advertised.tray_info_idx}</span>
                     <span style={{ color: textSecondary }}>
-                      {r.action === 'apply'
-                        ? t('printers.amsCompat.rowApply')
-                        : r.action === 'revert'
-                          ? t('printers.amsCompat.rowRevert')
-                          : r.reasons.map((x) => t(`printers.amsCompat.reason.${x}`)).join(', ')}
+                      {r.published === false
+                        ? t('printers.amsCompat.rowNotPublished')
+                        : r.action === 'apply'
+                          ? t('printers.amsCompat.rowApply')
+                          : r.action === 'revert'
+                            ? t('printers.amsCompat.rowRevert')
+                            : r.reasons.map((x) => t(`printers.amsCompat.reason.${x}`)).join(', ')}
                     </span>
                   </div>
                 ))}
@@ -377,10 +410,7 @@ export function AmsBackupModal({
                     type="button"
                     disabled={busy || (preview.would_apply ?? 0) === 0}
                     className="mt-2 px-3 py-1.5 text-sm rounded-lg bg-bambu-green text-white disabled:opacity-50"
-                    onClick={async () => {
-                      setBusy(true); setError(null);
-                      try { setResult(await compat.onApply()); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
-                    }}
+                    onClick={() => void runCompat(() => compat.onApply(), setResult)}
                   >
                     {t('printers.amsCompat.confirmButton', { count: preview.would_apply ?? 0 })}
                   </button>
