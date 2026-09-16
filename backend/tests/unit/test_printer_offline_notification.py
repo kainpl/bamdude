@@ -78,6 +78,7 @@ def _state(connected: bool, state: str = "IDLE") -> SimpleNamespace:
         active_extruder=0,
         tray_now=0,
         ams_auto_switch_filament=False,
+        ams_backup_groups=None,
         door_open=False,
         subtask_name="",
     )
