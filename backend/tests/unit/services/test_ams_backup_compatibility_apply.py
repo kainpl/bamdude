@@ -123,6 +123,47 @@ async def test_apply_publishes_only_apply_rows_keeps_live_k_and_fills_the_overla
 
 
 @pytest.mark.asyncio
+async def test_a_refused_publish_counts_as_nothing_and_masks_nothing(db_session):
+    """``ams_set_filament_setting`` answers False when the client has no live
+    connection. The slot still shows its real filament, so an overlay entry
+    would be a mask that exists only in our own head — and the count the
+    operator reads must not include it."""
+    printer, state = await _farm(db_session)
+    client = MagicMock()
+    client.ams_set_filament_setting.return_value = False
+    with patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm:
+        pm.get_status.return_value = state
+        result = await bulk.bulk_apply(db_session, printer, client, dry_run=False)
+    row = next(r for r in result["rows"] if (r["ams_id"], r["tray_id"]) == (0, 0))
+    assert (row["action"], row["published"], row["kprofile"]) == ("apply", False, None)
+    assert result["applied"] == 0 and result["skipped"] == 3
+    assert overlay.entries_for(printer.id) == {}
+    client.extrusion_cali_sel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generic_mode_under_the_skip_knob_reports_a_skipped_kprofile(db_session, monkeypatch):
+    """``GENERIC_MODE_KPROFILE`` is a hardware-decided knob (spec §8). Set to
+    ``skip``, a slot advertised as the Generic family keeps no K — and the row
+    says so rather than silently leaving the printer's own value."""
+    from backend.app.services import ams_backup_compatibility as compat
+
+    printer, state = await _farm(db_session)
+    printer.ams_policies = {"backup_compatibility": {"generic_base_material": True}}
+    await db_session.commit()
+    monkeypatch.setattr(compat, "GENERIC_MODE_KPROFILE", "skip")
+    client = MagicMock()
+    client.ams_set_filament_setting.return_value = True
+    with patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm:
+        pm.get_status.return_value = state
+        result = await bulk.bulk_apply(db_session, printer, client, dry_run=False)
+    row = next(r for r in result["rows"] if (r["ams_id"], r["tray_id"]) == (0, 0))
+    assert row["action"] == "apply" and row["published"] is True
+    assert row["kprofile"] == "skipped"  # the live cali_idx is 3, so the branch was reached
+    client.extrusion_cali_sel.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_policy_off_reverts_a_slot_the_overlay_still_remembers(db_session):
     printer, state = await _farm(db_session)
     printer.ams_policies = {}  # policy switched off after the slot was advertised black

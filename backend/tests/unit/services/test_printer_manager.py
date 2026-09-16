@@ -864,7 +864,8 @@ class TestPrinterStateToDict:
         from backend.app.services import ams_advertised_overlay as overlay
         from backend.app.services.ams_advertised_overlay import OverlayEntry
 
-        overlay.forget_all()
+        # No try/finally: the autouse ``_clean_advertised_overlay`` fixture in
+        # conftest empties the process-global store around every test.
         mock_state.raw_data = {
             "ams": [
                 {"id": 0, "tray": [{"id": 1, "tray_type": "PETG", "tray_color": "000000FF", "tray_info_idx": "GFG99"}]}
@@ -874,18 +875,15 @@ class TestPrinterStateToDict:
         overlay.replace_printer(
             5, {(0, 1): OverlayEntry("PETG", "FF0000FF", "GFG00", ("FF0000FF",), "000000FF", "GFG99", "internal")}
         )
-        try:
-            tray = printer_state_to_dict(mock_state, printer_id=5)["ams"][0]["tray"][0]
-            assert tray["tray_color"] == "000000FF"  # live stays live
-            assert tray["actual"] == {
-                "tray_color": "FF0000FF",
-                "tray_type": "PETG",
-                "tray_info_idx": "GFG00",
-                "cols": ["FF0000FF"],
-            }
-            assert printer_state_to_dict(mock_state, printer_id=6)["ams"][0]["tray"][0]["actual"] is None
-        finally:
-            overlay.forget_all()
+        tray = printer_state_to_dict(mock_state, printer_id=5)["ams"][0]["tray"][0]
+        assert tray["tray_color"] == "000000FF"  # live stays live
+        assert tray["actual"] == {
+            "tray_color": "FF0000FF",
+            "tray_type": "PETG",
+            "tray_info_idx": "GFG00",
+            "cols": ["FF0000FF"],
+        }
+        assert printer_state_to_dict(mock_state, printer_id=6)["ams"][0]["tray"][0]["actual"] is None
 
     def test_empty_tag_uid_becomes_none(self, mock_state):
         """Verify empty tag_uid is converted to None."""

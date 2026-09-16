@@ -9,7 +9,7 @@ from backend.app.api.routes.inventory import apply_spool_to_slot_via_mqtt
 from backend.app.models.printer import Printer
 from backend.app.models.spool import Spool
 from backend.app.services import ams_advertised_overlay
-from backend.app.services.slot_assignment import build_slot_assignment
+from backend.app.services.slot_assignment import SlotAssignmentPlan, build_slot_assignment
 
 LIVE_MANUAL_TRAY = {
     "id": 1,
@@ -133,4 +133,34 @@ async def test_rfid_tray_gets_the_actual_payload_even_with_policy_on(db_session)
         db_session, {"normalize_color": True, "generic_base_material": True}, tray=rfid_tray
     )
     sent, _ = await _run(db_session, printer, spool, state, client)
+    plan = await build_slot_assignment(
+        db_session, spool=spool, printer_model="P1S", nozzle_diameter="0.4", supports_user_preset=False
+    )
+    # Not just the colour: with generic mode on as well, a masked slot would
+    # also carry a rebuilt family and ITS setting_id. An RFID slot gets the
+    # spool's own plan, whole.
     assert sent["tray_color"] == "FF0000FF"
+    assert sent["tray_info_idx"] == "GFG99" == plan.tray_info_idx
+    assert sent["setting_id"] == plan.setting_id
+
+
+@pytest.mark.asyncio
+async def test_a_spool_with_no_colour_publishes_the_builders_own_default(db_session):
+    """The old hand-rolled payload sent the literal ``FFFFFFFF`` here; the
+    builder's default is the same white, and byte-for-byte means that too."""
+    printer, spool, state, client = await _fixture(db_session, None)
+    spool.rgba = None
+    await db_session.commit()
+    sent, _ = await _run(db_session, printer, spool, state, client)
+    assert sent["tray_color"] == "FFFFFFFF" and sent["cols"] == [] and sent["ctype"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_plan_without_a_material_falls_back_to_the_spools_own(db_session):
+    """``publish_slot_plan``'s ``tray_type_fallback``: a family whose catalogue
+    entry carries no filament type must not configure the slot as blank."""
+    printer, spool, state, client = await _fixture(db_session, None)
+    blank = SlotAssignmentPlan(tray_info_idx="GFG99", setting_id="GFSG99_00", tray_type="", tray_color="FF0000FF")
+    with patch("backend.app.services.slot_assignment.build_slot_assignment", new=AsyncMock(return_value=blank)):
+        sent, _ = await _run(db_session, printer, spool, state, client)
+    assert sent["tray_type"] == "PETG"  # the spool's material, not ""

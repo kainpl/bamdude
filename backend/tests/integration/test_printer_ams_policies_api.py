@@ -95,6 +95,113 @@ async def test_translucent_canonical_color_is_refused(async_client, printer_fact
         json={"ams_policies": {"backup_compatibility": {"canonical_color_rgba": "00000080"}}},
     )
     assert resp.status_code == 422
+    # The form has to be able to point at the field that was refused.
+    assert "canonical_color_rgba" in resp.text
+
+
+async def test_a_patch_that_says_nothing_about_the_policy_leaves_it_alone(async_client, printer_factory):
+    """``exclude_unset`` is what makes this true, and it is the difference
+    between an unrelated rename and a policy silently switched off."""
+    printer = await printer_factory(
+        ams_policies={"backup_compatibility": {"normalize_color": True, "canonical_color_rgba": "1A1A1AFF"}}
+    )
+    resp = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"name": "Renamed"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ams_policies"]["backup_compatibility"] == {
+        "normalize_color": True,
+        "canonical_color_rgba": "1A1A1AFF",
+        "generic_base_material": False,
+    }
+
+
+@pytest.mark.parametrize("sent", [None, {}])
+async def test_an_empty_namespace_is_a_no_op_not_a_reset(async_client, printer_factory, sent):
+    """``ams_policies: null`` is what a GET → edit → PATCH client sends for a
+    field it never touched; neither it nor ``{}`` may wipe the policy."""
+    printer = await printer_factory(ams_policies={"backup_compatibility": {"generic_base_material": True}})
+    resp = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"ams_policies": sent})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ams_policies"]["backup_compatibility"]["generic_base_material"] is True
+
+
+async def test_the_list_endpoint_carries_the_policy_too(async_client, printer_factory):
+    """The Printers page reads the list, not one row at a time — a field only
+    the detail route carries would leave every card's switch looking off."""
+    printer = await printer_factory(ams_policies={"backup_compatibility": {"normalize_color": True}})
+    rows = (await async_client.get("/api/v1/printers/")).json()
+    row = next(r for r in rows if r["id"] == printer.id)
+    assert row["ams_policies"]["backup_compatibility"]["normalize_color"] is True
+
+
+async def test_apply_walks_the_real_service_and_publishes_the_projected_plan(async_client, db_session, printer_factory):
+    """The route → ``bulk_apply`` wiring, with nothing between them patched.
+
+    Every other test here stubs ``bulk_apply``, so a route that stopped passing
+    the client (or stopped nudging the pushall the read-back verification waits
+    for) would keep them all green."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services import ams_advertised_overlay as overlay
+
+    printer = await printer_factory(model="P1S", ams_policies={"backup_compatibility": {"normalize_color": True}})
+    spool = Spool(material="PETG", rgba="FF0000FF", filament_family_id="GFG99", label_weight=1000)
+    db_session.add(spool)
+    await db_session.commit()
+    await db_session.refresh(spool)
+    db_session.add(
+        SpoolAssignment(spool_id=spool.id, printer_id=printer.id, ams_id=0, tray_id=0, fingerprint_type="PETG")
+    )
+    await db_session.commit()
+
+    state = SimpleNamespace(
+        nozzles=[],
+        support_user_preset=False,
+        ams_extruder_map={},
+        raw_data={
+            "ams": [
+                {
+                    "id": 0,
+                    "tray": [
+                        {
+                            "id": 0,
+                            "tray_type": "PETG",
+                            "tray_color": "FF0000FF",
+                            "tray_info_idx": "GFG99",
+                            "tag_uid": "0000000000000000",
+                            "tray_uuid": "",
+                            "state": 11,
+                            "exists": True,
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    client = MagicMock()
+    client.ams_set_filament_setting.return_value = True
+    client.state.connected = True
+    with (
+        patch("backend.app.api.routes.printers.printer_manager") as route_pm,
+        patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as walk_pm,
+    ):
+        route_pm.get_client.return_value = client
+        route_pm.is_print_active.return_value = False
+        route_pm.get_status.return_value = state
+        walk_pm.get_status.return_value = state
+        resp = await async_client.post(
+            f"/api/v1/printers/{printer.id}/ams-policies/backup-compatibility/apply", json={"dry_run": False}
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    applied_rows = [r for r in body["rows"] if r["action"] == "apply"]
+    assert len(applied_rows) == 1 and applied_rows[0]["published"] is True
+    assert body["applied"] == 1 and body["dry_run"] is False
+    assert client.ams_set_filament_setting.call_args.kwargs["tray_color"] == "000000FF"
+    client.request_status_update.assert_called_once()
+    assert overlay.entries_for(printer.id)[(0, 0)].actual_color == "FF0000FF"
 
 
 async def test_bulk_apply_refuses_while_printing_and_previews_without_mqtt(async_client, printer_factory):
