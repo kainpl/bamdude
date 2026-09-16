@@ -115,6 +115,10 @@ async def test_apply_publishes_only_apply_rows_keeps_live_k_and_fills_the_overla
     assert client.ams_set_filament_setting.call_args.kwargs["tray_color"] == "000000FF"
     client.extrusion_cali_sel.assert_called_once()
     assert client.extrusion_cali_sel.call_args.kwargs["cali_idx"] == 3
+    assert client.extrusion_cali_sel.call_args.kwargs["nozzle_diameter"] == "0.4"
+    # The walk already read the live state; the nozzle rides out on it rather
+    # than being asked for a second time.
+    assert pm.get_status.call_count == 1
     assert (0, 0) in overlay.entries_for(printer.id) and (0, 1) not in overlay.entries_for(printer.id)
 
 
@@ -296,6 +300,27 @@ async def test_internal_mode_reads_no_spoolman_rows_and_never_defers(db_session)
 
 
 @pytest.mark.asyncio
+async def test_an_unreadable_setting_defers_instead_of_guessing_internal_mode(db_session):
+    """A settings read that FAILED is not "this install is not Spoolman".
+
+    Answering False there silently drops the whole Spoolman half and still
+    reports COMPLETE, so the rebuild replaces a correct overlay with a halved
+    one and never asks again."""
+    printer, state = await _farm(db_session)
+    await _spoolman_slot(db_session, printer, state, with_kprofile=False)
+    with (
+        patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm,
+        patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(side_effect=RuntimeError("db gone"))),
+        patch("backend.app.services.spoolman.get_spoolman_client", new=AsyncMock(return_value=None)) as client,
+    ):
+        pm.get_status.return_value = state
+        walk = await bulk.iter_slot_projections(db_session, printer)
+    assert walk.spoolman_deferred is True
+    assert all(c.source == "internal" for c in walk.candidates)
+    client.assert_not_awaited()  # unknown mode reads no Spoolman row at all
+
+
+@pytest.mark.asyncio
 async def test_a_deferred_walk_leaves_the_existing_entries_alone(db_session):
     """A half answer may not replace the map: the entries the assign routes
     wrote are EXACT, and every Spoolman slot would be dropped from them."""
@@ -384,6 +409,38 @@ async def test_a_restart_with_the_policy_off_recovers_what_we_advertised(db_sess
         preview = await bulk.bulk_apply(db_session, printer, MagicMock(), dry_run=True)
     row = next(r for r in preview["rows"] if (r["ams_id"], r["tray_id"]) == (0, 0))
     assert row["action"] == "revert" and row["advertised"]["tray_color"] == "FF0000FF"
+
+
+@pytest.mark.asyncio
+async def test_recovery_re_projects_the_STORED_canonical_colour_not_the_default(db_session):
+    """The switch is off but the colour it was last set to is still on the row.
+
+    Re-projecting the DEFAULT black instead would recover exactly the installs
+    that never changed the colour and strand every other one — and would adopt
+    a black tray nobody here ever advertised."""
+    printer, state = await _farm(db_session)
+    printer.ams_policies = {
+        "backup_compatibility": {
+            "normalize_color": False,
+            "canonical_color_rgba": "1A2B3CFF",
+            "generic_base_material": False,
+        }
+    }
+    await db_session.commit()
+    state.raw_data["ams"][0]["tray"][0]["tray_color"] = "1A2B3CFF"
+    with patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm:
+        pm.get_status.return_value = state
+        assert await bulk.refresh_overlay(db_session, printer) is bulk.RebuildOutcome.COMPLETE
+    entry = overlay.entries_for(printer.id)[(0, 0)]
+    assert (entry.actual_color, entry.advertised_color) == ("FF0000FF", "1A2B3CFF")
+
+    # The default colour is not this printer's colour: a black tray here was
+    # somebody else's doing.
+    state.raw_data["ams"][0]["tray"][0]["tray_color"] = "000000FF"
+    with patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm:
+        pm.get_status.return_value = state
+        await bulk.refresh_overlay(db_session, printer)
+    assert overlay.entries_for(printer.id) == {}
 
 
 @pytest.mark.asyncio

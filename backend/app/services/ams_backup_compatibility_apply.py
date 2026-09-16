@@ -77,6 +77,11 @@ class SlotWalk:
 
     candidates: list[SlotCandidate] = field(default_factory=list)
     spoolman_deferred: bool = False
+    # The nozzle the walk projected against, carried out so a caller that needs
+    # it (the K re-push in ``bulk_apply``) reads the state ONCE — asking the
+    # manager again could answer a different device than the one these
+    # candidates were built for.
+    nozzle_diameter: str = "0.4"
 
 
 def _nozzle(state) -> str:
@@ -100,23 +105,30 @@ def _slot_extruder(state, ams_id: int, tray_id: int) -> int | None:
     return extruder_map.get(str(ams_id))
 
 
-async def _spoolman_mode(db) -> bool:
+async def _spoolman_mode(db) -> bool | None:
     """Whether this install's inventory IS Spoolman (spec §4.3: the walk covers
-    the slots of the CURRENT mode).
+    the slots of the CURRENT mode) — or ``None`` when we could not find out.
 
     Read exactly as ``print_scheduler._is_spoolman_mode`` reads it. In internal
     mode the Spoolman client will never come up, so a walk that waited for it
     would defer forever in a hot MQTT callback; leftover
     ``spoolman_slot_assignments`` rows from a previous mode are not this
     install's slots.
+
+    ⚠️ A read that FAILED is the third answer, not the "no" one: a transient
+    settings error would otherwise pass for internal mode, the walk would drop
+    the whole Spoolman half and still report COMPLETE, and the rebuild would
+    replace a correct overlay with a halved one — once per process, never asked
+    again.
     """
     try:
         from backend.app.api.routes.settings import get_setting  # noqa: PLC0415
 
         value = await get_setting(db, "spoolman_enabled")
         return bool(value) and str(value).lower() == "true"
-    except Exception:  # noqa: BLE001 — an unreadable setting is not Spoolman mode
-        return False
+    except Exception:  # noqa: BLE001 — unknown, and unknown is not "no"
+        logger.info("bulk projection: could not read spoolman_enabled; deferring the Spoolman half", exc_info=True)
+        return None
 
 
 async def _recover_advertised(
@@ -169,7 +181,7 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
     nozzle = _nozzle(state)
     supports = bool(getattr(state, "support_user_preset", False))
     common = {"printer_model": printer.model, "nozzle_diameter": nozzle, "supports_user_preset": supports}
-    walk = SlotWalk()
+    walk = SlotWalk(nozzle_diameter=nozzle)
     out = walk.candidates
 
     rows = (
@@ -219,11 +231,19 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
         .scalars()
         .all()
     )
-    if sm_rows and not await _spoolman_mode(db):
-        # Not this install's inventory — the rows are leftovers of a mode that
-        # was switched off, and nothing will ever read them. Absent, not
-        # deferred: deferring would retry on every AMS push forever.
-        sm_rows = []
+    if sm_rows:
+        mode = await _spoolman_mode(db)
+        if mode is None:
+            # We do not know which inventory this is. Neither reading the rows
+            # nor dropping them is an answer, so the walk says so and keeps its
+            # hands off the map.
+            walk.spoolman_deferred = True
+            sm_rows = []
+        elif not mode:
+            # Not this install's inventory — the rows are leftovers of a mode
+            # that was switched off, and nothing will ever read them. Absent,
+            # not deferred: deferring would retry on every AMS push forever.
+            sm_rows = []
     if sm_rows:
         from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool  # noqa: PLC0415
         from backend.app.services.spoolman import get_spoolman_client  # noqa: PLC0415
@@ -250,8 +270,9 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
                 walk.spoolman_deferred = True
                 continue
             tray_type = mapped.get("material") or ""
+            # Already 8 chars: ``_map_spoolman_spool`` validates the hex and
+            # appends the alpha itself, so there is no 6-char form to pad here.
             color = (mapped.get("rgba") or "808080FF").upper()
-            color = color + "FF" if len(color) == 6 else color
             # The family is the BRANDED one of the slot's linked calibration —
             # the same resolver both Spoolman assign routes use, so a revert
             # republishes the plan the slot actually had and the K re-push
@@ -401,8 +422,9 @@ async def rebuild_once(printer_id: int) -> None:
             logger.info("overlay rebuild for printer %s deferred: Spoolman not readable", printer_id)
             return
         logger.warning(
-            "overlay rebuild for printer %s gave up after %d deferred attempts: Spoolman stayed unreadable, "
-            "Spoolman-assigned slots keep their live profile until they are re-assigned",
+            "overlay rebuild for printer %s gave up after %d deferred attempts: the Spoolman half stayed unreadable, "
+            "so the map was never replaced — every slot of this printer keeps whatever the overlay already holds "
+            "(nothing at all after a restart) until it is re-assigned or the bulk apply is run",
             printer_id,
             attempts,
         )
@@ -428,7 +450,7 @@ def _slot_label(ams_id: int, tray_id: int) -> str:
 async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
     walk = await iter_slot_projections(db, printer)
     candidates = walk.candidates
-    nozzle = _nozzle(printer_manager.get_status(printer.id))
+    nozzle = walk.nozzle_diameter  # the state the walk read, not a second one
     remembered = overlay.entries_for(printer.id)
     rows: list[dict] = []
     for c in candidates:
