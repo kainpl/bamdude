@@ -488,7 +488,23 @@ export default {
       titleUnknown: 'AMS Filament Backup: Unknown'
     },
     amsCompat: {
-      badge: 'AMS sees: {{profile}}'
+      badge: 'AMS sees: {{profile}}',
+      firmwareDidNotMerge: 'The firmware did not merge these slots into one backup group. BamDude only changes what the printer is told; the printer decides the grouping (RFID identity and firmware rules still apply).',
+      applyIntro: 'Re-advertise the slots already assigned under the current policy.',
+      applyButton: 'Apply to assigned slots',
+      confirmButton: 'Confirm — {{count}} slot(s)',
+      applied: '{{count}} slot(s) re-advertised. Read-back will confirm on the next AMS push.',
+      rowApply: 'will apply',
+      rowRevert: 'will revert to the real spool',
+      reason: {
+        policy_off: 'policy off',
+        rfid_slot_excluded: 'RFID spool — never masked',
+        external_slot_excluded: 'external spool — not covered',
+        base_material_not_allowed: 'not a base material',
+        generic_preset_unavailable: 'no Generic preset for this printer',
+        printer_busy: 'printer is printing',
+        slot_empty: 'slot is empty',
+      }
     },
     pageView: {
       cards: 'Cards',

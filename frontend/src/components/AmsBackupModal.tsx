@@ -21,10 +21,12 @@
  * Theme-aware via CSS variables, matching AMSHistoryModal — adapts to every
  * background variant the user has picked.
  */
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Modal } from './Modal';
 import { Toggle } from './Toggle';
+import type { BackupCompatibilityApplyResult } from '../api/client';
 import {
   resolveBackupGroups,
   normalizeColor,
@@ -43,6 +45,17 @@ interface AmsBackupModalProps {
   pending: boolean;
   onToggle: (next: boolean) => void;
   onClose: () => void;
+  /**
+   * Bulk re-advertise of the slots the backup-compatibility policy covers.
+   * Absent whenever the caller has nothing to offer here — the dialog is
+   * complete without it.
+   */
+  compat?: {
+    policyEnabled: boolean;
+    canApply: boolean;
+    onPreview: () => Promise<BackupCompatibilityApplyResult>;
+    onApply: () => Promise<BackupCompatibilityApplyResult>;
+  };
 }
 
 /**
@@ -194,8 +207,25 @@ export function AmsBackupModal({
   pending,
   onToggle,
   onClose,
+  compat,
 }: AmsBackupModalProps) {
   const { t } = useTranslation();
+  // Declared above the `isOpen` early return — rules of hooks.
+  const [preview, setPreview] = useState<BackupCompatibilityApplyResult | null>(null);
+  const [result, setResult] = useState<BackupCompatibilityApplyResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // The dialog only stops RENDERING when it closes — the caller keeps it
+  // mounted — so a preview left behind would greet the next visitor as if it
+  // still described the slots, which have moved on since.
+  useEffect(() => {
+    if (!isOpen) {
+      setPreview(null);
+      setResult(null);
+      setError(null);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -233,6 +263,12 @@ export function AmsBackupModal({
 
   // Only pairs are rendered — lone slots are deliberately suppressed.
   const pairs = groups.filter((g) => g.members.length >= 2);
+
+  // "The firmware did not merge these slots" is only sayable once the printer
+  // has actually told us its grouping. With no AMS reported at all there are no
+  // slots to have merged, and `usesFallback` answers false for want of an
+  // extruder to be missing a group for — so ask the payload directly.
+  const firmwareReportedGroups = Object.keys(firmwareGroups || {}).length > 0;
 
   const isOn = state === true;
   const isUnknown = state === null;
@@ -293,6 +329,65 @@ export function AmsBackupModal({
                 }
               />
             ))}
+          </div>
+        )}
+
+        {compat?.policyEnabled && (
+          <div className="mt-6 border-t pt-4" style={{ borderColor }}>
+            {pairs.length === 0 && !usesFallback && firmwareReportedGroups && (
+              <p className="text-xs mb-3" style={{ color: textSecondary }}>{t('printers.amsCompat.firmwareDidNotMerge')}</p>
+            )}
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs" style={{ color: textSecondary }}>{t('printers.amsCompat.applyIntro')}</p>
+              <button
+                type="button"
+                disabled={!compat.canApply || busy}
+                className="px-3 py-1.5 text-sm rounded-lg bg-bambu-dark-tertiary text-white disabled:opacity-50 shrink-0"
+                onClick={async () => {
+                  setBusy(true); setError(null); setResult(null);
+                  try { setPreview(await compat.onPreview()); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+                }}
+              >
+                {t('printers.amsCompat.applyButton')}
+              </button>
+            </div>
+            {error && <p className="text-xs text-red-400 mt-2" role="alert">{error}</p>}
+            {preview && (
+              <div className="mt-3 space-y-1">
+                {preview.rows.map((r) => (
+                  <div key={`${r.ams_id}-${r.tray_id}`} className="flex items-center gap-2 text-xs" style={{ color: textPrimary }}>
+                    <span className="w-8 font-mono">{r.slot}</span>
+                    <span className="flex-1 truncate">{r.spool}</span>
+                    <span className="inline-block w-3 h-3 rounded-full border shrink-0" style={{ backgroundColor: `#${r.actual.tray_color.slice(0, 6)}` }} />
+                    <span>{r.actual.tray_info_idx}</span>
+                    <span style={{ color: textSecondary }}>→</span>
+                    <span className="inline-block w-3 h-3 rounded-full border shrink-0" style={{ backgroundColor: `#${r.advertised.tray_color.slice(0, 6)}` }} />
+                    <span>{r.advertised.tray_info_idx}</span>
+                    <span style={{ color: textSecondary }}>
+                      {r.action === 'apply'
+                        ? t('printers.amsCompat.rowApply')
+                        : r.action === 'revert'
+                          ? t('printers.amsCompat.rowRevert')
+                          : r.reasons.map((x) => t(`printers.amsCompat.reason.${x}`)).join(', ')}
+                    </span>
+                  </div>
+                ))}
+                {!result && (
+                  <button
+                    type="button"
+                    disabled={busy || (preview.would_apply ?? 0) === 0}
+                    className="mt-2 px-3 py-1.5 text-sm rounded-lg bg-bambu-green text-white disabled:opacity-50"
+                    onClick={async () => {
+                      setBusy(true); setError(null);
+                      try { setResult(await compat.onApply()); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+                    }}
+                  >
+                    {t('printers.amsCompat.confirmButton', { count: preview.would_apply ?? 0 })}
+                  </button>
+                )}
+                {result && <p className="text-xs mt-2" role="status" style={{ color: textPrimary }}>{t('printers.amsCompat.applied', { count: result.applied })}</p>}
+              </div>
+            )}
           </div>
         )}
       </div>

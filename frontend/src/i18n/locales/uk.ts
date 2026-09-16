@@ -492,7 +492,23 @@ export default {
       titleUnknown: 'Резервування філаменту AMS: невідомо'
     },
     amsCompat: {
-      badge: 'AMS бачить: {{profile}}'
+      badge: 'AMS бачить: {{profile}}',
+      firmwareDidNotMerge: 'Прошивка не обʼєднала ці слоти в одну групу резерву. BamDude змінює лише те, що повідомляється принтеру; групування вирішує принтер (RFID-ідентичність і правила прошивки лишаються чинними).',
+      applyIntro: 'Повторно оголосити вже призначені слоти за поточною політикою.',
+      applyButton: 'Застосувати до призначених слотів',
+      confirmButton: 'Підтвердити — {{count}} слот(ів)',
+      applied: 'Повторно оголошено {{count}} слот(ів). Зворотне читання підтвердить на наступному push-і AMS.',
+      rowApply: 'буде застосовано',
+      rowRevert: 'буде повернуто реальну котушку',
+      reason: {
+        policy_off: 'політику вимкнено',
+        rfid_slot_excluded: 'RFID-котушка — не маскується',
+        external_slot_excluded: 'зовнішня котушка — не охоплено',
+        base_material_not_allowed: 'не базовий матеріал',
+        generic_preset_unavailable: 'немає Generic-пресета для цього принтера',
+        printer_busy: 'принтер друкує',
+        slot_empty: 'слот порожній',
+      }
     },
     pageView: {
       cards: 'Картки',

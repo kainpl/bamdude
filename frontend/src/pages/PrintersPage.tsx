@@ -7025,6 +7025,20 @@ function PrinterCard({
         pending={amsBackupToggleMutation.isPending}
         onToggle={(next) => amsBackupToggleMutation.mutate(next)}
         onClose={() => setAmsBackupModalOpen(false)}
+        compat={{
+          // Shown whenever the policy is on OR any tray still carries `actual` — the
+          // latter is a slot advertised under a policy since switched off, which
+          // the same button reverts.
+          policyEnabled: Boolean(printer.ams_policies?.backup_compatibility?.normalize_color || printer.ams_policies?.backup_compatibility?.generic_base_material)
+            || Boolean(status?.ams?.some((u) => u.tray.some((tr) => tr.actual))),
+          canApply: hasPermission('printers:control'),
+          onPreview: () => api.applyAmsBackupCompatibility(printer.id, true),
+          onApply: async () => {
+            const r = await api.applyAmsBackupCompatibility(printer.id, false);
+            queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
+            return r;
+          },
+        }}
       />
 
       <AMSSettingsModal
