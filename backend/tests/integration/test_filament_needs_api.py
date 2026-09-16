@@ -99,9 +99,9 @@ async def shelf(db_session, tmp_path):
     return {"file": hook, "product": product}
 
 
-async def _order(db, product_id, quantity, *, colour=None, status="active", name="O"):
+async def _order(db, product_id, quantity, *, colour=None, material=None, status="active", name="O"):
     project = Project(name=name, status=status)
-    line = ProjectLine(product_id=product_id, quantity=quantity, sort_order=0, color=colour)
+    line = ProjectLine(product_id=product_id, quantity=quantity, sort_order=0, color=colour, material=material)
     project.lines.append(line)
     db.add(project)
     await db.flush()
@@ -122,17 +122,54 @@ async def test_need_per_key_with_the_line_colour_and_the_shelf_beside(db_session
         1800.0,
         0.0,
     )  # the archived spool is not stock
-    pla = rows[("PLA", "black")]
-    assert (pla.need_g, pla.have_g, pla.have_type_g, pla.short_g) == (10.0, 0.0, 400.0, 10.0)
+    # The support is the lighter filament: the colour is not its, and the shelf
+    # answers by the type (spec 2026-09-16 §4) - no shortage of "black PLA".
+    pla = rows[("PLA", None)]
+    assert (pla.need_g, pla.have_g, pla.have_type_g, pla.short_g) == (10.0, 400.0, 400.0, 0.0)
     assert out[pid].unknown_prints == 0 and out[pid].stock_unavailable is False
 
 
 @pytest.mark.asyncio
 async def test_a_nameless_spool_counts_by_hex_through_the_catalogue(db_session, shelf):
-    pid, _ = await _order(db_session, shelf["product"].id, 1, colour="white")
+    pid, _ = await _order(db_session, shelf["product"].id, 1, colour="white", material="PLA")
     out = await filament_needs.needs_of_orders(db_session, [pid])
     rows = {(r.material, r.colour): r for r in out[pid].rows}
     assert rows[("PLA", "white")].have_g == 400.0  # PLA spool has no name; FFFFFF → «White» in the catalogue
+
+
+@pytest.mark.asyncio
+async def test_the_lines_material_aims_the_colour_at_its_own_filament(db_session, shelf):
+    """PLA ordered in black: the 2 g support is the line's filament, the 10 g PETG body is not."""
+    pid, _ = await _order(db_session, shelf["product"].id, 5, colour="black", material="PLA")
+    out = await filament_needs.needs_of_orders(db_session, [pid])
+    rows = {(r.material, r.colour): r for r in out[pid].rows}
+    assert set(rows) == {("PLA", "black"), ("PETG", None)}
+    assert (rows[("PLA", "black")].need_g, rows[("PLA", "black")].have_g, rows[("PLA", "black")].short_g) == (
+        10.0,
+        0.0,
+        10.0,
+    )
+    assert (rows[("PETG", None)].need_g, rows[("PETG", None)].have_g) == (50.0, 1800.0)
+
+
+@pytest.mark.asyncio
+async def test_a_queued_row_reads_the_lines_material_too(db_session, shelf, printer_factory):
+    """The queue path carries the material the same way the plan path does: two
+    ordered and one queued, so the plan's print and the queue's row each add 2 g
+    of PLA under the colour and 10 g of PETG by type."""
+    p = await printer_factory(name="P1", model="P1S")
+    db_session.add(PrinterQueue(id=p.id, printer_id=p.id, status="idle"))
+    pid, line_id = await _order(db_session, shelf["product"].id, 2, colour="black", material="PLA")
+    db_session.add(
+        PrintQueueItem(
+            queue_id=p.id, library_file_id=shelf["file"].id, status="pending", project_id=pid, project_line_id=line_id
+        )
+    )
+    await db_session.commit()
+    out = await filament_needs.needs_of_orders(db_session, [pid])
+    rows = {(r.material, r.colour): r for r in out[pid].rows}
+    assert set(rows) == {("PLA", "black"), ("PETG", None)}
+    assert rows[("PLA", "black")].need_g == 4.0 and rows[("PETG", None)].need_g == 20.0
 
 
 @pytest.mark.asyncio
@@ -211,9 +248,11 @@ async def test_needs_grams_of_farm_is_the_same_arithmetic_with_no_shelf_read(db_
     needs = await filament_needs.needs_grams_of_farm(db_session)
 
     assert needs.grams[filament_needs.NeedKey("PETG", "black")] == pytest.approx(30.0)
-    assert needs.grams[filament_needs.NeedKey("PLA", "black")] == pytest.approx(6.0)
     assert needs.grams[filament_needs.NeedKey("PETG", None)] == pytest.approx(20.0)
-    assert needs.grams[filament_needs.NeedKey("PLA", None)] == pytest.approx(4.0)
+    # The PLA support never takes the line colour (spec 2026-09-16 4), so both orders PLA
+    # lands on one colourless key: 3 x 2 g under the black line + 2 x 2 g under the other.
+    assert needs.grams[filament_needs.NeedKey("PLA", None)] == pytest.approx(10.0)
+    assert filament_needs.NeedKey("PLA", "black") not in needs.grams
 
     # And it is the very arithmetic the order pages show.
     monkeypatch.undo()

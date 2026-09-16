@@ -340,23 +340,26 @@ def _spoolman_colour_name(name: str | None, material: str) -> str | None:
     return s or None
 
 
-async def line_colours_of(db: AsyncSession, project_ids: list[int]) -> dict[int, tuple[int, str | None]]:
-    """``line_id → (project_id, colour)`` for every line of the orders, in one statement.
+async def line_colours_of(db: AsyncSession, project_ids: list[int]) -> dict[int, tuple[int, str | None, str | None]]:
+    """``line_id → (project_id, colour, material)`` for every line of the orders, in one statement.
 
     The ORDER rides along because a queue row may carry a line without an order
-    id and must still be attributed — see :func:`queued_needs_of`. Reading it
-    here costs nothing: the statement already walks exactly these rows.
+    id and must still be attributed — see :func:`queued_needs_of`. The MATERIAL
+    rides along because it aims the colour at one filament of the row's plate
+    (spec 2026-09-16 §4) — the plan path reads it off ``LinePlan``, the queue
+    path has only this. Reading both here costs nothing: the statement already
+    walks exactly these rows.
     """
     if not project_ids:
         return {}
     rows = (
         await db.execute(
-            select(ProjectLine.id, ProjectLine.project_id, ProjectLine.color).where(
+            select(ProjectLine.id, ProjectLine.project_id, ProjectLine.color, ProjectLine.material).where(
                 ProjectLine.project_id.in_(project_ids)
             )
         )
     ).all()
-    return {line_id: (project_id, colour) for line_id, project_id, colour in rows}
+    return {line_id: (project_id, colour, material) for line_id, project_id, colour, material in rows}
 
 
 async def plate_filaments_of(db: AsyncSession, plate_ids: set[int]) -> dict[int, list[FilamentLine]]:
@@ -373,7 +376,7 @@ async def plate_filaments_of(db: AsyncSession, plate_ids: set[int]) -> dict[int,
 
 
 async def queued_needs_of(
-    db: AsyncSession, project_ids: list[int], lines: dict[int, tuple[int, str | None]]
+    db: AsyncSession, project_ids: list[int], lines: dict[int, tuple[int, str | None, str | None]]
 ) -> dict[int, list[QueuedNeed]]:
     """The order's pending rows of BOTH queue tiers — exactly what the plan engine subtracts.
 
@@ -475,7 +478,9 @@ async def queued_needs_of(
     )
     out: dict[int, list[QueuedNeed]] = {}
     for library_file_id, archive_id, plate_id, project_id, line_id, blob_id, snapshot in rows:
-        owner, colour = lines.get(line_id, (project_id, None)) if line_id is not None else (project_id, None)
+        owner, colour, material = (
+            lines.get(line_id, (project_id, None, None)) if line_id is not None else (project_id, None, None)
+        )
         if owner not in active:
             continue
         blob = blobs.get(blob_id) if blob_id is not None else None
@@ -485,7 +490,7 @@ async def queued_needs_of(
             plate_id=plate_id,
             descriptor=stored_descriptor(blob, snapshot) if blob is not None else None,
         )
-        out.setdefault(owner, []).append(QueuedNeed(colour, _lines_of(raw)))
+        out.setdefault(owner, []).append(QueuedNeed(colour, _lines_of(raw), material))
     return out
 
 
@@ -582,7 +587,7 @@ async def _needs_by_order(db: AsyncSession, active: list[int]) -> dict[int, Need
     plans = await plan_for_orders(db, active)
     plate_ids = {row.plate_id for plan in plans.values() for line in plan.lines for row in line.rows}
     lines = await line_colours_of(db, active)
-    line_colours = {line_id: colour for line_id, (_, colour) in lines.items()}
+    line_colours = {line_id: colour for line_id, (_, colour, _) in lines.items()}
     filaments = await plate_filaments_of(db, plate_ids)
     queued = await queued_needs_of(db, active, lines)
     return {

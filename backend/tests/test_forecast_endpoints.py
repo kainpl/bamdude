@@ -887,5 +887,7 @@ class TestForecastReserved:
         body = (await async_client.get("/api/v1/inventory/forecast")).json()
         by_material = {r["material"]: r for r in body["items"]}
         assert by_material["PETG"]["reserved_g"] == pytest.approx(30.0)  # 3 x 10 g, colour black -> the Black SKU
-        assert by_material["PLA"]["reserved_g"] == 0.0  # the line says black; the PLA spool is white by its hex
-        assert body["unmatched_reserved"] == [{"material": "PLA", "colour": "black", "grams": 6.0}]
+        # The 2 g PLA support is not the lines main filament, so it carries no colour
+        # and spreads over the material (vault 60-specs/filament-needs-colour-aims-spec).
+        assert by_material["PLA"]["reserved_g"] == pytest.approx(6.0)
+        assert body["unmatched_reserved"] == []
