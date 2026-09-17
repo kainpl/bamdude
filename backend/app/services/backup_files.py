@@ -224,7 +224,7 @@ def stage_queue_spool(data_dir: Path, staging: Path, backup_db: Path) -> None:
     (staging / root_name / "objects").mkdir(parents=True, exist_ok=True)
     for relative, size_bytes, sha256 in records:
         root_name = relative.split("/", 1)[0]
-        source_root = data_dir / root_name
+        source_root = data_dir / root_name  # SEC-PATH-OK: the containment reference, resolved+compared below
         source = data_dir / relative  # SEC-PATH-OK: exact validated queue object layout.
         target = staging / relative  # SEC-PATH-OK: exact validated queue object layout.
         try:
@@ -421,7 +421,9 @@ class FileRestore:
         self.targets = [(staging / n, p, True) for n, p in directories(settings).items() if (staging / n).exists()]
         for directory in (QUEUE_SOURCES_DIR, LEGACY_QUEUE_SOURCES_DIR):
             if (staging / directory).exists():
-                self.targets.append((staging / directory, data_dir / directory, True))
+                self.targets.append(
+                    (staging / directory, data_dir / directory, True)  # SEC-PATH-OK: two module constants above
+                )
         for name in (".mfa_encryption_key", ".install_id", "zigbee/zigbee.db"):
             if (staging / name).exists():
                 self.targets.append((staging / name, data_dir / name, False))  # SEC-PATH-OK: fixed allowlist above.

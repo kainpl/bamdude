@@ -224,12 +224,12 @@ class _Abandoned(Exception):
 
 
 def spool_root() -> Path:
-    return Path(settings.data_dir) / SPOOL_DIRNAME
+    return Path(settings.data_dir) / SPOOL_DIRNAME  # SEC-PATH-OK: module constant, never input
 
 
 def legacy_spool_root() -> Path:
     """The one pre-release directory name, retained only for an upgrade move."""
-    return Path(settings.data_dir) / LEGACY_SPOOL_DIRNAME
+    return Path(settings.data_dir) / LEGACY_SPOOL_DIRNAME  # SEC-PATH-OK: module constant, never input
 
 
 def objects_root() -> Path:
@@ -292,9 +292,7 @@ async def migrate_legacy_spool(*, session_factory: async_sessionmaker | None = N
         factory = session_factory or database.async_session
         async with factory() as session:
             rows = list(
-                await session.scalars(
-                    select(QueueSource).where(QueueSource.relative_path.startswith(legacy_prefix))
-                )
+                await session.scalars(select(QueueSource).where(QueueSource.relative_path.startswith(legacy_prefix)))
             )
             for row in rows:
                 row.relative_path = object_relative_path(row.sha256, row.format)
@@ -1016,7 +1014,7 @@ async def publish(
                 if existing is None:
                     # Path arithmetic only on the loop; the containment check and
                     # every syscall happen inside the worker call below.
-                    target = Path(settings.base_dir) / relative
+                    target = Path(settings.base_dir) / relative  # SEC-PATH-OK: object_relative_path()-validated
                     await _install(receipt, target, publication)
                     created = True
                     row = QueueSource(
@@ -1043,7 +1041,10 @@ async def publish(
                     await session.rollback()
                     if created:
                         # Nothing could reference it yet, and the row is gone.
-                        await _file_work(_drop, Path(settings.base_dir) / relative)
+                        await _file_work(
+                            _drop,
+                            Path(settings.base_dir) / relative,  # SEC-PATH-OK: object_relative_path()-validated
+                        )
                     raise
     except BaseException:
         if publication.staging_consumed or receipt.state == "published":
@@ -1547,7 +1548,7 @@ async def _collect_locked(
         # Rebuilt from what survived, rather than bookkept: a file a row still
         # names is not an orphan, and the rows are the authority on that.
         known = frozenset(
-            _fs_key(Path(settings.base_dir) / relative)
+            _fs_key(Path(settings.base_dir) / relative)  # SEC-PATH-OK: compared as a key, never opened
             for relative in await session.scalars(select(QueueSource.relative_path))
         )
 

@@ -197,7 +197,9 @@ async def independent_archive_bytes(db: AsyncSession, archive_id: int | None) ->
     if not stored:
         return "its 3MF has not been attached to the archive yet"
     path = Path(stored)
-    path = path if path.is_absolute() else Path(settings.base_dir) / path
+    path = (
+        path if path.is_absolute() else Path(settings.base_dir) / path
+    )  # SEC-PATH-OK: relative_to(objects_root()) just below is the containment check
     try:
         path.relative_to(queue_sources.objects_root())
     except ValueError:
