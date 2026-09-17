@@ -17,6 +17,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from backend.app.services.camera_metrics import CameraCaptureResult
 from backend.app.services.camera_worker_capture import WorkerCaptureCommand
@@ -91,10 +92,20 @@ class CameraWorkerSupervisor:
             creation_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             creation_kwargs["start_new_session"] = True
+        # ⚠️ ``cwd`` explicitly, not inherited. ``-m backend.app.camera_worker``
+        # needs the repository root importable, and without this the child got
+        # whatever directory the parent happened to be started from - which is
+        # the root when uvicorn runs the app, and is NOT when pytest runs from
+        # ``backend/``: the child then died at import and the supervisor could
+        # only report "did not authenticate". Derived from this file rather than
+        # from the process, so the answer does not depend on the caller. On the
+        # Windows installer this resolves to the same directory the service
+        # already uses as its working directory, so nothing there changes.
         self.process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
             "backend.app.camera_worker",
+            cwd=str(Path(__file__).resolve().parents[3]),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
