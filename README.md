@@ -283,6 +283,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - **User-authored tags** — cross-cutting labels with a tag-filter rail and a bulk Tag action (separate from the automatic format/provenance badges)
 - Sort folders **by recent activity**, search recursively **inside subfolders**, and per-folder Markdown **description panels** (renders README.md)
 - **All Files** now lists your own uploads; a new **External** sidebar entry holds linked-folder files
+- **One plate at a time on the card** — a multi-plate file is browsed with arrows and a plate counter, and the picture, print time, weight, object count and filament types on the card all belong to the plate on screen rather than to a whole-file total nobody prints; in list view a row shows plate 1 with an *N plates* count, and its thumbnail opens that same card in a window
 - **Per-plate gallery + 3D / G-code preview with build-volume wireframe** — multi-plate 3MFs expose every plate; library viewer hides tabs that don't apply to the file (e.g. no 3D tab for sliced `.gcode.3mf`); dual-handle layer slider (crop both top and bottom), travel-moves toggle, layer-play with 1× / 2× / 4× / 8× speeds, theme-synced canvas, wireframe / X-ray toggle, OBJ format support, Export-as-PNG
 - External folder mounting (NAS, USB)
 - STL / OBJ thumbnail generation — shaded surfaces with Lambertian lighting + transparent background so cards "float" on whatever theme is rendering them
