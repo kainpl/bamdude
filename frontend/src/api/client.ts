@@ -12103,6 +12103,18 @@ export interface LibraryFile {
   source_url?: string | null;
 }
 
+/** One plate as the library card pages through it (vault 60-specs/library-multiplate-card-spec 4).
+ *  Deeper detail - grams per slot, object names, bed, layers - stays behind /plates. */
+export interface PlateSummary {
+  index: number;
+  name: string | null;
+  print_time_seconds: number | null;
+  filament_used_grams: number | null;
+  object_count: number | null;
+  filament_types: string[];
+  has_thumbnail: boolean;
+}
+
 export interface LibraryFileListItem {
   id: number;
   folder_id: number | null;
@@ -12142,6 +12154,12 @@ export interface LibraryFileListItem {
   // Used to gate gallery rendering — single-plate files skip the per-card
   // gallery fetch entirely.
   is_multi_plate?: boolean;
+  // spec 4 - plate 1's (or the only plate's) filament types in slot order, and
+  // one compact slice per plate for a multi-plate file (empty otherwise). The
+  // card pages through the slices without a /plates fetch. OPTIONAL: legacy
+  // msw mocks build partial file shapes.
+  filament_types?: string[];
+  plate_summaries?: PlateSummary[];
   // Provenance (m033) — same semantics as ``LibraryFile``.
   source_type?: string | null;
   source_url?: string | null;

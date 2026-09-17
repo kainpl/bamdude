@@ -39,13 +39,21 @@ interface PlateObjectsPreviewModalProps {
   id: number;
   isOpen: boolean;
   onClose: () => void;
+  /** The plate to open on; without it the modal opens on the first plate that has objects. */
+  initialPlate?: number;
 }
 // No `isMultiPlate` prop: the modal fetches /plates for library files anyway,
 // to choose its opening plate, so it already knows. A prop would be a second
 // source for a question the component can answer itself — and callers that got
 // it wrong would silently lose the plate strip.
 
-export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateObjectsPreviewModalProps) {
+export function PlateObjectsPreviewModal({
+  source,
+  id,
+  isOpen,
+  onClose,
+  initialPlate,
+}: PlateObjectsPreviewModalProps) {
   const { t } = useTranslation();
   const headingId = useId();
   const [plate, setPlate] = useState(1);
@@ -58,7 +66,8 @@ export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateO
   // request against a cache LibraryPlateGallery usually warmed already, and the
   // right opening plate is worth more than the round trip.
   const { data: plateList } = useQuery({
-    queryKey: ['library-plates', id],
+    // The key the gallery uses too: one /plates answer per file in the cache, not two.
+    queryKey: ['library-file-plates', id],
     queryFn: () => api.getLibraryFilePlates(id),
     enabled: isOpen && source === 'library',
   });
@@ -66,17 +75,17 @@ export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateO
   const autoPlated = useRef(false);
   useEffect(() => {
     autoPlated.current = false;
-    setPlate(1);
+    setPlate(initialPlate ?? 1);
     setEnlarged(false);
-  }, [id, source]);
+  }, [id, source, initialPlate]);
   useEffect(() => {
     // Once, on first arrival. Re-running would yank the plate back from under
     // anyone who has since clicked the strip.
-    if (autoPlated.current || !plateList?.plates?.length) return;
+    if (autoPlated.current || initialPlate != null || !plateList?.plates?.length) return;
     autoPlated.current = true;
     const first = plateList.plates.find((p) => (p.object_count ?? 0) > 0);
     if (first) setPlate(first.index);
-  }, [plateList]);
+  }, [plateList, initialPlate]);
 
   const { data } = useQuery({
     queryKey: ['plate-objects', source, id, plate],

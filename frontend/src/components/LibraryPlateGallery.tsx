@@ -10,6 +10,8 @@ import { Modal } from './Modal';
 
 interface Props {
   fileId: number;
+  /** Open on this plate index rather than the first one (spec 5). */
+  initialPlateIndex?: number;
 }
 
 /**
@@ -24,7 +26,7 @@ interface Props {
 // Internal-only — LibraryPlateGalleryModal below is the single consumer
 // (kept as a separate component so the modal frame can wrap the gallery
 // without forcing every caller to deal with focus/escape handling).
-function LibraryPlateGallery({ fileId }: Props) {
+function LibraryPlateGallery({ fileId, initialPlateIndex }: Props) {
   const { t } = useTranslation();
   const { data, isLoading } = useQuery({
     queryKey: ['library-file-plates', fileId],
@@ -34,7 +36,7 @@ function LibraryPlateGallery({ fileId }: Props) {
 
   const plates: PlateMetadata[] = useMemo(() => data?.plates ?? [], [data]);
 
-  const [activeIdx, setActiveIdx] = useState<number | null>(null);
+  const [activeIdx, setActiveIdx] = useState<number | null>(initialPlateIndex ?? null);
   useEffect(() => {
     if (plates.length === 0) return;
     if (activeIdx !== null && plates.find((p) => p.index === activeIdx)) return;
@@ -168,10 +170,11 @@ interface ModalProps {
   fileId: number;
   filename: string;
   onClose: () => void;
+  initialPlateIndex?: number;
 }
 
 /** Full-screen modal wrapping ``LibraryPlateGallery`` for list-mode rows. */
-export function LibraryPlateGalleryModal({ fileId, filename, onClose }: ModalProps) {
+export function LibraryPlateGalleryModal({ fileId, filename, onClose, initialPlateIndex }: ModalProps) {
   const { t } = useTranslation();
   const headingId = useId();
 
@@ -187,7 +190,7 @@ export function LibraryPlateGalleryModal({ fileId, filename, onClose }: ModalPro
       size="3xl"
     >
       <div className="p-4">
-        <LibraryPlateGallery fileId={fileId} />
+        <LibraryPlateGallery fileId={fileId} initialPlateIndex={initialPlateIndex} />
       </div>
     </Modal>
   );

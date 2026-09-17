@@ -103,6 +103,23 @@ describe('PlateObjectsPreviewModal', () => {
     await waitFor(() => expect(api.getPlateObjects).toHaveBeenCalledWith('library', 9, 3));
   });
 
+  it('opens on the plate the caller names, skipping the first-with-objects guess', async () => {
+    vi.mocked(api.getLibraryFilePlates).mockResolvedValue({
+      file_id: 7,
+      filename: 'multi.3mf',
+      is_multi_plate: true,
+      // Objects live on plate 3 — where the auto-pick would land without a caller's say-so.
+      plates: [
+        { index: 1, object_count: 0 },
+        { index: 2, object_count: 0 },
+        { index: 3, object_count: 4 },
+      ] as PlateMetadata[],
+    });
+    render(<PlateObjectsPreviewModal source="library" id={7} isOpen onClose={() => {}} initialPlate={2} />);
+    await waitFor(() => expect(api.getPlateObjects).toHaveBeenCalledWith('library', 7, 2));
+    expect(api.getPlateObjects).not.toHaveBeenCalledWith('library', 7, 3);
+  });
+
   it('shows the empty state rather than an empty grid', async () => {
     vi.mocked(api.getPlateObjects).mockResolvedValue(payload({ objects: [] }));
     render(<PlateObjectsPreviewModal source="archive" id={1} isOpen onClose={() => {}} />);
