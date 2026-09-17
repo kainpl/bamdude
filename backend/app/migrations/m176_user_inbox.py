@@ -75,7 +75,9 @@ async def seed(session_factory):
             if not to_add:
                 continue
             await db.execute(
-                update(Group).where(Group.id == row.id).values(permissions=list(row.permissions or []) + to_add)
+                update(Group.__table__)
+                .where(Group.__table__.c.id == row.id)
+                .values(permissions=list(row.permissions or []) + to_add)
             )
             dirty += 1
         if dirty:
