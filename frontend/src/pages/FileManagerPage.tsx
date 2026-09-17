@@ -1,4 +1,16 @@
-import { useState, useRef, useCallback, useId, useMemo, useEffect, type DragEvent } from 'react';
+import {
+  useState,
+  useRef,
+  useCallback,
+  useId,
+  useMemo,
+  useEffect,
+  type DragEvent,
+  // Aliased: the DOM's own MouseEvent is still the right type for the
+  // native listener below, and importing React's under the same name would
+  // silently retype it.
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -11,6 +23,7 @@ import {
   Trash2,
   Download,
   MoreVertical,
+  ChevronLeft,
   ChevronRight,
   FolderPlus,
   FileBox,
@@ -88,6 +101,7 @@ import { FileTagBadges } from '../components/FileTagBadges';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
 import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { getTagStyle, is3mf, isPrintable, isSliceable, isMultiPlate } from '../lib/fileTags';
+import { figuresAt, formatMaterials, plateAt, plateSlices, plateThumbnailUrl, step } from '../lib/plateBrowsing';
 import { PlanFromFilesModal } from '../components/library/PlanFromFilesModal';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
@@ -665,7 +679,7 @@ interface FileCardProps {
   onRename?: (file: LibraryFileListItem) => void;
   onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
-  onPlateGallery?: (file: LibraryFileListItem) => void;
+  onPlateGallery?: (file: LibraryFileListItem, plateIndex?: number) => void;
   /** Open the model card — what the 3MF says about itself. ⚠️ `.3mf` only:
    *  there is no card to read in an STL, and an entry that always answers
    *  "nothing here" is worse than no entry. */
@@ -955,6 +969,17 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
   // there isn't enough room above (e.g. trigger near top of viewport).
   const [coords, setCoords] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
   const [showPlateObjects, setShowPlateObjects] = useState(false);
+  // Which plate the card is showing (vault 60-specs/library-multiplate-card-spec 5).
+  // A POSITION, not a plate index - the slices are what the row carries. Reset
+  // when the card is reused for another file.
+  const [current, setCurrent] = useState(0);
+  useEffect(() => {
+    setCurrent(0);
+  }, [file.id]);
+  const slices = plateSlices(file);
+  const plate = plateAt(file, current);
+  const figures = figuresAt(file, current);
+  const thumbUrl = plateThumbnailUrl(file, current, thumbnailVersion);
 
   useEffect(() => {
     if (!showActions) return;
@@ -992,14 +1017,46 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
     >
       {/* Thumbnail */}
       <div className="relative aspect-square bg-bambu-dark flex items-center justify-center overflow-hidden">
-        {file.thumbnail_path ? (
+        {thumbUrl ? (
           <img
-            src={`${api.getLibraryFileThumbnailUrl(file.id)}${thumbnailVersion ? `?v=${thumbnailVersion}` : ''}`}
-            alt={file.filename}
+            src={thumbUrl}
+            alt={plate ? t('fileManager.plateOf', { index: plate.index, count: slices.length }) : file.filename}
             className="w-full h-full object-contain"
           />
         ) : (
           <FileBox className="w-12 h-12 text-bambu-gray/30" />
+        )}
+        {/* Plate carousel (spec 5): arrows and a counter, no dots - a
+            twelve-plate MakerWorld file would drown the card in them. z-20
+            keeps them under the regen overlay's z-30. The counter sits
+            top-left: tags own top-right, the gallery and notes buttons own
+            bottom-left, the actions trigger owns bottom-right. */}
+        {slices.length > 1 && (
+          <>
+            <button
+              type="button"
+              aria-label={t('fileManager.previousPlate')}
+              onClick={(e) => { e.stopPropagation(); setCurrent((c) => step(c, slices.length, -1)); }}
+              className={`absolute left-1 top-1/2 -translate-y-1/2 z-20 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              aria-label={t('fileManager.nextPlate')}
+              onClick={(e) => { e.stopPropagation(); setCurrent((c) => step(c, slices.length, 1)); }}
+              className={`absolute right-1 top-1/2 -translate-y-1/2 z-20 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+            <span
+              data-testid="plate-counter"
+              title={plate ? t('fileManager.plateOf', { index: plate.index, count: slices.length }) : undefined}
+              className="absolute top-2 left-2 z-20 px-1.5 py-0.5 rounded bg-black/60 text-[11px] text-white tabular-nums"
+            >
+              {current + 1}/{slices.length}
+            </span>
+          </>
         )}
         {/* Regen overlay — covers the thumbnail with a translucent backdrop
             + spinner so the operator gets visible feedback that the menu
@@ -1030,7 +1087,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
           <div className="absolute bottom-8 left-2" onClick={(e) => e.stopPropagation()}>
             <div className="relative inline-block">
               <button
-                onClick={() => onPlateGallery(file)}
+                onClick={() => onPlateGallery(file, plate?.index)}
                 className="rounded-md bg-bambu-dark/80 backdrop-blur text-bambu-gray hover:text-bambu-green hover:bg-bambu-dark transition-colors flex items-center"
                 title={t('fileManager.plateGallery')}
               >
@@ -1085,19 +1142,26 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
         </h3>
         <div className="flex items-center gap-3 mt-1 text-xs text-bambu-gray">
           <span>{formatFileSize(file.file_size)}</span>
-          {file.print_time_seconds && (
+          {figures.print_time_seconds ? (
             <span className="flex items-center gap-1">
               <Clock className="w-3 h-3" />
-              {formatDuration(file.print_time_seconds)}
+              {formatDuration(figures.print_time_seconds)}
             </span>
-          )}
-          {file.filament_used_grams != null && file.filament_used_grams > 0 && (
+          ) : null}
+          {figures.filament_used_grams != null && figures.filament_used_grams > 0 && (
             <span className="flex items-center gap-1">
               <Package className="w-3 h-3" />
-              {file.filament_used_grams.toFixed(1)}g
+              {figures.filament_used_grams.toFixed(1)}g
             </span>
           )}
-          {file.object_count != null && file.object_count > 0 && (
+          {/* The plate's filament types, plus-joined (spec 5): shown for a
+              single-plate file too - it never said what it prints with. */}
+          {figures.filament_types.length > 0 && (
+            <span className="truncate" title={t('fileManager.materials')} data-testid="plate-materials">
+              {formatMaterials(figures.filament_types)}
+            </span>
+          )}
+          {figures.object_count != null && figures.object_count > 0 && (
             <span className="flex items-center gap-1">
               {/* The count itself opens the preview — no extra icon button to
                   crowd the card. stopPropagation is load-bearing: the card
@@ -1109,7 +1173,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
                 title={t('library.plateObjects.open')}
               >
                 <Box className="w-3 h-3" />
-                {file.object_count}
+                {figures.object_count}
               </button>
               {/* Icon-only: most sliced files support skipping, so a text badge
                   on every card would be noise. Absence is the signal. */}
@@ -1398,6 +1462,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
         <PlateObjectsPreviewModal
           source="library"
           id={file.id}
+          initialPlate={plate?.index}
           isOpen
           onClose={() => setShowPlateObjects(false)}
         />
@@ -1407,7 +1472,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
 }
 
 export function FileManagerPage() {
-  const [previewFileId, setPreviewFileId] = useState<number | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<{ id: number; plate?: number } | null>(null);
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -1463,7 +1528,15 @@ export function FileManagerPage() {
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
   // Per-plate gallery modal — opened from list-mode "plates" button. Null when closed.
-  const [galleryFile, setGalleryFile] = useState<LibraryFileListItem | null>(null);
+  const [galleryTarget, setGalleryTarget] = useState<{ file: LibraryFileListItem; plateIndex?: number } | null>(
+    null,
+  );
+  // The list row's popup (vault 60-specs/library-multiplate-card-spec 6): the
+  // grid card, in a modal, for ANY file. Held by id and resolved against the
+  // live list on render, so a rename or a refetch shows through and a deleted
+  // file closes it rather than lingering.
+  const [cardPopupId, setCardPopupId] = useState<number | null>(null);
+  const cardPopupHeadingId = useId();
   // Model card of one library 3MF — what the file says about itself. Read-only:
   // a library file is somebody's source of truth and BamDude never writes into
   // one; the card leads to a PRODUCT instead, which is database data.
@@ -2318,6 +2391,48 @@ export function FileManagerPage() {
       defaultExpanded={expandFoldersByDefault}
       hasPermission={hasPermission}
       t={t}
+      timeFormat={timeFormat}
+      dateFormat={dateFormat}
+    />
+  );
+
+  const cardPopupFile = cardPopupId != null ? (filteredAndSortedFiles.find((f) => f.id === cardPopupId) ?? null) : null;
+
+  // The card, wired exactly once: the grid maps over this, and the list's popup
+  // renders it for one file - so the popup can never drift from the grid.
+  const renderFileCard = (file: LibraryFileListItem) => (
+    <FileCard
+      key={file.id}
+      file={file}
+      isSelected={selectedFiles.includes(file.id)}
+      isMobile={isMobile}
+      t={t}
+      onSelect={handleFileSelect}
+      onOpenArchives={handleOpenArchives}
+      onDelete={(id) => setDeleteConfirm({ type: 'file', id })}
+      onDownload={handleDownload}
+      onAddToQueue={(id) => {
+        const target = files?.find((f) => f.id === id);
+        if (target) scheduleOne(target);
+      }}
+      onPrint={setPrintFile}
+      onSlice={setSliceFile}
+      onOpenInSlicer={handleOpenInSlicer}
+      useSlicerApi={settings?.use_slicer_api ?? false}
+      onPreview3d={setViewerFile}
+      onModelCard={setModelCardFile}
+      onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
+      onLink={setLinkFile}
+      onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
+      onPlateGallery={(f, plateIndex) => setGalleryTarget({ file: f, plateIndex })}
+      onMove={setMoveFile}
+      onTags={(f, anchor) => setTagsPopover({ file: f, anchor })}
+      onTagClick={toggleTagFilter}
+      thumbnailVersion={thumbnailVersions[file.id]}
+      isRegeneratingThumbnail={regeneratingFileId === file.id}
+      hasPermission={hasPermission}
+      canModify={canModify}
+      authEnabled={authEnabled}
       timeFormat={timeFormat}
       dateFormat={dateFormat}
     />
@@ -3207,43 +3322,7 @@ export function FileManagerPage() {
           ) : viewMode === 'grid' ? (
             <div className="flex-1 lg:overflow-y-auto">
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
-                {filteredAndSortedFiles.map((file) => (
-                  <FileCard
-                    key={file.id}
-                    file={file}
-                    isSelected={selectedFiles.includes(file.id)}
-                    isMobile={isMobile}
-                    t={t}
-                    onSelect={handleFileSelect}
-                    onOpenArchives={handleOpenArchives}
-                    onDelete={(id) => setDeleteConfirm({ type: 'file', id })}
-                    onDownload={handleDownload}
-                    onAddToQueue={(id) => {
-                      const file = files?.find(f => f.id === id);
-                      if (file) scheduleOne(file);
-                    }}
-                    onPrint={setPrintFile}
-                    onSlice={setSliceFile}
-                    onOpenInSlicer={handleOpenInSlicer}
-                    useSlicerApi={settings?.use_slicer_api ?? false}
-                    onPreview3d={setViewerFile}
-                    onModelCard={setModelCardFile}
-                    onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
-                    onLink={setLinkFile}
-                    onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
-                    onPlateGallery={setGalleryFile}
-                    onMove={setMoveFile}
-                    onTags={(f, anchor) => setTagsPopover({ file: f, anchor })}
-                    onTagClick={toggleTagFilter}
-                    thumbnailVersion={thumbnailVersions[file.id]}
-                    isRegeneratingThumbnail={regeneratingFileId === file.id}
-                    hasPermission={hasPermission}
-                    canModify={canModify}
-                    authEnabled={authEnabled}
-                    timeFormat={timeFormat}
-                    dateFormat={dateFormat}
-                  />
-                ))}
+                {filteredAndSortedFiles.map(renderFileCard)}
               </div>
             </div>
           ) : (
@@ -3272,7 +3351,14 @@ export function FileManagerPage() {
                   <div className="text-center">{t('archives.list.actions')}</div>
                 </div>
                 {/* List rows */}
-                {filteredAndSortedFiles.map((file) => (
+                {filteredAndSortedFiles.map((file) => {
+                  const rowFigures = figuresAt(file, 0); // the row shows plate 1 (spec 6)
+                  const rowPlates = plateSlices(file).length; // > 1 = the chip, and a carousel in the popup
+                  const openCard = (e: ReactMouseEvent) => {
+                    e.stopPropagation();
+                    setCardPopupId(file.id);
+                  };
+                  return (
                   <div
                     key={file.id}
                     data-file-row
@@ -3299,7 +3385,12 @@ export function FileManagerPage() {
                     {/* Name with thumbnail */}
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="relative group/thumb">
-                        <div className="relative w-10 h-10 rounded bg-bambu-dark flex-shrink-0 overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={openCard}
+                          aria-label={t('fileManager.openCard', { name: file.print_name || file.filename })}
+                          className="relative w-10 h-10 rounded bg-bambu-dark flex-shrink-0 overflow-hidden focus:outline-none focus:ring-1 focus:ring-bambu-green"
+                        >
                           {file.thumbnail_path ? (
                             <img
                               src={`${api.getLibraryFileThumbnailUrl(file.id)}${thumbnailVersions[file.id] ? `?v=${thumbnailVersions[file.id]}` : ''}`}
@@ -3318,7 +3409,7 @@ export function FileManagerPage() {
                               <Loader2 className="w-4 h-4 text-bambu-green animate-spin" />
                             </div>
                           )}
-                        </div>
+                        </button>
                         {/* Hover preview — popup's top-left corner anchors at
                             the thumbnail's bottom-right 1/3 point (i.e. 2/3
                             down and 2/3 right of the thumbnail). The popup
@@ -3349,21 +3440,46 @@ export function FileManagerPage() {
                             this one file, whereas the badge row to the right is
                             the shared tag vocabulary. Keeping them there put
                             two different kinds of thing in one row. */}
-                        {((file.object_count != null && file.object_count > 0) || file.print_count > 0) && (
+                        {(rowPlates > 1 ||
+                          (rowFigures.object_count != null && rowFigures.object_count > 0) ||
+                          rowFigures.filament_types.length > 0 ||
+                          file.print_count > 0) && (
                           <div className="flex items-center gap-2 mt-0.5">
-                            {file.object_count != null && file.object_count > 0 && (
+                            {/* «N plates» (spec 6): the visible answer to "how many" - and a
+                                second door to the popup, where the paging lives. */}
+                            {rowPlates > 1 && (
                               <button
                                 type="button"
-                                onClick={(e) => { e.stopPropagation(); setPreviewFileId(file.id); }}
+                                onClick={openCard}
+                                className="flex items-center gap-1 text-[11px] text-bambu-gray hover:text-bambu-green transition-colors"
+                                data-testid="plates-chip"
+                              >
+                                <Layers className="w-3 h-3" />
+                                {t('fileManager.platesCount', { count: rowPlates })}
+                              </button>
+                            )}
+                            {rowFigures.object_count != null && rowFigures.object_count > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setPreviewTarget({ id: file.id, plate: plateSlices(file)[0]?.index }); }}
                                 className="flex items-center gap-1 text-[11px] text-bambu-gray hover:text-bambu-green transition-colors"
                                 title={t('library.plateObjects.open')}
                               >
                                 <Box className="w-3 h-3" />
-                                {file.object_count}
+                                {rowFigures.object_count}
                                 {file.skip_objects_supported && (
                                   <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
                                 )}
                               </button>
+                            )}
+                            {rowFigures.filament_types.length > 0 && (
+                              <span
+                                className="text-[11px] text-bambu-gray truncate"
+                                title={t('fileManager.materials')}
+                                data-testid="plate-materials"
+                              >
+                                {formatMaterials(rowFigures.filament_types)}
+                              </span>
                             )}
                             {file.print_count > 0 && (
                               <button
@@ -3442,7 +3558,7 @@ export function FileManagerPage() {
                           view's overlay condition. */}
                       {isMultiPlate(file) && (
                         <button
-                          onClick={() => setGalleryFile(file)}
+                          onClick={() => setGalleryTarget({ file })}
                           className="p-1.5 rounded transition-colors hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
                           title={t('fileManager.plateGallery')}
                         >
@@ -3543,7 +3659,8 @@ export function FileManagerPage() {
                       />
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -3590,20 +3707,39 @@ export function FileManagerPage() {
       {/* Page-level rather than per-row: the list view renders rows inline in
           this component's map, so there is no row component to hold the state
           the way FileCard does for the grid. */}
-      {previewFileId != null && (
+      {previewTarget != null && (
         <PlateObjectsPreviewModal
           source="library"
-          id={previewFileId}
+          id={previewTarget.id}
+          initialPlate={previewTarget.plate}
           isOpen
-          onClose={() => setPreviewFileId(null)}
+          onClose={() => setPreviewTarget(null)}
         />
       )}
-      {galleryFile && (
+      {galleryTarget && (
         <LibraryPlateGalleryModal
-          fileId={galleryFile.id}
-          filename={galleryFile.print_name || galleryFile.filename}
-          onClose={() => setGalleryFile(null)}
+          fileId={galleryTarget.file.id}
+          filename={galleryTarget.file.print_name || galleryTarget.file.filename}
+          initialPlateIndex={galleryTarget.plateIndex}
+          onClose={() => setGalleryTarget(null)}
         />
+      )}
+      {/* The list's card popup (spec 6). The card opens its own dialogs -
+          gallery, object preview, the actions menu - and those stack above this
+          one; the modal stack owns that ordering. */}
+      {cardPopupFile && (
+        <Modal
+          onClose={() => setCardPopupId(null)}
+          labelledBy={cardPopupHeadingId}
+          size="xs"
+          header={
+            <h3 id={cardPopupHeadingId} className="text-sm font-semibold text-white truncate">
+              {cardPopupFile.print_name || cardPopupFile.filename}
+            </h3>
+          }
+        >
+          <div className="p-4">{renderFileCard(cardPopupFile)}</div>
+        </Modal>
       )}
       {showNewFolderModal && (
         <NewFolderModal

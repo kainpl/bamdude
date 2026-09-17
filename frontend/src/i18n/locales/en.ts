@@ -4932,6 +4932,15 @@ export default {
     plate: 'Plate',
     plateSlot: 'Slot',
     plateGallery: 'Plate gallery',
+    // Plate carousel on the card, and the card popup a list row opens
+    // (vault 60-specs/library-multiplate-card-spec 5, 6)
+    previousPlate: 'Previous plate',
+    nextPlate: 'Next plate',
+    plateOf: 'Plate {{index}} of {{count}}',
+    materials: 'Materials',
+    openCard: 'Open the card of {{name}}',
+    platesCount_one: '{{count}} plate',
+    platesCount_other: '{{count}} plates',
     modelCard: 'Model card',
     source: {
       openOriginal: 'Open on MakerWorld',

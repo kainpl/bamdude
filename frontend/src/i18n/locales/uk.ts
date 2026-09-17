@@ -4954,6 +4954,17 @@ export default {
     plate: 'Плита',
     plateSlot: 'Слот',
     plateGallery: 'Галерея плит',
+    // Карусель плит на картці й попап картки з рядка списку
+    // (vault 60-specs/library-multiplate-card-spec 5, 6)
+    previousPlate: 'Попередня плита',
+    nextPlate: 'Наступна плита',
+    plateOf: 'Плита {{index}} з {{count}}',
+    materials: 'Матеріали',
+    openCard: 'Відкрити картку {{name}}',
+    platesCount_one: '{{count}} плита',
+    platesCount_few: '{{count}} плити',
+    platesCount_many: '{{count}} плит',
+    platesCount_other: '{{count}} плити',
     modelCard: 'Картка моделі',
     source: {
       openOriginal: 'Відкрити на MakerWorld',
