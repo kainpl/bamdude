@@ -1,30 +1,39 @@
-"""``filament_low`` for the spools usage tracking cannot see.
+"""``filament_low`` for the spools usage tracking cannot see: Spoolman-bound slots.
 
 ``usage_tracker._warn_if_low_stock`` has fired ``filament_low`` for every spool
 bound to BamDude's own inventory since m117 — right after each consumption
 write, against the spool's own override or the global ``low_stock_threshold``,
-with the persisted ``Spool.low_stock_notified`` memory. Two kinds of slot never
-reach it: a tray with **no inventory binding** (a Bambu RFID spool whose only
-figure is the printer's ``remain`` counter) and a **Spoolman-bound** slot (no
-``Spool`` row, so no ``weight_used`` write ever happens here). This module
-covers those two, from ``on_ams_change``, against the SAME global threshold —
-one setting, Settings → Inventory — so the notification can never disagree
-with what the Inventory page calls low. BamDude-bound slots are skipped here
-on purpose: two announcers for one spool would be the flood m117 exists to
-prevent.
+with the persisted ``Spool.low_stock_notified`` memory. A **Spoolman-bound**
+slot never reaches it: there is no ``Spool`` row, so no ``weight_used`` write
+ever happens here. This module covers that slot, from ``on_ams_change``,
+against the SAME global threshold — one setting, Settings → Inventory — so the
+notification can never disagree with what the Inventory page calls low.
+BamDude-bound slots are skipped here on purpose: two announcers for one spool
+would be the flood m117 exists to prevent.
 
-**Remaining** is what prefer-lowest reads (#1508), not a fourth figure: a
-Spoolman-bound slot uses ``remaining_weight`` over ``initial_weight``
-(``PrintScheduler._build_inventory_remain_overrides`` + ``_inventory_label_weights``);
-an unbound slot uses the printer's ``remain``, which is ``-1`` for anything but
-a Bambu spool and then says nothing — no percent, no event.
+⚠️ **The printer's own counter is never a source (ruling 2026-09-17).** The
+first version of this module read the tray's ``remain`` for a slot with no
+inventory binding. A spool without an RFID tag — every third-party spool, and
+everything on the external holder, which has no reader at all — reports
+``remain: 0``, and read as a percent it announced "0 %" for the external slot
+of every printer on the farm after every restart (14 rows in two bursts of 7,
+each printer's slot within ten seconds of connecting, with filament on every
+one of them). Zero is the firmware's "nothing to say", not a measurement
+(``utils/filament_remaining``), and a tag can be missing inside an AMS just as
+well. What BamDude knows about a slot is what is ASSIGNED to it: BamDude's own
+spool, or Spoolman's. An unbound slot is unknown, and unknown is silent.
+
+**Remaining** is what prefer-lowest reads (#1508), not a second figure: Spoolman
+``remaining_weight`` over ``initial_weight`` via the scheduler's
+``_build_inventory_remain_overrides`` + ``_inventory_label_weights``.
 
 **One announcement per spool per slot**, per process: the event fires when a
 slot crosses below the threshold and is re-armed when the tray identity changes
-(a new spool went in) or remaining climbs back to threshold + ``HYSTERESIS``.
-A restart may repeat an already-low slot once — a reminder, not a flood. The
-bound spools' memory is persisted because their trigger is every print; this
-trigger is an AMS change, which a restart does not replay by itself.
+(a new spool went in), the binding goes away, or remaining climbs back to
+threshold + ``HYSTERESIS``. A restart may repeat an already-low slot once — a
+reminder, not a flood. The bound spools' memory is persisted because their
+trigger is every print; this trigger is an AMS change, which a restart does not
+replay by itself.
 
 ⚠️ Not ``filament_deficit``. That event compares ONE job with what is in the
 slot; this one is a threshold on the spool, regardless of any job.
@@ -71,7 +80,8 @@ async def read_threshold(db: AsyncSession) -> float:
 
 def _identity(f: dict) -> str:
     """What makes this tray THIS spool: the RFID uuid when the printer has one,
-    else the material and colour the slot reports."""
+    else the material and colour the slot reports. Identity, not quantity —
+    the one thing the tray is trusted for here."""
     for key in ("tray_uuid", "tag_uid"):
         v = f.get(key)
         if v and str(v).strip("0"):
@@ -94,16 +104,12 @@ async def _bindings(
     return spoolman, grams, labels
 
 
-def _percent(f: dict, bound: tuple[float, float | None] | None) -> int | None:
-    if bound is not None:
-        remaining, label = bound
-        if not label or label <= 0:
-            return None
-        return max(0, min(100, round(remaining / label * 100)))
-    remain = f.get("remain", -1)
-    if isinstance(remain, bool) or not isinstance(remain, (int, float)) or remain < 0:
+def _percent(remaining: float, label: float | None) -> int | None:
+    """Remaining over the spool's initial weight, or None without a weight to
+    divide by — a figure nobody can compare with a threshold is no figure."""
+    if not label or label <= 0:
         return None
-    return max(0, min(100, int(remain)))
+    return max(0, min(100, round(remaining / label * 100)))
 
 
 async def evaluate(db: AsyncSession, printer_id: int, status) -> list[LowSlot]:
@@ -112,7 +118,8 @@ async def evaluate(db: AsyncSession, printer_id: int, status) -> list[LowSlot]:
     Returns the slots to announce (possibly none). Mutates the per-process
     memory: a slot that fires is remembered under its tray identity; a slot
     that climbed back above threshold + hysteresis, whose spool changed, that
-    is no longer loaded, or that inventory tracking owns, is forgotten.
+    is no longer loaded or bound, or that BamDude's own inventory tracking
+    owns, is forgotten.
     """
     threshold = await read_threshold(db)
     loaded = build_loaded_filaments(status, printer_id) if status is not None else []
@@ -127,13 +134,13 @@ async def evaluate(db: AsyncSession, printer_id: int, status) -> list[LowSlot]:
     for f in loaded:
         gtid = f["global_tray_id"]
         key = (printer_id, gtid)
-        bound = gtid in grams
-        if bound and not spoolman:
-            # BamDude's own inventory: usage tracking warns for this spool with
-            # a persisted memory. Not a second announcer.
+        if gtid not in grams or not spoolman:
+            # Unbound: unknown, not empty — the printer's counter is not asked.
+            # BamDude-bound: usage tracking warns for this spool with a
+            # persisted memory. Neither gets a second announcer.
             _announced.pop(key, None)
             continue
-        percent = _percent(f, (grams[gtid], labels.get(gtid)) if bound else None)
+        percent = _percent(grams[gtid], labels.get(gtid))
         if percent is None:
             continue
         identity = _identity(f)
@@ -141,7 +148,7 @@ async def evaluate(db: AsyncSession, printer_id: int, status) -> list[LowSlot]:
             if _announced.get(key) == identity:
                 continue
             _announced[key] = identity
-            to_announce.append(LowSlot(gtid, _slot_label(f, gtid), percent, f.get("color") or None))
+            to_announce.append(LowSlot(gtid, _slot_label(gtid), percent, f.get("color") or None))
         elif key in _announced and (percent >= threshold + HYSTERESIS or _announced[key] != identity):
             del _announced[key]
     return to_announce
