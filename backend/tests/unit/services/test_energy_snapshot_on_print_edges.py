@@ -17,10 +17,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select
 
-from backend.app.api.routes.archives import _sum_snapshot_deltas
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
 from backend.app.services.smart_plug_manager import smart_plug_manager
+from backend.app.services.statistics.energy import sum_snapshot_deltas
 
 pytestmark = pytest.mark.asyncio
 
@@ -56,7 +56,7 @@ async def test_extra_snapshots_do_not_change_the_range_total(db_session):
         plug.id,
         [(day, 10.0), (day.replace(hour=6), 10.4), (day.replace(hour=12), 11.0), (day.replace(hour=18), 11.5)],
     )
-    total_sparse, _ = await _sum_snapshot_deltas(db_session, dt_from=day, dt_to=end)
+    total_sparse, _ = await sum_snapshot_deltas(db_session, dt_from=day, dt_to=end)
 
     # The identical movement — same first and last reading — recorded far more
     # densely, as print-edge snapshots would.
@@ -69,7 +69,7 @@ async def test_extra_snapshots_do_not_change_the_range_total(db_session):
         plug.id,
         [(day + timedelta(minutes=30 * i), 10.0 + 1.5 * (i / steps)) for i in range(steps + 1)],
     )
-    total_dense, _ = await _sum_snapshot_deltas(db_session, dt_from=day, dt_to=end)
+    total_dense, _ = await sum_snapshot_deltas(db_session, dt_from=day, dt_to=end)
 
     assert round(total_sparse, 3) == round(total_dense, 3) == 1.5
 
@@ -89,14 +89,14 @@ async def test_a_snapshot_at_the_end_makes_the_total_current(db_session):
     # hook writes is stamped when it runs, i.e. after `now` was captured here.
     window = {"dt_from": now - timedelta(hours=3), "dt_to": now + timedelta(minutes=1)}
 
-    stale, _ = await _sum_snapshot_deltas(db_session, **window)
+    stale, _ = await sum_snapshot_deltas(db_session, **window)
     assert round(stale, 3) == 0.2, "only what the hourly loop happened to catch"
 
     # What the print-end hook now adds.
     assert await smart_plug_manager.record_energy_snapshot(db_session, plug.id, 10.9)
     await db_session.commit()
 
-    fresh, _ = await _sum_snapshot_deltas(db_session, **window)
+    fresh, _ = await sum_snapshot_deltas(db_session, **window)
     assert round(fresh, 3) == 0.9, "the just-finished print is included immediately"
 
 
@@ -137,6 +137,6 @@ async def test_a_counter_reset_is_clamped_not_subtracted(db_session):
         [(now - timedelta(hours=2), 40.0), (now - timedelta(minutes=5), 0.2)],  # plug reset
     )
 
-    total, _ = await _sum_snapshot_deltas(db_session, dt_from=now - timedelta(hours=3), dt_to=now)
+    total, _ = await sum_snapshot_deltas(db_session, dt_from=now - timedelta(hours=3), dt_to=now)
 
     assert total == 0.0, "a counter that went backwards contributes zero, never a negative"

@@ -299,7 +299,7 @@ class TestArchivesAPI:
             filament_used_grams=100.0,
         )
 
-        response = await async_client.get("/api/v1/archives/stats")
+        response = await async_client.get("/api/v1/statistics/overview")
 
         assert response.status_code == 200
         result = response.json()
@@ -341,7 +341,7 @@ class TestArchivesAPI:
         await archive_factory(printer.id, **synthetic, extra_data={"recovered_by_startup_sweep": True})
         await archive_factory(printer.id, **synthetic, extra_data={"recovered_by_cleanup": True})
 
-        result = (await async_client.get("/api/v1/archives/stats")).json()
+        result = (await async_client.get("/api/v1/statistics/overview")).json()
 
         # Only the measured print counts — not (50 + 100 + 100) / 3.
         assert result["average_time_accuracy"] == 50.0
@@ -364,7 +364,7 @@ class TestArchivesAPI:
         await archive_factory(printer_a.id, status="failed", quantity=5, defective_count=5)
         await archive_factory(printer_b.id, status="completed", quantity=0, defective_count=0)
 
-        response = await async_client.get("/api/v1/archives/stats")
+        response = await async_client.get("/api/v1/statistics/overview")
 
         assert response.status_code == 200, response.text
         assert response.json()["defects_by_printer"] == {str(printer_a.id): {"printed": 10, "defective": 2}}
@@ -1311,7 +1311,7 @@ async def test_filing_reverses_every_part_it_can_even_when_one_is_spent(
 
 @pytest.mark.asyncio
 async def test_the_slim_endpoint_is_gone(async_client):
-    """It had two callers, both now on /archives/aggregate, and it silently
+    """It had two callers, both now on /statistics/aggregate, and it silently
     truncated at the newest 10 000 rows — a trap with no users left is worse
     than no endpoint.
 

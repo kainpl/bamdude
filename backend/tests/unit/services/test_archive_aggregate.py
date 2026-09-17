@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from backend.app.services import archive_aggregate as agg
+from backend.app.services.statistics import aggregate as agg
 
 
 def _index(dt: datetime) -> int:

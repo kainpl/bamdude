@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from backend.app.models.archive import PrintArchive
-from backend.app.services import archive_aggregate as agg
+from backend.app.services.statistics import aggregate as agg
 
 UTC = ZoneInfo("UTC")
 KYIV = ZoneInfo("Europe/Kyiv")

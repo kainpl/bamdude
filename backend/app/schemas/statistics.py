@@ -126,3 +126,55 @@ class ArchiveAggregate(BaseModel):
     by_duration: list[DurationRow]
     totals: Totals
     records: Records
+
+
+# ── The overview (KPI block) - moved from schemas/archive.py on 2026-09-17 ──
+
+
+class DefectsByPrinter(BaseModel):
+    """What came off one printer's plates in the period, and how much of it went in the bin."""
+
+    printed: int
+    defective: int
+
+
+class ArchiveStats(BaseModel):
+    total_prints: int
+    successful_prints: int
+    failed_prints: int
+    # User/system-stopped prints (status in stopped/cancelled/skipped).
+    # Defaulted so older clients that don't send this field still validate.
+    cancelled_prints: int = 0
+    total_print_time_hours: float
+    total_filament_grams: float
+    total_cost: float
+    prints_by_filament_type: dict
+    prints_by_printer: dict
+    # Time accuracy stats
+    # Average across all prints with data
+    average_time_accuracy: float | None = None
+    time_accuracy_by_printer: dict | None = None  # Per-printer accuracy
+    # Completed prints only, keyed by printer id as a string like the other
+    # per-printer maps; printers with nothing printed in the period are omitted.
+    defects_by_printer: dict[str, DefectsByPrinter] = {}
+    # ── Energy, answered twice ───────────────────────────────────────────
+    # These used to be one pair whose meaning depended on a setting, so the
+    # number on the page could not be read without opening Settings to find out
+    # which question it had answered. Both are returned now and the page shows
+    # both; the setting is gone.
+    #
+    # ⚠️ They are not two views of one figure. ``print_*`` is measured between
+    # the start and end of each print and is therefore bounded by the date
+    # filter like every other statistic here. ``total_*`` is what the plugs
+    # themselves counted — idle, warm-up, and anything else sharing the socket
+    # — and all-time it is read from their live lifetime counters, which no
+    # date filter can reach. The gap between the two is the cost of standing
+    # still, which is the reason anyone wants both.
+    print_energy_kwh: float = 0.0
+    print_energy_cost: float = 0.0
+    total_energy_kwh: float = 0.0
+    total_energy_cost: float = 0.0
+    # Set when the date-range query in "total consumption" mode is running on
+    # incomplete snapshot history - e.g. right after a fresh upgrade before the
+    # hourly snapshot loop has built up a baseline. Frontend shows a tooltip.
+    energy_data_warming_up: bool = False

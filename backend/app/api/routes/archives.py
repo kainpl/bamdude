@@ -21,32 +21,25 @@ from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.db_dialect import is_postgres
 from backend.app.core.permissions import Permission
-from backend.app.core.timezones import client_timezone, day_bounds
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.product import ProductPart
 from backend.app.models.project_line import ProjectLine
-from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.models.user import User
 from backend.app.schemas.archive import (
     ArchiveFilterOptions,
     ArchiveResponse,
-    ArchiveStats,
     ArchiveUpdate,
-    DefectsByPrinter,
     PaginatedArchiveResponse,
     PaginationMeta,
     ReprintRequest,
 )
-from backend.app.schemas.archive_aggregate import ArchiveAggregate
 from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.schemas.project import StockMovedOut
-from backend.app.services import archive_aggregate, part_stock
+from backend.app.services import part_stock
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.design_settings import overrides_from_config
-from backend.app.services.filament_cost import default_rate_per_kg
-from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.archive_paths import photos_dir_for
 from backend.app.utils.http import build_content_disposition
@@ -107,25 +100,6 @@ def _ensure_archive_visible(
     if user is None or archive.created_by_id is None or archive.created_by_id != user.id:
         raise HTTPException(404, "Archive not found")
     return archive
-
-
-def _validate_user_filter_permission(current_user: User | None, created_by_id: int | None):
-    """Raise 403 if created_by_id filter is used without stats:filter_by_user permission."""
-    if created_by_id is None or current_user is None:
-        return
-    if current_user.is_admin:
-        return
-    if not current_user.has_permission(Permission.STATS_FILTER_BY_USER.value):
-        raise HTTPException(status_code=403, detail="Permission stats:filter_by_user required")
-
-
-def _apply_user_filter(conditions: list, created_by_id: int | None):
-    """Append created_by_id filter to conditions list if specified."""
-    if created_by_id is not None:
-        if created_by_id == -1:
-            conditions.append(PrintArchive.created_by_id.is_(None))
-        else:
-            conditions.append(PrintArchive.created_by_id == created_by_id)
 
 
 def _parse_applied_patches(raw: str | None) -> list[str] | None:
@@ -449,41 +423,6 @@ async def get_archive_filter_options(
     return ArchiveFilterOptions(**options)
 
 
-@router.get("/aggregate", response_model=ArchiveAggregate)
-async def aggregate_archives(
-    request: Request,
-    date_from: date | None = Query(None),
-    date_to: date | None = Query(None),
-    db: AsyncSession = Depends(get_db),
-    auth_result: tuple[User | None, bool] = Depends(
-        require_ownership_permission(
-            Permission.ARCHIVES_READ_ALL,
-            Permission.ARCHIVES_READ_OWN,
-        )
-    ),
-):
-    """Everything the Stats page and the archive calendar fold, folded here.
-
-    The response is sized by the date range, not by the number of prints — and,
-    unlike the slim listing it replaces, it is not silently truncated at the
-    newest 10 000 rows, which on a busy farm turned «all time» into «the last
-    three weeks» without saying so.
-
-    Day and hour keys are local to the caller's ``X-Client-Timezone`` (the
-    server's ``TZ`` when the header is absent), which is where the browser was
-    bucketing them before — so the numbers are the same, computed once instead
-    of per viewer.
-    """
-    current_user, can_read_all = auth_result
-    return await archive_aggregate.collect(
-        db,
-        tz=client_timezone(request),
-        date_from=date_from,
-        date_to=date_to,
-        user_id=None if can_read_all or current_user is None else current_user.id,
-    )
-
-
 @router.get("/search", response_model=list[ArchiveResponse])
 async def search_archives(
     q: str = Query(..., min_length=2, description="Search query"),
@@ -725,51 +664,6 @@ async def rebuild_search_index(
         raise HTTPException(status_code=500, detail=f"Failed to rebuild index: {str(e)}")
 
 
-@router.get("/analysis/failures")
-async def analyze_failures(
-    request: Request,
-    days: int | None = None,
-    date_from: date | None = Query(None),
-    date_to: date | None = Query(None),
-    printer_id: int | None = None,
-    project_id: int | None = None,
-    db: AsyncSession = Depends(get_db),
-    auth_result: tuple[User | None, bool] = Depends(
-        require_ownership_permission(
-            Permission.ARCHIVES_READ_ALL,
-            Permission.ARCHIVES_READ_OWN,
-        )
-    ),
-):
-    """Analyze failure patterns across prints.
-
-    Returns failure statistics including:
-    - Overall failure rate
-    - Failures by reason, filament type, printer
-    - Time of day distribution
-    - Recent failures
-    - Weekly trend
-    """
-    # security #2: gated by require_ownership_permission above; READ_OWN callers
-    # are scoped to their own runs so aggregate failure stats don't leak other
-    # users' prints.
-    user, can_read_all = auth_result
-    scoped_user_id = user.id if (user is not None and not can_read_all) else None
-
-    from backend.app.services.failure_analysis import FailureAnalysisService
-
-    service = FailureAnalysisService(db)
-    return await service.analyze_failures(
-        days=days,
-        date_from=date_from,
-        date_to=date_to,
-        printer_id=printer_id,
-        project_id=project_id,
-        created_by_id=scoped_user_id,
-        tz=client_timezone(request),
-    )
-
-
 @router.get("/compare")
 async def compare_archives(
     archive_ids: str = Query(..., description="Comma-separated archive IDs (2-5)"),
@@ -900,41 +794,6 @@ async def export_archives(
     )
 
 
-@router.get("/stats/export")
-async def export_stats(
-    format: str = Query("csv", description="Export format: csv or xlsx"),
-    days: int = 30,
-    printer_id: int | None = None,
-    project_id: int | None = None,
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.STATS_READ),
-):
-    """Export statistics summary to CSV or Excel format."""
-    from fastapi.responses import StreamingResponse
-
-    from backend.app.services.export import ExportService
-
-    if format not in ("csv", "xlsx"):
-        raise HTTPException(400, "Format must be 'csv' or 'xlsx'")
-
-    service = ExportService(db)
-    try:
-        file_bytes, filename, content_type = await service.export_stats(
-            format=format,
-            days=days,
-            printer_id=printer_id,
-            project_id=project_id,
-        )
-    except ImportError as e:
-        raise HTTPException(500, str(e))
-
-    return StreamingResponse(
-        io.BytesIO(file_bytes),
-        media_type=content_type,
-        headers={"Content-Disposition": build_content_disposition(filename)},
-    )
-
-
 @router.get("/no-3mf-warning")
 async def no_3mf_warning(
     db: AsyncSession = Depends(get_db),
@@ -970,361 +829,6 @@ async def no_3mf_warning(
         if extra_data and extra_data.get("no_3mf_available"):
             return {"has_fallback": True}
     return {"has_fallback": False}
-
-
-@router.get("/stats", response_model=ArchiveStats)
-async def get_archive_stats(
-    request: Request,
-    date_from: date | None = Query(None, description="Start date (inclusive), YYYY-MM-DD"),
-    date_to: date | None = Query(None, description="End date (inclusive), YYYY-MM-DD"),
-    created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
-    db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.STATS_READ),
-):
-    """Get statistics across all archives."""
-    _validate_user_filter_permission(current_user, created_by_id)
-
-    # Build date filter conditions.
-    # Defensively exclude the legacy "archived" status (uploaded-but-never-printed
-    # rows from the removed VP / manual-upload flows; no longer produced, but
-    # legacy DBs may still carry them).
-    # Exclude trashed rows (deleted_at IS NOT NULL) — trash is a soft-delete
-    # awaiting the retention sweeper, the user has explicitly removed these
-    # from active history and they shouldn't pollute totals / filament / cost.
-    base_conditions = [
-        PrintArchive.status != "archived",
-        PrintArchive.deleted_at.is_(None),
-    ]
-    _apply_user_filter(base_conditions, created_by_id)
-    # Client's day, not UTC's — the picker was filled in against their clock.
-    # This decides which prints land in the range at all, so a UTC boundary
-    # moved every print from the first hours of a local day into the one before.
-    _tz = client_timezone(request)
-    if date_from:
-        base_conditions.append(PrintArchive.created_at >= day_bounds(date_from, _tz)[0])
-    if date_to:
-        base_conditions.append(PrintArchive.created_at < day_bounds(date_to, _tz)[1])
-
-    # Total counts
-    total_result = await db.execute(select(func.count(PrintArchive.id)).where(*base_conditions))
-    total_prints = total_result.scalar() or 0
-
-    successful_result = await db.execute(
-        select(func.count(PrintArchive.id)).where(PrintArchive.status == "completed", *base_conditions)
-    )
-    successful_prints = successful_result.scalar() or 0
-
-    failed_result = await db.execute(
-        select(func.count(PrintArchive.id)).where(PrintArchive.status.in_(["failed", "aborted"]), *base_conditions)
-    )
-    failed_prints = failed_result.scalar() or 0
-
-    # User/system-stopped prints — stopped/cancelled/skipped are distinct from
-    # quality failures: the user (or the queue) interrupted them, the printer
-    # didn't detect a fault. Bucketed separately so the Success Rate gauge
-    # divides by completed + failed only (a cancelled print shouldn't drag the
-    # gauge down), while still being visible in the breakdown so they don't
-    # silently vanish from Total Prints (#1390).
-    cancelled_result = await db.execute(
-        select(func.count(PrintArchive.id)).where(
-            PrintArchive.status.in_(["stopped", "cancelled", "skipped"]), *base_conditions
-        )
-    )
-    cancelled_prints = cancelled_result.scalar() or 0
-
-    # Totals - use actual print time from timestamps (not slicer estimates)
-    # For archives with both started_at and completed_at, calculate actual duration
-    # Fall back to print_time_seconds only for archives without timestamps
-    archives_for_time = await db.execute(
-        select(PrintArchive.started_at, PrintArchive.completed_at, PrintArchive.print_time_seconds).where(
-            *base_conditions
-        )
-    )
-    total_seconds = 0
-    for started_at, completed_at, print_time_seconds in archives_for_time.all():
-        if started_at and completed_at:
-            # Use actual elapsed time
-            actual_seconds = (completed_at - started_at).total_seconds()
-            if actual_seconds > 0:
-                total_seconds += actual_seconds
-        elif print_time_seconds:
-            # Fallback to estimate only if no timestamps
-            total_seconds += print_time_seconds
-    total_time = total_seconds / 3600  # Convert to hours
-
-    # Sum filament directly - filament_used_grams already contains the total for the print job
-    filament_result = await db.execute(
-        select(func.coalesce(func.sum(PrintArchive.filament_used_grams), 0)).where(*base_conditions)
-    )
-    total_filament = filament_result.scalar() or 0
-
-    cost_result = await db.execute(select(func.sum(PrintArchive.cost)).where(*base_conditions))
-    total_cost = cost_result.scalar() or 0
-
-    # By filament type (split comma-separated values for multi-material prints)
-    filament_type_result = await db.execute(
-        select(PrintArchive.filament_type).where(PrintArchive.filament_type.isnot(None), *base_conditions)
-    )
-    prints_by_filament: dict[str, int] = {}
-    for (filament_types,) in filament_type_result.all():
-        # Split by comma and count each type
-        for ftype in filament_types.split(","):
-            ftype = ftype.strip()
-            if ftype:
-                prints_by_filament[ftype] = prints_by_filament.get(ftype, 0) + 1
-
-    # By printer
-    printer_result = await db.execute(
-        select(PrintArchive.printer_id, func.count(PrintArchive.id))
-        .where(*base_conditions)
-        .group_by(PrintArchive.printer_id)
-    )
-    prints_by_printer = {str(k): v for k, v in printer_result.all()}
-
-    # Defects by printer — completed prints only: what came off the plate
-    # against what the operator (or a skip) marked bad (spec 2026-09-11 §6).
-    defects_result = await db.execute(
-        select(
-            PrintArchive.printer_id,
-            func.coalesce(func.sum(PrintArchive.quantity), 0),
-            func.coalesce(func.sum(PrintArchive.defective_count), 0),
-        )
-        .where(PrintArchive.status == "completed", *base_conditions)
-        .group_by(PrintArchive.printer_id)
-    )
-    defects_by_printer = {
-        str(printer_id): DefectsByPrinter(printed=int(printed), defective=int(defective))
-        for printer_id, printed, defective in defects_result.all()
-        if printer_id is not None and int(printed) > 0
-    }
-
-    # Time accuracy statistics
-    # Completed prints that carry both an estimate and a measured time.
-    #
-    # ⚠️ THREE COLUMNS, never `select(PrintArchive)`. This used to hydrate whole
-    # ORM entities — every column, the JSON blob, the identity map — for tens of
-    # thousands of rows, to read two flags and a float off each. That hydration
-    # runs on the event loop, so opening the stats page stalled every printer's
-    # MQTT for as long as it took. `time_accuracy IS NOT NULL` moved into the
-    # WHERE for the same reason: those rows were fetched and then skipped.
-    accuracy_rows = (
-        await db.execute(
-            select(PrintArchive.printer_id, PrintArchive.time_accuracy, PrintArchive.extra_data)
-            .where(PrintArchive.status == "completed", *base_conditions)
-            .where(PrintArchive.print_time_seconds.isnot(None))
-            .where(PrintArchive.started_at.isnot(None))
-            .where(PrintArchive.completed_at.isnot(None))
-            .where(PrintArchive.time_accuracy.isnot(None))
-        )
-    ).all()
-
-    average_accuracy = None
-    accuracy_by_printer: dict[str, float] = {}
-
-    if accuracy_rows:
-        accuracies = []
-        printer_accuracies: dict[str, list[float]] = {}
-
-        for printer_id, time_accuracy, extra_data in accuracy_rows:
-            # Skip synthetic closures. Their completed_at is derived FROM the
-            # slicer estimate (reconcile / stale-cleanup), so time_accuracy is
-            # 100% by construction and would drag the fleet average toward a
-            # number nobody measured (#2592).
-            extra = extra_data or {}
-            if extra.get("recovered_by_startup_sweep") or extra.get("recovered_by_cleanup"):
-                continue
-            accuracies.append(time_accuracy)
-
-            # Group by printer
-            printer_key = str(printer_id) if printer_id else "unknown"
-            if printer_key not in printer_accuracies:
-                printer_accuracies[printer_key] = []
-            printer_accuracies[printer_key].append(time_accuracy)
-
-        if accuracies:
-            average_accuracy = round(sum(accuracies) / len(accuracies), 1)
-
-        # Calculate per-printer averages
-        for printer_key, accs in printer_accuracies.items():
-            accuracy_by_printer[printer_key] = round(sum(accs) / len(accs), 1)
-
-    # Energy, both ways — see ArchiveStats for why there are two of each.
-    from backend.app.api.routes.settings import get_setting
-
-    energy_cost_per_kwh_str = await get_setting(db, "energy_cost_per_kwh")
-    energy_cost_per_kwh = float(energy_cost_per_kwh_str) if energy_cost_per_kwh_str else 0.15
-
-    total_energy_kwh: float = 0.0
-    total_energy_cost: float = 0.0
-    energy_data_warming_up = False
-
-    # ── What the prints themselves drew ──────────────────────────────────
-    # The per-print column, summed. Recorded from the plug at the start and end
-    # of each print, so it excludes everything between prints.
-    print_energy_kwh = (
-        await db.execute(select(func.sum(PrintArchive.energy_kwh)).where(*base_conditions))
-    ).scalar() or 0
-    print_energy_cost = (
-        await db.execute(select(func.sum(PrintArchive.energy_cost)).where(*base_conditions))
-    ).scalar() or 0
-
-    # ── What the plugs measured, full stop ───────────────────────────────
-    if not date_from and not date_to:
-        # All-time: the live lifetime counters.
-        total_energy_kwh = await _sum_live_plug_totals(db)
-        total_energy_cost = total_energy_kwh * energy_cost_per_kwh
-    else:
-        # Total consumption mode with a date filter (#941): use hourly snapshots
-        # to compute per-plug (endpoint - baseline) deltas.
-        #
-        # Day boundaries are the CLIENT's, not UTC. The dates arrive as bare
-        # calendar days from a date picker someone filled in while looking at
-        # their own clock, so resolving them at UTC midnight put the first hours
-        # of every local day into the previous one — three hours' worth on a
-        # Europe/Kyiv farm, which is where this was noticed.
-        tz = client_timezone(request)
-        dt_from = day_bounds(date_from, tz)[0] if date_from else None
-        # Exclusive end from day_bounds: `time.max` would silently drop the last
-        # 999 microseconds of the range.
-        dt_to = day_bounds(date_to, tz)[1] if date_to else None
-
-        total_energy_kwh, energy_data_warming_up = await _sum_snapshot_deltas(db, dt_from=dt_from, dt_to=dt_to)
-        total_energy_cost = total_energy_kwh * energy_cost_per_kwh
-
-    return ArchiveStats(
-        total_prints=total_prints,
-        successful_prints=successful_prints,
-        failed_prints=failed_prints,
-        cancelled_prints=cancelled_prints,
-        total_print_time_hours=round(total_time, 1),
-        total_filament_grams=round(total_filament, 1),
-        total_cost=round(total_cost, 2),
-        prints_by_filament_type=prints_by_filament,
-        prints_by_printer=prints_by_printer,
-        defects_by_printer=defects_by_printer,
-        average_time_accuracy=average_accuracy,
-        time_accuracy_by_printer=accuracy_by_printer if accuracy_by_printer else None,
-        print_energy_kwh=round(print_energy_kwh, 3),
-        print_energy_cost=round(print_energy_cost, 3),
-        total_energy_kwh=round(total_energy_kwh, 3),
-        total_energy_cost=round(total_energy_cost, 3),
-        energy_data_warming_up=energy_data_warming_up,
-    )
-
-
-async def _sum_live_plug_totals(db: AsyncSession) -> float:
-    """Sum the live lifetime counter from every smart plug.
-
-    Used for all-time "total consumption" mode. Only the current value is
-    available so this can't be date-filtered - use `_sum_snapshot_deltas` for
-    that case.
-    """
-    from backend.app.models.smart_plug import SmartPlug
-
-    plugs_result = await db.execute(select(SmartPlug))
-    plugs = list(plugs_result.scalars().all())
-
-    # Resolved per plug rather than branched on by hand. The chain this replaces
-    # had no ``else``, so a plug type it predated matched nothing and silently
-    # contributed zero to the total — the sibling of main.py::_get_plug_energy,
-    # whose own chain defaulted to Tasmota instead. Going through the manager
-    # means a new plug type is one line there. It also configures the Home
-    # Assistant service itself, which is why the ha_url/ha_token preamble that
-    # used to sit here is gone.
-    total = 0.0
-    for plug in plugs:
-        service = await smart_plug_manager.get_service_for_plug(plug, db)
-        energy = await service.get_energy(plug)
-        if not energy:
-            continue
-        # REST reports only a daily figure; every other driver reports a
-        # lifetime one. That asymmetry is real — a REST plug has no lifetime
-        # counter — so it survives the collapse of the per-type chain rather
-        # than being tidied into a single key, which would drop REST plugs out
-        # of the totals entirely.
-        value = energy.get("total")
-        if value is None and plug.plug_type == "rest":
-            value = energy.get("today")
-        if value is not None:
-            total += value
-    return total
-
-
-async def _sum_snapshot_deltas(
-    db: AsyncSession,
-    *,
-    dt_from: datetime | None,
-    dt_to: datetime | None,
-) -> tuple[float, bool]:
-    """Sum per-plug energy consumption over a date range using hourly snapshots.
-
-    For each plug:
-      * baseline  = last snapshot at or before `dt_from` (ideal)
-                    - if missing, fall back to the earliest snapshot ever
-                      recorded for the plug and flag the result as warming up.
-      * endpoint  = last snapshot at or before `dt_to` (or most recent overall)
-      * delta     = max(0, endpoint - baseline)  - clamp counter resets to 0.
-
-    Returns (total_kwh, warming_up). `warming_up = True` means at least one plug
-    had no baseline before `dt_from` (fresh install or fresh upgrade), so the
-    result undercounts the beginning of the range.
-    """
-    from backend.app.models.smart_plug import SmartPlug
-    from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
-
-    plug_ids_result = await db.execute(select(SmartPlug.id))
-    plug_ids = [row[0] for row in plug_ids_result.all()]
-    if not plug_ids:
-        return 0.0, False
-
-    total = 0.0
-    warming_up = False
-    for plug_id in plug_ids:
-        baseline: float | None = None
-        if dt_from is not None:
-            baseline_q = await db.execute(
-                select(SmartPlugEnergySnapshot.lifetime_kwh)
-                .where(
-                    SmartPlugEnergySnapshot.plug_id == plug_id,
-                    SmartPlugEnergySnapshot.recorded_at <= dt_from,
-                )
-                .order_by(SmartPlugEnergySnapshot.recorded_at.desc())
-                .limit(1)
-            )
-            baseline = baseline_q.scalar()
-        if baseline is None:
-            # No snapshot before range start - fall back to the earliest
-            # snapshot ever recorded. Result undercounts the pre-first-snapshot
-            # portion of the range; signal that to the frontend.
-            earliest_q = await db.execute(
-                select(SmartPlugEnergySnapshot.lifetime_kwh)
-                .where(SmartPlugEnergySnapshot.plug_id == plug_id)
-                .order_by(SmartPlugEnergySnapshot.recorded_at.asc())
-                .limit(1)
-            )
-            baseline = earliest_q.scalar()
-            if baseline is None:
-                # No snapshots at all for this plug yet.
-                warming_up = True
-                continue
-            warming_up = True
-
-        endpoint_conditions = [SmartPlugEnergySnapshot.plug_id == plug_id]
-        if dt_to is not None:
-            endpoint_conditions.append(SmartPlugEnergySnapshot.recorded_at <= dt_to)
-        endpoint_q = await db.execute(
-            select(SmartPlugEnergySnapshot.lifetime_kwh)
-            .where(*endpoint_conditions)
-            .order_by(SmartPlugEnergySnapshot.recorded_at.desc())
-            .limit(1)
-        )
-        endpoint = endpoint_q.scalar()
-        if endpoint is None:
-            continue
-
-        total += max(0.0, endpoint - baseline)
-
-    return total, warming_up
 
 
 @router.get("/tags")
@@ -1761,70 +1265,6 @@ async def retry_archive_download(
         "recovered": status == "recovered",
         "message": messages.get(status, "Unknown status"),
     }
-
-
-@router.post("/recalculate-costs")
-async def recalculate_all_costs(
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
-):
-    """Recalculate costs for all archives based on filament usage and prices."""
-
-    result = await db.execute(select(PrintArchive))
-    archives = list(result.scalars().all())
-
-    # Get default filament cost from settings
-    default_cost_per_kg = await default_rate_per_kg(db)
-
-    # Pre-fetch all usage costs and tracked weight by archive_id. Tracked
-    # weight tops up the cost at the default rate for any filament grams not
-    # covered by an inventory spool (#1344).
-    usage_costs_result = await db.execute(
-        select(
-            SpoolUsageHistory.archive_id,
-            func.sum(SpoolUsageHistory.cost),
-            func.sum(SpoolUsageHistory.weight_used),
-        ).group_by(SpoolUsageHistory.archive_id)
-    )
-    usage_costs = usage_costs_result.fetchall()
-    cost_map = {
-        row[0]: (row[1], float(row[2] or 0))
-        for row in usage_costs
-        if row[0] is not None and row[1] is not None and row[1] > 0
-    }
-
-    updated = 0
-    for archive in archives:
-        usage = cost_map.get(archive.id)
-        if usage is not None:
-            usage_cost, tracked_grams = usage
-            total_cost = float(usage_cost)
-            archive_grams = float(archive.filament_used_grams or 0)
-            untracked_grams = max(0.0, archive_grams - tracked_grams)
-            if untracked_grams > 0 and default_cost_per_kg > 0:
-                total_cost += (untracked_grams / 1000.0) * default_cost_per_kg
-            new_cost = round(total_cost, 2)
-        else:
-            # Fallback: sum costs for old records by print_name
-            usage_result = await db.execute(
-                select(func.sum(SpoolUsageHistory.cost)).where(
-                    SpoolUsageHistory.print_name == archive.print_name,
-                    SpoolUsageHistory.archive_id.is_(None),
-                )
-            )
-            fallback_cost = usage_result.scalar()
-            if fallback_cost is not None and fallback_cost > 0:
-                new_cost = round(fallback_cost, 2)
-            elif archive.filament_used_grams and default_cost_per_kg > 0:
-                new_cost = round((archive.filament_used_grams / 1000) * default_cost_per_kg, 2)
-            else:
-                new_cost = None
-        if new_cost is not None and archive.cost != new_cost:
-            archive.cost = new_cost
-            updated += 1
-
-    await db.commit()
-    return {"message": f"Recalculated costs for {updated} archives", "updated": updated}
 
 
 @router.get("/{archive_id}/duplicates")

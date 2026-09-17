@@ -77,6 +77,7 @@ from backend.app.api.routes import (
     smart_plugs,
     spoolman,
     spoolman_inventory,
+    statistics,
     stock,
     support,
     system,
@@ -10528,6 +10529,7 @@ app.include_router(measurement_history.router, prefix=app_settings.api_prefix)
 # don't get swallowed by archives' `/archives/{archive_id}` catch-all.
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
 app.include_router(archives.router, prefix=app_settings.api_prefix)
+app.include_router(statistics.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(filament_families_routes.router, prefix=app_settings.api_prefix)
 app.include_router(orca_cloud.router, prefix=app_settings.api_prefix)

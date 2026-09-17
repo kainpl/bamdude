@@ -49,7 +49,7 @@ async def _add_snapshot(db, plug_id: int, recorded_at: datetime, lifetime_kwh: f
 @pytest.mark.asyncio
 async def test_snapshot_delta_baseline_and_endpoint(db_session, two_plugs):
     """Picks the most recent snapshot at-or-before each bound and returns the difference."""
-    from backend.app.api.routes.archives import _sum_snapshot_deltas
+    from backend.app.services.statistics.energy import sum_snapshot_deltas
 
     p1, p2 = two_plugs
     base = datetime(2026, 4, 10, 0, 0, 0, tzinfo=timezone.utc)
@@ -61,7 +61,7 @@ async def test_snapshot_delta_baseline_and_endpoint(db_session, two_plugs):
     await _add_snapshot(db_session, p2.id, base - timedelta(hours=1), 50.0)
     await _add_snapshot(db_session, p2.id, base + timedelta(hours=20), 53.0)
 
-    total, warming = await _sum_snapshot_deltas(
+    total, warming = await sum_snapshot_deltas(
         db_session,
         dt_from=base,
         dt_to=base + timedelta(hours=24),
@@ -73,13 +73,13 @@ async def test_snapshot_delta_baseline_and_endpoint(db_session, two_plugs):
 @pytest.mark.asyncio
 async def test_snapshot_delta_clamps_counter_reset(db_session, one_plug):
     """A negative delta (counter reset/replacement) clamps to zero rather than going negative."""
-    from backend.app.api.routes.archives import _sum_snapshot_deltas
+    from backend.app.services.statistics.energy import sum_snapshot_deltas
 
     base = datetime(2026, 4, 10, 0, 0, 0, tzinfo=timezone.utc)
     await _add_snapshot(db_session, one_plug.id, base - timedelta(hours=1), 500.0)
     await _add_snapshot(db_session, one_plug.id, base + timedelta(hours=12), 10.0)  # reset
 
-    total, warming = await _sum_snapshot_deltas(
+    total, warming = await sum_snapshot_deltas(
         db_session,
         dt_from=base,
         dt_to=base + timedelta(hours=24),
@@ -91,7 +91,7 @@ async def test_snapshot_delta_clamps_counter_reset(db_session, one_plug):
 @pytest.mark.asyncio
 async def test_snapshot_warming_up_when_no_baseline(db_session, two_plugs):
     """Falls back to earliest snapshot and flags warming_up when no pre-range baseline."""
-    from backend.app.api.routes.archives import _sum_snapshot_deltas
+    from backend.app.services.statistics.energy import sum_snapshot_deltas
 
     p1, _ = two_plugs
     base = datetime(2026, 4, 10, 0, 0, 0, tzinfo=timezone.utc)
@@ -99,7 +99,7 @@ async def test_snapshot_warming_up_when_no_baseline(db_session, two_plugs):
     await _add_snapshot(db_session, p1.id, base + timedelta(hours=2), 100.0)
     await _add_snapshot(db_session, p1.id, base + timedelta(hours=20), 102.5)
 
-    total, warming = await _sum_snapshot_deltas(
+    total, warming = await sum_snapshot_deltas(
         db_session,
         dt_from=base,
         dt_to=base + timedelta(hours=24),
@@ -112,7 +112,7 @@ async def test_snapshot_warming_up_when_no_baseline(db_session, two_plugs):
 @pytest.mark.asyncio
 async def test_snapshot_warming_up_when_no_snapshots_at_all(db_session, two_plugs):
     """A plug with zero snapshots contributes nothing but flips warming_up."""
-    from backend.app.api.routes.archives import _sum_snapshot_deltas
+    from backend.app.services.statistics.energy import sum_snapshot_deltas
 
     p1, p2 = two_plugs
     base = datetime(2026, 4, 10, 0, 0, 0, tzinfo=timezone.utc)
@@ -121,7 +121,7 @@ async def test_snapshot_warming_up_when_no_snapshots_at_all(db_session, two_plug
     await _add_snapshot(db_session, p1.id, base + timedelta(hours=10), 12.0)
     # p2 has nothing → flips warming_up but adds 0.
 
-    total, warming = await _sum_snapshot_deltas(
+    total, warming = await sum_snapshot_deltas(
         db_session,
         dt_from=base,
         dt_to=base + timedelta(hours=24),
@@ -133,9 +133,9 @@ async def test_snapshot_warming_up_when_no_snapshots_at_all(db_session, two_plug
 @pytest.mark.asyncio
 async def test_snapshot_no_plugs_returns_empty(db_session):
     """No plugs configured at all → 0 kWh, not warming."""
-    from backend.app.api.routes.archives import _sum_snapshot_deltas
+    from backend.app.services.statistics.energy import sum_snapshot_deltas
 
-    total, warming = await _sum_snapshot_deltas(
+    total, warming = await sum_snapshot_deltas(
         db_session,
         dt_from=datetime(2026, 4, 10, tzinfo=timezone.utc),
         dt_to=datetime(2026, 4, 11, tzinfo=timezone.utc),
@@ -147,7 +147,7 @@ async def test_snapshot_no_plugs_returns_empty(db_session):
 @pytest.mark.asyncio
 async def test_snapshot_endpoint_windowing(db_session, one_plug):
     """Endpoint picks the latest snapshot at-or-before dt_to (later snapshots ignored)."""
-    from backend.app.api.routes.archives import _sum_snapshot_deltas
+    from backend.app.services.statistics.energy import sum_snapshot_deltas
 
     base = datetime(2026, 4, 10, 0, 0, 0, tzinfo=timezone.utc)
     await _add_snapshot(db_session, one_plug.id, base - timedelta(hours=1), 100.0)
@@ -155,7 +155,7 @@ async def test_snapshot_endpoint_windowing(db_session, one_plug):
     # Past dt_to → must be ignored
     await _add_snapshot(db_session, one_plug.id, base + timedelta(hours=30), 200.0)
 
-    total, warming = await _sum_snapshot_deltas(
+    total, warming = await sum_snapshot_deltas(
         db_session,
         dt_from=base,
         dt_to=base + timedelta(hours=24),
