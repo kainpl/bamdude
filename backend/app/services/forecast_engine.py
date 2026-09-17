@@ -106,6 +106,18 @@ class RateEstimate(NamedTuple):
     std_dev: float
 
 
+def _now() -> datetime:
+    """The one clock the engine reads when a caller names no instant.
+
+    A single function rather than two inline ``datetime.now`` calls so a test
+    can pin request time to the same instant it seeded with. Without that the
+    seed clock and the request clock are minutes apart inside a long suite, and
+    a day bucket lands on either side of a ``floor`` - which is what made three
+    different forecast tests take turns failing (2026-09-18).
+    """
+    return datetime.now(timezone.utc)
+
+
 def history_rate(day_buckets: list[tuple[date, float]], now: datetime) -> RateEstimate | None:
     """Time-weighted g/day from UTC-day usage buckets, or None with too little
     to measure.
@@ -472,7 +484,7 @@ async def compute_forecast_full(
     way of pinning the zero invariant. Consumers: the forecast list endpoint
     (this), and ``compute_forecast`` for everything that only wants rows.
     """
-    now = _as_utc(now) or datetime.now(timezone.utc)
+    now = _as_utc(now) or _now()
     now_naive = now.astimezone(timezone.utc).replace(tzinfo=None)
     window_start = now_naive - timedelta(days=USAGE_WINDOW_DAYS)
 
@@ -723,7 +735,7 @@ async def usage_day_series(
     not the rate model's input (the exclusion exists only because pre-reset
     events have no anchor for a RATE).
     """
-    now = _as_utc(now) or datetime.now(timezone.utc)
+    now = _as_utc(now) or _now()
     window_start = now.astimezone(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
 
     wanted = {sku_key(*key): key for key in sku_keys}

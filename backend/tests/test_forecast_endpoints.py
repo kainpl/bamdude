@@ -55,11 +55,23 @@ from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
 pytestmark = pytest.mark.asyncio
 
-# Seed-time clock. The routes compute with the REQUEST-time now, seconds later —
-# every exact-value assertion below is drift-proof (single-observation history
-# rates don't depend on decay weights; day buckets are written, not derived),
-# and the few date assertions accept both sides of a midnight crossing.
+# Seed-time clock, and — through ``_pin_the_engine_clock`` below — request time
+# as well.
+#
+# ⚠️ These used to be two clocks minutes apart: the module seeded at import and
+# the routes computed with the real now, which inside a ~10-minute suite put a
+# day bucket on either side of a ``floor``. The comment here claimed every
+# assertion was "drift-proof"; it was not, and on 2026-09-17/18 three different
+# tests in this file took turns failing across runs (``TestForecastRows``,
+# ``TestForecastLogistics``, ``TestForecastChart``) — one cause wearing three
+# faces, which reads as three unrelated flakes and got dismissed as such.
 NOW = datetime.now(timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _pin_the_engine_clock(monkeypatch):
+    """Make the engine answer from the instant this module seeded with."""
+    monkeypatch.setattr(forecast_engine, "_now", lambda: NOW)
 
 
 def _naive(dt: datetime) -> datetime:
