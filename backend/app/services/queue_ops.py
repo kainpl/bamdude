@@ -60,7 +60,13 @@ async def place_pending_block(
 
     existing = await _pending_items_in_queue(db, queue_id)
     if enqueue_position == "end":
-        next_position = max((item.position for item in existing), default=-1) + 1
+        # ⚠️ ``default=0``, so the first pending row of an empty queue is 1, not 0.
+        # Position 0 is the direct-print claim's slot (``queue_batch``: "position=0
+        # keeps it out of the pending ordering"); letting pending work start there
+        # too costs that row its one distinguishing mark, and every listing that
+        # orders by ``(position, id)`` without filtering on status then sorts a
+        # live claim against fresh pending work by insertion order.
+        next_position = max((item.position for item in existing), default=0) + 1
         for offset, item in enumerate(new_items):
             item.position = next_position + offset
         return
