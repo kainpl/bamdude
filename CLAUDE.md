@@ -37,7 +37,8 @@ DEBUG=true uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000 --lo
 cd frontend && npm run dev                       # /api → :8000
 ruff check backend/                              # +--fix; ruff format
 cd frontend && npm run lint && npm run typecheck # ⚠ NOT `npx tsc --noEmit` — that checks NOTHING
-pytest backend/tests/ -v                         # -k "name" single test
+CAMERA_RUNTIME=inline pytest backend/tests/ -n auto --timeout=300 --timeout-method=thread
+pytest backend/tests/ -k "name" -v               # one test; same two rules apply
 cd frontend && npm run test:run                  # vitest
 cd frontend && npm run build                     # tracked static/
 ./test_backend.sh · ./test_frontend.sh · ./test_all.sh
@@ -45,6 +46,8 @@ bash docker-publish.sh 0.X.Y --parallel          # EMERGENCY ONLY — a v* tag a
 ```
 
 ⚠ **Slicer sidecars** — `cd slicer-api && docker compose --profile all build && docker compose --profile all up -d` (health :3001 bambu, :3003 orca). Two traps, both silent: the build context is the fork's **GitHub URL**, not the local checkout; and the version lives in **both** `docker-compose.yml` and `.env`, where `.env` wins. Details: vault `10-repos/orca-slicer-api/slicer-docker.md`.
+
+⚠ **Run the backend suite FROM THE REPO ROOT, and keep your `.env` out of it.** Both halves are load-bearing and each is a different red suite. *Root*, because tests resolve repo paths and `camera_worker_supervisor` spawns `python -m backend.app.camera_worker` with no `cwd=`, so from `backend/` the child cannot import the package and nine tests die on a startup timeout. *`CAMERA_RUNTIME=inline`*, because `settings` is a singleton built at import and pydantic-settings reads `.env` from the working directory — a maintainer `.env` carrying `CAMERA_RUNTIME=worker` makes `unit/services/test_vp_startup.py` fail six tests and **hang one forever** (no timeout fires; the process just sits). ⚠ Do NOT "also" override `DATABASE_URL`: it looks like the matching fix and breaks seven tests — `unit/core/test_database_url_modes.py` asserts on how that value resolves from dotenv, and `unit/test_prune_orphan_archive_files.py` drives a script that reads the database from settings. `:memory:` additionally breaks the engine at import (StaticPool rejects `pool_size`). That leak is closed in `conftest`, never from the command line. `--timeout` is what turns a hung test into a named failure; without it a full run is an hour of silence. Measured 2026-09-17: ~11 min with `-n auto`.
 
 ⚠ **`npx tsc --noEmit` is a silent no-op here.** The root `tsconfig.json` is `"files": []` plus project references, so without `-b` the compiler enters no file and exits 0 on anything — including a file whose only line is `export const x: number = NOT_DEFINED_ANYWHERE;` (measured 2026-07-28). Always `npm run typecheck` (`tsc -b --noEmit`). A refactor that dropped an import passed a bare `tsc` run and surfaced only as a blank dialog under vitest. ⚠ The pre-commit hook checks the **app** project only (`tsc -b tsconfig.app.json`, ~43 s, keeps commits fast); `npm run typecheck` also enters `src/__tests__` — run it before claiming green. Since 2026-09-04 the root references `tsconfig.test.json` too, so `src/__tests__` is type-checked as well — the run costs ~2× (a second full program over the same `src` graph), and a fixture that has drifted from its wire type now fails the check instead of only vitest.
 

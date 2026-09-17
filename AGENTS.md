@@ -17,7 +17,10 @@ The five things that most often go wrong for an agent here:
 4. **Every new `Permission` lands in three places** (`core/permissions.py`, the
    API-key scope map in `core/auth.py`, and a seed for Administrators in the
    migration) — a drift-guard test fails otherwise.
-5. **Tests are run, not described.** `ruff check backend/`, `pytest backend/tests/`
+5. **Tests are run, not described.** `ruff check backend/`,
+   `CAMERA_RUNTIME=inline pytest backend/tests/ -n auto --timeout=300 --timeout-method=thread`
+   from the repo root (CONTRIBUTING.md explains why both the directory and the
+   prefix matter)
    (or the targeted file), `npm run lint && npm run typecheck && npm run test:run`
    — and the CHANGELOG entry goes in the same change.
 

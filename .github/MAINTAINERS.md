@@ -49,6 +49,8 @@ cd frontend && npm run lint -- --fix                   # Frontend Lint
 cd frontend && npm run typecheck                       # Frontend Type Check — NOT `npx tsc --noEmit`, that checks nothing
 cd frontend && npm run i18n:check                      # en/uk drift, names the key
 pytest backend/tests/ -k "<name>" -v                   # a single backend test
+# Full suite: from the REPO ROOT, with the .env kept out of it (CONTRIBUTING.md#testing)
+CAMERA_RUNTIME=inline pytest backend/tests/ -n auto --timeout=300 --timeout-method=thread
 ```
 
 ## Merging a contributor PR

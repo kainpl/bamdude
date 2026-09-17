@@ -124,7 +124,7 @@ jobs gate the merge. The same commands, locally:
 | CI job | Run locally |
 |---|---|
 | Backend Lint | `ruff check backend/ && ruff format --check backend/` |
-| Backend Tests | `pytest backend/tests/ -n auto` |
+| Backend Tests | `CAMERA_RUNTIME=inline pytest backend/tests/ -n auto --timeout=300 --timeout-method=thread` (from the repo root — see [Testing](#testing)) |
 | PostgreSQL Scenarios | `TEST_POSTGRES_URL=postgresql://… pytest backend/tests/integration/test_postgres_scenarios.py` (see [Testing](#testing)) |
 | Backend Security | `pip-audit` |
 | Frontend Lint | `cd frontend && npm run lint && npm run i18n:check` |
@@ -303,11 +303,30 @@ the goal; a test that would have caught the bug is.
 ### Backend
 
 ```bash
-pytest backend/tests/ -n auto              # full suite (pytest-xdist)
+# Full suite. Run it from the REPO ROOT, and keep your own .env out of it.
+CAMERA_RUNTIME=inline pytest backend/tests/ -n auto --timeout=300 --timeout-method=thread
 pytest backend/tests/ -k "queue and busy"  # by name
 pytest backend/tests/unit/services/test_preheat_does_not_strand_heaters.py -v
 pytest backend/tests/ -m "not slow"
 ```
+
+Three things about that command are not decoration:
+
+- **Repo root.** Some tests resolve paths against the repository and one spawns
+  `python -m backend.app.camera_worker`, which needs the root importable. From
+  `backend/` those fail for reasons that have nothing to do with your change.
+- **`CAMERA_RUNTIME=inline`.** Settings are read once at import, and
+  pydantic-settings loads `.env` from the working directory. A development
+  `.env` that sets `CAMERA_RUNTIME=worker` makes the virtual-printer startup
+  tests fail and one of them hang forever. An environment variable overrides
+  `.env`, so the prefix is enough — do not edit your `.env` for this. Do **not**
+  override `DATABASE_URL` the same way: tests assert on how that value resolves,
+  and one drives a script that reads the database from settings.
+- **`--timeout`.** Without it a hung test is silence, not a failure. With it you
+  get the test's name.
+
+If you have no `.env`, the defaults already match and the prefix changes
+nothing — it is there so one command works for everybody.
 
 - Layout: `backend/tests/unit/{core,routes,services}/` mirrors `backend/app/`;
   cross-cutting suites sit directly in `backend/tests/`; `integration/` holds the

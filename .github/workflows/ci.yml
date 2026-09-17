@@ -155,11 +155,19 @@ jobs:
       # worst kind of gate: it fails without naming anything. Per-test
       # `--timeout=60` is what actually catches a hung test; this number only
       # needs to be comfortably above however long the suite honestly takes.
+      # ⚠️ From the REPO ROOT, not `cd backend`. Some tests resolve paths
+      # against the repository and one spawns `python -m
+      # backend.app.camera_worker`, which needs the root importable; run from
+      # `backend/` they fail on the directory, not on the code. The runner has
+      # no `.env`, so CAMERA_RUNTIME already defaults to inline — it is set
+      # explicitly so this line and the one contributors run are the same
+      # command, and so the default cannot drift out from under CI silently.
+      # See CONTRIBUTING.md#testing.
       - name: Run tests
         timeout-minutes: 20
-        run: |
-          cd backend
-          python -m pytest tests/ -v --tb=short --timeout=60 --timeout-method=thread -n auto
+        env:
+          CAMERA_RUNTIME: inline
+        run: python -m pytest backend/tests/ -v --tb=short --timeout=60 --timeout-method=thread -n auto
 
   postgres-scenarios:
     name: PostgreSQL Scenarios
