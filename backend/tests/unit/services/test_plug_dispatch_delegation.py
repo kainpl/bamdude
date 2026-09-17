@@ -5,7 +5,7 @@ which driver a plug used, because the resolver existed in two verbatim copies.
 These two sites are the same defect one layer down: they branch on ``plug_type``
 by hand, so a plug type they predate is either silently misrouted (``main.py``
 ends its chain with ``else: tasmota_service``, an HTTP poll against an IP a
-Zigbee plug does not have) or silently skipped (``archives.py`` has no ``else``
+Zigbee plug does not have) or silently skipped (the resolver has no ``else``
 and simply adds nothing).
 
 Both feed per-print energy, which is why this is the same failure mode phase 0
@@ -221,11 +221,11 @@ class TestTheEndOfAPrintAsksThePlugItself:
 @pytest.mark.asyncio
 async def test_archive_total_asks_the_resolver():
     """A plug type the chain predates must contribute, not be skipped."""
-    from backend.app.api.routes import archives
+    from backend.app.services.statistics import energy
 
     driver = SimpleNamespace(get_energy=AsyncMock(return_value={"total": 2.0}))
-    with patch.object(archives.smart_plug_manager, "get_service_for_plug", AsyncMock(return_value=driver)):
-        total = await archives._sum_live_plug_totals(_FakeDB([_plug("some-future-type")]))
+    with patch.object(energy.smart_plug_manager, "get_service_for_plug", AsyncMock(return_value=driver)):
+        total = await energy.sum_live_plug_totals(_FakeDB([_plug("some-future-type")]))
 
     assert total == 2.0
 
@@ -238,11 +238,11 @@ async def test_archive_total_still_reads_rest_daily_figure():
     no lifetime counter. Collapsing both onto one key while removing the
     per-type chain would silently drop REST plugs out of the totals.
     """
-    from backend.app.api.routes import archives
+    from backend.app.services.statistics import energy
 
     driver = SimpleNamespace(get_energy=AsyncMock(return_value={"today": 0.75}))
-    with patch.object(archives.smart_plug_manager, "get_service_for_plug", AsyncMock(return_value=driver)):
-        total = await archives._sum_live_plug_totals(_FakeDB([_plug("rest")]))
+    with patch.object(energy.smart_plug_manager, "get_service_for_plug", AsyncMock(return_value=driver)):
+        total = await energy.sum_live_plug_totals(_FakeDB([_plug("rest")]))
 
     assert total == 0.75
 
@@ -250,11 +250,11 @@ async def test_archive_total_still_reads_rest_daily_figure():
 @pytest.mark.asyncio
 async def test_archive_total_ignores_a_driver_that_returns_nothing():
     """An unreachable plug contributes zero rather than raising."""
-    from backend.app.api.routes import archives
+    from backend.app.services.statistics import energy
 
     driver = SimpleNamespace(get_energy=AsyncMock(return_value=None))
-    with patch.object(archives.smart_plug_manager, "get_service_for_plug", AsyncMock(return_value=driver)):
-        total = await archives._sum_live_plug_totals(_FakeDB([_plug("mqtt")]))
+    with patch.object(energy.smart_plug_manager, "get_service_for_plug", AsyncMock(return_value=driver)):
+        total = await energy.sum_live_plug_totals(_FakeDB([_plug("mqtt")]))
 
     assert total == 0.0
 
