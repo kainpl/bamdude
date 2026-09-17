@@ -1,11 +1,14 @@
 """``scripts/prune_orphan_archive_files.py`` — what it deletes, and what it must not.
 
-The script reconciles ``<DATA_DIR>/archive/`` against the file columns of
-``print_archives`` and ``library_files``. Two things brought it here:
+The script reconciles ``<DATA_DIR>/archive/`` and ``<DATA_DIR>/library/``
+against the file columns of ``print_archives`` and ``library_files`` — two file
+roots, one reference set, because those two tables name files under both
+(vault 40-invariants/inv-data-dir-one-root-per-subsystem). Two things brought
+it here:
 
 * ``delete_project`` and ``delete_product`` remove the row and leave
-  ``archive/{projects,products}/<id>/attachments/`` on disk, so a deleted
-  order's pictures outlive it — nothing swept those;
+  ``{projects,products}/<id>/attachments/`` on disk, so a deleted order's
+  pictures outlive it — nothing swept those;
 * ⚠️ and those same directories were inside the FILE sweep, where no row can
   ever name them, so ``--apply`` on a healthy install would have deleted every
   LIVE attachment as an orphan.
@@ -29,6 +32,7 @@ def _data_dir(tmp_path: Path, *, projects=(1,), products=(1,), with_tables=True)
     conn.execute("CREATE TABLE print_archives (file_path TEXT, thumbnail_path TEXT)")
     conn.execute("CREATE TABLE library_files (file_path TEXT, thumbnail_path TEXT)")
     conn.execute("INSERT INTO print_archives VALUES ('archive/kept/a.3mf', 'archive/kept/a.png')")
+    conn.execute("INSERT INTO library_files VALUES ('library/files/c.3mf', NULL)")
     if with_tables:
         conn.execute("CREATE TABLE projects (id INTEGER PRIMARY KEY)")
         conn.execute("CREATE TABLE products (id INTEGER PRIMARY KEY)")
@@ -50,10 +54,14 @@ def _populate(data: Path) -> dict[str, Path]:
     return {
         "referenced": _write(archive / "kept" / "a.3mf"),
         "orphan": _write(archive / "stray" / "b.3mf"),
-        "live_attachment": _write(archive / "projects" / "1" / "attachments" / "cover.png"),
-        "dead_order": _write(archive / "projects" / "9" / "attachments" / "cover.png"),
-        "live_product": _write(archive / "products" / "1" / "attachments" / "bom.csv"),
-        "dead_product": _write(archive / "products" / "7" / "attachments" / "bom.csv"),
+        # The library is its own root since m177 and is swept against the same
+        # reference set - a file nothing names there is an orphan too.
+        "library_referenced": _write(data / "library" / "files" / "c.3mf"),
+        "library_orphan": _write(data / "library" / "files" / "stray.3mf"),
+        "live_attachment": _write(data / "projects" / "1" / "attachments" / "cover.png"),
+        "dead_order": _write(data / "projects" / "9" / "attachments" / "cover.png"),
+        "live_product": _write(data / "products" / "1" / "attachments" / "bom.csv"),
+        "dead_product": _write(data / "products" / "7" / "attachments" / "bom.csv"),
     }
 
 
@@ -65,8 +73,8 @@ def test_a_dry_run_reports_the_orphans_and_touches_nothing(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "Orphan attachment directories: 2" in out
-    assert str(data / "archive" / "projects" / "9") in out
-    assert str(data / "archive" / "products" / "7") in out
+    assert str(data / "projects" / "9") in out
+    assert str(data / "products" / "7") in out
     assert all(p.exists() for p in paths.values()), "a dry run deleted something"
 
 
@@ -78,12 +86,14 @@ def test_apply_removes_the_dead_directories_and_keeps_the_live_ones(tmp_path):
 
     assert paths["referenced"].exists()
     assert not paths["orphan"].exists(), "an unreferenced archive file is still an orphan"
+    assert paths["library_referenced"].exists()
+    assert not paths["library_orphan"].exists(), "the library root is swept against the same rows"
     # ⚠️ The whole point: a live order's and a live product's attachments are
     # not archive files, and are not orphans either.
     assert paths["live_attachment"].exists()
     assert paths["live_product"].exists()
-    assert not (data / "archive" / "projects" / "9").exists()
-    assert not (data / "archive" / "products" / "7").exists()
+    assert not (data / "projects" / "9").exists()
+    assert not (data / "products" / "7").exists()
 
 
 def test_a_database_without_the_tables_sweeps_neither_subtree(tmp_path, capsys):
@@ -99,12 +109,12 @@ def test_a_database_without_the_tables_sweeps_neither_subtree(tmp_path, capsys):
 
     err = capsys.readouterr().err
     assert "cannot read projects" in err and "cannot read products" in err
-    assert all(p.exists() for key, p in paths.items() if key != "orphan")
+    assert all(p.exists() for key, p in paths.items() if key not in ("orphan", "library_orphan"))
 
 
 def test_a_directory_that_is_not_an_id_is_left_alone(tmp_path, capsys):
     data = _data_dir(tmp_path)
-    stray = _write(data / "archive" / "projects" / "notanid" / "attachments" / "x.png")
+    stray = _write(data / "projects" / "notanid" / "attachments" / "x.png")
 
     assert prune.main(["--data-dir", str(data), "--apply"]) == 0
 

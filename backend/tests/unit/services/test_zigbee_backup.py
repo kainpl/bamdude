@@ -9,7 +9,12 @@ from backend.app.services.backup_files import FileRestore, stage_zigbee_db as _s
 
 def _restore_zigbee_db(staging, data_dir):
     settings = SimpleNamespace(
-        base_dir=data_dir, archive_dir=data_dir / "archive", plate_calibration_dir=data_dir / "plate_calibration"
+        base_dir=data_dir,
+        archive_dir=data_dir / "archive",
+        library_dir=data_dir / "library",
+        projects_dir=data_dir / "projects",
+        products_dir=data_dir / "products",
+        plate_calibration_dir=data_dir / "plate_calibration",
     )
     files = FileRestore(staging, settings, data_dir)
     try:

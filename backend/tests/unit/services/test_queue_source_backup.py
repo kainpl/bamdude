@@ -75,6 +75,9 @@ def test_file_restore_swaps_the_queue_spool_as_one_directory(tmp_path):
     settings = SimpleNamespace(
         base_dir=live,
         archive_dir=live / "archive",
+        library_dir=live / "library",
+        projects_dir=live / "projects",
+        products_dir=live / "products",
         plate_calibration_dir=live / "plate_calibration",
     )
     restore = backup_files.FileRestore(staging, settings, live)
@@ -100,7 +103,14 @@ def test_pre_rename_backup_restores_the_legacy_directory_for_startup_migration(t
     backup_files.validate_staged_queue_spool(staging, backup_db)
 
     live = tmp_path / "live"
-    settings = SimpleNamespace(base_dir=live, archive_dir=live / "archive", plate_calibration_dir=live / "plate_calibration")
+    settings = SimpleNamespace(
+        base_dir=live,
+        archive_dir=live / "archive",
+        library_dir=live / "library",
+        projects_dir=live / "projects",
+        products_dir=live / "products",
+        plate_calibration_dir=live / "plate_calibration",
+    )
     restore = backup_files.FileRestore(staging, settings, live)
     restore.prepare()
     restore.apply()
