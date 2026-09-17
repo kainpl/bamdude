@@ -738,6 +738,8 @@ class TestLibraryFilesAPI:
             "sliced_for_model",
             "swap_compatible",
             "is_multi_plate",
+            "filament_types",
+            "plate_summaries",
             "source_type",
             "source_url",
             "notes_count",
@@ -747,6 +749,114 @@ class TestLibraryFilesAPI:
         assert set(row.keys()) == expected_fields
         assert row["id"] == lib_file.id
         assert row["filename"] == "legacy.3mf"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_multi_plate_row_leads_with_plate_one_and_carries_every_plates_slice(
+        self, async_client: AsyncClient, folder_factory, file_factory
+    ):
+        """spec §4 - plate 1's figures at the top (never a sum), one seven-field slice per plate."""
+        folder = await folder_factory()
+        plates = [
+            {
+                "index": 1,
+                "name": "Body",
+                "objects": ["body"],
+                "object_count": 2,
+                "has_thumbnail": True,
+                "print_time_seconds": 3600,
+                "filament_used_grams": 40.0,
+                "total_layers": 100,
+                "filaments": [
+                    {"slot_id": 1, "type": "PETG", "color": "#000000", "used_grams": 30.0, "used_meters": 10.0},
+                    {"slot_id": 2, "type": "PLA", "color": "#ffffff", "used_grams": 10.0, "used_meters": 3.0},
+                    {"slot_id": 3, "type": "PETG", "color": "#ff0000", "used_grams": 0.0, "used_meters": 0.0},
+                ],
+            },
+            {
+                "index": 2,
+                "name": None,
+                "objects": ["lid"],
+                "object_count": 1,
+                "has_thumbnail": False,
+                "print_time_seconds": 900,
+                "filament_used_grams": 5.5,
+                "total_layers": 20,
+                "filaments": [{"slot_id": 1, "type": "TPU", "color": "#00ff00", "used_grams": 5.5, "used_meters": 2.0}],
+            },
+        ]
+        await file_factory(
+            folder_id=folder.id,
+            filename="multi.gcode.3mf",
+            file_metadata={
+                # What a pre-change list summed: 4500 s / 45.5 g / 3 objects. None of it may show.
+                "print_time_seconds": 4500,
+                "filament_used_grams": 45.5,
+                "filament_type": "PETG, PLA, TPU",
+                "printable_objects": {"1": "body", "2": "body", "3": "lid"},
+                "is_multi_plate": True,
+                "plates": plates,
+            },
+        )
+        (row,) = (await async_client.get(f"/api/v1/library/files?folder_id={folder.id}")).json()
+        assert (row["print_time_seconds"], row["filament_used_grams"], row["object_count"]) == (3600, 40.0, 2)
+        assert row["filament_types"] == ["PETG", "PLA"]  # plate 1's, slot order, deduplicated
+        assert [p["index"] for p in row["plate_summaries"]] == [1, 2]
+        assert row["plate_summaries"][1] == {
+            "index": 2,
+            "name": None,
+            "print_time_seconds": 900,
+            "filament_used_grams": 5.5,
+            "object_count": 1,
+            "filament_types": ["TPU"],
+            "has_thumbnail": False,
+        }
+        assert "total_layers" not in row["plate_summaries"][0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_single_plate_legacy_and_mesh_rows_carry_types_but_no_slice(
+        self, async_client: AsyncClient, folder_factory, file_factory
+    ):
+        folder = await folder_factory()
+        await file_factory(
+            folder_id=folder.id,
+            filename="one.gcode.3mf",
+            file_metadata={
+                "print_time_seconds": 1200,
+                "filament_used_grams": 12.0,
+                "is_multi_plate": False,
+                "plates": [
+                    {
+                        "index": 1,
+                        "name": None,
+                        "objects": ["a"],
+                        "object_count": 1,
+                        "has_thumbnail": True,
+                        "print_time_seconds": 1200,
+                        "filament_used_grams": 12.0,
+                        "filaments": [
+                            {"slot_id": 1, "type": "PLA", "color": "#fff", "used_grams": 12.0, "used_meters": 4.0}
+                        ],
+                    }
+                ],
+            },
+        )
+        # Uploaded before m023: no plates cache, only the top-level snapshot.
+        await file_factory(
+            folder_id=folder.id,
+            filename="legacy.gcode.3mf",
+            file_metadata={"print_time_seconds": 600, "filament_type": "ASA, ASA"},
+        )
+        await file_factory(folder_id=folder.id, filename="mesh.stl", file_type="stl", file_metadata={})
+        rows = {
+            r["filename"]: r for r in (await async_client.get(f"/api/v1/library/files?folder_id={folder.id}")).json()
+        }
+        assert rows["one.gcode.3mf"]["filament_types"] == ["PLA"] and rows["one.gcode.3mf"]["plate_summaries"] == []
+        assert rows["one.gcode.3mf"]["print_time_seconds"] == 1200
+        assert rows["legacy.gcode.3mf"]["filament_types"] == ["ASA"]
+        assert rows["legacy.gcode.3mf"]["print_time_seconds"] == 600
+        assert rows["mesh.stl"]["filament_types"] == [] and rows["mesh.stl"]["plate_summaries"] == []
 
     @pytest.mark.asyncio
     @pytest.mark.integration

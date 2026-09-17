@@ -268,6 +268,21 @@ class TagBulkAssignResponse(BaseModel):
     associations_removed: int
 
 
+class PlateSummary(BaseModel):
+    """One plate as the library card pages through it - the seven things the
+    card shows (vault 60-specs/library-multiplate-card-spec §4, §5). Deeper
+    detail (grams per slot, object names, bed type, layers) stays behind
+    ``/library/files/{id}/plates``."""
+
+    index: int
+    name: str | None = None
+    print_time_seconds: int | None = None
+    filament_used_grams: float | None = None
+    object_count: int | None = None
+    filament_types: list[str] = []
+    has_thumbnail: bool = False
+
+
 class FileListResponse(BaseModel):
     """Schema for file list item (lighter than full response)."""
 
@@ -307,6 +322,11 @@ class FileListResponse(BaseModel):
     sliced_for_model: str | None = None
     swap_compatible: bool = False
     is_multi_plate: bool = False
+    # spec §4 - plate 1's (or the only plate's) filament types in slot order,
+    # and one compact slice per plate for a multi-plate file (empty otherwise),
+    # so the card pages through plates without a /plates request per card.
+    filament_types: list[str] = []
+    plate_summaries: list[PlateSummary] = []
     # Provenance (m033) — same semantics as ``FileResponse``. List endpoint
     # surfaces them so the file card can show the "MakerWorld" / "Sliced"
     # badge without a follow-up detail fetch.

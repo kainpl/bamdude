@@ -64,6 +64,7 @@ from backend.app.schemas.library import (
     LibraryGroupingMetadata,
     LibraryGroupingPlate,
     OrderCandidateOut,
+    PlateSummary,
     ProductRef,
     TagSummary,
     ZipExtractError,
@@ -99,6 +100,7 @@ from backend.app.services.library_helpers import (
 from backend.app.services.library_ingest import IngestResult, find_reusable_row
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.order_filing import order_candidates
+from backend.app.services.plate_summaries import cached_plates, plate_summary, split_types
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.process_overrides import apply_process_overrides
 from backend.app.services.product_files import attachment_limit, exceeds_attachment_limit
@@ -2090,6 +2092,8 @@ async def list_files(
         sliced_for_model = None
         object_count = None
         is_multi_plate = False
+        filament_types: list[str] = []
+        plate_summaries: list[PlateSummary] = []
         if f.file_metadata:
             print_name = f.file_metadata.get("print_name")
             print_time = f.file_metadata.get("print_time_seconds")
@@ -2099,37 +2103,32 @@ async def list_files(
             if isinstance(printable_objects, dict):
                 object_count = len(printable_objects)
             # ``is_multi_plate`` is pre-computed at upload + by m023 backfill
-            # so the frontend can gate gallery rendering without an extra
-            # /plates fetch per single-plate file.
+            # so the frontend can gate the carousel without an extra /plates
+            # fetch per single-plate file.
             is_multi_plate = bool(f.file_metadata.get("is_multi_plate"))
+            filament_types = split_types(f.file_metadata.get("filament_type"))
 
-            # Multi-plate files: replace the single-plate snapshot values
-            # with sums across every plate. The card represents the WHOLE
-            # file, so showing only plate 1's time / weight / object count
-            # is misleading. The cached ``plates`` array (m023) carries
-            # everything we need — no ZIP open.
-            if is_multi_plate:
-                plates_payload = f.file_metadata.get("plates")
-                if isinstance(plates_payload, list) and plates_payload:
-                    time_sum = 0
-                    grams_sum = 0.0
-                    objects_sum = 0
-                    for p in plates_payload:
-                        pt = p.get("print_time_seconds") if isinstance(p, dict) else None
-                        if isinstance(pt, (int, float)):
-                            time_sum += int(pt)
-                        pg = p.get("filament_used_grams") if isinstance(p, dict) else None
-                        if isinstance(pg, (int, float)):
-                            grams_sum += float(pg)
-                        po = p.get("printable_objects") if isinstance(p, dict) else None
-                        if isinstance(po, dict):
-                            objects_sum += len(po)
-                    if time_sum > 0:
-                        print_time = time_sum
-                    if grams_sum > 0:
-                        filament_grams = round(grams_sum, 1)
-                    if objects_sum > 0:
-                        object_count = objects_sum
+            # The card shows ONE plate at a time (vault
+            # 60-specs/library-multiplate-card-spec §5), so the figures at the
+            # top of the row are plate 1's - never a sum across plates. 0.4.1
+            # summed them, which described a whole-file print nobody makes,
+            # next to a picture of plate 1. Read from the cached slice when it
+            # exists: it is sorted by index, whereas the top-level snapshot is
+            # whichever gcode entry the ZIP listed first. A figure the slice
+            # lacks keeps the snapshot's - never erased by None.
+            plates = cached_plates(f.file_metadata)
+            if plates:
+                first = plate_summary(plates[0])
+                if first["print_time_seconds"] is not None:
+                    print_time = first["print_time_seconds"]
+                if first["filament_used_grams"] is not None:
+                    filament_grams = first["filament_used_grams"]
+                if first["object_count"] is not None:
+                    object_count = first["object_count"]
+                if first["filament_types"]:
+                    filament_types = first["filament_types"]
+                if is_multi_plate and len(plates) > 1:
+                    plate_summaries = [PlateSummary(**plate_summary(p)) for p in plates]
 
         file_list.append(
             FileListResponse(
@@ -2155,6 +2154,8 @@ async def list_files(
                 sliced_for_model=sliced_for_model,
                 swap_compatible=f.swap_compatible,
                 is_multi_plate=is_multi_plate,
+                filament_types=filament_types,
+                plate_summaries=plate_summaries,
                 source_type=f.source_type,
                 source_url=f.source_url,
                 notes_count=notes_counts.get(f.id, 0),
