@@ -131,6 +131,9 @@ def data_dir_isolation(monkeypatch, tmp_path):
     monkeypatch.setattr(app_settings, "data_dir", tmp_path, raising=False)
     monkeypatch.setattr(app_settings, "base_dir", tmp_path, raising=False)
     monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive", raising=False)
+    monkeypatch.setattr(app_settings, "library_dir", tmp_path / "library", raising=False)
+    monkeypatch.setattr(app_settings, "projects_dir", tmp_path / "projects", raising=False)
+    monkeypatch.setattr(app_settings, "products_dir", tmp_path / "products", raising=False)
 
 
 @pytest.fixture(scope="session")

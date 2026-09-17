@@ -165,6 +165,14 @@ class Settings(BaseSettings):
     # code tree rather than the data tree (#1240, etc.).
     app_dir: Path = _app_dir
     archive_dir: Path = _data_dir / "archive"
+    # Each subsystem owns a root under DATA_DIR (vault
+    # 40-invariants/inv-data-dir-one-root-per-subsystem): archive/ is the
+    # print history and nothing else. Derived, like archive_dir - never an
+    # env override, so every root is on one filesystem and m177's renames
+    # are atomic.
+    library_dir: Path = _data_dir / "library"
+    projects_dir: Path = _data_dir / "projects"
+    products_dir: Path = _data_dir / "products"
     plate_calibration_dir: Path = _plate_cal_dir  # Plate detection references
     static_dir: Path = _app_dir / "static"  # Static files are part of app, not data
     database_url: str = (
@@ -259,6 +267,9 @@ class Settings(BaseSettings):
         # Recalculate paths derived from data_dir
         object.__setattr__(self, "base_dir", self.data_dir)
         object.__setattr__(self, "archive_dir", self.data_dir / "archive")
+        object.__setattr__(self, "library_dir", self.data_dir / "library")
+        object.__setattr__(self, "projects_dir", self.data_dir / "projects")
+        object.__setattr__(self, "products_dir", self.data_dir / "products")
         # DATABASE_URL reaches us two ways: from the process environment, classified
         # at import above, or from .env, which pydantic pours into the field only
         # now — as the raw word "embedded" or a URL. Resolve from the field's final

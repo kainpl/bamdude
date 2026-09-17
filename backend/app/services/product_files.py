@@ -209,9 +209,9 @@ CATEGORY_EXTENSIONS: dict[str, set[str]] = {
 
 
 def product_attachments_dir(product_id: int) -> Path:
-    """``<archive_dir>/products/<id>/attachments`` — the product-side twin of
-    ``routes/projects.py::get_project_attachments_dir``."""
-    return Path(settings.archive_dir) / "products" / str(product_id) / "attachments"
+    """``<DATA_DIR>/products/<id>/attachments`` — the product-side twin of
+    ``routes/projects.py::get_project_attachments_dir``; its own root since m177."""
+    return Path(settings.products_dir) / str(product_id) / "attachments"
 
 
 def safe_attachment_name(filename: str) -> str:

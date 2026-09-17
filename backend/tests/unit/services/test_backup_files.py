@@ -16,7 +16,12 @@ from backend.app.services import backup_files as files
 
 def settings(root):
     return SimpleNamespace(
-        base_dir=root, archive_dir=root / "custom-archive", plate_calibration_dir=root / "calibration"
+        base_dir=root,
+        archive_dir=root / "custom-archive",
+        library_dir=root / "library",
+        projects_dir=root / "projects",
+        products_dir=root / "products",
+        plate_calibration_dir=root / "calibration",
     )
 
 

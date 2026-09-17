@@ -33,7 +33,7 @@ _COVER_EXT_FROM_MIME = {
 
 def get_makerworld_covers_dir() -> Path:
     """Resolve (and create) the on-disk directory for downloaded covers."""
-    covers_dir = Path(settings.archive_dir) / "library" / "makerworld-covers"
+    covers_dir = Path(settings.library_dir) / "makerworld-covers"
     covers_dir.mkdir(parents=True, exist_ok=True)
     return covers_dir
 

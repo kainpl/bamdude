@@ -268,9 +268,9 @@ def _without_print_name(metadata: dict | None) -> dict | None:
 
 
 def get_library_dir() -> Path:
-    """Get the library storage directory."""
-    base_dir = Path(app_settings.archive_dir)
-    library_dir = base_dir / "library"
+    """The file manager's root, ``<DATA_DIR>/library`` - its own root since
+    m177, not a child of the archive (vault 60-specs/data-dir-roots-spec)."""
+    library_dir = Path(app_settings.library_dir)
     library_dir.mkdir(parents=True, exist_ok=True)
     return library_dir
 

@@ -154,6 +154,9 @@ def _get_app_dir() -> Path:
 def _get_data_dirs() -> list[Path]:
     return [
         settings.archive_dir,
+        settings.library_dir,
+        settings.projects_dir,
+        settings.products_dir,
         settings.log_dir,
         settings.plate_calibration_dir,
         settings.base_dir / "virtual_printer",
@@ -171,7 +174,7 @@ def _is_system_path(path: Path) -> bool:
 def _get_storage_rules() -> list[tuple[str, str, Callable]]:
     base_dir = settings.base_dir
     archive_dir = settings.archive_dir
-    library_dir = archive_dir / "library"
+    library_dir = settings.library_dir
     virtual_printer_dir = base_dir / "virtual_printer"
     upload_dir = virtual_printer_dir / "uploads"
 
@@ -233,6 +236,11 @@ def _get_storage_rules() -> list[tuple[str, str, Callable]]:
             "virtual_printer_other",
             "Virtual Printer Other",
             lambda path: _is_under(path, virtual_printer_dir),
+        ),
+        (
+            "attachments",
+            "Attachments",
+            lambda path: _is_under(path, settings.projects_dir) or _is_under(path, settings.products_dir),
         ),
         (
             "downloads",

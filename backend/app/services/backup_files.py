@@ -37,10 +37,12 @@ def directories(settings) -> dict[str, Path]:
     base = Path(settings.base_dir)
     return {
         "archive": Path(settings.archive_dir),
+        "library": Path(settings.library_dir),
         "virtual_printer": base / "virtual_printer",
         "plate_calibration": Path(settings.plate_calibration_dir),
         "icons": base / "icons",
-        "projects": base / "projects",
+        "projects": Path(settings.projects_dir),
+        "products": Path(settings.products_dir),
         "certs": base / "certs",
     }
 

@@ -1751,12 +1751,12 @@ class TestLibraryPathHelpers:
         from backend.app.api.routes.library import to_absolute_path
         from backend.app.core.config import settings
 
-        rel_path = "archive/library/files/test.3mf"
+        rel_path = "library/files/test.3mf"
         abs_path = to_absolute_path(rel_path)
 
         assert abs_path is not None
         assert abs_path.is_absolute()
-        expected = str(settings.base_dir / "archive" / "library" / "files" / "test.3mf")
+        expected = str(settings.base_dir / "library" / "files" / "test.3mf")
         assert str(abs_path) == expected
 
     def test_to_absolute_path_handles_already_absolute(self):

@@ -1078,9 +1078,8 @@ async def add_queue_items_to_project(
 
 
 def get_project_attachments_dir(project_id: int) -> Path:
-    """Get the attachments directory for a project."""
-    base_dir = Path(settings.archive_dir)
-    return base_dir / "projects" / str(project_id) / "attachments"
+    """``<DATA_DIR>/projects/<id>/attachments`` - its own root since m177, not a child of the archive."""
+    return Path(settings.projects_dir) / str(project_id) / "attachments"
 
 
 @router.post("/{project_id}/attachments")

@@ -168,12 +168,13 @@ def _collect_referenced_paths(db_path: Path) -> set[str]:
     return referenced
 
 
-# ``<archive>/<subdir>/<id>/`` — one per row of ``<table>``, attachments inside.
+# ``<data_dir>/<subdir>/<id>/`` — one per row of ``<table>``, attachments inside
+# (their own roots since m177; before that they sat under archive/).
 _ENTITY_DIRS: tuple[tuple[str, str], ...] = (("projects", "projects"), ("products", "products"))
 
 
-def _orphan_entity_dirs(db_path: Path, archive_root: Path) -> list[Path]:
-    """``archive/{projects,products}/<id>`` directories whose row is gone.
+def _orphan_entity_dirs(db_path: Path, data_dir: Path) -> list[Path]:
+    """``<data_dir>/{projects,products}/<id>`` directories whose row is gone.
 
     Returns them deepest-safe (whole directory, attachments and all) — the row
     is what made the directory meaningful, so nothing inside it can be wanted.
@@ -184,7 +185,7 @@ def _orphan_entity_dirs(db_path: Path, archive_root: Path) -> list[Path]:
     # files, which on Windows a lingering handle can refuse.
     with closing(sqlite3.connect(str(db_path))) as conn:
         for subdir, table in _ENTITY_DIRS:
-            root = archive_root / subdir
+            root = data_dir / subdir
             if not root.exists():
                 continue
             try:
@@ -226,7 +227,8 @@ def _is_under(path: Path, ancestor: Path) -> bool:
 
 
 def _walk_archive_files(archive_root: Path, data_dir: Path, skip_dirs: list[Path]):
-    """Yield (relative_posix_path, abs_path) for regular files under archive/.
+    """Yield (relative_posix_path, abs_path) for regular files under one root
+    (``archive/`` or, since m177, ``library/``).
 
     ``skip_dirs`` are absolute paths to omit (anything under them is skipped).
     """
@@ -282,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     data_dir = _resolve_data_dir(args.data_dir)
     db_path = data_dir / "bamdude.db"
     archive_root = data_dir / "archive"
+    library_root = data_dir / "library"  # its own root since m177
     # ⚠️ ``projects`` and ``products`` are skipped by the FILE sweep on purpose:
     # nothing in the database's file columns names an attachment, so every live
     # one would read as an orphan. They get their own directory pass below.
@@ -307,15 +310,18 @@ def main(argv: list[str] | None = None) -> int:
     orphans: list[Path] = []
     total_files = 0
     total_bytes = 0
-    for rel, abs_path in _walk_archive_files(archive_root, data_dir, skip_dirs):
-        total_files += 1
-        if rel not in referenced:
-            try:
-                size = abs_path.stat().st_size
-            except OSError:
-                size = 0
-            total_bytes += size
-            orphans.append(abs_path)
+    # Library files are referenced by the same two tables and, since m177, live
+    # under their own root - walk it against the same reference set.
+    for walk_root in (archive_root, library_root):
+        for rel, abs_path in _walk_archive_files(walk_root, data_dir, skip_dirs):
+            total_files += 1
+            if rel not in referenced:
+                try:
+                    size = abs_path.stat().st_size
+                except OSError:
+                    size = 0
+                total_bytes += size
+                orphans.append(abs_path)
 
     print(f"Total files scanned: {total_files}")
     print(f"Orphan files: {len(orphans)} ({total_bytes / 1_048_576:.1f} MiB)")
@@ -333,10 +339,11 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     print("Collapsing empty directories...")
-    _collapse_empty_dirs(archive_root, skip_dirs, dry_run=not args.apply)
+    for walk_root in (archive_root, library_root):
+        _collapse_empty_dirs(walk_root, skip_dirs, dry_run=not args.apply)
 
     print()
-    orphan_dirs = _orphan_entity_dirs(db_path, archive_root)
+    orphan_dirs = _orphan_entity_dirs(db_path, data_dir)
     print(f"Orphan attachment directories: {len(orphan_dirs)}")
     for directory in orphan_dirs:
         if args.apply:
