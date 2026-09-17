@@ -32,9 +32,15 @@ pytestmark = pytest.mark.unit
 # The three modules that build an attachment entry. m158 writes ``manual`` too
 # and is deliberately absent: migrations are frozen, so it cannot be made to
 # import these constants and cannot drift either.
+# ⚠️ Anchored on THIS file, never on the working directory. These were bare
+# relative paths, so the file only passed when pytest was started from the repo
+# root - and the CI step runs it from ``backend/``, where the same paths point
+# at ``backend/backend/app/...`` and every read raises FileNotFoundError. A test
+# that passes from one directory and not another proves nothing about the code.
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 _WRITERS = (
-    Path("backend/app/api/routes/products.py"),
-    Path("backend/app/services/product_card.py"),
+    _REPO_ROOT / "backend/app/api/routes/products.py",
+    _REPO_ROOT / "backend/app/services/product_card.py",
 )
 
 
