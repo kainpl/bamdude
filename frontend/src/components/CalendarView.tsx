@@ -8,7 +8,7 @@ import { getArchiveStatusBadge, isFailureStatus } from '../utils/archiveStatus';
 
 interface CalendarViewProps {
   /**
-   * Per-day counts from `GET /archives/aggregate`, already keyed in this
+   * Per-day counts from `GET /statistics/aggregate`, already keyed in this
    * browser's own zone.
    *
    * ⚠️ The grid used to be built by grouping every archive row of the window in

@@ -1260,7 +1260,7 @@ export interface Archive {
 }
 
 /**
- * GET /archives/aggregate — everything the Stats page and the archive calendar
+ * GET /statistics/aggregate — everything the Stats page and the archive calendar
  * fold, folded on the server.
  *
  * Sized by the date range rather than by the number of prints. It replaces
@@ -8164,7 +8164,7 @@ export const api = {
     if (dateFrom) params.set('date_from', dateFrom);
     if (dateTo) params.set('date_to', dateTo);
     const qs = params.toString();
-    return request<ArchiveAggregate>(`/archives/aggregate${qs ? `?${qs}` : ''}`);
+    return request<ArchiveAggregate>(`/statistics/aggregate${qs ? `?${qs}` : ''}`);
   },
   getArchive: (id: number) => request<Archive>(`/archives/${id}`),
   /**
@@ -8237,7 +8237,7 @@ export const api = {
     if (options?.dateFrom) params.set('date_from', options.dateFrom);
     if (options?.dateTo) params.set('date_to', options.dateTo);
     const qs = params.toString();
-    return request<ArchiveStats>(`/archives/stats${qs ? `?${qs}` : ''}`);
+    return request<ArchiveStats>(`/statistics/overview${qs ? `?${qs}` : ''}`);
   },
   // Tag management
   getTags: () => request<TagInfo[]>('/archives/tags'),
@@ -8251,7 +8251,7 @@ export const api = {
       method: 'DELETE',
     }),
   recalculateCosts: () =>
-    request<{ message: string; updated: number }>('/archives/recalculate-costs', { method: 'POST' }),
+    request<{ message: string; updated: number }>('/statistics/recalculate-costs', { method: 'POST' }),
   getFailureAnalysis: (options?: { days?: number; dateFrom?: string; dateTo?: string; printerId?: number; projectId?: number }) => {
     const params = new URLSearchParams();
     if (options?.days) params.set('days', String(options.days));
@@ -8260,7 +8260,7 @@ export const api = {
     if (options?.printerId) params.set('printer_id', String(options.printerId));
     if (options?.projectId) params.set('project_id', String(options.projectId));
     const qs = params.toString();
-    return request<FailureAnalysis>(`/archives/analysis/failures${qs ? `?${qs}` : ''}`);
+    return request<FailureAnalysis>(`/statistics/failures${qs ? `?${qs}` : ''}`);
   },
   compareArchives: (archiveIds: number[]) =>
     request<ArchiveComparison>(`/archives/compare?archive_ids=${archiveIds.join(',')}`),
@@ -8322,7 +8322,7 @@ export const api = {
     if (authToken) {
       headers['Authorization'] = `Bearer ${authToken}`;
     }
-    const response = await fetch(`${API_BASE}/archives/stats/export?${params}`, { headers });
+    const response = await fetch(`${API_BASE}/statistics/export?${params}`, { headers });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       throw new Error(error.detail || `HTTP ${response.status}`);

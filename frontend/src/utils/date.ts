@@ -461,7 +461,7 @@ export function formatDurationFromHours(hours: number): string {
  * string regardless of locale conventions.
  */
 /**
- * Read a bucket key from `GET /archives/aggregate` as a local calendar date.
+ * Read a bucket key from `GET /statistics/aggregate` as a local calendar date.
  *
  * ⚠️ Do NOT feed these to `parseUTCDate`. A bucket key (`2026-09-08` or
  * `2026-09-08T14`) is already local — the server folded it into the zone this

@@ -41,7 +41,7 @@ const mockPrinters = [
 ];
 
 /**
- * The Stats page reads `GET /archives/aggregate` now, not a list of archives.
+ * The Stats page reads `GET /statistics/aggregate` now, not a list of archives.
  *
  * ⚠️ The rules these fixtures used to prove in the browser — records count
  * completed prints only, "most expensive" ranks on filament plus measured
@@ -151,19 +151,19 @@ const mockFailureAnalysis = {
 describe('StatsPage', () => {
   beforeEach(() => {
     server.use(
-      http.get('/api/v1/archives/stats', () => {
+      http.get('/api/v1/statistics/overview', () => {
         return HttpResponse.json(mockStats);
       }),
       http.get('/api/v1/printers/', () => {
         return HttpResponse.json(mockPrinters);
       }),
-      http.get('/api/v1/archives/aggregate', () => {
+      http.get('/api/v1/statistics/aggregate', () => {
         return HttpResponse.json(mockAggregate);
       }),
       http.get('/api/v1/settings/', () => {
         return HttpResponse.json(mockSettings);
       }),
-      http.get('/api/v1/archives/analysis/failures', () => {
+      http.get('/api/v1/statistics/failures', () => {
         return HttpResponse.json(mockFailureAnalysis);
       })
     );
@@ -277,7 +277,7 @@ describe('StatsPage', () => {
 
     it('translates camelCase failure-reason keys (#1687 follow-up)', async () => {
       server.use(
-        http.get('/api/v1/archives/analysis/failures', () => {
+        http.get('/api/v1/statistics/failures', () => {
           return HttpResponse.json({
             ...mockFailureAnalysis,
             failures_by_reason: { filamentRunout: 3, cloggedNozzle: 1 },
@@ -293,7 +293,7 @@ describe('StatsPage', () => {
 
     it('renders legacy translated-text failure reasons unchanged', async () => {
       server.use(
-        http.get('/api/v1/archives/analysis/failures', () => {
+        http.get('/api/v1/statistics/failures', () => {
           return HttpResponse.json({
             ...mockFailureAnalysis,
             failures_by_reason: { 'First layer adhesion': 2 },
@@ -368,7 +368,7 @@ describe('StatsPage', () => {
   describe('defects by printer', () => {
     it('lists defects by printer, worst rate first', async () => {
       server.use(
-        http.get('/api/v1/archives/stats', () =>
+        http.get('/api/v1/statistics/overview', () =>
           HttpResponse.json({
             total_prints: 3, successful_prints: 3, failed_prints: 0, cancelled_prints: 0,
             total_print_time_hours: 1, total_filament_grams: 10, total_cost: 1,
@@ -455,7 +455,7 @@ describe('StatsPage', () => {
       // reconciled against the print's own page instead of reading as a wrong
       // filament cost.
       server.use(
-        http.get('/api/v1/archives/aggregate', () =>
+        http.get('/api/v1/statistics/aggregate', () =>
           HttpResponse.json(
             aggregate({
               totals: {
@@ -490,7 +490,7 @@ describe('StatsPage', () => {
       // A "+ power $0.00" would claim it ran on no electricity, which is a
       // different statement from "we did not measure it".
       server.use(
-        http.get('/api/v1/archives/aggregate', () =>
+        http.get('/api/v1/statistics/aggregate', () =>
           HttpResponse.json(
             aggregate({
               totals: {
@@ -517,7 +517,7 @@ describe('StatsPage', () => {
     });
 
     it('shows no records at all when the range is empty', async () => {
-      server.use(http.get('/api/v1/archives/aggregate', () => HttpResponse.json(aggregate())));
+      server.use(http.get('/api/v1/statistics/aggregate', () => HttpResponse.json(aggregate())));
       render(<StatsPage />);
 
       await waitFor(() => {
@@ -561,7 +561,7 @@ describe('while the numbers are still loading', () => {
     server.use(
       // Never resolves: the page has to be usable in this state, not merely
       // survive it.
-      http.get('/api/v1/archives/stats', () => new Promise(() => {})),
+      http.get('/api/v1/statistics/overview', () => new Promise(() => {})),
     );
   });
 
