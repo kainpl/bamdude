@@ -601,11 +601,16 @@ async def test_a_captured_job_stores_its_own_hash_as_the_revision_and_preflights
     mtime is not the original's, so every captured job would defer as
     ``source_changed``, and after a restore an mtime means nothing at all.
 
-    So the revision is the captured copy's **hash** (routing v2): preflight still
-    asks whether these are the bytes the intent was written about, it can answer
-    portably, and the job preflights fine with the original **deleted**.
+    So the revision is the captured copy's **hash**: preflight still asks whether
+    these are the bytes the intent was written about, it can answer portably, and
+    the job preflights fine with the original **deleted**.
+
+    The version is asserted against ``filament_policy.VERSION`` rather than a
+    literal - what this test is about is the SHAPE of the revision, and pinning
+    the integer only made it fail the next time the policy grew a field.
     """
     from backend.app.schemas.print_queue import PrintQueueItemCreate
+    from backend.app.services.filament_policy import VERSION as POLICY_VERSION
     from backend.app.services.filament_preflight import preflight_item
     from backend.app.services.queue_add import add_items_to_printer_queue
 
@@ -619,7 +624,7 @@ async def test_a_captured_job_stores_its_own_hash_as_the_revision_and_preflights
     item = items[0]
     stored = json.loads(item.filament_routing)
     blob = await db_session.get(QueueSource, item.queue_source_id)
-    assert stored["version"] == 2
+    assert stored["version"] == POLICY_VERSION
     assert stored["source_identity"]["revision"] == {"sha256": blob.sha256, "size_bytes": blob.size_bytes}
     assert stored["source_identity"]["queue_source_id"] == blob.id
     assert "mtime_ns" not in json.dumps(stored)
