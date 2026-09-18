@@ -13,7 +13,10 @@ import { SeverityIcon } from './SeverityIcon';
 
 const PERIOD_MS = { day: 24 * 3600e3, week: 7 * 24 * 3600e3, month: 30 * 24 * 3600e3 } as const;
 type Period = keyof typeof PERIOD_MS | 'all';
-const PAGE = 50;
+// The page size the Archives and Inventory tables default to, so a farm sees
+// the same amount of list everywhere. The endpoint's own default stays 50 for
+// API callers; this is what the page asks for.
+const PAGE = 24;
 
 const selectClass =
   'px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white';
