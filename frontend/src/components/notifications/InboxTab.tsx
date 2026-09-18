@@ -18,6 +18,22 @@ const PAGE = 50;
 const selectClass =
   'px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white';
 
+/**
+ * The left edge of a row, by severity.
+ *
+ * Read notifications used to be drawn on `bg-bambu-dark` — which IS the page's
+ * own background — so an inbox that had been read was one flat sheet with
+ * nothing telling one entry from the next. They now sit on the card surface the
+ * rest of the app uses, with a border, and this edge carries the severity the
+ * icon already states, so a long list can be skimmed for the two levels that
+ * matter without reading a word.
+ */
+const SEVERITY_EDGE: Record<InboxSeverity, string> = {
+  error: 'border-l-status-error',
+  warning: 'border-l-status-warning',
+  info: 'border-l-bambu-dark-tertiary',
+};
+
 export function InboxTab() {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -164,7 +180,9 @@ export function InboxTab() {
             return (
               <li
                 key={item.id}
-                className={`flex gap-3 p-3 rounded-lg ${unread ? 'bg-bambu-dark-tertiary' : 'bg-bambu-dark'}`}
+                className={`flex gap-3 p-3 rounded-lg border border-l-4 border-bambu-dark-tertiary ${SEVERITY_EDGE[item.severity] ?? SEVERITY_EDGE.info} ${
+                  unread ? 'bg-bambu-dark-tertiary' : 'bg-bambu-dark-secondary'
+                }`}
               >
                 <SeverityIcon severity={item.severity} />
                 {/* The row body is a real <button>, SIBLING to the delete one —
