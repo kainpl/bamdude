@@ -294,7 +294,15 @@ class Settings(BaseSettings):
             object.__setattr__(self, "database_url", f"sqlite+aiosqlite:///{db_path}")
 
 
-settings = Settings()
+# ⚠️ ``BAMDUDE_IGNORE_DOTENV`` makes this process ignore the ``.env`` beside it.
+# It exists for the test suite, and it is not a convenience: ``settings`` is a
+# singleton built at import, and pydantic-settings reads ``.env`` from the
+# WORKING DIRECTORY, so without this a developer's own file silently decides
+# what the tests measure. It cost a day on 2026-09-17 - a suite that hung for
+# an hour because ``CAMERA_RUNTIME=worker`` was set for the developer's farm,
+# and a test process that opened a connection to the live application database
+# because ``DATABASE_URL=embedded`` was too. Nothing in production sets it.
+settings = Settings(_env_file=None if os.getenv("BAMDUDE_IGNORE_DOTENV") else ".env")
 
 # Ensure directories exist
 settings.archive_dir.mkdir(parents=True, exist_ok=True)

@@ -18,6 +18,12 @@ import pytest
 # This must happen before settings/config are loaded
 os.environ["LOG_TO_FILE"] = "false"
 os.environ["DEBUG"] = "false"
+# ⚠️ And the suite reads NO ``.env``. Settings are a singleton built at import
+# and pydantic-settings resolves ``.env`` against the working directory, so
+# without this line the result of a test run depends on the machine it runs on
+# rather than on the code - which is exactly what happened on 2026-09-17.
+# ``setdefault``, so a deliberate override from the command line still wins.
+os.environ.setdefault("BAMDUDE_IGNORE_DOTENV", "1")
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
