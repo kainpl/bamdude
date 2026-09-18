@@ -3,7 +3,7 @@ import io
 import json
 import logging
 import math
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 import httpx
@@ -3528,7 +3528,10 @@ async def get_inventory_forecast_chart(
     if days not in _FORECAST_CHART_DAY_CHOICES:
         raise HTTPException(status_code=400, detail="days must be one of 7, 30, 180")
 
-    now = datetime.now(timezone.utc)
+    # ⚠️ The engine's clock, not a second wall-clock read of our own. All three
+    # forecast routes did the latter and passed the result in, which bypassed
+    # any pin a test had set - see forecast_engine.now_utc().
+    now = forecast_engine.now_utc()
     today = now.date()
     # No orders are read here: the chart, the logistics bumps and the shopping
     # list all draw from the PHYSICAL remaining and never touch a reorder date
@@ -3584,7 +3587,10 @@ async def get_inventory_forecast_logistics(
     """
     from backend.app.models.shopping_list import ShoppingListItem
 
-    now = datetime.now(timezone.utc)
+    # ⚠️ The engine's clock, not a second wall-clock read of our own. All three
+    # forecast routes did the latter and passed the result in, which bypassed
+    # any pin a test had set - see forecast_engine.now_utc().
+    now = forecast_engine.now_utc()
     today = now.date()
     # No orders are read here: the chart, the logistics bumps and the shopping
     # list all draw from the PHYSICAL remaining and never touch a reorder date
@@ -3674,7 +3680,10 @@ async def export_shopping_list_csv(
     """
     from backend.app.models.shopping_list import ShoppingListItem
 
-    now = datetime.now(timezone.utc)
+    # ⚠️ The engine's clock, not a second wall-clock read of our own. All three
+    # forecast routes did the latter and passed the result in, which bypassed
+    # any pin a test had set - see forecast_engine.now_utc().
+    now = forecast_engine.now_utc()
     today = now.date()
     # No orders are read here: the chart, the logistics bumps and the shopping
     # list all draw from the PHYSICAL remaining and never touch a reorder date

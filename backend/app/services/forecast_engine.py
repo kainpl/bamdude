@@ -106,14 +106,18 @@ class RateEstimate(NamedTuple):
     std_dev: float
 
 
-def _now() -> datetime:
+def now_utc() -> datetime:
     """The one clock the engine reads when a caller names no instant.
 
-    A single function rather than two inline ``datetime.now`` calls so a test
-    can pin request time to the same instant it seeded with. Without that the
-    seed clock and the request clock are minutes apart inside a long suite, and
-    a day bucket lands on either side of a ``floor`` - which is what made three
-    different forecast tests take turns failing (2026-09-18).
+    ⚠️ PUBLIC, and callers outside this module are expected to use it instead of
+    reading the wall clock themselves - ``routes/inventory.py`` does. One clock
+    means one place for a test to pin, and the alternative is not hypothetical:
+    the chart route computed its own ``now`` and passed it in, which quietly
+    bypassed the pin and kept a projection one day long (2026-09-18).
+
+    Without a single instant the seed clock and the request clock sit minutes
+    apart inside a long suite, a day bucket lands on either side of a ``floor``,
+    and three different forecast tests take turns failing.
     """
     return datetime.now(timezone.utc)
 
@@ -484,7 +488,7 @@ async def compute_forecast_full(
     way of pinning the zero invariant. Consumers: the forecast list endpoint
     (this), and ``compute_forecast`` for everything that only wants rows.
     """
-    now = _as_utc(now) or _now()
+    now = _as_utc(now) or now_utc()
     now_naive = now.astimezone(timezone.utc).replace(tzinfo=None)
     window_start = now_naive - timedelta(days=USAGE_WINDOW_DAYS)
 
@@ -735,7 +739,7 @@ async def usage_day_series(
     not the rate model's input (the exclusion exists only because pre-reset
     events have no anchor for a RATE).
     """
-    now = _as_utc(now) or _now()
+    now = _as_utc(now) or now_utc()
     window_start = now.astimezone(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
 
     wanted = {sku_key(*key): key for key in sku_keys}

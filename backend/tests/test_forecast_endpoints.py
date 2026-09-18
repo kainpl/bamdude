@@ -71,7 +71,7 @@ NOW = datetime.now(timezone.utc)
 @pytest.fixture(autouse=True)
 def _pin_the_engine_clock(monkeypatch):
     """Make the engine answer from the instant this module seeded with."""
-    monkeypatch.setattr(forecast_engine, "_now", lambda: NOW)
+    monkeypatch.setattr(forecast_engine, "now_utc", lambda: NOW)
 
 
 def _naive(dt: datetime) -> datetime:
@@ -79,12 +79,15 @@ def _naive(dt: datetime) -> datetime:
 
 
 def _acceptable_dates(offset_days: int) -> set[str]:
-    """ISO dates ``offset_days`` from today — seed-time AND assert-time, so a
-    UTC-midnight crossing mid-test cannot flake an exact-date assertion."""
-    return {
-        (NOW.date() + timedelta(days=offset_days)).isoformat(),
-        (datetime.now(timezone.utc).date() + timedelta(days=offset_days)).isoformat(),
-    }
+    """The ISO date ``offset_days`` from the pinned now — one value, not two.
+
+    This used to accept assert-time as well, so that a UTC-midnight crossing
+    mid-test could not flake an exact-date assertion. That allowance was a
+    symptom of the engine reading its own clock; with ``now_utc`` pinned to
+    ``NOW`` the routes cannot cross midnight relative to the seed, and keeping
+    the second date would only widen the target enough to hide a real one.
+    """
+    return {(NOW.date() + timedelta(days=offset_days)).isoformat()}
 
 
 async def _spool(db, **kwargs) -> Spool:
