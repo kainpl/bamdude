@@ -78,6 +78,25 @@ def backup_schema(tmp_path_factory):
             }
         )
         schema["__counts__"] = (len(Base.metadata.tables), len(tables))  # type: ignore[assignment]
+        # Per-table state at emission time, for the failure message. On
+        # 2026-09-17 seven tables emitted FK-less DDL while ``__declared_fks__``
+        # was intact, and the run could not say which of the two possible
+        # mechanisms it was: the constraints missing from ``table.constraints``
+        # (the collection the DDL walks — ``foreign_key_constraints`` is a
+        # different one, built from ``table.foreign_keys``), or the SQLite
+        # compiler returning None for a schema mismatch. These three numbers
+        # tell them apart; capturing them costs nothing.
+        schema["__emission_state__"] = {  # type: ignore[assignment]
+            name: {
+                "in_constraints": len([c for c in table.constraints if c in set(table.foreign_key_constraints)]),
+                "schema": table.schema,
+                "referred_canonical": all(
+                    fk.column.table is Base.metadata.tables.get(fk.column.table.name) for fk in table.foreign_keys
+                ),
+            }
+            for name, table in Base.metadata.tables.items()
+            if table.foreign_key_constraints
+        }
         yield schema
     finally:
         conn.close()
@@ -117,6 +136,17 @@ class TestBackupSchemaFidelity:
     def test_unique_constraint_survives(self, backup_schema):
         assert "UNIQUE (serial_number)" in backup_schema["__sql__"]["printers"]
 
+    def test_the_hand_written_cyclic_group_is_the_cyclic_group(self):
+        """The exclusion above is a hand-written list so that a new cycle member
+        turns this red rather than widening the exemption unseen. This pins the
+        other direction too: the list is exactly what SQLAlchemy's sort has to
+        break — no stale member kept out of ``test_foreign_keys_survive`` after
+        it left the cycle. Measured deterministic across processes (2026-09-18)."""
+        from sqlalchemy.sql.ddl import sort_tables_and_constraints
+
+        deferred = sort_tables_and_constraints(list(Base.metadata.tables.values()))[-1][1]
+        assert {fkc.table.name for fkc in deferred} == set(_CYCLIC_FK_GROUP)
+
     def test_foreign_keys_survive(self, backup_schema):
         """Every table that declares foreign keys carries them in the DDL —
         except the cyclic group, which cannot answer stably (see below).
@@ -127,22 +157,28 @@ class TestBackupSchemaFidelity:
         none of them were checked) and, worse, the single table that cannot
         give the same answer twice.
 
-        ⚠️ **Why the seven are excluded.** They are a cyclic foreign-key group.
-        SQLAlchemy breaks such a cycle by emitting some constraints separately,
-        as ``ALTER TABLE ... ADD CONSTRAINT`` — a statement the SQLite dialect
-        does not have, so those constraints are dropped in SILENCE. Which of
-        the seven is sacrificed is decided while walking sets of constraint
-        objects, i.e. by object identity, so it differs per interpreter:
-        measured 2026-09-17, a clean process lost none and the full suite lost
-        all seven, on the same 103 tables with every referenced table present.
-        Asserting on them turns CI red by coin toss, which would block releases
-        for a reason no reader could act on.
+        ⚠️ **Why the seven are excluded.** They are a cyclic foreign-key group,
+        and on 2026-09-17 one full-suite run emitted FK-less DDL for exactly
+        those seven — ``created_by_id -> users`` included, which is not in any
+        cycle — while every model still declared its keys. It has not happened
+        again: six clean processes and two full suites on 2026-09-18 emitted
+        131 of 131. The first explanation, SQLAlchemy sacrificing cycle members
+        to ``ALTER TABLE`` that SQLite lacks, was measured and is WRONG for this
+        dialect: ``SchemaGenerator.visit_table`` renders every constraint
+        inline when ``supports_alter`` is False, so the sort's choice is never
+        applied here (and the choice itself was the same seven in every
+        process). Whatever it was lived in that process's state — see
+        ``__emission_state__`` above, captured so the next occurrence names it.
 
-        ⚠️ This exclusion hides a real question — whether a portable backup can
-        travel without that group's foreign keys — and it is NOT answered here.
-        It is tracked as its own work: vault ``TaskNotes/Tasks/Open/Портативний
-        бекап і циклічна група зовнішніх ключів``. Do not widen this test to
-        cover the seven until that lands; fix the export instead.
+        The question the exclusion once hid is answered: the real export
+        (``db_portable._export_pg_to_sqlite`` → ``create_all`` on a SQLite
+        staging engine) goes through the same lossless path, SQLite-to-SQLite
+        is a file snapshot, and SQLite-to-PostgreSQL rebuilds the keys from the
+        catalogue in Phase 3. A portable backup does not lose this group's keys.
+        The seven stay out of the hard assertion only because a red CI by an
+        unexplained, once-seen event blocks releases for nothing a reader can
+        act on; ``test_the_hand_written_cyclic_group_is_the_cyclic_group`` keeps
+        the list honest. Vault: ``90-ideas/`` «FK-less DDL у тест-процесі».
         """
         in_metadata, created = backup_schema["__counts__"]
         lost = sorted(
@@ -152,9 +188,11 @@ class TestBackupSchemaFidelity:
             and table not in _CYCLIC_FK_GROUP
             and "FOREIGN KEY" not in (backup_schema["__sql__"].get(table) or "")
         )
+        state = {name: backup_schema["__emission_state__"].get(name) for name in lost}
         assert not lost, (
             f"{len(lost)} table(s) declare foreign keys the backup DDL does not carry: {lost}"
             f" | {in_metadata} tables in metadata, {created} created"
+            f" | emission state of the lost ones (declared vs in table.constraints, schema, referred canonical): {state}"
         )
 
 
