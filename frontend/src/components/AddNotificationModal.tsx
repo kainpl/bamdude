@@ -52,7 +52,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
     }
     return seeded;
   });
-  const { data: providerEvents } = useProviderEvents();
+  const { data: providerEvents, isSuccess: eventsReady } = useProviderEvents();
   const eventLabel = useEventLabel();
   // A NEW provider shows the defaults it would be saved with, rather than
   // showing everything off and letting the backend quietly fill six of them in.
@@ -775,9 +775,13 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           >
             {t('notifications.cancel')}
           </Button>
+          {/* ⚠️ Saving waits for the event list, and that is not cosmetic:
+              without it the payload would carry no on_* fields at all and the
+              backend would apply its own defaults — six of which are ON, which
+              is the exact bug this form was changed to end. */}
           <Button
             type="submit"
-            disabled={isPending}
+            disabled={isPending || !eventsReady}
             className="flex-1"
           >
             {isPending ? (

@@ -364,4 +364,15 @@ describe('AddNotificationModal - event subscriptions', () => {
     const jobFailed = await screen.findByRole('switch', { name: 'Job Failed' });
     expect(jobFailed).toHaveAttribute('aria-checked', 'false');
   });
+
+  it('refuses to save while the event list is unavailable', async () => {
+    // Saving without the list would send no on_* fields at all, and the backend
+    // would fill in its defaults — six of them ON. Better to refuse than to
+    // reintroduce the bug quietly.
+    server.use(http.get('*/api/v1/notifications/events', () => HttpResponse.error()));
+
+    render(<AddNotificationModal onClose={() => undefined} />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /^add$/i })).toBeDisabled());
+  });
 });
