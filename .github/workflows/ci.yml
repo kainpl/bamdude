@@ -148,13 +148,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
-      # ⚠️ 20, not 10. On 2026-08-18 the whole suite passed — 8702 tests — and
-      # the job still failed, because it finished in 601.71s against a 10-minute
-      # step timeout. Two seconds. The ceiling was set when the suite was
-      # smaller and had quietly become a coin toss on a green run, which is the
-      # worst kind of gate: it fails without naming anything. Per-test
-      # `--timeout=60` is what actually catches a hung test; this number only
-      # needs to be comfortably above however long the suite honestly takes.
+      # ⚠️ 35, not 20, and for the second time the same reason. On 2026-08-18 the
+      # whole suite passed — 8702 tests — and the job failed anyway, finishing in
+      # 601.71s against a 10-minute ceiling. Two seconds. Raising it to 20 bought
+      # room for a while; by 2026-09-18 the suite was 14112 tests and took 17:41,
+      # i.e. 2 minutes 19 seconds of margin, and the next run timed out at 57%
+      # having simply been ~33% slower end to end — no hung test, no regression,
+      # just a slower runner (the same commits take 609-627s locally, flat).
+      # A ceiling with minutes of headroom on a job that grows every week is a
+      # coin toss, and it is the worst kind of gate: it fails without naming
+      # anything. Per-test `--timeout=60` is what actually catches a hung test;
+      # this number only needs to sit comfortably above an honest slow run.
       # ⚠️ From the REPO ROOT, not `cd backend`. Some tests resolve paths
       # against the repository and one spawns `python -m
       # backend.app.camera_worker`, which needs the root importable; run from
@@ -164,7 +168,7 @@ jobs:
       # command, and so the default cannot drift out from under CI silently.
       # See CONTRIBUTING.md#testing.
       - name: Run tests
-        timeout-minutes: 20
+        timeout-minutes: 35
         env:
           CAMERA_RUNTIME: inline
         run: python -m pytest backend/tests/ -v --tb=short --timeout=60 --timeout-method=thread -n auto

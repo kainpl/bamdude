@@ -868,6 +868,11 @@ export function ModelViewer({
       plateRef.current = null;
       gridRef.current = null;
     };
+    // `theme` is read here for the INITIAL background and grid only; the "Live
+    // theme sync" effect below keeps both current without rebuilding. Listing it
+    // would dispose and recreate the whole renderer on a theme toggle, and reset
+    // the camera with it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, buildVolume, fileType, t]);
 
   useEffect(() => {
