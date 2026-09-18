@@ -315,13 +315,15 @@ Three things about that command are not decoration:
 - **Repo root.** Some tests resolve paths against the repository and one spawns
   `python -m backend.app.camera_worker`, which needs the root importable. From
   `backend/` those fail for reasons that have nothing to do with your change.
-- **`CAMERA_RUNTIME=inline`.** Settings are read once at import, and
-  pydantic-settings loads `.env` from the working directory. A development
-  `.env` that sets `CAMERA_RUNTIME=worker` makes the virtual-printer startup
-  tests fail and one of them hang forever. An environment variable overrides
-  `.env`, so the prefix is enough — do not edit your `.env` for this. Do **not**
-  override `DATABASE_URL` the same way: tests assert on how that value resolves,
-  and one drives a script that reads the database from settings.
+- **`CAMERA_RUNTIME=inline`.** Belt-and-braces since 2026-09-18. The suite
+  itself no longer reads any `.env`: `conftest` sets `BAMDUDE_IGNORE_DOTENV`
+  before the first app import, because settings are built once at import and
+  pydantic-settings resolves `.env` against the working directory — so which
+  directory you were in used to decide whether the run was green. A variable
+  **exported in your shell** still wins over that, and this prefix is what
+  covers it. Do **not** override `DATABASE_URL` the same way: tests assert on
+  how that value resolves, and one drives a script that reads the database from
+  settings.
 - **`--timeout`.** Without it a hung test is silence, not a failure. With it you
   get the test's name.
 
