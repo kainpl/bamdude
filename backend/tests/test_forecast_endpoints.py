@@ -122,9 +122,10 @@ async def _usage(db, spool_id: int, days_ago: float, grams: float) -> None:
 
 async def _rate_events(db, spool_id: int, rate: float) -> None:
     """Two adjacent-day events → a single inter-day observation, so the
-    history-tier rate is EXACTLY ``rate`` (grams of the later day / 1-day gap;
-    a lone observation's weighted mean is weight-independent, hence immune to
-    the seed-vs-request clock drift). std_dev = 0."""
+    history-tier rate is ``rate`` (grams of the later day / 1-day gap). A lone
+    observation's weighted mean is weight-independent in algebra, NOT in
+    floating point: ``(rate·w)/w`` misses ``rate`` by one ulp for some weights,
+    which is why the engine floors day counts with a tolerance. std_dev = 0."""
     await _usage(db, spool_id, 3.0, 5.0)
     await _usage(db, spool_id, 2.0, rate)
 
@@ -412,16 +413,14 @@ class TestForecastRows:
         assert row["safety_stock_g"] == pytest.approx(70.0)  # 5 g/day placeholder × 14-day margin
         assert row["stock_break_alert"] is False and row["reorder_alert"] is False
 
-    # ⚠️ Flaky, cause NOT understood — reruns so it stops breaking unrelated
-    # work, never to make it look healthy. It fails intermittently as
-    # `assert 49 == 50` on days_remaining, which needs the rate to be strictly
-    # above 30.0 while `approx(30.0)` below still accepts it. The obvious
-    # explanation — clock drift between the seed and the request — was MEASURED
-    # and disproved: at 0, 5, 30, 90 and 720 minutes of staleness the rate is
-    # exactly 30.0 and the answer exactly 50. A real regression still fails,
-    # because it fails every attempt. Vault: TaskNotes/Tasks/Open/"Два плаваючі
-    # тести".
-    @pytest.mark.flaky(reruns=2, reruns_delay=0)
+    # This one flaked as `assert 49 == 50` for a day and wore a reruns marker
+    # while the cause was chased. Found 2026-09-18: `(30.0·w)/w` is not 30.0 in
+    # floating point for 3.2% of the weights a day's clock times produce, and
+    # `floor(1500 / 30.000000000000004)` is 49 — while `approx(30.0)` below
+    # accepts the rate, which is why THIS line failed and that one passed. The
+    # engine now floors with a nanoday of tolerance (`_whole_days`), and
+    # `test_forecast_engine.py` pins the exact offending weight, so this test
+    # no longer depends on the second the process started.
     async def test_the_row_payload_carries_the_finished_numbers(self, async_client, db_session):
         """Field-by-field pin of one computed row (A) — the endpoint serves the
         engine's finished numbers, not re-derived ones."""

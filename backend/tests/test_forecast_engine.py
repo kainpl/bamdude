@@ -264,6 +264,25 @@ def _finish(engine, **overrides):
 
 
 class TestFinishRowHandVectors:
+    def test_a_day_count_does_not_lose_a_day_to_the_sixteenth_digit(self, engine):
+        """The forecast-endpoint flake, reproduced without a clock.
+
+        One observation of 30 g/day at age ``2 + 104/86400`` days gives a weight
+        for which ``sum([30.0*w]) / sum([w])`` — exactly what ``history_rate``
+        computes — is ``30.000000000000004``, and ``floor(1500 / that)`` is 49.
+        The engine used to answer 49 on 3.2% of the seconds in a day and 50 on
+        the rest; a whole-day count must not hinge on the last bit of a mean.
+        """
+        w = math.exp(-engine._DECAY_LAMBDA * (2 + 104 / 86400))
+        rate = sum([30.0 * w]) / sum([w])
+        assert rate != 30.0, "the weight no longer reproduces the round-off; pick another"
+        assert math.floor(1500.0 / rate) == 49, "plain floor should still show the defect"
+
+        row = _finish(engine, rate=rate, std_dev=0.0, eff_lead_time_days=0, margin_value=14, total_remaining_g=1500.0)
+
+        assert row.days_remaining == 50
+        assert row.days_until_rop == 36  # (1500 - 420) / 30, the endpoint test's other number
+
     def test_safety_stock_and_rop_hand_vector(self, engine):
         # rate=10 g/day, history-tier std_dev=4, eff_lead_time=9 days,
         # margin: 2 days => 20 g.  Z95=1.65.  (ForecastPanel.tsx, verified.)

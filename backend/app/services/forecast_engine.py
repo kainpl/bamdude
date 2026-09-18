@@ -64,6 +64,16 @@ _DECAY_LAMBDA = math.log(2) / 30
 _Z_95 = 1.65
 _ASSUMED_SPREAD = 0.2
 
+# ⚠️ Tolerance for turning a ratio of grams into a count of whole days. A
+# nanoday — about 86 microseconds of consumption. It exists because the
+# weighted mean is not exact in floating point: for a single observation
+# ``(rate·w)/w`` is ``rate`` in algebra and ``30.000000000000004`` in IEEE 754 for
+# 3.2% of the weights ``exp(-λ·age)`` a day's worth of clock times produce
+# (measured 2026-09-18). ``floor(1500 / that)`` is 49, not 50, so the answer
+# depended on the second the process started. A day count decided by the
+# sixteenth significant digit is noise, not a forecast; the tolerance says so.
+_WHOLE_DAY_EPS = 1e-9
+
 # The panel keeps the safety stock non-zero for brand-new SKUs: a "days" margin
 # with NO rate at all is priced at 5 g/day. A measured rate of exactly 0.0 is
 # NOT null — the margin is then honestly 0.
@@ -204,6 +214,11 @@ class RowFinish:
     over_committed: bool
 
 
+def _whole_days(days: float) -> int:
+    """``floor`` for a day count, blind to round-off in the last digit (see ``_WHOLE_DAY_EPS``)."""
+    return math.floor(days + _WHOLE_DAY_EPS)
+
+
 def finish_row(
     *,
     rate: float | None,
@@ -252,9 +267,9 @@ def finish_row(
     reorder_point_g = 0.0 if rate is None else rate * eff_lead_time_days + safety_stock_g
 
     if rate is not None and rate > 0:
-        days_remaining = math.floor(total_remaining_g / rate)
+        days_remaining = _whole_days(total_remaining_g / rate)
         projected_empty_date = today + timedelta(days=days_remaining)
-        days_until_rop = math.floor((free_g - reorder_point_g) / rate)
+        days_until_rop = _whole_days((free_g - reorder_point_g) / rate)
         reorder_trigger_date = today + timedelta(days=max(0, days_until_rop))
         stock_break_alert = eff_lead_time_days > 0 and days_remaining <= eff_lead_time_days
         reorder_alert = (not stock_break_alert) and days_until_rop <= 0
