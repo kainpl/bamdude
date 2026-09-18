@@ -33,6 +33,22 @@ from backend.app.core.config import settings  # noqa: E402
 
 settings.log_to_file = False
 
+# ⚠️ Import every migration module NOW, before any test runs. 63 of them bind
+# ``is_sqlite`` / ``is_postgres`` at import (``from backend.app.core.db_dialect
+# import is_sqlite``), and several tests legitimately ``monkeypatch`` those two
+# names on ``db_dialect`` for one test. A migration imported for the first time
+# INSIDE such a test binds the patched lambda and keeps it after the patch is
+# undone — ``monkeypatch`` restores the attribute it changed, not the copies
+# other modules took of it. Found 2026-09-18: ``test_backup_schema_fidelity``
+# patches ``is_sqlite`` to False and calls ``dump_to_sqlite``, which discovers
+# (imports) every migration; ``test_migration_m124`` in the same worker then
+# created ``printer_locations`` with ``id SERIAL PRIMARY KEY`` on SQLite — not a
+# rowid alias, so every id was NULL — and failed one run in a few. Importing
+# them here binds the real functions while nothing is patched.
+from backend.app.migrations import _discover_migrations  # noqa: E402
+
+_discover_migrations()
+
 # Use a temp directory for plate calibration to avoid deleting real calibration files
 _test_plate_cal_dir = Path(tempfile.mkdtemp(prefix="bamdude_test_plate_cal_"))
 settings.plate_calibration_dir = _test_plate_cal_dir
@@ -251,6 +267,49 @@ async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
     async_session_maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
     async with async_session_maker() as session:
         yield session
+
+
+_REAL_DIALECT_CHECKS = None
+
+
+@pytest.fixture(autouse=True)
+def _no_dialect_check_leaks():
+    """Fail the test that leaves a patched ``is_sqlite`` / ``is_postgres`` behind
+    in a module that bound it at import.
+
+    ``monkeypatch.setattr("backend.app.core.db_dialect.is_sqlite", ...)`` is
+    restored on ``db_dialect`` when the test ends. A module first imported
+    DURING that test (``from ... import is_sqlite``) keeps the lambda for the
+    rest of the process, and the failure lands on a test in another file that
+    ran minutes later — which is how the m124 flake stayed unexplained. This
+    runs after ``monkeypatch`` has undone its own changes (it was set up
+    before the test's own fixtures, so it is torn down after them), so
+    whatever still differs from the real function is a leak, and the test
+    that just ran is the one that caused it.
+    """
+    global _REAL_DIALECT_CHECKS
+    import sys
+    import types
+
+    from backend.app.core import db_dialect
+
+    if _REAL_DIALECT_CHECKS is None:
+        _REAL_DIALECT_CHECKS = {"is_sqlite": db_dialect.is_sqlite, "is_postgres": db_dialect.is_postgres}
+    yield
+    leaked = []
+    for modname, mod in list(sys.modules.items()):
+        if not modname.startswith("backend.app.") or modname == "backend.app.core.db_dialect":
+            continue
+        if not isinstance(mod, types.ModuleType):  # a test may park a stand-in object here
+            continue
+        for name, real in _REAL_DIALECT_CHECKS.items():
+            bound = getattr(mod, name, real)
+            if bound is not real:
+                leaked.append(f"{modname}.{name} -> {bound!r}")
+    assert not leaked, (
+        "this test left a patched dialect check bound in other modules — patch "
+        "`settings.database_url`, or import those modules before patching: " + "; ".join(leaked)
+    )
 
 
 @pytest.fixture(autouse=True)
