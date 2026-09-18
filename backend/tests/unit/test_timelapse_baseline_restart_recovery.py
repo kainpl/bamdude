@@ -128,6 +128,19 @@ async def test_running_observed_skips_when_baseline_already_present():
         # early-return below. Pinned away for the same reason: this test is
         # about the TIMELAPSE half.
         patch("backend.app.main._adopt_running_print", new=AsyncMock(return_value=None)),
+        # ...and the runout-journal seeder, the fourth branch of this shape and
+        # the one that made this test flake on CI. It runs UNCONDITIONALLY and
+        # returns early only when the printer has no CLIENT - a different piece
+        # of shared printer_manager state than get_status above - so a
+        # neighbouring test that left one registered for printer 1 sends it into
+        # a session before the baseline early-return. Its own `except` then
+        # swallows the mock AttributeError and logs "Could not read the journal
+        # to re-arm printer 1", which is the line that gave it away in the CI log.
+        # WARNING Four pins in one test is the real signal: the handler keeps
+        # growing branches that read the database before the early-return, and
+        # each is found the hard way, as an intermittent failure. The durable fix
+        # is resetting printer_manager state between tests, not the fifth pin.
+        patch("backend.app.main.printer_manager.get_client", return_value=None),
     ):
         from backend.app.main import on_print_running_observed
 
