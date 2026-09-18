@@ -107,6 +107,8 @@ services:
       # Switching from SQLite imports the existing database on first start.
       #- DATABASE_URL=postgresql+asyncpg://bamdude:password@192.168.1.100:5432/bamdude
       # For a PostgreSQL running in its own container, see docker-compose.postgres.yml.
+      # For Signal notifications through a signal-cli-rest-api in its own
+      # container, see docker-compose.signal.yml (same COMPOSE_FILE mechanism).
       # ⚠️ `DATABASE_URL=embedded` (the PostgreSQL bundled with BamDude) is NOT
       # available in Docker and is deliberately not offered here. This image runs
       # as root and `initdb` refuses to run as root — PostgreSQL's own rule — so

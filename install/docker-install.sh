@@ -42,6 +42,7 @@ TIMEZONE=""
 DB_MODE=""             # sqlite | sidecar | external  (no embedded: see the menu below)
 DATABASE_URL_VALUE=""  # external URL when DB_MODE=external
 PG_PASSWORD=""         # generated for the sidecar
+SIGNAL_SIDECAR="false" # signal-cli-rest-api next to BamDude (docker-compose.signal.yml)
 BUILD_FROM_SOURCE="false"
 NON_INTERACTIVE="false"
 OS_TYPE=""
@@ -144,6 +145,7 @@ show_help() {
     echo "  --tz TIMEZONE      Timezone (default: system timezone or UTC)"
     echo "  --db BACKEND       Database: sqlite (default) | sidecar | external"
     echo "  --database-url URL External database URL (implies --db external)"
+    echo "  --signal           Also run signal-cli-rest-api next to BamDude (Signal notifications)"
     echo "  --build            Build from source instead of using pre-built image"
     echo "  --yes, -y          Non-interactive mode, accept defaults"
     echo "  --redirect-990     (Deprecated, no longer needed)"
@@ -294,6 +296,10 @@ download_compose_file() {
             curl -fsSL -o docker-compose.postgres.yml \
                 https://raw.githubusercontent.com/kainpl/bamdude/main/docker-compose.postgres.yml
         fi
+        if [[ "$SIGNAL_SIDECAR" == "true" ]]; then
+            curl -fsSL -o docker-compose.signal.yml \
+                https://raw.githubusercontent.com/kainpl/bamdude/main/docker-compose.signal.yml
+        fi
     fi
 
     log_success "docker-compose.yml ready"
@@ -329,7 +335,6 @@ EOF
             cat >> .env << EOF
 
 # PostgreSQL in its own container (docker-compose.postgres.yml).
-COMPOSE_FILE=docker-compose.yml:docker-compose.postgres.yml
 POSTGRES_USER=bamdude
 POSTGRES_PASSWORD=$PG_PASSWORD
 POSTGRES_DB=bamdude
@@ -337,6 +342,29 @@ DATABASE_URL=postgresql+asyncpg://bamdude:$PG_PASSWORD@$pg_host/bamdude
 EOF
             ;;
     esac
+
+    if [[ "$SIGNAL_SIDECAR" == "true" ]]; then
+        cat >> .env << EOF
+
+# signal-cli-rest-api in its own container (docker-compose.signal.yml).
+# Published on loopback only - the API has no authentication of its own.
+SIGNAL_API_PORT=8081
+EOF
+    fi
+
+    # ONE COMPOSE_FILE line, assembled from every override that was chosen.
+    # Writing it inside each option block would leave two lines when both
+    # sidecars are picked, and Compose would honour only the last one.
+    local compose_files="docker-compose.yml"
+    [[ "$DB_MODE" == "sidecar" ]] && compose_files="$compose_files:docker-compose.postgres.yml"
+    [[ "$SIGNAL_SIDECAR" == "true" ]] && compose_files="$compose_files:docker-compose.signal.yml"
+    if [[ "$compose_files" != "docker-compose.yml" ]]; then
+        cat >> .env << EOF
+
+# Override files Compose loads together with the base file (the sidecars chosen above).
+COMPOSE_FILE=$compose_files
+EOF
+    fi
 
     log_success "Environment file created"
 }
@@ -427,6 +455,10 @@ parse_args() {
                 DATABASE_URL_VALUE="$2"
                 DB_MODE="external"
                 shift 2
+                ;;
+            --signal)
+                SIGNAL_SIDECAR="true"
+                shift
                 ;;
             --build)
                 BUILD_FROM_SOURCE="true"
@@ -572,6 +604,18 @@ gather_config() {
     # Database backend
     gather_db_config
 
+    # Signal sidecar (signal-cli-rest-api) - opt-in, off by default. The
+    # container is the easy half; linking a number is done with a phone.
+    if [[ "$SIGNAL_SIDECAR" != "true" ]] && [[ "$NON_INTERACTIVE" != "true" ]]; then
+        echo ""
+        echo "Signal notifications need a signal-cli-rest-api server. BamDude can run one"
+        echo "next to itself (docker-compose.signal.yml). You will still link a Signal"
+        echo "number to it with your phone afterwards - no script can do that part."
+        if prompt_yes_no "Also run signal-cli-rest-api next to BamDude?" "n"; then
+            SIGNAL_SIDECAR="true"
+        fi
+    fi
+
     # Build from source?
     if [[ "$BUILD_FROM_SOURCE" != "true" ]] && [[ "$NON_INTERACTIVE" != "true" ]]; then
         if prompt_yes_no "Build from source? (No = use pre-built image)" "n"; then
@@ -592,6 +636,7 @@ gather_config() {
         external) echo -e "  Database:      ${GREEN}external PostgreSQL${NC}" ;;
         *)        echo -e "  Database:      ${GREEN}SQLite${NC}" ;;
     esac
+    echo -e "  Signal sidecar:${GREEN} $SIGNAL_SIDECAR${NC}"
     echo -e "  Build source:  ${GREEN}$BUILD_FROM_SOURCE${NC}"
     echo -e "  Redirect 990:  ${GREEN}$REDIRECT_990${NC}"
     echo ""
@@ -691,6 +736,28 @@ main() {
     echo ""
     echo -e "  ${BOLD}Data location:${NC}  Docker volumes (bamdude_data, bamdude_logs)"
     echo ""
+
+    if [[ "$SIGNAL_SIDECAR" == "true" ]]; then
+        # The platform fork docker-compose.signal.yml explains: a host-network
+        # BamDude (Linux) reaches the loopback publish, Docker Desktop uses the name.
+        local signal_url="http://127.0.0.1:8081"
+        [[ "$OS_TYPE" == "macos" ]] && signal_url="http://signal-api:8080"
+        echo -e "  ${BOLD}Next steps for Signal:${NC}"
+        echo -e "    1. Link a number to the sidecar - open"
+        echo -e "         ${CYAN}http://127.0.0.1:8081/v1/qrcodelink?device_name=BamDude${NC}"
+        if [[ "$OS_TYPE" == "macos" ]]; then
+            echo -e "       in your browser and scan the QR code in Signal > Settings > Linked devices."
+        else
+            echo -e "       in a browser on this machine, or from your laptop through a tunnel:"
+            echo -e "         ${CYAN}ssh -L 8081:127.0.0.1:8081 <user>@<this-server>${NC}"
+            echo -e "       then scan the QR code in Signal > Settings > Linked devices."
+        fi
+        echo -e "       (Registering a brand-new number instead needs SMS/voice verification - see the docs.)"
+        echo -e "    2. In BamDude: Settings > Notifications > Add > Signal CLI API"
+        echo -e "         Signal API URL: ${CYAN}$signal_url${NC}   Sender: the number you linked"
+        echo -e "    3. The account keys live in the ${CYAN}bamdude_signal${NC} volume - not in the BamDude backup."
+        echo ""
+    fi
     echo -e "  ${BOLD}Documentation:${NC}  ${CYAN}https://wiki.bamdude.cool${NC}"
     echo ""
 
