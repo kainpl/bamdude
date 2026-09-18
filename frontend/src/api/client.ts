@@ -6339,8 +6339,13 @@ export interface InboxItem {
 
 export interface InboxListResponse {
   items: InboxItem[];
+  /** The WHOLE inbox's unread count — it feeds the sidebar badge, not this page. */
   unread_count: number;
-  next_before_id: number | null;
+  /** Meta named as Archives and Inventory name theirs, so `PaginationBar` reads it directly. */
+  total: number;
+  current_page: number;
+  per_page: number;
+  last_page: number;
 }
 
 /** The ONE filter shape. The list reads it, and so do read-all and clear — the
@@ -7389,10 +7394,12 @@ export const api = {
     }),
 
   // In-app inbox
-  getInbox: (params: InboxFilters & { before_id?: number; limit?: number } = {}) => {
+  getInbox: (params: InboxFilters & { page?: number; per_page?: number } = {}) => {
     const qs = inboxQuery(params);
-    if (params.before_id) qs.set('before_id', String(params.before_id));
-    if (params.limit) qs.set('limit', String(params.limit));
+    if (params.page) qs.set('page', String(params.page));
+    // -1 is the size selector's "All"; the endpoint spells that `all=true`.
+    if (params.per_page === -1) qs.set('all', 'true');
+    else if (params.per_page) qs.set('per_page', String(params.per_page));
     return request<InboxListResponse>(`/inbox/?${qs}`);
   },
   getInboxUnreadCount: () => request<{ unread_count: number }>('/inbox/unread-count'),

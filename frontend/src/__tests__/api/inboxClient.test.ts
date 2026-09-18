@@ -25,7 +25,7 @@ describe('inbox client', () => {
     server.use(
       http.get('/api/v1/inbox/', ({ request }) => {
         seen = new URL(request.url);
-        return HttpResponse.json({ items: [], unread_count: 0, next_before_id: null });
+        return HttpResponse.json({ items: [], unread_count: 0, total: 0, current_page: 1, per_page: 24, last_page: 1 });
       }),
       http.post('/api/v1/inbox/read-all', ({ request }) => {
         seen = new URL(request.url);
@@ -39,12 +39,20 @@ describe('inbox client', () => {
   });
 
   it('serialises only the filters that are set', async () => {
-    await api.getInbox({ severity: 'error', unread_only: true, before_id: 40, limit: 20 });
+    await api.getInbox({ severity: 'error', unread_only: true, page: 2, per_page: 20 });
     expect(seen?.searchParams.get('severity')).toBe('error');
     expect(seen?.searchParams.get('unread_only')).toBe('true');
-    expect(seen?.searchParams.get('before_id')).toBe('40');
-    expect(seen?.searchParams.get('limit')).toBe('20');
+    expect(seen?.searchParams.get('page')).toBe('2');
+    expect(seen?.searchParams.get('per_page')).toBe('20');
     expect(seen?.searchParams.has('printer_id')).toBe(false);
+  });
+
+  it('spells the All option the way the endpoint spells it', async () => {
+    // -1 is what PaginationBar reports for All; the endpoint takes `all=true`,
+    // and sending `per_page=-1` would simply be refused.
+    await api.getInbox({ per_page: -1 });
+    expect(seen?.searchParams.get('all')).toBe('true');
+    expect(seen?.searchParams.has('per_page')).toBe(false);
   });
 
   it('read-all carries the same filters', async () => {

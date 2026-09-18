@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react';
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { CheckCheck, Loader2, Trash2 } from 'lucide-react';
+import { CheckCheck, Trash2 } from 'lucide-react';
 import { api, type InboxFilters, type InboxSeverity } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
@@ -9,14 +9,16 @@ import { ConfirmModal } from '../ConfirmModal';
 import { LoadingBlock } from '../LoadingBlock';
 import { formatRelativeTime } from '../../utils/date';
 import { INBOX_QUERY_KEY } from '../../hooks/useInboxUnreadCount';
+import { PaginationBar } from '../PaginationBar';
 import { SeverityIcon } from './SeverityIcon';
 
 const PERIOD_MS = { day: 24 * 3600e3, week: 7 * 24 * 3600e3, month: 30 * 24 * 3600e3 } as const;
 type Period = keyof typeof PERIOD_MS | 'all';
-// The page size the Archives and Inventory tables default to, so a farm sees
-// the same amount of list everywhere. The endpoint's own default stays 50 for
-// API callers; this is what the page asks for.
-const PAGE = 24;
+// The page size the Archives and Inventory tables default to, and remembered
+// the way they remember theirs, so a farm sees the same amount of list on every
+// page it reads.
+const PAGE_SIZE_KEY = 'bamdude-inbox-pageSize';
+const DEFAULT_PAGE_SIZE = 24;
 
 const selectClass =
   'px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white';
@@ -48,6 +50,14 @@ export function InboxTab() {
   const [period, setPeriod] = useState<Period>('all');
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(() => {
+    try {
+      const stored = Number(localStorage.getItem(PAGE_SIZE_KEY));
+      if ([12, 24, 48, 96, -1].includes(stored)) return stored;
+    } catch { /* ignore */ }
+    return DEFAULT_PAGE_SIZE;
+  });
 
   // `since` is computed when the period changes, not on every render — a fresh
   // Date per render would be a fresh query key per render, and so an endless
@@ -68,15 +78,22 @@ export function InboxTab() {
     }),
     [severity, printerId, unreadOnly, since],
   );
+  // Any filter change is a new result set, so it starts at its first page.
+  useEffect(() => setPage(1), [filters]);
 
   const { data: printers } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters });
-  const list = useInfiniteQuery({
-    queryKey: [...INBOX_QUERY_KEY, 'list', filters],
-    queryFn: ({ pageParam }) => api.getInbox({ ...filters, before_id: pageParam ?? undefined, limit: PAGE }),
-    initialPageParam: null as number | null,
-    getNextPageParam: (last) => last.next_before_id,
+  const list = useQuery({
+    queryKey: [...INBOX_QUERY_KEY, 'list', filters, page, perPage],
+    queryFn: () => api.getInbox({ ...filters, page, per_page: perPage }),
+    placeholderData: (previous) => previous,
   });
-  const items = list.data?.pages.flatMap((p) => p.items) ?? [];
+  const items = list.data?.items ?? [];
+  // A filter can shrink the result under the page you are on — asking for page
+  // 9 of 2 answers an empty list, which reads as "nothing here" when there is
+  // plenty. Step back instead of showing that.
+  useEffect(() => {
+    if (list.data && page > list.data.last_page) setPage(list.data.last_page);
+  }, [list.data, page]);
   // Mark-all-read acts on the FILTERED set, so it is gated on the filtered set:
   // the server's `unread_count` is the whole inbox (it feeds the sidebar badge),
   // and gating on it leaves the button live while you look at a printer whose
@@ -234,13 +251,21 @@ export function InboxTab() {
         </ul>
       )}
 
-      {list.hasNextPage && (
-        <div className="flex justify-center">
-          <Button variant="ghost" size="sm" onClick={() => list.fetchNextPage()} disabled={list.isFetchingNextPage}>
-            {list.isFetchingNextPage ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-            {t('notifications.center.inbox.loadMore')}
-          </Button>
-        </div>
+      {list.data && (
+        <PaginationBar
+          page={list.data.current_page}
+          totalPages={list.data.last_page}
+          perPage={perPage}
+          total={list.data.total}
+          items={t('notifications.center.inbox.notificationCount', { count: list.data.total })}
+          variant="bare"
+          onPageChange={setPage}
+          onPerPageChange={(size) => {
+            setPerPage(size);
+            setPage(1);
+            try { localStorage.setItem(PAGE_SIZE_KEY, String(size)); } catch { /* ignore */ }
+          }}
+        />
       )}
 
       {confirmClear && (

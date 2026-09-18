@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- **The notification centre pages like every other table.** It grew by a Show-more button while Archives, Inventory and the file manager all offered numbered pages and a size selector; it now uses the same bar, remembers the size you pick, and starts at 24 like they do. Changing a filter returns you to the first page instead of leaving you on a page the narrower result no longer has.
+
 - **A read notification centre no longer looks like one flat sheet.** Entries that had been read were drawn on the page's own background, so a long inbox had nothing telling one from the next. Each now sits on the card surface the rest of the app uses, with its own edge, and a coloured left border repeats the severity — errors and warnings can be found by eye without reading a line.
 
 - **The provider form now offers every event, and a new provider no longer subscribes to any of them behind your back.** Adding a notification channel showed eighteen events; BamDude has thirty-four. AMS alarms, everything about the queue, the two sensor alerts and the plate-not-empty check were missing from the form — reachable only by saving the provider first and expanding its card. Six of the hidden ones are on by default, so a freshly added ntfy, Discord or Signal channel started sending events nobody had been shown. The form and the card now read the list from the server, so every event is offered, a new provider shows exactly the subscriptions it will be saved with, and an event added in a future version appears by itself instead of waiting to be typed out a fourth time.

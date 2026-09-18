@@ -8477,7 +8477,8 @@ export default {
         clearConfirmBody: 'Remove every notification matching the current filters? This cannot be undone.',
         cleared: '{{count}} removed',
         delete: 'Delete',
-        loadMore: 'Show more',
+        notificationCount_one: 'notification',
+        notificationCount_other: 'notifications',
         unread: 'Unread'
       },
       subscriptions: {

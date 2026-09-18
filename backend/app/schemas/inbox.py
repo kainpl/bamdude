@@ -42,9 +42,22 @@ class InboxItem(BaseModel):
 
 
 class InboxListResponse(BaseModel):
+    """One page of the inbox.
+
+    Offset pagination with the same meta field names the Archives and Inventory
+    tables use (``total`` / ``current_page`` / ``per_page`` / ``last_page``), so
+    the shared ``PaginationBar`` can render it without a translation layer. The
+    first version paged by cursor (``before_id``) behind a Load-more button;
+    that shipped in no release, and numbered pages were what the rest of the app
+    already offered.
+    """
+
     items: list[InboxItem]
     unread_count: int
-    next_before_id: int | None = None
+    total: int
+    current_page: int
+    per_page: int
+    last_page: int
 
 
 class UnreadCountResponse(BaseModel):

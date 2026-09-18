@@ -5,11 +5,12 @@ caller's ``user_id``; there is no administrative view of somebody else's inbox.
 Static paths are declared before ``/{item_id}`` ones on purpose.
 """
 
+import math
 from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequirePermission
@@ -109,22 +110,33 @@ async def _subscriptions(db: AsyncSession, user_id: int) -> InboxSubscriptions:
 @router.get("/", response_model=InboxListResponse)
 async def list_inbox(
     filters: InboxFilters = Depends(),
-    before_id: int | None = Query(None, ge=1),
-    limit: int = Query(50, ge=1, le=200),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(24, ge=1, le=200),
+    all: bool = Query(False, description="When true, skip pagination and return every matching row"),
     current_user: User | None = RequirePermission(Permission.NOTIFICATIONS_INBOX),
     db: AsyncSession = Depends(get_db),
 ):
+    """One page of this user's inbox, newest first.
+
+    ``per_page`` defaults to the 24 the Archives and Inventory tables use, and
+    ``all=true`` is the "All" option of the same size selector. The count is a
+    separate query on purpose: the page needs a total to draw the last-page
+    button, which a cursor cannot give.
+    """
     user = _require_user(current_user)
-    stmt = filters.apply(select(UserNotification), user.id)
-    if before_id is not None:
-        stmt = stmt.where(UserNotification.id < before_id)
-    rows = (await db.execute(stmt.order_by(UserNotification.id.desc()).limit(limit + 1))).scalars().all()
-    has_more = len(rows) > limit
-    rows = rows[:limit]
+    base = filters.apply(select(UserNotification), user.id)
+    total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one())
+    stmt = base.order_by(UserNotification.id.desc())
+    if not all:
+        stmt = stmt.offset((page - 1) * per_page).limit(per_page)
+    rows = (await db.execute(stmt)).scalars().all()
     return InboxListResponse(
         items=[InboxItem.from_row(r) for r in rows],
         unread_count=await notification_inbox.unread_count(db, user.id),
-        next_before_id=rows[-1].id if has_more and rows else None,
+        total=total,
+        current_page=1 if all else page,
+        per_page=(total or 1) if all else per_page,
+        last_page=1 if all else max(1, math.ceil(total / per_page)),
     )
 
 

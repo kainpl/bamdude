@@ -8544,7 +8544,10 @@ export default {
         clearConfirmBody: 'Прибрати всі сповіщення, що відповідають поточним фільтрам? Цю дію не скасувати.',
         cleared: 'Прибрано: {{count}}',
         delete: 'Видалити',
-        loadMore: 'Показати ще',
+        notificationCount_one: 'сповіщення',
+        notificationCount_few: 'сповіщення',
+        notificationCount_many: 'сповіщень',
+        notificationCount_other: 'сповіщень',
         unread: 'Непрочитане'
       },
       subscriptions: {

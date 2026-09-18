@@ -19,6 +19,19 @@ const items = [
   },
 ];
 
+/** One page in the shape the endpoint returns — meta named as Archives names it. */
+function pageOf(items: unknown[], unread_count: number, over: Record<string, unknown> = {}) {
+  return {
+    items,
+    unread_count,
+    total: items.length,
+    current_page: 1,
+    per_page: 24,
+    last_page: 1,
+    ...over,
+  };
+}
+
 describe('InboxTab', () => {
   const calls: { read: number[]; readAll: URL[]; clear: URL[] } = { read: [], readAll: [], clear: [] };
 
@@ -31,7 +44,7 @@ describe('InboxTab', () => {
       http.get('/api/v1/inbox/', ({ request }) => {
         const url = new URL(request.url);
         const filtered = url.searchParams.get('severity') === 'error' ? [items[0]] : items;
-        return HttpResponse.json({ items: filtered, unread_count: 1, next_before_id: null });
+        return HttpResponse.json(pageOf(filtered, 1));
       }),
       http.post('/api/v1/inbox/:id/read', ({ params }) => {
         calls.read.push(Number(params.id));
@@ -95,11 +108,33 @@ describe('InboxTab', () => {
     // read and the button must go quiet, or it fires a no-op that reports zero.
     server.use(
       http.get('/api/v1/inbox/', () =>
-        HttpResponse.json({ items: [items[1]], unread_count: 5, next_before_id: null }),
+        HttpResponse.json(pageOf([items[1]], 5)),
       ),
     );
     render(<InboxTab />);
     await screen.findByText('Print done');
     expect(screen.getByRole('button', { name: 'Mark all read' })).toBeDisabled();
   });
+
+  it('pages with the same bar the rest of the app uses, and asks for the size chosen', async () => {
+    // The inbox used to grow by a Load-more button while every other table in
+    // the app had numbered pages and a size selector; this pins that it now
+    // asks the server for a page rather than appending to one long list.
+    const asked: string[] = [];
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([])),
+      http.get('/api/v1/inbox/', ({ request }) => {
+        asked.push(new URL(request.url).search);
+        return HttpResponse.json(pageOf([items[0]], 1, { total: 60, last_page: 3 }));
+      }),
+    );
+
+    render(<InboxTab />);
+
+    await screen.findByText('Print failed on P1');
+    await userEvent.click(await screen.findByRole('button', { name: /next page/i }));
+
+    await waitFor(() => expect(asked.some((q) => q.includes('page=2'))).toBe(true));
+  });
+
 });

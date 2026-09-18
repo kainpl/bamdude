@@ -52,7 +52,8 @@ async def test_list_shows_only_my_rows_newest_first_with_unread_count(async_clie
     assert r.status_code == 200
     body = r.json()
     assert [i["title"] for i in body["items"]] == ["b", "a"]
-    assert body["unread_count"] == 1 and body["next_before_id"] is None
+    assert body["unread_count"] == 1
+    assert (body["total"], body["current_page"], body["per_page"], body["last_page"]) == (2, 1, 24, 1)
     assert body["items"][0]["group"] == "print" and body["items"][0]["severity"] == "error"
 
     r = await async_client.get("/api/v1/inbox/unread-count")
@@ -61,7 +62,7 @@ async def test_list_shows_only_my_rows_newest_first_with_unread_count(async_clie
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_filters_and_cursor(async_client, db_session):
+async def test_filters_and_pages(async_client, db_session):
     me = await _admin_id(db_session)
     db_session.add_all(
         [
@@ -90,13 +91,24 @@ async def test_filters_and_cursor(async_client, db_session):
     assert [i["title"] for i in r.json()["items"]] == ["old-warning"]
     assert (await async_client.get("/api/v1/inbox/", params={"severity": "loud"})).status_code == 422
 
-    r = await async_client.get("/api/v1/inbox/", params={"limit": 2})
+    # Numbered pages, the same shape the Archives and Inventory tables use, so
+    # the shared PaginationBar can draw this list without a translation layer.
+    r = await async_client.get("/api/v1/inbox/", params={"per_page": 2})
     page = r.json()
-    assert len(page["items"]) == 2 and page["next_before_id"] == page["items"][-1]["id"]
-    r = await async_client.get("/api/v1/inbox/", params={"limit": 2, "before_id": page["next_before_id"]})
+    assert len(page["items"]) == 2
+    assert (page["total"], page["current_page"], page["per_page"], page["last_page"]) == (4, 1, 2, 2)
+    r = await async_client.get("/api/v1/inbox/", params={"per_page": 2, "page": 2})
     page2 = r.json()
-    assert len(page2["items"]) == 2 and page2["next_before_id"] is None
+    assert len(page2["items"]) == 2 and page2["current_page"] == 2
     assert {i["id"] for i in page["items"]}.isdisjoint({i["id"] for i in page2["items"]})
+    # A page past the end is empty, not an error — the table can ask for one
+    # after a filter shrinks the result.
+    r = await async_client.get("/api/v1/inbox/", params={"per_page": 2, "page": 9})
+    assert r.status_code == 200 and r.json()["items"] == []
+    # "All" is the size selector's last option: one page holding everything.
+    r = await async_client.get("/api/v1/inbox/", params={"all": "true"})
+    every = r.json()
+    assert len(every["items"]) == 4 and every["last_page"] == 1 and every["per_page"] == 4
 
 
 @pytest.mark.asyncio
