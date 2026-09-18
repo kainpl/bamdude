@@ -31,6 +31,14 @@ def _free_port() -> int:
 
 @pytest.fixture
 def live_settings(tmp_path, monkeypatch):
+    # PostgreSQL refuses to initdb as root - its rule, not ours - and the
+    # integration suite is also run inside a container that has no other
+    # user. The bundled server is a native-install option (Linux service,
+    # the Windows installer); Docker gets the sidecar or an external server,
+    # and docker-install.sh no longer offers it. So this is nothing to fail
+    # over there - but it stays a hard failure everywhere it CAN run.
+    if getattr(os, "geteuid", lambda: -1)() == 0:
+        pytest.skip("running as root: initdb refuses, and the bundled server is not a container option")
     pgdata = tmp_path / "postgres" / ep.bundled_major()
     password_file = tmp_path / "postgres" / "password"
     password_file.parent.mkdir(parents=True)
