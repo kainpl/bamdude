@@ -345,22 +345,34 @@ class TestPolicy:
         assert await camera_light.allowed(printer.id, "telegram") is False
 
     @pytest.mark.asyncio
-    async def test_the_printer_says_on_over_a_farm_that_says_off(self, db_session, printer_factory):
+    async def test_the_farm_toggle_is_the_master_switch_even_for_a_printer_that_says_on(
+        self, db_session, printer_factory
+    ):
         printer = await printer_factory(camera_light_auto="on")
+        assert await camera_light.allowed(printer.id, "telegram") is False
+        await self._set(db_session, camera_light.FARM_SETTING, "true")
         assert await camera_light.allowed(printer.id, "telegram") is True
 
     @pytest.mark.asyncio
     async def test_obico_needs_its_own_yes_and_that_yes_is_the_farms(self, db_session, printer_factory):
-        printer = await printer_factory(camera_light_auto="on")
+        printer = await printer_factory()
+        await self._set(db_session, camera_light.FARM_SETTING, "true")
         assert await camera_light.allowed(printer.id, "obico") is False
         await self._set(db_session, camera_light.OBICO_SETTING, "true")
         assert await camera_light.allowed(printer.id, "obico") is True
 
     @pytest.mark.asyncio
     async def test_the_layer_timelapse_never_takes_the_light(self, db_session, printer_factory):
-        printer = await printer_factory(camera_light_auto="on")
+        printer = await printer_factory()
+        await self._set(db_session, camera_light.FARM_SETTING, "true")
         await self._set(db_session, camera_light.OBICO_SETTING, "true")
         assert await camera_light.allowed(printer.id, "layer_timelapse") is False
+
+    @pytest.mark.asyncio
+    async def test_the_plate_check_always_takes_the_light_as_it_always_did(self, db_session, printer_factory):
+        """Its reference was calibrated with the light on; a check in the dark pauses prints for nothing."""
+        printer = await printer_factory(camera_light_auto="off")
+        assert await camera_light.allowed(printer.id, "plate_check") is True
 
     @pytest.mark.asyncio
     async def test_an_unknown_printer_is_a_no(self, db_session):

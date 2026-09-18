@@ -3704,7 +3704,7 @@ async def on_print_start(printer_id: int, data: dict):
         if printer and printer.plate_detection_enabled:
             logger.info("[PLATE CHECK] ENTERING plate detection code for printer %s", printer_id)
             # Release the pooled DB connection before the plate-detection camera work
-            # (a light-settle sleep + FTP/camera capture). Only the printer SELECT has
+            # (the camera-light lease + FTP/camera capture). Only the printer SELECT has
             # run so far — nothing to persist — so this commit is a data-noop that ends
             # the read transaction and returns the connection to the pool during the
             # I/O (#2572). expire_on_commit=False keeps printer.* readable; the archive
@@ -3730,17 +3730,11 @@ async def on_print_start(printer_id: int, data: dict):
                         printer.plate_detection_roi_h,
                     )
 
-                # Auto-turn on chamber light if it's off for better detection
-                light_was_off = False
-                client = printer_manager.get_client(printer_id)
-                if client and client.state:
-                    light_was_off = not client.state.chamber_light
-                    if light_was_off:
-                        logger.info("[PLATE CHECK] Turning on chamber light for printer %s", printer_id)
-                        client.set_chamber_light(True)
-                        # Wait for light to physically turn on and camera to adjust exposure
-                        await asyncio.sleep(2.5)
-
+                # The chamber light is the capture's business: check_plate_empty
+                # captures with purpose="plate_check", which the camera-light lease
+                # always lights (services/camera_light.ALWAYS_PURPOSES) — on if it
+                # was off, confirmed by the printer instead of a 2.5 s pause, off
+                # again after the grace, and never touched if it was already on.
                 logger.info("[PLATE CHECK] Running plate detection for printer %s", printer_id)
                 plate_result = await check_plate_empty(
                     printer_id=printer_id,
@@ -3754,11 +3748,6 @@ async def on_print_start(printer_id: int, data: dict):
                     roi=roi,
                     external_camera_snapshot_url=printer.external_camera_snapshot_url,
                 )
-
-                # Restore chamber light to original state
-                if light_was_off and client:
-                    logger.info("[PLATE CHECK] Restoring chamber light to off for printer %s", printer_id)
-                    client.set_chamber_light(False)
 
                 if not plate_result.needs_calibration and not plate_result.is_empty:
                     # Objects detected - pause the print!

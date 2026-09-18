@@ -405,14 +405,20 @@ class ObicoDetectionService:
             for pid, state in self._states.items()
         }
 
-    def get_status(self, sensitivity: str = "medium") -> dict:
+    def get_status(self, sensitivity: str = "medium", *, active: bool = True) -> dict:
         # Report the thresholds for the configured sensitivity, not a hardcoded
         # "medium" — otherwise the Status panel always shows the medium row
         # regardless of the user's selection (#1469). thresholds() falls back
         # to the medium multiplier for any unrecognized value.
+        #
+        # ``is_running`` is the EFFECTIVE state: the loop is alive AND the
+        # caller says detection is on (enabled + an ML URL). The loop itself
+        # starts with the app and merely sleeps while the feature is off, so
+        # a bare task check answered "running" on a farm that never enabled
+        # Obico — the Status panel said Yes with the toggle off.
         low, high = thresholds(sensitivity)
         return {
-            "is_running": self._task is not None and not self._task.done(),
+            "is_running": active and self._task is not None and not self._task.done(),
             "last_error": self._last_error,
             "per_printer": self.get_per_printer(),
             "thresholds": {"low": low, "high": high},

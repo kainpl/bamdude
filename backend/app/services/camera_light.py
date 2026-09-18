@@ -55,12 +55,19 @@ MAX_POLL_MS = 120_000
 #: Added to a declared cadence: covers the capture timeout (15 s) plus slack.
 POLL_HOLD_MARGIN_SECONDS = 20.0
 
-#: ``printers.camera_light_auto``: the per-printer answer, or defer to the farm.
+#: ``printers.camera_light_auto``: ``off`` excludes the printer; ``inherit`` (and the
+#: no-longer-offered ``on``) defer to the farm toggle, which is the master switch.
 POLICY_VALUES: tuple[str, ...] = ("inherit", "on", "off")
 FARM_SETTING = "camera_light_auto"
 OBICO_SETTING = "camera_light_auto_obico"
 #: Purposes that never take the light, whatever the settings say.
 NEVER_PURPOSES = frozenset({"layer_timelapse"})
+#: Purposes that ALWAYS take the light, whatever the settings say. The plate
+#: check compares the camera view against a reference calibrated with the
+#: light on; a check in the dark would differ from it and pause a print for
+#: nothing. It lit the plate before this module existed (main.py and the
+#: card each did it by hand) and keeps doing so — only through the lease now.
+ALWAYS_PURPOSES = frozenset({"plate_check"})
 
 
 @dataclass
@@ -132,11 +139,14 @@ async def allowed(printer_id: int, purpose: str) -> bool:
     """The settings' answer for this printer and this use of the camera.
 
     Read on every call, never cached: flipping the toggle must act at once.
-    The printer's own value wins over the farm's when it is not ``inherit``;
-    the Obico sub-toggle is the farm's alone.
+    The farm toggle is the master switch — off, and no printer takes the
+    light whatever its own row says; on, and a printer may still say ``off``
+    for itself. The Obico sub-toggle is the farm's alone.
     """
     if purpose in NEVER_PURPOSES:
         return False
+    if purpose in ALWAYS_PURPOSES:
+        return True
     from sqlalchemy import select
 
     from backend.app.api.routes.settings import get_setting
@@ -144,12 +154,12 @@ async def allowed(printer_id: int, purpose: str) -> bool:
     from backend.app.models.printer import Printer
 
     async with database.async_session() as db:
+        if not _truthy(await get_setting(db, FARM_SETTING)):
+            return False
         policy = (
             await db.execute(select(Printer.camera_light_auto).where(Printer.id == printer_id))
         ).scalar_one_or_none()
         if policy is None or policy == "off":
-            return False
-        if policy != "on" and not _truthy(await get_setting(db, FARM_SETTING)):
             return False
         if purpose == "obico" and not _truthy(await get_setting(db, OBICO_SETTING)):
             return False

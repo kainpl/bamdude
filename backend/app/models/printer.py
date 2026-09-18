@@ -131,9 +131,10 @@ class Printer(Base):
     # Bambuddy #1177.
     external_camera_snapshot_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     camera_rotation: Mapped[int] = mapped_column(default=0)  # 0, 90, 180, 270 degrees
-    # Chamber light for the camera (services/camera_light): "inherit" defers to
-    # the farm's camera_light_auto setting, "on" / "off" decide for this printer.
-    # Not per model — the model only says whether there IS a light. m178.
+    # Chamber light for the camera (services/camera_light): "off" excludes this
+    # printer; "inherit" defers to the farm's camera_light_auto, which is the
+    # master switch ("on" is still accepted and reads as "inherit"). Not per
+    # model — the model only says whether there IS a light. m178.
     camera_light_auto: Mapped[str] = mapped_column(String(8), default="inherit", server_default="inherit")
     # Plate detection - check if build plate is empty before starting print
     plate_detection_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

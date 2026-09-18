@@ -75,6 +75,16 @@ class TestGetStatus:
         assert s["history"] == []
         assert "low" in s["thresholds"] and "high" in s["thresholds"]
 
+    def test_running_means_the_loop_is_alive_and_detection_is_on(self):
+        """The loop starts with the app and sleeps while the feature is off; the
+        panel must not call that running."""
+        from types import SimpleNamespace
+
+        svc = ObicoDetectionService()
+        svc._task = SimpleNamespace(done=lambda: False)
+        assert svc.get_status(active=False)["is_running"] is False
+        assert svc.get_status(active=True)["is_running"] is True
+
     def test_thresholds_reflect_configured_sensitivity(self):
         """#1469 — get_status() reports the thresholds for the passed
         sensitivity, not a hardcoded 'medium'. Each level must be distinct so

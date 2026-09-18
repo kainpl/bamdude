@@ -1213,7 +1213,10 @@ export function SettingsPage() {
       enabled: activeTab === 'printing',
     })),
   });
+  // The farm toggle is the master switch: off, and nothing per printer is
+  // shown (nor acted on — the backend reads it the same way).
   const cameraLightSelectable = (printerId: number): boolean => {
+    if (!localSettings?.camera_light_auto) return false;
     const index = (printers ?? []).findIndex((p) => p.id === printerId);
     const status = index >= 0 ? printerStatusQueries[index]?.data : undefined;
     return !(status?.connected && status.has_chamber_light === false);
@@ -2161,46 +2164,6 @@ export function SettingsPage() {
                   </div>
                 </div>
               )}
-
-              {/* The chamber light for the camera (backend services/camera_light).
-                  Off by default; only a light that is off is switched on, and only
-                  a light BamDude switched on is switched off. Obico is a separate
-                  yes because it polls the camera for the whole print. */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.cameraLightAuto')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.cameraLightAutoDescription')}
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.camera_light_auto ?? false}
-                    onChange={(e) => updateSetting('camera_light_auto', e.target.checked)}
-                    className="sr-only peer"
-                  />
-                <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className={localSettings.camera_light_auto ? 'text-white' : 'text-bambu-gray'}>{t('settings.cameraLightAutoObico')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.cameraLightAutoObicoDescription')}
-                  </p>
-                </div>
-                <label className={`relative inline-flex items-center ${localSettings.camera_light_auto ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
-                  <input
-                    type="checkbox"
-                    checked={localSettings.camera_light_auto_obico ?? false}
-                    disabled={!localSettings.camera_light_auto}
-                    onChange={(e) => updateSetting('camera_light_auto_obico', e.target.checked)}
-                    className="sr-only peer"
-                  />
-                <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
 
               {/* Tidy the printer up once BamDude has the recording. Opt-in:
                   having a copy is not the same as nobody needing it on the
@@ -3239,6 +3202,47 @@ export function SettingsPage() {
                 </p>
               </div>
 
+              {/* The chamber light for the camera (backend services/camera_light).
+                  Off by default; only a light that is off is switched on, and only
+                  a light BamDude switched on is switched off. Obico is a separate
+                  yes because it polls the camera for the whole print. */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.cameraLightAuto')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.cameraLightAutoDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.camera_light_auto ?? false}
+                    onChange={(e) => updateSetting('camera_light_auto', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              {localSettings.camera_light_auto && localSettings.obico_enabled && (
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.cameraLightAutoObico')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.cameraLightAutoObicoDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.camera_light_auto_obico ?? false}
+                    onChange={(e) => updateSetting('camera_light_auto_obico', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              )}
+
               {/* External Cameras Section */}
               <div className="border-t border-bambu-dark-tertiary pt-4 mt-4">
                 <h3 className="text-sm font-medium text-white mb-2">{t('settings.externalCameras')}</h3>
@@ -3369,7 +3373,6 @@ export function SettingsPage() {
                               className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-xs focus:border-bambu-green focus:outline-none"
                             >
                               <option value="inherit">{t('settings.printerCameraLightInherit')}</option>
-                              <option value="on">{t('settings.printerCameraLightOn')}</option>
                               <option value="off">{t('settings.printerCameraLightOff')}</option>
                             </select>
                           </div>

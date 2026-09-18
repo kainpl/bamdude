@@ -379,10 +379,10 @@ describe('SettingsPage', () => {
       await user.click(tab);
     };
 
-    it('the Obico toggle is disabled until the light toggle is on, and both are saved', async () => {
+    it('the Obico toggle appears only once the light toggle is on, and both are saved', async () => {
       const saved: Record<string, unknown>[] = [];
       server.use(
-        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, camera_light_auto: false, camera_light_auto_obico: false })),
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, obico_enabled: true, camera_light_auto: false, camera_light_auto_obico: false })),
         http.put('/api/v1/settings/', async ({ request }) => {
           const body = (await request.json()) as Record<string, unknown>;
           saved.push(body);
@@ -390,15 +390,14 @@ describe('SettingsPage', () => {
         }),
       );
       render(<SettingsPage />);
-      await openTab('General');
+      await openTab('Printing');
       const light = await waitFor(() => toggleFor('Light for the camera'), { timeout: 5000 });
-      const obico = toggleFor('Also for Obico failure detection');
       expect(light.checked).toBe(false);
-      expect(obico.disabled).toBe(true);
+      expect(screen.queryByText('Also for Obico failure detection')).not.toBeInTheDocument();
 
       const user = userEvent.setup();
       await user.click(light);
-      await waitFor(() => expect(toggleFor('Also for Obico failure detection').disabled).toBe(false), { timeout: 5000 });
+      await waitFor(() => toggleFor('Also for Obico failure detection'), { timeout: 5000 });
       await user.click(toggleFor('Also for Obico failure detection'));
       await waitFor(() => {
         const last = saved.at(-1);
@@ -410,6 +409,7 @@ describe('SettingsPage', () => {
     it('a printer that reported a light gets its own selector, and the choice is sent as camera_light_auto', async () => {
       const patches: Record<string, unknown>[] = [];
       server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, camera_light_auto: true })),
         http.get('/api/v1/printers/', () => HttpResponse.json([printerRow()])),
         status({ has_chamber_light: true }),
         http.patch('/api/v1/printers/:id', async ({ request }) => {
@@ -428,6 +428,7 @@ describe('SettingsPage', () => {
 
     it('a connected printer with no chamber light has no selector', async () => {
       server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, camera_light_auto: true })),
         http.get('/api/v1/printers/', () => HttpResponse.json([printerRow()])),
         status({ has_chamber_light: false }),
       );
@@ -435,6 +436,18 @@ describe('SettingsPage', () => {
       await openTab('Printing');
       await screen.findByText('Mini by the window', {}, { timeout: 5000 });
       await waitFor(() => expect(screen.queryByLabelText('Light for the camera')).not.toBeInTheDocument(), { timeout: 5000 });
+    }, 15000);
+
+    it('with the farm toggle off there is no per-printer selector at all', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, camera_light_auto: false })),
+        http.get('/api/v1/printers/', () => HttpResponse.json([printerRow()])),
+        status({ has_chamber_light: true }),
+      );
+      render(<SettingsPage />);
+      await openTab('Printing');
+      await screen.findByText('Mini by the window', {}, { timeout: 5000 });
+      expect(screen.queryByLabelText('Light for the camera')).not.toBeInTheDocument();
     }, 15000);
   });
 
