@@ -190,6 +190,17 @@ async def test_engine(monkeypatch):
     session shows only that nothing rolled it back. The one place this is
     load-bearing says so out loud:
     ``integration/test_queue_add_captures_once.py::test_the_long_transaction_is_released_before_the_copy``.
+
+    The same shared connection has a sharper edge: closing ANY session is a
+    ROLLBACK for everyone on it. A request's ``get_db`` session closes when the
+    request ends, so a test that polls an endpoint while a service session is
+    mid-transaction can roll that service's uncommitted INSERT out from under
+    it — the ORM's next autoflush then reports ``StaleDataError: UPDATE …
+    0 rows matched``. Reproduced deterministically on 2026-09-18 (one
+    authenticated GET between a ``flush()`` and an autoflush). A test that
+    needs a background job's result awaits the job's task and reads the
+    endpoint once afterwards (``integration/test_slice_api.py::_wait_for_job``);
+    it does not poll over HTTP while the job runs.
     """
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 
