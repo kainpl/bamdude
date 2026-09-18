@@ -1248,6 +1248,10 @@ class PrinterState:
     speed_level: int = 2
     # Chamber light on/off
     chamber_light: bool = False
+    # True once a lights_report has carried a chamber_light node — the
+    # printer has a light we can switch. Off until the first report of a
+    # connection; the camera-light lease is a no-op while it is off.
+    has_chamber_light: bool = False
     # Active extruder for dual nozzle (0=right, 1=left) - from device.extruder.info[X].hnow
     active_extruder: int = 0
     # Currently loaded tray (global ID): 254/255 = external spools, 255 = no filament on legacy printers
@@ -1821,6 +1825,7 @@ class BambuMQTTClient:
         on_skipped_objects_changed: Callable[[list], None] | None = None,
         on_tray_change: Callable[[int, int], None] | None = None,
         on_usage_event: Callable[[str, str | None, int | None, int], None] | None = None,
+        on_lights_report: Callable[[bool], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -1839,6 +1844,11 @@ class BambuMQTTClient:
         # list must not inflate it. printer_manager wires this to the archive's
         # defective-part counter.
         self.on_skipped_objects_changed = on_skipped_objects_changed
+        # Fired on a CHANGE of the chamber light after the first report of a
+        # connection, with the new state. The camera-light lease listens
+        # (services/camera_light): a change it commanded confirms its "on",
+        # any other change ends its ownership of the light.
+        self.on_lights_report = on_lights_report
         # #1349: fired when an AMS unit's ``dry_time`` falls from >0 to 0
         # — i.e. the drying cycle just finished (queue-triggered, ambient,
         # or manual). Receives the AMS id of the unit that finished drying.
@@ -6124,11 +6134,23 @@ class BambuMQTTClient:
                 for light in lights:
                     if isinstance(light, dict) and light.get("node") == "chamber_light":
                         new_light_state = light.get("mode") == "on"
-                        if new_light_state != self.state.chamber_light:
+                        # The first report of a connection is a sync, not a switch:
+                        # nobody flipped anything, we just did not know yet. Only a
+                        # later change is reported onward, so the camera-light lease
+                        # never mistakes a reconnect for the operator taking over.
+                        first_report = not self.state.has_chamber_light
+                        changed = new_light_state != self.state.chamber_light
+                        if changed:
                             logger.debug(
                                 f"[{self.serial_number}] chamber_light changed: {self.state.chamber_light} -> {new_light_state}"
                             )
+                        self.state.has_chamber_light = True
                         self.state.chamber_light = new_light_state
+                        if changed and not first_report and self.on_lights_report:
+                            try:
+                                self.on_lights_report(new_light_state)
+                            except Exception as e:
+                                logger.warning("[%s] on_lights_report failed: %s", self.serial_number, e)
                         break
 
         # Parse nozzle hardware info (single nozzle printers)

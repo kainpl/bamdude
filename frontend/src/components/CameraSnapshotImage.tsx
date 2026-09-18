@@ -44,7 +44,10 @@ export function CameraSnapshotImage({
         // The deadline covers headers AND the JPEG body. Start it after the
         // slot grant, so waiting tiles cannot time out before their first turn.
         deadline = setTimeout(cancelRequest, 20_000);
-        const path = `/api/v1/printers/${printerId}/camera/snapshot?t=${Date.now()}`;
+        // `poll` declares this tile's cadence: the server then keeps the
+        // chamber light (when the farm asks for it) for that long after each
+        // frame instead of blinking it on every one.
+        const path = `/api/v1/printers/${printerId}/camera/snapshot?t=${Date.now()}&poll=${Math.max(1000, intervalMs)}`;
         const url = streamToken ? `${path}&token=${encodeURIComponent(streamToken)}` : withStreamToken(path);
         const response = await fetch(url, { signal: request.signal, cache: 'no-store' });
         if (!response.ok) {

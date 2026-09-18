@@ -389,15 +389,24 @@ async def _worker_stream_response(
             return True
 
     async def _generate():
-        async for chunk in iter_subscriber(
-            broadcaster,
-            queue,
-            is_disconnected=_is_disconnected,
-            on_unsubscribe=lambda remaining: logger.info(
-                "Camera worker viewer detached from %s (subscribers=%d)", fanout_key, remaining
-            ),
-        ):
-            yield chunk
+        # One light lease per viewer, for exactly as long as the viewer reads
+        # (services/camera_light): taken inside the generator so a response
+        # that is never iterated never holds it.
+        from backend.app.services import camera_light
+
+        light = await camera_light.acquire(printer_id, "stream")
+        try:
+            async for chunk in iter_subscriber(
+                broadcaster,
+                queue,
+                is_disconnected=_is_disconnected,
+                on_unsubscribe=lambda remaining: logger.info(
+                    "Camera worker viewer detached from %s (subscribers=%d)", fanout_key, remaining
+                ),
+            ):
+                yield chunk
+        finally:
+            camera_light.release(light)
 
     return StreamingResponse(
         _generate(),
@@ -1059,7 +1068,13 @@ async def camera_stream(
 
         async def external_stream_wrapper():
             """Wrap external stream to track start/stop and update frame times."""
+            from backend.app.services import camera_light
+
+            light = None
             try:
+                # The chamber light lights the chamber the external camera
+                # looks into too (services/camera_light).
+                light = await camera_light.acquire(printer_id, "stream")
 
                 def _publish_external_frame(frame: bytes) -> None:
                     """Make the live frame reusable by one-shot consumers (#2707).
@@ -1091,6 +1106,7 @@ async def camera_stream(
                     _stream_last_frame_times[stream_id] = now
                     yield frame
             finally:
+                camera_light.release(light)
                 # Best-effort. When an abrupt disconnect skips this block the
                 # registry entries survive — and that is the point: they are what
                 # the stop endpoint and the janitor then reap the process by.
@@ -1209,13 +1225,22 @@ async def camera_stream(
         logger.info("Camera viewer detached from %s (subscribers=%d)", fanout_key, remaining)
 
     async def _generate():
-        async for chunk in iter_subscriber(
-            broadcaster,
-            queue,
-            is_disconnected=_is_disconnected,
-            on_unsubscribe=_log_detach,
-        ):
-            yield chunk
+        # One light lease per viewer, for exactly as long as the viewer reads
+        # (services/camera_light): taken inside the generator so a response
+        # that is never iterated never holds it.
+        from backend.app.services import camera_light
+
+        light = await camera_light.acquire(printer_id, "stream")
+        try:
+            async for chunk in iter_subscriber(
+                broadcaster,
+                queue,
+                is_disconnected=_is_disconnected,
+                on_unsubscribe=_log_detach,
+            ):
+                yield chunk
+        finally:
+            camera_light.release(light)
 
     return StreamingResponse(
         _generate(),
@@ -1317,6 +1342,7 @@ async def stop_camera_stream(
 @router.get("/{printer_id}/camera/snapshot")
 async def camera_snapshot(
     printer_id: int,
+    poll: int | None = None,
     _token: None = RequireCameraStreamToken,
 ):
     """Capture a single frame from the printer camera.
@@ -1325,10 +1351,13 @@ async def camera_snapshot(
 
     Gated by a ``?token=...`` query param from ``POST /printers/camera/stream-token``
     because ``<img>`` / ``<video>`` tags can't send Authorization headers.
-    """
-    import tempfile
-    from pathlib import Path
 
+    ``?poll=<ms>`` is a poller declaring its cadence (the Camera Wall in
+    snapshot mode, the embedded viewer): the chamber light, when the farm
+    or the printer asks for it, is then held for that cadence plus the
+    capture timeout instead of the one-shot grace, so a wall that is open
+    keeps the light on rather than blinking it on every frame.
+    """
     # Fetch the printer in a short-lived session and release the pooled DB
     # connection BEFORE the camera capture below (up to 15s, longer under a
     # saturated FTP/camera pool). Holding a Depends(get_db) session across the
@@ -1338,6 +1367,22 @@ async def camera_snapshot(
     # already-loaded scalar columns (expire_on_commit=False).
     async with database.async_session() as db:
         printer = await get_printer_or_404(printer_id, db)
+
+    # The light for the whole answer — buffered, cached or fresh — so a
+    # poller keeps it on between two frames. The capture requests below do
+    # NOT name the printer: this lease already waited for the light.
+    from backend.app.services import camera_light
+
+    async with camera_light.held(printer_id, "snapshot", hold=camera_light.hold_for_poll(poll)) as lease:
+        if lease is not None:
+            await lease.settle()
+        return await _snapshot_from(printer_id, printer)
+
+
+async def _snapshot_from(printer_id: int, printer):
+    """One frame from ``printer``: external camera, live buffer, recent cache, or a fresh capture."""
+    import tempfile
+    from pathlib import Path
 
     # Check for external camera first
     if printer.external_camera_enabled and printer.external_camera_url:

@@ -1457,6 +1457,7 @@ async def _build_printer_status(
         supports_cooling_filter=bool((state.print_option_support or {}).get("cooling_filter")),
         speed_level=state.speed_level,
         chamber_light=state.chamber_light,
+        has_chamber_light=state.has_chamber_light,
         active_extruder=state.active_extruder,
         ams_mapping=ams_mapping,
         ams_extruder_map=ams_extruder_map,

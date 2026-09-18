@@ -90,6 +90,7 @@ async def cb_camera_snapshot(callback: CallbackQuery, tg_chat: TelegramChat | No
                     access_code=printer.access_code,
                     model=printer.model,
                     purpose="telegram",
+                    printer_id=printer.id,
                 )
             )
         ).frame

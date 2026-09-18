@@ -407,6 +407,7 @@ async def _capture(printer_id: int, camera: _Camera) -> bytes | None:
                 timeout=CAMERA_TIMEOUT_S,
                 snapshot_url=camera.external_snapshot_url,
                 purpose="cloud_link",
+                printer_id=printer_id,
             )
         )
     else:
@@ -417,6 +418,7 @@ async def _capture(printer_id: int, camera: _Camera) -> bytes | None:
                 model=camera.model,
                 timeout=CAMERA_TIMEOUT_S,
                 purpose="cloud_link",
+                printer_id=printer_id,
             )
         )
     return result.frame

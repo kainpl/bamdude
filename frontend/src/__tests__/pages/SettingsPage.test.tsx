@@ -340,6 +340,104 @@ describe('SettingsPage', () => {
     });
   });
 
+  describe('light for the camera', () => {
+    const printerRow = (overrides: Record<string, unknown> = {}) => ({
+      id: 9,
+      name: 'Mini by the window',
+      serial_number: 'MINI0001',
+      ip_address: '192.168.1.109',
+      access_code: 'XXXX',
+      model: 'A1 mini',
+      location: null,
+      nozzle_count: 1,
+      is_active: true,
+      auto_archive: true,
+      external_camera_url: null,
+      external_camera_type: null,
+      external_camera_enabled: false,
+      external_camera_snapshot_url: null,
+      camera_rotation: 0,
+      camera_light_auto: 'inherit',
+      plate_detection_enabled: false,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      ...overrides,
+    });
+    const status = (overrides: Record<string, unknown>) =>
+      http.get('/api/v1/printers/:id/status', ({ params }) =>
+        HttpResponse.json({ id: Number(params.id), name: 'Mini by the window', connected: true, state: 'IDLE', ...overrides }),
+      );
+    // The tab a previous test left open survives into this one, so every
+    // test here opens the tab it needs instead of trusting the default.
+    const openTab = async (label: string) => {
+      const user = userEvent.setup();
+      const tab = await waitFor(() => {
+        const buttons = screen.getAllByText(label).filter((el) => el.tagName === 'BUTTON');
+        expect(buttons.length).toBeGreaterThan(0);
+        return buttons[0];
+      });
+      await user.click(tab);
+    };
+
+    it('the Obico toggle is disabled until the light toggle is on, and both are saved', async () => {
+      const saved: Record<string, unknown>[] = [];
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, camera_light_auto: false, camera_light_auto_obico: false })),
+        http.put('/api/v1/settings/', async ({ request }) => {
+          const body = (await request.json()) as Record<string, unknown>;
+          saved.push(body);
+          return HttpResponse.json({ ...mockSettings, ...body });
+        }),
+      );
+      render(<SettingsPage />);
+      await openTab('General');
+      const light = await waitFor(() => toggleFor('Light for the camera'), { timeout: 5000 });
+      const obico = toggleFor('Also for Obico failure detection');
+      expect(light.checked).toBe(false);
+      expect(obico.disabled).toBe(true);
+
+      const user = userEvent.setup();
+      await user.click(light);
+      await waitFor(() => expect(toggleFor('Also for Obico failure detection').disabled).toBe(false), { timeout: 5000 });
+      await user.click(toggleFor('Also for Obico failure detection'));
+      await waitFor(() => {
+        const last = saved.at(-1);
+        expect(last?.camera_light_auto).toBe(true);
+        expect(last?.camera_light_auto_obico).toBe(true);
+      }, { timeout: 5000 });
+    }, 15000);
+
+    it('a printer that reported a light gets its own selector, and the choice is sent as camera_light_auto', async () => {
+      const patches: Record<string, unknown>[] = [];
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([printerRow()])),
+        status({ has_chamber_light: true }),
+        http.patch('/api/v1/printers/:id', async ({ request }) => {
+          const body = (await request.json()) as Record<string, unknown>;
+          patches.push(body);
+          return HttpResponse.json(printerRow(body));
+        }),
+      );
+      render(<SettingsPage />);
+      await openTab('Printing');
+      const select = (await screen.findByLabelText('Light for the camera', {}, { timeout: 5000 })) as HTMLSelectElement;
+      expect(select.value).toBe('inherit');
+      await userEvent.setup().selectOptions(select, 'off');
+      await waitFor(() => expect(patches).toEqual([{ camera_light_auto: 'off' }]), { timeout: 5000 });
+    }, 15000);
+
+    it('a connected printer with no chamber light has no selector', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([printerRow()])),
+        status({ has_chamber_light: false }),
+      );
+      render(<SettingsPage />);
+      await openTab('Printing');
+      await screen.findByText('Mini by the window', {}, { timeout: 5000 });
+      await waitFor(() => expect(screen.queryByLabelText('Light for the camera')).not.toBeInTheDocument(), { timeout: 5000 });
+    }, 15000);
+  });
+
   describe('external camera snapshot URL override (#1177)', () => {
     /**
      * The snapshot URL input only appears for stream camera types where the

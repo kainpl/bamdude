@@ -626,6 +626,7 @@ async def capture_camera_image(
                         camera_type=external_camera_type,
                         snapshot_url=external_camera_snapshot_url,
                         purpose="plate_check",
+                        printer_id=printer_id,
                     )
                 )
             ).frame
@@ -662,6 +663,7 @@ async def capture_camera_image(
                         model=model,
                         timeout=10,
                         purpose="plate_check",
+                        printer_id=printer_id,
                     )
                 )
             ).frame

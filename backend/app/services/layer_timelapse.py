@@ -96,6 +96,7 @@ class TimelapseSession:
                         camera_type=self.camera_type,
                         snapshot_url=self.snapshot_url,
                         purpose="layer_timelapse",
+                        printer_id=self.printer_id,
                     )
                 )
                 frame_data = result.frame

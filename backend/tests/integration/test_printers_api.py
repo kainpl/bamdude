@@ -504,6 +504,20 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_update_printer_camera_light_auto(self, async_client: AsyncClient, printer_factory):
+        """The per-printer answer is one of three words; anything else is refused (services/camera_light)."""
+        printer = await printer_factory()
+        assert (await async_client.get(f"/api/v1/printers/{printer.id}")).json()["camera_light_auto"] == "inherit"
+
+        response = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"camera_light_auto": "off"})
+        assert response.status_code == 200
+        assert response.json()["camera_light_auto"] == "off"
+
+        refused = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"camera_light_auto": "maybe"})
+        assert refused.status_code == 422
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_update_nonexistent_printer(self, async_client: AsyncClient):
         """Verify updating non-existent printer returns 404."""
         response = await async_client.patch("/api/v1/printers/9999", json={"name": "New Name"})

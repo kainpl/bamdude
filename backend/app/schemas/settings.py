@@ -38,6 +38,20 @@ class AppSettings(BaseModel):
             "this does not enable the printer's timelapse."
         ),
     )
+    # The chamber light for the camera (services/camera_light). Off by
+    # default and the printer's own camera_light_auto can override either way;
+    # Obico is a separate yes because it polls the camera for the whole print.
+    camera_light_auto: bool = Field(
+        default=False,
+        description=(
+            "Switch the chamber light on for the camera when it is off, and back off afterwards. "
+            "Only a light BamDude switched on is switched off again."
+        ),
+    )
+    camera_light_auto_obico: bool = Field(
+        default=False,
+        description="Also switch the light on for Obico's failure-detection frames (the whole print).",
+    )
     # ⚠️ Off by default, and it stays off unless somebody chooses it. "BamDude
     # has a copy" is not the same as "nobody needs it on the machine" — the
     # recording may be there to watch from the printer's own screen or to carry
@@ -665,6 +679,8 @@ class AppSettingsUpdate(BaseModel):
 
     save_thumbnails: bool | None = None
     capture_finish_photo: bool | None = None
+    camera_light_auto: bool | None = None
+    camera_light_auto_obico: bool | None = None
     delete_timelapse_after_attach: bool | None = None
     archive_3mf_retention_enabled: bool | None = None
     archive_3mf_retention_days: int | None = Field(default=None, ge=1)

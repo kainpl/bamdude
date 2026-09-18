@@ -3045,13 +3045,18 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
         # Try external camera first
         if printer.external_camera_enabled and printer.external_camera_url:
             logger.info("[SNAPSHOT] Capturing from external camera for printer %s", printer_id)
-            from backend.app.services.external_camera import capture_frame
+            from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-            frame_data = await capture_frame(
-                printer.external_camera_url,
-                printer.external_camera_type or "mjpeg",
-                snapshot_url=printer.external_camera_snapshot_url,
-            )
+            frame_data = (
+                await capture(
+                    CameraCaptureRequest.external(
+                        url=printer.external_camera_url,
+                        camera_type=printer.external_camera_type or "mjpeg",
+                        snapshot_url=printer.external_camera_snapshot_url,
+                        printer_id=printer_id,
+                    )
+                )
+            ).frame
             if frame_data and len(frame_data) <= 2_500_000:
                 logger.info("[SNAPSHOT] External camera frame: %s bytes", len(frame_data))
                 return _apply_camera_rotation(frame_data, printer, logger)
@@ -3070,11 +3075,19 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
 
         # Fresh capture from printer camera
         logger.info("[SNAPSHOT] Capturing fresh frame for printer %s", printer_id)
-        from backend.app.services.camera import capture_camera_frame_bytes
+        from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-        frame_data = await capture_camera_frame_bytes(
-            printer.ip_address, printer.access_code, printer.model, timeout=15
-        )
+        frame_data = (
+            await capture(
+                CameraCaptureRequest.builtin(
+                    ip_address=printer.ip_address,
+                    access_code=printer.access_code,
+                    model=printer.model,
+                    timeout=15,
+                    printer_id=printer_id,
+                )
+            )
+        ).frame
         if frame_data and len(frame_data) <= 2_500_000:
             logger.info("[SNAPSHOT] Fresh camera frame: %s bytes", len(frame_data))
             return _apply_camera_rotation(frame_data, printer, logger)
@@ -5828,13 +5841,19 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
                     frame_bytes = None
 
         if frame_bytes is None and printer.external_camera_enabled and printer.external_camera_url:
-            from backend.app.services.external_camera import capture_frame
+            from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-            frame_bytes = await capture_frame(
-                printer.external_camera_url,
-                printer.external_camera_type or "mjpeg",
-                snapshot_url=printer.external_camera_snapshot_url,
-            )
+            frame_bytes = (
+                await capture(
+                    CameraCaptureRequest.external(
+                        url=printer.external_camera_url,
+                        camera_type=printer.external_camera_type or "mjpeg",
+                        snapshot_url=printer.external_camera_snapshot_url,
+                        purpose="finish_photo",
+                        printer_id=printer_id,
+                    )
+                )
+            ).frame
             if frame_bytes:
                 logger.info("[FINISH-PHOTO-MOMENT] captured external-camera frame (%d bytes)", len(frame_bytes))
         elif frame_bytes is None:
@@ -5845,14 +5864,20 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
                 frame_bytes = buffered
                 logger.info("[FINISH-PHOTO-MOMENT] used buffered RTSP frame (%d bytes)", len(frame_bytes))
             else:
-                from backend.app.services.camera import capture_camera_frame_bytes
+                from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-                frame_bytes = await capture_camera_frame_bytes(
-                    ip_address=printer.ip_address,
-                    access_code=printer.access_code,
-                    model=printer.model,
-                    timeout=15,
-                )
+                frame_bytes = (
+                    await capture(
+                        CameraCaptureRequest.builtin(
+                            ip_address=printer.ip_address,
+                            access_code=printer.access_code,
+                            model=printer.model,
+                            timeout=15,
+                            purpose="finish_photo",
+                            printer_id=printer_id,
+                        )
+                    )
+                ).frame
                 if frame_bytes:
                     logger.info("[FINISH-PHOTO-MOMENT] captured RTSP frame (%d bytes)", len(frame_bytes))
 
@@ -9837,6 +9862,12 @@ async def lifespan(app: FastAPI):
         await stop_configured_camera_runtime()
     except Exception as e:
         logging.warning("Failed to stop camera worker runtime: %s", e)
+    try:
+        from backend.app.services import camera_light
+
+        await camera_light.shutdown()
+    except Exception as e:
+        logging.warning("Failed to stop the camera-light lease: %s", e)
     # Cancel any pending offline-notification debounce tasks (#1752) so the 60s
     # sleep doesn't outlive the asyncio loop on shutdown.
     for _t in list(_printer_offline_notify_tasks.values()):

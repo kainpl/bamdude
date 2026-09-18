@@ -1990,7 +1990,6 @@ function PrinterCard({
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [editingRoi, setEditingRoi] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [isSavingRoi, setIsSavingRoi] = useState(false);
-  const [plateCheckLightWasOff, setPlateCheckLightWasOff] = useState(false);
   const plateCheckHeadingId = useId();
 
   const { data: status } = useQuery({
@@ -2835,41 +2834,25 @@ function PrinterCard({
     setIsCheckingPlate(true);
     setPlateCheckResult(null);
 
-    // Auto-turn on light if it's off
-    const lightWasOff = status?.chamber_light === false;
-    setPlateCheckLightWasOff(lightWasOff);
-    if (lightWasOff) {
-      await api.setChamberLight(printer.id, true);
-      // Wait for light to physically turn on and camera to adjust exposure
-      // (MQTT command is async, light takes ~1s to turn on, camera needs time to adjust)
-      await new Promise(resolve => setTimeout(resolve, 2500));
-    }
-
+    // The chamber light is the server's business: the plate check takes it
+    // through the camera-light lease like every other capture — within the
+    // farm's and this printer's setting, only when it is off, and it waits
+    // for the printer to confirm it before the frame. This used to switch
+    // the light from here, for this one consumer, whatever the settings said.
     try {
       const result = await api.checkPlateEmpty(printer.id, { includeDebugImage: true });
       setPlateCheckResult(result);
       fetchPlateReferences();
     } catch (error) {
       showToast(error instanceof Error ? error.message : t('printers.toast.failedToCheckPlate'), 'error');
-      // Restore light if check failed
-      if (lightWasOff) {
-        await api.setChamberLight(printer.id, false);
-        setPlateCheckLightWasOff(false);
-      }
     } finally {
       setIsCheckingPlate(false);
     }
   };
 
-  // Close plate check modal and restore light state
-  const closePlateCheckModal = useCallback(async () => {
+  const closePlateCheckModal = useCallback(() => {
     setPlateCheckResult(null);
-    // Restore light to original state if we turned it on
-    if (plateCheckLightWasOff) {
-      await api.setChamberLight(printer.id, false);
-      setPlateCheckLightWasOff(false);
-    }
-  }, [plateCheckLightWasOff, printer.id]);
+  }, []);
 
   // Calibrate plate detection handler
   const handleCalibratePlate = async (label?: string) => {

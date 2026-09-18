@@ -83,6 +83,8 @@ async def get_settings(
             if setting.key in [
                 "save_thumbnails",
                 "capture_finish_photo",
+                "camera_light_auto",
+                "camera_light_auto_obico",
                 "archive_3mf_retention_enabled",
                 "spoolman_enabled",
                 "spoolman_disable_weight_sync",

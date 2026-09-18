@@ -65,6 +65,9 @@ describe('CameraSnapshotImage', () => {
     await flush();
     expect(requests[0].url).toContain('/camera/snapshot?');
     expect(requests[0].url).toContain('token=kiosk-test');
+    // The tile declares its cadence, so the server keeps the chamber light
+    // between two frames instead of blinking it (services/camera_light).
+    expect(requests[0].url).toContain('poll=1000');
     await reply(0);
     const image = screen.getByAltText('Camera 1');
     expect(image).toHaveAttribute('src', 'blob:frame-1');

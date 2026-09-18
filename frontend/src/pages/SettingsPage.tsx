@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, MonitorPlay, Tag, Clock } from 'lucide-react';
 import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } from '../lib/sliceEngines';
 import { useTranslation } from 'react-i18next';
@@ -8,7 +8,7 @@ import { checkPasswordComplexity, isPasswordValid } from '../utils/password';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateOnly, type DateFormat } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
-import type { AppSettings, AppSettingsUpdate, APIKey, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate, ZigbeeDevice } from '../api/client';
+import type { AppSettings, AppSettingsUpdate, APIKey, CameraLightPolicy, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate, ZigbeeDevice } from '../api/client';
 import { Card, CardContent, CardHeader } from '../components/Card';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { CopyButton } from '../components/CopyButton';
@@ -1203,8 +1203,24 @@ export function SettingsPage() {
     },
   });
 
+  // Which printers have a light BamDude can switch. One batched read into the
+  // same ['printerStatus', id] cache the cards and the wall keep; no polling.
+  const printerStatusQueries = useQueries({
+    queries: (printers ?? []).map((p) => ({
+      queryKey: ['printerStatus', p.id],
+      queryFn: () => api.getPrinterStatus(p.id),
+      staleTime: 30_000,
+      enabled: activeTab === 'printing',
+    })),
+  });
+  const cameraLightSelectable = (printerId: number): boolean => {
+    const index = (printers ?? []).findIndex((p) => p.id === printerId);
+    const status = index >= 0 ? printerStatusQueries[index]?.data : undefined;
+    return !(status?.connected && status.has_chamber_light === false);
+  };
+
   const updatePrinterMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Partial<{ external_camera_url: string | null; external_camera_type: string | null; external_camera_enabled: boolean; external_camera_snapshot_url: string | null; camera_rotation: number }> }) =>
+    mutationFn: ({ id, data }: { id: number; data: Partial<{ external_camera_url: string | null; external_camera_type: string | null; external_camera_enabled: boolean; external_camera_snapshot_url: string | null; camera_rotation: number; camera_light_auto: CameraLightPolicy }> }) =>
       api.updatePrinter(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['printers'] });
@@ -1235,6 +1251,8 @@ export function SettingsPage() {
     const hasChanges =
       baseline.save_thumbnails !== localSettings.save_thumbnails ||
       baseline.capture_finish_photo !== localSettings.capture_finish_photo ||
+      (baseline.camera_light_auto ?? false) !== (localSettings.camera_light_auto ?? false) ||
+      (baseline.camera_light_auto_obico ?? false) !== (localSettings.camera_light_auto_obico ?? false) ||
       // ⚠️ Every setting must be listed here or it silently never saves: this
       // is a hand-maintained comparison, and a field missing from it leaves the
       // toggle moving on screen while the debounced save is never triggered.
@@ -1355,6 +1373,8 @@ export function SettingsPage() {
       const settingsToSave: AppSettingsUpdate = {
         save_thumbnails: localSettings.save_thumbnails,
         capture_finish_photo: localSettings.capture_finish_photo,
+        camera_light_auto: localSettings.camera_light_auto,
+        camera_light_auto_obico: localSettings.camera_light_auto_obico,
         delete_timelapse_after_attach: localSettings.delete_timelapse_after_attach,
         archive_3mf_retention_enabled: localSettings.archive_3mf_retention_enabled,
         archive_3mf_retention_days: localSettings.archive_3mf_retention_days,
@@ -1558,11 +1578,12 @@ export function SettingsPage() {
     }, 800);
   };
 
-  const handleUpdatePrinterCamera = (printerId: number, updates: { type?: string; enabled?: boolean; rotation?: number }) => {
-    const data: Partial<{ external_camera_type: string | null; external_camera_enabled: boolean; camera_rotation: number }> = {};
+  const handleUpdatePrinterCamera = (printerId: number, updates: { type?: string; enabled?: boolean; rotation?: number; light?: CameraLightPolicy }) => {
+    const data: Partial<{ external_camera_type: string | null; external_camera_enabled: boolean; camera_rotation: number; camera_light_auto: CameraLightPolicy }> = {};
     if (updates.type !== undefined) data.external_camera_type = updates.type || null;
     if (updates.enabled !== undefined) data.external_camera_enabled = updates.enabled;
     if (updates.rotation !== undefined) data.camera_rotation = updates.rotation;
+    if (updates.light !== undefined) data.camera_light_auto = updates.light;
     updatePrinterMutation.mutate({ id: printerId, data });
   };
 
@@ -2140,6 +2161,46 @@ export function SettingsPage() {
                   </div>
                 </div>
               )}
+
+              {/* The chamber light for the camera (backend services/camera_light).
+                  Off by default; only a light that is off is switched on, and only
+                  a light BamDude switched on is switched off. Obico is a separate
+                  yes because it polls the camera for the whole print. */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.cameraLightAuto')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.cameraLightAutoDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.camera_light_auto ?? false}
+                    onChange={(e) => updateSetting('camera_light_auto', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className={localSettings.camera_light_auto ? 'text-white' : 'text-bambu-gray'}>{t('settings.cameraLightAutoObico')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.cameraLightAutoObicoDescription')}
+                  </p>
+                </div>
+                <label className={`relative inline-flex items-center ${localSettings.camera_light_auto ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                  <input
+                    type="checkbox"
+                    checked={localSettings.camera_light_auto_obico ?? false}
+                    disabled={!localSettings.camera_light_auto}
+                    onChange={(e) => updateSetting('camera_light_auto_obico', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
 
               {/* Tidy the printer up once BamDude has the recording. Opt-in:
                   having a copy is not the same as nobody needing it on the
@@ -3292,6 +3353,25 @@ export function SettingsPage() {
                                 <option value={270}>270°</option>
                               </select>
                             </div>
+                          </div>
+                        )}
+                        {/* The printer's own answer on the light for the camera. Hidden
+                            only for a printer that is connected and has reported no
+                            chamber light: an offline one keeps its selector, so it can be
+                            set before the printer is up. */}
+                        {cameraLightSelectable(printer.id) && (
+                          <div className="flex items-center gap-2 mt-2">
+                            <label className="text-xs text-bambu-gray" htmlFor={`camera-light-${printer.id}`}>{t('settings.printerCameraLight')}</label>
+                            <select
+                              id={`camera-light-${printer.id}`}
+                              value={printer.camera_light_auto ?? 'inherit'}
+                              onChange={(e) => handleUpdatePrinterCamera(printer.id, { light: e.target.value as CameraLightPolicy })}
+                              className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-xs focus:border-bambu-green focus:outline-none"
+                            >
+                              <option value="inherit">{t('settings.printerCameraLightInherit')}</option>
+                              <option value="on">{t('settings.printerCameraLightOn')}</option>
+                              <option value="off">{t('settings.printerCameraLightOff')}</option>
+                            </select>
                           </div>
                         )}
                       </div>

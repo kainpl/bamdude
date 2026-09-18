@@ -51,6 +51,12 @@ class CameraCaptureRequest:
     url: str | None = field(default=None, repr=False)
     camera_type: str | None = None
     snapshot_url: str | None = field(default=None, repr=False)
+    #: The printer this frame is for. The chamber-light lease keys on it
+    #: (services/camera_light); ``None`` means no lease. In-memory only —
+    #: the worker command copies its fields by name and never sees this.
+    printer_id: int | None = None
+    #: A poller's declared hold on the light, seconds (camera_light.hold_for_poll).
+    hold: float | None = None
 
     @classmethod
     def builtin(
@@ -61,6 +67,8 @@ class CameraCaptureRequest:
         model: str | None,
         timeout: int = 15,
         purpose: CameraPurpose = "snapshot",
+        printer_id: int | None = None,
+        hold: float | None = None,
     ) -> CameraCaptureRequest:
         return cls(
             kind="builtin",
@@ -69,6 +77,8 @@ class CameraCaptureRequest:
             ip_address=ip_address,
             access_code=access_code,
             model=model,
+            printer_id=printer_id,
+            hold=hold,
         )
 
     @classmethod
@@ -80,6 +90,8 @@ class CameraCaptureRequest:
         snapshot_url: str | None = None,
         timeout: int = 15,
         purpose: CameraPurpose = "snapshot",
+        printer_id: int | None = None,
+        hold: float | None = None,
     ) -> CameraCaptureRequest:
         return cls(
             kind="external",
@@ -88,11 +100,15 @@ class CameraCaptureRequest:
             url=url,
             camera_type=camera_type,
             snapshot_url=snapshot_url,
+            printer_id=printer_id,
+            hold=hold,
         )
 
     def __post_init__(self) -> None:
         if not 1 <= self.timeout <= 120:
             raise ValueError("camera capture timeout must be between 1 and 120 seconds")
+        if self.hold is not None and self.hold < 0:
+            raise ValueError("camera light hold cannot be negative")
         if self.kind == "builtin":
             if not self.ip_address or self.access_code is None:
                 raise ValueError("built-in camera capture requires address and access code")
@@ -289,9 +305,20 @@ async def stop_configured_camera_runtime() -> None:
 
 
 async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:
-    """Capture through the selected runtime without exposing implementation."""
+    """Capture through the selected runtime without exposing implementation.
 
-    return await get_camera_runtime().capture(request)
+    The chamber light is taken here, in the main process, whichever runtime
+    does the capture: a request that names its printer holds the light for
+    the frame and waits for the printer to confirm it before the capture
+    (services/camera_light — off unless the farm or the printer asks for it).
+    """
+
+    from backend.app.services import camera_light
+
+    async with camera_light.held(request.printer_id, request.purpose, hold=request.hold) as lease:
+        if lease is not None:
+            await lease.settle()
+        return await get_camera_runtime().capture(request)
 
 
 @contextmanager

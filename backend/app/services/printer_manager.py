@@ -999,6 +999,13 @@ class PrinterManager:
         def on_skipped_objects_changed(skipped: list):
             self._schedule_async(_record_skipped_as_defective(printer_id, skipped))
 
+        def on_lights_report(on: bool):
+            # A switch of the chamber light, from anywhere. The camera-light
+            # lease decides whether it was ours (services/camera_light).
+            from backend.app.services import camera_light
+
+            self._schedule_async(camera_light.note_light_report(printer_id, on))
+
         def on_first_status(live_state: str, live_file: str, live_subtask_id: str = "", live_subtask_name: str = ""):
             # First full status after each fresh connect — run the reconcile
             # sweep so a print that finished while BamDude was stopped or
@@ -1028,6 +1035,7 @@ class PrinterManager:
             on_finish_photo_moment=on_finish_photo_moment,
             on_assignment_verified=on_assignment_verified,
             on_skipped_objects_changed=on_skipped_objects_changed,
+            on_lights_report=on_lights_report,
             on_tray_change=on_tray_change,
             on_usage_event=on_usage_event,
         )
@@ -2155,6 +2163,9 @@ def printer_state_to_dict(
         "heatbreak_fan_speed": state.heatbreak_fan_speed,
         # Chamber light state
         "chamber_light": state.chamber_light,
+        # Whether the printer has a light we can switch (a chamber_light node
+        # in its lights_report). Gates the per-printer camera-light selector.
+        "has_chamber_light": state.has_chamber_light,
         # The air duct, so a mode change lands on the card as soon as the
         # printer confirms it rather than at the next poll. ⚠️ A field the REST
         # status serves but this dict omits updates only by refetch — see L14 in

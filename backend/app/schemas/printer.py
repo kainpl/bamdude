@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -99,6 +100,8 @@ class PrinterBase(BaseModel):
     external_camera_enabled: bool = False
     external_camera_snapshot_url: str | None = None  # Optional single-frame override; upstream #1177
     camera_rotation: int = 0  # 0, 90, 180, 270 degrees
+    # Chamber light for the camera: defer to the farm, or decide here (services/camera_light)
+    camera_light_auto: Literal["inherit", "on", "off"] = "inherit"
     stagger_interval_minutes: int = 0
     swap_mode_enabled: bool = False
     swap_profile: str | None = None
@@ -153,6 +156,7 @@ class PrinterUpdate(BaseModel):
     external_camera_enabled: bool | None = None
     external_camera_snapshot_url: str | None = None  # upstream #1177
     camera_rotation: int | None = None  # 0, 90, 180, 270 degrees
+    camera_light_auto: Literal["inherit", "on", "off"] | None = None
     plate_detection_enabled: bool | None = None
     plate_detection_roi: PlateDetectionROI | None = None
     stagger_interval_minutes: int | None = None
@@ -184,6 +188,7 @@ class PrinterResponse(PrinterBase):
     external_camera_enabled: bool = False
     external_camera_snapshot_url: str | None = None  # upstream #1177
     camera_rotation: int = 0  # 0, 90, 180, 270 degrees
+    camera_light_auto: Literal["inherit", "on", "off"] = "inherit"
     plate_detection_enabled: bool = False
     # Assembled from the four flat columns by ``Printer.plate_detection_roi`` — a
     # model property, because this response is validated straight off the ORM row.
@@ -502,6 +507,9 @@ class PrinterStatus(BaseModel):
     speed_level: int = 2
     # Chamber light on/off
     chamber_light: bool = False
+    # Whether the printer has a light we can switch (a chamber_light node in
+    # its lights_report); off until the first report of a connection.
+    has_chamber_light: bool = False
     # Active extruder for dual nozzle (0=right, 1=left)
     active_extruder: int = 0
     # AMS mapping for dual nozzle: which AMS is connected to which nozzle

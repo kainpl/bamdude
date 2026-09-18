@@ -186,6 +186,7 @@ async def cmd_camera(message: Message, tg_chat=None) -> None:
                             access_code=printer.access_code,
                             model=printer.model,
                             purpose="telegram",
+                            printer_id=printer.id,
                         )
                     )
                 ).frame

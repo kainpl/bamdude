@@ -264,6 +264,7 @@ class ObicoDetectionService:
                     snapshot_url=printer.external_camera_snapshot_url,
                     timeout=SNAPSHOT_CAPTURE_TIMEOUT,
                     purpose="obico",
+                    printer_id=printer_id,
                 )
             )
         else:
@@ -274,6 +275,7 @@ class ObicoDetectionService:
                     model=printer.model,
                     timeout=SNAPSHOT_CAPTURE_TIMEOUT,
                     purpose="obico",
+                    printer_id=printer_id,
                 )
             )
         return result.frame

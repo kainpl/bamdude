@@ -183,6 +183,7 @@ async def _check_first_frame(
     access_code: str,
     model: str | None,
     timeout: int,
+    printer_id: int | None = None,
 ) -> CameraDiagnoseStage:
     """Stage 2 — capture one frame end-to-end. Combines auth + protocol
     handshake + first keyframe; either it works or it doesn't."""
@@ -195,6 +196,7 @@ async def _check_first_frame(
                 model=model,
                 timeout=timeout,
                 purpose="diagnose",
+                printer_id=printer_id,
             )
         )
     except Exception as exc:  # noqa: BLE001 — see camera_profiles.py rationale
@@ -314,7 +316,7 @@ async def diagnose_camera(
         return result
 
     # Stage 2
-    frame_stage = await _check_first_frame(ip_address, access_code, model, capture_timeout)
+    frame_stage = await _check_first_frame(ip_address, access_code, model, capture_timeout, printer_id=printer_id)
     result.stages.append(frame_stage)
     if frame_stage.status != "ok":
         result.overall_status = "failed"

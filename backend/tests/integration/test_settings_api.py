@@ -50,6 +50,22 @@ class TestSettingsAPI:
         assert response.json()["prefer_lowest_filament"] is False
         assert (await async_client.get("/api/v1/settings/")).json()["prefer_lowest_filament"] is False
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_camera_light_toggles_default_off_and_round_trip(self, async_client: AsyncClient):
+        """Both off unless somebody chooses them (services/camera_light)."""
+        current = (await async_client.get("/api/v1/settings/")).json()
+        assert current["camera_light_auto"] is False
+        assert current["camera_light_auto_obico"] is False
+
+        response = await async_client.put(
+            "/api/v1/settings/", json={"camera_light_auto": True, "camera_light_auto_obico": True}
+        )
+        assert response.status_code == 200
+        again = (await async_client.get("/api/v1/settings/")).json()
+        assert again["camera_light_auto"] is True
+        assert again["camera_light_auto_obico"] is True
+
     # ========================================================================
     # Update settings
     # ========================================================================

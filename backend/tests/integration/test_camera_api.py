@@ -608,3 +608,99 @@ class TestCameraAPI:
         assert response.status_code == 200
         result = response.json()
         assert result["cameras"] == []
+
+
+class TestCameraLightHooks:
+    """The two places outside the capture facade that take the chamber light (services/camera_light)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_snapshot_route_declares_the_pollers_hold_and_waits_for_the_light_first(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        printer = await printer_factory()
+        events: list = []
+
+        class FakeLease:
+            async def settle(self):
+                events.append("settle")
+
+        async def acquire(printer_id, purpose, *, hold=None):
+            events.append(("acquire", printer_id, purpose, hold))
+            return FakeLease()
+
+        def release(lease):
+            events.append("release")
+
+        async def capture(request):
+            events.append(("capture", request.printer_id))
+            return CameraCaptureResult(b"\xff\xd8frame", "fresh")
+
+        with (
+            patch("backend.app.services.camera_light.acquire", acquire),
+            patch("backend.app.services.camera_light.release", release),
+            patch("backend.app.services.camera_runtime.capture", capture),
+        ):
+            first = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot", params={"poll": 5000})
+            second = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot", params={"poll": 999999})
+            third = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
+
+        assert first.status_code == second.status_code == third.status_code == 200
+        # The first answer captured; the next two came from the recent-capture
+        # cache and still renewed the hold. The capture request names no printer:
+        # the route's own lease already waited for the light.
+        assert events == [
+            ("acquire", printer.id, "snapshot", 25.0),
+            "settle",
+            ("capture", None),
+            "release",
+            ("acquire", printer.id, "snapshot", 140.0),
+            "settle",
+            "release",
+            ("acquire", printer.id, "snapshot", None),
+            "settle",
+            "release",
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_stream_viewer_holds_the_light_for_exactly_as_long_as_it_reads(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        printer = await printer_factory(model="X1C")
+        events: list = []
+
+        async def acquire(printer_id, purpose, *, hold=None):
+            events.append(("acquire", printer_id, purpose))
+            return object()
+
+        def release(lease):
+            events.append("release")
+
+        class FakeBroadcaster:
+            subscriber_count = 1
+
+            async def subscribe(self):
+                import asyncio
+
+                return asyncio.Queue()
+
+        async def fake_get_or_create(key, factory):
+            return FakeBroadcaster()
+
+        async def fake_iter(broadcaster, queue, *, is_disconnected, on_unsubscribe):
+            for _ in range(2):
+                events.append("frame")
+                yield b"--frame\r\n"
+
+        with (
+            patch("backend.app.services.camera_light.acquire", acquire),
+            patch("backend.app.services.camera_light.release", release),
+            patch("backend.app.api.routes.camera.get_or_create_broadcaster", fake_get_or_create),
+            patch("backend.app.api.routes.camera.iter_subscriber", fake_iter),
+        ):
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/stream")
+
+        assert response.status_code == 200
+        assert response.content.count(b"--frame") == 2
+        assert events == [("acquire", printer.id, "stream"), "frame", "frame", "release"]

@@ -2756,6 +2756,12 @@ export default {
     // Camera
     saveThumbnails: 'Save thumbnails',
     captureFinishPhoto: 'Capture finish photo',
+    cameraLightAuto: 'Light for the camera',
+    cameraLightAutoObico: 'Also for Obico failure detection',
+    printerCameraLight: 'Light for the camera',
+    printerCameraLightInherit: 'As on the farm',
+    printerCameraLightOn: 'Yes',
+    printerCameraLightOff: 'No',
     noPrintersConfigured: 'No printers configured',
     // Updates
     checkForUpdatesLabel: 'Check for updates',
@@ -3306,6 +3312,8 @@ export default {
     progressInTitleHint: 'The soonest-finishing print\'s percentage appears in the tab title, with a matching progress ring as the tab icon. Applies to this browser only.',
     saveThumbnailsDescription: 'Extract and save preview images from 3MF files',
     captureFinishPhotoDescription: 'Capture finish photos and notification images. While printing, BamDude may capture frames in the background to preserve the last view of the print. Off by default. This does not enable the printer\'s timelapse.',
+    cameraLightAutoDescription: 'Before any use of the camera — a photo in Telegram, a stream, the Camera Wall, a finish photo, the plate check — switch the chamber light on if it is off, and back off afterwards. A light that was already on is never touched, and only a light BamDude switched on is switched off. Off by default; each printer can say yes or no for itself under Printing → External cameras.',
+    cameraLightAutoObicoDescription: 'Obico looks at the camera every few seconds for the whole print, so with this on the light stays on for the whole print. Off by default.',
     deleteTimelapseAfterAttach: 'Remove timelapses from the printer once saved',
     deleteTimelapseAfterAttachDesc:
       'After a recording is attached to its archive, delete it from the printer to keep its storage from filling up. Only ever after the copy has been saved. Off by default — a recording may still be wanted on the machine itself.',

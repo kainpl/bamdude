@@ -594,6 +594,9 @@ export interface PrinterTagListItem extends PrinterTag {
   is_stagger_group: boolean;
 }
 
+/** `printers.camera_light_auto`: the per-printer answer, or defer to the farm's toggle. */
+export type CameraLightPolicy = 'inherit' | 'on' | 'off';
+
 export interface Printer {
   id: number;
   name: string;
@@ -627,6 +630,8 @@ export interface Printer {
   external_camera_enabled: boolean;
   external_camera_snapshot_url: string | null;  // optional single-frame override (#1177)
   camera_rotation: number;  // 0, 90, 180, 270 degrees
+  // Chamber light for the camera: defer to the farm setting, or decide here
+  camera_light_auto: CameraLightPolicy;
   plate_detection_enabled: boolean;  // Check plate before print
   plate_detection_roi?: PlateDetectionROI;  // ROI for plate detection
   stagger_interval_minutes: number;  // Per-printer stagger interval override (0 = system default)
@@ -924,6 +929,9 @@ export interface PrinterStatus {
   speed_level: number;
   // Chamber light on/off
   chamber_light: boolean;
+  // Whether the printer has a light BamDude can switch (it reported a
+  // chamber_light node); false until the first report of a connection
+  has_chamber_light?: boolean;
   // Active extruder for dual nozzle (0=right, 1=left)
   active_extruder: number;
   // AMS mapping - which AMS is connected to which nozzle
@@ -1071,6 +1079,7 @@ export interface PrinterCreate {
   external_camera_enabled?: boolean;
   external_camera_snapshot_url?: string | null;  // optional single-frame override (#1177)
   camera_rotation?: number;
+  camera_light_auto?: CameraLightPolicy;
   plate_detection_enabled?: boolean;
   plate_detection_roi?: PlateDetectionROI;
   stagger_interval_minutes?: number;
@@ -2681,6 +2690,10 @@ export interface LongLivedTokenCreate {
 export interface AppSettings {
   save_thumbnails: boolean;
   capture_finish_photo: boolean;
+  // Switch the chamber light on for the camera when it is off, and back off after
+  camera_light_auto: boolean;
+  // ...and also for Obico's frames, which run the whole print
+  camera_light_auto_obico: boolean;
   /** Remove a recording from the printer once its archive has a copy. Opt-in. */
   delete_timelapse_after_attach: boolean;
   archive_3mf_retention_enabled: boolean;
