@@ -242,6 +242,10 @@ function App() {
 
                 {/* Camera page - standalone, no layout, no WebSocket (doesn't need real-time updates) */}
                 <Route path="/camera/:printerId" element={<CameraPage />} />
+                {/* The same page for a camera that belongs to no printer.
+                    Declared BEFORE nothing in particular — "standalone" is not a
+                    number, so it cannot collide with the route above. */}
+                <Route path="/camera/standalone/:cameraId" element={<CameraPage />} />
 
                 {/* Stream overlay page - standalone for OBS/streaming embeds, no auth required */}
                 <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />

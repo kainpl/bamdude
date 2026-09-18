@@ -285,6 +285,7 @@ def import_all_models() -> None:
         bug_report,
         calibration_audit,
         calibration_session,
+        camera,
         cloud_link,
         color_catalog,
         customer,

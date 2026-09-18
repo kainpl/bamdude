@@ -1,5 +1,5 @@
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, useSearchParams } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -11,6 +11,7 @@ import { useStreamTokenSync } from '../hooks/useCameraStreamToken';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { CameraDiagnoseModal } from '../components/CameraDiagnoseModal';
+import { snapshotPath, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const INITIAL_RECONNECT_DELAY = 2000; // 2 seconds
@@ -22,8 +23,17 @@ export function CameraPage() {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { hasPermission, user } = useAuth();
-  const { printerId } = useParams<{ printerId: string }>();
-  const id = parseInt(printerId || '0', 10);
+  // Two routes land here: /camera/:printerId for a printer's camera and
+  // /camera/standalone/:cameraId for a camera that belongs to a place. The
+  // picture, the mode toggle, the zoom and the reconnect logic are the same
+  // for both; a printer additionally has a status, a chamber light, skipped
+  // objects and diagnostics, and all of those are gated on `isPrinter`.
+  const { printerId, cameraId } = useParams<{ printerId?: string; cameraId?: string }>();
+  const isPrinter = cameraId === undefined;
+  const id = parseInt((isPrinter ? printerId : cameraId) || '0', 10);
+  // Memoised so the effects below can depend on it without restarting the
+  // stream on every render.
+  const source = useMemo<CameraSource>(() => ({ kind: isPrinter ? 'printer' : 'camera', id }), [isPrinter, id]);
   // Honor ?fps=N query param for /camera/<id> diagnostic URLs (#1131).
   // Default 15, clamp 1–30, fallback to 15 on non-numeric input.
   const [searchParams] = useSearchParams();
@@ -73,11 +83,18 @@ export function CameraPage() {
   // ~20 min (upstream #2521).
   const stallStrikesRef = useRef(0);
 
+  // The name in the header comes from whichever of the two this is.
+  const { data: camera } = useQuery({
+    queryKey: ['camera', id],
+    queryFn: async () => (await api.getCameras()).find((row) => row.id === id) ?? null,
+    enabled: !isPrinter && id > 0,
+  });
+
   // Fetch printer info for the title
   const { data: printer } = useQuery({
     queryKey: ['printer', id],
     queryFn: () => api.getPrinter(id),
-    enabled: id > 0,
+    enabled: isPrinter && id > 0,
   });
 
   // Fetch printer status for light toggle and skip objects
@@ -85,7 +102,7 @@ export function CameraPage() {
     queryKey: ['printerStatus', id],
     queryFn: () => api.getPrinterStatus(id),
     refetchInterval: 30000,
-    enabled: id > 0,
+    enabled: isPrinter && id > 0,
   });
 
   // Chamber light mutation with optimistic update
@@ -131,7 +148,7 @@ export function CameraPage() {
   const stopSentRef = useRef(false);
 
   useEffect(() => {
-    const stopUrl = `/api/v1/printers/${id}/camera/stop`;
+    const stopUrl = stopPath(source);
     stopSentRef.current = false;
 
     const sendStopOnce = () => {
@@ -157,7 +174,7 @@ export function CameraPage() {
       // Send stop signal only once
       sendStopOnce();
     };
-  }, [id]);
+  }, [id, source]);
 
   // Auto-hide loading after timeout
   useEffect(() => {
@@ -388,7 +405,7 @@ export function CameraPage() {
       const headers: Record<string, string> = {};
       const token = getAuthToken();
       if (token) headers['Authorization'] = `Bearer ${token}`;
-      fetch(`/api/v1/printers/${id}/camera/stop`, { method: 'POST', headers }).catch(() => {});
+      fetch(stopPath(source), { method: 'POST', headers }).catch(() => {});
     }
   };
 
@@ -621,8 +638,8 @@ export function CameraPage() {
   const currentUrl = transitioning || waitingForStreamToken
     ? ''
     : streamMode === 'stream'
-      ? appendToken(`/api/v1/printers/${id}/camera/stream?fps=${fps}&t=${imageKey}`)
-      : appendToken(`/api/v1/printers/${id}/camera/snapshot?t=${imageKey}`);
+      ? appendToken(streamPath(source, fps, imageKey))
+      : appendToken(snapshotPath(source, { bust: imageKey }));
 
   const { attachImage } = useCameraImageRef(currentUrl);
   const attachStreamImage = useCallback((image: HTMLImageElement | null) => {
@@ -650,7 +667,7 @@ export function CameraPage() {
       <div className="flex items-center justify-between px-4 py-2 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary">
         <h1 className="text-sm font-medium text-white flex items-center gap-2">
           <Camera className="w-4 h-4" />
-          {printer?.name || `Printer ${id}`}
+          {printer?.name || camera?.name || (isPrinter ? `Printer ${id}` : `Camera ${id}`)}
         </h1>
         <div className="flex items-center gap-2">
           {/* Mode toggle */}
@@ -840,14 +857,16 @@ export function CameraPage() {
         </div>
       </div>
 
-      {/* Skip Objects Modal */}
-      <SkipObjectsModal
-        printerId={id}
-        isOpen={showSkipObjectsModal}
-        onClose={() => setShowSkipObjectsModal(false)}
-      />
+      {/* Skip Objects Modal — a printer's parts, so a camera has none. */}
+      {isPrinter && (
+        <SkipObjectsModal
+          printerId={id}
+          isOpen={showSkipObjectsModal}
+          onClose={() => setShowSkipObjectsModal(false)}
+        />
+      )}
       {/* Camera diagnostic modal — stethoscope icon + error-state Diagnose button (#1395) */}
-      {showDiagnoseModal && (
+      {showDiagnoseModal && isPrinter && (
         <CameraDiagnoseModal
           printerId={id}
           printerName={printer?.name || null}

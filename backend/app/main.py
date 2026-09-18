@@ -25,6 +25,7 @@ from backend.app.api.routes import (
     background_dispatch as background_dispatch_routes,
     bug_report,
     camera,
+    cameras,
     camwall,
     cloud,
     cloud_link,
@@ -10068,6 +10069,10 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # above: a TV or Pi has no login session, so the wall carries a long-lived
     # ``camwall``-scoped token in the URL, checked by RequireCamWallToken.
     re.compile(r"^/api/v1/camwall/printers$"),
+    # ...and the standalone cameras beside them on the same wall. Same token,
+    # same reasoning; the list carries no URL, because an RTSP camera's
+    # credentials live inside one.
+    re.compile(r"^/api/v1/camwall/cameras$"),
     # Only these anchored read feeds validate a monitor-scoped Bearer grant.
     re.compile(r"^/api/v1/monitor/kiosk/(?:snapshot|forecast)$"),
     # Camera (streams loaded via <img> tag). ⚠️ NOT the token MINTER beside
@@ -10075,6 +10080,10 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # what a substring "/camera/stream" quietly opened.
     re.compile(r"^/api/v1/printers/\d+/camera/stream$"),
     re.compile(r"^/api/v1/printers/\d+/camera/snapshot$"),
+    # A standalone camera's stream and snapshot, loaded by the same <img> tags
+    # and gated by the same stream token. NOT its CRUD, which is settings work.
+    re.compile(r"^/api/v1/cameras/\d+/stream$"),
+    re.compile(r"^/api/v1/cameras/\d+/snapshot$"),
     # A plate-detection reference picture, shown by <img> in the same settings
     # panel and gated by the same stream token.
     re.compile(r"^/api/v1/printers/\d+/camera/plate-detection/references/\d+/thumbnail$"),
@@ -10582,6 +10591,7 @@ app.include_router(macros.router, prefix=app_settings.api_prefix)
 app.include_router(maintenance.router, prefix=app_settings.api_prefix)
 app.include_router(camera.router, prefix=app_settings.api_prefix)
 app.include_router(camwall.router, prefix=app_settings.api_prefix)
+app.include_router(cameras.router, prefix=app_settings.api_prefix)
 app.include_router(monitor.router, prefix=app_settings.api_prefix)
 app.include_router(external_links.router, prefix=app_settings.api_prefix)
 app.include_router(projects.router, prefix=app_settings.api_prefix)

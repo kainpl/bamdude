@@ -113,12 +113,18 @@ PUBLIC_ROUTES: dict[str, tuple[str, str]] = {
     "/api/v1/printers/{printer_id}/camera-cover": ("stream-token", "current job's cover"),
     "/api/v1/printers/{printer_id}/camera/stream": ("stream-token", "MJPEG stream"),
     "/api/v1/printers/{printer_id}/camera/snapshot": ("stream-token", "snapshot"),
+    # A standalone camera — one that belongs to no printer — serves the same two
+    # things through its own routes, behind the same stream token. Its CRUD is
+    # settings work and is deliberately absent from this table.
+    "/api/v1/cameras/{camera_id}/stream": ("stream-token", "standalone camera MJPEG stream"),
+    "/api/v1/cameras/{camera_id}/snapshot": ("stream-token", "standalone camera snapshot"),
     "/api/v1/printers/{printer_id}/camera/plate-detection/references/{index}/thumbnail": (
         "stream-token",
         "calibration reference picture",
     ),
     "/api/v1/printers/{printer_id}/overlay-status": ("overlay-token", "OBS overlay feed"),
     "/api/v1/camwall/printers": ("camwall-token", "kiosk wall feed"),
+    "/api/v1/camwall/cameras": ("camwall-token", "kiosk wall feed, the cameras beside the printers"),
     "/api/v1/monitor/kiosk/snapshot": ("monitor-token", "read-only fleet projection via scoped Bearer"),
     "/api/v1/monitor/kiosk/forecast": ("monitor-token", "aggregate queue forecast via scoped Bearer"),
     # Token-in-the-path downloads for slicer protocol handlers.

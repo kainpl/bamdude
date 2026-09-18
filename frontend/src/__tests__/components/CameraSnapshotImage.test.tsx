@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CameraSnapshotImage } from '../../components/CameraSnapshotImage';
+import { printerSource } from '../../utils/cameraSource';
 
 interface Pending {
   url: string;
@@ -15,7 +16,7 @@ let queryClient: QueryClient;
 
 function wall(count = 1, strict = false) {
   const tiles = Array.from({ length: count }, (_, id) => <CameraSnapshotImage
-    key={id} printerId={id + 1} printerName={`Camera ${id + 1}`} intervalMs={1000} streamToken="kiosk-test"
+    key={id} source={printerSource(id + 1)} name={`Camera ${id + 1}`} intervalMs={1000} streamToken="kiosk-test"
   />);
   return render(<QueryClientProvider client={queryClient}>
     {strict ? <StrictMode>{tiles}</StrictMode> : tiles}

@@ -3,6 +3,7 @@ import { StrictMode } from 'react';
 import { act, fireEvent, screen } from '@testing-library/react';
 import { render } from '../utils';
 import { CameraTile } from '../../components/CameraTile';
+import { printerSource } from '../../utils/cameraSource';
 
 // The shared render() util mounts AuthProvider, which fires an async
 // /auth/me probe on mount. Each test absorbs that settle with a single
@@ -37,8 +38,8 @@ describe('CameraTile', () => {
   it('renders the live stream URL in live mode', async () => {
     render(
       <CameraTile
-        printerId={42}
-        printerName="X1C-Lab"
+        source={printerSource(42)}
+        name="X1C-Lab"
         mode="live"
         snapshotIntervalMs={5000}
         connected
@@ -53,8 +54,8 @@ describe('CameraTile', () => {
   it('displays completed snapshots and refreshes without replacing the image element', async () => {
     render(
       <CameraTile
-        printerId={7}
-        printerName="P1S-Garage"
+        source={printerSource(7)}
+        name="P1S-Garage"
         mode="snapshot"
         snapshotIntervalMs={1000}
         connected
@@ -77,8 +78,8 @@ describe('CameraTile', () => {
   it('shows an offline placeholder when not connected', async () => {
     render(
       <CameraTile
-        printerId={1}
-        printerName="A1-Offline"
+        source={printerSource(1)}
+        name="A1-Offline"
         mode="live"
         snapshotIntervalMs={5000}
         connected={false}
@@ -90,7 +91,7 @@ describe('CameraTile', () => {
 
   it('cancels the detached MJPEG image on navigation and restores it during Strict Mode replay', async () => {
     const { unmount } = render(<StrictMode><CameraTile
-      printerId={42} printerName="Live" mode="live" snapshotIntervalMs={5000} connected
+      source={printerSource(42)} name="Live" mode="live" snapshotIntervalMs={5000} connected
     /></StrictMode>);
     await flushMicrotasks();
     const image = screen.getByAltText('Live') as HTMLImageElement;
@@ -101,17 +102,17 @@ describe('CameraTile', () => {
 
   it('cancels the old live image when switching to snapshots or going offline', async () => {
     const { rerender } = render(<CameraTile
-      printerId={42} printerName="Live" mode="live" snapshotIntervalMs={5000} connected
+      source={printerSource(42)} name="Live" mode="live" snapshotIntervalMs={5000} connected
     />);
     await flushMicrotasks();
     const first = screen.getByAltText('Live') as HTMLImageElement;
-    rerender(<CameraTile printerId={42} printerName="Live" mode="snapshot" snapshotIntervalMs={5000} connected />);
+    rerender(<CameraTile source={printerSource(42)} name="Live" mode="snapshot" snapshotIntervalMs={5000} connected />);
     await flushMicrotasks();
     expect(first.src).toMatch(/^data:image\/gif;/);
-    rerender(<CameraTile printerId={42} printerName="Live" mode="live" snapshotIntervalMs={5000} connected />);
+    rerender(<CameraTile source={printerSource(42)} name="Live" mode="live" snapshotIntervalMs={5000} connected />);
     await flushMicrotasks();
     const second = screen.getByAltText('Live') as HTMLImageElement;
-    rerender(<CameraTile printerId={42} printerName="Live" mode="live" snapshotIntervalMs={5000} connected={false} />);
+    rerender(<CameraTile source={printerSource(42)} name="Live" mode="live" snapshotIntervalMs={5000} connected={false} />);
     await flushMicrotasks();
     expect(second.src).toMatch(/^data:image\/gif;/);
   });
@@ -119,8 +120,8 @@ describe('CameraTile', () => {
   it('shows the paused placeholder in paused mode', async () => {
     render(
       <CameraTile
-        printerId={9}
-        printerName="H2D-Booth"
+        source={printerSource(9)}
+        name="H2D-Booth"
         mode="paused"
         snapshotIntervalMs={5000}
         connected
@@ -136,8 +137,8 @@ describe('CameraTile', () => {
     );
     const { rerender } = render(
       <CameraTile
-        printerId={11}
-        printerName="X1C-Stop"
+        source={printerSource(11)}
+        name="X1C-Stop"
         mode="live"
         snapshotIntervalMs={5000}
         connected
@@ -149,8 +150,8 @@ describe('CameraTile', () => {
     await act(async () => {
       rerender(
         <CameraTile
-          printerId={11}
-          printerName="X1C-Stop"
+          source={printerSource(11)}
+          name="X1C-Stop"
           mode="snapshot"
           snapshotIntervalMs={5000}
           connected
@@ -169,8 +170,8 @@ describe('CameraTile', () => {
     const onOpenPrinterCard = vi.fn();
     render(
       <CameraTile
-        printerId={23}
-        printerName="P1S-Detail"
+        source={printerSource(23)}
+        name="P1S-Detail"
         mode="snapshot"
         snapshotIntervalMs={5000}
         connected
@@ -192,8 +193,8 @@ describe('CameraTile', () => {
   it('keeps pause and failure visible when ordinary overlays are off', async () => {
     const { rerender, container } = render(
       <CameraTile
-        printerId={24}
-        printerName="P1S-Attention"
+        source={printerSource(24)}
+        name="P1S-Attention"
         mode="snapshot"
         snapshotIntervalMs={5000}
         connected
@@ -207,8 +208,8 @@ describe('CameraTile', () => {
 
     rerender(
       <CameraTile
-        printerId={24}
-        printerName="P1S-Attention"
+        source={printerSource(24)}
+        name="P1S-Attention"
         mode="snapshot"
         snapshotIntervalMs={5000}
         connected

@@ -3,6 +3,7 @@ import { act, fireEvent, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from '../utils';
 import { EmbeddedCameraViewer } from '../../components/EmbeddedCameraViewer';
+import { printerSource } from '../../utils/cameraSource';
 
 describe('floating camera lifecycle', () => {
   beforeEach(() => {
@@ -10,7 +11,7 @@ describe('floating camera lifecycle', () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}'));
   });
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
-  const viewer = (id = 42) => <EmbeddedCameraViewer key={id} printerId={id} printerName={`Camera ${id}`} onClose={() => {}} />;
+  const viewer = (id = 42) => <EmbeddedCameraViewer key={id} source={printerSource(id)} name={`Camera ${id}`} onClose={() => {}} />;
   const image = () => screen.getByAltText('Camera stream') as HTMLImageElement;
   const settle = () => act(async () => { await Promise.resolve(); });
 

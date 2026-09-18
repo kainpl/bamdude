@@ -4,14 +4,16 @@ import { AlertTriangle, Expand, VideoOff, WifiOff } from 'lucide-react';
 import { getAuthToken, withStreamToken } from '../api/client';
 import { formatDuration } from '../utils/date';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
 import { CameraSnapshotImage } from './CameraSnapshotImage';
 
 export type CameraTileMode = 'live' | 'snapshot' | 'paused';
 export type CameraTileStatusMode = 'off' | 'compact' | 'full';
 
 interface CameraTileProps {
-  printerId: number;
-  printerName: string;
+  /** A printer's camera, or a camera that belongs to a place. */
+  source: CameraSource;
+  name: string;
   cameraRotation?: number;
   mode: CameraTileMode;
   snapshotIntervalMs: number;
@@ -70,8 +72,8 @@ const BUCKET_CHIP_CLASS: Record<StatusBucket, string> = {
 };
 
 export function CameraTile({
-  printerId,
-  printerName,
+  source,
+  name,
   cameraRotation = 0,
   mode,
   snapshotIntervalMs,
@@ -105,7 +107,7 @@ export function CameraTile({
       const headers: Record<string, string> = {};
       const token = getAuthToken();
       if (token) headers['Authorization'] = `Bearer ${token}`;
-      fetch(`/api/v1/printers/${printerId}/camera/stop`, {
+      fetch(stopPath(source), {
         method: 'POST',
         keepalive: true,
         headers,
@@ -113,7 +115,8 @@ export function CameraTile({
     }
     setErrored(false);
     setBust((b) => b + 1);
-  }, [mode, printerId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, sourceKey(source)]);
 
   useEffect(() => {
     return () => {
@@ -121,22 +124,21 @@ export function CameraTile({
         const headers: Record<string, string> = {};
         const token = getAuthToken();
         if (token) headers['Authorization'] = `Bearer ${token}`;
-        fetch(`/api/v1/printers/${printerId}/camera/stop`, {
+        fetch(stopPath(source), {
           method: 'POST',
           keepalive: true,
           headers,
         }).catch(() => {});
       }
     };
-  }, [printerId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceKey(source)]);
 
   // A kiosk carries its own token; everything else rides the module-cached
   // short-lived one that only a signed-in browser holds (upstream #2531).
   const withToken = (path: string) =>
     streamToken ? `${path}&token=${encodeURIComponent(streamToken)}` : withStreamToken(path);
-  const liveUrl = withToken(
-    `/api/v1/printers/${printerId}/camera/stream?fps=${LIVE_FPS}&t=${bust}`,
-  );
+  const liveUrl = withToken(streamPath(source, LIVE_FPS, bust));
   const { attachImage: attachLiveImage } = useCameraImageRef(liveUrl);
 
   const transform = cameraRotation ? `rotate(${cameraRotation}deg)` : undefined;
@@ -176,13 +178,13 @@ export function CameraTile({
   return (
     <div
       className={rootClass}
-      title={printerName}
+      title={name}
     >
       {interactive && (
         <button
           type="button"
           onClick={onToggleLive}
-          aria-label={t(activeLive ? 'printers.camWall.stopLive' : 'printers.camWall.startLive', { printer: printerName })}
+          aria-label={t(activeLive ? 'printers.camWall.stopLive' : 'printers.camWall.startLive', { printer: name })}
           className="absolute inset-0 z-10 cursor-pointer rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green focus-visible:ring-inset"
         />
       )}
@@ -196,8 +198,8 @@ export function CameraTile({
         </div>
       ) : mode === 'snapshot' ? (
         <CameraSnapshotImage
-          printerId={printerId}
-          printerName={printerName}
+          source={source}
+          name={name}
           intervalMs={snapshotIntervalMs}
           streamToken={streamToken}
           transform={transform}
@@ -212,7 +214,7 @@ export function CameraTile({
           ref={attachLiveImage}
           key={`${mode}-${bust}`}
           src={liveUrl}
-          alt={printerName}
+          alt={name}
           draggable={false}
           loading="lazy"
           className="h-full w-full select-none object-contain"
@@ -284,7 +286,7 @@ export function CameraTile({
             </div>
           </div>
         )}
-        <span className={`block truncate text-xs font-medium${connected && mode === 'snapshot' ? ' pr-36' : ''}`}>{printerName}</span>
+        <span className={`block truncate text-xs font-medium${connected && mode === 'snapshot' ? ' pr-36' : ''}`}>{name}</span>
       </div>
       {onOpenPrinterCard && (
         <button
@@ -293,7 +295,7 @@ export function CameraTile({
             event.stopPropagation();
             onOpenPrinterCard();
           }}
-          aria-label={t('printers.camWall.openPrinterCard', { printer: printerName })}
+          aria-label={t('printers.camWall.openPrinterCard', { printer: name })}
           title={t('printers.camWall.openPrinterCard')}
           className="absolute bottom-2 right-2 z-20 inline-flex h-7 w-7 items-center justify-center rounded-md bg-black/70 text-white transition-colors hover:bg-bambu-dark-tertiary focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green"
         >

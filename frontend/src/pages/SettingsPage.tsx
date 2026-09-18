@@ -29,6 +29,7 @@ import { CreateUserAdvancedAuthModal } from '../components/CreateUserAdvancedAut
 import { PasswordField } from '../components/PasswordField';
 import { SubmitBlockedHint } from '../components/SubmitBlockedHint';
 import CameraTokensPanel from '../components/settings/CameraTokensPanel';
+import { StandaloneCamerasPanel } from '../components/settings/StandaloneCamerasPanel';
 import { StreamOverlayBuilder } from '../components/StreamOverlayBuilder';
 import { SpoolmanSettings } from '../components/SpoolmanSettings';
 import { SpoolDisplayNameSettings } from '../components/SpoolDisplayNameSettings';
@@ -3384,6 +3385,12 @@ export function SettingsPage() {
                   <p className="text-xs text-bambu-gray italic">{t('settings.noPrintersConfigured')}</p>
                 )}
               </div>
+
+              {/* Cameras that belong to no printer — a room, a shelf, a dryer.
+                  Same card as the printers' external cameras, because everything
+                  about cameras is configured here; a different object, because a
+                  camera of a place feeds none of a printer's consumers. */}
+              <StandaloneCamerasPanel />
             </CardContent>
           </Card>
 

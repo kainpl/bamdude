@@ -110,7 +110,25 @@ export function CamWallPage() {
     enabled: !kiosk,
   });
 
+  // The cameras that belong to no printer, on the same wall. Two feeds for
+  // the same reason the printers have two: a kiosk has no session, and its
+  // list is redacted — a name and a rotation, never a URL.
+  const { data: kioskCameras } = useQuery({
+    queryKey: ['camwallCameras', token],
+    queryFn: () => api.getCamWallCameras(token!),
+    enabled: kiosk,
+    refetchInterval: KIOSK_POLL_MS,
+  });
+  const { data: authedCameras } = useQuery({
+    queryKey: ['cameras'],
+    queryFn: api.getCameras,
+    enabled: !kiosk,
+  });
+
   const printers = kiosk ? (kioskPrinters ?? []) : (authedPrinters ?? []);
+  const cameras = kiosk
+    ? (kioskCameras ?? [])
+    : (authedCameras ?? []).filter((camera) => camera.enabled);
 
   // In kiosk mode the statuses arrive with the list, so hand them to the wall
   // rather than letting it run its own per-printer JWT queries.
@@ -137,6 +155,7 @@ export function CamWallPage() {
     <div className="min-h-screen bg-bambu-dark p-4">
       <CameraWall
         printers={printers}
+        cameras={cameras}
         snapshotIntervalSec={snapshotSec}
         statusMode={statusMode}
         onChangeSnapshotIntervalSec={setSnapshotSec}

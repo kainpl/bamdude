@@ -128,3 +128,69 @@ describe('CameraWall live selection', () => {
     expect(screen.queryByRole('button', { name: 'Open printer card' })).not.toBeInTheDocument();
   });
 });
+
+describe('CameraWall with cameras that belong to no printer', () => {
+  beforeEach(() => {
+    vi.stubGlobal('IntersectionObserver', VisibleIntersectionObserver);
+    fetchMock = vi.fn().mockResolvedValue(new Response('jpeg', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = vi.fn(() => 'blob:snapshot');
+      static revokeObjectURL = vi.fn();
+    });
+    Object.defineProperty(HTMLImageElement.prototype, 'decode', {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(undefined),
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const cameras = [
+    { id: 4, name: 'Shelf', rotation: 0 },
+    { id: 5, name: 'Lobby', rotation: 90 },
+  ];
+
+  function renderWallWithCameras() {
+    return render(
+      <CameraWall
+        printers={printers}
+        cameras={cameras}
+        snapshotIntervalSec={10}
+        statusMode="compact"
+        statusOverride={connectedStatuses()}
+        onOpenPrinterCard={vi.fn()}
+        onChangeSnapshotIntervalSec={vi.fn()}
+        onChangeStatusMode={vi.fn()}
+      />,
+    );
+  }
+
+  it('draws the cameras after the printers and counts them in the wall', async () => {
+    renderWallWithCameras();
+
+    await waitFor(() => expect(screen.getByText('0 live, 4 snapshots, 4 total')).toBeInTheDocument());
+    const labels = screen.getAllByTitle(/X1C-A|P1S-B|Shelf|Lobby/).map((el) => el.getAttribute('title'));
+    expect(labels).toEqual(['X1C-A', 'P1S-B', 'Lobby', 'Shelf']);
+  });
+
+  it('gives a camera the one live slot, from its own route', async () => {
+    renderWallWithCameras();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Watch Shelf live' })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Watch Shelf live' }));
+    await waitFor(() => {
+      const image = screen.getByAltText('Shelf') as HTMLImageElement;
+      expect(image.src).toContain('/api/v1/cameras/4/stream');
+    });
+    expect(screen.getByText('1 live, 3 snapshots, 4 total')).toBeInTheDocument();
+  });
+
+  it('offers no printer card for a camera — there is none to open', async () => {
+    renderWallWithCameras();
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Open printer card' })).toHaveLength(2));
+  });
+});

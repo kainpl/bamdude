@@ -594,6 +594,24 @@ export interface PrinterTagListItem extends PrinterTag {
   is_stagger_group: boolean;
 }
 
+/** A camera that belongs to no printer — a room, a shelf, a dryer.
+ *  NOT a printer's external camera, which is columns on the printer and
+ *  replaces that printer's own camera for every consumer of its frames. */
+export interface Camera {
+  id: number;
+  name: string;
+  camera_type: 'mjpeg' | 'rtsp' | 'snapshot' | 'usb';
+  url: string;
+  snapshot_url: string | null;
+  rotation: number;
+  enabled: boolean;
+  location_id: number | null;
+  location_name: string | null;
+}
+
+export type CameraCreate = Omit<Camera, 'id' | 'location_name'>;
+export type CameraUpdate = Partial<CameraCreate>;
+
 /** `printers.camera_light_auto`: the per-printer answer, or defer to the farm's toggle. */
 export type CameraLightPolicy = 'inherit' | 'on' | 'off';
 
@@ -9058,6 +9076,25 @@ export const api = {
   getZigbeePorts: () => request<{ ports: ZigbeePort[] }>('/zigbee/ports'),
   getZigbeeDevices: () => request<{ devices: ZigbeeDevice[] }>('/zigbee/devices'),
   getZigbeeSensors: () => request<{ sensors: ZigbeeSensor[] }>('/zigbee/sensors'),
+
+  // Cameras that belong to no printer. The list carries the URL because it
+  // feeds the settings screen where that URL is typed; the wall's own feeds
+  // (below and in the kiosk call) never do.
+  getCameras: () => request<Camera[]>('/cameras/'),
+  createCamera: (data: CameraCreate) =>
+    request<Camera>('/cameras/', { method: 'POST', body: JSON.stringify(data) }),
+  updateCamera: (id: number, data: CameraUpdate) =>
+    request<Camera>(`/cameras/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteCamera: (id: number) => request<{ deleted: number }>(`/cameras/${id}`, { method: 'DELETE' }),
+  testCameraSource: (data: { url: string; camera_type: string }) =>
+    request<{ success?: boolean; error?: string }>('/cameras/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getCamWallCameras: (token: string) =>
+    request<{ id: number; name: string; rotation: number; location_id: number | null }[]>(
+      `/camwall/cameras?token=${encodeURIComponent(token)}`,
+    ),
   getDeviceSettings: (ieee: string) =>
     request<DeviceSettings>(`/zigbee/devices/${encodeURIComponent(ieee)}/settings`),
   updateDeviceSettings: (

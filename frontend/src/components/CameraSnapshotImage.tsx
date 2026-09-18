@@ -3,17 +3,19 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { withStreamToken } from '../api/client';
 import { acquireCameraSnapshotSlot } from '../utils/cameraSnapshotQueue';
+import { snapshotPath, sourceKey, type CameraSource } from '../utils/cameraSource';
 
 interface CameraSnapshotImageProps {
-  printerId: number;
-  printerName: string;
+  /** A printer's camera or a camera of its own — only the URL differs. */
+  source: CameraSource;
+  name: string;
   intervalMs: number;
   streamToken?: string;
   transform?: string;
 }
 
 export function CameraSnapshotImage({
-  printerId, printerName, intervalMs, streamToken, transform,
+  source, name, intervalMs, streamToken, transform,
 }: CameraSnapshotImageProps) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -46,8 +48,8 @@ export function CameraSnapshotImage({
         deadline = setTimeout(cancelRequest, 20_000);
         // `poll` declares this tile's cadence: the server then keeps the
         // chamber light (when the farm asks for it) for that long after each
-        // frame instead of blinking it on every one.
-        const path = `/api/v1/printers/${printerId}/camera/snapshot?t=${Date.now()}&poll=${Math.max(1000, intervalMs)}`;
+        // frame instead of blinking it on every one. Only a printer has one.
+        const path = snapshotPath(source, { bust: Date.now(), pollMs: Math.max(1000, intervalMs) });
         const url = streamToken ? `${path}&token=${encodeURIComponent(streamToken)}` : withStreamToken(path);
         const response = await fetch(url, { signal: request.signal, cache: 'no-store' });
         if (!response.ok) {
@@ -96,12 +98,15 @@ export function CameraSnapshotImage({
       image?.removeAttribute('src');
       if (displayedUrl) URL.revokeObjectURL(displayedUrl);
     };
-  }, [printerId, intervalMs, streamToken, queryClient]);
+    // `sourceKey` rather than the object: a fresh `{kind, id}` literal on every
+    // render would restart the poll loop each time the parent re-renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceKey(source), intervalMs, streamToken, queryClient]);
 
   return <>
     <img
       ref={imageRef}
-      alt={printerName}
+      alt={name}
       draggable={false}
       className="h-full w-full select-none object-contain"
       style={{ transform, visibility: hasFrame ? 'visible' : 'hidden' }}

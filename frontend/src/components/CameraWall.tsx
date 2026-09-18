@@ -5,6 +5,7 @@ import { useQueries } from '@tanstack/react-query';
 import { Settings as SettingsIcon } from 'lucide-react';
 import { useCameraLiveBudget } from '../hooks/useCameraLiveBudget';
 import { CameraTile, type CameraTileMode, type CameraTileStatusMode } from './CameraTile';
+import { printerSource, sourceKey, standaloneSource, type CameraSource } from '../utils/cameraSource';
 import { filterKnownHMSErrors } from './HMSErrorModal';
 import { api, type HMSError, type PrinterStatus } from '../api/client';
 
@@ -16,6 +17,24 @@ export interface CameraWallPrinter {
   id: number;
   name: string;
   camera_rotation?: number;
+}
+
+/** A camera that belongs to no printer. The kiosk feed serves exactly this
+ *  shape and, deliberately, no URL — an RTSP camera's credentials live in one. */
+export interface CameraWallCamera {
+  id: number;
+  name: string;
+  rotation?: number;
+}
+
+/** One grid cell, whichever kind of source is behind it. */
+interface WallTile {
+  key: string;
+  source: CameraSource;
+  name: string;
+  rotation?: number;
+  /** Present only for a printer — the status overlay and the card need it. */
+  printer?: CameraWallPrinter;
 }
 
 // What a tile draws from a printer's status. `PrinterStatus` satisfies it; so
@@ -39,6 +58,9 @@ export interface CameraWallStatus {
 
 interface CameraWallProps {
   printers: CameraWallPrinter[];
+  /** Cameras that belong to no printer — a room, a shelf, a dryer. Drawn
+   *  after the printers, by the same tile: a view has no print to report. */
+  cameras?: CameraWallCamera[];
   snapshotIntervalSec: number;
   statusMode: CameraTileStatusMode;
   /** Omitted by the kiosk wall: its token cannot open the detailed card. */
@@ -61,8 +83,15 @@ const MIN_SNAPSHOT_SEC = 2;
 const MAX_SNAPSHOT_SEC = 60;
 const STATUS_MODES: CameraTileStatusMode[] = ['off', 'compact', 'full'];
 
+/** ⚠️ Module-level, not a `cameras = []` default parameter: that literal is a new
+ *  array on every render, which would make `tiles` and the IntersectionObserver
+ *  effect below rebuild every render — and since observing a tile sets state,
+ *  that is an infinite render loop for every wall without cameras. */
+const NO_CAMERAS: CameraWallCamera[] = [];
+
 export function CameraWall({
   printers,
+  cameras = NO_CAMERAS,
   snapshotIntervalSec,
   statusMode,
   onOpenPrinterCard,
@@ -73,7 +102,9 @@ export function CameraWall({
   hideSettings = false,
 }: CameraWallProps) {
   const { t } = useTranslation();
-  const tileRefs = useRef<Map<number, HTMLDivElement | null>>(new Map());
+  // Keyed by `sourceKey`, not by a printer id: two kinds of source share this
+  // grid, and a number could only ever name one of them.
+  const tileRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
 
   // Reuses the same ['printerStatus', id] cache that each PrinterCard
   // populates, so flipping between Cards and Cam Wall is instant. Disabled in
@@ -97,11 +128,11 @@ export function CameraWall({
   }, [kiosk, printers, statusQueries]);
   const statusByPrinter: Map<number, CameraWallStatus | undefined> =
     statusOverride ?? fetchedStatusByPrinter;
-  const [visibleIds, setVisibleIds] = useState<Set<number>>(() => new Set());
+  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(() => new Set());
   // A wall is an overview first. A user explicitly selects the one camera
   // worth spending a live MJPEG connection on; all other visible tiles stay
   // on bounded snapshot refreshes.
-  const [activeLivePrinterId, setActiveLivePrinterId] = useState<number | null>(null);
+  const [activeLiveKey, setActiveLiveKey] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const settingsRef = useRef<HTMLDivElement | null>(null);
 
@@ -122,14 +153,17 @@ export function CameraWall({
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
-        setVisibleIds((prev) => {
+        setVisibleKeys((prev) => {
           const next = new Set(prev);
           for (const entry of entries) {
-            const id = Number((entry.target as HTMLElement).dataset.printerId);
-            if (!Number.isFinite(id)) continue;
-            if (entry.isIntersecting) next.add(id);
-            else next.delete(id);
+            const key = (entry.target as HTMLElement).dataset.tileKey;
+            if (!key) continue;
+            if (entry.isIntersecting) next.add(key);
+            else next.delete(key);
           }
+          // Same set, same object: an observer that re-reports what we already
+          // knew must not cost a render, let alone one per report.
+          if (next.size === prev.size && [...next].every((key) => prev.has(key))) return prev;
           return next;
         });
       },
@@ -140,45 +174,63 @@ export function CameraWall({
       if (el) observer.observe(el);
     }
     return () => observer.disconnect();
-  }, [printers]);
+  }, [printers, cameras]);
 
   // Scrolling a selected tile away is a navigation event, not a reason to keep
   // an invisible MJPEG viewer alive. The user can select it again after they
   // return to it; no printer state change ever selects a live camera for them.
   useEffect(() => {
-    if (activeLivePrinterId !== null && !visibleIds.has(activeLivePrinterId)) {
-      setActiveLivePrinterId(null);
+    if (activeLiveKey !== null && !visibleKeys.has(activeLiveKey)) {
+      setActiveLiveKey(null);
     }
-  }, [activeLivePrinterId, visibleIds]);
+  }, [activeLiveKey, visibleKeys]);
 
-  const activeLiveIsConnected = activeLivePrinterId !== null &&
-    statusByPrinter.get(activeLivePrinterId)?.connected === true;
+  // One list, printers first, then the standalone cameras by name. A camera
+  // is "connected" when it is switched on: there is nothing else to ask.
+  const tiles = useMemo<WallTile[]>(() => [
+    ...printers.map((printer) => ({
+      key: sourceKey(printerSource(printer.id)),
+      source: printerSource(printer.id),
+      name: printer.name,
+      rotation: printer.camera_rotation,
+      printer,
+    })),
+    ...[...cameras].sort((a, b) => a.name.localeCompare(b.name)).map((camera) => ({
+      key: sourceKey(standaloneSource(camera.id)),
+      source: standaloneSource(camera.id),
+      name: camera.name,
+      rotation: camera.rotation,
+      printer: undefined,
+    })),
+  ], [printers, cameras]);
+
+  const connectedOf = (tile: WallTile) =>
+    tile.printer ? statusByPrinter.get(tile.printer.id)?.connected ?? false : true;
+
+  const activeLiveIsConnected =
+    activeLiveKey !== null && tiles.some((tile) => tile.key === activeLiveKey && connectedOf(tile));
   const requestedLive = activeLiveIsConnected ? 1 : 0;
   const { granted: liveSlots, ready, protocol, limit } = useCameraLiveBudget(requestedLive);
 
-  const modeByPrinter = useMemo(() => {
-    const map = new Map<number, CameraTileMode>();
-    for (const p of printers) {
-      const connected = statusByPrinter.get(p.id)?.connected ?? false;
-      if (!ready || !visibleIds.has(p.id) || !connected) {
-        map.set(p.id, 'paused');
+  const modeByKey = useMemo(() => {
+    const map = new Map<string, CameraTileMode>();
+    for (const tile of tiles) {
+      const connected = tile.printer ? statusByPrinter.get(tile.printer.id)?.connected ?? false : true;
+      if (!ready || !visibleKeys.has(tile.key) || !connected) {
+        map.set(tile.key, 'paused');
         continue;
       }
-      if (p.id === activeLivePrinterId && liveSlots > 0) {
-        map.set(p.id, 'live');
-      } else {
-        map.set(p.id, 'snapshot');
-      }
+      map.set(tile.key, tile.key === activeLiveKey && liveSlots > 0 ? 'live' : 'snapshot');
     }
     return map;
-  }, [printers, visibleIds, liveSlots, ready, statusByPrinter, activeLivePrinterId]);
+  }, [tiles, visibleKeys, liveSlots, ready, statusByPrinter, activeLiveKey]);
 
-  const toggleLive = (printerId: number) => {
-    if (statusByPrinter.get(printerId)?.connected !== true) return;
-    setActiveLivePrinterId((current) => current === printerId ? null : printerId);
+  const toggleLive = (tile: WallTile) => {
+    if (!connectedOf(tile)) return;
+    setActiveLiveKey((current) => (current === tile.key ? null : tile.key));
   };
 
-  if (printers.length === 0) {
+  if (tiles.length === 0) {
     return (
       <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-6 text-center text-bambu-gray">
         {t('printers.camWall.noPrinters')}
@@ -196,9 +248,9 @@ export function CameraWall({
       <div className="flex items-center justify-between text-xs text-bambu-gray">
         <span>
           {t('printers.camWall.summary', {
-            live: Array.from(modeByPrinter.values()).filter((m) => m === 'live').length,
-            snap: Array.from(modeByPrinter.values()).filter((m) => m === 'snapshot').length,
-            total: printers.length,
+            live: Array.from(modeByKey.values()).filter((m) => m === 'live').length,
+            snap: Array.from(modeByKey.values()).filter((m) => m === 'snapshot').length,
+            total: tiles.length,
           })}
         </span>
         <div className={`relative ${hideSettings ? 'hidden' : ''}`} ref={settingsRef}>
@@ -271,42 +323,52 @@ export function CameraWall({
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {printers.map((p) => {
-          const mode = modeByPrinter.get(p.id) ?? 'paused';
+        {tiles.map((tile) => {
+          const mode = modeByKey.get(tile.key) ?? 'paused';
+          // Narrowed once, here: `tile.printer` inside a callback below is a
+          // property access TypeScript cannot keep narrowed across the closure.
+          const tilePrinter = tile.printer;
+          const status = tilePrinter ? statusByPrinter.get(tilePrinter.id) : undefined;
           return (
             <div
-              key={p.id}
+              key={tile.key}
               ref={(el) => {
-                tileRefs.current.set(p.id, el);
+                tileRefs.current.set(tile.key, el);
               }}
-              data-printer-id={p.id}
+              data-tile-key={tile.key}
             >
               <CameraTile
-                printerId={p.id}
-                printerName={p.name}
-                cameraRotation={p.camera_rotation}
+                source={tile.source}
+                name={tile.name}
+                cameraRotation={tile.rotation}
                 mode={mode}
                 snapshotIntervalMs={snapshotIntervalSec * 1000}
-                connected={statusByPrinter.get(p.id)?.connected ?? false}
-                statusMode={statusMode}
-                printerState={statusByPrinter.get(p.id)?.state ?? null}
-                progress={statusByPrinter.get(p.id)?.progress ?? null}
-                remainingMin={statusByPrinter.get(p.id)?.remaining_time ?? null}
-                layerNum={statusByPrinter.get(p.id)?.layer_num ?? null}
-                totalLayers={statusByPrinter.get(p.id)?.total_layers ?? null}
+                connected={connectedOf(tile)}
+                // A camera of its own has no print to report, so the whole
+                // status overlay is simply absent rather than empty.
+                statusMode={tilePrinter ? statusMode : 'off'}
+                printerState={status?.state ?? null}
+                progress={status?.progress ?? null}
+                remainingMin={status?.remaining_time ?? null}
+                layerNum={status?.layer_num ?? null}
+                totalLayers={status?.total_layers ?? null}
                 printName={
-                  cameraWallPrintName(statusByPrinter.get(p.id)) ??
-                  t('printers.camWall.currentJobFallback')
+                  tilePrinter
+                    ? cameraWallPrintName(status) ?? t('printers.camWall.currentJobFallback')
+                    : null
                 }
-                hmsErrorCount={
-                  filterKnownHMSErrors(statusByPrinter.get(p.id)?.hms_errors ?? []).length
-                }
+                hmsErrorCount={filterKnownHMSErrors(status?.hms_errors ?? []).length}
                 streamToken={streamToken}
-                activeLive={p.id === activeLivePrinterId && mode === 'live'}
+                activeLive={tile.key === activeLiveKey && mode === 'live'}
                 // The kiosk wall deliberately receives neither handler: its
                 // token can only view the passive, redacted wall.
-                onToggleLive={onOpenPrinterCard ? () => toggleLive(p.id) : undefined}
-                onOpenPrinterCard={onOpenPrinterCard ? () => onOpenPrinterCard(p.id, p.name) : undefined}
+                onToggleLive={onOpenPrinterCard ? () => toggleLive(tile) : undefined}
+                // Only a printer has a card to open.
+                onOpenPrinterCard={
+                  onOpenPrinterCard && tilePrinter
+                    ? () => onOpenPrinterCard(tilePrinter.id, tile.name)
+                    : undefined
+                }
               />
             </div>
           );
