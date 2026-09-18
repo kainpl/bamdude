@@ -39,7 +39,7 @@ INSTALL_PATH=""
 PORT=""
 BIND_ADDRESS=""
 TIMEZONE=""
-DB_MODE=""             # sqlite | embedded | sidecar | external
+DB_MODE=""             # sqlite | sidecar | external  (no embedded: see the menu below)
 DATABASE_URL_VALUE=""  # external URL when DB_MODE=external
 PG_PASSWORD=""         # generated for the sidecar
 BUILD_FROM_SOURCE="false"
@@ -142,7 +142,7 @@ show_help() {
     echo "  --port PORT        Port to expose (default: 8000)"
     echo "  --bind ADDRESS     Bind address: 0.0.0.0 (network) or 127.0.0.1 (local only)"
     echo "  --tz TIMEZONE      Timezone (default: system timezone or UTC)"
-    echo "  --db BACKEND       Database: sqlite (default) | embedded | sidecar | external"
+    echo "  --db BACKEND       Database: sqlite (default) | sidecar | external"
     echo "  --database-url URL External database URL (implies --db external)"
     echo "  --build            Build from source instead of using pre-built image"
     echo "  --yes, -y          Non-interactive mode, accept defaults"
@@ -314,14 +314,6 @@ TZ=$TIMEZONE
 EOF
 
     case "$DB_MODE" in
-        embedded)
-            cat >> .env << 'EOF'
-
-# Bundled PostgreSQL 18, run by BamDude inside the container. Its data lives in
-# the bamdude_data volume under postgres/. Imported from SQLite on first start.
-DATABASE_URL=embedded
-EOF
-            ;;
         external)
             cat >> .env << EOF
 
@@ -494,9 +486,19 @@ gen_password() {
 gather_db_config() {
     if [[ -n "$DB_MODE" ]]; then
         case "$DB_MODE" in
-            sqlite|embedded|sidecar|external) ;;
+            sqlite|sidecar|external) ;;
             postgres|postgresql) DB_MODE="external" ;;
-            *) log_error "Unknown --db backend '$DB_MODE' (use sqlite|embedded|sidecar|external)"; exit 1 ;;
+            # ⚠️ Not a typo and not an oversight: the bundled PostgreSQL cannot
+            # run in this container. The image runs as root and `initdb` refuses
+            # to start under root — that is PostgreSQL's own rule, not ours — so
+            # picking it here produced a container that died on first boot with
+            # nothing but `initdb: cannot be run as root`. Say so instead.
+            embedded)
+                log_error "--db embedded is not available for Docker: the bundled PostgreSQL cannot run as root inside this container."
+                log_error "Use --db sidecar (PostgreSQL in its own official container) or --db external (a server you already run)."
+                exit 1
+                ;;
+            *) log_error "Unknown --db backend '$DB_MODE' (use sqlite|sidecar|external)"; exit 1 ;;
         esac
     else
         DB_MODE="sqlite"
@@ -506,20 +508,17 @@ gather_db_config() {
         echo ""
         echo "Database backend:"
         echo "  1) SQLite    - zero setup, one file; great for most farms (default)"
-        echo "  2) embedded  - the bundled PostgreSQL 18 run inside the BamDude container"
-        echo "  3) separate  - PostgreSQL in its own container (official image, own volume)"
-        echo "  4) external  - a PostgreSQL server you already run (enter its URL)"
+        echo "  2) separate  - PostgreSQL in its own container (official image, own volume)"
+        echo "  3) external  - a PostgreSQL server you already run (enter its URL)"
         local default_choice=1
-        [[ "$DB_MODE" == "embedded" ]] && default_choice=2
-        [[ "$DB_MODE" == "sidecar" ]] && default_choice=3
-        [[ "$DB_MODE" == "external" ]] && default_choice=4
+        [[ "$DB_MODE" == "sidecar" ]] && default_choice=2
+        [[ "$DB_MODE" == "external" ]] && default_choice=3
         local choice
-        prompt "Choose 1, 2, 3 or 4" "$default_choice" choice
+        prompt "Choose 1, 2 or 3" "$default_choice" choice
         case "$choice" in
             1|sqlite)   DB_MODE="sqlite" ;;
-            2|embedded) DB_MODE="embedded" ;;
-            3|sidecar|separate) DB_MODE="sidecar" ;;
-            4|external) DB_MODE="external" ;;
+            2|sidecar|separate) DB_MODE="sidecar" ;;
+            3|external) DB_MODE="external" ;;
             *) log_warn "Unrecognised choice '$choice', keeping $DB_MODE" ;;
         esac
     fi
@@ -589,7 +588,6 @@ gather_config() {
     echo -e "  Bind address:  ${GREEN}$BIND_ADDRESS${NC}"
     echo -e "  Timezone:      ${GREEN}$TIMEZONE${NC}"
     case "$DB_MODE" in
-        embedded) echo -e "  Database:      ${GREEN}bundled PostgreSQL (in the container)${NC}" ;;
         sidecar)  echo -e "  Database:      ${GREEN}PostgreSQL (separate container)${NC}" ;;
         external) echo -e "  Database:      ${GREEN}external PostgreSQL${NC}" ;;
         *)        echo -e "  Database:      ${GREEN}SQLite${NC}" ;;

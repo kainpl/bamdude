@@ -98,18 +98,20 @@ services:
       # is also editable in Settings if you would rather set it there, or if you
       # drive Compose with `-f` from elsewhere.
       #- BAMDUDE_COMPOSE_DIR=${PWD}
-      # Database backend (default: SQLite). One variable, three states:
-      #   embedded  - the bundled PostgreSQL 18, run by BamDude inside this
-      #               container; its data lives in the bamdude_data volume under
-      #               postgres/. Needs no extra container and no networking.
-      #               (stop_grace_period below lets it shut down cleanly.)
-      #   a URL     - an external PostgreSQL you run yourself; the database must
-      #               already exist. With the default host networking, use the
-      #               host's real address, not a Compose service name.
+      # Database backend (default: SQLite). Two states:
+      #   unset     - SQLite, one file in the data volume. Fine for most farms.
+      #   a URL     - PostgreSQL. Either the sidecar in docker-compose.postgres.yml
+      #               or a server you run yourself; the database must already
+      #               exist. With the default host networking, use the host's
+      #               real address, not a Compose service name.
       # Switching from SQLite imports the existing database on first start.
-      #- DATABASE_URL=embedded
       #- DATABASE_URL=postgresql+asyncpg://bamdude:password@192.168.1.100:5432/bamdude
       # For a PostgreSQL running in its own container, see docker-compose.postgres.yml.
+      # ⚠️ `DATABASE_URL=embedded` (the PostgreSQL bundled with BamDude) is NOT
+      # available in Docker and is deliberately not offered here. This image runs
+      # as root and `initdb` refuses to run as root — PostgreSQL's own rule — so
+      # the container would die on first boot. It is the native/Windows install's
+      # option; in Docker use the sidecar above or your own server.
       # Virtual printer: Set to the Docker host's IP when using bridge mode (ports:).
       # Required for FTP passive mode to work behind NAT.
       # Example: VIRTUAL_PRINTER_PASV_ADDRESS=192.168.1.100
@@ -130,9 +132,9 @@ services:
       # that BamDude needs to talk to over HTTPS.
       #- USE_SYSTEM_TRUST_STORE=true
     restart: unless-stopped
-    # With DATABASE_URL=embedded the bundled PostgreSQL is a child of the app
-    # process; give the container time to stop it cleanly (a fast checkpoint)
-    # on `docker compose down` before Docker sends SIGKILL. Harmless for SQLite.
+    # Give the container time to close the database cleanly on
+    # `docker compose down` before Docker sends SIGKILL. Cheap for SQLite, and
+    # it is what a slow final checkpoint needs on a busy PostgreSQL.
     stop_grace_period: 60s
 
 volumes:

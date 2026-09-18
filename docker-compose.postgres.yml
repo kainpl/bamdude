@@ -1,9 +1,18 @@
 # PostgreSQL in its own container — an override for docker-compose.yml.
 #
-# When to use this: you want a separate, independently-upgradable PostgreSQL
-# rather than the bundled one (DATABASE_URL=embedded), which is the simpler
-# default. Both are fine; this one keeps the database in its own official
-# `postgres` image and its own volume.
+# When to use this: you want PostgreSQL rather than the default SQLite. In
+# Docker this is THE PostgreSQL option, together with pointing DATABASE_URL at
+# a server you run yourself.
+#
+# ⚠️ The bundled PostgreSQL (DATABASE_URL=embedded) is NOT one of them. It is a
+# native-install feature (Linux service, the Windows installer): the BamDude
+# image runs as root and `initdb` refuses to run as root, which is PostgreSQL's
+# own rule. An earlier version of this note called the bundled one "the simpler
+# default" - in a container it is neither, and docker-install.sh no longer
+# offers it.
+#
+# This file keeps the database in its own official `postgres` image and its own
+# volume, so it upgrades independently of BamDude.
 #
 # Enable it by listing both files in COMPOSE_FILE (install/docker-install.sh
 # writes this into .env when you pick the sidecar):

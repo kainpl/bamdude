@@ -505,7 +505,7 @@ Short version:
 |-----------|------------|
 | Backend | Python, FastAPI, SQLAlchemy, aiogram 3.x |
 | Frontend | React 19, TypeScript, Tailwind CSS 4 |
-| Database | SQLite (default), a bundled PostgreSQL 18, or your own PostgreSQL |
+| Database | SQLite (default), your own PostgreSQL, or a bundled PostgreSQL 18 on native installs |
 | 3D Viewer | Three.js |
 | Communication | MQTT (TLS), FTPS |
 | Telegram | aiogram 3.x, MarkdownV2, FSM |
