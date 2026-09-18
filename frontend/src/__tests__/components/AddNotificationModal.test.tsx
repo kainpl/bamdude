@@ -14,6 +14,7 @@ import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { AddNotificationModal } from '../../components/AddNotificationModal';
+import { PROVIDER_EVENTS } from '../fixtures/providerEvents';
 import type { NotificationProvider } from '../../api/client';
 
 function buildProvider(provider_type: string, name: string, config: Record<string, unknown>) {
@@ -288,5 +289,79 @@ describe('AddNotificationModal — Signal', () => {
     await user.click(screen.getByRole('button', { name: /^save$/i }));
 
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+
+/**
+ * Event subscriptions in the provider form.
+ *
+ * The form used to offer eighteen of the thirty-four flags the backend knows,
+ * and to send only those eighteen. The other sixteen were filled in by the
+ * backend's own defaults - six of which are ON - so a brand-new ntfy or Discord
+ * provider started sending AMS, queue and plate events its creator had never
+ * been shown, and could only switch them off on the expanded card. These tests
+ * pin the two halves of the fix: everything is offered, and everything is sent.
+ */
+describe('AddNotificationModal - event subscriptions', () => {
+  it('offers every event the API knows, not a subset', async () => {
+    render(<AddNotificationModal onClose={() => undefined} />);
+
+    await screen.findByRole('switch', { name: 'Print Started' });
+    const subscriptionToggles = PROVIDER_EVENTS.length;
+    expect(screen.getAllByRole('switch').length).toBeGreaterThanOrEqual(subscriptionToggles);
+    // One from each group the old hand-written list left out entirely.
+    expect(screen.getByRole('switch', { name: 'AMS Humidity High' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Job Failed' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Sensor readings' })).toBeInTheDocument();
+  });
+
+  it('shows a new provider the defaults it would be saved with', async () => {
+    render(<AddNotificationModal onClose={() => undefined} />);
+
+    // on_plate_not_empty defaults ON in the backend registry. Before the fix the
+    // form showed nothing for it and the backend switched it on out of sight.
+    const plate = await screen.findByRole('switch', { name: 'Plate Not Empty' });
+    expect(plate).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('switch', { name: 'Print Started' })).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('sends every flag on save, so the backend fills none in silently', async () => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(
+      http.post('*/api/v1/notifications/', async ({ request }) => {
+        captured = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ id: 7 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<AddNotificationModal onClose={vi.fn()} />);
+
+    await screen.findByRole('switch', { name: 'Print Started' });
+    // ntfy: one required config field, so the save is about the events.
+    await user.selectOptions(screen.getAllByRole('combobox')[0], 'ntfy');
+    await user.type(screen.getByPlaceholderText('My Notifications'), 'Test');
+    await user.type(screen.getByPlaceholderText('my-bamdude'), 'farm');
+    await user.click(screen.getByRole('button', { name: /^add$/i }));
+
+    await waitFor(() => expect(captured).not.toBeNull());
+    const sent = Object.keys(captured!).filter((key) => key.startsWith('on_'));
+    expect(sent.sort()).toEqual(PROVIDER_EVENTS.map((event) => event.flag).sort());
+  });
+
+  it('carries the edited provider own subscriptions into the form', async () => {
+    render(
+      <AddNotificationModal
+        provider={buildProvider('ntfy', 'My ntfy', { topic: 'bamdude' })}
+        onClose={() => undefined}
+      />,
+    );
+
+    await screen.findByDisplayValue('My ntfy');
+    // The fixture provider carries no on_* fields at all, so every flag shows
+    // as off rather than inheriting a default meant for a new provider.
+    const jobFailed = await screen.findByRole('switch', { name: 'Job Failed' });
+    expect(jobFailed).toHaveAttribute('aria-checked', 'false');
   });
 });

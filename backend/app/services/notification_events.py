@@ -83,6 +83,35 @@ EVENT_CATALOG: dict[str, EventMeta] = {
 # event through ``NotificationService.notify_in_app`` (spec §3.3).
 IN_APP_ONLY_EVENTS: frozenset[str] = frozenset()
 
+# Two provider flags each govern several catalog events. The service owns the
+# behaviour (which column gates which message); the map lives here because the
+# provider-events endpoint needs it too, and a second copy is how the frontend
+# lists drifted in the first place. ``NotificationService._SENSOR_ALERT_FIELDS``
+# is this object, so the test that pins the aliases still reads the authority.
+SENSOR_ALERT_FIELDS: dict[str, str] = {
+    "sensor_above_max": "on_sensor_threshold",
+    "sensor_below_min": "on_sensor_threshold",
+    "sensor_back_in_range": "on_sensor_threshold",
+    "sensor_silent": "on_sensor_silent",
+    "sensor_speaking_again": "on_sensor_silent",
+}
+
+
+def events_of_flag(flag: str) -> list[str]:
+    """Catalog events a provider flag governs, in catalog order.
+
+    One for an ordinary flag (``on_print_start`` -> ``print_start``), several
+    for the two sensor aggregates. An empty list means the flag names no
+    catalogued event — impossible today (a test pins it) and rendered by the
+    frontend under a derived label rather than hidden.
+    """
+    aggregated = [e for e, f in SENSOR_ALERT_FIELDS.items() if f == flag]
+    if aggregated:
+        return [e for e, _ in catalog_rows() if e in set(aggregated)]
+    event = flag.removeprefix("on_")
+    return [event] if event in EVENT_CATALOG else []
+
+
 _UNKNOWN = EventMeta("info", "printer")
 _warned_unknown: set[str] = set()
 _SEVERITY_RANK = {"error": 0, "warning": 1, "info": 2}

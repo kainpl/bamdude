@@ -8221,6 +8221,7 @@ export default {
     signalGroupId: 'Group ID',
     signalRecipientsRequired: 'At least one recipient number is required',
     signalGroupRequired: 'Group ID is required',
+    eventsLoadFailed: 'The list of events could not be loaded, so subscriptions cannot be edited right now.',
     // NotificationProviderCard
     lastSuccess: 'Last: {{date}}',
     error: 'Error',

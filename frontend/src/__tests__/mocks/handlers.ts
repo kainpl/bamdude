@@ -4,6 +4,8 @@
 
 import { http, HttpResponse } from 'msw';
 
+import { PROVIDER_EVENTS } from '../fixtures/providerEvents';
+
 // Sample data
 const mockSmartPlugs = [
   {
@@ -165,6 +167,12 @@ export const handlers = [
   // ========================================================================
   // Notification Providers
   // ========================================================================
+
+  // Declared before '/:id' for the same reason the backend declares it first:
+  // otherwise 'events' is matched as a provider id.
+  http.get('/api/v1/notifications/events', () => {
+    return HttpResponse.json(PROVIDER_EVENTS);
+  }),
 
   http.get('/api/v1/notifications/', () => {
     return HttpResponse.json(mockNotificationProviders);

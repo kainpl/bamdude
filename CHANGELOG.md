@@ -8,6 +8,10 @@
 
 - **A second round of frontend dependency bumps:** `vitest` 4.1.9 → 4.1.11 with its coverage plugin and mocker (a path-traversal advisory in the test mocker — development only), `js-yaml` 4.3.1 → 4.3.2 (a CPU-exhaustion advisory), `@tiptap/core` 3.31.0 → 3.31.3 and `baseline-browser-mapping` 2.11.21 → 2.11.22. `npm audit` reports nothing; the test suite passes on the new runner.
 
+### Fixed
+
+- **The provider form now offers every event, and a new provider no longer subscribes to any of them behind your back.** Adding a notification channel showed eighteen events; BamDude has thirty-four. AMS alarms, everything about the queue, the two sensor alerts and the plate-not-empty check were missing from the form — reachable only by saving the provider first and expanding its card. Six of the hidden ones are on by default, so a freshly added ntfy, Discord or Signal channel started sending events nobody had been shown. The form and the card now read the list from the server, so every event is offered, a new provider shows exactly the subscriptions it will be saved with, and an event added in a future version appears by itself instead of waiting to be typed out a fourth time.
+
 ### Added
 
 - **Signal CLI API, for notifications through the messenger you probably already trust with everything else.** A new notification provider talking to a self-hosted [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) instance — named for what it actually is, since it isn't Signal's own API. Point BamDude at its URL and the sender number registered with signal-cli, then choose either a list of recipient numbers or a single group ID. signal-cli-rest-api can't mix the two in one request, so the form only ever asks for one shape at a time. Print-finish photos attach the same way they do for webhook and Discord. Contributed by @dimonalek in #48.

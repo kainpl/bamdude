@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Save, Loader2, Send, CheckCircle, XCircle, MessageCircle, ExternalLink, Plus, Trash2 } from 'lucide-react';
@@ -8,6 +8,8 @@ import type { NotificationProvider, NotificationProviderCreate, NotificationProv
 import { Button } from './Button';
 import { Modal } from './Modal';
 import { Toggle } from './Toggle';
+import { ProviderEventToggles } from './ProviderEventToggles';
+import { useEventLabel, useProviderEvents } from './providerEvents';
 
 interface AddNotificationModalProps {
   provider?: NotificationProvider | null;
@@ -33,27 +35,36 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [dailyDigestEnabled, setDailyDigestEnabled] = useState(provider?.daily_digest_enabled || false);
   const [dailyDigestTime, setDailyDigestTime] = useState(provider?.daily_digest_time || '08:00');
 
-  // Event toggles
-  const [onPrintStart, setOnPrintStart] = useState(provider?.on_print_start ?? false);
-  const [onPrintComplete, setOnPrintComplete] = useState(provider?.on_print_complete ?? true);
-  const [onPrintFailed, setOnPrintFailed] = useState(provider?.on_print_failed ?? true);
-  const [onPrintStopped, setOnPrintStopped] = useState(provider?.on_print_stopped ?? true);
-  const [onPrintProgress, setOnPrintProgress] = useState(provider?.on_print_progress ?? false);
-  const [onPrintPaused, setOnPrintPaused] = useState(provider?.on_print_paused ?? true);
-  const [onPrintResumed, setOnPrintResumed] = useState(provider?.on_print_resumed ?? true);
-  const [onPrinterOffline, setOnPrinterOffline] = useState(provider?.on_printer_offline ?? false);
-  const [onPrinterError, setOnPrinterError] = useState(provider?.on_printer_error ?? false);
-  const [onAiFailureDetection, setOnAiFailureDetection] = useState(provider?.on_ai_failure_detection ?? false);
-  const [onFilamentLow, setOnFilamentLow] = useState(provider?.on_filament_low ?? false);
-  const [onFilamentRunout, setOnFilamentRunout] = useState(provider?.on_filament_runout ?? false);
-  // Defaults ON: it fires only when the shortfall can be proved, so it is
-  // quiet by construction rather than by the operator remembering to enable it.
-  const [onFilamentDeficit, setOnFilamentDeficit] = useState(provider?.on_filament_deficit ?? true);
-  const [onMaintenanceDue, setOnMaintenanceDue] = useState(provider?.on_maintenance_due ?? false);
-  const [onStockReorderAlert, setOnStockReorderAlert] = useState(provider?.on_stock_reorder_alert ?? false);
-  const [onStockBreakAlert, setOnStockBreakAlert] = useState(provider?.on_stock_break_alert ?? false);
-  const [onBedCooled, setOnBedCooled] = useState(provider?.on_bed_cooled ?? false);
-  const [onFirstLayerComplete, setOnFirstLayerComplete] = useState(provider?.on_first_layer_complete ?? false);
+  // Event subscriptions, keyed by the provider flag.
+  //
+  // ⚠️ NOT a fixed list. It used to be eighteen `useState` written out by hand,
+  // and the backend grew to thirty-four flags without them: AMS alarms, the
+  // whole queue group, the sensor aggregates and two print events were simply
+  // missing from this form. Six of them default to ON, so a new provider began
+  // sending events its creator was never shown. The list now comes from
+  // `GET /notifications/events` (`useProviderEvents`), and an unset flag falls
+  // back to that row's `default` — see `applyEventDefaults` below.
+  const [events, setEvents] = useState<Record<string, boolean>>(() => {
+    if (!provider) return {};
+    const seeded: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(provider as unknown as Record<string, unknown>)) {
+      if (key.startsWith('on_') && typeof value === 'boolean') seeded[key] = value;
+    }
+    return seeded;
+  });
+  const { data: providerEvents } = useProviderEvents();
+  const eventLabel = useEventLabel();
+  // A NEW provider shows the defaults it would be saved with, rather than
+  // showing everything off and letting the backend quietly fill six of them in.
+  // An EXISTING one falls back to off instead: a flag its row does not carry is
+  // one nobody subscribed to, and opening the form must never switch it on.
+  const eventsWithDefaults = useMemo(() => {
+    const merged: Record<string, boolean> = {};
+    for (const event of providerEvents ?? []) {
+      merged[event.flag] = events[event.flag] ?? (provider ? false : event.default);
+    }
+    return merged;
+  }, [providerEvents, events, provider]);
 
   // Provider-specific config (scalar fields only — event_priorities is split out
   // into its own state because it's an object, not a string).
@@ -224,25 +235,9 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       // Daily digest
       daily_digest_enabled: dailyDigestEnabled,
       daily_digest_time: dailyDigestEnabled ? dailyDigestTime : null,
-      // Event toggles
-      on_print_start: onPrintStart,
-      on_print_complete: onPrintComplete,
-      on_print_failed: onPrintFailed,
-      on_print_stopped: onPrintStopped,
-      on_print_progress: onPrintProgress,
-      on_print_paused: onPrintPaused,
-      on_print_resumed: onPrintResumed,
-      on_printer_offline: onPrinterOffline,
-      on_printer_error: onPrinterError,
-      on_ai_failure_detection: onAiFailureDetection,
-      on_filament_low: onFilamentLow,
-      on_filament_runout: onFilamentRunout,
-      on_filament_deficit: onFilamentDeficit,
-      on_maintenance_due: onMaintenanceDue,
-      on_stock_reorder_alert: onStockReorderAlert,
-      on_stock_break_alert: onStockBreakAlert,
-      on_bed_cooled: onBedCooled,
-      on_first_layer_complete: onFirstLayerComplete,
+      // Every flag the API knows about, so the backend never has to fill one
+      // in silently — that is how six events arrived switched on unseen.
+      ...eventsWithDefaults,
     };
 
     if (isEditing) {
@@ -717,140 +712,23 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           )}
         </div>
 
-        {/* Event Toggles — provider-level. Telegram lives per-chat instead. */}
+        {/* Event Toggles — provider-level. Telegram lives per-chat instead.
+            The list itself comes from the API; see ProviderEventToggles. */}
         {providerType !== 'telegram' && (
         <div className="space-y-3">
           <p className="text-sm text-bambu-gray">{t('notifications.notificationEvents')}</p>
 
-          {/* Print Events */}
-          <div className="space-y-2 p-3 bg-bambu-dark rounded-lg">
-            <p className="text-xs text-bambu-gray uppercase tracking-wide mb-2">{t('notifications.printEvents')}</p>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.start')}</span>
-                <Toggle checked={onPrintStart} onChange={setOnPrintStart} />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.complete')}</span>
-                <Toggle checked={onPrintComplete} onChange={setOnPrintComplete} />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.failed')}</span>
-                <Toggle checked={onPrintFailed} onChange={setOnPrintFailed} />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.stopped')}</span>
-                <Toggle checked={onPrintStopped} onChange={setOnPrintStopped} />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.paused')}</span>
-                <Toggle checked={onPrintPaused} onChange={setOnPrintPaused} />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.resumed')}</span>
-                <Toggle checked={onPrintResumed} onChange={setOnPrintResumed} />
-              </div>
-              <div className="flex items-center justify-between col-span-2">
-                <div>
-                  <span className="text-sm text-white">{t('notifications.progress')}</span>
-                  <span className="text-xs text-bambu-gray ml-1">{t('notifications.progressPercent')}</span>
-                </div>
-                <Toggle checked={onPrintProgress} onChange={setOnPrintProgress} />
-              </div>
-              <div className="flex items-center justify-between col-span-2">
-                <div>
-                  <span className="text-sm text-white">{t('notifications.bedCooled')}</span>
-                  <span className="text-xs text-bambu-gray ml-1">{t('notifications.bedCooledAfterPrint')}</span>
-                </div>
-                <Toggle checked={onBedCooled} onChange={setOnBedCooled} />
-              </div>
-              <div className="flex items-center justify-between col-span-2">
-                <div>
-                  <span className="text-sm text-white">{t('notifications.firstLayerCompleteLabel')}</span>
-                  <span className="text-xs text-bambu-gray ml-1">{t('notifications.firstLayerCompleteDescription')}</span>
-                </div>
-                <Toggle checked={onFirstLayerComplete} onChange={setOnFirstLayerComplete} />
-              </div>
-            </div>
-          </div>
-
-          {/* Printer Status Events */}
-          <div className="space-y-2 p-3 bg-bambu-dark rounded-lg">
-            <p className="text-xs text-bambu-gray uppercase tracking-wide mb-2">{t('notifications.printerStatus')}</p>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.offline')}</span>
-                <Toggle checked={onPrinterOffline} onChange={setOnPrinterOffline} />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.error')}</span>
-                <Toggle checked={onPrinterError} onChange={setOnPrinterError} />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.aiFailureDetection')}</span>
-                <Toggle checked={onAiFailureDetection} onChange={setOnAiFailureDetection} />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.lowFilament')}</span>
-                <Toggle checked={onFilamentLow} onChange={setOnFilamentLow} />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.filamentRunout')}</span>
-                <Toggle checked={onFilamentRunout} onChange={setOnFilamentRunout} />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.filamentDeficit')}</span>
-                <Toggle checked={onFilamentDeficit} onChange={setOnFilamentDeficit} />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white">{t('notifications.maintenance')}</span>
-                <Toggle checked={onMaintenanceDue} onChange={setOnMaintenanceDue} />
-              </div>
-            </div>
-          </div>
-
-          {/* Inventory Stock Alerts (upstream #1184; scaffold — UI-only today) */}
-          <div className="space-y-2 p-3 bg-bambu-dark rounded-lg">
-            <p className="text-xs text-bambu-gray uppercase tracking-wide mb-2">{t('notifications.inventoryAlerts')}</p>
-            <div className="grid grid-cols-1 gap-2">
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-sm text-white">{t('notifications.stockReorderAlert')}</span>
-                  <span className="text-xs text-bambu-gray ml-1">{t('notifications.stockReorderAlertDescription')}</span>
-                </div>
-                <Toggle checked={onStockReorderAlert} onChange={setOnStockReorderAlert} />
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-sm text-white">{t('notifications.stockBreakAlert')}</span>
-                  <span className="text-xs text-bambu-gray ml-1">{t('notifications.stockBreakAlertDescription')}</span>
-                </div>
-                <Toggle checked={onStockBreakAlert} onChange={setOnStockBreakAlert} />
-              </div>
-            </div>
-          </div>
+          <ProviderEventToggles
+            value={eventsWithDefaults}
+            onChange={(flag, on) => setEvents((prev) => ({ ...prev, [flag]: on }))}
+            columns={2}
+          />
 
           {/* Per-event ntfy priority (#990) */}
           {providerType === 'ntfy' && (() => {
-            const enabledEvents: Array<{ key: string; label: string }> = [];
-            if (onPrintStart) enabledEvents.push({ key: 'on_print_start', label: t('notifications.start') });
-            if (onPrintComplete) enabledEvents.push({ key: 'on_print_complete', label: t('notifications.complete') });
-            if (onPrintFailed) enabledEvents.push({ key: 'on_print_failed', label: t('notifications.failed') });
-            if (onPrintStopped) enabledEvents.push({ key: 'on_print_stopped', label: t('notifications.stopped') });
-            if (onPrintPaused) enabledEvents.push({ key: 'on_print_paused', label: t('notifications.paused') });
-            if (onPrintResumed) enabledEvents.push({ key: 'on_print_resumed', label: t('notifications.resumed') });
-            if (onPrintProgress) enabledEvents.push({ key: 'on_print_progress', label: t('notifications.progress') });
-            if (onBedCooled) enabledEvents.push({ key: 'on_bed_cooled', label: t('notifications.bedCooled') });
-            if (onFirstLayerComplete) enabledEvents.push({ key: 'on_first_layer_complete', label: t('notifications.firstLayerCompleteLabel') });
-            if (onPrinterOffline) enabledEvents.push({ key: 'on_printer_offline', label: t('notifications.offline') });
-            if (onPrinterError) enabledEvents.push({ key: 'on_printer_error', label: t('notifications.error') });
-            if (onAiFailureDetection) enabledEvents.push({ key: 'on_ai_failure_detection', label: t('notifications.aiFailureDetection') });
-            if (onFilamentLow) enabledEvents.push({ key: 'on_filament_low', label: t('notifications.lowFilament') });
-            if (onFilamentRunout) enabledEvents.push({ key: 'on_filament_runout', label: t('notifications.filamentRunout') });
-            if (onFilamentDeficit) enabledEvents.push({ key: 'on_filament_deficit', label: t('notifications.filamentDeficit') });
-            if (onMaintenanceDue) enabledEvents.push({ key: 'on_maintenance_due', label: t('notifications.maintenance') });
-            if (onStockReorderAlert) enabledEvents.push({ key: 'on_stock_reorder_alert', label: t('notifications.stockReorderAlert') });
-            if (onStockBreakAlert) enabledEvents.push({ key: 'on_stock_break_alert', label: t('notifications.stockBreakAlert') });
+            const enabledEvents = (providerEvents ?? [])
+              .filter((event) => eventsWithDefaults[event.flag])
+              .map((event) => ({ key: event.flag, label: eventLabel(event) }));
 
             if (enabledEvents.length === 0) return null;
 

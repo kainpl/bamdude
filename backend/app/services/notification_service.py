@@ -23,6 +23,7 @@ from backend.app.core.config import APP_VERSION
 from backend.app.models.notification import NotificationDigestQueue, NotificationLog, NotificationProvider
 from backend.app.models.notification_template import NotificationTemplate
 from backend.app.services import notification_inbox
+from backend.app.services.notification_events import SENSOR_ALERT_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -2525,14 +2526,11 @@ class NotificationService:
     # templates on purpose: the raise and its all-clear are never divided —
     # switching off the all-clear while keeping the alarm is the AMS fault this
     # avoids — while "tell me about the room" versus "tell me about the device"
-    # is a division people do make.
-    _SENSOR_ALERT_FIELDS = {
-        "sensor_above_max": "on_sensor_threshold",
-        "sensor_below_min": "on_sensor_threshold",
-        "sensor_back_in_range": "on_sensor_threshold",
-        "sensor_silent": "on_sensor_silent",
-        "sensor_speaking_again": "on_sensor_silent",
-    }
+    # is a division people do make. The map itself lives in
+    # ``notification_events`` since 2026-09-18, because ``GET /notifications/events``
+    # needs the same answer and a second copy is exactly the drift that endpoint
+    # exists to end.
+    _SENSOR_ALERT_FIELDS = SENSOR_ALERT_FIELDS
 
     async def on_sensor_alert(self, event, db: AsyncSession):
         """One sensor alert, raised or cleared.

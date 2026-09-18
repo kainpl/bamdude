@@ -8288,6 +8288,7 @@ export default {
     signalGroupId: 'ID групи',
     signalRecipientsRequired: 'Потрібен принаймні один номер отримувача',
     signalGroupRequired: 'Потрібен ID групи',
+    eventsLoadFailed: 'Не вдалося завантажити перелік подій, тож підписки зараз не відредагувати.',
     // NotificationProviderCard
     lastSuccess: 'Останнє: {{date}}',
     error: 'Помилка',

@@ -21,7 +21,9 @@ from backend.app.schemas.notification import (
     NotificationProviderUpdate,
     NotificationTestRequest,
     NotificationTestResponse,
+    ProviderEventInfo,
 )
+from backend.app.services.notification_events import EVENT_CATALOG, catalog_rows, events_of_flag
 from backend.app.services.notification_service import notification_service
 
 logger = logging.getLogger(__name__)
@@ -208,6 +210,39 @@ async def test_all_notification_providers(
 # ============================================================================
 # Notification Log Routes (must come BEFORE /{provider_id} routes)
 # ============================================================================
+
+
+@router.get("/events", response_model=list[ProviderEventInfo])
+async def list_provider_events(
+    _: User | None = RequirePermission(Permission.NOTIFICATIONS_READ),
+):
+    """Every event a provider can subscribe to, in catalog display order.
+
+    ⚠️ Declared before ``GET /{provider_id}`` on purpose: FastAPI matches in
+    declaration order, so the other way round "events" is read as a provider id
+    and the route answers 422. ``/logs`` sits above for the same reason.
+
+    The frontend renders its toggles from this, so a flag added to
+    ``PROVIDER_EVENT_DEFAULTS`` appears in the UI with no frontend change.
+    """
+    order = {event: i for i, (event, _meta) in enumerate(catalog_rows())}
+    severity_rank = {"error": 0, "warning": 1, "info": 2}
+    rows: list[tuple[int, ProviderEventInfo]] = []
+    for flag, default in PROVIDER_EVENT_DEFAULTS.items():
+        events = events_of_flag(flag)
+        metas = [EVENT_CATALOG[e] for e in events]
+        # An aggregate takes the strictest severity of its events: the row is one
+        # switch, and it must look as serious as the worst thing it can silence.
+        severity = min((m.severity for m in metas), key=lambda s: severity_rank.get(s, 9), default="info")
+        group = metas[0].group if metas else "printer"
+        rows.append(
+            (
+                min((order[e] for e in events), default=len(order)),
+                ProviderEventInfo(flag=flag, event_types=events, group=group, severity=severity, default=default),
+            )
+        )
+    rows.sort(key=lambda r: r[0])
+    return [info for _rank, info in rows]
 
 
 @router.get("/logs", response_model=list[NotificationLogResponse])

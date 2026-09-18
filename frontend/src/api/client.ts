@@ -9470,6 +9470,7 @@ export const api = {
 
   // Notification Providers
   getNotificationProviders: () => request<NotificationProvider[]>('/notifications/'),
+  getNotificationEvents: () => request<ProviderEventInfo[]>('/notifications/events'),
   getNotificationProvider: (id: number) => request<NotificationProvider>(`/notifications/${id}`),
   createNotificationProvider: (data: NotificationProviderCreate) =>
     request<NotificationProvider>('/notifications/', {
@@ -11644,6 +11645,24 @@ export interface TelegramChatUpdate {
   quiet_hours_end?: string | null;
   progress_min_duration_minutes?: number | null;
   printer_ids?: number[] | null;
+}
+
+/**
+ * One event a notification provider can subscribe to, as `GET /notifications/events`
+ * returns it. The provider form and the provider card render their toggles from this
+ * list instead of keeping their own — theirs had drifted to 18 of the 34 flags.
+ */
+export interface ProviderEventInfo {
+  /** The provider column, e.g. `on_print_start`. */
+  flag: string;
+  /** Catalog events this flag governs — one, or several for the sensor aggregates. */
+  event_types: string[];
+  /** Catalog group: print / printer / filament / ams / queue / inventory / sensors. */
+  group: string;
+  /** Catalog severity; for an aggregate, the strictest of its events. */
+  severity: string;
+  /** Whether a new provider subscribes to it. */
+  default: boolean;
 }
 
 export interface NotifyEventInfo {

@@ -309,6 +309,24 @@ class SignalConfig(BaseModel):
     )
 
 
+class ProviderEventInfo(BaseModel):
+    """One event a provider can subscribe to, as the UI needs to render it.
+
+    The provider form and the provider card build their toggles from this list
+    rather than from a list of their own — three hand-kept copies on the
+    frontend had drifted to 18 of the 34 flags, and six of the missing ones
+    default to ON, so a new provider sent events nobody had seen offered.
+    """
+
+    flag: str = Field(..., description="The provider column, e.g. 'on_print_start'")
+    event_types: list[str] = Field(
+        ..., description="Catalog events this flag governs — one, or several for the sensor aggregates"
+    )
+    group: str = Field(..., description="Catalog group: print / printer / filament / ams / queue / inventory / sensors")
+    severity: str = Field(..., description="Catalog severity; for an aggregate, the strictest of its events")
+    default: bool = Field(..., description="Whether a new provider subscribes to it")
+
+
 # Notification Log schemas
 class NotificationLogResponse(BaseModel):
     """Schema for notification log API responses."""
