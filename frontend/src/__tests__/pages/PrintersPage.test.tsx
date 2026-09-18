@@ -683,4 +683,27 @@ describe('PrintersPage', () => {
       expect(screen.queryByText('01.01.03.00')).not.toBeInTheDocument();
     });
   });
+
+  it('opens the card menu outside the card, where nothing can clip it', async () => {
+    // The kebab used to draw its panel inside the card: fourteen entries ran
+    // past the card's bottom edge and were cut off, and the next card down
+    // could cover the rest. It now goes through CardActionMenu — a portal on
+    // document.body, position: fixed — like every other card menu here.
+    const view = render(<PrintersPage />);
+    try {
+      const card = await waitFor(() => {
+        const el = document.getElementById('printer-1');
+        expect(el).not.toBeNull();
+        return el!;
+      });
+      await userEvent.click(within(card).getByRole('button', { name: 'Actions' }));
+      const panel = await screen.findByTestId('printer-menu-1-panel');
+      expect(card.contains(panel)).toBe(false);
+      expect(panel.style.position).toBe('fixed');
+      expect(within(panel).getAllByRole('menuitem').length).toBeGreaterThanOrEqual(10);
+    } finally {
+      view.unmount();
+    }
+  });
+
 });

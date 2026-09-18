@@ -8,8 +8,20 @@ interface CardActionMenuProps {
   label: string;
   /** Optional hook for tests that open the menu by id rather than by name. */
   testId?: string;
-  /** Menu width in px. Fixed, because the panel is positioned, not laid out. */
-  width?: number;
+  /** Menu width in px, or `max-content` for a menu whose longest label is in
+   *  the reader's language and cannot be known here. Fixed either way, because
+   *  the panel is positioned, not laid out. */
+  width?: number | 'max-content';
+  /** How tall the panel is assumed to be when deciding to flip it above the
+   *  trigger. The default suits a five-item menu; a card with a dozen entries
+   *  passes its own, or it opens downward off a short viewport. */
+  estimatedHeight?: number;
+  /** The trigger's classes, for a card whose sibling icon buttons are styled
+   *  differently from the default and would otherwise sit next to an odd one. */
+  triggerClassName?: string;
+  /** The trigger icon's classes — a card that scales its icons through a CSS
+   *  variable passes the same expression its neighbours use. */
+  iconClassName?: string;
   /** The items. Called with `close` so each item shuts the menu itself — the
    *  panel cannot close on a bubbling click, being in another tree. */
   children: (close: () => void) => ReactNode;
@@ -38,11 +50,19 @@ interface CardActionMenuProps {
  * walked into the page BEHIND the panel — the menu was announced and then
  * unreachable.
  */
-export function CardActionMenu({ label, testId, width = 180, children }: CardActionMenuProps) {
+export function CardActionMenu({
+  label,
+  testId,
+  width = 180,
+  estimatedHeight,
+  triggerClassName = 'p-1.5 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-white transition-colors',
+  iconClassName = 'w-4 h-4',
+  children,
+}: CardActionMenuProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const coords = useAnchoredPosition(triggerRef, open);
+  const coords = useAnchoredPosition(triggerRef, open, estimatedHeight);
 
   /** The items, in DOM order, as the roving keys see them. Read on every press
    *  rather than kept in state: what a card offers depends on permissions and
@@ -140,9 +160,9 @@ export function CardActionMenu({ label, testId, width = 180, children }: CardAct
         aria-expanded={open}
         aria-label={label}
         onClick={() => setOpen((v) => !v)}
-        className="p-1.5 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-white transition-colors"
+        className={triggerClassName}
       >
-        <MoreVertical className="w-4 h-4" />
+        <MoreVertical className={iconClassName} />
       </button>
       {open
         && createPortal(
@@ -160,7 +180,10 @@ export function CardActionMenu({ label, testId, width = 180, children }: CardAct
                 width,
                 visibility: coords ? 'visible' : 'hidden',
               }}
-              className="z-[60] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 whitespace-nowrap"
+              // Never taller than the viewport: a long menu on a short screen
+              // scrolls inside its own panel rather than running off the bottom
+              // where the flip could not save it (no room above either).
+              className="z-[60] max-h-[calc(100vh-1rem)] overflow-y-auto bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 whitespace-nowrap"
             >
               {children(close)}
             </div>
@@ -182,11 +205,15 @@ export function CardActionMenuItem({
   onSelect,
   danger,
   disabled,
+  title,
   children,
 }: {
   onSelect: () => void;
   danger?: boolean;
   disabled?: boolean;
+  /** Why the row is disabled, shown on hover — the permission or the state
+   *  that stands in the way, so a greyed entry is an explanation, not a riddle. */
+  title?: string;
   children: ReactNode;
 }) {
   return (
@@ -195,6 +222,7 @@ export function CardActionMenuItem({
       role="menuitem"
       onClick={onSelect}
       disabled={disabled}
+      title={title}
       className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-bambu-dark disabled:opacity-50 disabled:hover:bg-transparent ${
         danger ? 'text-red-500' : 'text-white'
       }`}

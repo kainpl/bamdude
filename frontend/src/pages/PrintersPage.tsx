@@ -127,6 +127,7 @@ export interface SpoolmanSlotAssignmentRow {
 }
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
+import { CardActionMenu, CardActionMenuItem } from '../components/CardActionMenu';
 import { Modal } from '../components/Modal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { FileManagerModal } from '../components/FileManagerModal';
@@ -1858,7 +1859,6 @@ function PrinterCard({
   const navigate = useNavigate();
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
-  const [showMenu, setShowMenu] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteArchives, setDeleteArchives] = useState(true);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -3454,239 +3454,194 @@ function PrinterCard({
                   <Maximize2 className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
                 </Button>
               )}
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowMenu(!showMenu)}
-                className={compact ? '!p-1.5 !rounded-md' : undefined}
+              {/* The kebab. Rendered through the shared CardActionMenu: a portal
+                  on document.body, position: fixed from the kebab's own box,
+                  recomputed on scroll, flipped above when the bottom is close.
+                  The hand-rolled `absolute` panel it replaces lived inside the
+                  card and was cut off at the card's bottom edge — on the
+                  Printers grid a fourteen-item menu is taller than the card. */}
+              <CardActionMenu
+                label={t('common.actions')}
+                testId={`printer-menu-${printer.id}`}
+                width="max-content"
+                estimatedHeight={560}
+                triggerClassName={`inline-flex items-center justify-center rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-bambu-dark bg-transparent hover:bg-bambu-dark-tertiary text-bambu-gray-light hover:text-white text-sm min-h-[44px] md:min-h-0 ${compact ? 'p-1.5 rounded-md' : 'px-3 py-1.5'}`}
+                iconClassName="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]"
               >
-                <MoreVertical className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-              </Button>
-              {showMenu && (
-                <>
-                {/* not-a-modal: menu */}
-                <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-                {/* Anchor by the top-right corner of the cluster (kebab's
-                    own top edge): ``top-full`` was the previous default
-                    via static-positioned ``mt-2``, which let the dropdown
-                    push downward past the viewport bottom in the expand
-                    popup (and the small visible portion at the top
-                    suggested it was being clipped). ``top-0`` aligns the
-                    dropdown's top with the kebab's top so the menu unfurls
-                    from the corner — same direction (downward) but the
-                    visual origin is the corner, not the button's bottom. */}
-                <div className="absolute right-0 top-0 max-w-58 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-20 whitespace-nowrap">
-                  {/* Info & Maintenance */}
-                  <button
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
-                    onClick={() => {
-                      setShowPrinterInfo(true);
-                      setShowMenu(false);
-                    }}
-                  >
-                    <Info className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                    {t('printers.printerInformation')}
-                  </button>
-                  {/* ⚠️ There is no separate "start recording" item here any more.
-                      Two MQTT rows in one kebab were one thing wearing two
-                      labels: starting a recording and reading it are the same
-                      job, and the dialog below does both. The badge on the card
-                      is the second way in, for a recording already running. */}
-                  {/* Maintenance Mode toggle (#1476) — leverages backend is_active flag */}
-                  <button
-                    className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
-                      hasPermission('printers:update')
-                        ? 'hover:bg-bambu-dark-tertiary'
-                        : 'opacity-50 cursor-not-allowed'
-                    }`}
-                    disabled={maintenanceMutation.isPending || !hasPermission('printers:update')}
-                    onClick={() => {
-                      if (!hasPermission('printers:update')) return;
-                      setShowMenu(false);
-                      if (printer.is_active !== false) {
-                        handleEnterMaintenance();
-                      } else {
-                        maintenanceMutation.mutate(true);
-                      }
-                    }}
-                    title={!hasPermission('printers:update') ? t('printers.permission.noEdit') : undefined}
-                  >
-                    <Wrench className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                    {printer.is_active !== false
-                      ? t('printers.maintenance.menuEnter')
-                      : t('printers.maintenance.menuExit')}
-                  </button>
-                  <button
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
-                    onClick={() => {
-                      navigate(`/maintenance?printer=${printer.id}`);
-                      setShowMenu(false);
-                    }}
-                  >
-                    <Wrench className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                    {t('printers.maintenanceHistory')}
-                  </button>
-                  {hasPermission('printers:delete') && (
-                    <button
-                      className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
-                        isPrintingOrPaused ? 'opacity-50 cursor-not-allowed' : 'hover:bg-bambu-dark-tertiary'
-                      }`}
-                      disabled={isPrintingOrPaused || archiveMutation.isPending}
-                      onClick={() => {
-                        if (isPrintingOrPaused) return;
-                        setShowMenu(false);
-                        setConfirmArchive(true);
-                      }}
-                      title={isPrintingOrPaused ? t('printers.archive.blockedPrinting') : undefined}
-                    >
-                      <Archive className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                      {t('printers.archive.action')}
-                    </button>
-                  )}
-                  <div className="mx-3 my-1 border-t border-bambu-dark-tertiary" />
-                  {/* Calibration & Macros */}
-                  <button
-                    className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
-                      !hasPermission('printers:control') || !calibrationAvailable ? 'opacity-50 cursor-not-allowed' : ''
-                    }`}
-                    title={calibrationAvailable ? undefined : t('printers.calibration.requiresIdle')}
-                    onClick={() => {
-                      if (!hasPermission('printers:control') || !calibrationAvailable) return;
-                      setShowCalibration(true);
-                      setShowMenu(false);
-                    }}
-                  >
-                    <Wrench className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                    {t('printers.calibration.menuItem')}
-                  </button>
-                  <button
-                    className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
-                      !hasPermission('printers:update') ? 'opacity-50 cursor-not-allowed' : ''
-                    }`}
-                    onClick={() => {
-                      if (!hasPermission('printers:update')) return;
-                      setPrinterSettingsOpen(true);
-                      setShowMenu(false);
-                    }}
-                  >
-                    <Settings className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                    {t('printerSettings.menuItem')}
-                  </button>
-                  {useSlicerApi && (
-                    <>
-                      <button
-                        className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
-                          !hasPermission('printers:update') || !calibrationAvailable ? 'opacity-50 cursor-not-allowed' : ''
-                        }`}
-                        title={calibrationAvailable ? undefined : t('printers.calibration.requiresIdle')}
-                        onClick={() => {
-                          if (!hasPermission('printers:update') || !calibrationAvailable) return;
-                          setFilamentCaliOpen(true);
-                          setShowMenu(false);
-                        }}
-                      >
-                        <Droplet className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                        {t('filamentCali.menuItem')}
-                      </button>
-                      <button
-                        className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
-                          !hasPermission('printers:update') ? 'opacity-50 cursor-not-allowed' : ''
-                        }`}
-                        onClick={() => {
-                          if (!hasPermission('printers:update')) return;
-                          setCalibrationHistoryOpen(true);
-                          setShowMenu(false);
-                        }}
-                      >
-                        <Droplet className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                        {t('filamentCali.history.menuItem')}
-                      </button>
-                    </>
-                  )}
-                  {hasMatchingMacros && (
-                    <button
-                      className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
-                        !hasPermission('printers:control') ? 'opacity-50 cursor-not-allowed' : ''
-                      }`}
-                      onClick={() => {
-                        if (!hasPermission('printers:control')) return;
-                        setShowMacrosMenu(true);
-                        setShowMenu(false);
+                {(close) => (
+                  <>
+                    {/* Info & Maintenance */}
+                    <CardActionMenuItem
+                      onSelect={() => {
+                        setShowPrinterInfo(true);
+                        close();
                       }}
                     >
-                      <Play className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                      {t('printers.macros')}
-                    </button>
-                  )}
-                  <div className="mx-3 my-1 border-t border-bambu-dark-tertiary" />
-                  {/* Connection & Debug */}
-                  <button
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
-                    onClick={() => {
-                      connectMutation.mutate();
-                      setShowMenu(false);
-                    }}
-                  >
-                    <RefreshCw className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                    {t('printers.reconnect')}
-                  </button>
-                  <button
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
-                    onClick={() => {
-                      setShowMQTTDebug(true);
-                      setShowMenu(false);
-                    }}
-                  >
-                    <Terminal className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                    {t('printers.mqttDebug')}
-                  </button>
-                  <button
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
-                    onClick={() => {
-                      setShowDiagnostic(true);
-                      setShowMenu(false);
-                    }}
-                  >
-                    <Stethoscope className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                    {t('diagnostic.runButton')}
-                  </button>
-                  <div className="mx-3 my-1 border-t border-bambu-dark-tertiary" />
-                  {/* Edit & Delete */}
-                  <button
-                    className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
-                      hasPermission('printers:update')
-                        ? 'hover:bg-bambu-dark-tertiary'
-                        : 'opacity-50 cursor-not-allowed'
-                    }`}
-                    onClick={() => {
-                      if (!hasPermission('printers:update')) return;
-                      setShowEditModal(true);
-                      setShowMenu(false);
-                    }}
-                    title={!hasPermission('printers:update') ? t('printers.permission.noEdit') : undefined}
-                  >
-                    <Pencil className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                    {t('common.edit')}
-                  </button>
-                  <button
-                    className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
-                      hasPermission('printers:delete')
-                        ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark-tertiary'
-                        : 'text-red-700/50 dark:text-red-400/50 cursor-not-allowed'
-                    }`}
-                    onClick={() => {
-                      if (!hasPermission('printers:delete')) return;
-                      setShowDeleteConfirm(true);
-                      setShowMenu(false);
-                    }}
-                    title={!hasPermission('printers:delete') ? t('printers.permission.noDelete') : undefined}
-                  >
-                    <Trash2 className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
-                    {t('common.delete')}
-                  </button>
-                </div>
-                </>
-              )}
+                      <Info className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                      {t('printers.printerInformation')}
+                    </CardActionMenuItem>
+                    {/* ⚠️ There is no separate "start recording" item here any more.
+                        Two MQTT rows in one kebab were one thing wearing two
+                        labels: starting a recording and reading it are the same
+                        job, and the dialog below does both. The badge on the card
+                        is the second way in, for a recording already running. */}
+                    {/* Maintenance Mode toggle (#1476) — leverages backend is_active flag */}
+                    <CardActionMenuItem
+                      disabled={maintenanceMutation.isPending || !hasPermission('printers:update')}
+                      title={!hasPermission('printers:update') ? t('printers.permission.noEdit') : undefined}
+                      onSelect={() => {
+                        close();
+                        if (printer.is_active !== false) {
+                          handleEnterMaintenance();
+                        } else {
+                          maintenanceMutation.mutate(true);
+                        }
+                      }}
+                    >
+                      <Wrench className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                      {printer.is_active !== false
+                        ? t('printers.maintenance.menuEnter')
+                        : t('printers.maintenance.menuExit')}
+                    </CardActionMenuItem>
+                    <CardActionMenuItem
+                      onSelect={() => {
+                        navigate(`/maintenance?printer=${printer.id}`);
+                        close();
+                      }}
+                    >
+                      <Wrench className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                      {t('printers.maintenanceHistory')}
+                    </CardActionMenuItem>
+                    {hasPermission('printers:delete') && (
+                      <CardActionMenuItem
+                        disabled={isPrintingOrPaused || archiveMutation.isPending}
+                        title={isPrintingOrPaused ? t('printers.archive.blockedPrinting') : undefined}
+                        onSelect={() => {
+                          close();
+                          setConfirmArchive(true);
+                        }}
+                      >
+                        <Archive className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                        {t('printers.archive.action')}
+                      </CardActionMenuItem>
+                    )}
+                    <div className="mx-3 my-1 border-t border-bambu-dark-tertiary" />
+                    {/* Calibration & Macros */}
+                    <CardActionMenuItem
+                      disabled={!hasPermission('printers:control') || !calibrationAvailable}
+                      title={calibrationAvailable ? undefined : t('printers.calibration.requiresIdle')}
+                      onSelect={() => {
+                        setShowCalibration(true);
+                        close();
+                      }}
+                    >
+                      <Wrench className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                      {t('printers.calibration.menuItem')}
+                    </CardActionMenuItem>
+                    <CardActionMenuItem
+                      disabled={!hasPermission('printers:update')}
+                      onSelect={() => {
+                        setPrinterSettingsOpen(true);
+                        close();
+                      }}
+                    >
+                      <Settings className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                      {t('printerSettings.menuItem')}
+                    </CardActionMenuItem>
+                    {useSlicerApi && (
+                      <>
+                        <CardActionMenuItem
+                          disabled={!hasPermission('printers:update') || !calibrationAvailable}
+                          title={calibrationAvailable ? undefined : t('printers.calibration.requiresIdle')}
+                          onSelect={() => {
+                            setFilamentCaliOpen(true);
+                            close();
+                          }}
+                        >
+                          <Droplet className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                          {t('filamentCali.menuItem')}
+                        </CardActionMenuItem>
+                        <CardActionMenuItem
+                          disabled={!hasPermission('printers:update')}
+                          onSelect={() => {
+                            setCalibrationHistoryOpen(true);
+                            close();
+                          }}
+                        >
+                          <Droplet className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                          {t('filamentCali.history.menuItem')}
+                        </CardActionMenuItem>
+                      </>
+                    )}
+                    {hasMatchingMacros && (
+                      <CardActionMenuItem
+                        disabled={!hasPermission('printers:control')}
+                        onSelect={() => {
+                          setShowMacrosMenu(true);
+                          close();
+                        }}
+                      >
+                        <Play className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                        {t('printers.macros')}
+                      </CardActionMenuItem>
+                    )}
+                    <div className="mx-3 my-1 border-t border-bambu-dark-tertiary" />
+                    {/* Connection & Debug */}
+                    <CardActionMenuItem
+                      onSelect={() => {
+                        connectMutation.mutate();
+                        close();
+                      }}
+                    >
+                      <RefreshCw className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                      {t('printers.reconnect')}
+                    </CardActionMenuItem>
+                    <CardActionMenuItem
+                      onSelect={() => {
+                        setShowMQTTDebug(true);
+                        close();
+                      }}
+                    >
+                      <Terminal className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                      {t('printers.mqttDebug')}
+                    </CardActionMenuItem>
+                    <CardActionMenuItem
+                      onSelect={() => {
+                        setShowDiagnostic(true);
+                        close();
+                      }}
+                    >
+                      <Stethoscope className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                      {t('diagnostic.runButton')}
+                    </CardActionMenuItem>
+                    <div className="mx-3 my-1 border-t border-bambu-dark-tertiary" />
+                    {/* Edit & Delete */}
+                    <CardActionMenuItem
+                      disabled={!hasPermission('printers:update')}
+                      title={!hasPermission('printers:update') ? t('printers.permission.noEdit') : undefined}
+                      onSelect={() => {
+                        setShowEditModal(true);
+                        close();
+                      }}
+                    >
+                      <Pencil className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                      {t('common.edit')}
+                    </CardActionMenuItem>
+                    <CardActionMenuItem
+                      danger
+                      disabled={!hasPermission('printers:delete')}
+                      title={!hasPermission('printers:delete') ? t('printers.permission.noDelete') : undefined}
+                      onSelect={() => {
+                        setShowDeleteConfirm(true);
+                        close();
+                      }}
+                    >
+                      <Trash2 className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                      {t('common.delete')}
+                    </CardActionMenuItem>
+                  </>
+                )}
+              </CardActionMenu>
               </div>
               {/* Collapse: closes the expand popup. Rightmost, after the
                   kebab, and OUTSIDE the ``relative`` wrapper above so the

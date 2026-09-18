@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- **The printer card's menu is no longer cut off by the card.** The "…" menu on a printer card was drawn inside the card, so on the Printers grid its fourteen entries ran past the card's bottom edge and the last ones were clipped; the next card down could cover it too. It now opens the way every other card menu in the app does — outside the card, anchored to the button, flipped above it when the screen ends, and scrolling inside itself on a short screen — with the same keyboard behaviour: arrows walk the entries, Escape closes and returns focus, disabled entries still say why on hover.
+
 - **The stock forecast no longer flickers by a day between two refreshes.** A SKU's days-remaining could read 49 on one request and 50 on the next with nothing changed on the shelf: the consumption rate is a weighted mean, and in floating point a mean of identical observations misses its own value by one part in ten quadrillion for about three per cent of the moments in a day — enough for a whole-day count taken at the boundary to drop a day. Day counts are now taken with a tolerance far below anything a spool can consume, so the number depends on the filament, not on the second.
 
 - **The notification centre pages like every other table.** It grew by a Show-more button while Archives, Inventory and the file manager all offered numbered pages and a size selector; it now uses the same bar, remembers the size you pick, and starts at 24 like they do. Changing a filter returns you to the first page instead of leaving you on a page the narrower result no longer has.
