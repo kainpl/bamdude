@@ -161,3 +161,132 @@ describe('AddNotificationModal — Home Assistant custom data', () => {
     expect(screen.getByText(/valid JSON object/i)).toBeInTheDocument();
   });
 });
+
+/**
+ * Signal, via a self-hosted signal-cli-rest-api instance. Its recipients
+ * don't fit the generic scalar-field config: signal-cli-rest-api can't mix
+ * individual numbers and a group ID in one request, so the form is a type
+ * switch between a dynamic list of numbers and a single group field, and
+ * only the active shape is required to be non-empty.
+ */
+describe('AddNotificationModal — Signal', () => {
+  const signalProvider = (config: Record<string, unknown>) => buildProvider('signal', 'My Signal', config);
+
+  it('offers Signal in the provider list and renders its fields', async () => {
+    render(
+      <AddNotificationModal
+        provider={signalProvider({
+          server: 'http://localhost:8080',
+          sender_number: '+15550000000',
+          recipient_type: 'numbers',
+          numbers: '+15551111111',
+        })}
+        onClose={() => undefined}
+      />,
+    );
+
+    await screen.findByDisplayValue('My Signal');
+    expect(screen.getByRole('option', { name: 'Signal CLI API' })).toBeInTheDocument();
+    expect(screen.getByDisplayValue('http://localhost:8080')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('+15550000000')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('+15551111111')).toBeInTheDocument();
+  });
+
+  it('switches from a numbers list to a single Group ID field', async () => {
+    const user = userEvent.setup();
+    render(
+      <AddNotificationModal
+        provider={signalProvider({
+          server: 'http://localhost:8080',
+          sender_number: '+15550000000',
+          recipient_type: 'numbers',
+          numbers: '+15551111111',
+        })}
+        onClose={() => undefined}
+      />,
+    );
+
+    await screen.findByDisplayValue('My Signal');
+    const recipientTypeRow = screen.getByText('Recipient Type').closest('div')!;
+    await user.selectOptions(within(recipientTypeRow).getByRole('combobox'), 'group');
+
+    expect(screen.queryByDisplayValue('+15551111111')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('group.XXXXXXXX==')).toBeInTheDocument();
+  });
+
+  it('adds a number row and saves the joined list', async () => {
+    let captured: { config: Record<string, unknown> } | null = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = (await request.json()) as { config: Record<string, unknown> };
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AddNotificationModal
+        provider={signalProvider({
+          server: 'http://localhost:8080',
+          sender_number: '+15550000000',
+          recipient_type: 'numbers',
+          numbers: '+15551111111',
+        })}
+        onClose={onClose}
+      />,
+    );
+
+    await screen.findByDisplayValue('My Signal');
+    await user.click(screen.getByRole('button', { name: /add number/i }));
+    const numberInputs = screen.getAllByPlaceholderText('+15551234567');
+    await user.type(numberInputs[numberInputs.length - 1], '+15552222222');
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured!.config).toMatchObject({ numbers: '+15551111111,+15552222222' });
+  });
+
+  it('refuses to save without any recipient number', async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AddNotificationModal
+        provider={signalProvider({
+          server: 'http://localhost:8080',
+          sender_number: '+15550000000',
+          recipient_type: 'numbers',
+          numbers: '',
+        })}
+        onClose={onClose}
+      />,
+    );
+
+    await screen.findByDisplayValue('My Signal');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('refuses to save without a Group ID in group mode', async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AddNotificationModal
+        provider={signalProvider({
+          server: 'http://localhost:8080',
+          sender_number: '+15550000000',
+          recipient_type: 'group',
+          group_id: '',
+        })}
+        onClose={onClose}
+      />,
+    );
+
+    await screen.findByDisplayValue('My Signal');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});

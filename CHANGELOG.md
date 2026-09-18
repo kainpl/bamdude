@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Added
+
+- **Signal CLI API, for notifications through the messenger you probably already trust with everything else.** A new notification provider talking to a self-hosted [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) instance — named for what it actually is, since it isn't Signal's own API. Point BamDude at its URL and the sender number registered with signal-cli, then choose either a list of recipient numbers or a single group ID. signal-cli-rest-api can't mix the two in one request, so the form only ever asks for one shape at a time. Print-finish photos attach the same way they do for webhook and Discord.
+
 ## [0.5.5] - 2026-08-28
 
 Image: `ghcr.io/kainpl/bamdude:0.5.5` / `kainpl/bamdude:0.5.5` (`:latest` tracks this).

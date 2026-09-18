@@ -7052,7 +7052,8 @@ export default {
       email: 'Email',
       discord: 'Discord',
       webhook: 'Webhook',
-      homeassistant: 'Home Assistant'
+      homeassistant: 'Home Assistant',
+      signal: 'Signal CLI API'
     },
     // Provider descriptions
     providerDescriptions: {
@@ -7064,8 +7065,19 @@ export default {
       bark: 'iOS push notifications via Bark (self-hostable)',
       callmebot: 'Free WhatsApp notifications via CallMeBot',
       webhook: 'Generic HTTP POST to any URL',
-      homeassistant: 'Persistent notifications in Home Assistant dashboard'
+      homeassistant: 'Persistent notifications in Home Assistant dashboard',
+      signal: 'Signal messages via a self-hosted signal-cli-rest-api instance'
     },
+    // Signal recipients
+    signalRecipientType: 'Recipient Type',
+    signalRecipientTypeNumbers: 'Phone Numbers',
+    signalRecipientTypeGroup: 'Group ID',
+    signalNumbers: 'Recipient Numbers',
+    signalAddNumber: 'Add number',
+    signalRemoveNumber: 'Remove number',
+    signalGroupId: 'Group ID',
+    signalRecipientsRequired: 'At least one recipient number is required',
+    signalGroupRequired: 'Group ID is required',
     // NotificationProviderCard
     lastSuccess: 'Last: {{date}}',
     error: 'Error',

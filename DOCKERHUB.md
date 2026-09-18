@@ -55,7 +55,7 @@ Open **http://localhost:8000** and add your printer.
 - **Print Archive** — Automatic 3MF archiving, 3D model viewer, timelapse editor, re-print with AMS mapping
 - **Print Scheduling** — Per-printer queues, staggered start for farms, error-pause, clear plate confirmation
 - **Smart Automation** — Smart plug control, auto power-on/off, energy monitoring, maintenance reminders
-- **Notifications** — Telegram, Discord, Email, Pushover, ntfy with per-chat settings, quiet hours, actionable buttons
+- **Notifications** — Telegram, Discord, Email, Pushover, ntfy, Signal CLI API (self-hosted via signal-cli-rest-api) with per-chat settings, quiet hours, actionable buttons
 - **File Manager** — Upload sliced files, folder structure, external mounts, print directly
 - **Integrations** — Spoolman, MQTT, Prometheus, Bambu Cloud, REST API, Home Assistant
 - **Virtual Printer** — Archive, Review, Queue, or Proxy mode

@@ -314,7 +314,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 
 ### Notifications
 - Telegram (auto-restart bot on config change), Discord, Email, Pushover, ntfy, CallMeBot, **Bark** (free iOS push, no account)
-- Home Assistant, custom webhooks
+- Home Assistant, custom webhooks, **Signal CLI API** (self-hosted via signal-cli-rest-api, numbers or a group)
 - Customizable message templates (MarkdownV2 editor)
 - Per-chat quiet hours & daily digest (Telegram)
 - Actionable buttons: clear plate, mark maintenance done, pause/stop on progress

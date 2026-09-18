@@ -7084,7 +7084,8 @@ export default {
       email: 'Email',
       discord: 'Discord',
       webhook: 'Webhook',
-      homeassistant: 'Home Assistant'
+      homeassistant: 'Home Assistant',
+      signal: 'Signal CLI API'
     },
     // Provider descriptions
     providerDescriptions: {
@@ -7096,8 +7097,19 @@ export default {
       bark: 'iOS push-сповіщення через Bark (можна хостити самостійно)',
       callmebot: 'Безкоштовні WhatsApp сповіщення через CallMeBot',
       webhook: 'Загальний HTTP POST на будь-який URL',
-      homeassistant: 'Постійні сповіщення у панелі Home Assistant'
+      homeassistant: 'Постійні сповіщення у панелі Home Assistant',
+      signal: 'Повідомлення Signal через власний сервер signal-cli-rest-api'
     },
+    // Signal recipients
+    signalRecipientType: 'Тип отримувача',
+    signalRecipientTypeNumbers: 'Номери телефонів',
+    signalRecipientTypeGroup: 'ID групи',
+    signalNumbers: 'Номери отримувачів',
+    signalAddNumber: 'Додати номер',
+    signalRemoveNumber: 'Видалити номер',
+    signalGroupId: 'ID групи',
+    signalRecipientsRequired: 'Потрібен принаймні один номер отримувача',
+    signalGroupRequired: 'Потрібен ID групи',
     // NotificationProviderCard
     lastSuccess: 'Останнє: {{date}}',
     error: 'Помилка',

@@ -3572,7 +3572,7 @@ export interface SlotPresetMapping {
 
 
 // Notification Provider types
-export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'bark' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant';
+export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'bark' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant' | 'signal';
 
 export interface NotificationProvider {
   id: number;

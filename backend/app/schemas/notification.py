@@ -19,6 +19,7 @@ class ProviderType(StrEnum):
     DISCORD = "discord"
     WEBHOOK = "webhook"
     HOMEASSISTANT = "homeassistant"
+    SIGNAL = "signal"
 
 
 class NotificationProviderBase(BaseModel):
@@ -278,6 +279,25 @@ class EmailConfig(BaseModel):
     from_email: str = Field(..., description="From email address")
     to_email: str = Field(..., description="Recipient email address")
     use_tls: bool = Field(default=True, description="Use TLS encryption")
+
+
+class SignalConfig(BaseModel):
+    """Signal configuration (via a self-hosted signal-cli-rest-api instance)."""
+
+    server: str = Field(..., description="Base URL of your signal-cli-rest-api instance, e.g. http://localhost:8080")
+    sender_number: str = Field(..., description="Signal number registered with signal-cli, in E.164 format")
+    recipient_type: str = Field(
+        default="numbers",
+        description="'numbers' or 'group' - signal-cli-rest-api cannot mix individual recipients and a group in one request",
+    )
+    numbers: str | None = Field(
+        default=None, description="Comma-separated recipient phone numbers, used when recipient_type='numbers'"
+    )
+    group_id: str | None = Field(default=None, description="Signal group ID, used when recipient_type='group'")
+    auth_header: str | None = Field(
+        default=None,
+        description="Optional Authorization header value if signal-cli-rest-api sits behind an authenticating reverse proxy",
+    )
 
 
 # Notification Log schemas
