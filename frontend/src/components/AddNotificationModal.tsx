@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Save, Loader2, Send, CheckCircle, XCircle, MessageCircle, ExternalLink } from 'lucide-react';
+import { Save, Loader2, Send, CheckCircle, XCircle, MessageCircle, ExternalLink, Plus, Trash2 } from 'lucide-react';
 import { Link } from 'react-router';
 import { api } from '../api/client';
 import type { NotificationProvider, NotificationProviderCreate, NotificationProviderUpdate, ProviderType } from '../api/client';
@@ -14,7 +14,7 @@ interface AddNotificationModalProps {
   onClose: () => void;
 }
 
-const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'bark', 'callmebot', 'webhook', 'homeassistant'];
+const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'bark', 'callmebot', 'webhook', 'homeassistant', 'signal'];
 
 export function AddNotificationModal({ provider, onClose }: AddNotificationModalProps) {
   const { t } = useTranslation();
@@ -81,8 +81,44 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   })();
   const [eventPriorities, setEventPriorities] = useState<Record<string, number>>(initialEventPriorities);
 
+  // Signal recipients (recipient_type/numbers/group_id) don't fit the generic
+  // scalar-field config model: signal-cli-rest-api can't mix individual
+  // numbers and a group in one request, so this is a type switch rather than
+  // one generic recipients list.
+  const initialSignalNumbers = (() => {
+    const raw = provider?.config?.numbers;
+    if (typeof raw !== 'string' || !raw.trim()) return [''];
+    const parts = raw.split(',').map((n) => n.trim()).filter(Boolean);
+    return parts.length > 0 ? parts : [''];
+  })();
+  const [signalRecipientType, setSignalRecipientType] = useState<'numbers' | 'group'>(
+    provider?.config?.recipient_type === 'group' ? 'group' : 'numbers',
+  );
+  const [signalNumbers, setSignalNumbers] = useState<string[]>(initialSignalNumbers);
+  const [signalGroupId, setSignalGroupId] = useState(String(provider?.config?.group_id || ''));
+
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Merges the config fields that live outside the generic `config` blob
+  // (ntfy's event_priorities, Signal's recipient_type/numbers/group_id) back
+  // in. Shared by the test button and the actual save so a test always
+  // reflects what would be persisted.
+  const buildFinalConfig = (): Record<string, unknown> => {
+    if (providerType === 'ntfy' && Object.keys(eventPriorities).length > 0) {
+      return { ...config, event_priorities: eventPriorities };
+    }
+    if (providerType === 'signal') {
+      return {
+        ...config,
+        recipient_type: signalRecipientType,
+        ...(signalRecipientType === 'numbers'
+          ? { numbers: signalNumbers.map((n) => n.trim()).filter(Boolean).join(',') }
+          : { group_id: signalGroupId.trim() }),
+      };
+    }
+    return config;
+  };
 
   // Fetch printers for linking
   const { data: printers } = useQuery({
@@ -92,7 +128,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
 
   // Test configuration mutation
   const testMutation = useMutation({
-    mutationFn: () => api.testNotificationConfig({ provider_type: providerType, config }),
+    mutationFn: () => api.testNotificationConfig({ provider_type: providerType, config: buildFinalConfig() }),
     onSuccess: (result) => {
       setTestResult(result);
       setError(null);
@@ -161,10 +197,21 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       }
     }
 
-    const finalConfig: Record<string, unknown> =
-      providerType === 'ntfy' && Object.keys(eventPriorities).length > 0
-        ? { ...config, event_priorities: eventPriorities }
-        : config;
+    // signal-cli-rest-api can't mix individual numbers and a group in one
+    // request, so exactly one recipient shape must be filled in.
+    if (providerType === 'signal') {
+      if (signalRecipientType === 'numbers') {
+        if (!signalNumbers.some((n) => n.trim())) {
+          setError(t('notifications.signalRecipientsRequired'));
+          return;
+        }
+      } else if (!signalGroupId.trim()) {
+        setError(t('notifications.signalGroupRequired'));
+        return;
+      }
+    }
+
+    const finalConfig = buildFinalConfig();
 
     const data = {
       name: name.trim(),
@@ -301,6 +348,12 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           { key: 'service', label: 'Home Assistant Service', placeholder: 'notify.mobile_app_myphone', type: 'text', required: false },
           { key: 'data', label: t('notifications.haDataLabel'), placeholder: '{"priority": "high", "ttl": 0, "channel": "3D Printing"}', type: 'textarea', required: false },
         ];
+      case 'signal':
+        return [
+          { key: 'server', label: 'Signal API URL', placeholder: 'http://localhost:8080 (base URL, not /v2/send)', type: 'text', required: true },
+          { key: 'sender_number', label: 'Sender Number', placeholder: '+15551234567', type: 'text', required: true },
+          { key: 'auth_header', label: 'Authorization', placeholder: 'Bearer token (optional)', type: 'password', required: false },
+        ];
       default:
         return [];
     }
@@ -346,6 +399,9 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             onChange={(e) => {
               setProviderType(e.target.value as ProviderType);
               setConfig({}); // Reset config when changing type
+              setSignalRecipientType('numbers');
+              setSignalNumbers(['']);
+              setSignalGroupId('');
               setTestResult(null);
             }}
             disabled={isEditing}
@@ -413,6 +469,81 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             </div>
           ))}
         </div>
+
+        {/* Signal recipients - signal-cli-rest-api can't mix individual
+            numbers and a group in one request, so this is a type switch
+            rather than one generic recipients list. */}
+        {providerType === 'signal' && (
+          <div className="space-y-3 p-3 bg-bambu-dark rounded-lg">
+            <div>
+              <label className="block text-sm text-bambu-gray mb-1">{t('notifications.signalRecipientType')}</label>
+              <select
+                value={signalRecipientType}
+                onChange={(e) => {
+                  setSignalRecipientType(e.target.value as 'numbers' | 'group');
+                  setTestResult(null);
+                }}
+                className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+              >
+                <option value="numbers">{t('notifications.signalRecipientTypeNumbers')}</option>
+                <option value="group">{t('notifications.signalRecipientTypeGroup')}</option>
+              </select>
+            </div>
+
+            {signalRecipientType === 'numbers' ? (
+              <div className="space-y-2">
+                <label className="block text-sm text-bambu-gray">{t('notifications.signalNumbers')} *</label>
+                {signalNumbers.map((number, index) => (
+                  <div key={index} className="flex gap-2">
+                    <input
+                      type="text"
+                      value={number}
+                      onChange={(e) => {
+                        const next = [...signalNumbers];
+                        next[index] = e.target.value;
+                        setSignalNumbers(next);
+                        setTestResult(null);
+                      }}
+                      placeholder="+15551234567"
+                      className="flex-1 px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setSignalNumbers(signalNumbers.filter((_, i) => i !== index))}
+                      disabled={signalNumbers.length <= 1}
+                      className="px-2 text-bambu-gray hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      aria-label={t('notifications.signalRemoveNumber')}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setSignalNumbers([...signalNumbers, ''])}
+                  className="flex items-center gap-1 text-sm text-bambu-green hover:opacity-80 transition-opacity"
+                >
+                  <Plus className="w-4 h-4" />
+                  {t('notifications.signalAddNumber')}
+                </button>
+              </div>
+            ) : (
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('notifications.signalGroupId')} *</label>
+                <input
+                  type="text"
+                  value={signalGroupId}
+                  onChange={(e) => {
+                    setSignalGroupId(e.target.value);
+                    setTestResult(null);
+                  }}
+                  placeholder="group.XXXXXXXX=="
+                  className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                />
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Test Button (not shown for Telegram - bot restarts automatically) */}
         {providerType !== 'telegram' && (

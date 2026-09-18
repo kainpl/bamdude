@@ -564,3 +564,74 @@ class TestHomeAssistantNotificationProvider:
         result = response.json()
         assert result["success"] is False
         assert "not configured" in result["message"].lower() or "Home Assistant" in result["message"]
+
+
+class TestSignalNotificationProvider:
+    """Integration tests for the Signal (signal-cli-rest-api) notification provider."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_signal_provider(self, async_client: AsyncClient):
+        """Verify a signal notification provider can be created."""
+        data = {
+            "name": "Signal Notifications",
+            "provider_type": "signal",
+            "enabled": True,
+            "config": {
+                "server": "http://localhost:8080",
+                "sender_number": "+15550000000",
+                "recipient_type": "numbers",
+                "numbers": "+15551111111",
+            },
+            "on_print_complete": True,
+            "on_print_failed": True,
+        }
+
+        response = await async_client.post("/api/v1/notifications/", json=data)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["name"] == "Signal Notifications"
+        assert result["provider_type"] == "signal"
+        assert result["config"]["sender_number"] == "+15550000000"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_signal_provider(self, async_client: AsyncClient, notification_provider_factory, db_session):
+        """Verify a signal provider's recipient config can be switched to a group."""
+        provider = await notification_provider_factory(
+            name="Signal Test",
+            provider_type="signal",
+            config='{"server": "http://localhost:8080", "sender_number": "+15550000000", "recipient_type": "numbers", "numbers": "+15551111111"}',
+        )
+
+        response = await async_client.patch(
+            f"/api/v1/notifications/{provider.id}",
+            json={
+                "config": {
+                    "server": "http://localhost:8080",
+                    "sender_number": "+15550000000",
+                    "recipient_type": "group",
+                    "group_id": "group.abc123==",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["config"]["recipient_type"] == "group"
+        assert result["config"]["group_id"] == "group.abc123=="
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_test_signal_config_without_server(self, async_client: AsyncClient):
+        """Verify test-config returns a clear error when the Signal API URL is missing."""
+        response = await async_client.post(
+            "/api/v1/notifications/test-config",
+            json={"provider_type": "signal", "config": {"sender_number": "+15550000000", "numbers": "+15551111111"}},
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["success"] is False
+        assert "Signal API URL" in result["message"]

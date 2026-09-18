@@ -241,6 +241,8 @@ class NotificationService:
                 return await self._send_webhook(config, title, message, event_type="test")
             elif provider_type == "homeassistant":
                 return await self._send_homeassistant(config, title, message, db=db)
+            elif provider_type == "signal":
+                return await self._send_signal(config, title, message)
             else:
                 return False, f"Unknown provider type: {provider_type}"
         except Exception as e:
@@ -986,6 +988,83 @@ class NotificationService:
         except Exception as e:
             return False, f"Webhook error: {str(e)}"
 
+    async def _send_signal(
+        self,
+        config: dict,
+        title: str,
+        message: str,
+        image_data: bytes | None = None,
+    ) -> tuple[bool, str]:
+        """Send notification via a self-hosted signal-cli-rest-api instance.
+
+        signal-cli-rest-api's /v2/send cannot mix individual recipient numbers
+        and a group ID in the same request, so recipient_type picks one shape
+        or the other rather than accepting one generic recipients list.
+        """
+        server = config.get("server", "").strip().rstrip("/")
+        # signal-cli-rest-api's own docs/Postman collections show the full
+        # /v2/send (or legacy /v1/send) endpoint, so pasting that whole URL
+        # here is the natural mistake - normalise it back to the base URL
+        # rather than doubling the path onto a 404.
+        for suffix in ("/v2/send", "/v1/send"):
+            if server.lower().endswith(suffix):
+                server = server[: -len(suffix)]
+                break
+        sender_number = config.get("sender_number", "").strip()
+        recipient_type = config.get("recipient_type", "numbers").strip()
+        auth_header = config.get("auth_header", "").strip()
+
+        if not server or not sender_number:
+            return False, "Signal API URL and sender number are required"
+
+        # Same reasoning as ntfy/webhook: signal-cli-rest-api is routinely
+        # self-hosted on the same box or LAN, so the LAN-service policy
+        # applies rather than a blanket private-address block.
+        try:
+            assert_safe_lan_service_url(server, label="Signal API URL")
+        except ValueError as exc:
+            return False, str(exc)
+
+        if recipient_type == "group":
+            group_id = config.get("group_id", "").strip()
+            if not group_id:
+                return False, "Group ID is required"
+            recipients = [group_id if group_id.startswith("group.") else f"group.{group_id}"]
+        else:
+            recipients = [n.strip() for n in config.get("numbers", "").split(",") if n.strip()]
+            if not recipients:
+                return False, "At least one recipient number is required"
+
+        payload: dict[str, Any] = {
+            "message": f"{title}\n{message}",
+            "number": sender_number,
+            "recipients": recipients,
+        }
+
+        if image_data:
+            import base64
+
+            payload["base64_attachments"] = [base64.b64encode(image_data).decode("ascii")]
+
+        headers = {"Content-Type": "application/json"}
+        if auth_header:
+            # Support "Bearer token" or just "token" format
+            if " " in auth_header:
+                headers["Authorization"] = auth_header
+            else:
+                headers["Authorization"] = f"Bearer {auth_header}"
+
+        client = await self._get_client()
+        try:
+            response = await client.post(f"{server}/v2/send", json=payload, headers=headers)
+
+            if response.status_code in (200, 201, 202, 204):
+                return True, "Message sent successfully"
+            else:
+                return False, f"HTTP {response.status_code}: {response.text[:200]}"
+        except Exception as e:
+            return False, f"Signal error: {str(e)}"
+
     async def _send_homeassistant(
         self, config: dict, title: str, message: str, db: AsyncSession | None = None
     ) -> tuple[bool, str]:
@@ -1145,6 +1224,8 @@ class NotificationService:
                 )
             elif provider.provider_type == "homeassistant":
                 return await self._send_homeassistant(config, title, message, db=db)
+            elif provider.provider_type == "signal":
+                return await self._send_signal(config, title, message, image_data=image_data)
             else:
                 return False, f"Unknown provider type: {provider.provider_type}"
         except Exception as e:
