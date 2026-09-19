@@ -140,7 +140,7 @@ function getSizeClasses(size: OverlaySize) {
       };
     case 'large':
       return {
-        container: 'p-6',
+        container: 'p-4',
         text: 'text-xl',
         textLarge: 'text-3xl',
         progressHeight: 'h-4',

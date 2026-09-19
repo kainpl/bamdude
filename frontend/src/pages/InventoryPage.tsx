@@ -751,8 +751,8 @@ export default function InventoryPageRouter() {
     const spoolmanIsHttp = spoolmanUrl.toLowerCase().startsWith('http://');
     if (bamdudeIsHttps && spoolmanIsHttp) {
       return (
-        <div className="p-6 max-w-3xl mx-auto">
-          <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-5">
+        <div className="p-4 max-w-3xl mx-auto">
+          <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4">
             <div className="flex items-start gap-3">
               <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
               <div className="flex-1 min-w-0 space-y-2 text-sm">
@@ -3870,7 +3870,7 @@ function EmptyFilterState({
 }) {
   return (
     <div className="flex flex-col items-center justify-center py-16 px-4">
-      <div className="relative mb-6">
+      <div className="relative mb-4">
         <div className="absolute inset-0 -m-4 bg-bambu-green/5 rounded-full blur-2xl" />
         <div className="relative flex items-center justify-center w-24 h-24 rounded-2xl bg-gradient-to-br from-bambu-dark-secondary to-bambu-dark-tertiary border border-bambu-dark-tertiary shadow-lg">
           <div className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-bambu-green/30" />
@@ -3892,7 +3892,7 @@ function EmptyFilterState({
       <h3 className="text-lg font-semibold text-white mb-2 text-center">
         {hasFilters ? t('inventory.noSpoolsMatch') : t('inventory.noSpools').split('.')[0]}
       </h3>
-      <p className="text-sm text-bambu-gray text-center max-w-sm mb-6">
+      <p className="text-sm text-bambu-gray text-center max-w-sm mb-4">
         {hasFilters
           ? t('inventory.noSpoolsMatchDesc')
           : t('inventory.noSpools')

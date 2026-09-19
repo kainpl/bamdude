@@ -1048,7 +1048,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
             {/* Gradient fade + expand button */}
             {hiddenCount > 0 && !expanded && (
               <div className="relative">
-                <div className="absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-bambu-dark-secondary to-transparent pointer-events-none" />
+                <div className="absolute inset-x-0 -top-4 h-6 bg-gradient-to-t from-bambu-dark-secondary to-transparent pointer-events-none" />
                 <button
                   onClick={() => setExpanded(true)}
                   className="w-full flex items-center justify-center gap-1 py-1 text-xs text-bambu-gray hover:text-white transition-colors"

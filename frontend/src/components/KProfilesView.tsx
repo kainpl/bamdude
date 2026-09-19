@@ -690,7 +690,7 @@ function KProfileModal({
           ariaLabel={t('kProfiles.deleteConfirm.title')}
           size="sm"
         >
-          <div className="p-6">
+          <div className="p-4">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-500/20 flex items-center justify-center">
                 <Trash2 className="w-5 h-5 text-red-500" />
@@ -700,7 +700,7 @@ function KProfileModal({
                 <p className="text-sm text-bambu-gray">{t('kProfiles.deleteConfirm.cannotUndo')}</p>
               </div>
             </div>
-            <p className="text-bambu-gray mb-6">
+            <p className="text-bambu-gray mb-4">
               {t('kProfiles.deleteConfirm.message', { name: profile?.name })}
             </p>
             <div className="flex gap-3">
@@ -1250,7 +1250,7 @@ export function KProfilesView() {
       )}
 
       {/* Printer & Nozzle Selector */}
-      <div className="flex flex-wrap gap-4 mb-6">
+      <div className="flex flex-wrap gap-4 mb-4">
         <div className="flex-1 min-w-48">
           <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.printer')}</label>
           <select
@@ -1356,7 +1356,7 @@ export function KProfilesView() {
       </div>
 
       {/* Toolbar Row */}
-      <div className="flex flex-wrap gap-2 mb-6">
+      <div className="flex flex-wrap gap-2 mb-4">
         <Button
           variant="secondary"
           onClick={handleExport}
@@ -1616,7 +1616,7 @@ export function KProfilesView() {
           ariaLabel={t('kProfiles.bulkDelete.title')}
           size="sm"
         >
-          <div className="p-6">
+          <div className="p-4">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-500/20 flex items-center justify-center">
                 <Trash2 className="w-5 h-5 text-red-500" />
@@ -1626,7 +1626,7 @@ export function KProfilesView() {
                 <p className="text-sm text-bambu-gray">{t('kProfiles.bulkDelete.cannotUndo')}</p>
               </div>
             </div>
-            <p className="text-bambu-gray mb-6">
+            <p className="text-bambu-gray mb-4">
               {t('kProfiles.bulkDelete.message', { count: selectedProfiles.size })}
             </p>
             <div className="flex gap-3">

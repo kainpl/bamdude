@@ -22,7 +22,7 @@ export function QRCodeModal({ archiveId, archiveName, onClose }: QRCodeModalProp
   return (
     <Modal onClose={onClose} title="QR Code" size="sm">
       {/* Content */}
-      <div className="p-6 flex flex-col items-center">
+      <div className="p-4 flex flex-col items-center">
         <p className="text-sm text-bambu-gray mb-4 text-center truncate max-w-full">
           {archiveName}
         </p>

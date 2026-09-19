@@ -477,7 +477,7 @@ export function PlanBlock({
           </div>
 
           <div className="flex items-center justify-between gap-4 flex-wrap rounded-xl border border-bambu-dark-tertiary bg-bambu-dark p-3">
-            <div className="flex items-center gap-5 flex-wrap text-sm">
+            <div className="flex items-center gap-4 flex-wrap text-sm">
               <Figure
                 label={t('orders.plan.totals.prints')}
                 testId="plan-totals-prints"

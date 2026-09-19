@@ -1239,7 +1239,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 is the only way 348 options are comfortable to work through.
                 ⚠️ Below lg both collapse back into the single stack this
                 dialog used to be, so nothing on a phone changes. */}
-            <div className="lg:grid lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:gap-5 lg:items-start">
+            <div className="lg:grid lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:gap-4 lg:items-start">
               <div className="space-y-4 min-w-0">
             {/* Slicer picker — two big card-buttons matching the
                 "Filament Tracking" pattern in Settings. Each card carries

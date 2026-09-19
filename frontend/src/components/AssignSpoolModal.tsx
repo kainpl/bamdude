@@ -744,7 +744,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
           }
           size="md"
         >
-          <div className="p-5">
+          <div className="p-4">
             <h3 className="text-lg font-semibold text-white">
               {windowMode === 'optin'
                 ? t('inventory.midPrintReplacement.titleOptin')
@@ -755,7 +755,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                 ? t('inventory.midPrintReplacement.bodyOptin', { layer: replacementWindow?.pause_layer ?? 0 })
                 : t('inventory.midPrintReplacement.body')}
             </p>
-            <div className="mt-5 flex flex-col gap-2">
+            <div className="mt-4 flex flex-col gap-2">
               <Button
                 variant="primary"
                 disabled={assignMutation.isPending || assignSpoolmanMutation.isPending}

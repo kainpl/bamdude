@@ -468,7 +468,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
 
                 {/* Telegram Chats - inside the same card */}
                 {isTelegram && (
-                    <div className="p-6 p-4 pt-0">
+                    <div className="p-4 p-4 pt-0">
                         <div className="pt-3 border-t border-bambu-dark-tertiary">
                             <div className="flex items-center justify-between mb-3">
                                 <h4 className="text-sm font-medium text-white flex items-center gap-2">

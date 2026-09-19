@@ -486,7 +486,7 @@ export function TimelapseEditorModal({
                 </button>
               </div>
             ) : (
-              <label className="flex flex-col items-center justify-center gap-2 p-6 border-2 border-dashed border-bambu-dark-tertiary rounded-lg cursor-pointer hover:border-bambu-green/50 transition-colors">
+              <label className="flex flex-col items-center justify-center gap-2 p-4 border-2 border-dashed border-bambu-dark-tertiary rounded-lg cursor-pointer hover:border-bambu-green/50 transition-colors">
                 <Upload className="w-8 h-8 text-bambu-gray" />
                 <span className="text-sm text-bambu-gray">
                   Drop audio file or click to upload

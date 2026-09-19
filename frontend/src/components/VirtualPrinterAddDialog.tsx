@@ -57,7 +57,7 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
 
   return (
     <Modal onClose={onClose} title={t('virtualPrinter.addDialog.title')} size="md">
-      <div className="p-6 space-y-4">
+      <div className="p-4 space-y-4">
         {/* Name */}
         <div>
           <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.addDialog.name')}</label>

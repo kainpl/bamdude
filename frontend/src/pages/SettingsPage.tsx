@@ -4639,7 +4639,7 @@ export function SettingsPage() {
           ariaLabel={haTestResult.success ? t('settings.connectionSuccessful') : t('settings.connectionFailed')}
           size="md"
         >
-          <div className="p-6">
+          <div className="p-4">
             <div className="flex items-center gap-3 mb-4">
               {haTestResult.success ? (
                 <CheckCircle className="w-8 h-8 text-green-600 dark:text-green-400" />
@@ -4650,7 +4650,7 @@ export function SettingsPage() {
                 {haTestResult.success ? t('settings.connectionSuccessful') : t('settings.connectionFailed')}
               </h3>
             </div>
-            <p className="text-bambu-gray mb-6">
+            <p className="text-bambu-gray mb-4">
               {haTestResult.success
                 ? haTestResult.message || t('settings.haConnectionSuccess')
                 : haTestResult.error || t('settings.haConnectionFailed')}
@@ -4869,7 +4869,7 @@ export function SettingsPage() {
       {/* ══════ NOTIFICATIONS TAB ══════ */}
       {activeTab === 'notifications' && (<>
         {/* Sub-tabs */}
-        <div className="flex gap-1 mb-6 border-b border-bambu-dark-tertiary">
+        <div className="flex gap-1 mb-4 border-b border-bambu-dark-tertiary">
           <button
             onClick={() => setNotifSubTab('providers')}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${notifSubTab === 'providers' ? 'text-bambu-green border-bambu-green' : 'text-bambu-gray border-transparent hover:text-white'}`}
@@ -5110,7 +5110,7 @@ export function SettingsPage() {
                 };
 
                 return (
-                  <div className="space-y-5">
+                  <div className="space-y-4">
                     {GROUP_ORDER.map((group) => {
                       const items = buckets[group];
                       if (items.length === 0) return null;
@@ -5193,7 +5193,7 @@ export function SettingsPage() {
 
             {/* Created Key Display */}
             {createdAPIKey && (
-              <Card className="mb-6 border-bambu-green">
+              <Card className="mb-4 border-bambu-green">
                 <CardContent className="py-4">
                   <div className="flex items-start gap-3">
                     <CheckCircle className="w-5 h-5 text-bambu-green flex-shrink-0 mt-0.5" />
@@ -5259,7 +5259,7 @@ export function SettingsPage() {
 
             {/* Create Key Form */}
             {showCreateAPIKey && (
-              <Card className="mb-6">
+              <Card className="mb-4">
                 <CardHeader>
                   <h3 className="text-base font-semibold text-white">{t('settings.createNewApiKey')}</h3>
                 </CardHeader>
@@ -5546,7 +5546,7 @@ export function SettingsPage() {
             </Card>
 
             {/* Long-lived camera-stream tokens (#1108) */}
-            <Card className="mt-6">
+            <Card className="mt-4">
               <CardHeader>
                 <h3
                   className="text-base font-semibold text-white flex items-center gap-2"
@@ -5564,7 +5564,7 @@ export function SettingsPage() {
             {/* Streaming-overlay URL builder. Sits under the camera tokens it
                 usually needs — an overlay on a login-enabled deployment is a
                 token plus a URL, and both are made here. */}
-            <Card className="mt-6">
+            <Card className="mt-4">
               <CardHeader>
                 <h3 className="text-base font-semibold text-white flex items-center gap-2" id="card-stream-overlay">
                   <MonitorPlay className="w-4 h-4 text-bambu-green" />
@@ -7701,7 +7701,7 @@ export function SettingsPage() {
                 mustMatch={changePasswordData.newPassword}
               />
             </div>
-            <div className="mt-6 flex justify-end gap-3">
+            <div className="mt-4 flex justify-end gap-3">
               <Button
                 variant="secondary"
                 onClick={() => {

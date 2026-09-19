@@ -62,7 +62,7 @@ export function ConfirmModal({
 
   return (
     <Modal onClose={onCancel} hideClose ariaLabel={title} closeDisabled={isLoading} size="md" panelClassName={cardClassName}>
-      <div className="p-6">
+      <div className="p-4">
         <div className="flex items-start gap-4">
           <div className={`p-2 rounded-full bg-bambu-dark ${styles.icon}`}>
             <AlertTriangle className="w-6 h-6" />
@@ -73,7 +73,7 @@ export function ConfirmModal({
             {children && <div className="mt-3">{children}</div>}
           </div>
         </div>
-        <div className="flex gap-3 mt-6">
+        <div className="flex gap-3 mt-4">
           <Button
             variant={cancelVariant ?? 'secondary'}
             onClick={onCancel}

@@ -44,7 +44,7 @@ export function PrintOptionsTab({ data, onSubmit, isPending }: Props) {
   ) => onSubmit({ action: 'xcam_control', module, enabled, sensitivity });
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {(sup.spaghetti_detector || sup.pileup_detector || sup.nozzleclumping_detector || sup.airprinting_detector || sup.first_layer_inspector || sup.ai_monitoring_legacy) && (
         <Group title={t('printerSettings.aiMonitoringGroup')}>
           {sup.ai_monitoring_legacy && (

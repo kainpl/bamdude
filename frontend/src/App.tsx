@@ -194,8 +194,8 @@ class ErrorBoundary extends React.Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-8">
-          <div className="max-w-lg w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl p-6 text-center">
+        <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
+          <div className="max-w-lg w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl p-4 text-center">
             <h1 className="text-xl font-bold text-white mb-2">Something went wrong</h1>
             <p className="text-bambu-gray text-sm mb-4">{this.state.error?.message}</p>
             <details className="text-left mb-4">

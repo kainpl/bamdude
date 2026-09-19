@@ -82,7 +82,7 @@ export function EmailDeliveryCard() {
   return (
     <div className="space-y-4">
       {/* Info card */}
-      <Card className="mb-6 border-blue-300 bg-blue-50 dark:border-blue-500/30 dark:bg-blue-500/5">
+      <Card className="mb-4 border-blue-300 bg-blue-50 dark:border-blue-500/30 dark:bg-blue-500/5">
         <CardContent className="py-4">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-full flex items-center justify-center bg-blue-100 dark:bg-blue-500/20 flex-shrink-0">
@@ -108,7 +108,7 @@ export function EmailDeliveryCard() {
       </Card>
 
       {/* Preferences card */}
-      <Card className="mb-6">
+      <Card className="mb-4">
         <CardHeader>
           <h2 className="text-lg font-semibold text-white">{t('notifications.userEmail.printJobNotifications')}</h2>
           <p className="text-sm text-bambu-gray mt-1">{t('notifications.userEmail.printJobNotificationsDesc')}</p>

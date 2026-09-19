@@ -136,7 +136,7 @@ export function AMSSettingsModal({ isOpen, onClose, printerId }: Props) {
   return (
     <Modal onClose={onClose} title={t('amsSettings.title')} size="md">
       {isLoading || !s || !supports ? (
-        <div className="p-6 space-y-3">
+        <div className="p-4 space-y-3">
           {[0, 1, 2, 3].map((i) => (
             <div
               key={i}

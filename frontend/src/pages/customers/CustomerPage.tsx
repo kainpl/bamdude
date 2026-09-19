@@ -134,7 +134,7 @@ export function CustomerPage() {
 
   if (isLoading) {
     return (
-      <div className="p-4 md:p-6 flex items-center gap-2 text-bambu-gray">
+      <div className="p-4 flex items-center gap-2 text-bambu-gray">
         <Loader2 className="w-4 h-4 animate-spin" />
         {t('common.loading')}
       </div>
@@ -147,11 +147,11 @@ export function CustomerPage() {
   // somebody removed.
   if (!customer) {
     return isError ? (
-      <div className="p-4 md:p-6 text-sm text-red-500">
+      <div className="p-4 text-sm text-red-500">
         {t('customers.page.loadFailed')} {(error as Error)?.message}
       </div>
     ) : (
-      <div className="p-4 md:p-6 text-bambu-gray text-sm">{t('customers.page.notFound')}</div>
+      <div className="p-4 text-bambu-gray text-sm">{t('customers.page.notFound')}</div>
     );
   }
 
@@ -166,7 +166,7 @@ export function CustomerPage() {
   ];
 
   return (
-    <div className="p-4 md:p-6 space-y-6">
+    <div className="p-4 space-y-4">
       <nav className="flex items-center gap-1 text-sm text-bambu-gray">
         <Link to="/customers" className="hover:text-white transition-colors">
           {t('projects.tabs.customers')}

@@ -624,7 +624,7 @@ export function LabelTemplatePickerModal({
           list is the part you scroll; those are the part you act on. */}
       <div className="flex-1 overflow-y-auto px-2 pb-2 min-h-0 max-h-[38vh]">
         {visibleSpools.length === 0 ? (
-          <div className="text-center text-sm text-bambu-gray py-6">
+          <div className="text-center text-sm text-bambu-gray py-4">
             {sortedSpools.length === 0
               ? t('inventory.labels.noSpoolsToShow')
               : t('inventory.labels.noMatches')}
@@ -840,7 +840,7 @@ export function LabelTemplatePickerModal({
         </div>
       )}
 
-      <div className="flex justify-end gap-2 px-5 py-2 border-t border-bambu-dark-tertiary">
+      <div className="flex justify-end gap-2 px-4 py-2 border-t border-bambu-dark-tertiary">
         <Button variant="secondary" onClick={onClose} disabled={pending !== null}>
           {t('common.cancel')}
         </Button>

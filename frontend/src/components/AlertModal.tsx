@@ -37,7 +37,7 @@ export function AlertModal({
 
   return (
     <Modal onClose={onClose} hideClose ariaLabel={title} size="md">
-      <div className="p-6">
+      <div className="p-4">
         <div className="flex items-start gap-4">
           <div className={`p-2 rounded-full bg-bambu-dark ${iconColor}`}>
             <AlertTriangle className="w-6 h-6" />
@@ -48,7 +48,7 @@ export function AlertModal({
             <p className="text-bambu-gray text-sm whitespace-pre-line break-words">{message}</p>
           </div>
         </div>
-        <div className="flex mt-6">
+        <div className="flex mt-4">
           <Button onClick={onClose} className="flex-1">
             {resolvedCloseText}
           </Button>

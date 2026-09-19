@@ -97,7 +97,7 @@ export function DeviceReportingModal({ ieee, deviceName, onClose }: Props) {
       }
       size="2xl"
     >
-      <div className="p-6 space-y-5 overflow-y-auto max-h-[calc(90vh-140px)]">
+      <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(90vh-140px)]">
         {/* A device off the mesh is an ordinary state since sensors are listed
             from our rows -- so it gets the reason, not an empty form. */}
         {error ? (

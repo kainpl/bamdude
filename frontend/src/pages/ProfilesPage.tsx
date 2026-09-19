@@ -180,7 +180,7 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
   return (
     <Card className="max-w-md mx-auto">
       <CardContent>
-        <div className="text-center mb-6">
+        <div className="text-center mb-4">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-bambu-green/20 mb-3">
             <Cloud className="w-6 h-6 text-bambu-green" />
           </div>
@@ -778,7 +778,7 @@ function TemplatesModal({
           ariaLabel={t('profiles.templates.deleteTitle')}
           size="md"
         >
-          <div className="p-6">
+          <div className="p-4">
             <div className="flex items-center gap-3 mb-4">
               <div className="p-2 bg-red-100 dark:bg-red-500/20 rounded-lg">
                 <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400" />
@@ -788,7 +788,7 @@ function TemplatesModal({
                 <p className="text-sm text-bambu-gray">{t('profiles.templates.deleteWarning')}</p>
               </div>
             </div>
-            <p className="text-white mb-6">
+            <p className="text-white mb-4">
               {t('profiles.templates.deleteConfirm', { name: templateToDelete.name })}
             </p>
             <div className="flex gap-2">
@@ -1883,7 +1883,7 @@ function CreatePresetModal({
         {/* Tab Content */}
         <div className="flex-1 p-4">
           {activeTab === 'common' && (
-            <div className="space-y-6">
+            <div className="space-y-4">
               {/* Templates */}
               <div>
                 <div className="flex items-center justify-between mb-3">
@@ -2017,7 +2017,7 @@ function CreatePresetModal({
           )}
 
           {activeTab === 'fields' && (
-            <div className="grid grid-cols-2 gap-6" style={{ height: '400px' }}>
+            <div className="grid grid-cols-2 gap-4" style={{ height: '400px' }}>
               {/* Left: Available Fields */}
               <div className="flex flex-col h-full overflow-hidden">
                 <div className="flex items-center justify-between mb-3 flex-shrink-0">
@@ -2439,7 +2439,7 @@ function CloudProfilesView({
   return (
     <>
       {/* Search and Filters */}
-      <div className="space-y-4 mb-6">
+      <div className="space-y-4 mb-4">
         {/* Search row */}
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
@@ -2664,7 +2664,7 @@ function CloudProfilesView({
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* Filament Column */}
           <div>
             <div className="flex items-center gap-2 mb-3 px-1">
@@ -2933,7 +2933,7 @@ export function ProfilesPage() {
         <>
           {/* Connection Status Bar */}
           {status?.is_authenticated && (
-            <div className="flex items-center justify-between p-3 mb-6 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+            <div className="flex items-center justify-between p-3 mb-4 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
               <div className="flex items-center gap-3">
                 <div className="w-2 h-2 rounded-full bg-bambu-green animate-pulse" />
                 <span className="text-sm text-bambu-gray">

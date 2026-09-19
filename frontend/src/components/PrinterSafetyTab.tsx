@@ -26,7 +26,7 @@ export function PrinterSafetyTab({ data, onSubmit, isPending }: Props) {
   ];
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div>
         <div className="text-white text-sm mb-1 flex items-center gap-2">
           {t('printerSettings.safety.openDoor')}

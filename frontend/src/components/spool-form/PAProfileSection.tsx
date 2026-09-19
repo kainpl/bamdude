@@ -104,7 +104,7 @@ export function PAProfileSection({
 
   if (!formData.material) {
     return (
-      <div className="p-6 bg-bambu-dark rounded-lg text-center">
+      <div className="p-4 bg-bambu-dark rounded-lg text-center">
         <p className="text-bambu-gray">
           {t('inventory.selectMaterialFirst')}
         </p>
@@ -114,7 +114,7 @@ export function PAProfileSection({
 
   if (loading) {
     return (
-      <div className="p-6 bg-bambu-dark rounded-lg flex items-center justify-center gap-3">
+      <div className="p-4 bg-bambu-dark rounded-lg flex items-center justify-center gap-3">
         <Loader2 className="w-5 h-5 text-bambu-green animate-spin" />
         <p className="text-bambu-gray">
           {t('inventory.loadingPrinterProfiles')}
@@ -125,7 +125,7 @@ export function PAProfileSection({
 
   if (printersWithCalibrations.length === 0) {
     return (
-      <div className="p-6 bg-bambu-dark rounded-lg text-center">
+      <div className="p-4 bg-bambu-dark rounded-lg text-center">
         <p className="text-bambu-gray">
           {t('inventory.noPrintersConfigured')}
         </p>

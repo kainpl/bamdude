@@ -44,7 +44,7 @@ export function CameraDiagnoseModal({ printerId, printerName, onClose }: CameraD
       icon={<Stethoscope className="w-5 h-5 text-bambu-green flex-shrink-0" />}
       size="lg"
     >
-      <div className="p-6 space-y-4">
+      <div className="p-4 space-y-4">
         {diagnose.isPending && (
           <div className="flex items-center gap-2 text-bambu-gray">
             <Loader2 className="w-4 h-4 animate-spin" />

@@ -263,7 +263,7 @@ export function OIDCProviderSettings() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Header */}
       <Card id="card-oidc">
         <CardHeader>
@@ -300,7 +300,7 @@ export function OIDCProviderSettings() {
       {providers && providers.length === 0 && !showCreate && (
         <Card id="card-oidc-empty">
           <CardContent>
-            <div className="text-center py-8 space-y-3">
+            <div className="text-center py-4 space-y-3">
               <Globe className="w-12 h-12 text-bambu-gray mx-auto" />
               <p className="text-bambu-gray">{t('settings.oidc.empty')}</p>
               <Button variant="primary" size="sm" onClick={() => setShowCreate(true)} className="inline-flex items-center gap-2">

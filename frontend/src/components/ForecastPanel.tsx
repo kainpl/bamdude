@@ -317,7 +317,7 @@ export function ForecastPanel() {
   const hasBreakAlert = alertRows.some((r) => r.stock_break_alert);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
 
       {/* ── Toolbar ── */}
       <div className="flex flex-wrap items-center gap-3">
@@ -2019,7 +2019,7 @@ function AddToCartModal({
       icon={<ShoppingCart className="w-5 h-5 text-bambu-green" />}
       size="sm"
     >
-      <form onSubmit={submit} className="p-5 space-y-4">
+      <form onSubmit={submit} className="p-4 space-y-4">
         <div className="text-sm text-bambu-gray">{label}</div>
 
         <div className="flex bg-bambu-dark-tertiary rounded-lg p-0.5">

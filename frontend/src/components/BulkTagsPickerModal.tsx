@@ -127,7 +127,7 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
       size="md"
       closeDisabled={applyMutation.isPending}
     >
-      <div className="px-5 py-3 border-b border-bambu-dark-tertiary flex gap-4 text-sm">
+      <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex gap-4 text-sm">
         <label className="flex items-center gap-2 cursor-pointer">
           <input
             type="radio"
@@ -150,7 +150,7 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
         </label>
       </div>
 
-      <div className="px-5 py-3 border-b border-bambu-dark-tertiary">
+      <div className="px-4 py-3 border-b border-bambu-dark-tertiary">
         <input
           type="text"
           value={filter}
@@ -174,7 +174,7 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
           <ul className="divide-y divide-bambu-dark-tertiary/40">
             {filteredTags.map((tg) => (
               <li key={tg.id}>
-                <label className="flex items-center gap-3 px-5 py-2 hover:bg-bambu-dark-tertiary/30 cursor-pointer">
+                <label className="flex items-center gap-3 px-4 py-2 hover:bg-bambu-dark-tertiary/30 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={selected.has(tg.id)}
@@ -191,7 +191,7 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
       </div>
 
       {action === 'add' && (
-        <div className="px-5 py-3 border-t border-bambu-dark-tertiary flex gap-2">
+        <div className="px-4 py-3 border-t border-bambu-dark-tertiary flex gap-2">
           <input
             type="text"
             value={newTagName}
@@ -218,7 +218,7 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
         </div>
       )}
 
-      <div className="px-5 py-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
+      <div className="px-4 py-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
         <Button type="button" variant="secondary" onClick={onClose} disabled={applyMutation.isPending}>
           {t('common.cancel')}
         </Button>

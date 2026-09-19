@@ -22,7 +22,7 @@ const gridLine = sourceLines.find((line) => line.includes('lg:grid-cols-[minmax(
 describe('SliceModal layout', () => {
   it('puts the body in a two-column grid', () => {
     expect(gridLine, 'the two-column grid').toBeDefined();
-    expect(gridLine).toContain('lg:gap-5');
+    expect(gridLine).toContain('lg:gap-4');
     expect(gridLine).toContain('lg:items-start');
   });
 

@@ -304,7 +304,7 @@ export function AmsBackupModal({
   return (
     <Modal onClose={onClose} title={t('printers.amsBackup.modalTitle')} size="2xl" bodyClassName="flex flex-col">
       <div
-        className="flex items-center justify-between px-5 py-3 border-b"
+        className="flex items-center justify-between px-4 py-3 border-b"
         style={{ borderColor, backgroundColor: sectionBg }}
       >
         <div className="min-w-0 mr-3">
@@ -326,21 +326,21 @@ export function AmsBackupModal({
         />
       </div>
 
-      <div className="flex-1 overflow-y-auto px-5 py-6">
-        <p className="text-xs text-center mb-5" style={{ color: textSecondary }}>
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        <p className="text-xs text-center mb-4" style={{ color: textSecondary }}>
           {usesFallback
             ? t('printers.amsBackup.firmwareEstimate')
             : t('printers.amsBackup.firmwareReported')}
         </p>
         {pairs.length === 0 ? (
           <p
-            className="text-sm text-center py-8"
+            className="text-sm text-center py-4"
             style={{ color: textSecondary }}
           >
             {t('printers.amsBackup.modalNoPairs')}
           </p>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 justify-items-center">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 justify-items-center">
             {pairs.map((g) => (
               <BackupRing
                 key={g.key}
@@ -361,7 +361,7 @@ export function AmsBackupModal({
         )}
 
         {compat?.policyEnabled && (
-          <div className="mt-6 border-t pt-4" style={{ borderColor }}>
+          <div className="mt-4 border-t pt-4" style={{ borderColor }}>
             {pairs.length === 0 && !usesFallback && firmwareReportedGroups && (
               <p className="text-xs mb-3" style={{ color: textSecondary }}>{t('printers.amsCompat.firmwareDidNotMerge')}</p>
             )}

@@ -132,7 +132,7 @@ export function OrderPage() {
 
   if (isLoading) {
     return (
-      <div className="p-4 md:p-6 flex items-center gap-2 text-bambu-gray">
+      <div className="p-4 flex items-center gap-2 text-bambu-gray">
         <Loader2 className="w-4 h-4 animate-spin" />
         {t('common.loading')}
       </div>
@@ -147,18 +147,18 @@ export function OrderPage() {
   // FAILED is not an order that was deleted.
   if (!order) {
     return isError ? (
-      <div className="p-4 md:p-6 text-sm text-red-500">
+      <div className="p-4 text-sm text-red-500">
         {t('orders.page.loadFailed')} {(error as Error)?.message}
       </div>
     ) : (
-      <div className="p-4 md:p-6 text-bambu-gray text-sm">{t('orders.page.notFound')}</div>
+      <div className="p-4 text-bambu-gray text-sm">{t('orders.page.notFound')}</div>
     );
   }
 
   const canEdit = hasPermission('projects:update');
 
   return (
-    <div className="p-4 md:p-6 space-y-6">
+    <div className="p-4 space-y-4">
       {/* The cover sits in the header's right column without OrderHeader
           knowing about it — the header owns the actions row, this owns the
           picture, and neither has to grow a slot for the other. */}

@@ -128,7 +128,7 @@ export function FailureDetectionSettings() {
   };
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
+    <div className="flex flex-col lg:flex-row gap-4">
       <div className="space-y-3 flex-1 lg:max-w-xl">
         <Card id="card-fd-ml">
           <CardHeader>

@@ -232,7 +232,7 @@ export function CameraWall({
 
   if (tiles.length === 0) {
     return (
-      <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-6 text-center text-bambu-gray">
+      <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-4 text-center text-bambu-gray">
         {t('printers.camWall.noPrinters')}
       </div>
     );

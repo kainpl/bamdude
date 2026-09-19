@@ -65,7 +65,7 @@ export function SetupPage() {
     <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
       <div className="max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
         <div className="text-center">
-          <div className="flex items-center justify-center mb-6">
+          <div className="flex items-center justify-center mb-4">
             <img
               src={mode === 'dark' ? '/img/brand/lockup-compact-on-dark.svg' : '/img/brand/lockup-compact-on-light.svg'}
               alt="BamDude"
@@ -80,7 +80,7 @@ export function SetupPage() {
           </p>
         </div>
 
-        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+        <form className="mt-4 space-y-4" onSubmit={handleSubmit}>
           <div className="space-y-4">
             <div className="p-3 bg-bambu-dark-secondary/50 border border-bambu-dark-tertiary rounded-lg">
               <div className="flex items-start gap-2">

@@ -45,7 +45,7 @@ export function CalibrationHistoryModal({ isOpen, onClose, printerId }: Props) {
 
   return (
     <Modal onClose={onClose} title={t('filamentCali.history.title')} size="3xl">
-      <div className="p-4 space-y-6">
+      <div className="p-4 space-y-4">
         <section>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold text-white">

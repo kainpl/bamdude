@@ -409,7 +409,7 @@ export function LoginPage() {
 
     return (
       <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
-        <div className="max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
+        <div className="max-w-md w-full space-y-4 p-4 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
           <div className="text-center">
             <div className="flex items-center justify-center mb-4">
               <div className="w-14 h-14 rounded-full bg-bambu-green/20 flex items-center justify-center">
@@ -474,7 +474,7 @@ export function LoginPage() {
   if (step === '2fa') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
-        <div className="max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
+        <div className="max-w-md w-full space-y-4 p-4 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
           <div className="text-center">
             <div className="flex items-center justify-center mb-4">
               <div className="w-14 h-14 rounded-full bg-bambu-green/20 flex items-center justify-center">
@@ -634,9 +634,9 @@ export function LoginPage() {
   // ---- Render: credentials step ----
   return (
     <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
-      <div className="max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
+      <div className="max-w-md w-full space-y-4 p-4 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
         <div className="text-center">
-          <div className="flex items-center justify-center mb-6">
+          <div className="flex items-center justify-center mb-4">
             <img
               src={mode === 'dark' ? '/img/brand/lockup-compact-on-dark.svg' : '/img/brand/lockup-compact-on-light.svg'}
               alt="BamDude"
@@ -652,19 +652,19 @@ export function LoginPage() {
         </div>
 
         {showAutologinBanner && (
-          <div className="mt-6 rounded-lg border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          <div className="mt-4 rounded-lg border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
             {t('login.autologinFailed')}
           </div>
         )}
 
         {!localLoginEnabled && (
-          <div className="mt-6 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/40 px-4 py-3 text-sm text-bambu-gray">
+          <div className="mt-4 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/40 px-4 py-3 text-sm text-bambu-gray">
             {t('login.localDisabledNotice')}
           </div>
         )}
 
         {localLoginEnabled && (
-        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+        <form className="mt-4 space-y-4" onSubmit={handleSubmit}>
           <div className="space-y-4">
             <div>
               <label htmlFor="username" className="block text-sm font-medium text-white mb-2">

@@ -96,11 +96,11 @@ export function CalendarView({ buckets, printerMap }: CalendarViewProps) {
   };
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6">
+    <div className="flex flex-col lg:flex-row gap-4">
       {/* Calendar */}
       <div className="flex-1">
         {/* Stats row */}
-        <div className="grid grid-cols-3 gap-4 text-center mb-6">
+        <div className="grid grid-cols-3 gap-4 text-center mb-4">
           <div>
             <div className="text-2xl font-bold text-white">{totalPrints}</div>
             <div className="text-xs text-bambu-gray">{t('archives.calendar.totalPrints', 'Prints (30 days)')}</div>

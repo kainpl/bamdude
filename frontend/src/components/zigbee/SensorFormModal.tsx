@@ -83,7 +83,7 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
       title={sensor ? t('settings.zigbee.sensors.editTitle') : t('settings.zigbee.sensors.adoptTitle')}
       size="md"
     >
-      <div className="p-5 space-y-4">
+      <div className="p-4 space-y-4">
         {sensor === null && (
           <div>
             <label className="block text-sm text-bambu-gray mb-1" htmlFor="sensor-device">

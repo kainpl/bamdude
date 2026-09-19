@@ -345,7 +345,7 @@ export function LocalProfilesView() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Create Filament (spec B) — authoring entry point beside import */}
       {hasPermission('settings:update') && (
         <div className="flex justify-end">
@@ -361,7 +361,7 @@ export function LocalProfilesView() {
           onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
-          className={`relative border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+          className={`relative border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
             isDragging
               ? 'border-bambu-green bg-bambu-green/10'
               : 'border-bambu-dark-tertiary hover:border-bambu-gray'
@@ -422,7 +422,7 @@ export function LocalProfilesView() {
 
       {/* 3-Column Preset Lists */}
       {totalCount > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {/* Filament Column */}
           {filaments.length > 0 && (
             <div>
@@ -505,7 +505,7 @@ export function LocalProfilesView() {
           ariaLabel={t('profiles.localProfiles.deleteConfirmTitle')}
           size="sm"
         >
-          <div className="p-6">
+          <div className="p-4">
             <div className="flex items-center gap-2 mb-3">
               <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400" />
               <h3 className="text-white font-medium">{t('profiles.localProfiles.deleteConfirmTitle')}</h3>

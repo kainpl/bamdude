@@ -364,7 +364,7 @@ export function FirmwareUpdatePage() {
       )}
 
       {groups.length === 0 && (
-        <p className="text-bambu-gray text-sm mt-6">{t('firmware.noPrinters')}</p>
+        <p className="text-bambu-gray text-sm mt-4">{t('firmware.noPrinters')}</p>
       )}
       </>
       )}

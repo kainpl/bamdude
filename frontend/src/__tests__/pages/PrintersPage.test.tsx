@@ -117,6 +117,8 @@ describe('PrintersPage', () => {
   });
 
   it('restores only the last saved camera and switches the single popup to another card', async () => {
+    // Seeded WITHOUT `kind`: that is what an install saved before a camera could
+    // stand on its own, and such a row must still read as a printer's camera.
     localStorage.setItem('openEmbeddedCameras', JSON.stringify([
       { id: 1, name: 'X1 Carbon' }, { id: 2, name: 'P1S Backup' },
     ]));
@@ -130,7 +132,9 @@ describe('PrintersPage', () => {
       await waitFor(() => expect(screen.getByAltText('Camera stream').getAttribute('src')).toContain('/printers/1/'));
       expect(initial.src).toMatch(/^data:image\/gif;/);
       expect(screen.getAllByAltText('Camera stream')).toHaveLength(1);
-      expect(JSON.parse(localStorage.getItem('openEmbeddedCameras')!)).toEqual([{ id: 1, name: 'X1 Carbon' }]);
+      expect(JSON.parse(localStorage.getItem('openEmbeddedCameras')!)).toEqual([
+        { kind: 'printer', id: 1, name: 'X1 Carbon' },
+      ]);
     } finally {
       view.unmount();
       localStorage.removeItem('openEmbeddedCameras');

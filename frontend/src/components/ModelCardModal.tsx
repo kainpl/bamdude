@@ -224,7 +224,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
         }
       >
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-4">
           {isLoading && (
             <div className="flex items-center justify-center py-12">
               <div className="animate-spin rounded-full h-8 w-8 border-2 border-bambu-green border-t-transparent" />
@@ -246,7 +246,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
           )}
 
           {projectPage && hasContent && (
-            <div className="space-y-6">
+            <div className="space-y-4">
               {/* Title & Designer */}
               <div className="space-y-4">
                 {isEditing ? (
@@ -737,7 +737,7 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
         bodyClassName="flex flex-col"
         header={header}
       >
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-4">
           {isLoading && (
             <div className="flex items-center justify-center py-12">
               <div className="animate-spin rounded-full h-8 w-8 border-2 border-bambu-green border-t-transparent" />
@@ -763,7 +763,7 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
           )}
 
           {card && hasContent && (
-            <div className="space-y-6">
+            <div className="space-y-4">
               <div className="space-y-4">
                 {card.title && <h3 className="text-xl font-semibold text-white">{card.title}</h3>}
 

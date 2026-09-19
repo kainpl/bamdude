@@ -1395,7 +1395,7 @@ export function Layout() {
           panelClassName="animate-in fade-in zoom-in duration-200"
           panelStyle={{ borderWidth: 2, borderColor: 'var(--color-yellow-500)' }}
         >
-          <div className="p-6 text-center">
+          <div className="p-4 text-center">
             <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-yellow-500/20 flex items-center justify-center">
               <svg className="w-10 h-10 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
@@ -1407,12 +1407,12 @@ export function Layout() {
             <p className="text-lg text-white mb-2">
               {plateDetectionAlert.printer_name}
             </p>
-            <p className="text-bambu-gray mb-6">
+            <p className="text-bambu-gray mb-4">
               {t('plateAlert.message')}
             </p>
             <button
               onClick={() => setPlateDetectionAlert(null)}
-              className="w-full py-3 px-6 bg-yellow-500 hover:bg-yellow-600 text-black font-semibold rounded-lg transition-colors"
+              className="w-full py-3 px-4 bg-yellow-500 hover:bg-yellow-600 text-black font-semibold rounded-lg transition-colors"
             >
               {t('plateAlert.understand')}
             </button>
@@ -1472,7 +1472,7 @@ export function Layout() {
                 mustMatch={changePasswordData.newPassword}
               />
             </div>
-            <div className="mt-6 flex justify-end gap-3">
+            <div className="mt-4 flex justify-end gap-3">
               <Button
                 variant="secondary"
                 onClick={() => {

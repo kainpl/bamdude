@@ -547,7 +547,7 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
               )}
 
               {viewState === 'logging' && (
-                <div className="py-6 space-y-6">
+                <div className="py-4 space-y-4">
                   {/* 3-step progress indicator */}
                   <div className="space-y-3 px-2">
                     {/* Step 1: Completed */}
@@ -589,7 +589,7 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
               )}
 
               {(viewState === 'stopping' || viewState === 'submitting') && (
-                <div className="flex flex-col items-center justify-center py-6 gap-3">
+                <div className="flex flex-col items-center justify-center py-4 gap-3">
                   <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />
                   <p className="text-sm text-bambu-gray text-center">
                     {viewState === 'stopping' ? t('bugReport.stoppingLogs') : t('bugReport.submitting')}

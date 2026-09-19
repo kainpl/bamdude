@@ -3275,7 +3275,7 @@ export function ArchivesPage() {
       {/* Install-step-4 nudge (#1687): no-3MF fallback detected — slicer-side
           "Store sent files on external storage" is likely off. */}
       {no3MFWarning?.has_fallback && !no3MFWarningDismissed && (
-        <div className="mb-6 rounded-lg border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 flex items-start gap-3">
+        <div className="mb-4 rounded-lg border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-amber-900 dark:text-amber-200">
@@ -3804,7 +3804,7 @@ export function ArchivesPage() {
           </CardContent>
         </Card>
       ) : viewMode === 'calendar' ? (
-        <Card className="p-6">
+        <Card className="p-4">
           <CalendarView
             buckets={calendarAggregate?.buckets || []}
             printerMap={printerMap}

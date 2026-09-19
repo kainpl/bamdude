@@ -3004,8 +3004,8 @@ function PrinterCard({
     switch (cardSize) {
       case 1: return 'mb-2';
       case 2: return 'mb-4';
-      case 3: return 'mb-5';
-      case 4: return 'mb-6';
+      case 3: return 'mb-4';
+      case 4: return 'mb-4';
       default: return 'mb-4';
     }
   };
@@ -3205,7 +3205,7 @@ function PrinterCard({
           </div>
         </div>
       )}
-      <CardContent className={cardSize >= 3 ? 'p-5' : compact ? 'p-3' : ''}>
+      <CardContent className={cardSize >= 3 ? 'p-4' : compact ? 'p-3' : ''}>
         {/* Header */}
         <div className={getSpacing()}>
           {/* Top row: Image, Name, Menu */}
@@ -6774,7 +6774,7 @@ function PrinterCard({
           ariaLabel={t('printers.bedJog.notHomedTitle')}
           size="sm"
         >
-          <div className="p-5">
+          <div className="p-4">
             <div className="flex items-start gap-3 mb-4">
               <AlertTriangle className="w-[var(--pc-i5,1.25rem)] h-[var(--pc-i5,1.25rem)] text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
               <div>
@@ -6821,7 +6821,7 @@ function PrinterCard({
           ariaLabel={t('printers.fans.printingWarningTitle')}
           size="sm"
         >
-          <div className="p-5">
+          <div className="p-4">
             <div className="flex items-start gap-3 mb-4">
               <AlertTriangle className="w-[var(--pc-i5,1.25rem)] h-[var(--pc-i5,1.25rem)] text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
               <div>
@@ -10001,7 +10001,7 @@ export function PrintersPage() {
                 columns={regularGridColumns}
                 estimateRowHeight={CARD_ROW_HEIGHT_ESTIMATE[cardSize] ?? CARD_ROW_HEIGHT_ESTIMATE[2]}
                 rowGap={regularGridGap}
-                className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}
+                className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-4' : ''} ${getGridClasses()}`}
                 rowClassName={`grid items-start gap-x-4 ${cardSize >= 3 ? 'gap-x-6' : ''} ${getGridClasses()}`}
                 getItemKey={(printer) => printer.id}
                 renderItem={renderRegularPrinterCard}
@@ -10020,7 +10020,7 @@ export function PrintersPage() {
           columns={regularGridColumns}
           estimateRowHeight={CARD_ROW_HEIGHT_ESTIMATE[cardSize] ?? CARD_ROW_HEIGHT_ESTIMATE[2]}
           rowGap={regularGridGap}
-          className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}
+          className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-4' : ''} ${getGridClasses()}`}
           rowClassName={`grid items-start gap-x-4 ${cardSize >= 3 ? 'gap-x-6' : ''} ${getGridClasses()}`}
           getItemKey={(printer) => printer.id}
           renderItem={renderRegularPrinterCard}

@@ -216,7 +216,7 @@ function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
       )}
 
       {isLoading ? (
-        <LoadingBlock label={t('common.loading')} className="py-6 text-bambu-gray" />
+        <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
       ) : groups.length === 0 ? (
         <p className="text-sm text-bambu-gray/70 italic">{t('orders.prints.empty')}</p>
       ) : (

@@ -144,7 +144,7 @@ export function MotionModal({ printerId, isOpen, onClose, status, isDualNozzle, 
           <p className="text-[11px] text-amber-400">{t('printers.motion.notHomed')}</p>
         )}
 
-        <div className="flex gap-5">
+        <div className="flex gap-4">
           <div className="flex-1 min-w-0">
             <AxisJoystick
               onMove={xy}

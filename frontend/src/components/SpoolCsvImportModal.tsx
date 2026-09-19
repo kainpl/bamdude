@@ -184,7 +184,7 @@ export function SpoolCsvImportModal({ onClose, onImported }: SpoolCsvImportModal
           }}
           onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
-          className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
+          className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
             isDragging
               ? 'border-bambu-green bg-bambu-green/10'
               : 'border-bambu-dark-tertiary hover:border-bambu-green/50'

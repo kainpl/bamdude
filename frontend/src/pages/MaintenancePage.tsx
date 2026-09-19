@@ -378,7 +378,7 @@ function PrinterSection({
     // card is the full width.
     <Card className="overflow-hidden @container">
       {/* Header */}
-      <div className="p-5">
+      <div className="p-4">
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <div className="flex items-center gap-3 min-w-0">
             <h2 className="text-xl font-semibold text-white truncate" title={overview.printer_name}>{overview.printer_name}</h2>
@@ -712,7 +712,7 @@ function SettingsSection({
 
         {/* Add custom type form */}
         {showAddType && (
-          <Card className="mb-6">
+          <Card className="mb-4">
             <CardContent className="py-4">
               <form onSubmit={handleAddType}>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

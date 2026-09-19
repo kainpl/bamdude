@@ -86,7 +86,7 @@ export function SensorHistoryModal({ isOpen, onClose, sensor }: Props) {
       }
       size="4xl"
     >
-      <div className="p-6 space-y-6 overflow-y-auto max-h-[calc(90vh-80px)]">
+      <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(90vh-80px)]">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="inline-flex gap-1 rounded-lg p-1" style={{ backgroundColor: cardBg }}>
             {TIME_RANGES.map((r) => (

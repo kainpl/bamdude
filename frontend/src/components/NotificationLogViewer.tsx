@@ -92,7 +92,7 @@ export function NotificationLogViewer({ onClose }: NotificationLogViewerProps) {
       {/* Stats Bar */}
       {stats && (
         <div className="px-4 py-3 border-b border-bambu-dark-tertiary bg-bambu-dark/50">
-          <div className="flex items-center gap-6 text-sm">
+          <div className="flex items-center gap-4 text-sm">
             <span className="text-bambu-gray">
               {t('notifications.statsSummary', { days })} <span className="text-white font-medium">{stats.total}</span> {t('notifications.statsNotifications')}
             </span>

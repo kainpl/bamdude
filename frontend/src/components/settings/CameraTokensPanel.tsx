@@ -83,7 +83,7 @@ function CreateTokenForm({ onCreated }: CreateTokenFormProps) {
   return (
     <form
       onSubmit={handleSubmit}
-      className="bg-bambu-dark-secondary rounded-lg p-4 mb-6 border border-bambu-dark-tertiary"
+      className="bg-bambu-dark-secondary rounded-lg p-4 mb-4 border border-bambu-dark-tertiary"
     >
       <h3 className="text-base font-semibold text-white mb-3">
         {t('cameraTokens.create.title')}
@@ -159,7 +159,7 @@ function ConfirmRevokeModal({ token, onConfirm, onCancel }: ConfirmRevokeModalPr
       size="md"
       panelStyle={{ borderColor: 'color-mix(in oklab, var(--color-red-500) 40%, transparent)' }}
     >
-      <div className="p-6">
+      <div className="p-4">
         <div className="flex items-start gap-3 mb-4">
           <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
           <div>
@@ -237,7 +237,7 @@ function JustCreatedModal({ token, onClose }: JustCreatedModalProps) {
       size="2xl"
       panelStyle={{ borderColor: 'color-mix(in oklab, var(--color-bambu-green) 40%, transparent)' }}
     >
-      <div className="p-6">
+      <div className="p-4">
         <div className="flex items-start gap-3 mb-4">
           <AlertTriangle className="w-6 h-6 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
           <div>
@@ -457,7 +457,7 @@ export default function CameraTokensPanel() {
         }}
       />}
 
-      <div className="mb-6">
+      <div className="mb-4">
         <h3 className="text-base font-semibold text-white mb-3">
           {t('cameraTokens.list.myTitle')}
         </h3>

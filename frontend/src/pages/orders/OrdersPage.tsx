@@ -229,7 +229,7 @@ export function OrdersPage() {
   );
 
   return (
-    <div className="p-4 md:p-6">
+    <div className="p-4">
       <ProjectsTabs />
 
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
@@ -300,7 +300,7 @@ export function OrdersPage() {
       {isLoading ? (
         <OrdersSkeleton />
       ) : groups ? (
-        <div className="space-y-6">
+        <div className="space-y-4">
           {[...groups.entries()].map(([customerName, group]) => (
             <section key={customerName}>
               <h2 className="text-lg font-medium text-white mb-2">{customerName}</h2>

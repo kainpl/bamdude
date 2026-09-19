@@ -2799,7 +2799,7 @@ export function FileManagerPage() {
         >
           {isPageDragging && (
             <div className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center rounded-lg border-2 border-dashed border-bambu-green bg-bambu-green/10 backdrop-blur-sm">
-              <div className="flex flex-col items-center gap-3 text-center px-6">
+              <div className="flex flex-col items-center gap-3 text-center px-4">
                 <Upload className="w-12 h-12 text-bambu-green" />
                 <p className="text-lg font-medium text-white">{t('fileManager.dropFilesToUpload')}</p>
                 <p className="text-sm text-bambu-green">{t('fileManager.dropFilesToUploadHint')}</p>
@@ -3290,7 +3290,7 @@ export function FileManagerPage() {
                     ? t('fileManager.externalIsEmpty')
                     : t('fileManager.noFilesYet')}
               </h3>
-              <p className="text-bambu-gray text-center max-w-md mb-6">
+              <p className="text-bambu-gray text-center max-w-md mb-4">
                 {selectedFolderId !== null
                   ? t('fileManager.folderEmptyDescription')
                   : topLevelView === 'external'
@@ -3312,7 +3312,7 @@ export function FileManagerPage() {
                 <Search className="w-12 h-12 text-bambu-gray/50" />
               </div>
               <h3 className="text-lg font-medium text-white mb-2">{t('fileManager.noMatchingFiles')}</h3>
-              <p className="text-bambu-gray text-center max-w-md mb-6">
+              <p className="text-bambu-gray text-center max-w-md mb-4">
                 {t('fileManager.noMatchingFilesDescription')}
               </p>
               <Button variant="secondary" onClick={clearAllFilters}>

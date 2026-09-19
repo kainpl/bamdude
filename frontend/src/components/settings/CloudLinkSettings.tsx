@@ -342,7 +342,7 @@ export function CloudLinkSettings() {
   return (
     <Card id="card-cloud-link" data-testid="cloud-link-card">
       {header}
-      <CardContent className="space-y-5">
+      <CardContent className="space-y-4">
         <p className="text-sm text-bambu-gray">{t('cloudLink.description')}</p>
 
         {/* ── Status ── */}

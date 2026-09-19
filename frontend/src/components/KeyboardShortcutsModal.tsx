@@ -129,7 +129,7 @@ export function KeyboardShortcutsModal({ onClose, navItems, sidebarItems }: Keyb
       icon={<Keyboard className="w-5 h-5 text-bambu-green" />}
       size="md"
     >
-      <div className="p-4 space-y-6 max-h-[60vh] overflow-y-auto">
+      <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
         {shortcuts.map((section) => (
           <div key={section.category}>
             <h3 className="text-sm font-medium text-bambu-gray mb-3">{section.category}</h3>

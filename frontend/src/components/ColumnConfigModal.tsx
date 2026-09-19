@@ -93,7 +93,7 @@ export function ColumnConfigModal({ isOpen, onClose, columns, defaultColumns, on
       size="lg"
       bodyClassName="flex flex-col"
     >
-      <div className="p-6 flex flex-col min-h-0">
+      <div className="p-4 flex flex-col min-h-0">
         {/* Header */}
         <h3 className="text-lg font-semibold text-white mb-2">{t('inventory.configureColumns')}</h3>
         <p className="text-sm text-bambu-gray mb-4">

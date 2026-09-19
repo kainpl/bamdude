@@ -455,7 +455,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
       title={editingExisting ? t('printOptionsPrefs.editTitle') : t('printOptionsPrefs.addTitle')}
       size="md"
     >
-      <div className="p-5">
+      <div className="p-4">
         <div className="space-y-3 mb-4">
           <div>
             <label className="block text-xs text-bambu-gray mb-1">
@@ -729,12 +729,12 @@ function CopyDialog({ src, users, availableModels, onClose }: CopyDialogProps) {
 
   return (
     <Modal onClose={onClose} title={t('printOptionsPrefs.copyTitle')} size="md">
-      <div className="p-5">
+      <div className="p-4">
         <p className="text-xs text-bambu-gray mb-4">
           {t('printOptionsPrefs.copyFrom', { user: src.username, model: src.printer_model })}
         </p>
 
-        <div className="space-y-3 mb-5">
+        <div className="space-y-3 mb-4">
           <div>
             <label className="block text-xs text-bambu-gray mb-1">
               {t('printOptionsPrefs.copyDstUser')}

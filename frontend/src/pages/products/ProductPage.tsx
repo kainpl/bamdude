@@ -121,7 +121,7 @@ export function ProductPage() {
 
   if (isLoading) {
     return (
-      <div className="p-4 md:p-6 flex items-center gap-2 text-bambu-gray">
+      <div className="p-4 flex items-center gap-2 text-bambu-gray">
         <Loader2 className="w-4 h-4 animate-spin" />
         {t('common.loading')}
       </div>
@@ -143,11 +143,11 @@ export function ProductPage() {
   // nobody performed, so the server's own sentence is shown instead.
   if (!product) {
     return isError ? (
-      <div className="p-4 md:p-6 text-sm text-red-500">
+      <div className="p-4 text-sm text-red-500">
         {t('products.page.loadFailed')} {(error as Error)?.message}
       </div>
     ) : (
-      <div className="p-4 md:p-6 text-bambu-gray text-sm">{t('products.page.notFound')}</div>
+      <div className="p-4 text-bambu-gray text-sm">{t('products.page.notFound')}</div>
     );
   }
 
@@ -157,7 +157,7 @@ export function ProductPage() {
   // is moved by `order`, and `space-y-*` hangs its margins on DOM siblings,
   // which after a reorder are not the visual ones.
   return (
-    <div className="p-4 md:p-6 flex flex-col gap-6">
+    <div className="p-4 flex flex-col gap-4">
       {/* Top-down, per the parent spec: what the thing LOOKS like, then what it
           is, then what it is made of, then what prints it, then its papers,
           then its files, then who wants it.

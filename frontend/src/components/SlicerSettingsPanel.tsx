@@ -336,7 +336,7 @@ export default function SlicerSettingsPanel({
       )}
 
       {shownPages.length === 0 ? (
-        <p className="py-6 text-center text-xs text-bambu-gray">
+        <p className="py-4 text-center text-xs text-bambu-gray">
           {t('slicerSettings.noMatches', 'No settings match this search.')}
         </p>
       ) : (

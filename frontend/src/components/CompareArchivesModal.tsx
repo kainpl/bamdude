@@ -49,7 +49,7 @@ export function CompareArchivesModal({ archiveIds, onClose }: CompareArchivesMod
 
 function ComparisonContent({ comparison }: { comparison: ArchiveComparison }) {
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Archive Headers */}
       <div className="overflow-x-auto">
         <table className="w-full">

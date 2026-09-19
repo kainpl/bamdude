@@ -45,7 +45,7 @@ export function CustomersPage() {
   });
 
   return (
-    <div className="p-4 md:p-6">
+    <div className="p-4">
       <ProjectsTabs />
 
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">

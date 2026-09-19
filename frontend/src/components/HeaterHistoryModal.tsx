@@ -197,7 +197,7 @@ export function HeaterHistoryModal({
       }
       size="4xl"
     >
-      <div className="p-6 space-y-6 overflow-y-auto max-h-[calc(90vh-80px)]">
+      <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(90vh-80px)]">
         <div className="flex items-center justify-between max-[550px]:flex-col max-[550px]:items-start max-[550px]:gap-3">
           <div className="inline-flex gap-1 rounded-lg p-1 max-w-full flex-wrap w-fit" style={{ backgroundColor: cardBg }}>
             {availableKinds.map(k => (

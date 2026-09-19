@@ -32,7 +32,7 @@ export function MonitorDetails({ printer: p, view, capabilities, forecast, stale
     [t('monitor.telemetryAt'), p.status_received_at ? new Date(p.status_received_at).toLocaleString(i18n.language) : '—'],
   ];
   return <Modal title={p.name} icon={<Printer size={20} />} onClose={onClose} size="2xl">
-    <div className="p-5 space-y-4">
+    <div className="p-4 space-y-4">
       <p className="text-lg font-semibold text-white">{label}</p>
       {(stale || p.source_stale) && <p role="status" className="text-status-warning">{t('monitor.stale')}</p>}
       {!capabilities.job_details && <p className="text-sm text-bambu-gray">{t('monitor.tvPrivacy')}</p>}

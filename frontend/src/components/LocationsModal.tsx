@@ -186,7 +186,7 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
 
       {editorOpen && (
         <Modal onClose={closeEditor} hideClose labelledBy={editorTitleId} size="md">
-          <div className="p-6">
+          <div className="p-4">
             <h3 id={editorTitleId} className="text-lg font-semibold text-white mb-4">
               {editing ? t('locations.edit') : t('locations.add')}
             </h3>
