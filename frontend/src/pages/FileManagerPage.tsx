@@ -75,6 +75,7 @@ import type {
 } from '../api/client';
 import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { Modal } from '../components/Modal';
 import { PaginationBar } from '../components/PaginationBar';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -2594,7 +2595,9 @@ export function FileManagerPage() {
       <div className="flex-1 flex flex-col lg:flex-row gap-4 min-h-0">
         {/* Mobile folder selector */}
         <div className="lg:hidden">
-          <select
+          <Select
+            tone="raised"
+            className="w-full"
             value={selectedFolderId !== null ? String(selectedFolderId) : `__top:${topLevelView}`}
             onChange={(e) => {
               const v = e.target.value;
@@ -2605,7 +2608,6 @@ export function FileManagerPage() {
                 setSelectedFolderId(parseInt(v, 10));
               }
             }}
-            className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg px-3 py-2.5 text-white focus:outline-none focus:border-bambu-green"
           >
             {/* Same grouping as the desktop sidebar: own folders under
                 "All files", external roots after the "External" entry. */}
@@ -2638,7 +2640,7 @@ export function FileManagerPage() {
                 </>
               );
             })()}
-          </select>
+          </Select>
         </div>
 
         {/* Folder sidebar - resizable, hidden on mobile */}
@@ -2675,20 +2677,21 @@ export function FileManagerPage() {
               {/* Folder tree sort (#1770). Dropdown drives the comparator;
                   direction button flips asc/desc. Both persist to localStorage
                   on change so the choice survives reloads. */}
-              <select
+              <Select
+                size="xs"
+                tone="muted"
                 value={folderSortField}
                 onChange={(e) => {
                   const v = e.target.value === 'activity' ? 'activity' : 'name';
                   setFolderSortField(v);
                   localStorage.setItem('library-folder-sort-field', v);
                 }}
-                className="text-xs px-1 py-0.5 rounded bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray focus:outline-none focus:border-bambu-green"
                 title={t('fileManager.folderSort')}
                 aria-label={t('fileManager.folderSort')}
               >
                 <option value="name">{t('fileManager.folderSortByName')}</option>
                 <option value="activity">{t('fileManager.folderSortByActivity')}</option>
-              </select>
+              </Select>
               <button
                 onClick={() => {
                   const newValue = folderSortDirection === 'asc' ? 'desc' : 'asc';
@@ -2958,10 +2961,10 @@ export function FileManagerPage() {
               )}
 
               {/* Type filter */}
-              <select
+              <Select
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value)}
-                className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
+                className="min-w-[9rem]"
               >
                 <option value="all">{t('fileManager.allTypes')}</option>
                 {fileTypes.map((type) => (
@@ -2969,7 +2972,7 @@ export function FileManagerPage() {
                     {type.toUpperCase()}
                   </option>
                 ))}
-              </select>
+              </Select>
 
               {/* A toggle, not a fourth select: the question is binary, and a
                   two-option dropdown is heavier than its answer. */}
@@ -3025,20 +3028,20 @@ export function FileManagerPage() {
 
               {/* Sort - pushed to far right via ml-auto */}
               <div className="flex items-center gap-1 ml-auto">
-                <select
+                <Select
                   value={sortField}
                   onChange={(e) => {
                     const newField = e.target.value as SortField;
                     setSortField(newField);
                     localStorage.setItem('library-sort-field', newField);
                   }}
-                  className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
+                  className="min-w-[9rem]"
                 >
                   <option value="name">{t('common.name')}</option>
                   <option value="date">{t('common.date')}</option>
                   <option value="size">{t('fileManager.size')}</option>
                   <option value="type">{t('common.type')}</option>
-                </select>
+                </Select>
                 <button
                   onClick={() => setSortDirection((d) => {
                     const newDir = d === 'asc' ? 'desc' : 'asc';
