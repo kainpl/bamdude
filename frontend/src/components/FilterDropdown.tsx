@@ -34,7 +34,7 @@ export function FilterDropdown({
     <div className="relative">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white hover:border-bambu-gray-dark transition-colors"
+        className="flex items-center gap-2 pl-3 pr-2 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white hover:border-bambu-gray-dark transition-colors"
       >
         <span className="text-bambu-gray">{label}:</span>
         <span>{selectedOption?.label || 'All'}</span>

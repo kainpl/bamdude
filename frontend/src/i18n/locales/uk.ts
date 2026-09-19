@@ -5003,6 +5003,7 @@ export default {
     folderName: 'Назва папки',
     folderNamePlaceholder: 'напр., Функціональні деталі',
     filterByUser: 'Фільтр за користувачем',
+    allUsers: 'Усі користувачі',
     renameFile: 'Перейменувати файл',
     renameFolder: 'Перейменувати папку',
     invalidFilenameChar: 'Ім’я не може містити: {{char}}',

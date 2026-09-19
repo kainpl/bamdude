@@ -1645,8 +1645,6 @@ export function FileManagerPage() {
   // and reaching into a user's browser storage to tidy up is a bigger action
   // than the tidiness is worth.
   const [filterUsername, setFilterUsername] = useState('');
-  // Free-text, same reasoning (and the same 300ms) as the search box above.
-  const debouncedFilterUsername = useDebouncedValue(filterUsername, 300);
   const [sortField, setSortField] = useState<SortField>(() => {
     const saved = localStorage.getItem('library-sort-field');
     return (saved as SortField) || 'name';
@@ -1859,7 +1857,7 @@ export function FileManagerPage() {
     searchCurrentFolder,
     filterType,
     unprintedOnly,
-    debouncedFilterUsername,
+    filterUsername,
     sortField,
     sortDirection,
   ]);
@@ -1899,7 +1897,7 @@ export function FileManagerPage() {
     q: debouncedSearchQuery.trim() || undefined,
     file_type: filterType !== 'all' ? filterType : undefined,
     unprinted_only: unprintedOnly,
-    username: debouncedFilterUsername.trim() || undefined,
+    username: filterUsername || undefined,
     sort_by: `${sortField}_${sortDirection}`,
     page: effectivePage,
     per_page: perPage === -1 ? undefined : perPage,
@@ -2997,32 +2995,23 @@ export function FileManagerPage() {
                 {t('fileManager.unprintedOnly')}
               </button>
 
-              {/* Username filter with autocomplete - only when auth is enabled */}
+              {/* Who uploaded it — only when auth is enabled, since without it
+                  every file belongs to the same nobody. A list rather than the
+                  text box with a datalist it used to be: the answer is always
+                  one of a known set of people, and a box that accepts anything
+                  invites a typo that silently returns nothing. */}
               {authEnabled && (
-                <div className="relative h-9">
-                  <input
-                    type="text"
-                    placeholder={t('fileManager.filterByUser', { defaultValue: 'Filter by user' })}
-                    value={filterUsername}
-                    onChange={(e) => setFilterUsername(e.target.value)}
-                    list="usernames-list"
-                    className={`w-40 h-9 px-3 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green ${filterUsername ? 'pr-8' : ''}`}
-                    style={filterUsername ? { WebkitAppearance: 'none', MozAppearance: 'textfield' } : undefined}
-                  />
-                  {filterUsername && (
-                    <button
-                      onClick={() => setFilterUsername('')}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white z-10"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  )}
-                  <datalist id="usernames-list">
-                    {users?.map((user) => (
-                      <option key={user.id} value={user.username} />
-                    ))}
-                  </datalist>
-                </div>
+                <Select
+                  className="w-40"
+                  value={filterUsername}
+                  onChange={(e) => setFilterUsername(e.target.value)}
+                  aria-label={t('fileManager.filterByUser')}
+                >
+                  <option value="">{t('fileManager.allUsers')}</option>
+                  {users?.map((user) => (
+                    <option key={user.id} value={user.username}>{user.username}</option>
+                  ))}
+                </Select>
               )}
 
               {/* Results count — `total` is now the server's grand total across

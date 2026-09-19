@@ -181,7 +181,7 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint, onCreateNe
         aria-expanded={open}
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
-        className="w-full text-left p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark flex items-center gap-2 disabled:opacity-50"
+        className="w-full text-left py-2.5 pl-2.5 pr-2 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark flex items-center gap-2 disabled:opacity-50"
       >
         <span className="flex-1 min-w-0">
           {selected ? (

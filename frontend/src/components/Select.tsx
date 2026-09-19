@@ -15,10 +15,12 @@ import type { ReactNode, SelectHTMLAttributes } from 'react';
  * the farm is driven from a phone. A control that needs icons, checkboxes or
  * arbitrary markup in a row is a different widget and does not belong here.
  *
- * The native arrow is kept deliberately. Twenty call sites drew their own with
- * `appearance-none`, but the reason to — a light triangle on a dark field — was
- * already solved globally by `color-scheme` in `index.css`, so a custom chevron
- * buys nothing and costs a wrapper element that would break `className`.
+ * The arrow is ours, drawn by the `select-chevron` utility in `index.css` as a
+ * background image so this stays ONE element — a wrapper would swallow the
+ * `className` every call site passes. It replaced the native arrow once it was
+ * measured that the native one cannot be given room: Chrome puts it hard
+ * against the border whatever `padding-right` says. (Visibility was never the
+ * reason — `color-scheme` had already settled that.)
  *
  * ⚠️ In a flex row, give it `min-w-0`. A form control's `min-width: auto` is
  * its widest option, so without that it refuses to shrink and pushes whatever
@@ -40,10 +42,10 @@ type SelectSize = 'xs' | 'sm' | 'md' | 'lg';
  * one size with no touch-target floor, because its row has no space for one.
  */
 const SIZES: Record<SelectSize, string> = {
-  xs: 'h-6 px-2 text-xs rounded',
-  sm: 'h-8 px-2 text-sm rounded-lg min-h-[44px] md:min-h-0',
-  md: 'h-9 px-3 text-sm rounded-lg min-h-[44px] md:min-h-0',
-  lg: 'h-11 px-3 text-base rounded-lg min-h-[48px] md:min-h-0',
+  xs: 'h-6 pl-2 pr-7 text-xs rounded',
+  sm: 'h-8 pl-2 pr-7 text-sm rounded-lg min-h-[44px] md:min-h-0',
+  md: 'h-9 pl-3 pr-8 text-sm rounded-lg min-h-[44px] md:min-h-0',
+  lg: 'h-11 pl-3 pr-8 text-base rounded-lg min-h-[48px] md:min-h-0',
 };
 
 /**
@@ -70,7 +72,7 @@ const TONES = {
  * forgot to say when it is on looks permanently empty, which is the failure
  * this control exists to prevent.
  */
-const FILTER_SHAPE = 'h-7 px-3 text-xs font-medium rounded-lg';
+const FILTER_SHAPE = 'h-7 pl-3 pr-7 text-xs font-medium rounded-lg';
 const FILTER_STATE = {
   on: 'bg-bambu-green/20 text-bambu-green border-bambu-green/30',
   off: 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary',
@@ -97,7 +99,7 @@ type SelectProps = Omit<SelectHTMLAttributes<HTMLSelectElement>, 'size'> &
 
 export function Select({ size, tone = 'sunken', active, className = '', children, ...props }: SelectProps) {
   const baseStyles =
-    'border transition-colors focus:outline-none focus:border-bambu-green disabled:opacity-50 disabled:cursor-not-allowed';
+    'select-chevron border transition-colors focus:outline-none focus:border-bambu-green disabled:opacity-50 disabled:cursor-not-allowed';
 
   const look =
     tone === 'filter'

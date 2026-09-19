@@ -44,7 +44,7 @@ interface CardSelectProps {
 }
 
 const CARD =
-  'w-full text-left p-2.5 rounded-lg border bg-bambu-dark flex items-center gap-2 disabled:opacity-50';
+  'w-full text-left py-2.5 pl-2.5 pr-2 rounded-lg border bg-bambu-dark flex items-center gap-2 disabled:opacity-50';
 
 /** Tallest the panel gets, the gap it keeps from the trigger, the margin it
  *  keeps from the bottom of the window, and the height below which shrinking it
