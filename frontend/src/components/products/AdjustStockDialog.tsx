@@ -5,6 +5,7 @@ import { api } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
+import { Select } from '../Select';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
@@ -68,18 +69,18 @@ export function AdjustStockDialog({ productId, parts, onClose, onSaved }: Adjust
           <label htmlFor="stock-adjust-part" className="block text-sm text-bambu-gray mb-1">
             {t('stock.adjust.part')}
           </label>
-          <select
+          <Select
+            className="w-full"
             id="stock-adjust-part"
             value={partId}
             onChange={(e) => setPartId(Number(e.target.value))}
-            className={FIELD_CLASS}
           >
             {parts.map((p) => (
               <option key={p.part_id} value={p.part_id}>
                 {p.name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div>

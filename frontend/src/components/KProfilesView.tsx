@@ -29,6 +29,7 @@ import { isAnyModalOpen } from './modalStack';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { MAX_PA_K_VALUE, MIN_PA_K_VALUE, formatKForDisplay, isValidKValue } from '../utils/kValue';
+import { Select } from './Select';
 
 interface KProfileCardProps {
   profile: KProfile;
@@ -534,7 +535,8 @@ function KProfileModal({
             {supportsFlowType && (
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.flowType')}</label>
-              <select
+              <Select
+                className={`w-full ${profile ? 'opacity-60 cursor-not-allowed' : ''}`}
                 value={nozzleType}
                 onChange={(e) => {
                   const newNozzleType = e.target.value;
@@ -552,26 +554,25 @@ function KProfileModal({
                   }
                 }}
                 disabled={!!profile}
-                className={`w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none ${profile ? 'opacity-60 cursor-not-allowed' : ''}`}
               >
                 <option value="HH00">{t('kProfiles.modal.highFlow')}</option>
                 <option value="HS00">{t('kProfiles.modal.standard')}</option>
-              </select>
+              </Select>
             </div>
             )}
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.nozzleSize')}</label>
-              <select
+              <Select
+                className={`w-full ${profile ? 'opacity-60 cursor-not-allowed' : ''}`}
                 value={modalDiameter}
                 onChange={(e) => setModalDiameter(e.target.value)}
                 disabled={!!profile}
-                className={`w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none ${profile ? 'opacity-60 cursor-not-allowed' : ''}`}
               >
                 <option value="0.2">0.2mm</option>
                 <option value="0.4">0.4mm</option>
                 <option value="0.6">0.6mm</option>
                 <option value="0.8">0.8mm</option>
-              </select>
+              </Select>
             </div>
           </div>
 
@@ -1253,31 +1254,31 @@ export function KProfilesView() {
       <div className="flex flex-wrap gap-4 mb-4">
         <div className="flex-1 min-w-48">
           <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.printer')}</label>
-          <select
+          <Select
+            className="w-full"
             value={selectedPrinter || ''}
             onChange={(e) => setSelectedPrinter(parseInt(e.target.value))}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
           >
             {connectedPrinters.map((printer) => (
               <option key={printer.id} value={printer.id}>
                 {printer.name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div className="w-32">
           <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.nozzle')}</label>
-          <select
+          <Select
+            className="w-full"
             value={nozzleDiameter}
             onChange={(e) => setNozzleDiameter(e.target.value)}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
           >
             <option value="0.2">0.2mm</option>
             <option value="0.4">0.4mm</option>
             <option value="0.6">0.6mm</option>
             <option value="0.8">0.8mm</option>
-          </select>
+          </Select>
         </div>
 
         <div className="flex items-end gap-2">
@@ -1315,15 +1316,15 @@ export function KProfilesView() {
         </div>
         {isDualNozzle && (
           <div className="w-36">
-            <select
+            <Select
+              className="w-full"
               value={extruderFilter}
               onChange={(e) => setExtruderFilter(e.target.value as ExtruderFilter)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             >
               <option value="all">{t('kProfiles.allExtruders')}</option>
               <option value="left">{t('kProfiles.leftOnly')}</option>
               <option value="right">{t('kProfiles.rightOnly')}</option>
-            </select>
+            </Select>
           </div>
         )}
         {/* Hidden, not disabled, on a model with a single nozzle variant
@@ -1331,27 +1332,27 @@ export function KProfilesView() {
             so the control has nothing to offer. */}
         {supportsFlowType && (
           <div className="w-32">
-            <select
+            <Select
+              className="w-full"
               value={flowTypeFilter}
               onChange={(e) => setFlowTypeFilter(e.target.value as FlowTypeFilter)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             >
               <option value="all">{t('kProfiles.allFlow')}</option>
               <option value="hf">{t('kProfiles.hfOnly')}</option>
               <option value="s">{t('kProfiles.sOnly')}</option>
-            </select>
+            </Select>
           </div>
         )}
         <div className="w-32">
-          <select
+          <Select
+            className="w-full"
             value={sortOption}
             onChange={(e) => setSortOption(e.target.value as SortOption)}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
           >
             <option value="name">{t('kProfiles.sortName')}</option>
             <option value="k_value">{t('kProfiles.sortKValue')}</option>
             <option value="filament">{t('kProfiles.sortFilament')}</option>
-          </select>
+          </Select>
         </div>
       </div>
 

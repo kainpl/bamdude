@@ -7,6 +7,7 @@
 import { useTranslation } from 'react-i18next';
 
 import type { BedType } from '../../../api/client';
+import { Select } from '../../Select';
 
 interface CalibrationBedTypePickerProps {
   value: BedType;
@@ -37,18 +38,18 @@ export function CalibrationBedTypePicker({ value, onChange, disabled }: Calibrat
       <span className="text-xs text-bambu-gray mb-1 block">
         {t('slice.bedType.label', 'Bed plate')}
       </span>
-      <select
+      <Select
+        className="w-full"
         value={value}
         onChange={(e) => onChange(e.target.value as BedType)}
         disabled={disabled}
-        className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
       >
         {options.map((opt) => (
           <option key={opt.value} value={opt.value}>
             {t(opt.labelKey, opt.fallback)}
           </option>
         ))}
-      </select>
+      </Select>
     </label>
   );
 }

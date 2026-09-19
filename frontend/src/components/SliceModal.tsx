@@ -31,6 +31,7 @@ import {
 } from '../utils/presetPickerUtils';
 import { useSlicerHealth, type SlicerKind } from '../hooks/useSlicerHealth';
 import { useIsWideLayout } from '../hooks/useIsWideLayout';
+import { Select } from './Select';
 import {
   EMPTY_COMPATIBILITY_INDEX,
   buildCompatibilityIndex,
@@ -321,11 +322,11 @@ function PresetDropdown({
         )}
         <span>{label}</span>
       </span>
-      <select
+      <Select
+        className="w-full"
         value={toRefValue(value)}
         onChange={(e) => onChange(fromRefValue(e.target.value))}
         disabled={disabled || totalEntries === 0}
-        className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
       >
         <option value="">
           {totalEntries === 0
@@ -350,7 +351,7 @@ function PresetDropdown({
             ))}
           </optgroup>
         )}
-      </select>
+      </Select>
     </label>
   );
 }
@@ -384,18 +385,18 @@ function BedTypePicker({ value, onChange, disabled }: BedTypePickerProps) {
       <span className="text-xs text-bambu-gray mb-1 block">
         {t('slice.bedType.label', 'Bed plate')}
       </span>
-      <select
+      <Select
+        className="w-full"
         value={value}
         onChange={(e) => onChange(e.target.value as BedType)}
         disabled={disabled}
-        className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
       >
         {options.map((opt) => (
           <option key={opt.value} value={opt.value}>
             {t(opt.labelKey, opt.fallback)}
           </option>
         ))}
-      </select>
+      </Select>
     </label>
   );
 }
@@ -1290,7 +1291,8 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     </button>
                   )}
                 </div>
-                <select
+                <Select
+                  className="w-full"
                   id="slice-pipeline-picker"
                   value=""
                   disabled={
@@ -1306,7 +1308,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     const picked = pipelinesQuery.data?.pipelines.find((p) => p.id === id);
                     if (picked) applyPipeline(picked);
                   }}
-                  className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
                 >
                   <option value="">
                     {(pipelinesQuery.data?.pipelines.length ?? 0) === 0
@@ -1318,7 +1319,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                       {p.name}
                     </option>
                   ))}
-                </select>
+                </Select>
                 {savePipelineOpen && (
                   <div className="flex items-center gap-2 mt-2">
                     <input

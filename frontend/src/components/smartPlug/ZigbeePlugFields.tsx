@@ -15,6 +15,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '../../api/client';
+import { Select } from '../Select';
 
 interface ZigbeePlugFieldsProps {
   value: string | null;
@@ -42,11 +43,11 @@ export function ZigbeePlugFields({ value, onChange, excludeIeees }: ZigbeePlugFi
   return (
     <div>
       <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.zigbeeDevice')}</label>
-      <select
+      <Select
+        className="w-full"
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value || null)}
         disabled={!radioUp || available.length === 0}
-        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-50"
       >
         <option value="">{t('smartPlugs.zigbeePickDevice')}</option>
         {available.map((device) => (
@@ -54,7 +55,7 @@ export function ZigbeePlugFields({ value, onChange, excludeIeees }: ZigbeePlugFi
             {device.model ? `${device.model} — ${device.ieee}` : device.ieee}
           </option>
         ))}
-      </select>
+      </Select>
 
       {/* Each disabled state says which one it is and where to go, rather than
           leaving the operator with a greyed-out control and no explanation. */}

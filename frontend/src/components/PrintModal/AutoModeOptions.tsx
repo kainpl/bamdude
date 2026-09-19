@@ -4,6 +4,7 @@ import { PrinterLocationSelect } from '../PrinterLocationSelect';
 import { Sparkles } from 'lucide-react';
 import type { AutoQueueFilamentOverride, FeedPolicy, Printer, RoutingPreview } from '../../api/client';
 import type { AutoModeOptionsState } from './types';
+import { Select } from '../Select';
 
 interface AutoModeOptionsProps {
   options: AutoModeOptionsState;
@@ -63,11 +64,13 @@ export function AutoModeOptions({ options, onChange, printers, slicedForModel, l
         <label className="text-xs text-bambu-gray block mb-1">
           {t('printModal.autoMode.targetModel')}
         </label>
-        <select
+        <Select
+          size="sm"
+          tone="raised"
+          className="w-full"
           value={options.target_model ?? ''}
           onChange={(e) => onChange({ ...options, target_model: e.target.value || null })}
           disabled={locked}
-          className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white px-2 py-1.5 text-sm disabled:opacity-70 disabled:cursor-not-allowed"
         >
           <option value="">
             {slicedForModel
@@ -79,7 +82,7 @@ export function AutoModeOptions({ options, onChange, printers, slicedForModel, l
               {model}
             </option>
           ))}
-        </select>
+        </Select>
       </div>
 
       <div>
@@ -98,13 +101,15 @@ export function AutoModeOptions({ options, onChange, printers, slicedForModel, l
 
       <label className="block text-xs text-bambu-gray">
         {t('filamentRouting.feedPolicy')}
-        <select value={options.feed_policy ?? 'auto'}
-          onChange={event => onChange({ ...options, feed_policy: event.target.value as FeedPolicy })}
-          className="mt-1 w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white px-2 py-1.5 text-sm">
+        <Select
+          size="sm"
+          tone="raised"
+          className="mt-1 w-full" value={options.feed_policy ?? 'auto'}
+          onChange={event => onChange({ ...options, feed_policy: event.target.value as FeedPolicy })}>
           <option value="auto">{t('filamentRouting.feedAuto')}</option>
           <option value="ams_only">{t('filamentRouting.feedAms')}</option>
           <option value="external_only">{t('filamentRouting.feedExternal')}</option>
-        </select>
+        </Select>
       </label>
 
       <label className="flex items-center justify-between gap-3 cursor-pointer">

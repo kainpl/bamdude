@@ -9,6 +9,7 @@ import { MATERIALS, KNOWN_VARIANTS } from './spool-form/constants';
 import { buildFilamentOptions, extractBrandsFromPresets } from './spool-form/utils';
 import { FILAMENT_EFFECT_OPTIONS } from './filamentSwatchHelpers';
 import { formatSpoolDisplayName } from '../utils/spoolName';
+import { Select } from './Select';
 
 interface Props {
   isOpen: boolean;
@@ -308,30 +309,30 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
         return <input type="date" disabled={!on} value={val} onChange={(e) => set(f.key, e.target.value)} className={inputCls} />;
       case 'diameter':
         return (
-          <select disabled={!on} value={val || '1.75'} onChange={(e) => set(f.key, e.target.value)} className={inputCls}>
+          <Select size="sm" className="w-full" disabled={!on} value={val || '1.75'} onChange={(e) => set(f.key, e.target.value)}>
             <option value="1.75">1.75 mm</option>
             <option value="2.85">2.85 mm</option>
-          </select>
+          </Select>
         );
       case 'effect':
         return (
-          <select disabled={!on} value={val} onChange={(e) => set(f.key, e.target.value)} className={inputCls}>
+          <Select size="sm" className="w-full" disabled={!on} value={val} onChange={(e) => set(f.key, e.target.value)}>
             {FILAMENT_EFFECT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{t(o.labelKey)}</option>)}
-          </select>
+          </Select>
         );
       case 'preset':
         return (
-          <select disabled={!on} value={val} onChange={(e) => set(f.key, e.target.value)} className={inputCls}>
+          <Select size="sm" className="w-full" disabled={!on} value={val} onChange={(e) => set(f.key, e.target.value)}>
             <option value="">{shared.slicer_filament == null ? t('inventory.bulkEdit.varies') : '—'}</option>
             {presetOptions.map((o) => <option key={o.code} value={o.code}>{o.displayName}</option>)}
-          </select>
+          </Select>
         );
       case 'catalog':
         return (
-          <select disabled={!on} value={val} onChange={(e) => set(f.key, e.target.value)} className={inputCls}>
+          <Select size="sm" className="w-full" disabled={!on} value={val} onChange={(e) => set(f.key, e.target.value)}>
             <option value="">{shared.core_weight_catalog_id == null ? t('inventory.bulkEdit.varies') : '—'}</option>
             {catalogEntries.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.weight}g)</option>)}
-          </select>
+          </Select>
         );
       case 'color':
         return (

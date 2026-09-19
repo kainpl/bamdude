@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import { api } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { Select } from '../Select';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
@@ -90,7 +91,8 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate }: Custo
   }
 
   return (
-    <select
+    <Select
+      className="w-full"
       value={value ?? ''}
       onChange={(e) => {
         if (e.target.value === NEW_CUSTOMER) {
@@ -100,7 +102,6 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate }: Custo
         onChange(e.target.value ? Number(e.target.value) : null);
       }}
       disabled={disabled}
-      className={FIELD_CLASS}
     >
       <option value="">{t('pickers.noCustomer')}</option>
       {customers?.map((c) => (
@@ -109,6 +110,6 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate }: Custo
         </option>
       ))}
       {allowCreate && <option value={NEW_CUSTOMER}>{t('pickers.newCustomer')}</option>}
-    </select>
+    </Select>
   );
 }

@@ -5,6 +5,7 @@ import { api, type CsvExportOptions, type CsvImportOptions, type CsvImportPrevie
 import { getSwatchStyle } from '../utils/colors';
 import { Button } from './Button';
 import { Modal } from './Modal';
+import { Select } from './Select';
 
 // The chosen locale knobs outlive the dialog — the same spreadsheet produces
 // the next file too.
@@ -34,15 +35,15 @@ function OptionSelect({ label, value, choices, onChange }: {
   return (
     <label className="flex flex-col gap-1 text-xs text-bambu-gray min-w-[9rem] flex-1">
       {label}
-      <select
+      <Select
+        size="sm"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white focus:outline-none focus:border-bambu-green"
       >
         {choices.map((c) => (
           <option key={c.value} value={c.value}>{c.label}</option>
         ))}
-      </select>
+      </Select>
     </label>
   );
 }

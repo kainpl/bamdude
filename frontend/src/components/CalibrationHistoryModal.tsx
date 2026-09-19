@@ -5,6 +5,7 @@ import { RefreshCw, Trash2, CheckCircle2 } from 'lucide-react';
 import { useCalibrationHistory } from '../hooks/useCalibrationHistory';
 import type { FilamentCalibrationOut, PACalibHistoryEntryOut } from '../api/client';
 import { Modal } from './Modal';
+import { Select } from './Select';
 
 interface Props {
   isOpen: boolean;
@@ -78,17 +79,17 @@ export function CalibrationHistoryModal({ isOpen, onClose, printerId }: Props) {
               {t('filamentCali.history.printerSide')}
             </h3>
             <div className="flex items-center gap-2">
-              <select
+              <Select
+                size="xs"
                 value={refreshDia}
                 onChange={(e) => setRefreshDia(parseFloat(e.target.value))}
-                className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 text-xs text-white"
               >
                 {[0.2, 0.4, 0.6, 0.8].map((d) => (
                   <option key={d} value={d}>
                     {d} mm
                   </option>
                 ))}
-              </select>
+              </Select>
               <button
                 onClick={() => h.refreshFromPrinter(refreshDia)}
                 disabled={h.isRefreshing}

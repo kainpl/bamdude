@@ -13,6 +13,7 @@ import { ConfirmModal } from './ConfirmModal';
 import { VirtualPrinterDiagnosticModal } from './VirtualPrinterDiagnosticModal';
 import { useToast } from '../contexts/ToastContext';
 import { FolderTreeSelect } from './FolderTreeSelect';
+import { Select } from './Select';
 
 type LocalMode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 type DisplayMode = 'print_queue' | 'file_manager' | 'proxy';
@@ -630,16 +631,18 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                 <div className="text-white text-sm font-medium mb-1">{t('virtualPrinter.model.title')}</div>
                 <p className="text-xs text-bambu-gray mb-2">{t('virtualPrinter.model.description')}</p>
                 <div className="relative">
-                  <select
+                  <Select
+                    size="sm"
+                    tone="raised"
+                    className="w-full"
                     value={localModel}
                     onChange={(e) => handleModelChange(e.target.value)}
                     disabled={pendingAction === 'model'}
-                    className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
                   >
                     {Object.entries(models).map(([code, name]) => (
                       <option key={code} value={code}>{name} ({code})</option>
                     ))}
-                  </select>
+                  </Select>
                   <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
                 </div>
               </div>
@@ -788,20 +791,22 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="relative flex-1">
-                      <select
+                      <Select
+                        size="sm"
+                        tone="raised"
+                        className="w-full"
                         value={localTargetPrinterId ?? ''}
                         onChange={(e) => {
                           const id = parseInt(e.target.value, 10);
                           if (!isNaN(id)) handleTargetPrinterChange(id);
                         }}
                         disabled={pendingAction === 'targetPrinter' || noMatchingPrinters}
-                        className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
                       >
                         <option value="">{t('virtualPrinter.targetPrinter.placeholder')}</option>
                         {filteredPrinters.map((p) => (
                           <option key={p.id} value={p.id}>{p.name} ({p.ip_address})</option>
                         ))}
-                      </select>
+                      </Select>
                       <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
                     </div>
                     {localTargetPrinterId !== null && (
@@ -829,7 +834,10 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             <div className="pt-2 border-t border-bambu-dark-tertiary">
               <div className="text-white text-sm font-medium mb-1">{t('virtualPrinter.bindIp.title')}</div>
               <div className="relative">
-                <select
+                <Select
+                  size="sm"
+                  tone="raised"
+                  className="w-full"
                   value={localBindIp}
                   onChange={(e) => {
                     setLocalBindIp(e.target.value);
@@ -837,7 +845,6 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                     updateMutation.mutate({ bind_ip: e.target.value });
                   }}
                   disabled={pendingAction === 'bindIp'}
-                  className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
                 >
                   <option value="">{t('virtualPrinter.bindIp.placeholder')}</option>
                   {networkInterfaces?.map((iface) => (
@@ -845,7 +852,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                       {iface.name} ({iface.ip}){iface.is_alias ? ' [alias]' : ''} - {iface.subnet}
                     </option>
                   ))}
-                </select>
+                </Select>
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
               </div>
               <p className="text-xs text-bambu-gray mt-1">{t('virtualPrinter.bindIp.hint')}</p>
@@ -950,11 +957,13 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                 )}
               </div>
               <div className="relative">
-                <select
+                <Select
+                  size="sm"
+                  tone="raised"
+                  className="w-full"
                   value={localRemoteInterfaceIp}
                   onChange={(e) => handleRemoteInterfaceChange(e.target.value)}
                   disabled={pendingAction === 'remoteInterface'}
-                  className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
                 >
                   <option value="">{t('virtualPrinter.remoteInterface.placeholder')}</option>
                   {networkInterfaces?.map((iface) => (
@@ -962,7 +971,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                       {iface.name} ({iface.ip}) - {iface.subnet}
                     </option>
                   ))}
-                </select>
+                </Select>
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
               </div>
             </div>

@@ -12,6 +12,7 @@ import { formatDateTime, type DateFormat, type TimeFormat } from '../utils/date'
 import { comparePrinterLike, printerLabel } from '../utils/printerLabel';
 import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName } from '../utils/spoolName';
 import { invalidateSpoolAndLocationQueries } from '../utils/inventoryQueries';
+import { Select } from './Select';
 
 /**
  * The farm's whole filament ledger, on the Inventory page (2026-09-01).
@@ -410,10 +411,11 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
 
         <div className="w-px h-5 bg-bambu-dark-tertiary" />
 
-        <select
+        <Select
+          tone="filter"
+          active={printerId !== ''}
           value={printerId}
           onChange={(e) => setPrinterId(e.target.value)}
-          className={chipClass(printerId !== '')}
         >
           <option value="">{t('inventory.usageView.colPrinter')}</option>
           <option value="__none__">{t('inventory.usageView.noPrinter')}</option>
@@ -422,29 +424,31 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
               {labelForPrinter(printer.id, printer.name, printer.archived)}
             </option>
           ))}
-        </select>
+        </Select>
 
-        <select
+        <Select
+          tone="filter"
+          active={material !== ''}
           value={material}
           onChange={(e) => setMaterial(e.target.value)}
-          className={chipClass(material !== '')}
         >
           <option value="">{t('inventory.material')}</option>
           {(facets?.materials ?? []).map((value) => (
             <option key={value} value={value}>{value}</option>
           ))}
-        </select>
+        </Select>
 
-        <select
+        <Select
+          tone="filter"
+          active={brand !== ''}
           value={brand}
           onChange={(e) => setBrand(e.target.value)}
-          className={chipClass(brand !== '')}
         >
           <option value="">{t('inventory.brand')}</option>
           {(facets?.brands ?? []).map((value) => (
             <option key={value} value={value}>{value}</option>
           ))}
-        </select>
+        </Select>
 
         <div className="w-px h-5 bg-bambu-dark-tertiary" />
 

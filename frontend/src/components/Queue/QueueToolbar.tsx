@@ -6,6 +6,7 @@ import {
   LayoutGrid, List, Activity, Filter, SlidersHorizontal,
 } from 'lucide-react';
 import type { QueueSortOption as SortOption } from '../../utils/queueOrder';
+import { Select } from '../Select';
 
 type ViewMode = 'expanded' | 'all' | 'timeline';
 
@@ -150,23 +151,25 @@ export function QueueToolbar({
     const fullWidth = inMenu ? 'w-full' : '';
     return (
       <>
-        <select
+        <Select
+          size="sm"
+          className={fullWidth}
           value={statusFilter}
           onChange={(e) => onStatusFilterChange(e.target.value)}
-          className={`h-8 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 text-white focus:border-bambu-green focus:outline-none ${fullWidth}`}
         >
           <option value="all">{t('printers.filter.allStatuses')}</option>
           <option value="printing">{t('printers.status.printing')}</option>
           <option value="paused">{t('printers.status.paused')}</option>
           <option value="idle">{t('printers.status.idle')}</option>
           <option value="error">{t('printers.status.error')}</option>
-        </select>
+        </Select>
 
         {availableLocations.length > 0 && (
-          <select
+          <Select
+            size="sm"
+            className={fullWidth}
             value={locationFilter}
             onChange={(e) => onLocationFilterChange(e.target.value)}
-            className={`h-8 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 text-white focus:border-bambu-green focus:outline-none ${fullWidth}`}
           >
             <option value="all">{t('printers.filter.allLocations')}</option>
             {availableLocations.map((loc) => (
@@ -175,7 +178,7 @@ export function QueueToolbar({
                 {loc.label}
               </option>
             ))}
-          </select>
+          </Select>
         )}
 
         <button
@@ -199,10 +202,11 @@ export function QueueToolbar({
     return (
       <>
         <div className={`flex items-center gap-1 ${fullWidth}`}>
-          <select
+          <Select
+            size="sm"
+            className={inMenu ? 'flex-1' : ''}
             value={sortBy}
             onChange={(e) => onSortByChange(e.target.value as SortOption)}
-            className={`h-8 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 text-white focus:border-bambu-green focus:outline-none ${inMenu ? 'flex-1' : ''}`}
           >
             <option value="name">{t('printers.sort.name')}</option>
             <option value="status">{t('printers.sort.status')}</option>
@@ -211,7 +215,7 @@ export function QueueToolbar({
             <option value="tag">{t('printers.sort.tag')}</option>
             <option value="eta">{t('printers.sort.eta')}</option>
             <option value="freeAt">{t('printers.sort.freeAt')}</option>
-          </select>
+          </Select>
           <button
             type="button"
             onClick={onSortDirectionToggle}

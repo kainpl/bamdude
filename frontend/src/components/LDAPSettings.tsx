@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { Select } from './Select';
 
 const SECURITY_PORT_MAP: Record<string, string> = {
   starttls: '389',
@@ -409,8 +410,10 @@ export function LDAPSettings() {
               <label className="block text-sm font-medium text-bambu-gray mb-2">
                 {t('settings.ldap.defaultGroup') || 'Default group'}
               </label>
-              <select
-                className={inputClasses}
+              <Select
+                size="lg"
+                tone="raised"
+                className="w-full"
                 value={form.ldap_default_group}
                 onChange={e => setForm({ ...form, ldap_default_group: e.target.value })}
               >
@@ -418,7 +421,7 @@ export function LDAPSettings() {
                 {groups.map(g => (
                   <option key={g.id} value={g.name}>{g.name}</option>
                 ))}
-              </select>
+              </Select>
               <p className="text-xs text-bambu-gray mt-1">
                 {t('settings.ldap.defaultGroupHint') || 'Assigned when an authenticated LDAP user has no mapped groups. Empty = user lands with no permissions (previous behavior).'}
               </p>

@@ -9,6 +9,7 @@ import { normalizeModelName } from '../../utils/printer';
 import { Button } from '../Button';
 import { PrintModal } from '../PrintModal';
 import { chosenPlate, parseCount, splitIsOff, type ChosenPlate } from './planMath';
+import { Select } from '../Select';
 
 /** The server's own ceiling on one enqueue item (`PlanEnqueueItem.count`). */
 export const MAX_PER_PLATE = 999;
@@ -187,19 +188,20 @@ export function PlanRow({
     >
       <td className="px-3 py-2 min-w-0">
         {hasAlternatives ? (
-          <select
+          <Select
+            size="sm"
+            className="max-w-full"
             data-testid={`plan-row-${lineId}-${row.plate_id}-file`}
             aria-label={t('orders.plan.row.file')}
             value={plate.plate_id}
             onChange={(e) => onChoose(Number(e.currentTarget.value))}
-            className="max-w-full px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:border-bambu-green focus:outline-none"
           >
             {options.map((option) => (
               <option key={option.plate_id} value={option.plate_id}>
                 {optionLabel(option)}
               </option>
             ))}
-          </select>
+          </Select>
         ) : (
           <p className="text-white truncate">{plate.filename}</p>
         )}
@@ -343,7 +345,9 @@ export function PlanRow({
             did. */}
         {pickingPrinter && (
           <div className="mt-2 flex justify-end">
-            <select
+            <Select
+              size="sm"
+              tone="muted"
               data-testid={`plan-row-${lineId}-${row.plate_id}-printer-pick`}
               aria-label={t('orders.plan.row.toPrinter')}
               value=""
@@ -353,7 +357,6 @@ export function PlanRow({
                 setPickingPrinter(false);
                 setPrinting({ plate: fileForPrinter(printer.model), printerId: printer.id });
               }}
-              className="px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded text-bambu-gray-light focus:border-bambu-green focus:outline-none"
             >
               <option value="">{t('orders.plan.row.toPrinter')}</option>
               {/* The filter can leave nothing — the only X2D is in Maintenance
@@ -369,7 +372,7 @@ export function PlanRow({
                   {printer.model ? `${printer.name} (${printer.model})` : printer.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
         )}
 

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import { byLocationName } from '../../utils/locationOrder';
+import { Select } from '../Select';
 
 /**
  * Manage the places printers and sensors stand in.
@@ -173,7 +174,9 @@ export function PrinterLocationsCard() {
                 column of its own and push the row one cell to the right. The
                 accessible name is identical either way. */}
             <div className={cell}>
-            <select
+            <Select
+              size="sm"
+              className="w-full"
               id={`parent-of-${loc.id}`}
               aria-label={`${t('printers.locations.parent')} ${loc.name}`}
               // `w-full` so every picker fills the shared column instead of
@@ -183,7 +186,6 @@ export function PrinterLocationsCard() {
               // white text, green focus ring. It was a smaller, greyer,
               // squarer thing than the picker eight lines below it in this
               // very card.
-              className="w-full text-sm px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
               value={loc.parent_id ?? ''}
               onChange={(e) => move.mutate({ id: loc.id, parent_id: e.target.value ? Number(e.target.value) : null })}
             >
@@ -198,7 +200,7 @@ export function PrinterLocationsCard() {
                     {candidate.name}
                   </option>
                 ))}
-            </select>
+            </Select>
             </div>
 
             <div className={cell}>
@@ -253,9 +255,9 @@ export function PrinterLocationsCard() {
         <label className="sr-only" htmlFor="new-location-parent">
           {t('printers.locations.parent')}
         </label>
-        <select
+        <Select
+          size="sm"
           id="new-location-parent"
-          className="px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
           value={parentId ?? ''}
           onChange={(e) => setParentId(e.target.value ? Number(e.target.value) : null)}
         >
@@ -266,7 +268,7 @@ export function PrinterLocationsCard() {
               {loc.name}
             </option>
           ))}
-        </select>
+        </Select>
         <button
           type="button"
           className="px-3 py-1.5 bg-bambu-green rounded-lg text-white disabled:opacity-50"

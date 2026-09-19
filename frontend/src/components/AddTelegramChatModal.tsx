@@ -7,6 +7,7 @@ import type { TelegramChat, TelegramChatCreate, TelegramChatUpdate, NotifyEventI
 import { Button } from './Button';
 import { Modal } from './Modal';
 import { Toggle } from './Toggle';
+import { Select } from './Select';
 
 interface AddTelegramChatModalProps {
   chat?: TelegramChat | null;
@@ -231,31 +232,31 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
           <label className="block text-sm text-bambu-gray mb-1">
             {t('telegram.user')} <span className="text-bambu-gray/50">({t('telegram.optional')})</span>
           </label>
-          <select
+          <Select
+            className="w-full"
             value={userId ?? ''}
             onChange={(e) => handleUserChange(e.target.value ? parseInt(e.target.value) : null)}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-bambu-green"
           >
             <option value="">{t('telegram.noUser')}</option>
             {users?.map(u => (
               <option key={u.id} value={u.id}>{u.username}</option>
             ))}
-          </select>
+          </Select>
         </div>
 
         {/* Role (group) */}
         <div>
           <label className="block text-sm text-bambu-gray mb-1">{t('telegram.role')} *</label>
-          <select
+          <Select
+            className="w-full"
             value={groupId ?? ''}
             onChange={(e) => setGroupId(e.target.value ? parseInt(e.target.value) : null)}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-bambu-green"
           >
             <option value="">{t('telegram.notAssigned')}</option>
             {groups?.map(g => (
               <option key={g.id} value={g.id}>{g.name}</option>
             ))}
-          </select>
+          </Select>
           {userId && (
             <p className="text-xs text-bambu-gray/60 mt-1">{t('telegram.roleAutoFill')}</p>
           )}

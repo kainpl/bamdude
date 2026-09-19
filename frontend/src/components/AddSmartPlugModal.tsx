@@ -8,6 +8,7 @@ import { api } from '../api/client';
 import type { SmartPlug, SmartPlugCreate, SmartPlugUpdate, DiscoveredTasmotaDevice } from '../api/client';
 import { Button } from './Button';
 import { Modal } from './Modal';
+import { Select } from './Select';
 
 interface AddSmartPlugModalProps {
   plug?: SmartPlug | null;
@@ -461,21 +462,21 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
         {!isEditing && (
           <div>
             <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.plugType')}</label>
-            <select
+            <Select
+              className="w-full"
               value={plugType}
               onChange={(e) => {
                 setPlugType(e.target.value as typeof plugType);
                 setTestResult(null);
                 setError(null);
               }}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             >
               <option value="tasmota">Tasmota</option>
               <option value="homeassistant">Home Assistant</option>
               <option value="mqtt">MQTT</option>
               <option value="rest">REST</option>
               <option value="zigbee">Zigbee</option>
-            </select>
+            </Select>
           </div>
         )}
 
@@ -564,12 +565,13 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                 </div>
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1 opacity-50">{t('smartPlugs.selectEntity')}</label>
-                  <select
+                  <Select
+                    tone="muted"
+                    className="w-full cursor-not-allowed opacity-50"
                     disabled
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray cursor-not-allowed opacity-50"
                   >
                     <option>{t('smartPlugs.addSmartPlug.chooseEntity')}</option>
-                  </select>
+                  </Select>
                 </div>
               </div>
             )}
@@ -1193,16 +1195,17 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
               <p className="text-white font-medium text-sm">{t('smartPlugs.restControl')}</p>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restMethod')}</label>
-                <select
+                <Select
+                  tone="raised"
+                  className="w-full"
                   value={restMethod}
                   onChange={(e) => setRestMethod(e.target.value)}
-                  className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 >
                   <option value="GET">GET</option>
                   <option value="POST">POST</option>
                   <option value="PUT">PUT</option>
                   <option value="PATCH">PATCH</option>
-                </select>
+                </Select>
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOnUrl')}</label>
@@ -1568,10 +1571,10 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
         {(
           <div>
             <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.linkToPrinter')}</label>
-            <select
+            <Select
+              className="w-full"
               value={printerId ?? ''}
               onChange={(e) => setPrinterId(e.target.value ? Number(e.target.value) : null)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             >
               <option value="">{t('smartPlugs.noPrinter')}</option>
               {availablePrinters?.map((p) => (
@@ -1579,7 +1582,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                   {p.name}
                 </option>
               ))}
-            </select>
+            </Select>
             <p className="text-xs text-bambu-gray mt-1">
               {t('smartPlugs.linkingDescription')}
             </p>
@@ -1833,16 +1836,16 @@ function PowerOnBehaviorField({ plugId }: { plugId: number }) {
         <p className="text-xs text-bambu-gray italic">{t('smartPlugs.powerOn.unsupported')}</p>
       ) : (
         <>
-          <select
+          <Select
+            className="w-full"
             value={data.mode ?? 'previous'}
             disabled={mutation.isPending}
             onChange={(e) => mutation.mutate(e.target.value as 'on' | 'off' | 'previous')}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-60"
           >
             <option value="previous">{t('smartPlugs.powerOn.previous')}</option>
             <option value="on">{t('smartPlugs.powerOn.alwaysOn')}</option>
             <option value="off">{t('smartPlugs.powerOn.alwaysOff')}</option>
-          </select>
+          </Select>
           <p className="text-xs text-bambu-gray mt-1">{t('smartPlugs.powerOn.hint')}</p>
         </>
       )}

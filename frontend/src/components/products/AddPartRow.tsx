@@ -6,6 +6,7 @@ import { api } from '../../api/client';
 import type { ProductPartKind } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
+import { Select } from '../Select';
 
 const FIELD_CLASS =
   'px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
@@ -87,16 +88,16 @@ export function AddPartRow({ productId, canEdit }: AddPartRowProps) {
           <label className="block text-xs text-bambu-gray mb-1" htmlFor="add-part-kind">
             {t('products.composition.kind')}
           </label>
-          <select
+          <Select
+            size="sm"
             id="add-part-kind"
             value={kind}
             onChange={(e) => setKind(e.target.value as ProductPartKind)}
             disabled={add.isPending}
-            className={FIELD_CLASS}
           >
             <option value="printed">{t('products.composition.printed')}</option>
             <option value="purchased">{t('products.composition.purchased')}</option>
-          </select>
+          </Select>
         </div>
 
         <div className="min-w-[12rem] flex-1">

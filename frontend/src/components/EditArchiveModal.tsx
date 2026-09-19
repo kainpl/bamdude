@@ -12,6 +12,7 @@ import { useToast } from '../contexts/ToastContext';
 import { OrderPicker } from './pickers/OrderPicker';
 import { OrderLinePicker } from './pickers/OrderLinePicker';
 import { invalidateOrderViews } from '../utils/queryInvalidation';
+import { Select } from './Select';
 
 // Keys for failure reasons - translated at render time
 const FAILURE_REASON_KEYS = [
@@ -318,10 +319,10 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
         {/* Printer */}
         <div>
           <label className="block text-sm text-bambu-gray mb-1">{t('editArchive.printer')}</label>
-          <select
+          <Select
+            className="w-full"
             value={printerId ?? ''}
             onChange={(e) => setPrinterId(e.target.value ? Number(e.target.value) : null)}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
           >
             <option value="">{t('editArchive.noPrinter')}</option>
             {printers?.map((p) => (
@@ -329,7 +330,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
                 {p.name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         {/* Order */}
@@ -527,7 +528,8 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
         {/* Status */}
         <div>
           <label className="block text-sm text-bambu-gray mb-1">{t('editArchive.status')}</label>
-          <select
+          <Select
+            className="w-full"
             value={status}
             onChange={(e) => {
               setStatus(e.target.value);
@@ -537,25 +539,24 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
                 setErrorMessage('');
               }
             }}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
           >
             {ARCHIVE_STATUS_KEYS.map((statusKey) => (
               <option key={statusKey} value={statusKey}>
                 {t(`editArchive.statuses.${statusKey}`)}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         {/* Failure Reason - only show for failed/aborted prints */}
         {(status === 'failed' || status === 'aborted') && (
           <div>
             <label htmlFor="failure-reason-select" className="block text-sm text-bambu-gray mb-1">{t('editArchive.failureReason')}</label>
-            <select
+            <Select
+              className="w-full"
               id="failure-reason-select"
               value={failureReason}
               onChange={(e) => setFailureReason(e.target.value)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             >
               <option value="">{t('editArchive.selectReason')}</option>
               {FAILURE_REASON_KEYS.map((reasonKey) => (
@@ -563,7 +564,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
                   {t(`editArchive.failureReasons.${reasonKey}`)}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
         )}
 

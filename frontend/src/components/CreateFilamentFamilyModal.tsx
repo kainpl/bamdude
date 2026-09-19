@@ -20,6 +20,7 @@ import type { CreateFamilyResponse, UnifiedPreset } from '../api/client';
 import { Button } from './Button';
 import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
+import { Select } from './Select';
 
 interface CreateFilamentFamilyModalProps {
   open: boolean;
@@ -212,17 +213,18 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.type')}</label>
-            <select
+            <Select
+              tone="raised"
+              className="w-full"
               value={filamentType}
               onChange={(e) => setFilamentType(e.target.value)}
-              className="w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
             >
               {(options?.filament_types || ['PLA']).map((ft) => (
                 <option key={ft} value={ft}>
                   {ft}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <div>
             <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.serial')}</label>
@@ -254,10 +256,11 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
             </label>
           </div>
           {sourceMode === 'preset' && (
-            <select
+            <Select
+              tone="raised"
+              className="accent-bambu-green mt-2 w-full"
               value={sourceKey}
               onChange={(e) => setSourceKey(e.target.value)}
-              className="accent-bambu-green mt-2 w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
             >
               <option value="">{t('authoring.pickPreset')}</option>
               {presetChoices.map((c) => (
@@ -265,7 +268,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
                   {c.label}
                 </option>
               ))}
-            </select>
+            </Select>
           )}
         </div>
 

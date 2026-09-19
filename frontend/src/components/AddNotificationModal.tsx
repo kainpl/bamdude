@@ -10,6 +10,7 @@ import { Modal } from './Modal';
 import { Toggle } from './Toggle';
 import { ProviderEventToggles } from './ProviderEventToggles';
 import { useEventLabel, useProviderEvents } from './providerEvents';
+import { Select } from './Select';
 
 interface AddNotificationModalProps {
   provider?: NotificationProvider | null;
@@ -389,7 +390,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
         {/* Provider Type */}
         <div>
           <label className="block text-sm text-bambu-gray mb-1">{t('notifications.providerTypeLabel')}</label>
-          <select
+          <Select
+            className="w-full"
             value={providerType}
             onChange={(e) => {
               setProviderType(e.target.value as ProviderType);
@@ -400,14 +402,13 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               setTestResult(null);
             }}
             disabled={isEditing}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-50"
           >
             {PROVIDER_VALUES.map((value) => (
               <option key={value} value={value}>
                 {t(`notifications.providerTypes.${value}`, value)}
               </option>
             ))}
-          </select>
+          </Select>
           <p className="text-xs text-bambu-gray mt-1">
             {t(`notifications.providerDescriptions.${providerType}`, '')}
           </p>
@@ -424,20 +425,20 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                 {field.label} {field.required && '*'}
               </label>
               {field.type === 'select' && 'options' in field && field.options ? (
-                <select
+                <Select
+                  className="w-full"
                   value={config[field.key] || field.options[0]?.value || ''}
                   onChange={(e) => {
                     setConfig({ ...config, [field.key]: e.target.value });
                     setTestResult(null);
                   }}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 >
                   {field.options.map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label}
                     </option>
                   ))}
-                </select>
+                </Select>
               ) : field.type === 'textarea' ? (
                 <textarea
                   value={config[field.key] || ''}
@@ -472,17 +473,18 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           <div className="space-y-3 p-3 bg-bambu-dark rounded-lg">
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('notifications.signalRecipientType')}</label>
-              <select
+              <Select
+                tone="raised"
+                className="w-full"
                 value={signalRecipientType}
                 onChange={(e) => {
                   setSignalRecipientType(e.target.value as 'numbers' | 'group');
                   setTestResult(null);
                 }}
-                className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
               >
                 <option value="numbers">{t('notifications.signalRecipientTypeNumbers')}</option>
                 <option value="group">{t('notifications.signalRecipientTypeGroup')}</option>
-              </select>
+              </Select>
             </div>
 
             {signalRecipientType === 'numbers' ? (
@@ -742,20 +744,21 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                   {enabledEvents.map((ev) => (
                     <div key={ev.key} className="flex items-center justify-between gap-3">
                       <span className="text-sm text-white">{ev.label}</span>
-                      <select
+                      <Select
+                        size="sm"
+                        tone="raised"
                         value={eventPriorities[ev.key] ?? 3}
                         onChange={(e) => {
                           const next = Number(e.target.value);
                           setEventPriorities((prev) => ({ ...prev, [ev.key]: next }));
                         }}
-                        className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-sm text-white focus:border-bambu-green focus:outline-none"
                       >
                         <option value={1}>{t('notifications.eventPriority.min')}</option>
                         <option value={2}>{t('notifications.eventPriority.low')}</option>
                         <option value={3}>{t('notifications.eventPriority.default')}</option>
                         <option value={4}>{t('notifications.eventPriority.high')}</option>
                         <option value={5}>{t('notifications.eventPriority.urgent')}</option>
-                      </select>
+                      </Select>
                     </div>
                   ))}
                 </div>

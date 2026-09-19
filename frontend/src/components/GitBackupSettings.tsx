@@ -41,6 +41,7 @@ import { Toggle } from './Toggle';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { formatDateTime as fmtDateTime, formatRelativeTime, type DateFormat, type TimeFormat } from '../utils/date';
+import { Select } from './Select';
 
 type GitProvider = 'github' | 'gitlab' | 'gitea' | 'forgejo';
 
@@ -650,7 +651,8 @@ export function GitBackupSettings() {
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('backup.autoBackup')}</label>
-                <select
+                <Select
+                  className="w-full"
                   value={scheduleEnabled ? scheduleType : 'disabled'}
                   onChange={(e) => {
                     if (e.target.value === 'disabled') {
@@ -660,13 +662,12 @@ export function GitBackupSettings() {
                       setScheduleType(e.target.value as ScheduleType);
                     }
                   }}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 >
                   <option value="disabled">{t('backup.manualOnly')}</option>
                   <option value="hourly">{t('backup.hourly')}</option>
                   <option value="daily">{t('backup.daily')}</option>
                   <option value="weekly">{t('backup.weekly')}</option>
-                </select>
+                </Select>
               </div>
             </div>
 
@@ -1095,7 +1096,8 @@ export function GitBackupSettings() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <label className="text-sm">
                     <span className="block text-bambu-gray mb-1">{t('backup.scheduledLocalBackup.schedule')}</span>
-                    <select
+                    <Select
+                      className="w-full"
                       value={localBackupStatus?.schedule ?? 'daily'}
                       onChange={async (e) => {
                         try {
@@ -1105,12 +1107,11 @@ export function GitBackupSettings() {
                           showToast(err instanceof Error ? err.message : 'Failed', 'error');
                         }
                       }}
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
                     >
                       <option value="hourly">{t('backup.scheduledLocalBackup.hourly')}</option>
                       <option value="daily">{t('backup.scheduledLocalBackup.daily')}</option>
                       <option value="weekly">{t('backup.scheduledLocalBackup.weekly')}</option>
-                    </select>
+                    </Select>
                   </label>
 
                   {(localBackupStatus?.schedule ?? 'daily') !== 'hourly' && (

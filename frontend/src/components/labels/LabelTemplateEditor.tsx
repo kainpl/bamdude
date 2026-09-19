@@ -44,6 +44,7 @@ import { Button } from '../Button';
 import { Card, CardContent, CardHeader } from '../Card';
 import { LabelCanvas } from './LabelCanvas';
 import { ElementInspector } from './ElementInspector';
+import { Select } from '../Select';
 import {
   alignBox,
   boxOf,
@@ -430,16 +431,16 @@ export function LabelTemplateEditor() {
                   <label className="text-xs text-bambu-gray" htmlFor="label-target">
                     {t('labelEditor.target.label')}
                   </label>
-                  <select
+                  <Select
+                    size="sm"
                     id="label-target"
                     value={draft.target}
 
                     onChange={(e) => commit({ ...draft, target: e.target.value as LabelTarget })}
-                    className="px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   >
                     <option value="driver">{t('labelEditor.target.driver')}</option>
                     <option value="thermal">{t('labelEditor.target.thermal')}</option>
-                  </select>
+                  </Select>
                   <span className="text-xs text-bambu-gray">
                     {draft.target === 'thermal' ? t('labelEditor.target.thermalHint') : t('labelEditor.target.driverHint')}
                   </span>
@@ -511,17 +512,17 @@ export function LabelTemplateEditor() {
                   {devices.length > 0 && (
                     <>
                       {devices.length > 1 && (
-                        <select
+                        <Select
+                          size="sm"
                           value={targetId ?? ''}
                           onChange={(e) => setTestDeviceId(Number(e.target.value))}
-                          className="px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
                         >
                           {devices.map((device: LabelDevice) => (
                             <option key={device.id} value={device.id}>
                               {device.name || device.model || device.installation_id}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                       )}
                       <Button
                         variant="secondary"

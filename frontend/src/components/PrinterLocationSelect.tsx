@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { byLocationName } from '../utils/locationOrder';
+import { Select } from './Select';
 
 interface Props {
   value: number | null;
@@ -92,8 +93,9 @@ export function PrinterLocationSelect({ value, onChange, allowCreate = false }: 
 
   return (
     <div className="flex gap-2">
-      <select
-        className="flex-1 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+      <Select
+        size="sm"
+        className="flex-1"
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
       >
@@ -112,7 +114,7 @@ export function PrinterLocationSelect({ value, onChange, allowCreate = false }: 
               {loc.name}
             </option>
           ))}
-      </select>
+      </Select>
       {allowCreate && (
         <button type="button" className="px-3 py-1.5 text-bambu-green whitespace-nowrap" onClick={() => setCreateMode(true)}>
           {t('printers.locations.addShort')}

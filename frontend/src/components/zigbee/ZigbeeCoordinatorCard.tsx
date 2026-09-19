@@ -26,6 +26,7 @@ import { Button } from '../Button';
 import { ConfirmModal } from '../ConfirmModal';
 import { useToast } from '../../contexts/ToastContext';
 import { usePairingProgress } from './usePairingProgress';
+import { Select } from '../Select';
 
 type Transport = 'ethernet' | 'usb';
 
@@ -241,10 +242,10 @@ export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
           <label className="block text-sm text-bambu-gray mb-1">{t('settings.zigbee.path')}</label>
           {transport === 'usb' ? (
             <div className="flex gap-2">
-              <select
+              <Select
+                className="flex-1"
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
-                className="flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
               >
                 <option value="">{t('settings.zigbee.pickPort')}</option>
                 {ports.map((port) => (
@@ -252,7 +253,7 @@ export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
                     {port.description ? `${port.device} — ${port.description}` : port.device}
                   </option>
                 ))}
-              </select>
+              </Select>
               <Button variant="secondary" onClick={() => refetchPorts()} title={t('settings.zigbee.refreshPorts')}>
                 <RefreshCw className="w-4 h-4" />
               </Button>

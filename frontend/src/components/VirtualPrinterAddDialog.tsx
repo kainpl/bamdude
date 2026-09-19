@@ -6,6 +6,7 @@ import { api, multiVirtualPrinterApi } from '../api/client';
 import { Button } from './Button';
 import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
+import { Select } from './Select';
 
 type Mode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 type DisplayMode = 'print_queue' | 'file_manager' | 'proxy';
@@ -136,19 +137,20 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
           <div>
             <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.targetPrinter.title')}</label>
             <div className="relative">
-              <select
+              <Select
+                tone="raised"
+                className="w-full"
                 value={targetPrinterId ?? ''}
                 onChange={(e) => {
                   const id = parseInt(e.target.value, 10);
                   setTargetPrinterId(isNaN(id) ? null : id);
                 }}
-                className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-2 text-white text-sm appearance-none cursor-pointer pr-10"
               >
                 <option value="">{t('virtualPrinter.targetPrinter.placeholder')}</option>
                 {printers?.map((p) => (
                   <option key={p.id} value={p.id}>{p.name} ({p.ip_address})</option>
                 ))}
-              </select>
+              </Select>
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
             </div>
           </div>

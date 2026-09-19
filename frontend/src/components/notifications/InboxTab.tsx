@@ -11,6 +11,7 @@ import { formatRelativeTime } from '../../utils/date';
 import { INBOX_QUERY_KEY } from '../../hooks/useInboxUnreadCount';
 import { PaginationBar } from '../PaginationBar';
 import { SeverityIcon } from './SeverityIcon';
+import { Select } from '../Select';
 
 const PERIOD_MS = { day: 24 * 3600e3, week: 7 * 24 * 3600e3, month: 30 * 24 * 3600e3 } as const;
 type Period = keyof typeof PERIOD_MS | 'all';
@@ -19,9 +20,6 @@ type Period = keyof typeof PERIOD_MS | 'all';
 // page it reads.
 const PAGE_SIZE_KEY = 'bamdude-inbox-pageSize';
 const DEFAULT_PAGE_SIZE = 24;
-
-const selectClass =
-  'px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white';
 
 /**
  * The left edge of a row, by severity.
@@ -138,9 +136,9 @@ export function InboxTab() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <select
+        <Select
+          size="sm"
           aria-label={t('notifications.center.inbox.severityLabel')}
-          className={selectClass}
           value={severity}
           onChange={(e) => setSeverity(e.target.value as InboxSeverity | '')}
         >
@@ -148,10 +146,10 @@ export function InboxTab() {
           {(['error', 'warning', 'info'] as const).map((s) => (
             <option key={s} value={s}>{t(`notifications.center.severity.${s}`)}</option>
           ))}
-        </select>
-        <select
+        </Select>
+        <Select
+          size="sm"
           aria-label={t('notifications.center.inbox.printerLabel')}
-          className={selectClass}
           value={printerId}
           onChange={(e) => setPrinterId(e.target.value ? Number(e.target.value) : '')}
         >
@@ -159,17 +157,17 @@ export function InboxTab() {
           {printers?.map((p) => (
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}
-        </select>
-        <select
+        </Select>
+        <Select
+          size="sm"
           aria-label={t('notifications.center.inbox.periodLabel')}
-          className={selectClass}
           value={period}
           onChange={(e) => setPeriod(e.target.value as Period)}
         >
           {(['all', 'day', 'week', 'month'] as const).map((p) => (
             <option key={p} value={p}>{t(`notifications.center.inbox.period.${p}`)}</option>
           ))}
-        </select>
+        </Select>
         <label className="flex items-center gap-2 text-sm text-bambu-gray">
           <input type="checkbox" checked={unreadOnly} onChange={(e) => setUnreadOnly(e.target.checked)} />
           {t('notifications.center.inbox.unreadOnly')}
