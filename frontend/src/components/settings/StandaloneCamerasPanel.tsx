@@ -18,7 +18,14 @@ import { ConfirmModal } from '../ConfirmModal';
 import { PrinterLocationSelect } from '../PrinterLocationSelect';
 import { useToast } from '../../contexts/ToastContext';
 
-const TYPES: Camera['camera_type'][] = ['mjpeg', 'rtsp', 'snapshot', 'usb'];
+/** Value plus the label key the printers' external camera select already uses:
+ *  the same four sources, so they must read the same in both lists. */
+const TYPES: { value: Camera['camera_type']; labelKey: string }[] = [
+  { value: 'mjpeg', labelKey: 'settings.cameraTypeMjpeg' },
+  { value: 'rtsp', labelKey: 'settings.cameraTypeRtsp' },
+  { value: 'snapshot', labelKey: 'settings.cameraTypeSnapshot' },
+  { value: 'usb', labelKey: 'settings.cameraTypeUsb' },
+];
 /** A snapshot source is already a single frame, so an override would be redundant. */
 const TAKES_SNAPSHOT_URL: Camera['camera_type'][] = ['mjpeg', 'rtsp', 'usb'];
 
@@ -85,8 +92,13 @@ export function StandaloneCamerasPanel() {
 
   const field =
     'px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none';
+  const label = 'block text-xs text-bambu-gray mb-1';
 
+  /** ``idPrefix`` keeps every label bound to its own row's input: the same
+   *  fields are drawn once per saved camera plus once for the draft, and a
+   *  shared id would point every label at the first row. */
   const rowFields = (
+    idPrefix: string,
     value: CameraCreate,
     onChange: (next: Partial<CameraCreate>) => void,
     onTest: () => void,
@@ -94,64 +106,82 @@ export function StandaloneCamerasPanel() {
   ) => (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
-        <input
-          type="text"
-          aria-label={t('settings.otherCameras.name')}
-          placeholder={t('settings.otherCameras.namePlaceholder')}
-          value={value.name}
-          onChange={(e) => onChange({ name: e.target.value })}
-          className={`${field} min-w-[8rem] flex-1`}
-        />
-        <select
-          aria-label={t('settings.otherCameras.type')}
-          value={value.camera_type}
-          onChange={(e) => onChange({ camera_type: e.target.value as Camera['camera_type'] })}
-          className={field}
-        >
-          {TYPES.map((type) => (
-            <option key={type} value={type}>{type.toUpperCase()}</option>
-          ))}
-        </select>
-        <select
-          aria-label={t('settings.cameraRotation')}
-          value={value.rotation}
-          onChange={(e) => onChange({ rotation: parseInt(e.target.value, 10) })}
-          className={field}
-        >
-          {[0, 90, 180, 270].map((deg) => (
-            <option key={deg} value={deg}>{deg}°</option>
-          ))}
-        </select>
+        <div className="min-w-[8rem] flex-1">
+          <label className={label} htmlFor={`${idPrefix}-name`}>{t('settings.otherCameras.name')}</label>
+          <input
+            id={`${idPrefix}-name`}
+            type="text"
+            placeholder={t('settings.otherCameras.namePlaceholder')}
+            value={value.name}
+            onChange={(e) => onChange({ name: e.target.value })}
+            className={`${field} w-full`}
+          />
+        </div>
+        <div>
+          <label className={label} htmlFor={`${idPrefix}-type`}>{t('settings.otherCameras.type')}</label>
+          <select
+            id={`${idPrefix}-type`}
+            value={value.camera_type}
+            onChange={(e) => onChange({ camera_type: e.target.value as Camera['camera_type'] })}
+            className={field}
+          >
+            {TYPES.map((type) => (
+              <option key={type.value} value={type.value}>{t(type.labelKey)}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className={label} htmlFor={`${idPrefix}-rotation`}>{t('settings.cameraRotation')}</label>
+          <select
+            id={`${idPrefix}-rotation`}
+            value={value.rotation}
+            onChange={(e) => onChange({ rotation: parseInt(e.target.value, 10) })}
+            className={field}
+          >
+            {[0, 90, 180, 270].map((deg) => (
+              <option key={deg} value={deg}>{deg}°</option>
+            ))}
+          </select>
+        </div>
       </div>
-      <div className="flex gap-2">
-        <input
-          type="text"
-          aria-label={t('settings.otherCameras.url')}
-          placeholder={
-            value.camera_type === 'usb'
-              ? t('settings.cameraPlaceholderUsb')
-              : t('settings.cameraPlaceholderUrl')
-          }
-          value={value.url}
-          onChange={(e) => onChange({ url: e.target.value })}
-          className={`${field} flex-1`}
-        />
-        <Button size="sm" variant="secondary" onClick={onTest} disabled={busy || !value.url}>
-          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : t('settings.test')}
-        </Button>
+      <div>
+        <label className={label} htmlFor={`${idPrefix}-url`}>
+          {value.camera_type === 'usb' ? t('settings.otherCameras.device') : t('settings.otherCameras.url')}
+        </label>
+        <div className="flex gap-2">
+          <input
+            id={`${idPrefix}-url`}
+            type="text"
+            placeholder={
+              value.camera_type === 'usb'
+                ? t('settings.cameraPlaceholderUsb')
+                : t('settings.cameraPlaceholderUrl')
+            }
+            value={value.url}
+            onChange={(e) => onChange({ url: e.target.value })}
+            className={`${field} flex-1`}
+          />
+          <Button size="sm" variant="secondary" onClick={onTest} disabled={busy || !value.url}>
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : t('settings.test')}
+          </Button>
+        </div>
       </div>
       {TAKES_SNAPSHOT_URL.includes(value.camera_type) && (
-        <input
-          type="text"
-          aria-label={t('settings.cameraSnapshotUrl')}
-          placeholder={t('settings.cameraSnapshotUrlPlaceholder')}
-          value={value.snapshot_url ?? ''}
-          onChange={(e) => onChange({ snapshot_url: e.target.value || null })}
-          className={`${field} w-full`}
-        />
+        <div>
+          <label className={label} htmlFor={`${idPrefix}-snapshot`}>{t('settings.cameraSnapshotUrl')}</label>
+          <input
+            id={`${idPrefix}-snapshot`}
+            type="text"
+            placeholder={t('settings.cameraSnapshotUrlPlaceholder')}
+            value={value.snapshot_url ?? ''}
+            onChange={(e) => onChange({ snapshot_url: e.target.value || null })}
+            className={`${field} w-full`}
+          />
+          <p className="text-xs text-bambu-gray opacity-75 mt-1">{t('settings.otherCameras.snapshotUrlHelp')}</p>
+        </div>
       )}
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="text-xs text-bambu-gray">{t('settings.otherCameras.location')}</label>
+      <div>
+        <label className={label}>{t('settings.otherCameras.location')}</label>
         <PrinterLocationSelect
           value={value.location_id}
           onChange={(location_id) => onChange({ location_id })}
@@ -197,6 +227,7 @@ export function StandaloneCamerasPanel() {
               </div>
             </div>
             {rowFields(
+              `camera-${camera.id}`,
               camera,
               (next) => update.mutate({ id: camera.id, data: next }),
               () => test(camera.id, camera.url, camera.camera_type),
@@ -208,6 +239,7 @@ export function StandaloneCamerasPanel() {
         {draft ? (
           <div className="p-3 bg-bambu-dark rounded-lg space-y-2 border border-bambu-green/40">
             {rowFields(
+              'camera-draft',
               draft,
               (next) => setDraft({ ...draft, ...next }),
               () => test('draft', draft.url, draft.camera_type),
