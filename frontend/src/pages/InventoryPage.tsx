@@ -23,6 +23,7 @@ import type {
   SpoolListParams,
 } from '../api/client';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { PaginationBar } from '../components/PaginationBar';
 import { SpoolFormModal, type SpoolFormMode } from '../components/SpoolFormModal';
 import { SpoolCsvExportModal, SpoolCsvImportModal } from '../components/SpoolCsvImportModal';
@@ -2693,68 +2694,56 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         <div className="w-px h-5 bg-bambu-dark-tertiary" />
 
         {/* Material dropdown chip */}
-        <select
+        <Select
           value={materialFilter}
           onChange={(e) => { setMaterialFilter(e.target.value); resetPage(); }}
-          className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
-            materialFilter
-              ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
-              : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
-          }`}
+          tone="filter"
+          active={!!materialFilter}
         >
           <option value="">{t('inventory.material')}</option>
           {withCurrentValue(uniqueMaterials, materialFilter).map((m) => (
             <option key={m} value={m}>{m}</option>
           ))}
-        </select>
+        </Select>
 
         {/* Brand dropdown chip */}
-        <select
+        <Select
           value={brandFilter}
           onChange={(e) => { setBrandFilter(e.target.value); resetPage(); }}
-          className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
-            brandFilter
-              ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
-              : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
-          }`}
+          tone="filter"
+          active={!!brandFilter}
         >
           <option value="">{t('inventory.brand')}</option>
           {withCurrentValue(uniqueBrands, brandFilter).map((b) => (
             <option key={b} value={b}>{b}</option>
           ))}
-        </select>
+        </Select>
 
         {/* Colour dropdown chip — options from existing (non-archived) spools,
             by resolved colour name. Only render once at least one active spool
             has a resolvable colour (or a colour is already selected). */}
         {(uniqueColors.length > 0 || colorFilter) && (
-          <select
+          <Select
             value={colorFilter}
             onChange={(e) => { setColorFilter(e.target.value); resetPage(); }}
-            className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
-              colorFilter
-                ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
-                : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
-            }`}
+            tone="filter"
+            active={!!colorFilter}
           >
             <option value="">{t('inventory.color')}</option>
             {withCurrentValue(uniqueColors, colorFilter).map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
-          </select>
+          </Select>
         )}
 
         {/* Category dropdown chip (#729) — only render once at least one
             spool carries a category, otherwise it's noise. */}
         {(uniqueCategories.length > 0 || categoryFilter) && (
-          <select
+          <Select
             value={categoryFilter}
             onChange={(e) => { setCategoryFilter(e.target.value); resetPage(); }}
-            className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
-              categoryFilter
-                ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
-                : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
-            }`}
+            tone="filter"
+            active={!!categoryFilter}
           >
             <option value="">{t('inventory.category')}</option>
             {/* `__none__` is a real value with its own option below, so it must
@@ -2765,21 +2754,18 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             {(hasUncategorized || categoryFilter === '__none__') && (
               <option value="__none__">{t('inventory.categoryNone')}</option>
             )}
-          </select>
+          </Select>
         )}
 
         {/* Storage location dropdown chip (#1400) — only render once at
             least one spool carries a storage location, otherwise it's
             noise (matches the category chip pattern). */}
         {(storageLocations.length > 0 || storageLocationFilter) && (
-          <select
+          <Select
             value={storageLocationFilter}
             onChange={(e) => { setStorageLocationFilter(e.target.value); }}
-            className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
-              storageLocationFilter
-                ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
-                : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
-            }`}
+            tone="filter"
+            active={!!storageLocationFilter}
           >
             <option value="">{t('inventory.storageLocation')}</option>
             {storageLocations.map((loc) => (
@@ -2788,27 +2774,24 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             {hasUnsetStorageLocation && (
               <option value="__none__">{t('inventory.storageLocationNone')}</option>
             )}
-          </select>
+          </Select>
         )}
 
         {/* Spool name dropdown chip */}
         {/* `|| spoolFilter` — a restored filter whose catalog entry is gone
             must still have a chip to clear it from. */}
         {(uniqueSpoolCatalogIds.length > 0 || spoolFilter) && (
-          <select
+          <Select
             value={spoolFilter}
             onChange={(e) => { setSpoolFilter(e.target.value); resetPage(); }}
-            className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
-              spoolFilter
-                ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
-                : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
-            }`}
+            tone="filter"
+            active={!!spoolFilter}
           >
             <option value="">{t('inventory.spoolName')}</option>
             {withCurrentId(uniqueSpoolCatalogIds, spoolFilter).map((id) => (
               <option key={id} value={id}>{catalogMap[id]?.name || `#${id}`}</option>
             ))}
-          </select>
+          </Select>
         )}
 
         {/* Clear filters */}

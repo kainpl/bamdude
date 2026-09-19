@@ -82,6 +82,35 @@ describe('Select', () => {
     expect(tokens()).not.toContain('text-white');
   });
 
+  it('will not compile a filter that forgets to say whether it is on', () => {
+    // These are typecheck assertions, not runtime ones: `npm run typecheck`
+    // enters this directory, so a union that stopped enforcing the pair would
+    // fail the build here rather than ship a filter stuck looking empty.
+    // @ts-expect-error `active` is required with tone="filter"
+    const missingActive = <Select tone="filter" value="" onChange={() => {}}>{options()}</Select>;
+    // @ts-expect-error a chip has one shape, so it takes no size
+    const sizedChip = <Select tone="filter" active size="sm" value="" onChange={() => {}}>{options()}</Select>;
+    // @ts-expect-error and `active` means nothing to an ordinary field
+    const activeField = <Select active value="" onChange={() => {}}>{options()}</Select>;
+
+    expect([missingActive, sizedChip, activeField]).toHaveLength(3);
+  });
+
+  it('says out loud whether a filter is set', () => {
+    // The whole reason this tone exists: a filter that looks the same set and
+    // unset is a filter nobody notices they left on.
+    const { rerender } = render(
+      <Select tone="filter" active={false} value="" onChange={() => {}}>{options()}</Select>,
+    );
+    expect(screen.getByRole('combobox').className).toContain('bg-transparent');
+
+    rerender(<Select tone="filter" active value="a" onChange={() => {}}>{options()}</Select>);
+    const cls = screen.getByRole('combobox').className;
+    expect(cls).toContain('bg-bambu-green/20');
+    expect(cls).toContain('text-bambu-green');
+    expect(cls).not.toContain('bg-transparent');
+  });
+
   it('gives every size but xs a touch target, and xs none', () => {
     // xs lives in a dense header row that has no room for a 44px control; the
     // others are the ones a finger is expected to hit.

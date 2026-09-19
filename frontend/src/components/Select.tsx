@@ -32,52 +32,80 @@ import type { ReactNode, SelectHTMLAttributes } from 'react';
 
 type SelectSize = 'xs' | 'sm' | 'md' | 'lg';
 
-interface SelectProps extends Omit<SelectHTMLAttributes<HTMLSelectElement>, 'size'> {
-  /**
-   * Heights, not paddings: a toolbar lines a select up with buttons and inputs,
-   * and this codebase already says that as `h-9`. A `<select>` centres its one
-   * line by itself, so a height is the honest knob. `md` is the toolbar and
-   * form default; `xs` exists for a control embedded in a dense header row and
-   * is the one size with no touch-target floor, because its row has no space
-   * for one.
-   *
-   * ⚠️ This shadows the native `size` attribute (the number of visible rows).
-   * Nothing in the app uses that, and `multiple` lists are not this component.
-   */
+/**
+ * Heights, not paddings: a toolbar lines a select up with buttons and inputs,
+ * and this codebase already says that as `h-9`. A `<select>` centres its one
+ * line by itself, so a height is the honest knob. `md` is the toolbar and form
+ * default; `xs` exists for a control embedded in a dense header row and is the
+ * one size with no touch-target floor, because its row has no space for one.
+ */
+const SIZES: Record<SelectSize, string> = {
+  xs: 'h-6 px-2 text-xs rounded',
+  sm: 'h-8 px-2 text-sm rounded-lg min-h-[44px] md:min-h-0',
+  md: 'h-9 px-3 text-sm rounded-lg min-h-[44px] md:min-h-0',
+  lg: 'h-11 px-3 text-base rounded-lg min-h-[48px] md:min-h-0',
+};
+
+/**
+ * How the field reads against what is behind it. `sunken` is a field on a card
+ * or panel, `raised` a field on the page's own ground, and `muted` a sunken one
+ * that sits among controls rather than in a form — the same idea as `Button`'s
+ * `outline`: grey until you go near it.
+ *
+ * The text colour lives here rather than in the base, because passing
+ * `text-bambu-gray` through `className` would be a coin toss — two utilities of
+ * one family are settled by Tailwind's emit order, not by the attribute.
+ */
+const TONES = {
+  sunken: 'bg-bambu-dark text-white',
+  raised: 'bg-bambu-dark-secondary text-white',
+  muted: 'bg-bambu-dark text-bambu-gray hover:text-white',
+} as const;
+
+/**
+ * A filter chip is not a field, so it does not take a `size`: it has one shape,
+ * sized to the toggle buttons it shares a row with, and its whole point is that
+ * you can see from across the room whether it is set. That state is `active`,
+ * which the type demands here and forbids everywhere else — a filter that
+ * forgot to say when it is on looks permanently empty, which is the failure
+ * this control exists to prevent.
+ */
+const FILTER_SHAPE = 'h-7 px-3 text-xs font-medium rounded-lg';
+const FILTER_STATE = {
+  on: 'bg-bambu-green/20 text-bambu-green border-bambu-green/30',
+  off: 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary',
+};
+
+type FieldProps = {
   size?: SelectSize;
-  /**
-   * Which way the field reads against what is behind it. `sunken` is a field on
-   * a card or panel, `raised` a field on the page's own ground, and `muted` is
-   * a sunken one that sits among controls rather than in a form — the same idea
-   * as `Button`'s `outline`: grey until you go near it.
-   *
-   * The text colour lives here rather than in the base, because passing
-   * `text-bambu-gray` through `className` would be a coin toss — two utilities
-   * of one family are settled by Tailwind's emit order, not by the attribute.
-   */
-  tone?: 'sunken' | 'raised' | 'muted';
-  children: ReactNode;
-}
+  tone?: keyof typeof TONES;
+  active?: never;
+};
 
-export function Select({ size = 'md', tone = 'sunken', className = '', children, ...props }: SelectProps) {
+type FilterProps = {
+  size?: never;
+  tone: 'filter';
+  active: boolean;
+};
+
+/**
+ * ⚠️ `size` shadows the native attribute (the number of visible rows). Nothing
+ * in the app uses that, and `multiple` lists are not this component.
+ */
+type SelectProps = Omit<SelectHTMLAttributes<HTMLSelectElement>, 'size'> &
+  (FieldProps | FilterProps) & { children: ReactNode };
+
+export function Select({ size, tone = 'sunken', active, className = '', children, ...props }: SelectProps) {
   const baseStyles =
-    'border border-bambu-dark-tertiary transition-colors focus:outline-none focus:border-bambu-green disabled:opacity-50 disabled:cursor-not-allowed';
+    'border transition-colors focus:outline-none focus:border-bambu-green disabled:opacity-50 disabled:cursor-not-allowed';
 
-  const tones = {
-    sunken: 'bg-bambu-dark text-white',
-    raised: 'bg-bambu-dark-secondary text-white',
-    muted: 'bg-bambu-dark text-bambu-gray hover:text-white',
-  };
-
-  const sizes = {
-    xs: 'h-6 px-2 text-xs rounded',
-    sm: 'h-8 px-2 text-sm rounded-lg min-h-[44px] md:min-h-0',
-    md: 'h-9 px-3 text-sm rounded-lg min-h-[44px] md:min-h-0',
-    lg: 'h-11 px-3 text-base rounded-lg min-h-[48px] md:min-h-0',
-  };
+  const look =
+    tone === 'filter'
+      ? `${FILTER_SHAPE} ${active ? FILTER_STATE.on : FILTER_STATE.off}`
+      : `border-bambu-dark-tertiary ${TONES[tone]} ${SIZES[size ?? 'md']}`;
 
   return (
-    <select className={`${baseStyles} ${tones[tone]} ${sizes[size]} ${className}`} {...props}>
+    <select className={`${baseStyles} ${look} ${className}`} {...props}>
       {children}
     </select>
   );
