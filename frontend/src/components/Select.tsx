@@ -19,6 +19,15 @@ import type { ReactNode, SelectHTMLAttributes } from 'react';
  * `appearance-none`, but the reason to — a light triangle on a dark field — was
  * already solved globally by `color-scheme` in `index.css`, so a custom chevron
  * buys nothing and costs a wrapper element that would break `className`.
+ *
+ * ⚠️ In a flex row, give it `min-w-0`. A form control's `min-width: auto` is
+ * its widest option, so without that it refuses to shrink and pushes whatever
+ * sits beside it out of the container — and the widest option is a translated
+ * string, i.e. a number this side of the code does not control. The floor, when
+ * one is wanted, is the caller's `min-w-[…]`: it is not in the base here,
+ * because two utilities of one family are settled by Tailwind's emit order
+ * rather than by the class attribute, so a base `min-w-0` might quietly win
+ * over the call site's own minimum.
  */
 
 type SelectSize = 'xs' | 'sm' | 'md' | 'lg';

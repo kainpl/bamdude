@@ -2671,15 +2671,16 @@ export function FileManagerPage() {
               <div className="w-0.5 h-0.5 rounded-full bg-white/70" />
             </div>
           </div>
-          <div className="p-3 border-b border-bambu-dark-tertiary flex items-center justify-between">
-            <h2 className="text-sm font-medium text-white">{t('fileManager.folders')}</h2>
-            <div className="flex items-center gap-1">
+          <div className="p-3 border-b border-bambu-dark-tertiary flex items-center justify-between gap-2">
+            <h2 className="text-sm font-medium text-white shrink-0">{t('fileManager.folders')}</h2>
+            <div className="flex items-center gap-1 min-w-0">
               {/* Folder tree sort (#1770). Dropdown drives the comparator;
                   direction button flips asc/desc. Both persist to localStorage
                   on change so the choice survives reloads. */}
               <Select
                 size="xs"
                 tone="muted"
+                className="min-w-0"
                 value={folderSortField}
                 onChange={(e) => {
                   const v = e.target.value === 'activity' ? 'activity' : 'name';
@@ -2698,7 +2699,7 @@ export function FileManagerPage() {
                   setFolderSortDirection(newValue);
                   localStorage.setItem('library-folder-sort-direction', newValue);
                 }}
-                className="text-bambu-gray hover:text-white hover:bg-bambu-dark p-1.5 rounded transition-colors"
+                className="shrink-0 text-bambu-gray hover:text-white hover:bg-bambu-dark p-1.5 rounded transition-colors"
                 title={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
                 aria-label={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
               >
