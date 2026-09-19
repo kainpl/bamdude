@@ -2673,7 +2673,7 @@ export function FileManagerPage() {
           </div>
           <div className="p-3 border-b border-bambu-dark-tertiary flex items-center justify-between gap-2">
             <h2 className="text-sm font-medium text-white shrink-0">{t('fileManager.folders')}</h2>
-            <div className="flex items-center gap-1 min-w-0">
+            <div className="flex items-center gap-1.5 min-w-0">
               {/* Folder tree sort (#1770). Dropdown drives the comparator;
                   direction button flips asc/desc. Both persist to localStorage
                   on change so the choice survives reloads. */}
@@ -2693,54 +2693,61 @@ export function FileManagerPage() {
                 <option value="name">{t('fileManager.folderSortByName')}</option>
                 <option value="activity">{t('fileManager.folderSortByActivity')}</option>
               </Select>
-              <button
-                onClick={() => {
-                  const newValue = folderSortDirection === 'asc' ? 'desc' : 'asc';
-                  setFolderSortDirection(newValue);
-                  localStorage.setItem('library-folder-sort-direction', newValue);
-                }}
-                className="shrink-0 text-bambu-gray hover:text-white hover:bg-bambu-dark p-1.5 rounded transition-colors"
-                title={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
-                aria-label={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
-              >
-                {folderSortDirection === 'asc' ? (
-                  <ArrowUpNarrowWide className="w-4 h-4" />
-                ) : (
-                  <ArrowDownWideNarrow className="w-4 h-4" />
-                )}
-              </button>
-              <button
-                onClick={() => {
-                  const newValue = !expandFoldersByDefault;
-                  setExpandFoldersByDefault(newValue);
-                  localStorage.setItem('library-collapse-folders', String(!newValue));
-                }}
-                className={`p-1.5 rounded transition-colors ${
-                  expandFoldersByDefault
-                    ? 'bg-bambu-green/20 text-bambu-green'
-                    : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
-                }`}
-                title={expandFoldersByDefault ? t('fileManager.collapseFoldersByDefault') : t('fileManager.expandFoldersByDefault')}
-                aria-label={expandFoldersByDefault ? t('fileManager.collapseFoldersByDefault') : t('fileManager.expandFoldersByDefault')}
-              >
-                <ListCollapse className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => {
-                  const newValue = !wrapFolderNames;
-                  setWrapFolderNames(newValue);
-                  localStorage.setItem('library-wrap-folders', String(newValue));
-                }}
-                className={`p-1.5 rounded transition-colors ${
-                  wrapFolderNames
-                    ? 'bg-bambu-green/20 text-bambu-green'
-                    : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
-                }`}
-                title={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
-                aria-label={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
-              >
-                <WrapText className="w-4 h-4" />
-              </button>
+              {/* One control, not three loose buttons: they all answer "how
+                  does this panel look", and at the sidebar's 200px floor the
+                  air between them is width the folder names want. Each is as
+                  tall as the select beside it — a 28px button next to a 24px
+                  `xs` field never lined up. */}
+              <div className="shrink-0 flex items-center">
+                <button
+                  onClick={() => {
+                    const newValue = folderSortDirection === 'asc' ? 'desc' : 'asc';
+                    setFolderSortDirection(newValue);
+                    localStorage.setItem('library-folder-sort-direction', newValue);
+                  }}
+                  className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark transition-colors"
+                  title={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+                  aria-label={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+                >
+                  {folderSortDirection === 'asc' ? (
+                    <ArrowUpNarrowWide className="w-4 h-4" />
+                  ) : (
+                    <ArrowDownWideNarrow className="w-4 h-4" />
+                  )}
+                </button>
+                <button
+                  onClick={() => {
+                    const newValue = !expandFoldersByDefault;
+                    setExpandFoldersByDefault(newValue);
+                    localStorage.setItem('library-collapse-folders', String(!newValue));
+                  }}
+                  className={`p-1 rounded transition-colors ${
+                    expandFoldersByDefault
+                      ? 'bg-bambu-green/20 text-bambu-green'
+                      : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
+                  }`}
+                  title={expandFoldersByDefault ? t('fileManager.collapseFoldersByDefault') : t('fileManager.expandFoldersByDefault')}
+                  aria-label={expandFoldersByDefault ? t('fileManager.collapseFoldersByDefault') : t('fileManager.expandFoldersByDefault')}
+                >
+                  <ListCollapse className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => {
+                    const newValue = !wrapFolderNames;
+                    setWrapFolderNames(newValue);
+                    localStorage.setItem('library-wrap-folders', String(newValue));
+                  }}
+                  className={`p-1 rounded transition-colors ${
+                    wrapFolderNames
+                      ? 'bg-bambu-green/20 text-bambu-green'
+                      : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
+                  }`}
+                  title={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
+                  aria-label={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
+                >
+                  <WrapText className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto p-2">
