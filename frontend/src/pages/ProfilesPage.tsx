@@ -48,6 +48,7 @@ import type { SlicerSetting, SlicerSettingsResponse, SlicerSettingDetail, Slicer
 import { Card, CardContent } from '../components/Card';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { FilterDropdown } from '../components/FilterDropdown';
 import { Modal } from '../components/Modal';
 import { useToast } from '../contexts/ToastContext';
@@ -237,14 +238,14 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('profiles.login.region')}</label>
-                <select
+                <Select
+                  className="w-full"
                   value={region}
                   onChange={(e) => setRegion(e.target.value)}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 >
                   <option value="global">{t('profiles.login.regionGlobal')}</option>
                   <option value="china">{t('profiles.login.regionChina')}</option>
-                </select>
+                </Select>
               </div>
             </>
           )}
@@ -1637,16 +1638,17 @@ function CreatePresetModal({
 
     if (field.type === 'select') {
       return (
-        <select
+        <Select
+          size="sm"
+          className="w-full"
           value={(value as string) || ''}
           onChange={(e) => updateField(field.key, e.target.value)}
-          className={baseClass}
         >
           <option value="">{placeholder}</option>
           {field.options?.map(opt => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
-        </select>
+        </Select>
       );
     }
 
@@ -1735,22 +1737,22 @@ function CreatePresetModal({
           <div className="grid grid-cols-3 gap-4 max-[640px]:grid-cols-1">
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('common.type')}</label>
-              <select
+              <Select
+                className="w-full"
                 value={presetType}
                 onChange={(e) => { setPresetType(e.target.value as 'filament' | 'print' | 'printer'); setBaseId(''); }}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
               >
                 <option value="filament">{t('profiles.presets.types.filament')}</option>
                 <option value="print">{t('profiles.presets.types.process')}</option>
                 <option value="printer">{t('profiles.presets.types.printer')}</option>
-              </select>
+              </Select>
             </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('profiles.presets.basePreset')}</label>
-              <select
+              <Select
+                className="w-full"
                 value={baseId}
                 onChange={(e) => setBaseId(e.target.value)}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
               >
                 <option value="">{t('profiles.presets.selectBasePreset')}</option>
                 {availableBasePresets.some(p => p.is_custom) && (
@@ -1765,7 +1767,7 @@ function CreatePresetModal({
                     <option key={preset.setting_id} value={preset.setting_id}>{preset.name}</option>
                   ))}
                 </optgroup>
-              </select>
+              </Select>
             </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('profiles.presets.presetName')}</label>

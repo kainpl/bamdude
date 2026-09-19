@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader } from '../components/Card';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { CopyButton } from '../components/CopyButton';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { Modal } from '../components/Modal';
 import { LdapUserPicker } from '../components/LdapUserPicker';
 import { ZigbeeCoordinatorCard } from '../components/zigbee/ZigbeeCoordinatorCard';
@@ -1800,31 +1801,28 @@ export function SettingsPage() {
                   <Globe className="w-4 h-4 inline mr-1" />
                   {t('settings.language')}
                 </label>
-                <div className="relative">
-                  <select
-                    value={i18n.language}
-                    onChange={(e) => {
-                      const newLang = e.target.value;
-                      // Block server persist if the user lacks settings:update —
-                      // without this guard the fire-and-forget api.updateSettings
-                      // call below would 403 silently while a success toast flashed.
-                      if (!hasPermission('settings:update')) {
-                        showToast(t('settings.toast.noPermissionUpdate'), 'error');
-                        return;
-                      }
-                      i18n.changeLanguage(newLang);
-                      updateMutation.mutate({ language: newLang });
-                    }}
-                    className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                  >
-                    {availableLanguages.map((lang) => (
-                      <option key={lang.code} value={lang.code}>
-                        {lang.nativeName} ({lang.name})
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                </div>
+                <Select
+                  className="w-full"
+                  value={i18n.language}
+                  onChange={(e) => {
+                    const newLang = e.target.value;
+                    // Block server persist if the user lacks settings:update —
+                    // without this guard the fire-and-forget api.updateSettings
+                    // call below would 403 silently while a success toast flashed.
+                    if (!hasPermission('settings:update')) {
+                      showToast(t('settings.toast.noPermissionUpdate'), 'error');
+                      return;
+                    }
+                    i18n.changeLanguage(newLang);
+                    updateMutation.mutate({ language: newLang });
+                  }}
+                >
+                  {availableLanguages.map((lang) => (
+                    <option key={lang.code} value={lang.code}>
+                      {lang.nativeName} ({lang.name})
+                    </option>
+                  ))}
+                </Select>
                 <p className="text-xs text-bambu-gray mt-1">
                   {t('settings.languageDescription')}
                 </p>
@@ -1833,22 +1831,19 @@ export function SettingsPage() {
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('settings.defaultView')}
                 </label>
-                <div className="relative">
-                  <select
-                    value={defaultView}
-                    onChange={(e) => handleDefaultViewChange(e.target.value)}
-                    className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                  >
-                    {defaultNavItems
-                      .filter((item) => ['printers', 'archives', 'queue', 'stats', 'maintenance', 'projects', 'inventory', 'files'].includes(item.id))
-                      .map((item) => (
-                        <option key={item.id} value={item.to}>
-                          {t(item.labelKey)}
-                        </option>
-                      ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                </div>
+                <Select
+                  className="w-full"
+                  value={defaultView}
+                  onChange={(e) => handleDefaultViewChange(e.target.value)}
+                >
+                  {defaultNavItems
+                    .filter((item) => ['printers', 'archives', 'queue', 'stats', 'maintenance', 'projects', 'inventory', 'files'].includes(item.id))
+                    .map((item) => (
+                      <option key={item.id} value={item.to}>
+                        {t(item.labelKey)}
+                      </option>
+                    ))}
+                </Select>
                 <p className="text-xs text-bambu-gray mt-1">
                   {t('settings.defaultViewDescription')}
                 </p>
@@ -1858,57 +1853,48 @@ export function SettingsPage() {
                   <label className="block text-sm text-bambu-gray mb-1">
                     {t('settings.dateFormat')}
                   </label>
-                  <div className="relative">
-                    <select
-                      value={localSettings.date_format || 'system'}
-                      onChange={(e) => updateSetting('date_format', e.target.value as 'system' | 'us' | 'eu' | 'iso')}
-                      className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                    >
-                      <option value="system">{t('settings.systemDefault')}</option>
-                      <option value="us">{t('settings.dateFormatUs')}</option>
-                      <option value="eu">{t('settings.dateFormatEu')}</option>
-                      <option value="iso">{t('settings.dateFormatIso')}</option>
-                    </select>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                  </div>
+                  <Select
+                    className="w-full"
+                    value={localSettings.date_format || 'system'}
+                    onChange={(e) => updateSetting('date_format', e.target.value as 'system' | 'us' | 'eu' | 'iso')}
+                  >
+                    <option value="system">{t('settings.systemDefault')}</option>
+                    <option value="us">{t('settings.dateFormatUs')}</option>
+                    <option value="eu">{t('settings.dateFormatEu')}</option>
+                    <option value="iso">{t('settings.dateFormatIso')}</option>
+                  </Select>
                 </div>
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">
                     {t('settings.timeFormat')}
                   </label>
-                  <div className="relative">
-                    <select
-                      value={localSettings.time_format || 'system'}
-                      onChange={(e) => updateSetting('time_format', e.target.value as 'system' | '12h' | '24h')}
-                      className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                    >
-                      <option value="system">{t('settings.systemDefault')}</option>
-                      <option value="12h">{t('settings.timeFormat12')}</option>
-                      <option value="24h">{t('settings.timeFormat24')}</option>
-                    </select>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                  </div>
+                  <Select
+                    className="w-full"
+                    value={localSettings.time_format || 'system'}
+                    onChange={(e) => updateSetting('time_format', e.target.value as 'system' | '12h' | '24h')}
+                  >
+                    <option value="system">{t('settings.systemDefault')}</option>
+                    <option value="12h">{t('settings.timeFormat12')}</option>
+                    <option value="24h">{t('settings.timeFormat24')}</option>
+                  </Select>
                 </div>
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('settings.defaultPrinter')}
                 </label>
-                <div className="relative">
-                  <select
-                    value={localSettings.default_printer_id ?? ''}
-                    onChange={(e) => updateSetting('default_printer_id', e.target.value ? Number(e.target.value) : null)}
-                    className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                  >
-                    <option value="">{t('settings.noDefaultPrinter')}</option>
-                    {printers?.map((printer) => (
-                      <option key={printer.id} value={printer.id}>
-                        {printer.name}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                </div>
+                <Select
+                  className="w-full"
+                  value={localSettings.default_printer_id ?? ''}
+                  onChange={(e) => updateSetting('default_printer_id', e.target.value ? Number(e.target.value) : null)}
+                >
+                  <option value="">{t('settings.noDefaultPrinter')}</option>
+                  {printers?.map((printer) => (
+                    <option key={printer.id} value={printer.id}>
+                      {printer.name}
+                    </option>
+                  ))}
+                </Select>
                 <p className="text-xs text-bambu-gray mt-1">
                   {t('settings.defaultPrinterDescription')}
                 </p>
@@ -1953,10 +1939,11 @@ export function SettingsPage() {
                 <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label className="block text-xs text-bambu-gray mb-1">{t('settings.background')}</label>
-                    <select
+                    <Select
+                      size="sm"
+                      className="w-full"
                       value={darkBackground}
                       onChange={(e) => { setDarkBackground(e.target.value as DarkBackground); showToast(t('settings.toast.settingsSaved'), 'success'); }}
-                      className="w-full px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     >
                       <option value="neutral">{t('settings.bgNeutral')}</option>
                       <option value="warm">{t('settings.bgWarm')}</option>
@@ -1964,14 +1951,15 @@ export function SettingsPage() {
                       <option value="oled">{t('settings.bgOled')}</option>
                       <option value="slate">{t('settings.bgSlate')}</option>
                       <option value="forest">{t('settings.bgForest')}</option>
-                    </select>
+                    </Select>
                   </div>
                   <div>
                     <label className="block text-xs text-bambu-gray mb-1">{t('settings.accent')}</label>
-                    <select
+                    <Select
+                      size="sm"
+                      className="w-full"
                       value={darkAccent}
                       onChange={(e) => { setDarkAccent(e.target.value as ThemeAccent); showToast(t('settings.toast.settingsSaved'), 'success'); }}
-                      className="w-full px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     >
                       <option value="green">{t('settings.accentGreen')}</option>
                       <option value="teal">{t('settings.accentTeal')}</option>
@@ -1979,19 +1967,20 @@ export function SettingsPage() {
                       <option value="orange">{t('settings.accentOrange')}</option>
                       <option value="purple">{t('settings.accentPurple')}</option>
                       <option value="red">{t('settings.accentRed')}</option>
-                    </select>
+                    </Select>
                   </div>
                   <div>
                     <label className="block text-xs text-bambu-gray mb-1">{t('settings.style')}</label>
-                    <select
+                    <Select
+                      size="sm"
+                      className="w-full"
                       value={darkStyle}
                       onChange={(e) => { setDarkStyle(e.target.value as ThemeStyle); showToast(t('settings.toast.settingsSaved'), 'success'); }}
-                      className="w-full px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     >
                       <option value="classic">{t('settings.styleClassic')}</option>
                       <option value="glow">{t('settings.styleGlow')}</option>
                       <option value="vibrant">{t('settings.styleVibrant')}</option>
-                    </select>
+                    </Select>
                   </div>
                 </div>
               </div>
@@ -2005,22 +1994,24 @@ export function SettingsPage() {
                 <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label className="block text-xs text-bambu-gray mb-1">{t('settings.background')}</label>
-                    <select
+                    <Select
+                      size="sm"
+                      className="w-full"
                       value={lightBackground}
                       onChange={(e) => { setLightBackground(e.target.value as LightBackground); showToast(t('settings.toast.settingsSaved'), 'success'); }}
-                      className="w-full px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     >
                       <option value="neutral">{t('settings.bgNeutral')}</option>
                       <option value="warm">{t('settings.bgWarm')}</option>
                       <option value="cool">{t('settings.bgCool')}</option>
-                    </select>
+                    </Select>
                   </div>
                   <div>
                     <label className="block text-xs text-bambu-gray mb-1">{t('settings.accent')}</label>
-                    <select
+                    <Select
+                      size="sm"
+                      className="w-full"
                       value={lightAccent}
                       onChange={(e) => { setLightAccent(e.target.value as ThemeAccent); showToast(t('settings.toast.settingsSaved'), 'success'); }}
-                      className="w-full px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     >
                       <option value="green">{t('settings.accentGreen')}</option>
                       <option value="teal">{t('settings.accentTeal')}</option>
@@ -2028,19 +2019,20 @@ export function SettingsPage() {
                       <option value="orange">{t('settings.accentOrange')}</option>
                       <option value="purple">{t('settings.accentPurple')}</option>
                       <option value="red">{t('settings.accentRed')}</option>
-                    </select>
+                    </Select>
                   </div>
                   <div>
                     <label className="block text-xs text-bambu-gray mb-1">{t('settings.style')}</label>
-                    <select
+                    <Select
+                      size="sm"
+                      className="w-full"
                       value={lightStyle}
                       onChange={(e) => { setLightStyle(e.target.value as ThemeStyle); showToast(t('settings.toast.settingsSaved'), 'success'); }}
-                      className="w-full px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     >
                       <option value="classic">{t('settings.styleClassic')}</option>
                       <option value="glow">{t('settings.styleGlow')}</option>
                       <option value="vibrant">{t('settings.styleVibrant')}</option>
-                    </select>
+                    </Select>
                   </div>
                 </div>
               </div>
@@ -2972,20 +2964,17 @@ export function SettingsPage() {
               {hasEngineChoice() && (
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">{t('settings.sliceEngine')}</label>
-                  <div className="relative">
-                    <select
-                      value={resolveEngine(localSettings.slice_engine)}
-                      onChange={(e) => updateSetting('slice_engine', e.target.value as SliceEngineId)}
-                      className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                    >
-                      {availableEngines().map((engine) => (
-                        <option key={engine.id} value={engine.id}>
-                          {t(engine.labelKey)}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                  </div>
+                  <Select
+                    className="w-full"
+                    value={resolveEngine(localSettings.slice_engine)}
+                    onChange={(e) => updateSetting('slice_engine', e.target.value as SliceEngineId)}
+                  >
+                    {availableEngines().map((engine) => (
+                      <option key={engine.id} value={engine.id}>
+                        {t(engine.labelKey)}
+                      </option>
+                    ))}
+                  </Select>
                   <p className="text-xs text-bambu-gray mt-1">
                     {t(
                       availableEngines().find((e) => e.id === resolveEngine(localSettings.slice_engine))
@@ -2998,17 +2987,14 @@ export function SettingsPage() {
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('settings.preferredSlicer')}
                 </label>
-                <div className="relative">
-                  <select
-                    value={localSettings.preferred_slicer ?? 'bambu_studio'}
-                    onChange={(e) => updateSetting('preferred_slicer', e.target.value as 'bambu_studio' | 'orcaslicer')}
-                    className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                  >
-                    <option value="bambu_studio">{t('settings.slicerBambuStudio')}</option>
-                    <option value="orcaslicer">{t('settings.slicerOrcaSlicer')}</option>
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                </div>
+                <Select
+                  className="w-full"
+                  value={localSettings.preferred_slicer ?? 'bambu_studio'}
+                  onChange={(e) => updateSetting('preferred_slicer', e.target.value as 'bambu_studio' | 'orcaslicer')}
+                >
+                  <option value="bambu_studio">{t('settings.slicerBambuStudio')}</option>
+                  <option value="orcaslicer">{t('settings.slicerOrcaSlicer')}</option>
+                </Select>
                 <p className="text-xs text-bambu-gray mt-1">
                   {t('settings.preferredSlicerDescription')}
                 </p>
@@ -3040,23 +3026,20 @@ export function SettingsPage() {
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('settings.openInSlicerLabel')}
                 </label>
-                <div className="relative">
-                  <select
-                    value={localSettings.open_in_slicer ?? ''}
-                    onChange={(e) =>
-                      updateSetting(
-                        'open_in_slicer',
-                        e.target.value === '' ? null : (e.target.value as 'bambu_studio' | 'orcaslicer'),
-                      )
-                    }
-                    className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                  >
-                    <option value="">{t('settings.openInSlicerInherit')}</option>
-                    <option value="bambu_studio">{t('settings.slicerBambuStudio')}</option>
-                    <option value="orcaslicer">{t('settings.slicerOrcaSlicer')}</option>
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                </div>
+                <Select
+                  className="w-full"
+                  value={localSettings.open_in_slicer ?? ''}
+                  onChange={(e) =>
+                    updateSetting(
+                      'open_in_slicer',
+                      e.target.value === '' ? null : (e.target.value as 'bambu_studio' | 'orcaslicer'),
+                    )
+                  }
+                >
+                  <option value="">{t('settings.openInSlicerInherit')}</option>
+                  <option value="bambu_studio">{t('settings.slicerBambuStudio')}</option>
+                  <option value="orcaslicer">{t('settings.slicerOrcaSlicer')}</option>
+                </Select>
                 <p className="text-xs text-bambu-gray mt-1">
                   {t('settings.openInSlicerDescription')}
                 </p>
@@ -3188,14 +3171,14 @@ export function SettingsPage() {
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('settings.cameraViewMode')}
                 </label>
-                <select
+                <Select
+                  className="w-full"
                   value={localSettings.camera_view_mode ?? 'window'}
                   onChange={(e) => updateSetting('camera_view_mode', e.target.value as 'window' | 'embedded')}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 >
                   <option value="window">{t('settings.newWindow')}</option>
                   <option value="embedded">{t('settings.embeddedOverlay')}</option>
-                </select>
+                </Select>
                 <p className="text-xs text-bambu-gray mt-1">
                   {localSettings.camera_view_mode === 'embedded'
                     ? t('settings.cameraOverlayDescription')
@@ -3278,16 +3261,17 @@ export function SettingsPage() {
                               className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
                             />
                             <div className="flex gap-2">
-                              <select
+                              <Select
+                                tone="raised"
+                                className="flex-1"
                                 value={printer.external_camera_type || 'mjpeg'}
                                 onChange={(e) => handleUpdatePrinterCamera(printer.id, { type: e.target.value })}
-                                className="flex-1 px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
                               >
                                 <option value="mjpeg">{t('settings.cameraTypeMjpeg')}</option>
                                 <option value="rtsp">{t('settings.cameraTypeRtsp')}</option>
                                 <option value="snapshot">{t('settings.cameraTypeSnapshot')}</option>
                                 <option value="usb">{t('settings.cameraTypeUsb')}</option>
-                              </select>
+                              </Select>
                               <Button
                                 size="sm"
                                 variant="secondary"
@@ -3347,16 +3331,17 @@ export function SettingsPage() {
                             )}
                             <div className="flex items-center gap-2">
                               <label className="text-xs text-bambu-gray">{t('settings.cameraRotation')}</label>
-                              <select
+                              <Select
+                                size="xs"
+                                tone="raised"
                                 value={printer.camera_rotation || 0}
                                 onChange={(e) => handleUpdatePrinterCamera(printer.id, { rotation: parseInt(e.target.value) })}
-                                className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-xs focus:border-bambu-green focus:outline-none"
                               >
                                 <option value={0}>0°</option>
                                 <option value={90}>90°</option>
                                 <option value={180}>180°</option>
                                 <option value={270}>270°</option>
-                              </select>
+                              </Select>
                             </div>
                           </div>
                         )}
@@ -3367,15 +3352,16 @@ export function SettingsPage() {
                         {cameraLightSelectable(printer.id) && (
                           <div className="flex items-center gap-2 mt-2">
                             <label className="text-xs text-bambu-gray" htmlFor={`camera-light-${printer.id}`}>{t('settings.printerCameraLight')}</label>
-                            <select
+                            <Select
+                              size="xs"
+                              tone="raised"
                               id={`camera-light-${printer.id}`}
                               value={printer.camera_light_auto ?? 'inherit'}
                               onChange={(e) => handleUpdatePrinterCamera(printer.id, { light: e.target.value as CameraLightPolicy })}
-                              className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-xs focus:border-bambu-green focus:outline-none"
                             >
                               <option value="inherit">{t('settings.printerCameraLightInherit')}</option>
                               <option value="off">{t('settings.printerCameraLightOff')}</option>
-                            </select>
+                            </Select>
                           </div>
                         )}
                       </div>
@@ -3472,15 +3458,15 @@ export function SettingsPage() {
             <CardContent className="space-y-4">
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('settings.currency')}</label>
-                <select
+                <Select
+                  className="w-full"
                   value={localSettings.currency}
                   onChange={(e) => updateSetting('currency', e.target.value)}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 >
                   {SUPPORTED_CURRENCIES.map((c) => (
                     <option key={c.code} value={c.code}>{c.label}</option>
                   ))}
-                </select>
+                </Select>
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">
@@ -4193,53 +4179,44 @@ export function SettingsPage() {
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.retryAttempts')}
                     </label>
-                    <div className="relative w-44">
-                      <select
-                        value={localSettings.ftp_retry_count ?? 3}
-                        onChange={(e) => updateSetting('ftp_retry_count', parseInt(e.target.value))}
-                        className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                      >
-                        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => (
-                          <option key={n} value={n}>{t('settings.time', { count: n })}</option>
-                        ))}
-                      </select>
-                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                    </div>
+                    <Select
+                      className="w-44"
+                      value={localSettings.ftp_retry_count ?? 3}
+                      onChange={(e) => updateSetting('ftp_retry_count', parseInt(e.target.value))}
+                    >
+                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => (
+                        <option key={n} value={n}>{t('settings.time', { count: n })}</option>
+                      ))}
+                    </Select>
                   </div>
 
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.retryDelay')}
                     </label>
-                    <div className="relative w-44">
-                      <select
-                        value={localSettings.ftp_retry_delay ?? 2}
-                        onChange={(e) => updateSetting('ftp_retry_delay', parseInt(e.target.value))}
-                        className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                      >
-                        {[1, 2, 3, 5, 10, 15, 20, 30].map(n => (
-                          <option key={n} value={n}>{t('settings.second', { count: n })}</option>
-                        ))}
-                      </select>
-                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                    </div>
+                    <Select
+                      className="w-44"
+                      value={localSettings.ftp_retry_delay ?? 2}
+                      onChange={(e) => updateSetting('ftp_retry_delay', parseInt(e.target.value))}
+                    >
+                      {[1, 2, 3, 5, 10, 15, 20, 30].map(n => (
+                        <option key={n} value={n}>{t('settings.second', { count: n })}</option>
+                      ))}
+                    </Select>
                   </div>
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.connectionTimeout')}
                     </label>
-                    <div className="relative w-44">
-                      <select
-                        value={localSettings.ftp_timeout ?? 30}
-                        onChange={(e) => updateSetting('ftp_timeout', parseInt(e.target.value))}
-                        className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
-                      >
-                        {[10, 15, 20, 30, 45, 60, 90, 120, 180, 300].map(n => (
-                          <option key={n} value={n}>{t('settings.nSeconds', { count: n })}</option>
-                        ))}
-                      </select>
-                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                    </div>
+                    <Select
+                      className="w-44"
+                      value={localSettings.ftp_timeout ?? 30}
+                      onChange={(e) => updateSetting('ftp_timeout', parseInt(e.target.value))}
+                    >
+                      {[10, 15, 20, 30, 45, 60, 90, 120, 180, 300].map(n => (
+                        <option key={n} value={n}>{t('settings.nSeconds', { count: n })}</option>
+                      ))}
+                    </Select>
                     <p className="text-xs text-bambu-gray mt-1">
                       {t('settings.increaseForWeakWifi')}
                     </p>
@@ -7385,10 +7362,10 @@ export function SettingsPage() {
                 </div>
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroEvent')}</label>
-                  <select
+                  <Select
+                    className="w-full"
                     value={macroForm.event}
                     onChange={(e) => setMacroForm(prev => ({ ...prev, event: e.target.value }))}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                   >
                     {macroMeta?.events ? (
                       Object.entries(macroMeta.events).map(([code, label]) => (
@@ -7402,7 +7379,7 @@ export function SettingsPage() {
                         <option value="swap_mode_change_table">{t('settings.macroEvents.swap_mode_change_table')}</option>
                       </>
                     )}
-                  </select>
+                  </Select>
                 </div>
                 {macroForm.event === 'layer_reached' && (
                   <div>
@@ -7460,7 +7437,8 @@ export function SettingsPage() {
                 {macroForm.action_type === 'mqtt_action' && (
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroMqttAction')}</label>
-                    <select
+                    <Select
+                      className="w-full"
                       value={macroForm.mqtt_action ?? ''}
                       onChange={(e) => {
                         const nextId = e.target.value || null;
@@ -7471,14 +7449,13 @@ export function SettingsPage() {
                           mqtt_action_param: nextSpec?.default ?? null,
                         }));
                       }}
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                     >
                       {(macroMeta?.mqtt_actions ?? []).map((a) => (
                         <option key={a.id} value={a.id}>
                           {t(`settings.mqttActions.${a.i18n_key}`, { defaultValue: a.label })}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </div>
                 )}
                 {/* The parameter control is described by the server, so this
@@ -7493,17 +7470,17 @@ export function SettingsPage() {
                       <label className="block text-sm text-bambu-gray mb-1">
                         {t(`settings.mqttActionParams.${spec.i18n_key}`, { defaultValue: spec.i18n_key })}
                       </label>
-                      <select
+                      <Select
+                        className="w-full"
                         value={macroForm.mqtt_action_param ?? spec.default ?? ''}
                         onChange={(e) => setMacroForm(prev => ({ ...prev, mqtt_action_param: e.target.value }))}
-                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                       >
                         {spec.choices.map((c) => (
                           <option key={c.value} value={c.value}>
                             {t(`settings.mqttActionValues.${c.i18n_key}`, { defaultValue: c.label })}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
                   );
                 })()}
@@ -7543,7 +7520,9 @@ export function SettingsPage() {
                       </span>
                     ))}
                   </div>
-                  <select
+                  <Select
+                    size="sm"
+                    className="w-full"
                     value=""
                     onChange={(e) => {
                       const val = e.target.value;
@@ -7555,7 +7534,6 @@ export function SettingsPage() {
                         return { ...prev, printer_models: [...without_wildcard, val] };
                       });
                     }}
-                    className="w-full px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                   >
                     <option value="">{t('settings.macroAddModel')}</option>
                     <option value="*" disabled={macroForm.printer_models.includes('*')}>{t('settings.macroAllModels')}</option>
@@ -7564,7 +7542,7 @@ export function SettingsPage() {
                         {name}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </div>
                 {/* Swap-only toggle is only relevant for swap events. Other
                     event types (e.g. print_started) get their own trigger path
@@ -7586,10 +7564,10 @@ export function SettingsPage() {
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.macroSwapProfile')}
                     </label>
-                    <select
+                    <Select
+                      className="w-full"
                       value={macroForm.swap_profile ?? ''}
                       onChange={(e) => setMacroForm(prev => ({ ...prev, swap_profile: e.target.value || null }))}
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                     >
                       <option value="">{t('settings.macroSwapProfileGeneric')}</option>
                       {(macroMeta?.swap_profiles ?? [])
@@ -7600,7 +7578,7 @@ export function SettingsPage() {
                         .map((p) => (
                           <option key={p.id} value={p.id}>{p.label}</option>
                         ))}
-                    </select>
+                    </Select>
                     {macroForm.swap_profile && (
                       <p className="text-xs text-bambu-gray mt-1">
                         {macroMeta?.swap_profiles?.find((p) => p.id === macroForm.swap_profile)?.description}

@@ -74,6 +74,7 @@ import { useIsMobile } from '../hooks/useIsMobile';
 import type { Archive, OrderListItem, ArchiveListParams } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { Modal } from '../components/Modal';
 import { isAnyModalOpen } from '../components/modalStack';
 import { PaginationBar } from '../components/PaginationBar';
@@ -3554,20 +3555,20 @@ export function ArchivesPage() {
           <div className="flex gap-2 md:gap-3 overflow-x-auto pb-1 md:pb-0 -mx-3 px-3 md:mx-0 md:px-0 md:flex-wrap scrollbar-hide w-full">
             {/* Collection filter */}
             <div className="flex items-center gap-2 flex-shrink-0 md:flex-shrink md:flex-1 md:min-w-0">
-              <select
-                className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none w-full"
+              <Select
+                className="w-full"
                 value={collection}
                 onChange={(e) => { setCollection(e.target.value as Collection); setPage(1); }}
               >
                 {collections.map((c) => (
                   <option key={c.id} value={c.id}>{t(c.labelKey)}</option>
                 ))}
-              </select>
+              </Select>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0 md:flex-shrink md:flex-1 md:min-w-0">
               <Filter className="w-4 h-4 text-bambu-gray hidden md:block flex-shrink-0" />
-              <select
-                className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none w-full"
+              <Select
+                className="w-full"
                 value={filterPrinter || ''}
                 onChange={(e) => {
                   setFilterPrinter(e.target.value ? Number(e.target.value) : null);
@@ -3582,12 +3583,12 @@ export function ArchivesPage() {
                     {printerLabel(p, p.id, t)}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0 md:flex-shrink md:flex-1 md:min-w-0">
               <Package className="w-4 h-4 text-bambu-gray hidden md:block flex-shrink-0" />
-              <select
-                className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none w-full"
+              <Select
+                className="w-full"
                 value={filterMaterial || ''}
                 onChange={(e) => {
                   setFilterMaterial(e.target.value || null);
@@ -3600,19 +3601,19 @@ export function ArchivesPage() {
                     {m}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0 md:flex-shrink md:flex-1 md:min-w-0">
               <FileCode className="w-4 h-4 text-bambu-gray hidden md:block flex-shrink-0" />
-              <select
-                className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none w-full"
+              <Select
+                className="w-full"
                 value={filterKind}
                 onChange={(e) => { setFilterKind(e.target.value as 'all' | 'calibration' | 'regular'); setPage(1); }}
               >
                 <option value="all">{t('archives.page.allPrints')}</option>
                 <option value="calibration">{t('archives.page.calibrationPrints')}</option>
                 <option value="regular">{t('archives.page.regularPrints')}</option>
-              </select>
+              </Select>
             </div>
             {collection !== 'favorites' && (
               <button
@@ -3659,8 +3660,7 @@ export function ArchivesPage() {
             {uniqueTags.length > 0 && (
               <div className="flex items-center gap-2 flex-shrink-0">
                 <Tag className="w-4 h-4 text-bambu-gray hidden md:block" />
-                <select
-                  className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                <Select
                   value={filterTag || ''}
                   onChange={(e) => { setFilterTag(e.target.value || null); setPage(1); }}
                 >
@@ -3670,7 +3670,7 @@ export function ArchivesPage() {
                       {t}
                     </option>
                   ))}
-                </select>
+                </Select>
                 <button
                   onClick={() => setShowTagManagement(true)}
                   className="p-2 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-green transition-colors"
@@ -3756,8 +3756,8 @@ export function ArchivesPage() {
               )}
               {viewMode === 'grid' && (
                 <div className="flex items-center gap-1 ml-auto">
-                  <select
-                    className="h-9 min-w-[7rem] px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  <Select
+                    className="min-w-[7rem]"
                     value={sortField}
                     aria-label={t('archives.list.sortBy')}
                     onChange={(e) => setSortField(e.target.value as SortField)}
@@ -3770,7 +3770,7 @@ export function ArchivesPage() {
                     <option value="energy">{t('archives.list.energy')}</option>
                     <option value="filament">{t('archives.list.filament')}</option>
                     <option value="duration">{t('archives.list.printTime')}</option>
-                  </select>
+                  </Select>
                   <button
                     onClick={toggleSortDir}
                     className="h-9 w-9 flex items-center justify-center bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-green transition-colors"

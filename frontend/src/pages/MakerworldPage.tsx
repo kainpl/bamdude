@@ -16,6 +16,7 @@ import {
 } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { Card, CardContent, CardHeader } from '../components/Card';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { Modal } from '../components/Modal';
@@ -1010,28 +1011,28 @@ export function MakerworldPage() {
                 className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
               />
             </div>
-            <select
+            <Select
+              className="min-w-[10rem]"
               value={historySortBy}
               onChange={(e) => setHistorySortBy(e.target.value as typeof historySortBy)}
-              className="h-9 min-w-[10rem] px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             >
               <option value="date-desc">{t('makerworld.history.sort.dateDesc')}</option>
               <option value="date-asc">{t('makerworld.history.sort.dateAsc')}</option>
               <option value="name-asc">{t('makerworld.history.sort.nameAsc')}</option>
               <option value="name-desc">{t('makerworld.history.sort.nameDesc')}</option>
-            </select>
+            </Select>
             <div className="flex items-center gap-1.5">
               <span className="text-xs text-bambu-gray">{t('common.show')}</span>
-              <select
+              <Select
+                tone="muted"
                 value={historyPerPage}
                 onChange={(e) => setHistoryPerPage(Number(e.target.value))}
-                className="h-9 px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none"
               >
                 {[12, 24, 48, 96].map((n) => (
                   <option key={n} value={n}>{n}</option>
                 ))}
                 <option value={-1}>{t('common.all')}</option>
-              </select>
+              </Select>
             </div>
           </div>
 
