@@ -1915,6 +1915,14 @@ export function PrintModal({
               manual_start: scheduleOptions.scheduleType === 'manual',
               require_previous_success: scheduleOptions.requirePreviousSuccess,
               ams_mapping: printerMapping,
+              // ⚠️ The same four routing answers `getQueueData` sends on the add
+              // path. The PATCH merges only what arrives (`exclude_unset=True`),
+              // so leaving them out kept the stored answer and the operator's
+              // change to the option was silently lost.
+              feed_policy: autoModeOptions.feed_policy,
+              force_color_match: autoModeOptions.force_color_match,
+              allow_base_material_match: autoModeOptions.allow_base_material_match,
+              filament_overrides: autoOverrides,
               plate_id: plateId,
               scheduled_time: scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
                 ? new Date(scheduleOptions.scheduledTime).toISOString()
