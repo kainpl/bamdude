@@ -81,9 +81,10 @@ operations.
    add a fresh empty `[Unreleased]` above it. Re-read the section: a `Fixed`
    bullet for a feature that is itself new in the same section is folded into
    the feature or dropped.
-2. `node scripts/set_version.js X.Y.Z` (bumps backend, frontend and
-   `pyproject.toml` together), `cd frontend && npm run build`, commit on `dev`,
-   push.
+2. `node scripts/set_version.js X.Y.Z` (bumps backend, frontend,
+   `pyproject.toml` and `frontend/package-lock.json` together; it exits
+   non-zero rather than skipping a file it cannot match), `cd frontend &&
+   npm run build`, commit on `dev`, push.
 3. **Wait for `dev`'s CI run:** `gh run watch --exit-status`. The gate is the run
    on `dev`, never the one on `main` — a fast-forward puts the same SHA on
    `main`, where Check Duplicate skips every job and reports green in ten

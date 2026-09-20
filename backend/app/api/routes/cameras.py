@@ -369,7 +369,13 @@ async def camera_stream(
     )
 
 
-@router.api_route("/{camera_id}/stop", methods=["GET", "POST"])
+# Declared once per method rather than as a single
+# `api_route(methods=["GET", "POST"])`: FastAPI derives one operationId per
+# ROUTE, so a two-method route publishes the same id for both operations —
+# and an unstable one, because the method that names it comes from
+# `list(route.methods)[0]`, a set whose order follows the process's hash seed.
+@router.get("/{camera_id}/stop")
+@router.post("/{camera_id}/stop")
 async def stop_camera_stream(
     camera_id: int,
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),

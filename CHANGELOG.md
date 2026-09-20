@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Fixed
+
+- **The API schema no longer gives two different operations the same name.** Six endpoints answered two HTTP methods from a single declaration: the two «stop the camera stream» routes (GET and POST, so a browser can send one on the way out of the page) and the four files a browser asks for by itself — `/manifest.json`, `/favicon.ico`, `/sw.js` and `/sw-register.js` (GET and HEAD). FastAPI works out an `operationId` once per route rather than once per operation, so both methods of each were published under one name — and *which* of the two methods the name was built from came out of an unordered set, so it changed from one start of the server to the next. Anyone generating a client from `/openapi.json` got six colliding method names, and two clients generated from the same version of BamDude could disagree about what they were called. All twelve operations now carry their own name, and it is the same name on every run. The paths, the methods and the answers are unchanged.
+
 ## [0.6.0] - 2026-09-20
 
 ### Security
