@@ -1,12 +1,14 @@
 """Routing checks complete assignments, colour policy and physical topology."""
 
+import inspect
 from dataclasses import replace
 
 import pytest
 
 from backend.app.services.filament_policy import choices_policy
+from backend.app.services.filament_preflight import DispatchRoutingGuard, feed_signature
 from backend.app.services.filament_requirements import PrintRequirements, SourceIdentity
-from backend.app.services.filament_routing import RoutingPolicy, resolve_filament_routing
+from backend.app.services.filament_routing import RoutingDeferred, RoutingPolicy, resolve_filament_routing
 from backend.app.services.printer_feed_snapshot import FeedSource, PrinterFeedSnapshot
 from backend.app.utils.printer_models import DUAL_NOZZLE_MODELS, normalize_model_name
 
@@ -286,3 +288,172 @@ def test_fts_source_reaches_either_extruder():
     req = requirements({"nozzle_id": 1}, model="X2D")
     state = snapshot(replace(feed(0, kind="ams"), nozzles=(0, 1)), model="X2D", fts=True)
     assert resolve_filament_routing(req, RoutingPolicy(), state).status == "compatible"
+
+
+# --------------------------------------------------------------------------- #
+# The dispatch boundary reads a plan under the policy it was made with
+# --------------------------------------------------------------------------- #
+
+
+def a_plan(policy, state, req=None):
+    result = resolve_filament_routing(req or requirements({}), policy, state)
+    assert result.plan is not None, result.reason
+    return result.plan
+
+
+def a_guard(policy, state, req=None):
+    req = req or requirements({})
+    return DispatchRoutingGuard(
+        req, policy, a_plan(policy, state, req), True, "revision", feed_signature(policy, state)
+    )
+
+
+def retagged(state, source, variant="GFB99"):
+    """The one change this feature is about: a new profile id on the same spool."""
+    return replace(state, sources=(replace(source, variant=variant),), revision="the raw revision moved")
+
+
+def test_the_plan_records_whether_the_profile_is_part_of_its_identity():
+    state = snapshot(feed(0, kind="ams", variant="GFA00"))
+    assert a_plan(RoutingPolicy(allow_base_material_match=True), state).variant_sensitive is False
+    assert a_plan(RoutingPolicy(allow_base_material_match=False), state).variant_sensitive is True
+
+
+def test_a_profile_only_retag_is_not_a_changed_plan_when_the_option_is_on():
+    policy = RoutingPolicy(allow_base_material_match=True)
+    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
+    state = snapshot(source)
+    assert a_plan(policy, state).fingerprint == a_plan(policy, retagged(state, source)).fingerprint
+
+
+def test_the_same_retag_is_a_changed_plan_when_the_option_is_off():
+    policy = RoutingPolicy(allow_base_material_match=False)
+    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
+    state = snapshot(source)
+    assert a_plan(policy, state).fingerprint != a_plan(policy, retagged(state, source)).fingerprint
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [{"color": "00FF00FF"}, {"identity": "ANOTHER-SPOOL"}, {"nozzles": (0, 1)}, {"kind": "external"}, {"id": 1}],
+)
+def test_the_plan_keeps_every_physical_fact_with_the_option_on(changed):
+    """Only the profile becomes policy-dependent; the spool itself never does."""
+    policy = RoutingPolicy(allow_base_material_match=True)
+    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
+    state = snapshot(source)
+    moved = replace(state, sources=(replace(source, **changed),))
+    assert a_plan(policy, state).fingerprint != a_plan(policy, moved).fingerprint
+
+
+def test_a_changed_material_never_reaches_the_plan_comparison_at_all():
+    """The material is not absent from that list: it is refused before a plan exists."""
+    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
+    moved = replace(snapshot(source), sources=(replace(source, material="PETG"),))
+    result = resolve_filament_routing(requirements({}), RoutingPolicy(allow_base_material_match=True), moved)
+    assert (result.plan, result.reason) == (None, "material_mismatch")
+
+
+def test_the_feed_signature_ignores_the_profile_only_when_the_option_is_on():
+    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
+    state = snapshot(source)
+    on, off = RoutingPolicy(allow_base_material_match=True), RoutingPolicy(allow_base_material_match=False)
+    assert feed_signature(on, state) == feed_signature(on, retagged(state, source))
+    assert feed_signature(off, state) != feed_signature(off, retagged(state, source))
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"material": "PETG"},
+        {"color": "00FF00FF"},
+        {"identity": "ANOTHER-SPOOL"},
+        {"nozzles": (0, 1)},
+        {"kind": "external"},
+        {"id": 1},
+    ],
+)
+def test_the_feed_signature_keeps_every_physical_fact_with_the_option_on(changed):
+    policy = RoutingPolicy(allow_base_material_match=True)
+    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
+    state = snapshot(source)
+    assert feed_signature(policy, state) != feed_signature(
+        policy, replace(state, sources=(replace(source, **changed),))
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"generation": 2},
+        {"nozzle_diameters": {0: (0.4,)}},
+        {"ams_known": False},
+        {"ams_present": False},
+        {"external_known": False},
+        {"incomplete": True},
+        {"fts": True},
+        {"backup_enabled": False},
+        {"model": "P1S"},
+        {"sources": ()},
+    ],
+)
+def test_the_feed_signature_keeps_the_connection_and_the_shape_of_the_feed(changed):
+    policy = RoutingPolicy(allow_base_material_match=True)
+    state = snapshot(feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL"))
+    assert feed_signature(policy, state) != feed_signature(policy, replace(state, **changed))
+
+
+def test_the_guard_runs_without_an_await_and_lets_a_retag_through():
+    """``validate`` is called inside the MQTT client's routing lock: no await, ever."""
+    assert not inspect.iscoroutinefunction(DispatchRoutingGuard.validate)
+    policy = RoutingPolicy(allow_base_material_match=True)
+    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
+    guard = a_guard(policy, snapshot(source))
+    assert (
+        guard.validate(
+            retagged(snapshot(source), source),
+            mapping=guard.plan.mapping,
+            use_ams=guard.plan.use_ams,
+            plate_id=guard.plan.resolved_plate_id,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "changed", [{"material": "PETG"}, {"color": "00FF00FF"}, {"identity": "ANOTHER-SPOOL"}, {"nozzles": (1,)}]
+)
+def test_the_guard_still_refuses_a_swapped_spool_with_the_option_on(changed):
+    policy = RoutingPolicy(allow_base_material_match=True)
+    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
+    state = snapshot(source)
+    guard = a_guard(policy, state)
+    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+        guard.validate(
+            replace(state, sources=(replace(source, **changed),)),
+            mapping=guard.plan.mapping,
+            use_ams=guard.plan.use_ams,
+            plate_id=guard.plan.resolved_plate_id,
+        )
+
+
+@pytest.mark.parametrize("changed", [{"generation": 2}, {"connected": False}, {"sources": ()}])
+def test_the_guard_still_refuses_a_lost_connection_or_an_empty_feed(changed):
+    policy = RoutingPolicy(allow_base_material_match=True)
+    guard = a_guard(policy, snapshot(feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")))
+    state = replace(snapshot(feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")), **changed)
+    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+        guard.validate(state, mapping=guard.plan.mapping, use_ams=guard.plan.use_ams, plate_id=4)
+
+
+def test_the_guard_refuses_a_profile_only_retag_when_the_option_is_off():
+    policy = RoutingPolicy(allow_base_material_match=False)
+    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
+    guard = a_guard(policy, snapshot(source))
+    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+        guard.validate(
+            retagged(snapshot(source), source),
+            mapping=guard.plan.mapping,
+            use_ams=guard.plan.use_ams,
+            plate_id=guard.plan.resolved_plate_id,
+        )

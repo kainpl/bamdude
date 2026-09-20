@@ -19,9 +19,10 @@ from backend.app.schemas.print_options_preference import PrintOptionsPreferenceD
 from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
 from backend.app.services.bambu_mqtt import BambuMQTTClient
 from backend.app.services.filament_deferred import defer_claim
-from backend.app.services.filament_policy import deserialize_policy
+from backend.app.services.filament_intake import read_item_requirements
+from backend.app.services.filament_policy import deserialize_policy, queue_policy
 from backend.app.services.filament_preflight import final_guard, preflight_item
-from backend.app.services.filament_routing import RoutingDeferred
+from backend.app.services.filament_routing import RoutingDeferred, fingerprint
 from backend.app.services.printer_manager import printer_manager
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
@@ -357,3 +358,166 @@ async def test_dual_topology_and_real_mqtt_wire(db_session, tmp_path, printer_fa
         {"ams_id": 255, "slot_id": 0},
     ]
     assert command["param"] == "Metadata/plate_2.gcode"
+
+
+# --------------------------------------------------------------------------- #
+# A profile re-tagged while a prepared job waited is not a changed feed
+# --------------------------------------------------------------------------- #
+
+
+async def a_routed_job(db, tmp_path, printer_factory, monkeypatch, *, allow_base_material_match=True):
+    """One prepared job against one external spool that carries a profile id."""
+    from backend.app.services.filament_policy_write import prepare_routing
+
+    source, printer, queue, mqtt = await setup_source(db, tmp_path, printer_factory, monkeypatch)
+    mqtt._process_message(
+        {
+            "print": {
+                "vt_tray": {
+                    "id": 254,
+                    "tray_type": "PLA",
+                    "tray_color": "0000FF",
+                    "tray_info_idx": "GFA00",
+                    "tray_uuid": "THE-SPOOL",
+                }
+            }
+        }
+    )
+    routing, plate = await prepare_routing(
+        db,
+        printer_id=printer.id,
+        library_file_id=source.id,
+        options={"allow_base_material_match": allow_base_material_match},
+    )
+    item = PrintQueueItem(queue_id=queue.id, library_file_id=source.id, plate_id=plate, filament_routing=routing)
+    db.add(item)
+    await db.commit()
+    return item, source, printer, plate, mqtt
+
+
+def retag(mqtt, variant="GFB99"):
+    """Only the profile id moves: the same spool, the same material, the same colour."""
+    mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_info_idx": variant}}})
+
+
+@pytest.mark.parametrize("when", ["before_final_guard", "after_final_guard"])
+async def test_a_retagged_spool_no_longer_stops_a_prepared_job(
+    db_session, tmp_path, printer_factory, monkeypatch, when
+):
+    """Re-profiling a spool moves no filament, so with the option on it moves no plan.
+
+    Both boundaries the re-tag can land on: between preflight and the final
+    refresh, and between that refresh and the synchronous guard at publish.
+    """
+    item, source, printer, plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    if when == "before_final_guard":
+        retag(mqtt)
+    guard = await final_guard(guard, printer.id)
+    if when == "after_final_guard":
+        retag(mqtt)
+    assert printer_manager.start_print(
+        printer.id,
+        source.filename,
+        plate,
+        ams_mapping=guard.plan.mapping,
+        use_ams=guard.plan.use_ams,
+        routing_guard=guard,
+    )
+    mqtt._client.publish.assert_called_once()
+
+
+async def test_the_same_retag_still_stops_the_job_when_the_option_is_off(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """With the option off the operator asked for that exact profile, here too."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(
+        db_session, tmp_path, printer_factory, monkeypatch, allow_base_material_match=False
+    )
+    guard = await preflight_item(db_session, item, printer.id)
+    retag(mqtt)
+    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+        await final_guard(guard, printer.id)
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [({"tray_type": "PETG"}, "material_mismatch"), ({"tray_uuid": "ANOTHER-SPOOL"}, "feed_state_changed")],
+)
+async def test_final_guard_still_refuses_a_swapped_spool_with_the_option_on(
+    db_session, tmp_path, printer_factory, monkeypatch, change, reason
+):
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    mqtt._process_message({"print": {"vt_tray": {"id": 254, **change}}})
+    with pytest.raises(RoutingDeferred, match=reason):
+        await final_guard(guard, printer.id)
+
+
+@pytest.mark.parametrize("change", ["material", "colour", "identity", "reconnect"])
+async def test_the_publish_boundary_still_catches_a_real_change_with_the_option_on(
+    db_session, tmp_path, printer_factory, monkeypatch, change
+):
+    item, source, printer, plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await final_guard(await preflight_item(db_session, item, printer.id), printer.id)
+    if change == "reconnect":
+        mqtt.state.connection_generation += 1
+    else:
+        tray = {
+            "material": {"tray_type": "PETG"},
+            "colour": {"tray_color": "00FF00"},
+            "identity": {"tray_uuid": "ANOTHER-SPOOL"},
+        }[change]
+        mqtt._process_message({"print": {"vt_tray": {"id": 254, **tray}}})
+    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+        printer_manager.start_print(
+            printer.id,
+            source.filename,
+            plate,
+            ams_mapping=guard.plan.mapping,
+            use_ams=guard.plan.use_ams,
+            routing_guard=guard,
+        )
+    mqtt._client.publish.assert_not_called()
+
+
+async def test_a_block_recorded_the_old_way_no_longer_holds_a_compatible_job(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """Nothing clears a stored block: the old one simply stops matching.
+
+    The revision written before the boundary was policy-aware hashed the
+    snapshot's own marker, profile ids included, so it can no longer equal what
+    this build computes for the same unchanged feed.
+    """
+    item, _source, printer, _plate, _mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    req = await read_item_requirements(db_session, item)
+    stale = fingerprint(
+        {
+            "source": req.source_identity.revision(),
+            "policy": queue_policy(item).fingerprint,
+            "snapshot": printer_manager.get_feed_snapshot(printer.id).marker,
+        }
+    )
+    item.filament_routing = json.dumps(
+        {**json.loads(item.filament_routing), "runtime": {"reason": "feed_state_changed", "blocked_revision": stale}}
+    )
+    await db_session.commit()
+    assert (await preflight_item(db_session, item, printer.id)).plan is not None
+
+
+async def test_a_block_recorded_the_new_way_still_holds_while_nothing_changes(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """The latch itself is untouched — only the key it is written under changed."""
+    item, _source, printer, _plate, _mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    item.filament_routing = json.dumps(
+        {
+            **json.loads(item.filament_routing),
+            "runtime": {"reason": "feed_state_changed", "blocked_revision": guard.revision},
+        }
+    )
+    await db_session.commit()
+    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+        await preflight_item(db_session, item, printer.id)

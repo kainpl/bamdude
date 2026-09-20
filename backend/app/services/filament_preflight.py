@@ -1,6 +1,6 @@
 """Read-only dispatch preflight and a synchronous guard at the MQTT boundary."""
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 
 from backend.app.models.queue_source import FORMAT_GCODE
 from backend.app.services.filament_intake import (
@@ -23,15 +23,71 @@ class DispatchRoutingGuard:
     plan: object
     exact_model: bool
     revision: str
+    #: What "the feed has not moved" meant when this guard was built, read under
+    #: this job's own policy. Recorded rather than re-derived from the plan,
+    #: because the plan describes the trays it CHOSE and the feed is the whole
+    #: of what was on offer — a spool pulled out of an unassigned slot still
+    #: changes what a re-run of the resolver would answer.
+    snapshot_signature: tuple[int, str]
 
     def validate(self, snapshot, *, mapping, use_ams, plate_id):
         """Must run under the client's routing lock, without an await before publish."""
         # Source I/O is checked by final_guard before this synchronous handoff.
         # Never stat a network mount while holding the MQTT telemetry lock.
-        if not snapshot.connected or snapshot.marker != self.plan.snapshot_marker:
+        # ``feed_signature`` is pure arithmetic over a snapshot already in hand,
+        # so this stays as awaitless as the raw marker comparison it replaced.
+        if not snapshot.connected or feed_signature(self.policy, snapshot) != self.snapshot_signature:
             raise RoutingDeferred("feed_state_changed", revision=revision_for(self.requirements, self.policy, snapshot))
         if mapping != self.plan.mapping or use_ams != self.plan.use_ams or plate_id != self.plan.resolved_plate_id:
             raise RoutingDeferred("mapping_review_required")
+
+
+def feed_signature(policy, snapshot) -> tuple[int, str]:
+    """Whether the feed has moved, asked under one job's own policy.
+
+    ``PrinterFeedSnapshot.revision`` hashes a tray's ``tray_info_idx`` with
+    everything else, so re-tagging a spool in the AMS moves the marker of every
+    printer that holds it. That is the right answer for a job that asked for one
+    exact profile and the wrong one for a job that said «any ABS will do»: with
+    «allow base material match» on, no profile id takes part in routing, so a job
+    prepared minutes ago was stopped — or kept stopped — by a fact its own plan
+    had already been told to ignore.
+
+    With the option OFF this IS the snapshot's own marker, unchanged, which is
+    also why a block recorded by an older build still matches for such a job.
+    With it ON the same facts are re-hashed without ``variant``. Everything
+    physical survives verbatim: each source's tag (``tray_uuid``/``tag_uid``),
+    material, colour, nozzle binding, feed kind and slot id, plus the connection
+    generation and the shape of the feed itself. A swapped spool, a re-coloured
+    one, a lost AMS or a reconnect all still move this.
+
+    The one fact of ``snapshot_from_state``'s own payload that cannot travel here
+    is which sources an advertised-profile overlay masked: it is folded into the
+    revision but not exposed on the snapshot. An overlay whose actual values
+    equal the live ones is therefore invisible to this signature — and to the
+    resolver too, which sees identical ``FeedSource`` rows either way.
+    """
+    if not getattr(policy, "allow_base_material_match", False):
+        return snapshot.marker
+    return (
+        snapshot.generation,
+        fingerprint(
+            {
+                "model": snapshot.model,
+                "ams_known": snapshot.ams_known,
+                "ams_present": snapshot.ams_present,
+                "external_known": snapshot.external_known,
+                "nozzles": snapshot.nozzle_diameters,
+                "fts": snapshot.fts,
+                "backup_enabled": snapshot.backup_enabled,
+                "incomplete": snapshot.incomplete,
+                "sources": [
+                    {k: v for k, v in asdict(source).items() if k not in ("remain", "variant")}
+                    for source in snapshot.sources
+                ],
+            }
+        ),
+    )
 
 
 def revision_for(req, policy, snapshot):
@@ -40,13 +96,17 @@ def revision_for(req, policy, snapshot):
     It therefore uses the same portable revision the intent stores: for a captured
     source the hash, never the copy's mtime, or a restore would clear every
     recorded block and re-ask a question whose answer had not changed.
+
+    The feed half is the policy-aware :func:`feed_signature`, the same one the
+    guard compares, so the block a deferral records and the question the next
+    preflight asks are the same question.
     """
     identity = req.source_identity
     return fingerprint(
         {
             "source": identity.revision() if identity else None,
             "policy": policy.fingerprint,
-            "snapshot": snapshot.marker,
+            "snapshot": feed_signature(policy, snapshot),
         }
     )
 
@@ -137,9 +197,16 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
     )
     if result.plan is None:
         raise RoutingDeferred(result.reason or "mapping_review_required", revision=revision, params=result.params)
+    # The latch: a refusal this job already recorded is not re-asked while the
+    # evidence behind it is unchanged. ⚠️ Nothing CLEARS a stored block, and
+    # nothing should: when the feed half of the revision changed shape — as it
+    # did when it became policy-aware — an old block simply stops matching by
+    # construction, and this job is re-evaluated on its next tick like any
+    # other. An unconditional clear would instead re-dispatch every genuinely
+    # blocked row on the first boot after such a change.
     if saved.get("runtime", {}).get("blocked_revision") == revision:
         raise RoutingDeferred(saved["runtime"].get("reason", "feed_state_changed"), revision=revision)
-    return DispatchRoutingGuard(req, policy, result.plan, exact_model, revision)
+    return DispatchRoutingGuard(req, policy, result.plan, exact_model, revision, feed_signature(policy, snapshot))
 
 
 async def final_guard(guard, printer_id):
@@ -169,7 +236,9 @@ async def final_guard(guard, printer_id):
     refreshed_plan = replace(guard.plan, assignments=selected, snapshot_marker=snapshot.marker)
     if refreshed_plan.fingerprint != guard.plan.fingerprint:
         raise RoutingDeferred("feed_state_changed", revision=revision)
-    refreshed = replace(guard, plan=refreshed_plan, revision=revision)
+    refreshed = replace(
+        guard, plan=refreshed_plan, revision=revision, snapshot_signature=feed_signature(guard.policy, snapshot)
+    )
     refreshed.validate(
         snapshot, mapping=guard.plan.mapping, use_ams=guard.plan.use_ams, plate_id=guard.plan.resolved_plate_id
     )

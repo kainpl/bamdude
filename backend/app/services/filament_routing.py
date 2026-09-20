@@ -64,6 +64,12 @@ class RoutingPlan:
     snapshot_marker: tuple[int, str]
     assignments: dict[int, FeedSource]
     color_matches: int
+    #: Whether a profile id is part of what "the same plan" means. The plan does
+    #: not carry the policy, and it is asked this question long after the policy
+    #: has gone out of scope — at the dispatcher's final refresh, comparing a
+    #: plan against itself. Defaults to the strict reading so anything that
+    #: builds a plan without answering keeps the behaviour it had.
+    variant_sensitive: bool = True
 
     @property
     def mapping(self) -> list[int]:
@@ -76,6 +82,13 @@ class RoutingPlan:
 
     @property
     def fingerprint(self) -> str:
+        # ``remain`` is never part of this: a spool that lost a gram during the
+        # upload is the same spool. With the base-material option on, neither is
+        # ``variant`` — re-profiling a tray moves no filament, so a plan made
+        # against it is still the plan. Everything PHYSICAL stays either way:
+        # the tag on the spool, its material, its colour, its nozzle binding,
+        # which feed it is and which slot it sits in.
+        volatile = ("remain",) if self.variant_sensitive else ("remain", "variant")
         return fingerprint(
             {
                 "printer": self.printer_id,
@@ -83,7 +96,7 @@ class RoutingPlan:
                 "source": self.source_revision,
                 "policy": self.policy_fingerprint,
                 "assignments": {
-                    slot: {k: v for k, v in asdict(feed).items() if k != "remain"}
+                    slot: {k: v for k, v in asdict(feed).items() if k not in volatile}
                     for slot, feed in self.assignments.items()
                 },
             }
@@ -362,5 +375,6 @@ def resolve_filament_routing(
             snapshot.marker,
             best,
             sum(int(colors[sid] is not None and colors[sid] == normalized_color(s.color)) for sid, s in best.items()),
+            not policy.allow_base_material_match,
         ),
     )
