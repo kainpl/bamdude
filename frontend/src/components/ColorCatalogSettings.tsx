@@ -7,6 +7,7 @@ import { useToast } from '../contexts/ToastContext';
 import { Card, CardHeader, CardContent } from './Card';
 import { ConfirmModal } from './ConfirmModal';
 import { FILAMENT_EFFECT_OPTIONS } from './filamentSwatchHelpers';
+import { Select } from './Select';
 
 export function ColorCatalogSettings() {
   const { t } = useTranslation();
@@ -417,8 +418,7 @@ export function ColorCatalogSettings() {
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <select
-            className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+          <Select
             value={filterManufacturer}
             onChange={(e) => setFilterManufacturer(e.target.value)}
           >
@@ -426,7 +426,7 @@ export function ColorCatalogSettings() {
             {manufacturers.map(m => (
               <option key={m} value={m}>{m}</option>
             ))}
-          </select>
+          </Select>
         </div>
 
         {/* Add form */}
@@ -497,8 +497,8 @@ export function ColorCatalogSettings() {
                 value={formExtraColors}
                 onChange={(e) => setFormExtraColors(e.target.value)}
               />
-              <select
-                className="px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
+              <Select
+                tone="raised"
                 value={formEffectType}
                 onChange={(e) => setFormEffectType(e.target.value)}
               >
@@ -507,7 +507,7 @@ export function ColorCatalogSettings() {
                     {t(opt.labelKey)}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
           </div>
         )}
@@ -617,8 +617,9 @@ export function ColorCatalogSettings() {
                                 value={formExtraColors}
                                 onChange={(e) => setFormExtraColors(e.target.value)}
                               />
-                              <select
-                                className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-xs focus:border-bambu-green focus:outline-none"
+                              <Select
+                                size="xs"
+                                tone="raised"
                                 value={formEffectType}
                                 onChange={(e) => setFormEffectType(e.target.value)}
                               >
@@ -627,7 +628,7 @@ export function ColorCatalogSettings() {
                                     {t(opt.labelKey)}
                                   </option>
                                 ))}
-                              </select>
+                              </Select>
                             </div>
                           </td>
                           <td className="px-3 py-2">

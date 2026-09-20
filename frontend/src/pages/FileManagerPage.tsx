@@ -75,6 +75,7 @@ import type {
 } from '../api/client';
 import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { Modal } from '../components/Modal';
 import { PaginationBar } from '../components/PaginationBar';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -1644,8 +1645,6 @@ export function FileManagerPage() {
   // and reaching into a user's browser storage to tidy up is a bigger action
   // than the tidiness is worth.
   const [filterUsername, setFilterUsername] = useState('');
-  // Free-text, same reasoning (and the same 300ms) as the search box above.
-  const debouncedFilterUsername = useDebouncedValue(filterUsername, 300);
   const [sortField, setSortField] = useState<SortField>(() => {
     const saved = localStorage.getItem('library-sort-field');
     return (saved as SortField) || 'name';
@@ -1858,7 +1857,7 @@ export function FileManagerPage() {
     searchCurrentFolder,
     filterType,
     unprintedOnly,
-    debouncedFilterUsername,
+    filterUsername,
     sortField,
     sortDirection,
   ]);
@@ -1898,7 +1897,7 @@ export function FileManagerPage() {
     q: debouncedSearchQuery.trim() || undefined,
     file_type: filterType !== 'all' ? filterType : undefined,
     unprinted_only: unprintedOnly,
-    username: debouncedFilterUsername.trim() || undefined,
+    username: filterUsername || undefined,
     sort_by: `${sortField}_${sortDirection}`,
     page: effectivePage,
     per_page: perPage === -1 ? undefined : perPage,
@@ -2594,7 +2593,9 @@ export function FileManagerPage() {
       <div className="flex-1 flex flex-col lg:flex-row gap-4 min-h-0">
         {/* Mobile folder selector */}
         <div className="lg:hidden">
-          <select
+          <Select
+            tone="raised"
+            className="w-full"
             value={selectedFolderId !== null ? String(selectedFolderId) : `__top:${topLevelView}`}
             onChange={(e) => {
               const v = e.target.value;
@@ -2605,7 +2606,6 @@ export function FileManagerPage() {
                 setSelectedFolderId(parseInt(v, 10));
               }
             }}
-            className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg px-3 py-2.5 text-white focus:outline-none focus:border-bambu-green"
           >
             {/* Same grouping as the desktop sidebar: own folders under
                 "All files", external roots after the "External" entry. */}
@@ -2638,7 +2638,7 @@ export function FileManagerPage() {
                 </>
               );
             })()}
-          </select>
+          </Select>
         </div>
 
         {/* Folder sidebar - resizable, hidden on mobile */}
@@ -2669,74 +2669,83 @@ export function FileManagerPage() {
               <div className="w-0.5 h-0.5 rounded-full bg-white/70" />
             </div>
           </div>
-          <div className="p-3 border-b border-bambu-dark-tertiary flex items-center justify-between">
-            <h2 className="text-sm font-medium text-white">{t('fileManager.folders')}</h2>
-            <div className="flex items-center gap-1">
+          <div className="p-3 border-b border-bambu-dark-tertiary flex items-center justify-between gap-2">
+            <h2 className="text-sm font-medium text-white shrink-0">{t('fileManager.folders')}</h2>
+            <div className="flex items-center gap-1.5 min-w-0">
               {/* Folder tree sort (#1770). Dropdown drives the comparator;
                   direction button flips asc/desc. Both persist to localStorage
                   on change so the choice survives reloads. */}
-              <select
+              <Select
+                size="xs"
+                tone="muted"
+                className="min-w-0"
                 value={folderSortField}
                 onChange={(e) => {
                   const v = e.target.value === 'activity' ? 'activity' : 'name';
                   setFolderSortField(v);
                   localStorage.setItem('library-folder-sort-field', v);
                 }}
-                className="text-xs px-1 py-0.5 rounded bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray focus:outline-none focus:border-bambu-green"
                 title={t('fileManager.folderSort')}
                 aria-label={t('fileManager.folderSort')}
               >
                 <option value="name">{t('fileManager.folderSortByName')}</option>
                 <option value="activity">{t('fileManager.folderSortByActivity')}</option>
-              </select>
-              <button
-                onClick={() => {
-                  const newValue = folderSortDirection === 'asc' ? 'desc' : 'asc';
-                  setFolderSortDirection(newValue);
-                  localStorage.setItem('library-folder-sort-direction', newValue);
-                }}
-                className="text-bambu-gray hover:text-white hover:bg-bambu-dark p-1.5 rounded transition-colors"
-                title={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
-                aria-label={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
-              >
-                {folderSortDirection === 'asc' ? (
-                  <ArrowUpNarrowWide className="w-4 h-4" />
-                ) : (
-                  <ArrowDownWideNarrow className="w-4 h-4" />
-                )}
-              </button>
-              <button
-                onClick={() => {
-                  const newValue = !expandFoldersByDefault;
-                  setExpandFoldersByDefault(newValue);
-                  localStorage.setItem('library-collapse-folders', String(!newValue));
-                }}
-                className={`p-1.5 rounded transition-colors ${
-                  expandFoldersByDefault
-                    ? 'bg-bambu-green/20 text-bambu-green'
-                    : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
-                }`}
-                title={expandFoldersByDefault ? t('fileManager.collapseFoldersByDefault') : t('fileManager.expandFoldersByDefault')}
-                aria-label={expandFoldersByDefault ? t('fileManager.collapseFoldersByDefault') : t('fileManager.expandFoldersByDefault')}
-              >
-                <ListCollapse className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => {
-                  const newValue = !wrapFolderNames;
-                  setWrapFolderNames(newValue);
-                  localStorage.setItem('library-wrap-folders', String(newValue));
-                }}
-                className={`p-1.5 rounded transition-colors ${
-                  wrapFolderNames
-                    ? 'bg-bambu-green/20 text-bambu-green'
-                    : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
-                }`}
-                title={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
-                aria-label={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
-              >
-                <WrapText className="w-4 h-4" />
-              </button>
+              </Select>
+              {/* One control, not three loose buttons: they all answer "how
+                  does this panel look", and at the sidebar's 200px floor the
+                  air between them is width the folder names want. Each is as
+                  tall as the select beside it — a 28px button next to a 24px
+                  `xs` field never lined up. */}
+              <div className="shrink-0 flex items-center">
+                <button
+                  onClick={() => {
+                    const newValue = folderSortDirection === 'asc' ? 'desc' : 'asc';
+                    setFolderSortDirection(newValue);
+                    localStorage.setItem('library-folder-sort-direction', newValue);
+                  }}
+                  className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark transition-colors"
+                  title={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+                  aria-label={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+                >
+                  {folderSortDirection === 'asc' ? (
+                    <ArrowUpNarrowWide className="w-4 h-4" />
+                  ) : (
+                    <ArrowDownWideNarrow className="w-4 h-4" />
+                  )}
+                </button>
+                <button
+                  onClick={() => {
+                    const newValue = !expandFoldersByDefault;
+                    setExpandFoldersByDefault(newValue);
+                    localStorage.setItem('library-collapse-folders', String(!newValue));
+                  }}
+                  className={`p-1 rounded transition-colors ${
+                    expandFoldersByDefault
+                      ? 'bg-bambu-green/20 text-bambu-green'
+                      : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
+                  }`}
+                  title={expandFoldersByDefault ? t('fileManager.collapseFoldersByDefault') : t('fileManager.expandFoldersByDefault')}
+                  aria-label={expandFoldersByDefault ? t('fileManager.collapseFoldersByDefault') : t('fileManager.expandFoldersByDefault')}
+                >
+                  <ListCollapse className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => {
+                    const newValue = !wrapFolderNames;
+                    setWrapFolderNames(newValue);
+                    localStorage.setItem('library-wrap-folders', String(newValue));
+                  }}
+                  className={`p-1 rounded transition-colors ${
+                    wrapFolderNames
+                      ? 'bg-bambu-green/20 text-bambu-green'
+                      : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
+                  }`}
+                  title={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
+                  aria-label={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
+                >
+                  <WrapText className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto p-2">
@@ -2958,10 +2967,10 @@ export function FileManagerPage() {
               )}
 
               {/* Type filter */}
-              <select
+              <Select
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value)}
-                className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
+                className="min-w-[9rem]"
               >
                 <option value="all">{t('fileManager.allTypes')}</option>
                 {fileTypes.map((type) => (
@@ -2969,7 +2978,7 @@ export function FileManagerPage() {
                     {type.toUpperCase()}
                   </option>
                 ))}
-              </select>
+              </Select>
 
               {/* A toggle, not a fourth select: the question is binary, and a
                   two-option dropdown is heavier than its answer. */}
@@ -2986,32 +2995,23 @@ export function FileManagerPage() {
                 {t('fileManager.unprintedOnly')}
               </button>
 
-              {/* Username filter with autocomplete - only when auth is enabled */}
+              {/* Who uploaded it — only when auth is enabled, since without it
+                  every file belongs to the same nobody. A list rather than the
+                  text box with a datalist it used to be: the answer is always
+                  one of a known set of people, and a box that accepts anything
+                  invites a typo that silently returns nothing. */}
               {authEnabled && (
-                <div className="relative h-9">
-                  <input
-                    type="text"
-                    placeholder={t('fileManager.filterByUser', { defaultValue: 'Filter by user' })}
-                    value={filterUsername}
-                    onChange={(e) => setFilterUsername(e.target.value)}
-                    list="usernames-list"
-                    className={`w-40 h-9 px-3 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green ${filterUsername ? 'pr-8' : ''}`}
-                    style={filterUsername ? { WebkitAppearance: 'none', MozAppearance: 'textfield' } : undefined}
-                  />
-                  {filterUsername && (
-                    <button
-                      onClick={() => setFilterUsername('')}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white z-10"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  )}
-                  <datalist id="usernames-list">
-                    {users?.map((user) => (
-                      <option key={user.id} value={user.username} />
-                    ))}
-                  </datalist>
-                </div>
+                <Select
+                  className="w-40"
+                  value={filterUsername}
+                  onChange={(e) => setFilterUsername(e.target.value)}
+                  aria-label={t('fileManager.filterByUser')}
+                >
+                  <option value="">{t('fileManager.allUsers')}</option>
+                  {users?.map((user) => (
+                    <option key={user.id} value={user.username}>{user.username}</option>
+                  ))}
+                </Select>
               )}
 
               {/* Results count — `total` is now the server's grand total across
@@ -3025,20 +3025,20 @@ export function FileManagerPage() {
 
               {/* Sort - pushed to far right via ml-auto */}
               <div className="flex items-center gap-1 ml-auto">
-                <select
+                <Select
                   value={sortField}
                   onChange={(e) => {
                     const newField = e.target.value as SortField;
                     setSortField(newField);
                     localStorage.setItem('library-sort-field', newField);
                   }}
-                  className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
+                  className="min-w-[9rem]"
                 >
                   <option value="name">{t('common.name')}</option>
                   <option value="date">{t('common.date')}</option>
                   <option value="size">{t('fileManager.size')}</option>
                   <option value="type">{t('common.type')}</option>
-                </select>
+                </Select>
                 <button
                   onClick={() => setSortDirection((d) => {
                     const newDir = d === 'asc' ? 'desc' : 'asc';

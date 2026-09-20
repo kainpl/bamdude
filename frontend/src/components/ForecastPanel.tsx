@@ -29,6 +29,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { LoadingBlock } from './LoadingBlock';
 import { Modal } from './Modal';
 import { PaginationBar } from './PaginationBar';
+import { Select } from './Select';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 //
@@ -357,32 +358,26 @@ export function ForecastPanel() {
         )}
 
         {/* Material filter */}
-        <select
+        <Select
+          tone="filter"
+          active={!!materialFilter}
           value={materialFilter}
           onChange={(e) => setMaterialFilter(e.target.value)}
-          className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
-            materialFilter
-              ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
-              : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
-          }`}
         >
           <option value="">{t('inventory.material')}</option>
           {uniqueMaterials.map((m) => <option key={m} value={m}>{m}</option>)}
-        </select>
+        </Select>
 
         {/* Brand filter */}
-        <select
+        <Select
+          tone="filter"
+          active={!!brandFilter}
           value={brandFilter}
           onChange={(e) => setBrandFilter(e.target.value)}
-          className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
-            brandFilter
-              ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
-              : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
-          }`}
         >
           <option value="">{t('inventory.brand')}</option>
           {uniqueBrands.map((b) => <option key={b} value={b}>{b}</option>)}
-        </select>
+        </Select>
 
         {/* Shopping list toggle */}
         <button

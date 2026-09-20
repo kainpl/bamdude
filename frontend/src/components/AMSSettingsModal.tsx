@@ -7,6 +7,7 @@ import { useToast } from '../contexts/ToastContext';
 import type { AmsSettingsPostBody, AmsSystemSettingState } from '../api/client';
 import { Button } from './Button';
 import { Modal } from './Modal';
+import { Select } from './Select';
 
 interface Props {
   isOpen: boolean;
@@ -214,8 +215,8 @@ export function AMSSettingsModal({ isOpen, onClose, printerId }: Props) {
                 </p>
               ) : (
                 <div className="mt-2 flex gap-2 items-center">
-                  <select
-                    className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 text-white focus:border-bambu-green focus:outline-none"
+                  <Select
+                    size="sm"
                     // No `?? 0` fallback: 0 is a real id (IDX_LITE), so
                     // defaulting to it would silently pre-select a
                     // personality the printer never said it was running.
@@ -232,7 +233,7 @@ export function AMSSettingsModal({ isOpen, onClose, printerId }: Props) {
                         {o.version ? `${o.label} (${o.version})` : o.label}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </div>
               )}
               {s.firmware_idx_run != null && s.firmware_idx_run !== s.firmware_idx_sel && (
@@ -274,8 +275,8 @@ export function AMSSettingsModal({ isOpen, onClose, printerId }: Props) {
                 <label className="text-sm text-bambu-gray">
                   {t('amsSettings.selectAmsForCalibrate')}:
                 </label>
-                <select
-                  className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 text-white focus:border-bambu-green focus:outline-none"
+                <Select
+                  size="sm"
                   value={selectedAmsId ?? ''}
                   onChange={(e) => setSelectedAmsId(Number(e.target.value))}
                 >
@@ -284,7 +285,7 @@ export function AMSSettingsModal({ isOpen, onClose, printerId }: Props) {
                       {u.label}
                     </option>
                   ))}
-                </select>
+                </Select>
                 <Button variant="secondary" onClick={onCalibrate}>
                   {t('amsSettings.calibrate')}
                 </Button>

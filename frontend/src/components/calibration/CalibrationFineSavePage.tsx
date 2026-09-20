@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { CalibrationSessionOut, ManualResultIn } from '../../api/client';
+import { Select } from '../Select';
 
 // Must match backend FLOW_RATE_FINE_MODIFIERS and the actual 10 blocks
 // inside flowrate-test-pass2.3mf (flowrate_m9..m1 + flowrate_0). BS's fine
@@ -28,17 +29,18 @@ export function CalibrationFineSavePage({ session, onSubmit, isSubmitting }: Pro
 
       <label className="block">
         <span className="text-xs text-bambu-gray">{t('filamentCali.fineSave.fineModifier')}</span>
-        <select
+        <Select
+          size="sm"
+          className="w-full"
           value={mod}
           onChange={(e) => setMod(parseInt(e.target.value, 10))}
-          className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
         >
           {FINE_MODS.map((m) => (
             <option key={m} value={m}>
               {m > 0 ? `+${m}%` : `${m}%`}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
 
       <div className="p-2 bg-bambu-dark rounded text-sm">

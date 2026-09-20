@@ -2,7 +2,7 @@
  * "Clear filters" must clear every filter, and must be reachable.
  *
  * It used to reset the search box and the type dropdown only, leaving the
- * computed-tag chip row, the username box and the cross-cutting user-tag
+ * computed-tag chip row, the uploader filter and the cross-cutting user-tag
  * filter still narrowing the list — so the button promised a reset and handed
  * back a library that was still partial, with nothing on screen saying why.
  *
@@ -99,6 +99,13 @@ describe('clear filters', () => {
           meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
         });
       }),
+      http.get('/api/v1/users/slim', () =>
+        HttpResponse.json([
+          { id: 1, username: 'alice' },
+          { id: 2, username: 'bob' },
+          { id: 3, username: 'carol' },
+        ]),
+      ),
       http.get('/api/v1/library/stats', () =>
         HttpResponse.json({
           total_files: 2,
@@ -147,7 +154,9 @@ describe('clear filters', () => {
     render(<FileManagerPage />);
     await screen.findByText('Benchy');
 
-    await userEvent.type(screen.getByPlaceholderText('Filter by user'), 'zzznobody');
+    // carol exists but owns neither file, so the listing empties — the filter
+    // is a list now, so there is no arbitrary string to type.
+    await userEvent.selectOptions(await screen.findByLabelText('Filter by user'), 'carol');
     await waitFor(() => expect(screen.queryByText('Benchy')).not.toBeInTheDocument());
 
     await userEvent.click(await screen.findByRole('button', { name: 'Clear filters' }));

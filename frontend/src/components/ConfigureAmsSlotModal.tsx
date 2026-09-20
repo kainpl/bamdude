@@ -1,12 +1,13 @@
 import { useState, useMemo, useEffect, useId, useRef } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Settings2, ChevronDown, CheckCircle2, RotateCcw } from 'lucide-react';
+import { Loader2, Settings2, CheckCircle2, RotateCcw } from 'lucide-react';
 import { api } from '../api/client';
 import type { KProfile } from '../api/client';
 import { isMatchingCalibration } from './spool-form/utils';
 import { Button } from './Button';
 import { Modal } from './Modal';
+import { Select } from './Select';
 
 interface SlotInfo {
   amsId: number;
@@ -626,24 +627,21 @@ export function ConfigureAmsSlotModal({
                   )}
                 </label>
                 {matchingKProfiles.length > 0 ? (
-                  <div className="relative">
-                    <select
-                      value={selectedKProfile?.name || ''}
-                      onChange={(e) => {
-                        const profile = matchingKProfiles.find(p => p.name === e.target.value);
-                        setSelectedKProfile(profile || null);
-                      }}
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none pr-10"
-                    >
-                      <option value="">{t('configureAmsSlot.noKProfile')}</option>
-                      {matchingKProfiles.map((profile) => (
-                        <option key={`${profile.name}-${profile.extruder_id}`} value={profile.name}>
-                          {profile.name} (K={profile.k_value})
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                  </div>
+                  <Select
+                    className="w-full"
+                    value={selectedKProfile?.name || ''}
+                    onChange={(e) => {
+                      const profile = matchingKProfiles.find(p => p.name === e.target.value);
+                      setSelectedKProfile(profile || null);
+                    }}
+                  >
+                    <option value="">{t('configureAmsSlot.noKProfile')}</option>
+                    {matchingKProfiles.map((profile) => (
+                      <option key={`${profile.name}-${profile.extruder_id}`} value={profile.name}>
+                        {profile.name} (K={profile.k_value})
+                      </option>
+                    ))}
+                  </Select>
                 ) : selectedPresetId ? (
                   <p className="text-sm text-bambu-gray italic py-2">
                     {t('configureAmsSlot.noMatchingKProfiles')}
@@ -870,24 +868,21 @@ export function ConfigureAmsSlotModal({
                 )}
               </label>
               {matchingKProfiles.length > 0 ? (
-                <div className="relative">
-                  <select
-                    value={selectedKProfile?.name || ''}
-                    onChange={(e) => {
-                      const profile = matchingKProfiles.find(p => p.name === e.target.value);
-                      setSelectedKProfile(profile || null);
-                    }}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none pr-10"
-                  >
-                    <option value="">{t('configureAmsSlot.noKProfile')}</option>
-                    {matchingKProfiles.map((profile) => (
-                      <option key={`${profile.name}-${profile.extruder_id}`} value={profile.name}>
-                        {profile.name} (K={profile.k_value})
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                </div>
+                <Select
+                  className="w-full"
+                  value={selectedKProfile?.name || ''}
+                  onChange={(e) => {
+                    const profile = matchingKProfiles.find(p => p.name === e.target.value);
+                    setSelectedKProfile(profile || null);
+                  }}
+                >
+                  <option value="">{t('configureAmsSlot.noKProfile')}</option>
+                  {matchingKProfiles.map((profile) => (
+                    <option key={`${profile.name}-${profile.extruder_id}`} value={profile.name}>
+                      {profile.name} (K={profile.k_value})
+                    </option>
+                  ))}
+                </Select>
               ) : selectedPresetId ? (
                 <p className="text-sm text-bambu-gray italic py-2">
                   {t('configureAmsSlot.noMatchingKProfiles')}

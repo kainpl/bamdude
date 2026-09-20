@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Cpu } from 'lucide-react';
 import { api, firmwareApi } from '../api/client';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { useToast } from '../contexts/ToastContext';
 
 interface ItemProgress {
@@ -264,19 +265,18 @@ export function FirmwareUpdatePage() {
         <div>
           <div className="flex items-center gap-3 mb-3">
             <label className="text-sm text-bambu-gray">{t('firmware.version')}</label>
-            <select
+            <Select
               value={versionByModel[activeGroup.model] ?? ''}
               onChange={(e) =>
                 setVersionByModel((v) => ({ ...v, [activeGroup.model]: e.target.value }))
               }
-              className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
             >
               {activeGroup.available_versions.map((v) => (
                 <option key={v} value={v}>
                   {v}
                 </option>
               ))}
-            </select>
+            </Select>
             <span
               className={`text-xs px-2 py-1 rounded ${
                 activeGroup.remote_apply ? 'bg-bambu-green/20 text-bambu-green' : 'bg-bambu-dark-tertiary text-bambu-gray'

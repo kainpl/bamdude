@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { CalibrationSessionOut, ManualResultIn } from '../../api/client';
+import { Select } from '../Select';
 
 // Must match backend FLOW_RATE_COARSE_MODIFIERS.
 const COARSE_MODS = [-20, -15, -10, -5, 0, 5, 10, 15, 20];
@@ -26,17 +27,18 @@ export function CalibrationCoarseSavePage({ onSubmit, isSubmitting }: Props) {
 
       <label className="block">
         <span className="text-xs text-bambu-gray">{t('filamentCali.coarseSave.blockModifier')}</span>
-        <select
+        <Select
+          size="sm"
+          className="w-full"
           value={mod}
           onChange={(e) => setMod(parseInt(e.target.value, 10))}
-          className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
         >
           {COARSE_MODS.map((m) => (
             <option key={m} value={m}>
               {m > 0 ? `+${m}%` : `${m}%`}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
 
       <div className="p-2 bg-bambu-dark rounded text-sm">

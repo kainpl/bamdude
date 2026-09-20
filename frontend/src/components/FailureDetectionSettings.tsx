@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
 import { Toggle } from './Toggle';
 import { useToast } from '../contexts/ToastContext';
+import { Select } from './Select';
 
 type TestResult = { ok: boolean; message: string } | null;
 
@@ -195,16 +196,16 @@ export function FailureDetectionSettings() {
               <label className="block text-sm text-bambu-gray mb-1">
                 {t('failureDetection.sensitivity')}
               </label>
-              <select
+              <Select
+                className="w-full"
                 value={sensitivity}
                 onChange={(e) => setSensitivity(e.target.value as 'low' | 'medium' | 'high')}
                 disabled={!enabled}
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
               >
                 <option value="low">{t('failureDetection.sensitivityLow')}</option>
                 <option value="medium">{t('failureDetection.sensitivityMedium')}</option>
                 <option value="high">{t('failureDetection.sensitivityHigh')}</option>
-              </select>
+              </Select>
               <p className="text-xs text-bambu-gray mt-1">{t('failureDetection.sensitivityHint')}</p>
             </div>
 
@@ -212,16 +213,16 @@ export function FailureDetectionSettings() {
               <label className="block text-sm text-bambu-gray mb-1">
                 {t('failureDetection.action')}
               </label>
-              <select
+              <Select
+                className="w-full"
                 value={action}
                 onChange={(e) => setAction(e.target.value as 'notify' | 'pause' | 'pause_and_off')}
                 disabled={!enabled}
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
               >
                 <option value="notify">{t('failureDetection.actionNotify')}</option>
                 <option value="pause">{t('failureDetection.actionPause')}</option>
                 <option value="pause_and_off">{t('failureDetection.actionPauseOff')}</option>
-              </select>
+              </Select>
             </div>
 
             <div>

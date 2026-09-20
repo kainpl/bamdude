@@ -8,6 +8,7 @@ import type { NotificationLogEntry } from '../api/client';
 import { Button } from './Button';
 import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
+import { Select } from './Select';
 
 const EVENT_COLORS: Record<string, string> = {
   print_start: 'text-blue-700 dark:text-blue-400',
@@ -112,16 +113,16 @@ export function NotificationLogViewer({ onClose }: NotificationLogViewerProps) {
 
       {/* Filters */}
       <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex items-center gap-4">
-        <select
+        <Select
+          size="sm"
           value={days}
           onChange={(e) => setDays(Number(e.target.value))}
-          className="px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-bambu-green"
         >
           <option value={1}>{t('notifications.last24Hours')}</option>
           <option value={7}>{t('notifications.last7Days')}</option>
           <option value={30}>{t('notifications.last30Days')}</option>
           <option value={90}>{t('notifications.last90Days')}</option>
-        </select>
+        </Select>
 
         <label className="flex items-center gap-2 text-sm text-bambu-gray cursor-pointer">
           <input

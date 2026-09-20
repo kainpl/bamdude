@@ -2,9 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import { selectableProjects } from '../../utils/projects';
-
-const SELECT_CLASS =
-  'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
+import { Select } from '../Select';
 
 interface OrderPickerProps {
   value: number | null;
@@ -30,12 +28,12 @@ export function OrderPicker({ value, onChange, disabled, id }: OrderPickerProps)
   const options = selectableProjects(orders, value != null ? [value] : null);
 
   return (
-    <select
+    <Select
+      className="w-full"
       id={id}
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
       disabled={disabled}
-      className={SELECT_CLASS}
     >
       <option value="">{t('pickers.noOrder')}</option>
       {options.map((o) => (
@@ -43,6 +41,6 @@ export function OrderPicker({ value, onChange, disabled, id }: OrderPickerProps)
           {o.name}
         </option>
       ))}
-    </select>
+    </Select>
   );
 }

@@ -10,9 +10,7 @@ import type { DateFormat } from '../../utils/date';
 import { Button } from '../Button';
 import { isNoteToken, signed } from '../products/stockMovementHelpers';
 import { MovementSource } from '../products/MovementSource';
-
-const FIELD_CLASS =
-  'px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
+import { Select } from '../Select';
 
 /**
  * The farm's ledger, newest first, with the older pages loaded on demand.
@@ -48,8 +46,7 @@ export function StockJournal() {
         <h2 className="text-lg font-medium text-white">{t('stock.page.journal')}</h2>
         <label className="text-xs text-bambu-gray flex flex-col gap-1">
           {t('stock.page.filterProduct')}
-          <select
-            className={FIELD_CLASS}
+          <Select
             value={filters.product_id ?? ''}
             onChange={(e) => setFilters((f) => ({ ...f, product_id: e.target.value ? Number(e.target.value) : undefined }))}
           >
@@ -57,12 +54,11 @@ export function StockJournal() {
             {catalog.filter((p) => p.parts_count > 0).map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
-          </select>
+          </Select>
         </label>
         <label className="text-xs text-bambu-gray flex flex-col gap-1">
           {t('stock.page.filterReason')}
-          <select
-            className={FIELD_CLASS}
+          <Select
             value={filters.reason ?? ''}
             onChange={(e) => setFilters((f) => ({ ...f, reason: e.target.value || undefined }))}
           >
@@ -70,7 +66,7 @@ export function StockJournal() {
             {STOCK_REASONS.map((r) => (
               <option key={r} value={r}>{t(`stock.reason.${r}`)}</option>
             ))}
-          </select>
+          </Select>
         </label>
       </div>
 

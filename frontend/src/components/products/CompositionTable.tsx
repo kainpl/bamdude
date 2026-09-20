@@ -8,6 +8,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { getCurrencySymbol } from '../../utils/currency';
 import { ConfirmModal } from '../ConfirmModal';
 import { AddPartRow } from './AddPartRow';
+import { Select } from '../Select';
 
 const FIELD_CLASS =
   'px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none disabled:opacity-60';
@@ -314,14 +315,14 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-end gap-2">
                         {canEdit && printed.length > 1 && (
-                          <select
+                          <Select
+                            size="sm"
                             value=""
                             aria-label={t('products.composition.mergeInto')}
                             onChange={(e) => {
                               const target = printed.find((other) => other.id === Number(e.target.value));
                               if (target) setMerging({ source: part, target });
                             }}
-                            className={FIELD_CLASS}
                           >
                             <option value="">{t('products.composition.mergeInto')}</option>
                             {printed
@@ -331,7 +332,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
                                   {other.name}
                                 </option>
                               ))}
-                          </select>
+                          </Select>
                         )}
                         {deleteButton(part)}
                       </div>

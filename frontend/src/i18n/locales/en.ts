@@ -4979,6 +4979,7 @@ export default {
     folderName: 'Folder Name',
     folderNamePlaceholder: 'e.g., Functional Parts',
     filterByUser: 'Filter by user',
+    allUsers: 'All users',
     renameFile: 'Rename File',
     renameFolder: 'Rename Folder',
     invalidFilenameChar: 'Name cannot contain: {{char}}',

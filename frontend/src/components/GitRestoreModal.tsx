@@ -24,6 +24,7 @@ import {
 } from '../api/client';
 import { invalidateSpoolViews } from '../utils/queryInvalidation';
 import type { TFunction } from 'i18next';
+import { Select } from './Select';
 
 interface GitRestoreModalProps {
   onClose: () => void;
@@ -346,7 +347,8 @@ export function GitRestoreModal({ onClose }: GitRestoreModalProps) {
               <label htmlFor="restore-commit" className="block text-sm font-medium text-white mb-1">
                 {t('backup.restoreFromGit.commitLabel')}
               </label>
-              <select
+              <Select
+                className="w-full"
                 id="restore-commit"
                 value={selectedRef}
                 onChange={(e) => {
@@ -357,7 +359,6 @@ export function GitRestoreModal({ onClose }: GitRestoreModalProps) {
                   restoreMutation.reset();
                 }}
                 disabled={isRestoring || commitsQuery.isLoading}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
               >
                 <option value={LATEST}>{t('backup.restoreFromGit.latestCommit')}</option>
                 {commits.map((c) => (
@@ -365,7 +366,7 @@ export function GitRestoreModal({ onClose }: GitRestoreModalProps) {
                     {formatCommitLabel(c.sha, c.message, c.date)}
                   </option>
                 ))}
-              </select>
+              </Select>
               {commitsError && <p className="mt-1 text-xs text-red-500 dark:text-red-400">{commitsError}</p>}
             </div>
 

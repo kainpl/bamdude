@@ -7,6 +7,7 @@ import type { ZigbeeDevice, ZigbeeSensor } from '../../api/client';
 import { Modal } from '../Modal';
 import { PrinterLocationSelect } from '../PrinterLocationSelect';
 import { Button } from '../Button';
+import { Select } from '../Select';
 
 interface Props {
   /** Set when editing, null when adopting. */
@@ -89,9 +90,10 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
             <label className="block text-sm text-bambu-gray mb-1" htmlFor="sensor-device">
               {t('settings.zigbee.sensors.device')}
             </label>
-            <select
+            <Select
+              size="sm"
+              className="w-full"
               id="sensor-device"
-              className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
               value={ieee}
               onChange={(e) => {
                 setIeee(e.target.value);
@@ -105,7 +107,7 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
                   {d.name || d.model || d.ieee}
                 </option>
               ))}
-            </select>
+            </Select>
             {free.length === 0 && (
               <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
                 {t('settings.zigbee.sensors.noFreeDevices')}
@@ -154,10 +156,11 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
           {boundTo === 'location' ? (
             <PrinterLocationSelect value={locationId} onChange={setLocationId} allowCreate />
           ) : (
-            <select
+            <Select
+              size="sm"
+              className="w-full"
               id="sensor-printer"
               aria-label={t('settings.zigbee.sensors.boundToPrinter')}
-              className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
               value={printerId ?? ''}
               onChange={(e) => setPrinterId(e.target.value === '' ? null : Number(e.target.value))}
             >
@@ -167,7 +170,7 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
                   {p.name}
                 </option>
               ))}
-            </select>
+            </Select>
           )}
           <p className="text-xs text-bambu-gray mt-1">
             {t(

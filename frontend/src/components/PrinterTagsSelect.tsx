@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { PrinterTagChip } from './PrinterTagChip';
 import { byLocationName } from '../utils/locationOrder';
+import { Select } from './Select';
 
 interface Props {
   value: number[];
@@ -110,9 +111,10 @@ export function PrinterTagsSelect({ value, onChange, allowCreate = false }: Prop
               The chips above are what the form holds; leaving the picked option
               selected would show the same tag twice, once as a chip and once as
               the picker's current value. */}
-          <select
+          <Select
+            size="sm"
+            className="flex-1"
             aria-label={t('printers.tags.pick')}
-            className="flex-1 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             value=""
             onChange={(e) => {
               if (e.target.value) onChange([...value, Number(e.target.value)]);
@@ -124,7 +126,7 @@ export function PrinterTagsSelect({ value, onChange, allowCreate = false }: Prop
                 {tag.name}
               </option>
             ))}
-          </select>
+          </Select>
           {allowCreate && (
             <button
               type="button"

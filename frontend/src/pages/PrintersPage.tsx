@@ -127,6 +127,7 @@ export interface SpoolmanSlotAssignmentRow {
 }
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { CardActionMenu, CardActionMenuItem } from '../components/CardActionMenu';
 import { Modal } from '../components/Modal';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -7552,8 +7553,9 @@ export function AddPrinterModal({
               {t('printers.discovery.subnetToScan')}
             </label>
             {detectedSubnets.length > 0 ? (
-              <select
-                className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+              <Select
+                size="sm"
+                className="w-full"
                 value={useCustomSubnet ? '__custom__' : subnet}
                 onChange={(e) => {
                   if (e.target.value === '__custom__') {
@@ -7569,7 +7571,7 @@ export function AddPrinterModal({
                   <option key={s} value={s}>{s}</option>
                 ))}
                 <option value="__custom__">{t('printers.discovery.customSubnetOption')}</option>
-              </select>
+              </Select>
             ) : (
               <input
                 type="text"
@@ -7729,8 +7731,9 @@ export function AddPrinterModal({
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.modelOptional')}</label>
-                <select
-                  className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                <Select
+                  size="sm"
+                  className="w-full"
                   value={form.model || ''}
                   onChange={(e) => setForm({ ...form, model: e.target.value })}
                 >
@@ -7761,7 +7764,7 @@ export function AddPrinterModal({
                   <optgroup label="A2 Series">
                     <option value="A2L">A2L</option>
                   </optgroup>
-                </select>
+                </Select>
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.locationGroup')}</label>
@@ -7863,15 +7866,15 @@ export function AddPrinterModal({
                         <label className="block text-xs text-bambu-gray mb-1">
                           {t('printers.modal.swapProfile')}
                         </label>
-                        <select
+                        <Select
+                          className="w-full"
                           value={form.swap_profile ?? ''}
                           onChange={(e) => setForm({ ...form, swap_profile: e.target.value || null })}
-                          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                         >
                           {modelProfiles.map((p) => (
                             <option key={p.id} value={p.id}>{p.label}</option>
                           ))}
-                        </select>
+                        </Select>
                         {form.swap_profile && (
                           <p className="text-xs text-bambu-gray mt-1">
                             {modelProfiles.find((p) => p.id === form.swap_profile)?.description}
@@ -8405,8 +8408,9 @@ export function EditPrinterModal({
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('printers.model')}</label>
-                <select
-                  className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                <Select
+                  size="sm"
+                  className="w-full"
                   value={form.model}
                   onChange={(e) => setForm({ ...form, model: e.target.value })}
                 >
@@ -8437,7 +8441,7 @@ export function EditPrinterModal({
                   <optgroup label="A2 Series">
                     <option value="A2L">A2L</option>
                   </optgroup>
-                </select>
+                </Select>
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">Location / Group</label>
@@ -8584,15 +8588,15 @@ export function EditPrinterModal({
                         <label className="block text-xs text-bambu-gray mb-1">
                           {t('printers.modal.swapProfile')}
                         </label>
-                        <select
+                        <Select
+                          className="w-full"
                           value={form.swap_profile ?? ''}
                           onChange={(e) => setForm({ ...form, swap_profile: e.target.value || null })}
-                          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                         >
                           {modelProfiles.map((p) => (
                             <option key={p.id} value={p.id}>{p.label}</option>
                           ))}
-                        </select>
+                        </Select>
                         {form.swap_profile && (
                           <p className="text-xs text-bambu-gray mt-1">
                             {modelProfiles.find((p) => p.id === form.swap_profile)?.description}

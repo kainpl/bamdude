@@ -1,8 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
-
-const SELECT_CLASS =
-  'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
+import { Select } from '../Select';
 
 interface OrderLinePickerProps {
   orderId: number | null;
@@ -28,12 +26,12 @@ export function OrderLinePicker({ orderId, value, onChange, disabled, id }: Orde
   const lines = order?.lines ?? [];
 
   return (
-    <select
+    <Select
+      className="w-full"
       id={id}
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
       disabled={disabled || orderId == null}
-      className={SELECT_CLASS}
     >
       <option value="">{orderId == null ? t('pickers.chooseOrderFirst') : t('pickers.noLine')}</option>
       {lines.map((line) => (
@@ -41,6 +39,6 @@ export function OrderLinePicker({ orderId, value, onChange, disabled, id }: Orde
           {`${line.product_name} × ${line.quantity}${line.material ? ` [${line.material}]` : ''}`}
         </option>
       ))}
-    </select>
+    </Select>
   );
 }

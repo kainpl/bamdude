@@ -1,5 +1,6 @@
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { Select } from './Select';
 
 export interface PaginationBarProps {
   /** Current page, 1-based — the number the bar itself shows. */
@@ -76,11 +77,12 @@ export function PaginationBar({
 
       <div className="flex items-center gap-2">
         <span className="text-bambu-gray">{t('common.show')}</span>
-        <select
+        <Select
+          size="sm"
+          tone="raised"
           value={perPage}
           onChange={(e) => onPerPageChange(Number(e.target.value))}
           aria-label={t('common.show')}
-          className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:border-bambu-green"
         >
           {perPageOptions.map((n) => (
             <option key={n} value={n}>
@@ -88,7 +90,7 @@ export function PaginationBar({
             </option>
           ))}
           <option value={-1}>{t('common.all')}</option>
-        </select>
+        </Select>
 
         {!isShowAll && totalPages > 1 && (
           <>

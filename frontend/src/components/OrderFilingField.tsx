@@ -2,6 +2,7 @@ import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ClipboardList } from 'lucide-react';
 import type { OrderCandidate } from '../api/client';
+import { Select } from './Select';
 
 /** Which order a print is filed under: none, a NEW order for this batch, or an existing order's line. */
 export type OrderFilingValue =
@@ -65,7 +66,9 @@ export function OrderFilingField({ value, onChange, candidates, loading, offerNe
         <ClipboardList className="w-3.5 h-3.5" />
         {t('orderFiling.label')}
       </label>
-      <select
+      <Select
+        size="sm"
+        className="w-full"
         id={selectId}
         value={current}
         onChange={(e) => {
@@ -74,7 +77,6 @@ export function OrderFilingField({ value, onChange, candidates, loading, offerNe
           const picked = list.find((c) => optionValue(c) === e.target.value);
           onChange(picked ? { kind: 'order', projectId: picked.project_id, projectLineId: picked.project_line_id } : { kind: 'none' });
         }}
-        className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded text-white px-2 py-1.5 text-sm"
       >
         <option value="">{t('orderFiling.none')}</option>
         {offerNewOrder && <option value="new">{t('orderFiling.newOrder')}</option>}
@@ -87,7 +89,7 @@ export function OrderFilingField({ value, onChange, candidates, loading, offerNe
             }`}
           </option>
         ))}
-      </select>
+      </Select>
     </div>
   );
 }

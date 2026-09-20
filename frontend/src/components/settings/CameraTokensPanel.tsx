@@ -18,6 +18,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { parseUTCDate } from '../../utils/date';
 import { monitorUrl } from '../../features/monitor/location';
+import { Select } from '../Select';
 
 const DEFAULT_LIFETIME_DAYS = 90;
 const MAX_LIFETIME_DAYS = 365;
@@ -99,17 +100,16 @@ function CreateTokenForm({ onCreated }: CreateTokenFormProps) {
           className="px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
           aria-label={t('cameraTokens.create.nameLabel')}
         />
-        <select
+        <Select
           value={scope}
           onChange={(e) => setScope(e.target.value)}
-          className="px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
           aria-label={t('cameraTokens.create.scopeLabel')}
         >
           {canCreateCamera && <option value="camera_stream">{t('cameraTokens.scope.cameraStream')}</option>}
           {canCreateCamera && <option value="camwall">{t('cameraTokens.scope.camwall')}</option>}
           {canCreateCamera && <option value="overlay">{t('cameraTokens.scope.overlay')}</option>}
           {canCreateMonitor && <option value="monitor">{t('monitor.tokenScope')}</option>}
-        </select>
+        </Select>
         {scope === 'monitor' && <p className="text-sm text-bambu-gray md:col-span-4 md:order-last">{t('monitor.tokenDescription')}</p>}
         <input
           type="number"

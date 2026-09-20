@@ -6,6 +6,7 @@
  */
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Select } from '../../Select';
 
 import type {
   PresetRef,
@@ -125,11 +126,11 @@ export function CalibrationPresetDropdown({
         )}
         <span>{label}</span>
       </span>
-      <select
+      <Select
+        className="w-full"
         value={toRefValue(value)}
         onChange={(e) => onChange(fromRefValue(e.target.value))}
         disabled={disabled || totalEntries === 0}
-        className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
       >
         <option value="">
           {totalEntries === 0
@@ -154,7 +155,7 @@ export function CalibrationPresetDropdown({
             ))}
           </optgroup>
         )}
-      </select>
+      </Select>
     </label>
   );
 }

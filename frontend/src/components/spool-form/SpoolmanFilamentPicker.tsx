@@ -78,7 +78,7 @@ export function SpoolmanFilamentPicker({
       <button
         type="button"
         onClick={handleOpen}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-left focus:outline-none focus:border-bambu-green hover:border-bambu-gray transition-colors"
+        className="w-full flex items-center gap-2 pl-3 pr-2 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-left focus:outline-none focus:border-bambu-green hover:border-bambu-gray transition-colors"
       >
         {isLoading ? (
           <Loader2 className="w-4 h-4 text-bambu-gray animate-spin shrink-0" />

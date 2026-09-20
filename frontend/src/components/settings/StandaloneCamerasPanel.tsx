@@ -17,6 +17,7 @@ import { Button } from '../Button';
 import { ConfirmModal } from '../ConfirmModal';
 import { PrinterLocationSelect } from '../PrinterLocationSelect';
 import { useToast } from '../../contexts/ToastContext';
+import { Select } from '../Select';
 
 /** Value plus the label key the printers' external camera select already uses:
  *  the same four sources, so they must read the same in both lists. */
@@ -119,29 +120,29 @@ export function StandaloneCamerasPanel() {
         </div>
         <div>
           <label className={label} htmlFor={`${idPrefix}-type`}>{t('settings.otherCameras.type')}</label>
-          <select
+          <Select
+            tone="raised"
             id={`${idPrefix}-type`}
             value={value.camera_type}
             onChange={(e) => onChange({ camera_type: e.target.value as Camera['camera_type'] })}
-            className={field}
           >
             {TYPES.map((type) => (
               <option key={type.value} value={type.value}>{t(type.labelKey)}</option>
             ))}
-          </select>
+          </Select>
         </div>
         <div>
           <label className={label} htmlFor={`${idPrefix}-rotation`}>{t('settings.cameraRotation')}</label>
-          <select
+          <Select
+            tone="raised"
             id={`${idPrefix}-rotation`}
             value={value.rotation}
             onChange={(e) => onChange({ rotation: parseInt(e.target.value, 10) })}
-            className={field}
           >
             {[0, 90, 180, 270].map((deg) => (
               <option key={deg} value={deg}>{deg}°</option>
             ))}
-          </select>
+          </Select>
         </div>
       </div>
       <div>

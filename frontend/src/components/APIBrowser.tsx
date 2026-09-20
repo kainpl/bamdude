@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { ChevronDown, ChevronRight, Play, Copy, Loader2, ExternalLink, AlertCircle, CheckCircle } from 'lucide-react';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
+import { Select } from './Select';
 
 interface OpenAPISchema {
   paths: Record<string, Record<string, EndpointSpec>>;
@@ -367,16 +368,17 @@ function EndpointItem({ path, method, spec, schema, apiKey }: EndpointItemProps)
                       {param.required && <span className="text-red-700 dark:text-red-400 ml-1">*</span>}
                     </label>
                     {param.schema?.enum ? (
-                      <select
+                      <Select
+                        size="sm"
+                        className="flex-1"
                         value={params[param.name] || ''}
                         onChange={(e) => setParams(p => ({ ...p, [param.name]: e.target.value }))}
-                        className="flex-1 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
                       >
                         <option value="">-- Select --</option>
                         {param.schema.enum.map(opt => (
                           <option key={opt} value={opt}>{opt}</option>
                         ))}
-                      </select>
+                      </Select>
                     ) : (
                       <input
                         type="text"

@@ -54,6 +54,7 @@ import type {
 } from './types';
 import type { AutoQueueFilamentOverride } from '../../api/client';
 import type { AutoModeOptionsState } from './types';
+import { Select } from '../Select';
 import {
   DEFAULT_AUTO_MODE_OPTIONS,
   DEFAULT_PRINT_OPTIONS,
@@ -2568,12 +2569,15 @@ export function PrintModal({
 
             {!isAutoMode && <div className="space-y-2 text-sm">
               <label className="block text-bambu-gray">{t('filamentRouting.feedPolicy')}
-                <select value={autoModeOptions.feed_policy ?? 'auto'} className="ml-2 bg-bambu-dark-secondary text-white rounded p-1"
+                <Select
+                  size="xs"
+                  tone="raised"
+                  className="ml-2" value={autoModeOptions.feed_policy ?? 'auto'}
                   onChange={event => setAutoModeOptions(previous => ({ ...previous, feed_policy: event.target.value as AutoModeOptionsState['feed_policy'] }))}>
                   <option value="auto">{t('filamentRouting.feedAuto')}</option>
                   <option value="ams_only">{t('filamentRouting.feedAms')}</option>
                   <option value="external_only">{t('filamentRouting.feedExternal')}</option>
-                </select>
+                </Select>
               </label>
               <label className="flex gap-2 items-center text-white">
                 <input type="checkbox" checked={autoModeOptions.force_color_match}

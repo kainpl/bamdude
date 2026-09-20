@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Select } from '../Select';
 import {
   Search, X, ArrowUpNarrowWide, ArrowDownWideNarrow,
   Wrench, History, Settings, Filter, SlidersHorizontal,
@@ -146,22 +147,24 @@ export function MaintenanceToolbar({
     const fullWidth = inMenu ? 'w-full' : '';
     return (
       <>
-        <select
+        <Select
+          size="sm"
+          className={fullWidth}
           value={statusFilter}
           onChange={(e) => onStatusFilterChange(e.target.value as StatusFilter)}
-          className={`h-8 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 text-white focus:border-bambu-green focus:outline-none ${fullWidth}`}
         >
           <option value="all">{t('maintenance.filter.all')}</option>
           <option value="due">{t('maintenance.filter.due')}</option>
           <option value="warning">{t('maintenance.filter.warning')}</option>
           <option value="ok">{t('maintenance.filter.ok')}</option>
-        </select>
+        </Select>
 
         {availableLocations.length > 0 && (
-          <select
+          <Select
+            size="sm"
+            className={fullWidth}
             value={locationFilter}
             onChange={(e) => onLocationFilterChange(e.target.value)}
-            className={`h-8 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 text-white focus:border-bambu-green focus:outline-none ${fullWidth}`}
           >
             <option value="all">{t('printers.filter.allLocations')}</option>
             {availableLocations.map((loc) => (
@@ -170,7 +173,7 @@ export function MaintenanceToolbar({
                 {loc.label}
               </option>
             ))}
-          </select>
+          </Select>
         )}
 
         <button
@@ -193,16 +196,17 @@ export function MaintenanceToolbar({
     const fullWidth = inMenu ? 'w-full' : '';
     return (
       <div className={`flex items-center gap-1 ${fullWidth}`}>
-        <select
+        <Select
+          size="sm"
+          className={inMenu ? 'flex-1' : ''}
           value={sortBy}
           onChange={(e) => onSortByChange(e.target.value as SortOption)}
-          className={`h-8 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 text-white focus:border-bambu-green focus:outline-none ${inMenu ? 'flex-1' : ''}`}
         >
           <option value="upcoming">{t('maintenance.sort.upcoming')}</option>
           <option value="name">{t('maintenance.sort.name')}</option>
           <option value="hours">{t('maintenance.sort.hours')}</option>
           <option value="location">{t('maintenance.sort.location')}</option>
-        </select>
+        </Select>
         <button
           type="button"
           onClick={onSortDirectionToggle}

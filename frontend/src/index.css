@@ -59,6 +59,139 @@
   }
 }
 
+/* The dropdown arrow of `components/Select.tsx`, drawn by us rather than by the
+   browser.
+
+   Measured 2026-09-19 in Chrome: the native arrow ignores `padding-right`
+   entirely — a field with 12px of it and one with 32px put the glyph in exactly
+   the same place, hard against the border. So there is no way to give it room
+   except to stop using it. `appearance: none` does that, and the same
+   chevron the rest of the app draws (lucide's `m6 9 6 6 6-6`) comes back as a
+   background image, which keeps the control ONE element: a wrapper would take
+   the `className` every one of the ~190 call sites passes.
+
+   One grey for every palette. It sits between `--text-muted` in the light
+   themes (#6b6b6b…#7a756c) and the dark one (#808080), and at 14px nobody can
+   tell the difference — whereas a per-palette copy would be a data URI to keep
+   in step in six places. */
+@layer components {
+  .select-chevron {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23808080' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 0.875rem 0.875rem;
+  }
+
+  /* The OPEN list, where the browser owned the look: square corners, a light
+     grey frame and a flat black sheet belonging to no theme of ours.
+
+     Unreachable until Chrome's customizable `<select>` (135+), which
+     `appearance: base-select` opts into: the popup becomes `::picker(select)`,
+     an element we can draw. All of it sits inside `@supports`, so a browser
+     without it keeps the list it has today — this is decoration, and choosing
+     an option does not depend on it.
+
+     Everything below the picker rules is the price of that opt-in, and each
+     line was measured in the browser on 2026-09-19:
+
+     ⚠️ `base-select` turns the closed control into a flex button, and a button
+     neither centres its line the way a select does nor keeps it on one line:
+     the label rode the top edge of every field wide enough not to wrap, and
+     wrapped and spilled out of the ones that were not. `align-items: center`
+     centres it at any box height — ⚠️ NOT `display: block`, which looks right
+     only while the box is exactly as tall as its line: every size here carries
+     a `min-h-[44px]` touch floor below `md`, and a block puts its line at the
+     TOP of the taller box. `text-wrap: nowrap` is what stops the wrapping —
+     `white-space: nowrap` is silently ignored here, as is every property set on
+     `::selectedcontent`, which generates no box of its own.
+
+     ⚠️ A label longer than its box is then cut at the border, which would run
+     it under the arrow — and a background-image arrow is painted BEHIND text,
+     so it cannot hide anything. Hence the arrow moves to `::after`, a real box
+     that paints on top and carries `background-color: inherit`, i.e. whatever
+     tone the field itself is wearing. */
+  @supports (appearance: base-select) {
+    .select-chevron {
+      appearance: base-select;
+      display: flex;
+      align-items: center;
+      position: relative;
+      text-wrap: nowrap;
+      overflow: hidden;
+      background-image: none;
+    }
+
+    .select-chevron::picker-icon {
+      display: none;
+    }
+
+    .select-chevron::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      right: 0;
+      width: 1.75rem;
+      background-color: inherit;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23808080' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0.5rem center;
+      background-size: 0.875rem 0.875rem;
+      pointer-events: none;
+    }
+
+    .select-chevron::picker(select) {
+      appearance: base-select;
+      margin-top: 0.25rem;
+      padding: 0.25rem;
+      border: 1px solid var(--border-color);
+      border-radius: 0.5rem;
+      background: var(--bg-secondary);
+      box-shadow: var(--card-shadow);
+    }
+
+    .select-chevron option {
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.375rem;
+      color: var(--text-primary);
+      font-size: 0.875rem;
+    }
+
+    /* The tick column would indent every row to make space for a mark only one
+       row ever shows; the chosen row says so in the accent instead. */
+    .select-chevron option::checkmark {
+      display: none;
+    }
+
+    .select-chevron option:focus {
+      outline: none;
+    }
+
+    .select-chevron option:hover,
+    .select-chevron option:focus {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+    }
+
+    .select-chevron option:checked {
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      color: var(--accent);
+    }
+
+    .select-chevron option:disabled {
+      color: var(--text-muted);
+    }
+
+    .select-chevron optgroup {
+      padding: 0.25rem 0.5rem 0;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+  }
+}
+
 @theme {
   /* Accent colors - use CSS variables for theming */
   --color-bambu-green: var(--accent);

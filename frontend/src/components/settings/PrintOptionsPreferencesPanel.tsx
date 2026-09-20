@@ -27,6 +27,7 @@ import { CalibrationModeControl } from '../PrintModal/CalibrationModeControl';
 import { autoCalibrationCaps, isDualNozzleModel } from '../../utils/printerCapabilities';
 import { useToast } from '../../contexts/ToastContext';
 import { MAX_CHAMBER_TEMP_C } from '../../utils/printer';
+import { Select } from '../Select';
 
 // Sentinel for the "System (slicer fallback)" pseudo-user. Real user ids
 // start at 1, so 0 is safe to mean "the per-model system row (user_id IS
@@ -461,11 +462,11 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
             <label className="block text-xs text-bambu-gray mb-1">
               {t('printOptionsPrefs.col.user')}
             </label>
-            <select
+            <Select
+              className="w-full"
               value={userId}
               disabled={editingExisting}
               onChange={(e) => setUserId(Number(e.target.value))}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:outline-none focus:border-bambu-green disabled:opacity-60"
             >
               <option value={SYSTEM_USER_ID}>{t('printOptionsPrefs.systemUser')}</option>
               {users.map((u) => (
@@ -473,7 +474,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
                   {u.username}
                 </option>
               ))}
-            </select>
+            </Select>
             {isSystemRow && (
               <p className="text-xs text-bambu-gray mt-1">{t('printOptionsPrefs.systemHint')}</p>
             )}
@@ -495,17 +496,17 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
                 {t('printOptionsPrefs.noModelsAvailable')}
               </p>
             ) : (
-              <select
+              <Select
+                className="w-full"
                 value={printerModel}
                 onChange={(e) => setPrinterModel(e.target.value)}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:outline-none focus:border-bambu-green"
               >
                 {availableModels.map((m) => (
                   <option key={m} value={m}>
                     {m}
                   </option>
                 ))}
-              </select>
+              </Select>
             )}
             {collidesWithExisting && (
               <p className="text-xs text-red-700 dark:text-red-400 mt-1">{t('printOptionsPrefs.alreadyExists')}</p>
@@ -739,33 +740,33 @@ function CopyDialog({ src, users, availableModels, onClose }: CopyDialogProps) {
             <label className="block text-xs text-bambu-gray mb-1">
               {t('printOptionsPrefs.copyDstUser')}
             </label>
-            <select
+            <Select
+              className="w-full"
               value={dstUserId}
               onChange={(e) => setDstUserId(Number(e.target.value))}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:outline-none focus:border-bambu-green"
             >
               {otherUsers.map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.username}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <div>
             <label className="block text-xs text-bambu-gray mb-1">
               {t('printOptionsPrefs.copyDstModel')}
             </label>
-            <select
+            <Select
+              className="w-full"
               value={dstModel}
               onChange={(e) => setDstModel(e.target.value)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:outline-none focus:border-bambu-green"
             >
               {modelChoices.map((m) => (
                 <option key={m} value={m}>
                   {m}
                 </option>
               ))}
-            </select>
+            </Select>
             <p className="text-xs text-bambu-gray mt-1">
               {t('printOptionsPrefs.copyDstModelHint')}
             </p>

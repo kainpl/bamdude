@@ -986,7 +986,7 @@ describe('FileManagerPage', () => {
       });
 
       // User filter dropdown should not be present
-      expect(screen.queryByPlaceholderText('Filter by user')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Filter by user')).not.toBeInTheDocument();
     });
 
     it('shows "Uploaded By" column and user filter when auth is enabled', async () => {
@@ -1046,7 +1046,7 @@ describe('FileManagerPage', () => {
       });
 
       // User filter dropdown should be present
-      expect(screen.getByPlaceholderText('Filter by user')).toBeInTheDocument();
+      expect(screen.getByLabelText('Filter by user')).toBeInTheDocument();
 
       // Username should be displayed in the column
       expect(screen.getByText('testuser')).toBeInTheDocument();

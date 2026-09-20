@@ -14,6 +14,7 @@ import { OrderModal } from '../../components/projects/OrderModal';
 import { FilamentStrip } from '../../components/projects/FilamentStrip';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
+import { Select } from '../../components/Select';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 
 const GROUP_STORAGE_KEY = 'projects.groupByCustomer';
@@ -260,10 +261,9 @@ export function OrdersPage() {
           ))}
         </div>
 
-        <select
+        <Select
           value={customerId ?? ''}
           onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}
-          className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
         >
           <option value="">{t('orders.list.customerFilterAll')}</option>
           {customers.map((c) => (
@@ -271,7 +271,7 @@ export function OrdersPage() {
               {c.name}
             </option>
           ))}
-        </select>
+        </Select>
 
         <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
           <input

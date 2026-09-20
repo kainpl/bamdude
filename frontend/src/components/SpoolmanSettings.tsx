@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Check, X, RefreshCw, Link2, Link2Off, Database, ChevronDown, Info, AlertTriangle, Package, ExternalLink } from 'lucide-react';
+import { Loader2, Check, X, RefreshCw, Link2, Link2Off, Database, Info, AlertTriangle, Package, ExternalLink } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { SpoolmanSyncResult, Printer } from '../api/client';
 import { invalidateSpoolViews } from '../utils/queryInvalidation';
@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
+import { Select } from './Select';
 
 export function SpoolmanSettings() {
   const { t } = useTranslation();
@@ -386,14 +387,14 @@ export function SpoolmanSettings() {
               <label className="block text-sm text-bambu-gray mb-1">
                 {t('settings.syncMode')}
               </label>
-              <select
+              <Select
+                className="w-full"
                 value={localSyncMode}
                 onChange={(e) => setLocalSyncMode(e.target.value)}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
               >
                 <option value="auto">{t('settings.syncModeAuto')}</option>
                 <option value="manual">{t('settings.syncModeManual')}</option>
-              </select>
+              </Select>
               <p className="text-xs text-bambu-gray mt-1">
                 {localSyncMode === 'auto'
                   ? t('settings.syncModeAutoDesc')
@@ -513,10 +514,10 @@ export function SpoolmanSettings() {
                   <div className="flex items-center gap-2">
                     {/* Printer selector */}
                     <div className="relative flex-1">
-                      <select
+                      <Select
+                        className="w-full"
                         value={selectedPrinterId}
                         onChange={(e) => setSelectedPrinterId(e.target.value === 'all' ? 'all' : Number(e.target.value))}
-                        className="w-full px-3 py-2 pr-8 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
                       >
                         <option value="all">{t('settings.allPrinters')}</option>
                         {printers?.map((printer: Printer) => (
@@ -524,8 +525,7 @@ export function SpoolmanSettings() {
                             {printer.name}
                           </option>
                         ))}
-                      </select>
-                      <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                      </Select>
                     </div>
                     {/* Sync button */}
                     <Button

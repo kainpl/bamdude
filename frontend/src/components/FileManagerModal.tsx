@@ -35,6 +35,7 @@ import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
 import { formatFileSize } from '../utils/file';
 import { FolderTreePicker } from './FolderTreePicker';
+import { Select } from './Select';
 
 // Depth-first flatten of the library folder tree for a single <select>.
 // Mirror of the helper in VirtualPrinterCard / MakerworldPage — kept inline
@@ -708,10 +709,10 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
           </div>
           <div className="relative flex items-center gap-1">
             <ArrowUpDown className="w-4 h-4 text-bambu-gray" />
-            <select
+            <Select
+              size="sm"
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as SortOption)}
-              className="appearance-none bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm py-1.5 pl-2 pr-6 focus:border-bambu-green focus:outline-none cursor-pointer"
               title="Sort files"
               aria-label="Sort files"
             >
@@ -720,7 +721,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                   {option.label}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <Button
             variant="secondary"

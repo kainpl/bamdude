@@ -7,6 +7,7 @@ import type { ExternalLink, ExternalLinkCreate, ExternalLinkNavGroup, ExternalLi
 import { Button } from './Button';
 import { IconPicker, getIconByName } from './IconPicker';
 import { Modal } from './Modal';
+import { Select } from './Select';
 interface AddExternalLinkModalProps {
   link?: ExternalLink | null;
   onClose: () => void;
@@ -198,10 +199,10 @@ export function AddExternalLinkModal({ link, onClose }: AddExternalLinkModalProp
         {/* Sidebar group */}
         <div>
           <label className="block text-sm text-bambu-gray mb-1">{t('externalLinks.navGroup')}</label>
-          <select
+          <Select
+            className="w-full"
             value={navGroup}
             onChange={(e) => setNavGroup(e.target.value as ExternalLinkNavGroup)}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
           >
             <option value="operations">{t('nav.group.operations')}</option>
             <option value="workshop">{t('nav.group.workshop')}</option>
@@ -209,7 +210,7 @@ export function AddExternalLinkModal({ link, onClose }: AddExternalLinkModalProp
             <option value="care">{t('nav.group.care')}</option>
             <option value="system">{t('nav.group.system')}</option>
             <option value="external">{t('nav.group.external')}</option>
-          </select>
+          </Select>
         </div>
 
         {/* Open in New Tab */}

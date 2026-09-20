@@ -8,6 +8,7 @@ import { etaShort } from '../../utils/forecast';
 import { PlanRow } from './PlanRow';
 import { PlanUnsatisfiable } from './PlanUnsatisfiable';
 import { projectPlan, type YieldByPlate } from './planMath';
+import { Select } from '../Select';
 
 interface PlanLineProps {
   order: Order;
@@ -296,7 +297,9 @@ export function PlanLine({
             through this menu, and gating it on `queue:create` alone hid the
             only door they have. */}
         {(canQueue || canPrint) && addable.length > 0 && (
-          <select
+          <Select
+            size="sm"
+            tone="muted"
             data-testid={`plan-line-${line.line_id}-add`}
             value=""
             aria-label={t('orders.plan.addPlate')}
@@ -304,7 +307,6 @@ export function PlanLine({
               const plate = addable.find((p) => p.id === Number(e.currentTarget.value));
               if (plate) onAddPlate(rowFromRecipe(plate, ratePerGram));
             }}
-            className="px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded text-bambu-gray-light focus:border-bambu-green focus:outline-none"
           >
             <option value="">{t('orders.plan.addPlate')}</option>
             {addable.map((plate) => (
@@ -314,7 +316,7 @@ export function PlanLine({
                   : `${plate.filename} · ${t('orders.plan.row.plate', { n: plate.plate_index })}`}
               </option>
             ))}
-          </select>
+          </Select>
         )}
       </div>
     </div>

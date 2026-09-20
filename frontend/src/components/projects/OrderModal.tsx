@@ -9,6 +9,7 @@ import { Modal } from '../Modal';
 import { CustomerPicker } from '../pickers/CustomerPicker';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { useToast } from '../../contexts/ToastContext';
+import { Select } from '../Select';
 
 /** Same nine presets as the old project colour picker — deliberately the only
  *  part of that modal carried over into this one. */
@@ -263,11 +264,11 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
               <label className={LABEL_CLASS} htmlFor="order-priority">
                 {t('orders.modal.priority')}
               </label>
-              <select
+              <Select
+                className="w-full"
                 id="order-priority"
                 value={priority}
                 onChange={(e) => setPriority(e.target.value as ProjectPriority)}
-                className={FIELD_CLASS}
                 disabled={mutation.isPending}
               >
                 {(['low', 'normal', 'high', 'urgent'] as const).map((p) => (
@@ -275,7 +276,7 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
                     {t(`orders.priority.${p}`)}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
           </div>
 
@@ -299,11 +300,11 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
                 <label className={LABEL_CLASS} htmlFor="order-status">
                   {t('orders.modal.status')}
                 </label>
-                <select
+                <Select
+                  className="w-full"
                   id="order-status"
                   value={status}
                   onChange={(e) => setStatus(e.target.value as ProjectStatus)}
-                  className={FIELD_CLASS}
                   disabled={mutation.isPending}
                 >
                   {(['active', 'completed', 'cancelled'] as const).map((s) => (
@@ -311,7 +312,7 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
                       {t(`orders.status.${s}`)}
                     </option>
                   ))}
-                </select>
+                </Select>
               </div>
             )}
           </div>
