@@ -170,7 +170,7 @@ export default {
     "feedAms": "AMS only",
     "feedExternal": "External spools only",
     "baseMaterialMatch": "Allow base-material match",
-    "baseMaterialMatchDesc": "Use the filament_type from each profile family, such as PETG, instead of comparing profile names.",
+    "baseMaterialMatchDesc": "On: match by the material the file declares — PETG, ABS — whatever profile either side carries. Off: the same profile is required wherever both sides name one.",
     "loading": "Reading plate requirements and checking printers…",
     "failed": "Could not verify this source. Retry before adding it to the queue.",
     "retry": "Retry",
