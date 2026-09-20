@@ -42,13 +42,21 @@ async def test_preview_uses_strict_reader_and_never_exposes_paths(
     assert strict.json()["plates"][0]["groups"][0]["reasons"][0]["code"] == "color_mismatch"
 
 
-async def test_preview_uses_profile_family_type_by_default_and_can_require_the_exact_preset(
+async def test_preview_matches_the_base_material_by_default_and_can_require_the_exact_preset(
     committing_client, db_session, tmp_path, printer_factory, monkeypatch
 ):
+    """The channel's own material decides; the family it resolves to is reported, not obeyed.
+
+    The preset id here is one no install but its author's can name, and the tray
+    carries a different one. With the option on that is one PETG on both sides;
+    with it off the operator asked for that exact preset. Either way the
+    response still carries the family the catalogue resolved, because the UI
+    shows it.
+    """
     source, printer, _, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     write_routing_3mf(
         tmp_path / source.filename,
-        {15: [{"id": 3, "type": "333Print PETG", "tray_info_idx": "P333PETG", "used_g": "0.0001"}]},
+        {15: [{"id": 3, "type": "PETG", "tray_info_idx": "P333PETG", "used_g": "0.0001"}]},
     )
     db_session.add(
         UserFilamentFamily(
@@ -62,7 +70,13 @@ async def test_preview_uses_profile_family_type_by_default_and_can_require_the_e
     )
     await db_session.commit()
     mqtt._process_message(
-        {"print": {"command": "push_status", "ams": {"ams": []}, "vt_tray": {"id": 254, "tray_type": "PETG"}}}
+        {
+            "print": {
+                "command": "push_status",
+                "ams": {"ams": []},
+                "vt_tray": {"id": 254, "tray_type": "PETG", "tray_info_idx": "GFG99"},
+            }
+        }
     )
     assert printer_manager.get_feed_snapshot(printer.id).sources[0].material == "PETG"
 
@@ -75,7 +89,7 @@ async def test_preview_uses_profile_family_type_by_default_and_can_require_the_e
         json={"library_file_id": source.id, "plate_ids": [15]},
     )
     assert strict.status_code == default.status_code == 200
-    assert strict.json()["plates"][0]["groups"][0]["reasons"][0]["code"] == "material_mismatch"
+    assert strict.json()["plates"][0]["groups"][0]["reasons"][0]["code"] == "variant_mismatch"
     assert default.json()["plates"][0]["filaments"][0]["filament_type"] == "PETG"
     assert default.json()["plates"][0]["groups"][0]["compatible"] == 1
 

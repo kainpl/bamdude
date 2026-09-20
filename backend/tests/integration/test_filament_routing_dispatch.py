@@ -223,15 +223,22 @@ async def test_publish_boundary_catches_change_after_final_preflight(
     mqtt._client.publish.assert_not_called()
 
 
-async def test_per_printer_routing_uses_the_profile_family_material_when_enabled(
+async def test_per_printer_routing_matches_the_base_material_when_enabled(
     db_session, tmp_path, printer_factory, monkeypatch
 ):
+    """A plate sliced against a foreign preset still routes onto the same material.
+
+    The captured routing survives all the way to preflight: PETG on both sides,
+    two preset ids that will never agree, and an operator who said «any PETG
+    will do». The catalogue can name this id — and that changes nothing either
+    way; the plate's own declared material is what was compared.
+    """
     from backend.app.services.filament_policy_write import prepare_routing
 
     source, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     path = write_routing_3mf(
         tmp_path / source.filename,
-        {15: [{"id": 3, "type": "333Print PETG", "tray_info_idx": "P333PETG", "used_g": "0.0001"}]},
+        {15: [{"id": 3, "type": "PETG", "tray_info_idx": "P333PETG", "used_g": "0.0001"}]},
     )
     source.file_path = str(path)
     db_session.add(
@@ -244,7 +251,9 @@ async def test_per_printer_routing_uses_the_profile_family_material_when_enabled
             origin="cloud_bambu",
         )
     )
-    mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_type": "PETG", "tray_color": "FF0000"}}})
+    mqtt._process_message(
+        {"print": {"vt_tray": {"id": 254, "tray_type": "PETG", "tray_color": "FF0000", "tray_info_idx": "GFG99"}}}
+    )
     await db_session.commit()
 
     routing, plate = await prepare_routing(

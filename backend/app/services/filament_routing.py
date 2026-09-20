@@ -180,27 +180,36 @@ def resolve_filament_routing(
     colors = {}
     for slot in slots:
         sid = slot["slot_id"]
-        # "Allow base material match" is the operator's answer to «any ABS will
-        # do», and it alone decides whether a profile id may veto below. The
-        # veto used to be ANDed with ``filament_type`` — the family this
-        # channel's ``tray_info_idx`` resolves to in the catalogue — which
-        # inverted the option on exactly the files it was written for: a custom
-        # slicer preset id ("Pa240002") resolves to no family, so the option
-        # read as OFF and the strict id comparison it exists to suppress came
-        # back on. Measured on a 24-printer farm (2026-09-20): every machine
-        # holding ABS refused an ABS plate, naming the filament TYPE.
+        # The material this channel needs is the one the FILE declares, after
+        # canonicalisation (``filament_types_compatible``). It is read the same
+        # way whatever the policy says: "allow base material match" is the
+        # operator's answer to «any ABS will do», and what it governs is whether
+        # a profile ID may veto a material that already matches — below, and in
+        # the pin clause further down. It has never been a second source for the
+        # material itself.
         #
-        # With the option on, what is compared is the BASE MATERIAL on both
-        # sides — the family's when the catalogue knows it, the 3MF's own
-        # declared type otherwise — and never an id. ABS prints on ABS.
+        # The comparison used to switch to ``filament_type`` — the family this
+        # channel's ``tray_info_idx`` resolves to in the catalogue — whenever
+        # that resolved. Two things were wrong with that. It inverted the option
+        # on exactly the files it was written for: a custom slicer preset id
+        # ("Pa240002") resolves to no family, the option read as OFF and the
+        # strict id comparison it exists to suppress came back on. Measured on a
+        # 24-printer farm (2026-09-20): every machine holding ABS refused an ABS
+        # plate, naming the filament TYPE. And where the family DID resolve it
+        # could contradict the plate — an id re-pointed in the cloud, a stale
+        # row, an id another vendor reused — and the printer extrudes what the
+        # slicer sliced for, not what a lookup table says the id means.
+        #
+        # So the catalogue neither permits, forbids nor substitutes a material
+        # here, and there is no whitelist of materials this applies to: ABS
+        # prints on ABS, and PVB on PVB, on the same terms.
         #
         # ⚠️ An unresolvable family is the NORMAL case on a working farm, not an
         # edge: the catalogue is filled through one operator's cloud link, while
         # the plates arrive from several people's slicers. Everyone else's
         # presets are ids this install has never seen and never will. Anything
         # that makes routing depend on resolving them strands those plates.
-        use_family_type = policy.allow_base_material_match and bool(slot.get("filament_type"))
-        target_type = slot["filament_type"] if use_family_type else slot["type"]
+        target_type = slot["type"]
         nozzle = slot.get("nozzle_id") if slot.get("nozzle_id") is not None else 0
         diameter = _required_diameter(requirements, nozzle)
         if diameter is not None:

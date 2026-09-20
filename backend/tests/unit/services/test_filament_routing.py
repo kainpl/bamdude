@@ -122,12 +122,12 @@ def test_known_variant_mismatch_is_not_relaxed_by_colour_policy():
 def test_a_profile_the_catalogue_cannot_name_still_prints_on_its_base_material():
     """ABS prints on ABS, whatever id either side carries.
 
-    The sibling test below hands ``filament_type`` in, so it only ever proved
-    the relaxation works once the family is known. A custom slicer preset
-    ("Pa240002") resolves to no family at all — and that used to switch the
-    option OFF and re-arm the id comparison it exists to suppress. Measured on
-    a 24-printer farm (2026-09-20): every machine with ABS in the AMS refused
-    an ABS plate, blaming the filament type.
+    A custom slicer preset ("Pa240002") resolves to no family in the catalogue
+    at all — and that used to switch the option OFF and re-arm the id
+    comparison it exists to suppress. Measured on a 24-printer farm
+    (2026-09-20): every machine with ABS in the AMS refused an ABS plate,
+    blaming the filament type. The sibling tests below hold the other half of
+    the rule: a family that DOES resolve is not consulted either.
     """
     req = requirements({"type": "ABS", "tray_info_idx": "Pa240002"})
     state = snapshot(feed(material="ABS", variant="GFB99"))
@@ -139,10 +139,59 @@ def test_a_profile_the_catalogue_cannot_name_still_prints_on_its_base_material()
     )
 
 
-def test_family_material_match_uses_filament_type_not_a_profile_name():
+def test_a_channel_is_matched_on_its_own_material_not_on_the_catalogue_family():
+    """The file's declared material decides; a family that disagrees does not overrule it.
+
+    ``filament_type`` is whatever the catalogue resolves this channel's
+    ``tray_info_idx`` to, and the two can disagree — a preset re-pointed in the
+    cloud, a stale row, an id another vendor reused. The plate will extrude what
+    the slicer sliced it for, so that is the material compared.
+    """
+    req = requirements({"type": "ABS", "filament_type": "PLA", "tray_info_idx": "GFB00"})
+    assert resolve_filament_routing(req, RoutingPolicy(), snapshot(feed(material="ABS"))).status == "compatible"
+    assert resolve_filament_routing(req, RoutingPolicy(), snapshot(feed(material="PLA"))).reason == "material_mismatch"
+
+
+@pytest.mark.parametrize("material", ["PVB", "PC-ABS"])
+def test_a_material_the_bundled_catalogue_never_names_still_matches_itself(material):
+    """There is no whitelist of relaxable materials, and there must never be one.
+
+    The option says «the base material on both sides», not «one of the materials
+    we happened to think of». A farm printing PVB or PC-ABS is entitled to it on
+    the same terms as one printing PLA.
+    """
+    req = requirements({"type": material, "tray_info_idx": "Pxxx"})
+    assert (
+        resolve_filament_routing(req, RoutingPolicy(), snapshot(feed(material=material, variant="GFZ00"))).status
+        == "compatible"
+    )
+
+
+def test_equivalent_materials_are_canonicalised_before_they_are_compared():
+    """PA12-CF and PA-CF are one material to the printer, and the gate agrees.
+
+    ``filament_types_compatible`` already folds the group; pinned here because
+    the gate now has nothing else left to relax a name with.
+    """
+    req = requirements({"type": "PA12-CF"})
+    assert resolve_filament_routing(req, RoutingPolicy(), snapshot(feed(material="PA-CF"))).status == "compatible"
+
+
+def test_a_profile_name_written_in_the_material_field_is_not_repaired_by_the_catalogue():
+    """Deferred decision Д1b — chosen, not forgotten.
+
+    Some slicer presets write their own NAME where the structured material
+    belongs ("333Print PETG"), and the catalogue used to paper over that by
+    substituting the family the preset id resolves to. That substitution is
+    gone: the resolver compares the file's own declared material, so such a
+    plate matches no PETG tray — with the option on or off. Reviving it means
+    repairing the type where the file is READ, not deciding routing from an id
+    the catalogue may or may not know; nothing guarantees the old behaviour in
+    the meantime.
+    """
     req = requirements({"type": "333Print PETG", "filament_type": "PETG", "tray_info_idx": "P333PETG"})
     state = snapshot(feed(material="PETG", variant="GFG99"))
-    assert resolve_filament_routing(req, RoutingPolicy(), state).status == "compatible"
+    assert resolve_filament_routing(req, RoutingPolicy(), state).reason == "material_mismatch"
     assert (
         resolve_filament_routing(req, RoutingPolicy(allow_base_material_match=False), state).reason
         == "material_mismatch"
