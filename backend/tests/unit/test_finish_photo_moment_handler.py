@@ -17,6 +17,7 @@ import pytest
 
 from backend.app import main as main_module
 from backend.app.main import _stage22_finish_frames, on_finish_photo_moment
+from backend.app.services.camera_metrics import CameraCaptureResult
 
 
 def _fake_session_factory(printer):
@@ -72,15 +73,15 @@ async def test_caches_buffered_frame(monkeypatch):
 
 
 async def test_falls_back_to_rtsp_when_no_buffered_frame(monkeypatch):
-    """No buffered frame -> fresh RTSP grab via capture_camera_frame_bytes."""
+    """No buffered frame -> a fresh grab through the capture runtime."""
     monkeypatch.setattr(main_module, "async_session", _fake_session_factory(_printer()))
 
     with (
         patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
         patch("backend.app.api.routes.camera.get_buffered_frame", return_value=None),
         patch(
-            "backend.app.services.camera.capture_camera_frame_bytes",
-            new=AsyncMock(return_value=b"\xff\xd8RTSP"),
+            "backend.app.services.camera_runtime.capture",
+            new=AsyncMock(return_value=CameraCaptureResult(frame=b"\xff\xd8RTSP", source="fresh")),
         ),
     ):
         await on_finish_photo_moment(7, {"trigger": "finish_state", "timelapse_was_active": False})
@@ -96,7 +97,7 @@ async def test_skips_pre_capture_when_timelapse_active(monkeypatch):
     with (
         patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
         patch("backend.app.api.routes.camera.get_buffered_frame", return_value=b"BUF"),
-        patch("backend.app.services.camera.capture_camera_frame_bytes", new=grab),
+        patch("backend.app.services.camera_runtime.capture", new=grab),
     ):
         await on_finish_photo_moment(7, {"trigger": "stage_22", "timelapse_was_active": True})
 
@@ -133,8 +134,10 @@ async def test_snapshot_consumers_require_explicit_opt_in(monkeypatch, setting, 
     frame = b"\xff\xd8FRAME"
     with (
         patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value=setting)),
-        patch("backend.app.services.external_camera.capture_frame", new=AsyncMock(return_value=frame)) as external,
-        patch("backend.app.services.camera.capture_camera_frame_bytes", new=AsyncMock()) as built_in,
+        patch(
+            "backend.app.services.camera_runtime.capture",
+            new=AsyncMock(return_value=CameraCaptureResult(frame=frame, source="fresh")),
+        ) as capture,
     ):
         if consumer == "bank":
             await main_module._maybe_bank_inprint_frame(printer.id, 5)
@@ -146,11 +149,10 @@ async def test_snapshot_consumers_require_explicit_opt_in(monkeypatch, setting, 
 
     if setting in ("true", "TRUE"):
         assert result == frame
-        external.assert_awaited_once()
+        capture.assert_awaited_once()
     else:
         assert result is None
-        external.assert_not_awaited()
-    built_in.assert_not_awaited()
+        capture.assert_not_awaited()
 
 
 @pytest.mark.parametrize("setting", [None, "false", "", "1", "invalid"])

@@ -218,6 +218,8 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - **Optional camera worker** — `CAMERA_RUNTIME=worker` moves camera transport and FFmpeg ownership to one supervised local process. `inline` remains the default. INFO logs record worker lifecycle, viewers, first-frame timing and stream completion for diagnosis. This is experimental isolation, not automatic hardware acceleration or a guarantee against browser/network bottlenecks. See the [setup and diagnostics guide](https://docs.bamdude.top/features/camera/#experimental-isolated-camera-process) and [technical notes](docs/camera-observability.md).
 - Streaming overlay for OBS
 - External camera support (MJPEG, RTSP, USB)
+- **Cameras that belong to no printer** — a view of the room, the shelf or the filament dryer, with its own name, source and optional location. It appears on the camera wall and the kiosk wall, opens in the same floating window a printer's camera does, and one upstream connection is shared by everyone watching. It feeds nothing else: no finish photo, no plate check, no Obico — a room has no printer to have them
+- **Light for the camera (off by default)** — switches the chamber light on before any use of the camera and off again afterwards: a photo in Telegram, a stream in the browser, the camera wall, the finish photo, the plate check. Only a light that was off is switched on, and only a light BamDude switched on is switched off; a light you set yourself is never touched
 - Build plate empty detection
 - Printer control (stop, pause, resume, light, speed)
 - **Skip Objects** — cancel individual parts mid-print instead of losing the plate to one failure. The plate is shown from above with a clickable numbered marker on each object, positioned from the slicer's own pick data; already-skipped parts stay visible so nothing shifts under the cursor, and a skip raises the archive's defective-part count from the printer's own report. Available in the web and in the Telegram bot, from the same marker placement
@@ -480,7 +482,7 @@ Full manual: **<https://docs.bamdude.top/getting-started/upgrading/>** ([source]
 
 Short version:
 
-- **From Bambuddy** — no longer supported since 0.5.6. BamDude forked at Bambuddy 2.2.2 and the two schemas have diverged too far for a one-time import; start BamDude with an empty data directory and re-add printers and spools.
+- **From Bambuddy** — no longer supported since 0.6.0. BamDude forked at Bambuddy 2.2.2 and the two schemas have diverged too far for a one-time import; start BamDude with an empty data directory and re-add printers and spools.
 - **From Bambuddy-HE / BamDude 0.2.x / 0.3.x** (tested & supported) — Docker users run `install/migrate-volumes.sh` once to copy `bambuddy_he_*` → `bamdude_*`; native users just point the installer at the existing data dir.
 
 ### Telegram Bot Setup
