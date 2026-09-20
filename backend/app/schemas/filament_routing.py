@@ -24,6 +24,12 @@ class FilamentRoutingChoices(BaseModel):
     force_color_match: bool = False
     allow_base_material_match: bool = True
     filament_overrides: list[FilamentOverride] | None = None
+    # Did a person point at these trays? The accompanying ``ams_mapping`` cannot
+    # answer that: the dialog sends back the routing it displayed, so every add
+    # carries one. Only this flag turns that array into physical pins — a
+    # statement, never an inference. It is a request choice and not a column;
+    # what persists is the intent's ``mode``.
+    manual_mapping: bool = False
 
 
 class RoutingPreviewRequest(FilamentRoutingChoices):

@@ -1204,7 +1204,15 @@ class VirtualPrinterInstance:
                             printer_id=printer_id,
                             library_file_id=library_file.id,
                             library_file=library_file,
-                            options={"plate_id": plate, "ams_mapping": ams_mapping_json, "use_ams": use_ams},
+                            # The mapping came out of BambuStudio's own AMS
+                            # dialog, so it IS a person pointing at trays — the
+                            # one thing that turns an array into physical pins.
+                            options={
+                                "plate_id": plate,
+                                "ams_mapping": ams_mapping_json,
+                                "use_ams": use_ams,
+                                "manual_mapping": True,
+                            },
                             cache=cache,
                             staged=staged,
                         )

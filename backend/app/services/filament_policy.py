@@ -17,7 +17,13 @@ VERSION = 3
 #: it, rather than a dispatch proceeding on pins it could not parse.
 SUPPORTED_VERSIONS = (1, 2, 3)
 FEED_POLICIES = {"auto", "ams_only", "external_only"}
-CHOICE_FIELDS = {"feed_policy", "force_color_match", "allow_base_material_match", "filament_overrides"}
+CHOICE_FIELDS = {
+    "feed_policy",
+    "force_color_match",
+    "allow_base_material_match",
+    "filament_overrides",
+    "manual_mapping",
+}
 
 
 def decode(value, fallback=None):
@@ -66,9 +72,18 @@ def auto_policy(item):
 
 
 def choices_policy(choices, snapshot=None):
+    """Read one producer's answers. ``manual_mapping`` is what makes a mapping a pin.
+
+    An ``ams_mapping`` on its own is a PLAN — the routing the dialog computed and
+    echoed back, which every add carries. Pinning on its presence charged jobs
+    nobody had touched the slots of with a physical selection, and the first tray
+    swap then held them for review. The array is still stored on the row either
+    way; an auto job simply lets the dispatcher recompute its plan at dispatch.
+    """
+    manual = bool(choices.get("manual_mapping"))
     mapping = decode(choices.get("ams_mapping"))
     pins = {}
-    if isinstance(mapping, list):
+    if manual and isinstance(mapping, list):
         sources = {source.id: source for source in snapshot.sources} if snapshot else {}
         for slot, source_id in enumerate(mapping, 1):
             if isinstance(source_id, int) and source_id >= 0:
@@ -86,7 +101,7 @@ def choices_policy(choices, snapshot=None):
     explicit = choices.get("feed_policy")
     policy = "auto" if pins and explicit is None else feed_policy(explicit, choices.get("use_ams", True))
     return RoutingPolicy(
-        mode="pinned" if mapping is not None else "auto",
+        mode="pinned" if manual and mapping is not None else "auto",
         feed_policy=policy,
         force_color_match=bool(choices.get("force_color_match", False)),
         allow_base_material_match=bool(choices.get("allow_base_material_match", True)),
@@ -224,7 +239,11 @@ def queue_policy(item):
     if item.filament_routing is not None:
         return deserialize_policy(item.filament_routing)
     # Old producers/rows have physical intent. No best-effort remapping here.
-    policy = choices_policy({"ams_mapping": item.ams_mapping, "use_ams": item.use_ams})
+    # ``manual_mapping`` is asserted rather than read: a row written before the
+    # intent existed carries no other evidence of who chose its trays, and
+    # re-reading those mappings as computed plans would silently re-route jobs
+    # the operator had mapped by hand.
+    policy = choices_policy({"ams_mapping": item.ams_mapping, "use_ams": item.use_ams, "manual_mapping": True})
     if policy.mode == "auto":
         return RoutingPolicy(mode="pinned", review_required=True)
     return policy

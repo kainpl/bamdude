@@ -32,17 +32,41 @@ def test_legacy_feed_policy(use_ams, explicit, expected):
     assert feed_policy(explicit, use_ams) == expected
 
 
-def test_manual_mapping_outranks_legacy_boolean_and_captures_selected_color():
-    snapshot = PrinterFeedSnapshot(
+def a_one_tray_snapshot():
+    return PrinterFeedSnapshot(
         1, "P1P", True, 1, "r", True, True, True, (FeedSource(0, "ams", "PLA", "FF0000", "GFA00", (0,)),)
     )
-    policy = choices_policy({"use_ams": False, "ams_mapping": [0, -1]}, snapshot)
+
+
+def test_manual_mapping_outranks_legacy_boolean_and_captures_selected_color():
+    policy = choices_policy({"use_ams": False, "ams_mapping": [0, -1], "manual_mapping": True}, a_one_tray_snapshot())
     assert policy.mode == "pinned"
     assert policy.feed_policy == "auto"
     assert policy.physical_pins == {
         1: {"source_id": 0, "type": "PLA", "color": "FF0000", "tray_info_idx": "GFA00", "nozzles": [0]}
     }
     assert deserialize_policy(serialize_policy(policy, library_file_id=7, plate_id=15, printer_id=1)) == policy
+
+
+def test_a_computed_mapping_is_a_plan_and_only_the_operator_makes_it_a_pin():
+    """The array alone says nothing about who chose it.
+
+    Every add carries one — the dialog shows the routing it worked out and sends
+    it back — so reading its presence as a physical selection pinned jobs nobody
+    had pinned, and the first tray swap then stopped them for review.
+    """
+    computed = choices_policy({"ams_mapping": [0, -1]}, a_one_tray_snapshot())
+    assert computed.mode == "auto"
+    assert computed.physical_pins == {}
+    assert choices_policy({"ams_mapping": [0, -1], "manual_mapping": True}, a_one_tray_snapshot()).mode == "pinned"
+
+
+def test_a_legacy_row_still_reads_its_own_mapping_as_physical_intent():
+    """Rows written before the intent existed have no other evidence of choice."""
+    policy = queue_policy(SimpleNamespace(filament_routing=None, ams_mapping="[0, -1]", use_ams=True))
+    assert policy.mode == "pinned"
+    assert policy.physical_pins == {1: {"source_id": 0}}
+    assert not policy.review_required
 
 
 def test_auto_global_color_policy_survives_without_overrides():

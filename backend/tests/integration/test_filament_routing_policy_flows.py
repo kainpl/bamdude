@@ -64,6 +64,7 @@ async def test_pinned_edit_to_another_printer_requires_an_explicit_mapping_answe
             "queue_id": queue.id,
             "library_file_id": source.id,
             "ams_mapping": [-1, -1, 254],
+            "manual_mapping": True,
         },
     )
     assert created.status_code == 200, created.text
@@ -75,6 +76,48 @@ async def test_pinned_edit_to_another_printer_requires_an_explicit_mapping_answe
     )
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()["filament_routing"]["mode"] == "auto"
+
+
+async def test_a_mapping_alone_is_not_a_pin_and_a_hand_pin_survives_an_unrelated_edit(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch
+):
+    """Who chose the trays is stated, never inferred from the array being there.
+
+    The dialog sends the routing it displays back with every add, so the array
+    is present on a job nobody touched the slots of. Only ``manual_mapping``
+    separates that from an operator who pointed at a tray — and once one has,
+    an edit about something else must not quietly undo it.
+    """
+    source, _, queue, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    add = {"queue_id": queue.id, "library_file_id": source.id, "ams_mapping": [-1, -1, 254]}
+
+    computed = await committing_client.post("/api/v1/queue/", json=add)
+    assert computed.status_code == 200, computed.text
+    auto_id = computed.json()["id"]
+    assert computed.json()["filament_routing"]["mode"] == "auto"
+    assert computed.json()["filament_routing"]["physical_pins"] == {}
+    # The row still carries the array — the dispatcher recomputes its plan from it.
+    assert computed.json()["ams_mapping"] == [-1, -1, 254]
+
+    resent = await committing_client.patch(f"/api/v1/queue/{auto_id}", json={"ams_mapping": [-1, -1, 254]})
+    assert resent.status_code == 200, resent.text
+    assert resent.json()["filament_routing"]["mode"] == "auto"
+
+    chosen = await committing_client.post("/api/v1/queue/", json={**add, "manual_mapping": True})
+    assert chosen.status_code == 200, chosen.text
+    pinned_id = chosen.json()["id"]
+    pins = chosen.json()["filament_routing"]["physical_pins"]
+    assert chosen.json()["filament_routing"]["mode"] == "pinned" and pins
+
+    kept = await committing_client.patch(f"/api/v1/queue/{pinned_id}", json={"force_color_match": True})
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["filament_routing"]["mode"] == "pinned"
+    assert kept.json()["filament_routing"]["physical_pins"] == pins
+
+    released = await committing_client.patch(f"/api/v1/queue/{pinned_id}", json={"manual_mapping": False})
+    assert released.status_code == 200, released.text
+    assert released.json()["filament_routing"]["mode"] == "auto"
+    assert released.json()["filament_routing"]["physical_pins"] == {}
 
 
 async def test_auto_intake_refuses_slot_rules_from_a_different_file(

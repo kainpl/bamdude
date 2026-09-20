@@ -287,6 +287,7 @@ async def enqueue_batch_copies(
     force_color_match: bool = False,
     allow_base_material_match: bool = True,
     filament_overrides: list[dict] | None = None,
+    manual_mapping: bool = False,
     requirements_cache=None,
 ) -> tuple[list[PrintQueueItem], str | None]:
     """Append ``count`` identical pending items to the given printer's queue.
@@ -345,6 +346,9 @@ async def enqueue_batch_copies(
                 "force_color_match": force_color_match,
                 "allow_base_material_match": allow_base_material_match,
                 "filament_overrides": filament_overrides,
+                # Copies inherit the operator's answer about the trays; without
+                # it the mapping below would be a plan and every copy auto.
+                "manual_mapping": manual_mapping,
             },
         )
         if batch_id is None:

@@ -111,9 +111,16 @@ async def routing_update(db, item, changes, cache=None):
         raise HTTPException(422, routing_detail("mapping_review_required"))
     choices = {**asdict(previous), "plate_id": item.plate_id, "use_ams": item.use_ams}
     # Absence of a physical mapping is deliberate for semantic auto jobs.
+    # ⚠️ The stored MODE is what an edit inherits, never the mapping column: an
+    # auto job carries one too (the dialog echoes back the routing it displayed),
+    # so re-sending it must not convert the job. A hand pin survives every edit
+    # that does not speak about it, and is released only by an explicit
+    # ``manual_mapping: False`` — the operator's own answer, not a side effect.
     if previous.mode == "pinned":
         choices["ams_mapping"] = decode(item.ams_mapping)
+        choices["manual_mapping"] = True
     choices.update(changes)
+    de_pinned = previous.mode == "pinned" and not choices.get("manual_mapping")
     if changes.get("use_ams") is not None and "feed_policy" not in changes and previous.mode == "auto":
         choices["feed_policy"] = "auto" if changes["use_ams"] else "external_only"
     queue = await db.get(PrinterQueue, changes.get("queue_id") or item.queue_id)
@@ -136,7 +143,11 @@ async def routing_update(db, item, changes, cache=None):
         if isinstance(previous_snapshot, dict):
             stored["exact_model"] = previous_snapshot.get("exact_model", item.source_auto_item_id is not None)
         routing = json.dumps(stored)
-    if routing and "ams_mapping" not in changes:
+    # Pins are evidence captured when the operator chose, so an edit that says
+    # nothing about the mapping keeps THAT record rather than re-reading today's
+    # trays. An edit that released the pin is the one case where carrying it
+    # over would reinstate what the operator just cleared.
+    if routing and "ams_mapping" not in changes and not de_pinned:
         stored = json.loads(routing)
         stored["physical_pins"] = previous.physical_pins
         stored["review_required"] = previous.review_required

@@ -225,7 +225,7 @@ def test_a_pinned_tray_that_was_only_re_profiled_is_still_the_pinned_tray():
     the unpinned gate above.
     """
     pinned = snapshot(feed(0, "000000FF", kind="ams", material="ABS", variant="GFB99"))
-    policy = choices_policy({"ams_mapping": [0]}, pinned)
+    policy = choices_policy({"ams_mapping": [0], "manual_mapping": True}, pinned)
     req = requirements({"type": "ABS", "color": "#000000"})
     reprofiled = snapshot(feed(0, "000000FF", kind="ams", material="ABS", variant="GFB00"))
 
@@ -245,7 +245,7 @@ def test_a_pin_still_catches_a_real_swap_with_base_material_match_on():
     pin can notice that it is no longer the ABS spool the operator chose.
     """
     pinned = snapshot(feed(0, "000000FF", kind="ams", material="ABS", variant="GFB99"))
-    policy = choices_policy({"ams_mapping": [0]}, pinned)
+    policy = choices_policy({"ams_mapping": [0], "manual_mapping": True}, pinned)
     swapped = snapshot(feed(0, "000000FF", kind="ams", material="PLA", variant="GFB00"))
     req = requirements({"type": "PLA", "color": "#000000"})
     assert resolve_filament_routing(req, policy, swapped).reason == "mapping_review_required"
