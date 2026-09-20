@@ -1426,6 +1426,29 @@ export function PrintModal({
     return amsMapping;
   };
 
+  /** A job that already carries a hand pin, so an edit about something else keeps it. */
+  const storedRoutingIsPinned =
+    (mode === 'edit-queue-item' && queueItem?.filament_routing?.mode === 'pinned') ||
+    initialRouting?.mode === 'pinned';
+
+  /** Did a person point at these trays, or did this dialog work the mapping out?
+   *
+   * `ams_mapping` cannot answer that — the payload carries the routing shown on
+   * screen whether or not anybody touched it, and reading its presence as a
+   * physical selection pinned jobs nobody had pinned, which the first tray swap
+   * then held for review. So the answer is stated, and stated on every payload:
+   * sent as `false` it keeps an ordinary add auto even though the mapping rides
+   * along with it, while a pin already stored on the row survives an edit that
+   * says nothing about the slots.
+   */
+  const isManualMapping = (printerId: number, plateId: number | null): boolean => {
+    if (Object.keys(manualMappings).length > 0) return true;
+    if (plateId !== null && Object.keys(manualMappingsByPlate[plateId] ?? {}).length > 0) return true;
+    const perPrinter = perPrinterConfigs[printerId];
+    if (perPrinter && !perPrinter.useDefault && !perPrinter.autoConfigured) return true;
+    return storedRoutingIsPinned;
+  };
+
   const runSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean }) => {
     e?.preventDefault();
 
@@ -1796,6 +1819,7 @@ export function PrintModal({
         Object.keys(manualMappings).length === 0 && Object.keys(manualMappingsByPlate).length === 0 &&
         !Object.values(perPrinterConfigs).some(config => !config.useDefault && !config.autoConfigured)
         ? undefined : getMappingForPrinter(printerId, plateId),
+      manual_mapping: isManualMapping(printerId, plateId),
       ...{
         feed_policy: autoModeOptions.feed_policy,
         force_color_match: autoModeOptions.force_color_match,
@@ -1875,6 +1899,7 @@ export function PrintModal({
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
+                manual_mapping: isManualMapping(printerId, plateId),
                 feed_policy: autoModeOptions.feed_policy,
                 force_color_match: autoModeOptions.force_color_match,
                 allow_base_material_match: autoModeOptions.allow_base_material_match,
@@ -1895,6 +1920,7 @@ export function PrintModal({
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
+                manual_mapping: isManualMapping(printerId, plateId),
                 feed_policy: autoModeOptions.feed_policy,
                 force_color_match: autoModeOptions.force_color_match,
                 allow_base_material_match: autoModeOptions.allow_base_material_match,
@@ -1915,10 +1941,13 @@ export function PrintModal({
               manual_start: scheduleOptions.scheduleType === 'manual',
               require_previous_success: scheduleOptions.requirePreviousSuccess,
               ams_mapping: printerMapping,
-              // ⚠️ The same four routing answers `getQueueData` sends on the add
+              // ⚠️ The same routing answers `getQueueData` sends on the add
               // path. The PATCH merges only what arrives (`exclude_unset=True`),
               // so leaving them out kept the stored answer and the operator's
-              // change to the option was silently lost.
+              // change to the option was silently lost. `manual_mapping` is what
+              // keeps the mapping above from re-pinning an auto job — and what
+              // keeps a stored pin through an edit that never touched the slots.
+              manual_mapping: isManualMapping(printerId, plateId),
               feed_policy: autoModeOptions.feed_policy,
               force_color_match: autoModeOptions.force_color_match,
               allow_base_material_match: autoModeOptions.allow_base_material_match,

@@ -4449,6 +4449,9 @@ export interface PrintQueueItemCreate {
   force_color_match?: boolean;
   allow_base_material_match?: boolean;
   filament_overrides?: AutoQueueFilamentOverride[];
+  /** The operator pointed at these trays; without it `ams_mapping` is only the
+   *  routing this dialog computed, and the job stays auto. */
+  manual_mapping?: boolean;
   queue_id: number;  // Required - which printer's queue
   /** Put this new block before other pending work on the selected printer. */
   enqueue_position?: 'end' | 'next';
@@ -4498,6 +4501,9 @@ export interface PrintQueueItemUpdate {
   force_color_match?: boolean;
   allow_base_material_match?: boolean;
   filament_overrides?: AutoQueueFilamentOverride[];
+  /** Whether the saved job is hand-pinned. Sent on every edit: omitted, a stored
+   *  pin survives; `false` releases it, `true` states one. */
+  manual_mapping?: boolean;
   queue_id?: number | null;  // Move to different queue
   position?: number;
   scheduled_time?: string | null;
@@ -8758,6 +8764,8 @@ export const api = {
       feed_policy?: FeedPolicy;
       force_color_match?: boolean;
       allow_base_material_match?: boolean;
+      /** The operator pointed at these trays (see PrintQueueItemCreate). */
+      manual_mapping?: boolean;
       filament_overrides?: AutoQueueFilamentOverride[];
       timelapse?: boolean;
       bed_levelling?: CalibrationMode;
@@ -11300,6 +11308,8 @@ export const api = {
       feed_policy?: FeedPolicy;
       force_color_match?: boolean;
       allow_base_material_match?: boolean;
+      /** The operator pointed at these trays (see PrintQueueItemCreate). */
+      manual_mapping?: boolean;
       filament_overrides?: AutoQueueFilamentOverride[];
       bed_levelling?: CalibrationMode;
       flow_cali?: CalibrationMode;
