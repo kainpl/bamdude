@@ -46,7 +46,7 @@ const printerStatus = {
   ams_extruder_map: {},
 };
 
-const queueItem = (mode: 'auto' | 'pinned'): PrintQueueItem => ({
+const baseQueueItem = (): PrintQueueItem => ({
   id: 7,
   queue_id: 1,
   printer_id: 1,
@@ -83,6 +83,10 @@ const queueItem = (mode: 'auto' | 'pinned'): PrintQueueItem => ({
   archive_thumbnail: null,
   printer_name: 'X1 Carbon',
   print_time_seconds: 3600,
+});
+
+const queueItem = (mode: 'auto' | 'pinned'): PrintQueueItem => ({
+  ...baseQueueItem(),
   filament_routing: {
     version: 3,
     mode,
@@ -91,6 +95,12 @@ const queueItem = (mode: 'auto' | 'pinned'): PrintQueueItem => ({
     allow_base_material_match: true,
     filament_overrides: [],
   },
+});
+
+/** A row from before the routing column: no stored answer, only the old mapping. */
+const legacyQueueItem = (amsMapping: number[] | null): PrintQueueItem => ({
+  ...baseQueueItem(),
+  ams_mapping: amsMapping,
 });
 
 describe('who chose the trays', () => {
@@ -187,6 +197,30 @@ describe('who chose the trays', () => {
   it('a hand-pinned row keeps its pin through an edit that never touched the slots', async () => {
     const user = userEvent.setup();
     openEdit(queueItem('pinned'));
+
+    await user.click(await screen.findByRole('button', { name: /queue only/i }));
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(patched).toBeDefined());
+    expect(patched).toMatchObject({ manual_mapping: true, manual_start: true });
+  });
+
+  /**
+   * A row queued before the routing column existed stores no answer at all, and
+   * the server reads that absence as physical intent — pinned, and held for
+   * review when the row has no usable mapping to check. Saying «nobody picked
+   * the slots» for such a row would reclassify it from an edit that never
+   * mentioned them, and lose the review with it. A missing mapping and one that
+   * pins nothing are the two shapes where nothing else rescues the answer: an
+   * older row WITH real trays seeds them into the dialog and reads as manual
+   * on its own.
+   */
+  it.each([
+    ['no mapping at all', null],
+    ['a mapping that pins nothing', [-1, -1]],
+  ] as const)('a row from before the routing column keeps its pin — %s', async (_label, amsMapping) => {
+    const user = userEvent.setup();
+    openEdit(legacyQueueItem(amsMapping as number[] | null));
 
     await user.click(await screen.findByRole('button', { name: /queue only/i }));
     await user.click(screen.getByRole('button', { name: /^save$/i }));

@@ -1426,9 +1426,19 @@ export function PrintModal({
     return amsMapping;
   };
 
-  /** A job that already carries a hand pin, so an edit about something else keeps it. */
+  /** A job that already carries a hand pin, so an edit about something else keeps it.
+   *
+   * ⚠️ A row written before the routing column existed has NO stored answer, and
+   * that absence is itself read as physical intent — `queue_policy`'s legacy
+   * branch takes such a row as pinned, with review required when its mapping is
+   * missing or empty. Answering `false` for it would let an edit that never
+   * mentioned the slots reclassify the row and drop that review. The common case
+   * is rescued by accident (`manualMappings` is seeded from `queueItem.ams_mapping`
+   * whenever the stored mode is not `auto`), but a legacy row whose mapping is
+   * NULL or all `-1` seeds nothing — which is exactly the row whose review matters.
+   */
   const storedRoutingIsPinned =
-    (mode === 'edit-queue-item' && queueItem?.filament_routing?.mode === 'pinned') ||
+    (mode === 'edit-queue-item' && !!queueItem && (queueItem.filament_routing?.mode ?? 'pinned') === 'pinned') ||
     initialRouting?.mode === 'pinned';
 
   /** Did a person point at these trays, or did this dialog work the mapping out?
