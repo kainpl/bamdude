@@ -182,7 +182,6 @@ def resolve_filament_routing(
             if not filament_types_compatible(override["type"], slot["type"]):
                 slot["tray_info_idx"] = override.get("tray_info_idx")
             slot["type"] = override["type"]
-            slot.pop("filament_type", None)
         if override.get("tray_info_idx"):
             slot["tray_info_idx"] = override["tray_info_idx"]
         if override.get("color"):
@@ -198,8 +197,8 @@ def resolve_filament_routing(
         # way whatever the policy says: "allow base material match" is the
         # operator's answer to «any ABS will do», and what it governs is whether
         # a profile ID may veto a material that already matches — below, and in
-        # the pin clause further down. It has never been a second source for the
-        # material itself.
+        # the pin clause further down. It is not a second source for the material
+        # itself, and the paragraph below is why it must not become one again.
         #
         # The comparison used to switch to ``filament_type`` — the family this
         # channel's ``tray_info_idx`` resolves to in the catalogue — whenever
