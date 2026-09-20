@@ -475,6 +475,8 @@ export interface FilamentReqsData {
     /** Structured material resolved through the profile family, e.g. PETG. */
     filament_type?: string;
     /** UI-only matcher policy; never sent as part of the raw 3MF requirement. */
+    ignore_profile?: boolean;
+    /** UI-only matcher policy; never sent as part of the raw 3MF requirement. */
     strict_profile_match?: boolean;
     /** UI-only matcher policy; never sent as part of the raw 3MF requirement. */
     strict_color_match?: boolean;

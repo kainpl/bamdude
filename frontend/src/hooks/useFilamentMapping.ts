@@ -183,6 +183,8 @@ export interface FilamentRequirement {
   nozzle_id?: number;
   /** Structured material of the resolved profile family, e.g. PETG. */
   filament_type?: string;
+  /** The operator allowed a base-material match, so the profile id plays no part. */
+  ignore_profile?: boolean;
   /** Keep the slicer's family/profile identity strict unless base matching was enabled. */
   strict_profile_match?: boolean;
   /** Reject a differently-coloured loaded slot instead of merely warning. */
@@ -319,7 +321,13 @@ export function buildFilamentComparison(
     // Auto-match: Find a loaded filament
     // Priority: unique tray_info_idx match > exact color match > similar color match > type-only match
     // IMPORTANT: Exclude trays that are already assigned (manually or auto)
-    const reqTrayInfoIdx = req.tray_info_idx || '';
+    //
+    // ⚠️ `ignore_profile` drops the idx out of the search entirely, which skips
+    // the preference branch below: once the operator has allowed a base-material
+    // match the profile is neither a condition nor a priority — the backend
+    // ranks by colour among material-compatible trays and so must this, or the
+    // dialog pins a spool the dispatcher would have passed over.
+    const reqTrayInfoIdx = req.ignore_profile ? '' : req.tray_info_idx || '';
 
     // Get available trays (not already used)
     let available = loadedFilaments.filter((f) => !usedTrayIds.has(f.globalTrayId));

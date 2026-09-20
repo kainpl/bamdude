@@ -755,10 +755,11 @@ export function PrintModal({
     : isLibraryFile
       ? libraryFilamentReqs
       : archiveFilamentReqs;
-  // The picker keeps the profile's display name, while its matcher can use the
-  // resolved family material when the operator opts in.  The original profile
-  // identity stays present as a preference for display and matching, while the
-  // material type keeps a generic PETG spool eligible.
+  // The dialog's matcher answers the question the printer's own routing answers,
+  // and the two must give the same answer or this panel promises a slot the
+  // dispatcher refuses. The requirement always keeps the material its FILE
+  // declares — the family its profile belongs to is never substituted for it —
+  // and the option decides only what happens to the profile id.
   const applyRoutingPolicy = useCallback((requirements: FilamentReqsData | undefined) => {
     // The source query may temporarily contain an error/fallback payload while
     // it settles. Leave that untouched; the normal source-read gate will keep
@@ -768,11 +769,14 @@ export function PrintModal({
       ...requirements,
       filaments: requirements.filaments.map(filament => ({
         ...filament,
-        ...(filament.filament_type
-          ? autoModeOptions.allow_base_material_match
-            ? { type: filament.filament_type }
-            : { strict_profile_match: true }
-          : {}),
+        // ON: the id stops being asked about at all — neither an eligibility
+        // condition nor a selection priority. OFF: the same profile is required
+        // wherever the id is known on BOTH sides, whether or not the family was
+        // resolved; the backend compares the ids either way, and asking only
+        // for a known family is how a `variant_mismatch` job showed as ready.
+        ...(autoModeOptions.allow_base_material_match
+          ? { ignore_profile: true }
+          : { strict_profile_match: true }),
         strict_color_match: autoModeOptions.force_color_match,
       })),
     };

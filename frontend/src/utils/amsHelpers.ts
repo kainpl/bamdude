@@ -92,6 +92,13 @@ export interface FilamentMatchRequirement {
   type?: string;
   color?: string;
   tray_info_idx?: string;
+  /**
+   * The operator allowed a base-material match, so the profile id plays no
+   * part — neither as an eligibility condition nor as a selection priority.
+   * Mutually exclusive with `strict_profile_match`, which the routing policy
+   * sets instead when the option is off.
+   */
+  ignore_profile?: boolean;
   strict_profile_match?: boolean;
   strict_color_match?: boolean;
 }
@@ -99,9 +106,14 @@ export interface FilamentMatchRequirement {
 /**
  * Check the material/profile portion of a loaded-slot match.
  *
- * A family-derived material (for example PETG) can deliberately relax the
- * profile-id comparison. Until that option is enabled, two known, different
- * profile ids must not be silently treated as interchangeable.
+ * The relaxation is the CALLER's `ignore_profile`, never a family-derived
+ * material: a requirement carries the material its own file declares, and
+ * allowing a base-material match only stops the profile id being asked about
+ * (the routing policy then sets neither `strict_profile_match` nor a substitute
+ * `type`). Until then, two known, different profile ids must not be silently
+ * treated as interchangeable — the backend refuses that pairing as
+ * `variant_mismatch` whether or not it resolved the profile's family, so this
+ * must too, or the dialog reports a job as ready that the printer turns down.
  */
 export function filamentRequirementMatches(
   req: FilamentMatchRequirement,

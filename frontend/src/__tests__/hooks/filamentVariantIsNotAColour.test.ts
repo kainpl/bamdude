@@ -86,3 +86,60 @@ describe('a filament variant is not a colour (#2687)', () => {
     expect(row.status).toBe('mismatch');
   });
 });
+
+/**
+ * The same question once the operator has allowed a base-material match.
+ *
+ * The rule is the backend's, and the dialog must rank trays by it or it
+ * promises a slot the dispatcher would not pick: with the option ON the profile
+ * id is neither an eligibility condition nor a selection priority, and the
+ * material the FILE declares is what gets compared; with it OFF the same
+ * profile is required wherever the id is known on both sides.
+ */
+describe('the profile id once a base-material match is allowed', () => {
+  /** Inside `colorsAreSimilar`' tolerance of RED, but not equal to it. */
+  const NEARLY_RED = '#E61414';
+
+  const asked = (
+    extra: { tray_info_idx?: string; ignore_profile?: boolean; strict_profile_match?: boolean },
+    loaded: LoadedFilament[],
+    type = 'PLA',
+    color = RED,
+  ) =>
+    buildFilamentComparison(
+      { filaments: [{ slot_id: 1, type, color, used_grams: 10, ...extra }] },
+      loaded,
+      {},
+    )[0];
+
+  it('does not let the asked-for profile move the chosen tray', () => {
+    // Two spools of the same material in the same colour, differing only by
+    // profile. Which one the dialog picks must no longer depend on the id.
+    const loaded = [tray(0, RED, BASIC), tray(1, RED, MATTE)];
+
+    const matte = asked({ tray_info_idx: MATTE, ignore_profile: true }, loaded);
+    const basic = asked({ tray_info_idx: BASIC, ignore_profile: true }, loaded);
+
+    expect(matte.loaded?.globalTrayId).toBe(basic.loaded?.globalTrayId);
+    expect(matte.status).toBe('match');
+  });
+
+  it('takes the exact colour of another profile over a near colour of the asked-for one', () => {
+    const loaded = [tray(0, NEARLY_RED, MATTE), tray(1, RED, BASIC)];
+
+    expect(asked({ tray_info_idx: MATTE, ignore_profile: true }, loaded).loaded?.globalTrayId).toBe(1);
+    // Without the option the profile still decides selection first (#2650:
+    // Basic is not Matte), which is the opposite order.
+    expect(asked({ tray_info_idx: MATTE }, loaded).loaded?.globalTrayId).toBe(0);
+  });
+
+  it('refuses a different known profile when the option is off, whatever the family', () => {
+    // Parity with the backend's `variant_mismatch`: it compares the two ids it
+    // knows and never asked whether the profile's family had been resolved.
+    const loaded = [tray(0, RED, 'GFG99', 'PETG')];
+    const strict = { tray_info_idx: 'Pa240002', strict_profile_match: true };
+
+    expect(asked(strict, loaded, 'PETG').status).toBe('mismatch');
+    expect(asked({ tray_info_idx: 'Pa240002' }, loaded, 'PETG').status).toBe('match');
+  });
+});
