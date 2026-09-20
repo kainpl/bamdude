@@ -262,7 +262,19 @@ def resolve_filament_routing(
                         expected_type,
                         source.material,
                     )
-                    or (expected_variant and source.variant and expected_variant != source.variant)
+                    # A pin is a PHYSICAL slot, not a profile, so the option
+                    # governs this comparison exactly as it governs the gate
+                    # above. With it on, a tray whose profile id was re-tagged
+                    # while its material, its colour and its nozzle binding
+                    # stayed put is still the tray the operator pointed at —
+                    # re-profiling a spool moves no filament. With it off the
+                    # operator asked for that exact profile, here too.
+                    or (
+                        not policy.allow_base_material_match
+                        and expected_variant
+                        and source.variant
+                        and expected_variant != source.variant
+                    )
                 ):
                     reason = "mapping_review_required"
                     continue

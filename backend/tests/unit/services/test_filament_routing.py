@@ -4,6 +4,7 @@ from dataclasses import replace
 
 import pytest
 
+from backend.app.services.filament_policy import choices_policy
 from backend.app.services.filament_requirements import PrintRequirements, SourceIdentity
 from backend.app.services.filament_routing import RoutingPolicy, resolve_filament_routing
 from backend.app.services.printer_feed_snapshot import FeedSource, PrinterFeedSnapshot
@@ -162,6 +163,43 @@ def test_pinned_sources_are_not_remapped_and_unknown_legacy_colour_needs_review(
     assert resolve_filament_routing(req, policy, state).reason == "mapping_review_required"
     explicit = replace(policy, physical_pins={1: {"source_id": 0, "color": "00FF00", "type": "PLA"}})
     assert resolve_filament_routing(req, explicit, state).plan.mapping == [0]
+
+
+def test_a_pinned_tray_that_was_only_re_profiled_is_still_the_pinned_tray():
+    """A pin is a physical slot, and the base-material option governs its profile clause too.
+
+    The pin is built the way production builds it — ``choices_policy`` records
+    what the chosen source WAS at pin time, ``tray_info_idx`` included. Re-tagging
+    that spool's profile afterwards (GFB99 → GFB00) moved no filament, so with
+    «allow base material match» on the tray is still the one the operator pointed
+    at. With the option off the operator asked for that exact profile, here as in
+    the unpinned gate above.
+    """
+    pinned = snapshot(feed(0, "000000FF", kind="ams", material="ABS", variant="GFB99"))
+    policy = choices_policy({"ams_mapping": [0]}, pinned)
+    req = requirements({"type": "ABS", "color": "#000000"})
+    reprofiled = snapshot(feed(0, "000000FF", kind="ams", material="ABS", variant="GFB00"))
+
+    result = resolve_filament_routing(req, policy, reprofiled)
+    assert result.status == "compatible"
+    assert result.plan.mapping == [0]
+    assert (
+        resolve_filament_routing(req, replace(policy, allow_base_material_match=False), reprofiled).reason
+        == "mapping_review_required"
+    )
+
+
+def test_a_pin_still_catches_a_real_swap_with_base_material_match_on():
+    """Only the profile clause is policy-dependent; the physical identity is not.
+
+    The plate here would take the PLA now sitting in the slot, so nothing but the
+    pin can notice that it is no longer the ABS spool the operator chose.
+    """
+    pinned = snapshot(feed(0, "000000FF", kind="ams", material="ABS", variant="GFB99"))
+    policy = choices_policy({"ams_mapping": [0]}, pinned)
+    swapped = snapshot(feed(0, "000000FF", kind="ams", material="PLA", variant="GFB00"))
+    req = requirements({"type": "PLA", "color": "#000000"})
+    assert resolve_filament_routing(req, policy, swapped).reason == "mapping_review_required"
 
 
 def test_prefer_lowest_is_gated_by_backup_and_secondary_to_exact_colour():

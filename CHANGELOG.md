@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Fixed
+
+- **A job that already names its tray is no longer sent for review just because that spool was re-tagged.** When you pick the tray yourself, and when a job queued to a printer records the one it was routed to, BamDude remembers what was in that slot — the profile id included — and checks the slot again before it prints. That check ignored «Allow base material match»: re-tagging the spool in the AMS to another profile, while the same material in the same colour stayed in the same slot, was enough to make the job ask to be reviewed instead of printing. With the option on, the profile no longer takes part in that check; the material, the colour and the slot's physical binding still do, so a spool actually swapped for a different one is caught exactly as before. With the option off the exact profile is still required. This lifts the second of the two limits noted in 0.6.0.1.
+
 ## [0.6.0.1] - 2026-09-20
 
 ### Fixed
