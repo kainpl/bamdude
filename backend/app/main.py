@@ -8937,9 +8937,9 @@ async def lifespan(app: FastAPI):
 
     # Scratch goes on the data volume, not the system temp — before anything
     # stages its first file there. The backup copies the whole data tree into
-    # scratch before zipping it, so on Docker the default /tmp is the
-    # container's own layer, and on some NAS hosts a tmpfs: a backup of a
-    # grown library then kills the container with nothing to log.
+    # scratch before zipping it, and on Docker the default is the container's
+    # own layer, on some NAS hosts a tmpfs: not where a copy of the whole
+    # library belongs, and not sized for it.
     from backend.app.core.paths import install_process_temp_dir
 
     install_process_temp_dir()

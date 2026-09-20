@@ -47,9 +47,8 @@ _log_dir = Path(_log_dir_env) if _log_dir_env else _app_dir / "logs"
 # 3MF patcher, the timelapse encoder, the camera. It defaults under DATA_DIR
 # because the system temp is the one filesystem nobody sized for this — in
 # Docker that is the container's own layer, and on some NAS hosts a tmpfs,
-# i.e. RAM, where a backup of a grown library kills the container with no
-# Python-level error to log (diagnosed 2026-09-20 from a farm whose container
-# died at 03:00 every night).
+# i.e. RAM. Neither is where an operator expects a copy of their whole library
+# to land, and neither was chosen for it.
 #
 # ⚠️ Unlike the subsystem roots below this one IS an env override
 # (inv-data-dir-one-root-per-subsystem does not cover it): nothing renames

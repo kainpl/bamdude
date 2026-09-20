@@ -2,9 +2,9 @@
 
 The backup stages a COPY OF THE WHOLE DATA TREE before it writes a byte of ZIP.
 On Docker the system temp is the container's own layer and on some NAS hosts a
-tmpfs — RAM — so a farm whose library had grown lost its container to the OOM
-killer at 03:00 every night, with no Python-level error to log (diagnosed
-2026-09-20). These tests pin where scratch goes and the one place it may not.
+tmpfs — RAM. Neither is where an operator expects a copy of their whole library
+to land, and neither was sized for it. These tests pin where scratch goes and
+the one place it may not.
 """
 
 import tempfile
