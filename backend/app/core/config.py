@@ -42,6 +42,21 @@ _plate_cal_dir = Path(_data_dir_env) / "plate_calibration" if _data_dir_env else
 _log_dir_env = os.environ.get("LOG_DIR")
 _log_dir = Path(_log_dir_env) if _log_dir_env else _app_dir / "logs"
 
+# Scratch directory for everything that stages a file before putting it in its
+# place: the backup (which copies the WHOLE data tree before zipping it), the
+# 3MF patcher, the timelapse encoder, the camera. It defaults under DATA_DIR
+# because the system temp is the one filesystem nobody sized for this — in
+# Docker that is the container's own layer, and on some NAS hosts a tmpfs,
+# i.e. RAM. Neither is where an operator expects a copy of their whole library
+# to land, and neither was chosen for it.
+#
+# ⚠️ Unlike the subsystem roots below this one IS an env override
+# (inv-data-dir-one-root-per-subsystem does not cover it): nothing renames
+# across it, and an operator whose DATA_DIR is a slow network volume needs to
+# be able to put scratch on a local disk.
+_temp_dir_env = os.environ.get("TEMP_DIR")
+_temp_dir = Path(_temp_dir_env) if _temp_dir_env else _data_dir / "tmp"
+
 
 def _get_database_path() -> Path:
     """Return the path to bamdude.db (may not exist yet)."""
@@ -156,6 +171,7 @@ class Settings(BaseSettings):
     # Paths - these accept env vars DATA_DIR, LOG_DIR etc.
     data_dir: Path = _data_dir
     log_dir: Path = _log_dir
+    temp_dir: Path = _temp_dir
     base_dir: Path = _data_dir  # For backwards compatibility (alias for data_dir)
     # Application install directory — where requirements.txt, the .git
     # tree, and frontend/ live. Distinct from data_dir on Docker (data is

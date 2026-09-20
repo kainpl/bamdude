@@ -8935,6 +8935,15 @@ async def lifespan(app: FastAPI):
 
     install_proactor_reset_filter()
 
+    # Scratch goes on the data volume, not the system temp — before anything
+    # stages its first file there. The backup copies the whole data tree into
+    # scratch before zipping it, and on Docker the default is the container's
+    # own layer, on some NAS hosts a tmpfs: not where a copy of the whole
+    # library belongs, and not sized for it.
+    from backend.app.core.paths import install_process_temp_dir
+
+    install_process_temp_dir()
+
     # DATABASE_URL=embedded: the bundled PostgreSQL must accept connections
     # before init_db() opens the first one. The engine itself was created at
     # import with a fixed localhost URL, so nothing else has to wait.
