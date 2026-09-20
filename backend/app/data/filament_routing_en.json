@@ -41,5 +41,10 @@
   "source_copy_timeout": "Copying the source file into the queue took too long. Check the storage connection, then try again.",
   "source_spool_no_space": "There is not enough free space to save this file for the queue.",
   "source_spool_write_failed": "The file could not be saved for the queue. Check the server's data storage.",
-  "source_copy_failed": "The file could not be saved for the queue."
+  "source_copy_failed": "The file could not be saved for the queue.",
+  "detail": {
+    "wanted_and_loaded": "Channel {slot} needs {wanted}; loaded: {loaded}.",
+    "wanted_nothing_loaded": "Channel {slot} needs {wanted}; nothing is loaded.",
+    "wanted_only": "Channel {slot} needs {wanted}."
+  }
 }

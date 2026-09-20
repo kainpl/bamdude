@@ -21,7 +21,7 @@ was referenced and offered to delete every archived file on the machine.
 
 | Script | What it is for |
 |---|---|
-| `set_version.js` | `node scripts/set_version.js 0.X.Y` — bumps the version in `backend/app/core/config.py`, `frontend/package.json` and `pyproject.toml` together. Step 2 of the release checklist in `.github/MAINTAINERS.md`. |
+| `set_version.js` | `node scripts/set_version.js 0.X.Y` — bumps the version in `backend/app/core/config.py`, `frontend/package.json`, `pyproject.toml` and `frontend/package-lock.json` together. A file it cannot find, or whose version field it can no longer match, is a hard failure with a non-zero exit — a half-set version used to look exactly like a clean run. Step 2 of the release checklist in `.github/MAINTAINERS.md`. |
 | `api_error_catalog.py` | `report` counts API refusals with no Ukrainian; `sync` adds the missing keys as empty strings, `--prune` drops orphans. A CI test fails when the catalogue drifts, and this is what fixes it. See `CONTRIBUTING.md`. |
 | `i18n_audit.py` | Finds frontend i18n keys nothing asks for, and the `en`/`uk` parity skew. Understands literal `t('x')`, template prefixes `` t(`x.${…}`) ``, `<Trans>` and plural siblings, so its "unused" list is worth acting on. Writes the full list to `temp/i18n_unused_keys.txt`. Needs Node. |
 | `cleanup-betas.sh` | After releasing a newer version of a line, removes the older betas' **GitHub pre-releases, Docker Hub tags and GHCR versions**. Never touches git tags (tag immutability). Dry-run by default, 14-day grace period. Needs `gh`, `jq`, `python3`. |

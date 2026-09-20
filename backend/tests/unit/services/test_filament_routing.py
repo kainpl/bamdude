@@ -98,9 +98,44 @@ def test_dual_external_without_ams():
 
 
 def test_known_variant_mismatch_is_not_relaxed_by_colour_policy():
+    """Colour policy has no say over the profile gate; the base-material option does.
+
+    That option is pinned off here because it is the only thing that arms the
+    gate. With it ON — the default — GFA01 routes onto GFA00: both report
+    ``tray_type == "PLA"``, and «any PLA will do» is precisely what the option
+    says. This has held for every id the catalogue can name since the option
+    landed (a resolvable family already disarmed the gate); the fixture below
+    omits ``filament_type``, so it used to reach the gate by accident and read
+    as if the default still enforced profiles.
+    """
     req = requirements({"tray_info_idx": "GFA01"})
-    assert resolve_filament_routing(req, RoutingPolicy(), snapshot(feed(variant="GFA00"))).reason == "variant_mismatch"
-    assert resolve_filament_routing(req, RoutingPolicy(), snapshot(feed())).status == "compatible"
+    strict = RoutingPolicy(allow_base_material_match=False)
+    assert resolve_filament_routing(req, strict, snapshot(feed(variant="GFA00"))).reason == "variant_mismatch"
+    assert resolve_filament_routing(req, strict, snapshot(feed())).status == "compatible"
+    assert (
+        resolve_filament_routing(req, replace(strict, force_color_match=True), snapshot(feed(variant="GFA00"))).reason
+        == "variant_mismatch"
+    )
+
+
+def test_a_profile_the_catalogue_cannot_name_still_prints_on_its_base_material():
+    """ABS prints on ABS, whatever id either side carries.
+
+    The sibling test below hands ``filament_type`` in, so it only ever proved
+    the relaxation works once the family is known. A custom slicer preset
+    ("Pa240002") resolves to no family at all — and that used to switch the
+    option OFF and re-arm the id comparison it exists to suppress. Measured on
+    a 24-printer farm (2026-09-20): every machine with ABS in the AMS refused
+    an ABS plate, blaming the filament type.
+    """
+    req = requirements({"type": "ABS", "tray_info_idx": "Pa240002"})
+    state = snapshot(feed(material="ABS", variant="GFB99"))
+    assert resolve_filament_routing(req, RoutingPolicy(), state).status == "compatible"
+    # Off is still off: the operator asked for that exact profile.
+    assert (
+        resolve_filament_routing(req, RoutingPolicy(allow_base_material_match=False), state).reason
+        == "variant_mismatch"
+    )
 
 
 def test_family_material_match_uses_filament_type_not_a_profile_name():

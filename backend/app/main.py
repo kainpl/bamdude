@@ -10697,7 +10697,14 @@ async def health_check():
     return {"status": "healthy"}
 
 
-@app.api_route("/manifest.json", methods=["GET", "HEAD"])
+# The four routes below answer GET and HEAD, each declared once per method
+# rather than as a single `api_route(methods=["GET", "HEAD"])`: FastAPI derives
+# one operationId per ROUTE, so a two-method route publishes the same id for
+# both operations — and an unstable one, because the method that names it comes
+# from `list(route.methods)[0]`, a set whose order follows the process's hash
+# seed.
+@app.get("/manifest.json")
+@app.head("/manifest.json")
 async def serve_manifest():
     """Serve PWA manifest."""
     manifest_file = app_settings.static_dir / "manifest.json"
@@ -10706,7 +10713,8 @@ async def serve_manifest():
     return {"error": "Manifest not found"}
 
 
-@app.api_route("/favicon.ico", methods=["GET", "HEAD"])
+@app.get("/favicon.ico")
+@app.head("/favicon.ico")
 async def serve_favicon():
     """Root favicon for clients that never read ``<link rel="icon">``.
 
@@ -10719,7 +10727,8 @@ async def serve_favicon():
     return Response(status_code=404)
 
 
-@app.api_route("/sw.js", methods=["GET", "HEAD"])
+@app.get("/sw.js")
+@app.head("/sw.js")
 async def serve_service_worker():
     """Serve service worker."""
     sw_file = app_settings.static_dir / "sw.js"
@@ -10732,7 +10741,8 @@ async def serve_service_worker():
     return {"error": "Service worker not found"}
 
 
-@app.api_route("/sw-register.js", methods=["GET", "HEAD"])
+@app.get("/sw-register.js")
+@app.head("/sw-register.js")
 async def serve_sw_register():
     """Serve the service-worker registration bootstrap script.
 

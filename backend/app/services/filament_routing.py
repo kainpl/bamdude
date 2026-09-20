@@ -19,9 +19,13 @@ FeedPolicy = Literal["auto", "ams_only", "external_only"]
 class RoutingDeferred(Exception):
     """No publish occurred: current evidence cannot authorize this attempt."""
 
-    def __init__(self, reason: str, *, revision: str | None = None):
+    def __init__(self, reason: str, *, revision: str | None = None, params: dict | None = None):
         self.reason = reason
         self.revision = revision
+        #: Same facts a ``RoutingResult`` carries, for the deferral an operator
+        #: reads on the queue row. Empty for the refusals that are about the
+        #: source or the claim rather than about a channel.
+        self.params = params or {}
         super().__init__(reason)
 
 
@@ -92,6 +96,28 @@ class RoutingResult:
     reason: str | None = None
     plan: RoutingPlan | None = None
     slots: tuple[int, ...] = ()
+    #: Facts behind a per-channel refusal, for the sentence the operator reads:
+    #: ``slot``, ``wanted`` and ``loaded``. A refusal that names neither the
+    #: channel nor what either side is holding cannot be acted on — 24 printers
+    #: refused one ABS plate for weeks under a sentence blaming the material,
+    #: while every one of them had ABS and differed only in the profile id.
+    params: dict = field(default_factory=dict)
+
+
+#: Sources listed in a refusal before it stops naming them one by one.
+_LISTED_SOURCES = 4
+
+
+def describe_source(material: str | None, variant: str | None) -> str:
+    return f"{material or '?'} ({variant})" if variant else (material or "?")
+
+
+def _refusal_params(sid: int, target_type: str, variant: str | None, sources) -> dict:
+    listed = [describe_source(s.material, s.variant) for s in sources]
+    loaded = ", ".join(listed[:_LISTED_SOURCES])
+    if len(listed) > _LISTED_SOURCES:
+        loaded = f"{loaded}, +{len(listed) - _LISTED_SOURCES}"
+    return {"slot": sid, "wanted": describe_source(target_type, variant), "loaded": loaded}
 
 
 def _required_diameter(requirements, nozzle):
@@ -154,6 +180,25 @@ def resolve_filament_routing(
     colors = {}
     for slot in slots:
         sid = slot["slot_id"]
+        # "Allow base material match" is the operator's answer to «any ABS will
+        # do», and it alone decides whether a profile id may veto below. The
+        # veto used to be ANDed with ``filament_type`` — the family this
+        # channel's ``tray_info_idx`` resolves to in the catalogue — which
+        # inverted the option on exactly the files it was written for: a custom
+        # slicer preset id ("Pa240002") resolves to no family, so the option
+        # read as OFF and the strict id comparison it exists to suppress came
+        # back on. Measured on a 24-printer farm (2026-09-20): every machine
+        # holding ABS refused an ABS plate, naming the filament TYPE.
+        #
+        # With the option on, what is compared is the BASE MATERIAL on both
+        # sides — the family's when the catalogue knows it, the 3MF's own
+        # declared type otherwise — and never an id. ABS prints on ABS.
+        #
+        # ⚠️ An unresolvable family is the NORMAL case on a working farm, not an
+        # edge: the catalogue is filled through one operator's cloud link, while
+        # the plates arrive from several people's slicers. Everyone else's
+        # presets are ids this install has never seen and never will. Anything
+        # that makes routing depend on resolving them strands those plates.
         use_family_type = policy.allow_base_material_match and bool(slot.get("filament_type"))
         target_type = slot["filament_type"] if use_family_type else slot["type"]
         nozzle = slot.get("nozzle_id") if slot.get("nozzle_id") is not None else 0
@@ -184,7 +229,7 @@ def resolve_filament_routing(
             if not filament_types_compatible(source.material, target_type):
                 continue
             variant = slot.get("tray_info_idx")
-            if variant and source.variant and variant != source.variant and not use_family_type:
+            if variant and source.variant and variant != source.variant and not policy.allow_base_material_match:
                 reason = "variant_mismatch"
                 continue
             if not source.nozzles:
@@ -228,7 +273,12 @@ def resolve_filament_routing(
                 or (not snapshot.external_known and policy.feed_policy != "ams_only")
                 or snapshot.incomplete
             )
-            return RoutingResult("unknown" if unknown else "incompatible", reason, slots=(sid,))
+            return RoutingResult(
+                "unknown" if unknown else "incompatible",
+                reason,
+                slots=(sid,),
+                params=_refusal_params(sid, target_type, slot.get("tray_info_idx"), snapshot.sources),
+            )
         options[sid] = candidates
     # Most constrained first. Search complete assignments; a flexible channel
     # must not consume the only source of a pinned/strict one.

@@ -84,7 +84,26 @@ def resolve_source_path(
 
 
 def routing_detail(code: str, **params) -> dict:
-    return {"code": code, "params": params, "message": t(current_language(), "filament_routing", code, **params)}
+    """The sentence an operator reads, plus the facts behind it when there are any.
+
+    The facts ride as a SEPARATE sentence rather than as placeholders inside the
+    44 existing ones: every caller that refuses without them keeps working, and
+    a code whose message has no ``{}`` can be raised from anywhere as before.
+    """
+    lang = current_language()
+    message = t(lang, "filament_routing", code, **params)
+    if params.get("wanted"):
+        if params.get("loaded"):
+            detail = "detail.wanted_and_loaded"
+        elif "loaded" in params:
+            # Known to be empty — not the same as not asked. A grouped refusal
+            # (one line for a whole printer model) passes no ``loaded`` at all,
+            # because the trays it would name belong to one printer of many.
+            detail = "detail.wanted_nothing_loaded"
+        else:
+            detail = "detail.wanted_only"
+        message = f"{message} {t(lang, 'filament_routing', detail, **params)}"
+    return {"code": code, "params": params, "message": message}
 
 
 async def item_source(db, item):

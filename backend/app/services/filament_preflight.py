@@ -136,7 +136,7 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
         req, policy, snapshot, prefer_lowest=prefer_lowest, exact_model=exact_model, source_priority=source_priority
     )
     if result.plan is None:
-        raise RoutingDeferred(result.reason or "mapping_review_required", revision=revision)
+        raise RoutingDeferred(result.reason or "mapping_review_required", revision=revision, params=result.params)
     if saved.get("runtime", {}).get("blocked_revision") == revision:
         raise RoutingDeferred(saved["runtime"].get("reason", "feed_state_changed"), revision=revision)
     return DispatchRoutingGuard(req, policy, result.plan, exact_model, revision)
@@ -157,7 +157,7 @@ async def final_guard(guard, printer_id):
     revision = revision_for(guard.requirements, guard.policy, snapshot)
     result = resolve_filament_routing(guard.requirements, guard.policy, snapshot, exact_model=guard.exact_model)
     if result.plan is None:
-        raise RoutingDeferred(result.reason or "feed_state_changed", revision=revision)
+        raise RoutingDeferred(result.reason or "feed_state_changed", revision=revision, params=result.params)
     # Keep the prepared assignment if it remains valid. Remain-only updates
     # cannot select another spool after calibration/colour attribution ran.
     selected = {
