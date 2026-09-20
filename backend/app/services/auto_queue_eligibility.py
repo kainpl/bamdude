@@ -338,7 +338,10 @@ async def find_eligible_printer(
             req, policy, printer_manager.get_feed_snapshot(printer.id), prefer_lowest=prefer_lowest
         )
         if result.plan is None:
-            reasons.append(f"{printer.name}: " + routing_detail(result.reason)["message"])
+            # With the facts: this line names ONE printer, so its trays can be
+            # listed. Without them a farm-wide refusal reads as 24 identical
+            # sentences and the operator cannot tell which channel disagreed.
+            reasons.append(f"{printer.name}: " + routing_detail(result.reason, **result.params)["message"])
             continue
         ready = scheduler._is_printer_idle(printer.id, require_plate_clear)
         candidates.append((ready, result.plan.color_matches, -printer.id, printer, result.plan))

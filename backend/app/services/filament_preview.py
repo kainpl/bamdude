@@ -102,7 +102,14 @@ async def routing_preview(db, data, user):
                 group["total"] += 1
                 group[result.status] += 1
                 if result.reason:
-                    reason = group["reasons"].setdefault(result.reason, {**routing_detail(result.reason), "count": 0})
+                    # One line stands for every printer of this model, so it may
+                    # carry what the FILE asks for but not what any one printer
+                    # has loaded — those trays differ between the machines being
+                    # counted together.
+                    shared = {k: v for k, v in result.params.items() if k in ("slot", "wanted")}
+                    reason = group["reasons"].setdefault(
+                        result.reason, {**routing_detail(result.reason, **shared), "count": 0}
+                    )
                     reason["count"] += 1
                 if (
                     result.plan

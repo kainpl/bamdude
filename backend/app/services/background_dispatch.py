@@ -1657,7 +1657,10 @@ class BackgroundDispatchService:
         from backend.app.services.filament_deferred import abort_execution_archive, defer_claim
         from backend.app.services.print_scheduler import scheduler
 
-        reason = routing_detail(exc.reason)
+        # Two exception types land here: ``RoutingDeferred``, which can name the
+        # channel and what either side holds, and ``SourceUnavailable``, whose
+        # refusal is about the file and has no channel to name.
+        reason = routing_detail(exc.reason, **getattr(exc, "params", {}))
         job.outcome = {
             "success": False,
             "archive_id": job.execution_archive_id,
